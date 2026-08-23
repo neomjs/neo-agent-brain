@@ -1,0 +1,13 @@
+{
+    "$comment"   : "Pre-move placeholder. ADR 0040 (neomjs/neo: learn/agentos/decisions/0040-agentos-extraction-topology.md) is the manifest authority: at the move, this root manifest becomes the Host-Edge package (Edge-only scripts), cloud/ becomes an independently installed nested package, and npm workspaces stay forbidden. The move leaf of Epic neomjs/neo#17500 is the only writer that replaces this file; scripts stay empty until then.",
+    "name"       : "neo-agent-brain",
+    "version"    : "0.0.0",
+    "private"    : true,
+    "description": "The Brain of the Neo.mjs organism — the Agent OS. Pre-move shell; source relocates from neomjs/neo after the extraction wave's blocking proofs.",
+    "repository" : {
+        "type": "git",
+        "url" : "git+https://github.com/neomjs/neo-agent-brain.git"
+    },
+    "license"    : "MIT",
+    "scripts"    : {}
+}
