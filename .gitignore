@@ -1,0 +1,79 @@
+# Derived from the Engine's .gitignore (neomjs/neo), keeping the blocks that are about the
+# Agent OS, the harness, and the toolchain — and dropping the ones about the Engine's own
+# tree (app whitelists, docs output, theme map, webpack json). Those paths do not exist here,
+# and copying them would leave ignore rules nobody can evaluate.
+#
+# See http://help.github.com/ignore-files/ for more about ignoring files.
+
+# ─── Secrets and local plane data ────────────────────────────────────────────────────────
+# The load-bearing block. `.env` and `.neo-ai-secrets` hold credentials, and `.neo-ai-data`
+# is the live plane — graph SQLite, Chroma state, wake and lease files. A repository that
+# does not ignore these is one `git add -A` away from publishing an operator's tokens, and
+# the Brain is precisely the one whose working tree sits next to them.
+.env
+.neo-ai-secrets
+# CONTENTS, not the directory. Git does not descend into an ignored directory, so a bare
+# `.neo-ai-data` makes the negation below unreachable — the Engine learned this for its docs
+# output and still carries the bare form here, where the two tracked concept files survive
+# only because they predate the rule. A new one would be dropped in silence.
+.neo-ai-data/*
+# Concepts are AUTHORED substrate that happens to live under the runtime root, so the
+# negation lands in the same commit as the rule that would otherwise swallow it.
+!.neo-ai-data/concepts/
+# Parity-plane runtime root (the relocated compose plane) — runtime data, never tracked.
+.neo-ai-data-parity
+# Resolved per-operator config overlays. `configBase.mjs` is the tracked authority; these are
+# the local deltas that override it, and they routinely carry hosts, ports, and keys.
+ai/config.mjs
+ai/mcp/server/*/config.mjs
+# Runtime telemetry written beside the graph storage path during SENT_TO edge culls.
+sent-to-cull.jsonl
+
+# ─── Per-seat harness configuration ──────────────────────────────────────────────────────
+# Seat-personal by design: generated per maintainer, never shared. Tracked harness substrate
+# such as hook adapters lives outside these paths.
+.claude/settings.json
+.claude/worktrees/
+.codex/config.toml
+/opencode.jsonc
+/.kimi-code/config.toml
+/.kimi-code/mcp.json
+.gemini/*
+!.gemini/concepts/
+
+# ─── Dependencies and build output ───────────────────────────────────────────────────────
+# Unanchored on purpose: this repository grows a nested `cloud/` package, so a leading slash
+# would ignore only the root installation and track the nested one.
+node_modules
+/dist
+/tmp
+
+# ─── Test output ─────────────────────────────────────────────────────────────────────────
+test/playwright/test-results/
+# Single-file Playwright runs via npx land here instead.
+test-results/
+
+# ─── Agent scratch artifacts ─────────────────────────────────────────────────────────────
+# Anchored to the root: these names are common enough that an unanchored rule could hide a
+# legitimately tracked file elsewhere in the tree.
+/patch_*.js
+/patch_*.mjs
+/patch_*.py
+/pr_*.md
+/scratch*.mjs
+/ticket-*.md
+*.orig
+*.patch
+
+# ─── IDEs and editors ────────────────────────────────────────────────────────────────────
+.classpath
+.project
+.settings
+.vscode/
+/.idea
+*.launch
+
+# ─── System files ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log
