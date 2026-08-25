@@ -38,6 +38,15 @@
     "notSeatRationale": "check-chore-sync.mjs and mergeInheritance.mjs honour --no-verify, so hook-based guards are feedback, not authority. Binding authority is reusable CI plus required branch protection.",
     "custodyTicket": "neomjs/neo#17783"
   },
+  "revalidation": {
+    "trigger": "participationStatus -> active in ai/graph/identityRoots.mjs",
+    "requiredFrom": [
+      "gemini",
+      "kimi"
+    ],
+    "signalled": [],
+    "rationale": "This contract reached cross-family quorum while gemini and kimi were benched. Their signal was not withheld; it was not possible. On reactivation the contract is re-presented for retroactive signal before being treated as settled."
+  },
   "canonicalRepository": "neomjs/neo-agent-skills",
-  "canonicalRevision": "1b7cecd48cd9389f2607a95687de0f15866fbcef"
+  "canonicalRevision": "a3282a71e36f7957c132b457463db77a39bb7063"
 }
