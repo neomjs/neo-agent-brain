@@ -16,9 +16,9 @@
 
 import fs from 'node:fs';
 
-import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
-import {validateComputedRouteResult}  from '../../services/graph/computedRouteResult.mjs';
-import {validateLifecycleFrontier}    from '../../services/graph/lifecycleFrontier.mjs';
+import {normalizeAgentIdentityNodeId} from '../../cloud/graph/normalizeAgentIdentityNodeId.mjs';
+import {validateComputedRouteResult}  from '../../cloud/services/graph/computedRouteResult.mjs';
+import {validateLifecycleFrontier}    from '../../cloud/services/graph/lifecycleFrontier.mjs';
 
 export const HOOK_PROJECTION_SCHEMA_VERSION = 'live-lane-awareness-projection.v1';
 

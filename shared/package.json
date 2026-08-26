@@ -1,0 +1,9 @@
+{
+    "$comment"   : "ADR 0040 §2.2: shared/ is the plane-neutral package, admitted because the inventory proved a non-empty population — an empty-but-present shared/ is refused. It owns no capability and carries no dependencies; its one member is pure math used by both planes' benchmark roots. If the registry's shared population ever empties, this package goes with it.",
+    "name"       : "neo-agent-brain-shared",
+    "version"    : "0.0.0",
+    "private"    : true,
+    "type"       : "module",
+    "description": "Plane-neutral helpers shared by the Host-Edge and Cloud packages.",
+    "license"    : "MIT"
+}

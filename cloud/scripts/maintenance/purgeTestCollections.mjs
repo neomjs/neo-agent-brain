@@ -3,7 +3,7 @@ import {ChromaClient}                  from 'chromadb';
 import fs                              from 'fs-extra';
 import path                            from 'path';
 import {fileURLToPath, pathToFileURL}  from 'url';
-import Neo                             from '../../../src/Neo.mjs'; // side-effect: defines globalThis.Neo so the memory-core config module evaluates
+import Neo                             from 'neo.mjs/src/Neo.mjs'; // side-effect: defines globalThis.Neo so the memory-core config module evaluates
 import {
     CHROMA_TEST_DATABASE,
     dropChromaTestDatabase

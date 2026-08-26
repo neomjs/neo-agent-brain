@@ -1,6 +1,6 @@
 import {execSync}                                  from 'node:child_process';
 import {readFileSync}                              from 'node:fs';
-import {findUnknownCoAuthors, rosterEmailForLogin} from '../../graph/agentCoAuthorEmails.mjs';
+import {findUnknownCoAuthors, rosterEmailForLogin} from '../../cloud/graph/agentCoAuthorEmails.mjs';
 import path                                        from 'node:path';
 import process                                     from 'node:process';
 

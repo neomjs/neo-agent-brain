@@ -2,7 +2,7 @@ import {program}                      from 'commander';
 import fs                             from 'fs-extra';
 import path                           from 'path';
 import {fileURLToPath, pathToFileURL} from 'url';
-import Neo                            from '../../../src/Neo.mjs';
+import Neo                            from 'neo.mjs/src/Neo.mjs';
 
 /**
  * @summary Read-only backup-corruption timeline diagnostic — artifact-verified, not manifest-trusted.

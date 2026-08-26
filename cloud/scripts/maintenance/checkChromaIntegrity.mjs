@@ -6,7 +6,7 @@ import os              from 'os';
 import path            from 'path';
 import {pathToFileURL} from 'url';
 import {promisify}     from 'util';
-import Neo             from '../../../src/Neo.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
 import AiConfig        from '../../config.mjs';
 import kbConfig        from '../../mcp/server/knowledge-base/config.mjs';
 import mcConfig        from '../../mcp/server/memory-core/config.mjs';

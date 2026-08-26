@@ -3,10 +3,10 @@ import * as acorn                  from 'acorn';
 import {execFileSync}              from 'node:child_process';
 import path                        from 'node:path';
 import {fileURLToPath}             from 'node:url';
-import {createFleetRegistryBridge} from '../../services/fleet/createFleetRegistryBridge.mjs';
+import {createFleetRegistryBridge} from '../../cloud/services/fleet/createFleetRegistryBridge.mjs';
 
-import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
-import {normalizeAgentIdentityNodeId}                 from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from '../../cloud/services/fleet/deriveHarnessLaunchSpec.mjs';
+import {normalizeAgentIdentityNodeId}                 from '../../cloud/graph/normalizeAgentIdentityNodeId.mjs';
 
 /**
  * @module ai/scripts/fleet/onboardPeer
@@ -665,8 +665,8 @@ async function main() {
     // Fact gathering (the side-effect half; every Fleet read hits the ONE long-lived HTTP owner).
     // The Neo bootstrap + graph/config imports stay LAZY so `--help` and the module import remain
     // runnable in a bare fresh process.
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
     const
         // the graph db path is OWNED by the memory-core server config (its useTestDatabase-derived

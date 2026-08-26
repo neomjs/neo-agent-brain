@@ -40,10 +40,10 @@ import {spawnSync}                                         from 'node:child_proc
 import path                                                from 'node:path';
 import {fileURLToPath}                                     from 'node:url';
 import fs                                                  from 'fs-extra';
-import Neo             from '../../../src/Neo.mjs';
-import '../../../src/core/_export.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import Client                                              from '../../mcp/client/Client.mjs';
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                     from '../../services/fleet/mcpServers.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                     from '../../cloud/services/fleet/mcpServers.mjs';
 import {buildRunLog, collectFailures, formatDigest, isRed} from './nightlyE2eDigest.mjs';
 
 /**

@@ -57,13 +57,13 @@
  * @see ai/scripts/lifecycle/swarmWakeCooldown.mjs   — idle-out-mode action dispatcher
  * @see learn/agentos/incidents/2026-05-04-runaway-spawn-pattern.md — wake-recovery failure-mode background
  */
-import Neo                              from '../../../src/Neo.mjs';
-import * as core                        from '../../../src/core/_export.mjs';
+import Neo                              from 'neo.mjs/src/Neo.mjs';
+import * as core                        from 'neo.mjs/src/core/_export.mjs';
 import path                             from 'path';
 import { fileURLToPath }                from 'url';
-import LifecycleService                 from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
-import {isActiveWakeSubscriptionStatus} from '../../services/memory-core/wakeSubscriptionStatusPolicy.mjs';
-import GraphService                     from '../../services/memory-core/GraphService.mjs';
+import LifecycleService                 from '../../cloud/services/memory-core/lifecycle/SystemLifecycleService.mjs';
+import {isActiveWakeSubscriptionStatus} from '../../cloud/services/memory-core/wakeSubscriptionStatusPolicy.mjs';
+import GraphService                     from '../../cloud/services/memory-core/GraphService.mjs';
 import AiConfig                         from '../../config.mjs';
 import memoryCoreConfig                 from '../../mcp/server/memory-core/config.mjs';
 import { checkInflightLock }            from './inflightLock.mjs';

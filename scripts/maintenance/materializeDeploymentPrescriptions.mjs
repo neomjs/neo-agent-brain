@@ -10,15 +10,15 @@ import {fileURLToPath}          from 'node:url';
 import {
     admitLedgerPrescriptions,
     LEDGER_REFUSALS
-} from '../../services/memory-core/helpers/deploymentPrescriptionLedger.mjs';
-import {renderPrescribedEnvironment} from '../../services/memory-core/helpers/deploymentPrescriptionEnvironment.mjs';
-import {writeFileAtomic}             from '../../services/shared/atomicFileWrite.mjs';
+} from '../../cloud/services/memory-core/helpers/deploymentPrescriptionLedger.mjs';
+import {renderPrescribedEnvironment} from '../../cloud/services/memory-core/helpers/deploymentPrescriptionEnvironment.mjs';
+import {writeFileAtomic}             from '../../cloud/services/shared/atomicFileWrite.mjs';
 import {
     appendDeploymentPrescription,
     readDeploymentPrescriptions,
     validateDeploymentPrescriptionLedger
-} from '../../services/memory-core/helpers/deploymentPrescriptionStore.mjs';
-import {knobEnvBindings, RECOVERY_KNOBS} from '../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
+} from '../../cloud/services/memory-core/helpers/deploymentPrescriptionStore.mjs';
+import {knobEnvBindings, RECOVERY_KNOBS} from '../../cloud/services/memory-core/helpers/recoveryKnobRegistry.mjs';
 
 /**
  * @module ai/scripts/maintenance/materializeDeploymentPrescriptions

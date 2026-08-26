@@ -16,7 +16,7 @@ import {
     createProviderLanePlanDigest,
     evaluateProviderLaneElection
 } from './helpers/providerLaneElectionCore.mjs';
-import {writeFileAtomic} from '../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic} from '../../cloud/services/shared/atomicFileWrite.mjs';
 
 export const PROVIDER_LANE_ELECTION_REPORT_SCHEMA_VERSION = 'provider-lane-election-report.v2';
 
@@ -1145,8 +1145,8 @@ export async function runProviderLanePreparationWorker({receipt, resident, timeo
  * @private
  */
 async function runEmbeddingWorker({contract, payloads, receipt, recorder, source}) {
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
     const [{default: aiConfig}, {default: TextEmbeddingService}] = await Promise.all([
         source === 'knowledge-base'
@@ -1154,7 +1154,7 @@ async function runEmbeddingWorker({contract, payloads, receipt, recorder, source
             : source === 'memory-core'
                 ? import('../../mcp/server/memory-core/config.mjs')
                 : import('../../config.mjs'),
-        import('../../services/memory-core/TextEmbeddingService.mjs')
+        import('../../cloud/services/memory-core/TextEmbeddingService.mjs')
     ]);
 
     assertProviderLaneWorkerConfig({aiConfig, receipt, source});
@@ -1206,8 +1206,8 @@ export function invokeProviderLaneEmbeddingSource({embeddingService, options, pa
  * @private
  */
 async function runChatWorker({contract, payloads, receipt, recorder}) {
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
     const [
         {default: aiConfig},
@@ -1215,8 +1215,8 @@ async function runChatWorker({contract, payloads, receipt, recorder}) {
         {buildAskChatModelOptions, buildAskProviderConfigs}
     ] = await Promise.all([
         import('../../mcp/server/knowledge-base/config.mjs'),
-        import('../../provider/buildChatModel.mjs'),
-        import('../../services/knowledge-base/SearchService.mjs')
+        import('../../cloud/provider/buildChatModel.mjs'),
+        import('../../cloud/services/knowledge-base/SearchService.mjs')
     ]);
 
     const providerConfigs = buildAskProviderConfigs(aiConfig),
@@ -2100,16 +2100,16 @@ async function runComposeWorker({args, candidateInput, runDocker, service, timeo
  * @private
  */
 async function createRuntimeObserver({dockerAuthority, projectName}) {
-    const {default: Neo} = await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    const {default: Neo} = await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
     const [
         {default: DeploymentRuntimeAccessService},
         {dockerSocketRequest},
         {calculateDockerCpuPercent}
     ] = await Promise.all([
-        import('../../daemons/orchestrator/services/DeploymentRuntimeAccessService.mjs'),
-        import('../../daemons/orchestrator/services/DeploymentRuntimeAccessService.mjs'),
-        import('../../daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs')
+        import('../../cloud/daemons/orchestrator/services/DeploymentRuntimeAccessService.mjs'),
+        import('../../cloud/daemons/orchestrator/services/DeploymentRuntimeAccessService.mjs'),
+        import('../../cloud/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs')
     ]);
 
     const service = Neo.create(DeploymentRuntimeAccessService, {

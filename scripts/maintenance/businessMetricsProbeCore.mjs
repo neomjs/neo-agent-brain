@@ -3,7 +3,7 @@ import {
     createMetricId,
     isClosedPeriodViolation,
     validateMetricProperties
-} from '../../graph/businessSchema.mjs';
+} from '../../cloud/graph/businessSchema.mjs';
 
 /**
  * @summary Pure, dependency-injected core of the read-only business-metric ingestion probe.

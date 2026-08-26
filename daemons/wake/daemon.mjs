@@ -27,16 +27,16 @@
 // at module-load. `InstanceManager` binds `Neo.find` / `Neo.findFirst` / `Neo.get`
 // aliases + sets `Base.instanceManagerAvailable=true` + consumes pre-singleton
 // `Neo.idMap`. All 3 MUST run before consumed class imports.
-import Neo                                       from '../../../src/Neo.mjs';
-import * as core                                 from '../../../src/core/_export.mjs';
-import InstanceManager                           from '../../../src/manager/Instance.mjs';
+import Neo                                       from 'neo.mjs/src/Neo.mjs';
+import * as core                                 from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                           from 'neo.mjs/src/manager/Instance.mjs';
 import AiConfig                                  from '../../config.mjs';
-import {writeFileAtomicSync}                     from '../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync}                     from '../../cloud/services/shared/atomicFileWrite.mjs';
 import memoryCoreConfig                          from '../../mcp/server/memory-core/config.mjs';
 import {assertConfigFresh}                       from '../../scripts/setup/initServerConfigs.mjs';
 import {buildWakeDigest, getHighestWakePriority} from './wakeDigestBuilder.mjs';
 import {withOutboxLock}                          from './outboxLock.mjs';
-import {DAEMON_EXIT_CRASH, DAEMON_EXIT_OK}       from '../shared/daemonExit.mjs';
+import {DAEMON_EXIT_CRASH, DAEMON_EXIT_OK}       from '../../cloud/daemons/shared/daemonExit.mjs';
 import nodeCrypto                                from 'node:crypto';
 
 import fs                               from 'fs-extra';
@@ -58,11 +58,11 @@ import {
     getDbNode,
     getActiveHarnessPresence,
     isHarnessPresenceFresh
-} from './queries.mjs';
+} from '../../cloud/daemons/wake/queries.mjs';
 import {
     applyHarnessMetadataDefaults
 } from '../../scripts/lifecycle/harnessRouting.mjs';
-import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {normalizeAgentIdentityNodeId} from '../../cloud/graph/normalizeAgentIdentityNodeId.mjs';
 import {
     getDefaultInstanceTarget,
     resolveGuiInstancePid
@@ -71,13 +71,13 @@ import {
     HEARTBEAT_PULSE_ENTITY_TYPE,
     match,
     TASK_STATE_CHANGED_ENTITY_TYPE
-} from '../../services/memory-core/heartbeatPulseEvaluator.mjs';
+} from '../../cloud/services/memory-core/heartbeatPulseEvaluator.mjs';
 import {
     computeFlushDelayMs,
     computeFlushHoldMs,
     partitionMessageWakesByFreshness,
     resolveCoalesceWindowMs
-} from '../../services/memory-core/wakeCoalescePolicy.mjs';
+} from '../../cloud/services/memory-core/wakeCoalescePolicy.mjs';
 import {
     HEAVY_DELTA_SETTLE_MS,
     isHeavyDeltaPoll,

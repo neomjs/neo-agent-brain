@@ -23,17 +23,17 @@
 
 // Neo namespace bootstrap, normally supplied by the barrel. Both look unused and are not: they
 // populate `globalThis.Neo` before any service module body runs `Neo.setupClass`.
-import Neo       from '../../../src/Neo.mjs';
-import * as core from '../../../src/core/_export.mjs';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
 
 import GH_Config      from '../../mcp/server/github-workflow/config.mjs';
-import GH_SyncService from '../../services/github-workflow/SyncService.mjs';
+import GH_SyncService from '../../cloud/services/github-workflow/SyncService.mjs';
 import AiConfig       from '../../config.mjs';
 
 import {
     resolveHeavyMaintenanceLeasePath,
     withHeavyMaintenanceLease
-} from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
+} from '../../cloud/daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
 import {pathToFileURL}             from 'url';
 import {
     buildSyncGithubWorkflowDevBranchGuard,

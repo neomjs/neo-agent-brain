@@ -1,5 +1,5 @@
-import '../../../src/Neo.mjs';
-import * as core         from '../../../src/core/_export.mjs';
+import 'neo.mjs/src/Neo.mjs';
+import * as core         from 'neo.mjs/src/core/_export.mjs';
 import KBRecorderService from '../../services/knowledge-base/KBRecorderService.mjs';
 
 /**

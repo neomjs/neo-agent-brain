@@ -15,10 +15,10 @@
  * red-proves the comparator against an induced drift, so the mechanism itself is witnessed.
  */
 
-import * as authorityCockpit from '../../services/fleet/fleetCockpitStatus.mjs';
-import * as authorityHarness from '../../services/fleet/harnessTypes.mjs';
-import * as authorityMcp     from '../../services/fleet/mcpServers.mjs';
-import * as authorityWire    from '../../services/fleet/fleetWireMethods.mjs';
+import * as authorityCockpit from '../../cloud/services/fleet/fleetCockpitStatus.mjs';
+import * as authorityHarness from '../../cloud/services/fleet/harnessTypes.mjs';
+import * as authorityMcp     from '../../cloud/services/fleet/mcpServers.mjs';
+import * as authorityWire    from '../../cloud/services/fleet/fleetWireMethods.mjs';
 
 import * as twinHarness from '../../../apps/agentos/config/harnessTypes.mjs';
 import * as twinMcp     from '../../../apps/agentos/config/mcpServers.mjs';

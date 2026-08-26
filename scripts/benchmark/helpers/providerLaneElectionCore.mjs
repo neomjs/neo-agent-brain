@@ -14,7 +14,7 @@
 import {createHash}         from 'node:crypto';
 
 import {aggregateWindow}    from './servingCostCore.mjs';
-import {median, percentile} from './stats.mjs';
+import {median, percentile} from '../../../shared/scripts/benchmark/helpers/stats.mjs';
 
 const
     CANDIDATES             = Object.freeze([1, 2, 4]),

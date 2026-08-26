@@ -1,6 +1,6 @@
 import {Command}           from 'commander';
-import Neo                 from '../../../../src/Neo.mjs';
-import * as core           from '../../../../src/core/_export.mjs';
+import Neo                 from 'neo.mjs/src/Neo.mjs';
+import * as core           from 'neo.mjs/src/core/_export.mjs';
 import Bridge              from './Bridge.mjs';
 import aiConfig            from './config.mjs';
 import logger              from './logger.mjs';

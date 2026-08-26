@@ -8,9 +8,9 @@
  */
 
 import {fileURLToPath, pathToFileURL} from 'node:url';
-import Neo                            from '../../../src/Neo.mjs';
-import * as core                      from '../../../src/core/_export.mjs';
-import InstanceManager                from '../../../src/manager/Instance.mjs';
+import Neo                            from 'neo.mjs/src/Neo.mjs';
+import * as core                      from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                from 'neo.mjs/src/manager/Instance.mjs';
 import AiConfig                       from '../../config.mjs';
 import {
     runCoreCorpusProjectionCycle
@@ -21,7 +21,7 @@ import {
 } from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
 import logger                                from '../../mcp/server/memory-core/logger.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
-import {assertConfigFresh}                   from '../setup/initServerConfigs.mjs';
+import {assertConfigFresh}                   from '../../../scripts/setup/initServerConfigs.mjs';
 
 /**
  * @summary Maps lease acquisition/completion into the supervisor's single structured outcome.

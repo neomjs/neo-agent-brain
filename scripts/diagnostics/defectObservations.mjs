@@ -1,14 +1,14 @@
-import Neo                        from '../../../src/Neo.mjs';
-import * as core                  from '../../../src/core/_export.mjs';
-import {createPlaneMailboxClient} from '../../services/fleet/planeMailboxClient.mjs';
-import {foldDefectObservations}   from '../../services/memory-core/helpers/defectObservationFold.mjs';
+import Neo                        from 'neo.mjs/src/Neo.mjs';
+import * as core                  from 'neo.mjs/src/core/_export.mjs';
+import {createPlaneMailboxClient} from '../../cloud/services/fleet/planeMailboxClient.mjs';
+import {foldDefectObservations}   from '../../cloud/services/memory-core/helpers/defectObservationFold.mjs';
 import {
     buildDigestBody,
     collectSuppressedFingerprints,
     DIGEST_SUBJECT_PREFIX,
     parseDigestCoverage,
     selectDigestRecords
-} from '../../services/memory-core/helpers/defectObservationTriggers.mjs';
+} from '../../cloud/services/memory-core/helpers/defectObservationTriggers.mjs';
 
 /**
  * @summary Prints the standing defect-observation ledger — the fold over `defect-note:` A2A
@@ -183,10 +183,10 @@ async function readPlaneObservations() {
  * @returns {Promise<Array<Object>>}
  */
 async function readLocalObservations() {
-    const {default: LifecycleService}      = await import('../../services/memory-core/lifecycle/SystemLifecycleService.mjs'),
-          {default: GraphService}          = await import('../../services/memory-core/GraphService.mjs'),
-          {default: MailboxService}        = await import('../../services/memory-core/MailboxService.mjs'),
-          {default: RequestContextService} = await import('../../mcp/server/shared/services/RequestContextService.mjs');
+    const {default: LifecycleService}      = await import('../../cloud/services/memory-core/lifecycle/SystemLifecycleService.mjs'),
+          {default: GraphService}          = await import('../../cloud/services/memory-core/GraphService.mjs'),
+          {default: MailboxService}        = await import('../../cloud/services/memory-core/MailboxService.mjs'),
+          {default: RequestContextService} = await import('../../cloud/mcp/server/shared/services/RequestContextService.mjs');
 
     await LifecycleService.ready();
     await GraphService.ready();

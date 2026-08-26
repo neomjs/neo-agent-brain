@@ -4,9 +4,9 @@ import path            from 'path';
 import {fileURLToPath} from 'url';
 
 // Neo namespace bootstrap for SDK singletons consumed by operator-run maintenance scripts.
-import Neo             from '../../../src/Neo.mjs';
-import * as core       from '../../../src/core/_export.mjs';
-import InstanceManager from '../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 import mcConfig        from '../../mcp/server/memory-core/config.mjs';
 

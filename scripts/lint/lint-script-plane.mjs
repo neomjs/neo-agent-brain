@@ -4,8 +4,8 @@ import * as yaml       from 'js-yaml';
 import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-import {buildTaskDefinitions}   from '../../daemons/orchestrator/taskDefinitions.mjs';
-import {TASK_AUTHORITY_BY_NAME} from '../../daemons/orchestrator/taskAuthority.mjs';
+import {buildTaskDefinitions}   from '../../cloud/daemons/orchestrator/taskDefinitions.mjs';
+import {TASK_AUTHORITY_BY_NAME} from '../../cloud/daemons/orchestrator/taskAuthority.mjs';
 import {
     FINDING,
     resolveEntrypointPlane,

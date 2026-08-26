@@ -24,9 +24,9 @@
 // at module-load. `InstanceManager` binds `Neo.find` / `Neo.findFirst` / `Neo.get`
 // aliases + sets `Base.instanceManagerAvailable=true` + consumes pre-singleton
 // `Neo.idMap`. All 3 MUST run before consumed class imports.
-import Neo              from '../../../src/Neo.mjs';
-import * as core        from '../../../src/core/_export.mjs';
-import InstanceManager  from '../../../src/manager/Instance.mjs';
+import Neo              from 'neo.mjs/src/Neo.mjs';
+import * as core        from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager  from 'neo.mjs/src/manager/Instance.mjs';
 import memoryCoreConfig from '../../mcp/server/memory-core/config.mjs';
 
 import fs         from 'fs-extra';

@@ -1,7 +1,7 @@
 import fs                      from 'node:fs';
 import path                    from 'node:path';
 import {FLEET_COCKPIT_SOURCES} from '../../../apps/agentos/config/cockpitSources.mjs';
-import {IDENTITIES}            from '../../graph/identityRoots.mjs';
+import {IDENTITIES}            from '../../cloud/graph/identityRoots.mjs';
 
 /**
  * @summary Derives the AgentOS cockpit roster seed (`apps/agentos/resources/data/fleetRoster.json`)

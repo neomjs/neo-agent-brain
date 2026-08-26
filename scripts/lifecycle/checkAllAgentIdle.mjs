@@ -17,16 +17,16 @@
  *     "details": { [identity]: { "lastMemTime": string, "ageMs": number } }
  *   }
  */
-import Neo                   from '../../../src/Neo.mjs';
-import * as core             from '../../../src/core/_export.mjs';
+import Neo                   from 'neo.mjs/src/Neo.mjs';
+import * as core             from 'neo.mjs/src/core/_export.mjs';
 import { createHash }        from 'crypto';
 import path                  from 'path';
 import { fileURLToPath }     from 'url';
-import LifecycleService      from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
-import GraphService          from '../../services/memory-core/GraphService.mjs';
+import LifecycleService      from '../../cloud/services/memory-core/lifecycle/SystemLifecycleService.mjs';
+import GraphService          from '../../cloud/services/memory-core/GraphService.mjs';
 import AiConfig              from '../../config.mjs';
 import memoryCoreConfig      from '../../mcp/server/memory-core/config.mjs';
-import {resolveTargets}      from '../../daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
+import {resolveTargets}      from '../../cloud/daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
 import { checkInflightLock } from './inflightLock.mjs';
 
 /**

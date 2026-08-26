@@ -1,9 +1,10 @@
 {
-    "$comment"   : "Pre-move placeholder. ADR 0040 (neomjs/neo: learn/agentos/decisions/0040-agentos-extraction-topology.md) is the manifest authority: at the move, this root manifest becomes the Host-Edge package (Edge-only scripts), cloud/ becomes an independently installed nested package, and npm workspaces stay forbidden. The move leaf of Epic neomjs/neo#17500 is the only writer that replaces this file. NOTE (2026-08-26, neomjs/neo#17798): the 'scripts stay empty until then' clause is knowingly excepted by operator directive — the Brain must consume neo-agent-skills today, which needs one devDependency and one postinstall entry. Nothing else is added here, and the move leaf still replaces this file wholesale.",
+    "$comment"   : "ADR 0040 §2.1: this root manifest IS the Host-Edge package. cloud/ is an independently installed nested package with its own manifest, and npm workspaces stay forbidden — hoisting would let a Cloud-only driver satisfy an Edge import, so the isolation proof would pass for the wrong reason. Dependencies are the MEASURED external imports of the Edge tree, not an inherited copy of neomjs/neo's list. better-sqlite3 is declared under protest: four Edge-dispositioned scripts import it directly, which violates the host-plane property ai/services.host.mjs exists to hold. Declaring it keeps the tree installable while the mis-disposition is ruled on (neomjs/neo#17787); omitting it would have hidden a plane defect behind a module-resolution error.",
     "name"       : "neo-agent-brain",
     "version"    : "0.0.0",
     "private"    : true,
-    "description": "The Brain of the Neo.mjs organism — the Agent OS. Pre-move shell; source relocates from neomjs/neo after the extraction wave's blocking proofs.",
+    "type"       : "module",
+    "description": "The Brain of the Neo.mjs organism — the Agent OS. Host-Edge package.",
     "repository" : {
         "type": "git",
         "url" : "git+https://github.com/neomjs/neo-agent-brain.git"
@@ -12,7 +13,21 @@
     "scripts"    : {
         "postinstall": "neo-agent-skills-materialize"
     },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.29.0",
+        "acorn"                    : "^8.17.0",
+        "better-sqlite3"           : "12.11.1",
+        "commander"                : "^15.0.0",
+        "dotenv"                   : "^17.4.2",
+        "fs-extra"                 : "^11.3.6",
+        "gray-matter"              : "^4.0.3",
+        "js-yaml"                  : "^5.2.3",
+        "neo.mjs"                  : "^13.1.0",
+        "ws"                       : "^8.21.0",
+        "zod"                      : "^4.4.3"
+    },
     "devDependencies": {
-        "neo-agent-skills": "^0.1.1"
+        "neo-agent-skills": "^0.1.1",
+        "playwright"      : "^1.61.1"
     }
 }

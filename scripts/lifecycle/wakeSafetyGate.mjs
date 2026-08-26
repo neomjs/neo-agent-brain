@@ -43,7 +43,7 @@
 import fs                from 'fs/promises';
 import path              from 'path';
 import { fileURLToPath } from 'url';
-import {writeFileAtomic} from '../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic} from '../../cloud/services/shared/atomicFileWrite.mjs';
 
 /**
  * Resolve the state-file path under the injected, already-resolved wake-daemon data directory.
@@ -213,8 +213,8 @@ if (isMain) {
     (async () => {
         // The module is also a Neo-free helper. Bootstrap config only on the direct CLI path, then
         // inject the resolved member into the same functions every composing caller uses.
-        await import('../../../src/Neo.mjs');
-        await import('../../../src/core/_export.mjs');
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
         const {default: memoryCoreConfig} = await import('../../mcp/server/memory-core/config.mjs');
 
         await main({wakeDaemonDir: memoryCoreConfig.wakeDaemon.dataDir})

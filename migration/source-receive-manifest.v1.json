@@ -9,1436 +9,3721 @@
     },
     "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
     "counts": {
-        "total": 168,
-        "cloud": 64,
-        "edge": 103,
+        "total": 616,
+        "cloud": 477,
+        "edge": 138,
         "shared": 1,
-        "planeConflicts": 0
+        "planeConflicts": 0,
+        "censusDispositioned": 211,
+        "planeByMeasurement": 405
     },
     "rows": [
         {
+            "identity": "ai/Agent.mjs",
+            "plane": "cloud",
+            "target": "cloud/Agent.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/ConfigProvider.mjs",
+            "plane": "cloud",
+            "target": "cloud/ConfigProvider.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/Env.mjs",
+            "plane": "cloud",
+            "target": "cloud/Env.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/agent/AgentOrchestrator.mjs",
+            "plane": "cloud",
+            "target": "cloud/agent/AgentOrchestrator.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/agent/Loop.mjs",
+            "plane": "cloud",
+            "target": "cloud/agent/Loop.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/agent/Scheduler.mjs",
+            "plane": "cloud",
+            "target": "cloud/agent/Scheduler.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/agent/profile/Browser.mjs",
+            "plane": "cloud",
+            "target": "cloud/agent/profile/Browser.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/agent/profile/Librarian.mjs",
+            "plane": "cloud",
+            "target": "cloud/agent/profile/Librarian.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/agent/profile/QA.mjs",
+            "plane": "cloud",
+            "target": "cloud/agent/profile/QA.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/agent/resolveAllowedTools.mjs",
+            "plane": "cloud",
+            "target": "cloud/agent/resolveAllowedTools.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/config.template.mjs",
+            "plane": "cloud",
+            "target": "cloud/config.template.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/configBase.mjs",
+            "plane": "cloud",
+            "target": "cloud/configBase.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/context/Assembler.mjs",
+            "plane": "cloud",
+            "target": "cloud/context/Assembler.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/daemons/embed/daemon.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root"
-            ],
-            "target": "cloud/daemons/embed/daemon.mjs"
+            "target": "cloud/daemons/embed/daemon.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/embed/drainCycle.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/embed/drainCycle.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/embed/drainLock.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/embed/drainLock.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/daemons/message/daemon.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root"
-            ],
-            "target": "cloud/daemons/message/daemon.mjs"
+            "target": "cloud/daemons/message/daemon.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/message/drainCycle.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/message/drainCycle.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/message/drainLock.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/message/drainLock.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/Orchestrator.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/Orchestrator.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/authorityLease.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/authorityLease.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/daemon.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/daemon.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/backup.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/backup.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/collector.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/collector.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/dataIntegritySweep.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/dataIntegritySweep.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/dream.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/dream.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/embedDrainLivenessWatchdog.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/embedDrainLivenessWatchdog.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/goldenPath.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/goldenPath.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/graphLogCompaction.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/graphLogCompaction.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/heavyMaintenanceStarvationWatchdog.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/heavyMaintenanceStarvationWatchdog.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/memorySummaryBackfill.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/memorySummaryBackfill.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/picker.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/picker.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/pipeline.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/pipeline.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/primaryDevSync.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/primaryDevSync.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/registry.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/registry.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/remConsolidationLivenessWatchdog.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/remConsolidationLivenessWatchdog.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/summary.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/summary.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/swarmHeartbeat.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/swarmHeartbeat.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/scheduling/tenantRepoSync.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/tenantRepoSync.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/BootIdentityHealthService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/BootIdentityHealthService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/ConfiguredTaskDefinitionsService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/ConfiguredTaskDefinitionsService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/ContainerHealthControllerService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/ContainerHealthControllerService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/DataIntegrityDiagnosisService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/DataIntegrityDiagnosisService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/DataRecoveryActuatorService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/DataRecoveryActuatorService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/DeploymentRuntimeAccessService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/DeploymentRuntimeAccessService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/DeploymentStateBridgeService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/DeploymentStateBridgeService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/DreamService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/DreamService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/MaintenanceBackpressureService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/PrimaryRepoSyncService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/PrimaryRepoSyncService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/ProcessSupervisorService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/ProcessSupervisorService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/RecoveryActuatorService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/RecoveryActuatorService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/SwarmHeartbeatService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/SwarmHeartbeatService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/TaskStateService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/TaskStateService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/TenantRepoSyncErrors.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/TenantRepoSyncErrors.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/TenantRepoSyncService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/TenantRepoSyncService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/WakeDecisionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/WakeDecisionService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/bootIdentityFactGatherer.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/bootIdentityFactGatherer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/bootIdentityFactStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/bootIdentityFactStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/bootIdentityFreshness.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/bootIdentityFreshness.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/buildBootIdentitySource.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/buildBootIdentitySource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/containerHealthFactTypes.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/containerHealthFactTypes.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/coreCorpusProjection.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/coreCorpusProjection.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/dataIntegrityCoverageDiagnosis.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/dataIntegrityCoverageDiagnosis.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/dataIntegrityEvidenceAssembler.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/dataIntegrityEvidenceAssembler.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/dataIntegrityModeClassifier.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/dataIntegrityModeClassifier.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/deploymentDurabilityPosture.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/deploymentDurabilityPosture.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/dimensionConsistencyDiagnosis.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/dimensionConsistencyDiagnosis.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/dimensionConsistencyGatherer.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/dimensionConsistencyGatherer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/heavyMaintenanceLeasePrimitives.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/heavyMaintenanceLeasePrimitives.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/heavyMaintenanceWaiterLedger.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/heavyMaintenanceWaiterLedger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/memoryPressureDisposition.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/memoryPressureDisposition.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/recordBootIdentityFact.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/recordBootIdentityFact.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/taskOutcomeDiagnosis.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/taskOutcomeDiagnosis.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/tenantRepoCheckpointValidity.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/tenantRepoCheckpointValidity.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/taskAuthority.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/taskAuthority.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/taskDefinitions.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/taskDefinitions.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/shared/daemonExit.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/shared/daemonExit.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/shared/drainDisposition.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/shared/drainDisposition.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/shared/fileLease.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/shared/fileLease.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/shared/lifecycleGuard.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/shared/lifecycleGuard.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/temporal-summary/TemporalSummaryAggregationService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/temporal-summary/TemporalSummaryAggregationService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/buildReceiverManifest.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/buildReceiverManifest.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/claudeCourierTransport.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/claudeCourierTransport.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/contextGatePolicy.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/contextGatePolicy.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/daemons/wake/daemon.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root"
-            ],
-            "target": "daemons/wake/daemon.mjs"
+            "target": "daemons/wake/daemon.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/wake/flushDeferPolicy.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/flushDeferPolicy.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/hostHarnessMetadata.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/hostHarnessMetadata.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/instanceResolver.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/instanceResolver.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/localWakeAdapters.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/localWakeAdapters.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/outboxLock.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/outboxLock.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/queries.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/wake/queries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/receiver.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/receiver.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/receiverState.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/receiverState.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/wakeDigestBuilder.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/wakeDigestBuilder.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/wakeLaneDirective.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/wakeLaneDirective.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/wakeTargetEligibility.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/wakeTargetEligibility.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/wokenWatermark.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/wokenWatermark.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/embeddingProviders.mjs",
+            "plane": "cloud",
+            "target": "cloud/embeddingProviders.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/embeddingSafeBand.mjs",
+            "plane": "cloud",
+            "target": "cloud/embeddingSafeBand.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/examples/db-restore-graph.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/db-restore-graph.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/examples/inspectGraph.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/inspectGraph.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/graph/Database.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/Database.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/EdgeModel.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/EdgeModel.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/NodeModel.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/NodeModel.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/RequestScopedVicinitySet.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/RequestScopedVicinitySet.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/Store.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/Store.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/agentCoAuthorEmails.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/agentCoAuthorEmails.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/assertExpectedIdentity.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/assertExpectedIdentity.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/bootSeedManifest.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/bootSeedManifest.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/businessSchema.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/businessSchema.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/identityHydration.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/identityHydration.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/identityRoots.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/identityRoots.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/identityRootsMigration.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/identityRootsMigration.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/identitySchema.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/identitySchema.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/normalizeAgentIdentityNodeId.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/normalizeAgentIdentityNodeId.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/storage/Base.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/storage/Base.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/storage/SQLite.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/storage/SQLite.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/graph/storage/constants.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/storage/constants.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/temporalSummarySchema.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/temporalSummarySchema.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/ToolService.mjs",
+            "plane": "edge",
+            "target": "mcp/ToolService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/client/Client.mjs",
+            "plane": "edge",
+            "target": "mcp/client/Client.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/client/config.mjs",
+            "plane": "edge",
+            "target": "mcp/client/config.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/mcp/deploy/proxy/Caddyfile",
             "plane": "cloud",
-            "surfaces": [
-                "deployment-artifact"
-            ],
-            "target": "cloud/mcp/deploy/proxy/Caddyfile"
+            "target": "cloud/mcp/deploy/proxy/Caddyfile",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/github-workflow/config.template.mjs",
+            "plane": "edge",
+            "target": "mcp/server/github-workflow/config.template.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/github-workflow/configBase.mjs",
+            "plane": "edge",
+            "target": "mcp/server/github-workflow/configBase.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/github-workflow/logger.mjs",
+            "plane": "edge",
+            "target": "mcp/server/github-workflow/logger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/gitlab-workflow/config.template.mjs",
+            "plane": "edge",
+            "target": "mcp/server/gitlab-workflow/config.template.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/gitlab-workflow/configBase.mjs",
+            "plane": "edge",
+            "target": "mcp/server/gitlab-workflow/configBase.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/gitlab-workflow/logger.mjs",
+            "plane": "edge",
+            "target": "mcp/server/gitlab-workflow/logger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/knowledge-base/config.template.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/knowledge-base/config.template.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/knowledge-base/configBase.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/knowledge-base/configBase.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/knowledge-base/logger.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/knowledge-base/logger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/config.template.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/config.template.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/configBase.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/configBase.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/helpers/TurnPresenceConfig.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/helpers/TurnPresenceConfig.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/logger.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/logger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/Bridge.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/Bridge.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/BridgeProtocol.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/BridgeProtocol.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/config.template.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/config.template.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/configBase.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/configBase.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/diagnosticPathAttestation.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/diagnosticPathAttestation.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/logger.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/logger.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/mcp/server/neural-link/run-bridge.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root"
-            ],
-            "target": "mcp/server/neural-link/run-bridge.mjs"
+            "target": "mcp/server/neural-link/run-bridge.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/verifyBridgeToken.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/verifyBridgeToken.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/helpers/localBearer.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/helpers/localBearer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/helpers/patValidationCache.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/helpers/patValidationCache.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/helpers/seatToken.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/helpers/seatToken.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/logger.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/logger.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/shared/services/AuthService.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/AuthService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/shared/services/DestructiveOperationGuard.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/DestructiveOperationGuard.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/services/RequestContextService.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/RequestContextService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/services/RuntimeFreshnessService.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/RuntimeFreshnessService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/services/StdioIdentityResolver.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/StdioIdentityResolver.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/services/TransportService.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/TransportService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/validation/openApiValidator.mjs",
+            "plane": "edge",
+            "target": "mcp/validation/openApiValidator.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/planeConfig.mjs",
+            "plane": "cloud",
+            "target": "cloud/planeConfig.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/provider/Base.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/Base.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/provider/Gemini.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/Gemini.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/provider/InteractiveBatchQueue.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/InteractiveBatchQueue.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/provider/Ollama.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/Ollama.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/provider/OpenAiCompatible.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/OpenAiCompatible.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/provider/buildChatModel.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/buildChatModel.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/provider/createTimeoutError.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/createTimeoutError.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/provider/providerAliases.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/providerAliases.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/provider/resolveProviderClass.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/resolveProviderClass.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/providerLaneLiveShape.mjs",
+            "plane": "cloud",
+            "target": "cloud/providerLaneLiveShape.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/scripts/agent-preflight.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/agent-preflight.mjs"
+            "target": "scripts/agent-preflight.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/gemma4-rem-benchmark.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/benchmark/gemma4-rem-benchmark.mjs"
+            "target": "scripts/benchmark/gemma4-rem-benchmark.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/helpers/providerLaneElectionCore.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/benchmark/helpers/providerLaneElectionCore.mjs"
+            "target": "scripts/benchmark/helpers/providerLaneElectionCore.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/helpers/servingCostCore.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/benchmark/helpers/servingCostCore.mjs"
+            "target": "scripts/benchmark/helpers/servingCostCore.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/helpers/stats.mjs",
             "plane": "shared",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "shared/scripts/benchmark/helpers/stats.mjs"
+            "target": "shared/scripts/benchmark/helpers/stats.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/helpers/targetSetMeasurementCore.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/benchmark/helpers/targetSetMeasurementCore.mjs"
+            "target": "cloud/scripts/benchmark/helpers/targetSetMeasurementCore.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/keep-alive-probe.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/benchmark/keep-alive-probe.mjs"
+            "target": "scripts/benchmark/keep-alive-probe.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/provider-lane-election.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/benchmark/provider-lane-election.mjs"
+            "target": "scripts/benchmark/provider-lane-election.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/restore-empty-target-meter.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/benchmark/restore-empty-target-meter.mjs"
+            "target": "cloud/scripts/benchmark/restore-empty-target-meter.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/serving-cost-meter.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/benchmark/serving-cost-meter.mjs"
+            "target": "scripts/benchmark/serving-cost-meter.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/agentOsExtractionInventory.mjs",
+            "plane": "edge",
+            "target": "scripts/diagnostics/agentOsExtractionInventory.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/scripts/diagnostics/agentOsPlaneBoundaryProof.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/agentOsPlaneBoundaryProof.mjs"
+            "target": "scripts/diagnostics/agentOsPlaneBoundaryProof.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/analyzeNlTelemetry.mjs"
+            "target": "scripts/diagnostics/analyzeNlTelemetry.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/audit-discussion-lifecycle.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/audit-discussion-lifecycle.mjs"
+            "target": "scripts/diagnostics/audit-discussion-lifecycle.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/bootstrapCodexSandbox.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/bootstrapCodexSandbox.mjs"
+            "target": "scripts/diagnostics/bootstrapCodexSandbox.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/captureParityLatencyPair.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/captureParityLatencyPair.mjs"
+            "target": "scripts/diagnostics/captureParityLatencyPair.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/check-identity-facts.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/check-identity-facts.mjs"
+            "target": "scripts/diagnostics/check-identity-facts.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/check-retired-primitives.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/check-retired-primitives.mjs"
+            "target": "scripts/diagnostics/check-retired-primitives.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/check-substrate-size.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/check-substrate-size.mjs"
+            "target": "scripts/diagnostics/check-substrate-size.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/conceptNeighborhoodProbe.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/diagnostics/conceptNeighborhoodProbe.mjs"
+            "target": "cloud/scripts/diagnostics/conceptNeighborhoodProbe.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/consumerRelevanceCensus.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/consumerRelevanceCensus.mjs"
+            "target": "scripts/diagnostics/consumerRelevanceCensus.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/consumerRelevanceMap.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/consumerRelevanceMap.mjs"
+            "target": "scripts/diagnostics/consumerRelevanceMap.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/defectObservations.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/defectObservations.mjs"
+            "target": "scripts/diagnostics/defectObservations.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/denyCloudPlanePackages.loader.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/denyCloudPlanePackages.loader.mjs"
+            "target": "scripts/diagnostics/denyCloudPlanePackages.loader.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/detectTruncatedTimelines.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/detectTruncatedTimelines.mjs"
+            "target": "scripts/diagnostics/detectTruncatedTimelines.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/devDependencyCensus.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/devDependencyCensus.mjs"
+            "target": "scripts/diagnostics/devDependencyCensus.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/diagnoseMcpConcurrency.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/diagnoseMcpConcurrency.mjs"
+            "target": "scripts/diagnostics/diagnoseMcpConcurrency.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/dialogGateRig.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/dialogGateRig.mjs"
+            "target": "scripts/diagnostics/dialogGateRig.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/fleetHealthcheck.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/fleetHealthcheck.mjs"
+            "target": "scripts/diagnostics/fleetHealthcheck.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/gemini-incident-cost-ledger.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/gemini-incident-cost-ledger.mjs"
+            "target": "scripts/diagnostics/gemini-incident-cost-ledger.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/genesisProbe.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/genesisProbe.mjs"
+            "target": "scripts/diagnostics/genesisProbe.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/lmStudioEmbeddingInstances.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/lmStudioEmbeddingInstances.mjs"
+            "target": "scripts/diagnostics/lmStudioEmbeddingInstances.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/mailboxReadStateProbe.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/diagnostics/mailboxReadStateProbe.mjs"
+            "target": "cloud/scripts/diagnostics/mailboxReadStateProbe.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/mcpHandlerSignatureCensus.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/mcpHandlerSignatureCensus.mjs"
+            "target": "scripts/diagnostics/mcpHandlerSignatureCensus.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/mcpHealthcheck.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/mcpHealthcheck.mjs"
+            "target": "scripts/diagnostics/mcpHealthcheck.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/parityLatencyPair.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/parityLatencyPair.mjs"
+            "target": "scripts/diagnostics/parityLatencyPair.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/pilotPlaneTerminal.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/diagnostics/pilotPlaneTerminal.mjs"
+            "target": "cloud/scripts/diagnostics/pilotPlaneTerminal.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/planePlacementCensus.mjs",
+            "plane": "edge",
+            "target": "scripts/diagnostics/planePlacementCensus.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/scripts/diagnostics/probePortClaims.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/probePortClaims.mjs"
+            "target": "scripts/diagnostics/probePortClaims.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/providerLaneComposition.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/providerLaneComposition.mjs"
+            "target": "scripts/diagnostics/providerLaneComposition.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/review-cost-meter.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/review-cost-meter.mjs"
+            "target": "scripts/diagnostics/review-cost-meter.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/seatCostReport.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/seatCostReport.mjs"
+            "target": "scripts/diagnostics/seatCostReport.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/staleEmbeddingCensus.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/diagnostics/staleEmbeddingCensus.mjs"
+            "target": "cloud/scripts/diagnostics/staleEmbeddingCensus.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/structureMap.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/diagnostics/structureMap.mjs"
+            "target": "scripts/diagnostics/structureMap.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/validateConceptEdges.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/diagnostics/validateConceptEdges.mjs"
+            "target": "cloud/scripts/diagnostics/validateConceptEdges.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/walReplayPlan.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/diagnostics/walReplayPlan.mjs"
+            "target": "cloud/scripts/diagnostics/walReplayPlan.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/walSnapshotClone.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/diagnostics/walSnapshotClone.mjs"
+            "target": "cloud/scripts/diagnostics/walSnapshotClone.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/walVolumeBaseline.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/diagnostics/walVolumeBaseline.mjs"
+            "target": "cloud/scripts/diagnostics/walVolumeBaseline.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/fleet/deriveFleetRoster.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/fleet/deriveFleetRoster.mjs"
+            "target": "scripts/fleet/deriveFleetRoster.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/fleet/devCockpit.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/fleet/devCockpit.mjs"
+            "target": "scripts/fleet/devCockpit.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/fleet/onboardPeer.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/fleet/onboardPeer.mjs"
+            "target": "scripts/fleet/onboardPeer.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/backfill-memory-summaries.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/lifecycle/backfill-memory-summaries.mjs"
+            "target": "cloud/scripts/lifecycle/backfill-memory-summaries.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/checkAllAgentIdle.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/checkAllAgentIdle.mjs"
+            "target": "scripts/lifecycle/checkAllAgentIdle.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/checkSunsetted.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/checkSunsetted.mjs"
+            "target": "scripts/lifecycle/checkSunsetted.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/deferencePhraseMatch.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/deferencePhraseMatch.mjs"
+            "target": "scripts/lifecycle/deferencePhraseMatch.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/harnessLifecycle.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/harnessLifecycle.mjs"
+            "target": "scripts/lifecycle/harnessLifecycle.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/harnessRouting.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/harnessRouting.mjs"
+            "target": "scripts/lifecycle/harnessRouting.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/heartbeatLock.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/heartbeatLock.mjs"
+            "target": "scripts/lifecycle/heartbeatLock.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/hookProjectionReader.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/hookProjectionReader.mjs"
+            "target": "scripts/lifecycle/hookProjectionReader.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/idleOutNudge.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/idleOutNudge.mjs"
+            "target": "scripts/lifecycle/idleOutNudge.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/inflightLock.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/inflightLock.mjs"
+            "target": "scripts/lifecycle/inflightLock.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/materialArtifactKey.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/materialArtifactKey.mjs"
+            "target": "scripts/lifecycle/materialArtifactKey.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/nightlyE2eDigest.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/nightlyE2eDigest.mjs"
+            "target": "scripts/lifecycle/nightlyE2eDigest.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/nightlyE2eRunner.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/nightlyE2eRunner.mjs"
+            "target": "scripts/lifecycle/nightlyE2eRunner.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/parseLaneState.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/parseLaneState.mjs"
+            "target": "scripts/lifecycle/parseLaneState.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/postReleasePreflight.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/postReleasePreflight.mjs"
+            "target": "scripts/lifecycle/postReleasePreflight.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/postReleaseSync.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/postReleaseSync.mjs"
+            "target": "scripts/lifecycle/postReleaseSync.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/resumeHarness.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/resumeHarness.mjs"
+            "target": "scripts/lifecycle/resumeHarness.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/revalidationSweep.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/revalidationSweep.mjs"
+            "target": "scripts/lifecycle/revalidationSweep.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/stopHookDecision.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/stopHookDecision.mjs"
+            "target": "scripts/lifecycle/stopHookDecision.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/summarize-sessions.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/lifecycle/summarize-sessions.mjs"
+            "target": "cloud/scripts/lifecycle/summarize-sessions.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/swarmWakeCooldown.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/swarmWakeCooldown.mjs"
+            "target": "scripts/lifecycle/swarmWakeCooldown.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/sweepExpiredTasks.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/sweepExpiredTasks.mjs"
+            "target": "scripts/lifecycle/sweepExpiredTasks.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/validateLaneStateTerminal.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/validateLaneStateTerminal.mjs"
+            "target": "scripts/lifecycle/validateLaneStateTerminal.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/validateMergeReady.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/validateMergeReady.mjs"
+            "target": "scripts/lifecycle/validateMergeReady.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/wakeSafetyGate.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/wakeSafetyGate.mjs"
+            "target": "scripts/lifecycle/wakeSafetyGate.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/windowsBatchSpawn.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lifecycle/windowsBatchSpawn.mjs"
+            "target": "scripts/lifecycle/windowsBatchSpawn.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/check-commit-authorship.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/check-commit-authorship.mjs"
+            "target": "scripts/lint/check-commit-authorship.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/check-front-door-fingerprint.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/check-front-door-fingerprint.mjs"
+            "target": "scripts/lint/check-front-door-fingerprint.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-adr-seam-table.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-adr-seam-table.mjs"
+            "target": "scripts/lint/lint-adr-seam-table.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-adr-status.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-adr-status.mjs"
+            "target": "scripts/lint/lint-adr-status.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-agents.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-agents.mjs"
+            "target": "scripts/lint/lint-agents.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-config-template-ssot.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-config-template-ssot.mjs"
+            "target": "scripts/lint/lint-config-template-ssot.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-fleet-vocabulary-parity.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-fleet-vocabulary-parity.mjs"
+            "target": "scripts/lint/lint-fleet-vocabulary-parity.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-guard-ci-parity.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-guard-ci-parity.mjs"
+            "target": "scripts/lint/lint-guard-ci-parity.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-guides.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-guides.mjs"
+            "target": "scripts/lint/lint-guides.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-identity-engine-coherence.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-identity-engine-coherence.mjs"
+            "target": "scripts/lint/lint-identity-engine-coherence.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-identity-vocabulary.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-identity-vocabulary.mjs"
+            "target": "scripts/lint/lint-identity-vocabulary.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-mcp-test-locations.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-mcp-test-locations.mjs"
+            "target": "scripts/lint/lint-mcp-test-locations.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-npm-script-entrypoints.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-npm-script-entrypoints.mjs"
+            "target": "scripts/lint/lint-npm-script-entrypoints.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-openapi-service-parity.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-openapi-service-parity.mjs"
+            "target": "scripts/lint/lint-openapi-service-parity.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-pr-stacking.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-pr-stacking.mjs"
+            "target": "scripts/lint/lint-pr-stacking.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-retry-bounds.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-retry-bounds.mjs"
+            "target": "scripts/lint/lint-retry-bounds.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-script-plane.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-script-plane.mjs"
+            "target": "scripts/lint/lint-script-plane.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-skill-manifest.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-skill-manifest.mjs"
+            "target": "scripts/lint/lint-skill-manifest.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/lint-tree-json.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/lint/lint-tree-json.mjs"
+            "target": "scripts/lint/lint-tree-json.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/prStackingGuard.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lint/prStackingGuard.mjs"
+            "target": "scripts/lint/prStackingGuard.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lint/scriptPlaneClosure.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/lint/scriptPlaneClosure.mjs"
+            "target": "scripts/lint/scriptPlaneClosure.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/aggregate-temporal-summary.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/aggregate-temporal-summary.mjs"
+            "target": "cloud/scripts/maintenance/aggregate-temporal-summary.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/auditConceptSpineAliases.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/auditConceptSpineAliases.mjs"
+            "target": "cloud/scripts/maintenance/auditConceptSpineAliases.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/auditGraphIntegrity.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/auditGraphIntegrity.mjs"
+            "target": "cloud/scripts/maintenance/auditGraphIntegrity.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/backup.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/backup.mjs"
+            "target": "cloud/scripts/maintenance/backup.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/backupCorruptionTimeline.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/backupCorruptionTimeline.mjs"
+            "target": "cloud/scripts/maintenance/backupCorruptionTimeline.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/backupStagingResidueCore.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/backupStagingResidueCore.mjs"
+            "target": "cloud/scripts/maintenance/backupStagingResidueCore.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/buildKbAgentFaqs.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/buildKbAgentFaqs.mjs"
+            "target": "cloud/scripts/maintenance/buildKbAgentFaqs.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/businessMetricsProbeCore.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/maintenance/businessMetricsProbeCore.mjs"
+            "target": "scripts/maintenance/businessMetricsProbeCore.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/checkChromaIntegrity.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/checkChromaIntegrity.mjs"
+            "target": "cloud/scripts/maintenance/checkChromaIntegrity.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/checkDetectionRetentionSla.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/checkDetectionRetentionSla.mjs"
+            "target": "cloud/scripts/maintenance/checkDetectionRetentionSla.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/communityActivityShadowProbeCore.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/maintenance/communityActivityShadowProbeCore.mjs"
+            "target": "scripts/maintenance/communityActivityShadowProbeCore.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/communityBatchPushClient.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/maintenance/communityBatchPushClient.mjs"
+            "target": "scripts/maintenance/communityBatchPushClient.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/communitySourceOperator.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/communitySourceOperator.mjs"
+            "target": "cloud/scripts/maintenance/communitySourceOperator.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/compactGraphLog.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/compactGraphLog.mjs"
+            "target": "cloud/scripts/maintenance/compactGraphLog.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/defragChromaDB.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/defragChromaDB.mjs"
+            "target": "cloud/scripts/maintenance/defragChromaDB.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/defragSQLiteDB.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/defragSQLiteDB.mjs"
+            "target": "cloud/scripts/maintenance/defragSQLiteDB.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/deploymentMigrationCore.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/maintenance/deploymentMigrationCore.mjs"
+            "target": "scripts/maintenance/deploymentMigrationCore.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/detectionRetentionSla.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/detectionRetentionSla.mjs"
+            "target": "cloud/scripts/maintenance/detectionRetentionSla.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/detectionRetentionSlaInputs.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/detectionRetentionSlaInputs.mjs"
+            "target": "cloud/scripts/maintenance/detectionRetentionSlaInputs.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/downloadKnowledgeBase.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/downloadKnowledgeBase.mjs"
+            "target": "cloud/scripts/maintenance/downloadKnowledgeBase.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/exportMemoryQuarantine.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/exportMemoryQuarantine.mjs"
+            "target": "cloud/scripts/maintenance/exportMemoryQuarantine.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/graphLifecycleReport.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/graphLifecycleReport.mjs"
+            "target": "cloud/scripts/maintenance/graphLifecycleReport.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/ingestTenant.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/ingestTenant.mjs"
+            "target": "cloud/scripts/maintenance/ingestTenant.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/kbPushClient.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/maintenance/kbPushClient.mjs"
+            "target": "scripts/maintenance/kbPushClient.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/knowledgeBaseArtifact.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/knowledgeBaseArtifact.mjs"
+            "target": "cloud/scripts/maintenance/knowledgeBaseArtifact.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/materializeDeploymentPrescriptions.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/maintenance/materializeDeploymentPrescriptions.mjs"
+            "target": "scripts/maintenance/materializeDeploymentPrescriptions.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/migrateDeployment.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/maintenance/migrateDeployment.mjs"
+            "target": "scripts/maintenance/migrateDeployment.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/migrationCensusReport.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/migrationCensusReport.mjs"
+            "target": "cloud/scripts/maintenance/migrationCensusReport.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/offHostSync.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/offHostSync.mjs"
+            "target": "cloud/scripts/maintenance/offHostSync.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/probeBusinessMetrics.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/maintenance/probeBusinessMetrics.mjs"
+            "target": "scripts/maintenance/probeBusinessMetrics.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/probeCollectionQueryHealth.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/probeCollectionQueryHealth.mjs"
+            "target": "cloud/scripts/maintenance/probeCollectionQueryHealth.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/probeCommunityActivityShadow.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/maintenance/probeCommunityActivityShadow.mjs"
+            "target": "scripts/maintenance/probeCommunityActivityShadow.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/projectCoreCorpus.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/projectCoreCorpus.mjs"
+            "target": "cloud/scripts/maintenance/projectCoreCorpus.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/purgeNoContentGraphMemories.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/purgeNoContentGraphMemories.mjs"
+            "target": "cloud/scripts/maintenance/purgeNoContentGraphMemories.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/purgeTestCollections.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/purgeTestCollections.mjs"
+            "target": "cloud/scripts/maintenance/purgeTestCollections.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/recreateGraphDb.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/recreateGraphDb.mjs"
+            "target": "cloud/scripts/maintenance/recreateGraphDb.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/redeployPreflight.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/maintenance/redeployPreflight.mjs"
+            "target": "scripts/maintenance/redeployPreflight.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/repairMemoryCoreStoredEmbeddings.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/repairMemoryCoreStoredEmbeddings.mjs"
+            "target": "cloud/scripts/maintenance/repairMemoryCoreStoredEmbeddings.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/repairUnprojectedSessions.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/repairUnprojectedSessions.mjs"
+            "target": "cloud/scripts/maintenance/repairUnprojectedSessions.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/restore.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/restore.mjs"
+            "target": "cloud/scripts/maintenance/restore.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/syncGithubWorkflow.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/maintenance/syncGithubWorkflow.mjs"
+            "target": "scripts/maintenance/syncGithubWorkflow.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/syncGithubWorkflowBranchGuard.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/maintenance/syncGithubWorkflowBranchGuard.mjs"
+            "target": "scripts/maintenance/syncGithubWorkflowBranchGuard.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/syncKnowledgeBase.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/syncKnowledgeBase.mjs"
+            "target": "cloud/scripts/maintenance/syncKnowledgeBase.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/syncTenantRepos.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/syncTenantRepos.mjs"
+            "target": "cloud/scripts/maintenance/syncTenantRepos.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/maintenance/uploadKnowledgeBase.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/maintenance/uploadKnowledgeBase.mjs"
+            "target": "cloud/scripts/maintenance/uploadKnowledgeBase.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/backfillChromaSharedUserId.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/backfillChromaSharedUserId.mjs"
+            "target": "cloud/scripts/migrations/backfillChromaSharedUserId.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/bootstrapWorktree.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/migrations/bootstrapWorktree.mjs"
+            "target": "scripts/migrations/bootstrapWorktree.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/canonicalizeStoredAgentIdentities.mjs"
+            "target": "cloud/scripts/migrations/canonicalizeStoredAgentIdentities.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/migrate-discussions-b1.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/migrate-discussions-b1.mjs"
+            "target": "cloud/scripts/migrations/migrate-discussions-b1.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/migrateMemoryCore.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/migrateMemoryCore.mjs"
+            "target": "cloud/scripts/migrations/migrateMemoryCore.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/migrateWakeSubscriptions.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/migrateWakeSubscriptions.mjs"
+            "target": "cloud/scripts/migrations/migrateWakeSubscriptions.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/normalizeGraphIdentities.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/normalizeGraphIdentities.mjs"
+            "target": "cloud/scripts/migrations/normalizeGraphIdentities.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/priorityBackfill.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/priorityBackfill.mjs"
+            "target": "cloud/scripts/migrations/priorityBackfill.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/rebucketArchive.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/rebucketArchive.mjs"
+            "target": "cloud/scripts/migrations/rebucketArchive.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs"
+            "target": "cloud/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/refetchStaleDiscussions.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/refetchStaleDiscussions.mjs"
+            "target": "cloud/scripts/migrations/refetchStaleDiscussions.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/refetchStalePulls.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/refetchStalePulls.mjs"
+            "target": "cloud/scripts/migrations/refetchStalePulls.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/refetchTruncatedIssues.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/refetchTruncatedIssues.mjs"
+            "target": "cloud/scripts/migrations/refetchTruncatedIssues.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/renameAgentIdentities.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/renameAgentIdentities.mjs"
+            "target": "cloud/scripts/migrations/renameAgentIdentities.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/migrations/repairStaleEmbeddings.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/migrations/repairStaleEmbeddings.mjs"
+            "target": "cloud/scripts/migrations/repairStaleEmbeddings.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/runners/runAgent.mjs",
             "plane": "edge",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "scripts/runners/runAgent.mjs"
+            "target": "scripts/runners/runAgent.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/runners/runSandman.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "launch-root",
-                "script-module"
-            ],
-            "target": "cloud/scripts/runners/runSandman.mjs"
+            "target": "cloud/scripts/runners/runSandman.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/setup/cohortAdmissibility.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/setup/cohortAdmissibility.mjs"
+            "target": "scripts/setup/cohortAdmissibility.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/setup/generateRosterOnboarding.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/setup/generateRosterOnboarding.mjs"
+            "target": "scripts/setup/generateRosterOnboarding.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/scripts/setup/initServerConfigs.mjs",
+            "plane": "edge",
+            "target": "scripts/setup/initServerConfigs.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/scripts/setup/migrateConfigOverlay.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/setup/migrateConfigOverlay.mjs"
+            "target": "scripts/setup/migrateConfigOverlay.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/setup/revisionConfigDiff.mjs",
             "plane": "edge",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "scripts/setup/revisionConfigDiff.mjs"
+            "target": "scripts/setup/revisionConfigDiff.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/setup/seedAgentIdentities.mjs",
             "plane": "cloud",
-            "surfaces": [
-                "script-module"
-            ],
-            "target": "cloud/scripts/setup/seedAgentIdentities.mjs"
+            "target": "cloud/scripts/setup/seedAgentIdentities.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services.host.mjs",
+            "plane": "edge",
+            "target": "services.host.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services.mjs",
+            "plane": "cloud",
+            "target": "cloud/services.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/ConceptService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/ConceptService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/FleetControlBridge.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/FleetControlBridge.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/FleetLifecycleService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/FleetLifecycleService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/fleet/FleetManager.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/FleetManager.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/FleetRegistryService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/FleetRegistryService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/fleet/FleetTenantService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/FleetTenantService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/fleet/createFleetRegistryBridge.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/createFleetRegistryBridge.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/deriveAgentInstanceHome.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/deriveAgentInstanceHome.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/deriveAgentRepoPath.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/deriveAgentRepoPath.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/deriveHarnessLaunchSpec.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/deriveHarnessLaunchSpec.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/dispatchFleetRequest.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/dispatchFleetRequest.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/ensureAgentRepo.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/ensureAgentRepo.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetCockpitStatus.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetCockpitStatus.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetLaunchContract.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetLaunchContract.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetMailboxMirrorAdapter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetMailboxMirrorAdapter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetPresenceStateAdapter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetPresenceStateAdapter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetServer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetServer.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/fleet/fleetServerPolicy.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetServerPolicy.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetThrottleStateAdapter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetThrottleStateAdapter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetWakeFanout.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetWakeFanout.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetWakeReceiver.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetWakeReceiver.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetWakeStateAdapter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetWakeStateAdapter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetWireMethods.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetWireMethods.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/generateKimiSeatConfig.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/generateKimiSeatConfig.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/generateOpenCodeSeatConfig.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/generateOpenCodeSeatConfig.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/harnessTypes.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/harnessTypes.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/inspectAgentRepo.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/inspectAgentRepo.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/inspectFleetRepos.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/inspectFleetRepos.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/manageCodexDesktopRuntime.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/manageCodexDesktopRuntime.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/managedAgentWorkspacePlan.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/managedAgentWorkspacePlan.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/mcpServers.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/mcpServers.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/mcpWireParsing.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/mcpWireParsing.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/planeMailboxClient.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/planeMailboxClient.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/prepareManagedAgentWorkspace.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/prepareManagedAgentWorkspace.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/provisionAgentRepo.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/provisionAgentRepo.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/redactCredentials.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/redactCredentials.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/redactReadFailure.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/redactReadFailure.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/resolveIdentityDisplay.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/resolveIdentityDisplay.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/seatMemoryLayerTemplate.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/seatMemoryLayerTemplate.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/startAgentProvisioned.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/startAgentProvisioned.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/GraphqlService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/GraphqlService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/HealthService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/HealthService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/IssueService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/IssueService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/LabelService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/LabelService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/LocalFileService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/LocalFileService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/PullRequestHistoryService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/PullRequestHistoryService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/PullRequestService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/PullRequestService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/RepositoryService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/RepositoryService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/SyncService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/SyncService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/communityActivityShadowReader.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/communityActivityShadowReader.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/queries/communityActivityShadowQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/communityActivityShadowQueries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/queries/discussionQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/discussionQueries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/queries/issueQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/issueQueries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/queries/labelQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/labelQueries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/queries/mutations.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/mutations.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/queries/pullRequestQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/pullRequestQueries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/queries/releaseQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/releaseQueries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/queries/repositoryQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/repositoryQueries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/commentSelector.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/commentSelector.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/contentIndex.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/contentIndex.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/contentInventory.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/contentInventory.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/contentPath.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/contentPath.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/conversationTrust.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/conversationTrust.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/discussionRoutingDisposition.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/discussionRoutingDisposition.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/mergeHoldTokens.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/mergeHoldTokens.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/pruneEmptyDirs.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/pruneEmptyDirs.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/reconcileActiveChunks.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/reconcileActiveChunks.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/shared/repositoryTarget.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/repositoryTarget.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/sync/DiscussionSyncer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/DiscussionSyncer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/sync/IssueSyncer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/IssueSyncer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/sync/MetadataManager.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/MetadataManager.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/sync/PullRequestSyncer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/PullRequestSyncer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/ReleaseNotesSyncer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/sync/verifyFrontmatterIntegrity.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/verifyFrontmatterIntegrity.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/gitlab-workflow/GitLabClient.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/GitLabClient.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/gitlab-workflow/IssueService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/IssueService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/gitlab-workflow/MergeRequestService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/MergeRequestService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/gitlab-workflow/queries/issueQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/queries/issueQueries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/gitlab-workflow/queries/mrMutations.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/queries/mrMutations.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/gitlab-workflow/queries/mrQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/queries/mrQueries.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/gitlab-workflow/queries/mutations.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/queries/mutations.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/GapInferenceEngine.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/GapInferenceEngine.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/GoldenPathSynthesizer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/GoldenPathSynthesizer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/GraphMaintenanceService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/GraphMaintenanceService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/LazyEdgeDrainer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/LazyEdgeDrainer.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/graph/SemanticGraphExtractor.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/SemanticGraphExtractor.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/TopologyInferenceEngine.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/TopologyInferenceEngine.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/activePrCycleSection.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/activePrCycleSection.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/agentFamilyResolution.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/agentFamilyResolution.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/computedGoldenPathRouting.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/computedGoldenPathRouting.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/computedRouteResult.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/computedRouteResult.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/conceptAnchoredRetrieval.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/conceptAnchoredRetrieval.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/conceptNeighborhoodProbe.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/conceptNeighborhoodProbe.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/conceptSliceBuilder.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/conceptSliceBuilder.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/conceptSpineCanonicalization.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/conceptSpineCanonicalization.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/corpusProjectionContract.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/corpusProjectionContract.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/corpusProjectionReceiptStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/corpusProjectionReceiptStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/embeddingDimension.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/embeddingDimension.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/frontierConsolidation.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/frontierConsolidation.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/goldenPathPickupBridge.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/goldenPathPickupBridge.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/goldenPathTimestamp.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/goldenPathTimestamp.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/issueFocusSections.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/issueFocusSections.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/lifecycleFrontier.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/lifecycleFrontier.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/providerDispatch.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/providerDispatch.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/providerReadinessHelper.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/providerReadinessHelper.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/routeAttributionLedgerStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/routeAttributionLedgerStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/sessionChunker.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/sessionChunker.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/typeGateRejectionLedgerStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/typeGateRejectionLedgerStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/ingestion/AdrIngestor.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/ingestion/AdrIngestor.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/ingestion/ConceptDiscoveryService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/ingestion/ConceptDiscoveryService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/ingestion/ConceptIngestor.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/ingestion/ConceptIngestor.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/ingestion/IssueIngestor.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/ingestion/IssueIngestor.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/ingestion/MemorySessionIngestor.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/ingestion/MemorySessionIngestor.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/ChromaManager.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/ChromaManager.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/DatabaseLifecycleService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/DatabaseLifecycleService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/DatabaseService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/DatabaseService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/DocumentService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/DocumentService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/HealthService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/HealthService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/IngestionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/IngestionService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/KBRecorderService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/KBRecorderService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/QueryService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/QueryService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/knowledge-base/SearchService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/SearchService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/VectorService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/VectorService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/knowledge-base/conceptWalkKbFileGate.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/conceptWalkKbFileGate.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/askContextBudget.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/askContextBudget.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/askRateLimit.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/askRateLimit.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/askSynthesisGuard.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/askSynthesisGuard.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/chunkRowMetadata.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/chunkRowMetadata.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/classHierarchyContract.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/classHierarchyContract.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/corpusOutstanding.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/corpusOutstanding.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/deploymentMode.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/deploymentMode.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/embedFailureClassification.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/embedFailureClassification.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/embeddingInputFormat.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/embeddingInputFormat.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/gitMirror.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/gitMirror.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/kbEmbeddingPoisonStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/kbEmbeddingPoisonStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/kbEmbeddingResumeStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/kbEmbeddingResumeStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/mergeIdentityContract.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/mergeIdentityContract.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/resumableEmbedding.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/resumableEmbedding.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/staleEmbeddingCensus.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/staleEmbeddingCensus.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/staleEmbeddingRepair.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/staleEmbeddingRepair.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/tenantRepoAccessContract.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/tenantRepoAccessContract.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/tenantRepoIngestEnvelopeBuilder.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/tenantRepoIngestEnvelopeBuilder.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/parser/DocumentationParser.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/parser/DocumentationParser.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/parser/SourceParser.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/parser/SourceParser.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/parser/TestParser.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/parser/TestParser.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/retrievalProvenance.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/retrievalProvenance.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/AdrSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/AdrSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/ApiSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/ApiSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/Base.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/Base.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/ConceptSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/ConceptSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/DiscussionSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/DiscussionSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/LearningSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/LearningSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/PullRequestSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/PullRequestSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/RawRepoSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/RawRepoSource.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/ReleaseNotesSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/ReleaseNotesSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/SkillSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/SkillSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/SourceRegistry.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/SourceRegistry.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/TestSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/TestSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/TicketSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/TicketSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/_export.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/_export.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/discussionArchiveElementSplitter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/discussionArchiveElementSplitter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/pullRequestArchiveElementSplitter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/pullRequestArchiveElementSplitter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/tenantParserLoader.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/tenantParserLoader.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/source/ticketArchiveElementSplitter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/source/ticketArchiveElementSplitter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/CoalescingEngineService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/CoalescingEngineService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/CommunityBatchAdmissionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/CommunityBatchAdmissionService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/memory-core/DatabaseService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/DatabaseService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/memory-core/FileSystemIngestor.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/FileSystemIngestor.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/memory-core/GraphService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/GraphService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/memory-core/HealthService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/HealthService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/memory-core/MailboxService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/MailboxService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/MemoryCoreRecorderService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/MemoryCoreRecorderService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/memory-core/MemoryService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/MemoryService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/PermissionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/PermissionService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/SessionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/SessionService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/SourceRegistryService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/SourceRegistryService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/memory-core/SummaryService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/SummaryService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/TextEmbeddingService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/TextEmbeddingService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/TurnPresenceService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/TurnPresenceService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/WakeSubscriptionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/WakeSubscriptionService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/WebhookDeliveryService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/WebhookDeliveryService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/capSessionsForSweep.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/capSessionsForSweep.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/communityAttentionClassifier.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/communityAttentionClassifier.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/communityBatchContract.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/communityBatchContract.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/conceptWalkMemoryGate.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/conceptWalkMemoryGate.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/heartbeatPulseEvaluator.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/heartbeatPulseEvaluator.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/acceptedLossAuditStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/acceptedLossAuditStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/acceptedLossSettlement.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/acceptedLossSettlement.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/bundleIntegrity.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/bundleIntegrity.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/classifyRepairResidue.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/classifyRepairResidue.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/consumerFrictionHelper.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/consumerFrictionHelper.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/defectObservationFold.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/defectObservationFold.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/defectObservationTriggers.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/defectObservationTriggers.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/deploymentPrescriptionEnvironment.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/deploymentPrescriptionEnvironment.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/deploymentPrescriptionLedger.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/deploymentPrescriptionLedger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/deploymentPrescriptionStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/deploymentPrescriptionStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/deploymentStateBridgeStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/deploymentStateBridgeStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/embeddingDispatchPlan.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/embeddingDispatchPlan.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/exportCompleteness.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/exportCompleteness.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/freezeRecordStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/freezeRecordStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/freezeReprobeDecision.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/freezeReprobeDecision.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/freezeReprobeRunner.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/freezeReprobeRunner.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/graphJsonlImport.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/graphJsonlImport.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/harnessClassifier.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/harnessClassifier.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/healActionDispatch.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/healActionDispatch.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/healEventLedgerStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/healEventLedgerStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/healSystemicCircuit.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/healSystemicCircuit.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/incidentLedgerBundle.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/incidentLedgerBundle.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/loopbackFamilyProbe.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/loopbackFamilyProbe.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/mailboxReadStateClassifier.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/mailboxReadStateClassifier.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/memoryWalStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/memoryWalStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/messageWalStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/messageWalStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/nlActionTelemetryStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/nlActionTelemetryStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/offHostSyncStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/offHostSyncStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/quarantineStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/quarantineStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/rawMemoryGraphIdentity.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/rawMemoryGraphIdentity.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/reEmbedMissingHeal.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/reEmbedMissingHeal.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/recoveryKnobRegistry.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/recoveryKnobRegistry.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/recoveryOverrideStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/recoveryOverrideStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/recoveryRunStateStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/recoveryRunStateStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/remRunStateStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/remRunStateStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/resolveRowTimestamp.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/resolveRowTimestamp.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/resolveSharingPolicy.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/resolveSharingPolicy.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/restoreEmptyTargetOperation.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/restoreEmptyTargetOperation.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/restoreTargetSetAdmission.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/restoreTargetSetAdmission.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/restoreTargetSetContract.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/restoreTargetSetContract.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/restoreTargetSetStateStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/restoreTargetSetStateStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/restoreTargetSetStorage.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/restoreTargetSetStorage.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/reviewLoadProjection.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/reviewLoadProjection.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/sessionSummaryReceiptStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/sessionSummaryReceiptStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/temporalSummaryAggregationEngine.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/temporalSummaryAggregationEngine.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/throttleShedHeal.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/throttleShedHeal.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/turnDocumentText.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/turnDocumentText.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/vectorJsonlImport.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/vectorJsonlImport.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/vectorJsonlSourceValidation.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/vectorJsonlSourceValidation.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/vectorWriteInvariant.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/vectorWriteInvariant.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/verifyPersistedVector.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/verifyPersistedVector.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/walAppendLock.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/walAppendLock.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/withTimeout.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/withTimeout.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/lifecycle/ChromaLifecycleService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/lifecycle/ChromaLifecycleService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/lifecycle/InferenceLifecycleService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/lifecycle/InferenceLifecycleService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/lifecycle/SystemLifecycleService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/lifecycle/SystemLifecycleService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/managers/AbstractVectorManager.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/managers/AbstractVectorManager.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/managers/ChromaManager.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/managers/ChromaManager.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/managers/CollectionProxy.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/managers/CollectionProxy.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/managers/StorageRouter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/managers/StorageRouter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/nodeProjection.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/nodeProjection.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/readActiveWakeSubscriptionIdentities.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/readActiveWakeSubscriptionIdentities.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/taskAssignmentContract.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/taskAssignmentContract.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/wakeCoalescePolicy.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/wakeCoalescePolicy.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/wakeSubscriptionStatusPolicy.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/wakeSubscriptionStatusPolicy.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/ArchiveMcpClient.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/ArchiveMcpClient.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/ComponentService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/ComponentService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/ConnectionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/ConnectionService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/neural-link/DataService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/DataService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/DockService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/DockService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/HealthService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/HealthService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/InstanceService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/InstanceService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/InteractionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/InteractionService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/RecorderService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/RecorderService.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/services/neural-link/RuntimeService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/RuntimeService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/memoryCoreArchiveClient.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/memoryCoreArchiveClient.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/resolveCallTarget.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/resolveCallTarget.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/neural-link/windowOps.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/windowOps.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/atomicFileWrite.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/atomicFileWrite.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/boundedRetryGate.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/boundedRetryGate.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/captureReceipt.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/captureReceipt.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/contentTrust/astroturfSanitizer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/contentTrust/astroturfSanitizer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/contentTrust/authorTrustClassifier.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/contentTrust/authorTrustClassifier.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/deployedRevision.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/deployedRevision.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/embeddingIdentityLedger.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/embeddingIdentityLedger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/embeddingProbe.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/embeddingProbe.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/providerActivityLedger.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/providerActivityLedger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/providerActivityStatusStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/providerActivityStatusStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/serviceProxy.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/serviceProxy.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/storeWriteGuard.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/storeWriteGuard.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/vector/chromaClientPrimitives.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/vector/chromaClientPrimitives.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/vector/chromaTestIsolation.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/vector/chromaTestIsolation.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/vector/generationElectionStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/vector/generationElectionStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/vector/lmsEmbeddingInputSuffix.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/vector/lmsEmbeddingInputSuffix.mjs",
+            "origin": "measured"
         }
     ],
     "correction": [
         "sourceSha initially recorded a neo-agent-brain commit while sourceRepository names neomjs/neo - the rev-parse ran in the wrong clone. Corrected to the neomjs/neo dev SHA the inventory actually ran against, verified clean at that head.",
-        "The first emission carried 178 rows from an EXTENSION-shaped filter that silently dropped every file without a .mjs/.yml/.yaml suffix. That dropped 8 identities: 7 belonging to PR #9 (harmless) and ai/mcp/deploy/proxy/Caddyfile (a real miss), while leaving 11 PR #9 targets duplicated here. Re-derived with no extension filter and with ai/deploy/** excluded by scope: 168 rows. Caught by @neo-gpt-emmy."
+        "The first emission carried 178 rows from an EXTENSION-shaped filter that silently dropped every file without a .mjs/.yml/.yaml suffix. That dropped 8 identities: 7 belonging to PR #9 (harmless) and ai/mcp/deploy/proxy/Caddyfile (a real miss), while leaving 11 PR #9 targets duplicated here. Re-derived with no extension filter and with ai/deploy/** excluded by scope: 168 rows. Caught by @neo-gpt-emmy.",
+        "The 168-row emission was an authority-bearing SEED set, not the receive. Its custody discriminator (authoritySource present) excluded 47 tracked plane-dispositioned files, 19 of which the import closure could not rescue - including ai/daemons/orchestrator/daemon.mjs and the fleet server. Re-derived as roots-union-closure: 616 files. Reported by @neo-gpt-emmy and @neo-gpt."
     ],
     "scope": "neo-agent-brain#13 receives the Agent OS source movers EXCEPT ai/deploy/**, which PR #9 owns. Full custody population is 186; PR #9 holds 18; this manifest holds the remaining 168. The #17791 source-deletion predicate is the UNION of both sets, not this manifest alone.",
-    "canonicalSha256": "3627cedf2ae9c8ed9a36ce56af7fd58e8baf13a4d1e7cb0f1afd82426ebcac30"
+    "population": "Census roots (custody rows AND plane-opener rows) union their transitive ai/** closure, tracked files only, minus ai/deploy/** which Brain PR #9 owns. Custody rows alone lost 19 tracked files including the orchestrator daemon and the fleet server; the closure alone cannot find files nothing imports, such as the five per-server config templates. Neither source is sufficient by itself.",
+    "planeRule": "Census disposition wins. Otherwise SUBSYSTEM MEMBERSHIP - the nearest census-dispositioned ancestor directory - with cloud-safety as an override: a module whose transitive closure reaches chromadb, better-sqlite3, @google/generative-ai or @chroma-core/default-embed never lands on edge. Membership beats reachability-as-assignment by 3.2x on cross-plane edges (176 vs 562): \"could this run on edge\" and \"whose subsystem is this\" are different questions, and only the second predicts where the coupling is.",
+    "specifierRule": "Every relative specifier is RECOMPUTED from the plane map, never preserved - a file moving from ai/x/ to cloud/x/ changes depth relative to a target that stayed at the root. src/** specifiers become the published Engine package (neo.mjs/src/**) per ADR 0040 section 2.3.",
+    "residual": "Unresolved: 186 relative edges across 34 targets. 161 of them import one of the six generated, gitignored config.mjs files (ai/config.mjs plus five ai/mcp/server/*/config.mjs). Those are produced by ai/scripts/setup/initServerConfigs.mjs at npm prepare from tracked config.template.mjs siblings. The five per-server templates carry edge/cloud dispositions and travel; their generator carries retire. So the Brain receives the templates and no way to materialize them. That is one named decision on neomjs/neo#17787, not a repair inside this receive.",
+    "canonicalSha256": "2eebf498dd234638c80854098a71d773c41c70235c44c806617e2b504e5feb78"
 }

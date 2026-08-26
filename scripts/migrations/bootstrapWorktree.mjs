@@ -126,8 +126,8 @@ import path            from 'path';
 import {fileURLToPath} from 'url';
 import {promisify}     from 'util';
 
-import {IDENTITIES}                                                                    from '../../graph/identityRoots.mjs';
-import {rosterEmailForLogin}                                                           from '../../graph/agentCoAuthorEmails.mjs';
+import {IDENTITIES}                                                                    from '../../cloud/graph/identityRoots.mjs';
+import {rosterEmailForLogin}                                                           from '../../cloud/graph/agentCoAuthorEmails.mjs';
 import {initClaudeSettings, listServersWithTemplates, materializeServerConfigTemplate} from '../setup/initServerConfigs.mjs';
 
 const execFileAsync = promisify(execFile);

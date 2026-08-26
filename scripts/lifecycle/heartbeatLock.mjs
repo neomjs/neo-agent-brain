@@ -212,8 +212,8 @@ function printUsage() {
  * @private
  */
 async function resolveConfiguredLockPath() {
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
     const {default: AiConfig} = await import('../../config.mjs');
 

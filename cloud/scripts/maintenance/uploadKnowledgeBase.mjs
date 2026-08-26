@@ -8,8 +8,8 @@ import {fileURLToPath} from 'url';
 
 // Neo namespace bootstrap (entry-point invariant). `Neo` + `core/_export` populate
 // `globalThis.Neo` so that `ai/services.mjs` → Compare.mjs `Neo.gatekeep` resolves.
-import Neo       from '../../../src/Neo.mjs';
-import * as core from '../../../src/core/_export.mjs';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
 
 import AiConfig from '../../config.mjs';
 import kbConfig from '../../mcp/server/knowledge-base/config.mjs';

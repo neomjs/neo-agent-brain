@@ -2,11 +2,11 @@ import {Command} from 'commander';
 import {mkdir, writeFile} from 'fs/promises';
 import path from 'path';
 import {fileURLToPath} from 'url';
-import Neo from '../../../src/Neo.mjs';
-import '../../../src/core/_export.mjs';
+import Neo from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import aiConfig from '../../mcp/server/memory-core/config.mjs';
-import {buildGraphProvider, resolveGraphModelProvider} from '../../services/graph/providerDispatch.mjs';
-import {summarize} from './helpers/stats.mjs';
+import {buildGraphProvider, resolveGraphModelProvider} from '../../cloud/services/graph/providerDispatch.mjs';
+import {summarize} from '../../shared/scripts/benchmark/helpers/stats.mjs';
 
 /**
  * @module ai/scripts/benchmark/gemma4-rem-benchmark

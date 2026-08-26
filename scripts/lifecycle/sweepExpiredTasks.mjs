@@ -25,10 +25,10 @@
 // this prelude the script crashes at module-load with `ReferenceError: Neo is not
 // defined`. Keep the bootstrap local to this entry point so manual CLI usage and
 // orchestrator child-process usage share the same class-system prelude.
-import Neo              from '../../../src/Neo.mjs';
-import * as core        from '../../../src/core/_export.mjs';
-import LifecycleService from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
-import MailboxService   from '../../services/memory-core/MailboxService.mjs';
+import Neo              from 'neo.mjs/src/Neo.mjs';
+import * as core        from 'neo.mjs/src/core/_export.mjs';
+import LifecycleService from '../../cloud/services/memory-core/lifecycle/SystemLifecycleService.mjs';
+import MailboxService   from '../../cloud/services/memory-core/MailboxService.mjs';
 
 async function main() {
     await LifecycleService.ready();

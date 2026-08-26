@@ -53,14 +53,14 @@
  * @see ai/scripts/lifecycle/resumeHarness.mjs     — sibling for sunset-restart case
  * @see test/playwright/unit/ai/scripts/idleOutNudge.spec.mjs
  */
-import Neo                                                       from '../../../src/Neo.mjs';
-import * as core                                                 from '../../../src/core/_export.mjs';
+import Neo                                                       from 'neo.mjs/src/Neo.mjs';
+import * as core                                                 from 'neo.mjs/src/core/_export.mjs';
 import path                                                      from 'path';
 import {fileURLToPath}                                           from 'url';
-import LifecycleService                                          from '../../services/memory-core/lifecycle/SystemLifecycleService.mjs';
-import GraphService                                              from '../../services/memory-core/GraphService.mjs';
-import WakeSubscriptionService                                   from '../../services/memory-core/WakeSubscriptionService.mjs';
-import RequestContextService                                     from '../../mcp/server/shared/services/RequestContextService.mjs';
+import LifecycleService                                          from '../../cloud/services/memory-core/lifecycle/SystemLifecycleService.mjs';
+import GraphService                                              from '../../cloud/services/memory-core/GraphService.mjs';
+import WakeSubscriptionService                                   from '../../cloud/services/memory-core/WakeSubscriptionService.mjs';
+import RequestContextService                                     from '../../cloud/mcp/server/shared/services/RequestContextService.mjs';
 import memoryCoreConfig                                          from '../../mcp/server/memory-core/config.mjs';
 import {hasOverride, readGateState}                              from './wakeSafetyGate.mjs';
 import {writeInflightLock, clearInflightLock, checkInflightLock} from './inflightLock.mjs';

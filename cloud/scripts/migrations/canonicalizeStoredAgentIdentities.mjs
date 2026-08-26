@@ -471,8 +471,8 @@ async function main() {
     if (!dbPath) {
         // Genuine CLI entrypoint: consume the reactive AiConfig SSOT lazily at the use site.
         // Keeping this behind --help preserves bootstrap-free imports and flag discovery.
-        await import('../../../src/Neo.mjs');
-        await import('../../../src/core/_export.mjs');
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
         const {default: aiConfig} = await import('../../mcp/server/memory-core/config.mjs');
         dbPath = aiConfig.storagePaths.graph;
     }

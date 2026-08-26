@@ -48,8 +48,8 @@
 // The Neo class system first: every `ai/services/**` module is a `Neo.setupClass` class, and
 // `ai/Env.mjs` gatekeeps at module scope, so a service import before this line throws
 // `ReferenceError: Neo is not defined`.
-import Neo from '../../../src/Neo.mjs';
-import        '../../../src/core/_export.mjs';
+import Neo from 'neo.mjs/src/Neo.mjs';
+import        'neo.mjs/src/core/_export.mjs';
 
 import {
     EMBEDDING_INPUT_FORMAT_ID,

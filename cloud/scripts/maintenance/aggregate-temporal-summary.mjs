@@ -14,15 +14,15 @@
 
 // Neo namespace bootstrap (entry-point invariant): `Neo` + `core/_export` populate `globalThis.Neo` so the
 // service class's `Neo.setupClass()` at module-load succeeds; `InstanceManager` binds `Neo.find` / `Neo.get`.
-import Neo             from '../../../src/Neo.mjs';
-import * as core       from '../../../src/core/_export.mjs';
-import InstanceManager from '../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 import AiConfig                              from '../../config.mjs';
 import logger                                from '../../mcp/server/memory-core/logger.mjs';
 import TemporalSummaryAggregationService     from '../../daemons/temporal-summary/TemporalSummaryAggregationService.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
-import {assertConfigFresh}                   from '../setup/initServerConfigs.mjs';
+import {assertConfigFresh}                   from '../../../scripts/setup/initServerConfigs.mjs';
 import {fileURLToPath, pathToFileURL}        from 'node:url';
 
 /**
