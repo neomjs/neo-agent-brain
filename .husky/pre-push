@@ -1,0 +1,23 @@
+# Fail on the FIRST failing guard.
+#
+# Without this, sh reports only the LAST command's status, so a guard that fails anywhere but the
+# bottom of this file does not block the push — it prints its complaint and the push proceeds. Every
+# guard here would then be blocking only by virtue of being last, which is a property of the file
+# ordering rather than of the guard. Measured, not assumed: `sh -c 'false-ish; true-ish'` exits 0.
+set -e
+
+# git sends the pre-push payload — `<localRef> <localSha> <remoteRef> <remoteSha>` per ref — on stdin
+# exactly ONCE. Read by the first guard that wants it, it is gone for every guard after, which
+# degrades those to a guessed range silently. Capturing it here and handing each guard its own copy
+# makes the payload a property of the hook rather than a race won by whoever runs first.
+payload="$(cat)"
+
+# Agent-commit authorship. The guard travelled here with its subject: it resolves co-author emails
+# through the identity roster, which is Agent OS data, and neomjs/neo#17273 established that moving
+# the script without the roster only lengthens the coupling rather than severing it.
+#
+# Deliberately the only guard wired here. neomjs/neo's pre-push also runs branch-discipline and
+# spec-retirement, both of which live under buildScripts/ and stayed with the Engine. Recreating
+# them from memory would be inventing a second copy of a guard whose owner is elsewhere; if either
+# is wanted here it should arrive as a receive, not as a reimplementation.
+printf '%s\n' "$payload" | node ./scripts/lint/check-commit-authorship.mjs

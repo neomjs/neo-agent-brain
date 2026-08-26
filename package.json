@@ -61,7 +61,8 @@
         "ai:sync-github-workflow": "node ./scripts/maintenance/syncGithubWorkflow.mjs",
         "ai:wake-manifest": "node ./daemons/wake/buildReceiverManifest.mjs",
         "ai:wake-receiver": "node ./daemons/wake/receiver.mjs",
-        "postinstall": "neo-agent-skills-materialize"
+        "postinstall": "neo-agent-skills-materialize",
+        "prepare": "husky"
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
@@ -77,6 +78,7 @@
         "zod": "^4.4.3"
     },
     "devDependencies": {
+        "husky": "^9.1.7",
         "neo-agent-skills": "^0.1.1",
         "playwright": "^1.61.1"
     }
