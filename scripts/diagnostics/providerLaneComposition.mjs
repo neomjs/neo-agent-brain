@@ -19,7 +19,7 @@ import {isEmbeddingContextBelowSafeBand} from '../../cloud/embeddingSafeBand.mjs
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
-const PROJECT_ROOT = path.resolve(__dirname, '../../..');
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
 export const PROVIDER_LANE_COMPOSITION_SCHEMA_VERSION = 'provider-lane-composition.v2';
 

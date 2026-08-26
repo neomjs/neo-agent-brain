@@ -57,7 +57,7 @@ import {normalizeAgentIdentityNodeId}                 from '../../cloud/graph/no
 
 const
     __filename       = fileURLToPath(import.meta.url),
-    REPO_ROOT        = path.resolve(path.dirname(__filename), '../../..'),
+    REPO_ROOT        = path.resolve(path.dirname(__filename), '../..'),
     HARNESS_FAMILIES = Object.freeze({
         'antigravity'   : 'gemini',
         'claude-code'   : 'claude',

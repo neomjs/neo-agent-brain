@@ -49,7 +49,7 @@ const
     __dirname  = path.dirname(__filename),
     REPO_ROOT  = process.env.NEO_GUARD_CI_PARITY_REPO_ROOT
         ? path.resolve(process.env.NEO_GUARD_CI_PARITY_REPO_ROOT)
-        : path.resolve(__dirname, '../../..'),
+        : path.resolve(__dirname, '../..'),
     WORKFLOW_DIR = path.join(REPO_ROOT, '.github/workflows'),
     REGISTRY_REL = 'ai/scripts/lint/guard-ci-parity-registry.json',
     SELF_REL     = 'ai/scripts/lint/lint-guard-ci-parity.mjs',

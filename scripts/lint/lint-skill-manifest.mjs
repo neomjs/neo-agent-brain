@@ -14,7 +14,7 @@ import {fileURLToPath}                                               from 'url';
 
 const __filename                = fileURLToPath(import.meta.url);
 const __dirname                 = path.dirname(__filename);
-const ROOT_DIR                  = path.resolve(__dirname, '../../..');
+const ROOT_DIR                  = path.resolve(__dirname, '../..');
 const SKILLS_DIR                = path.join(ROOT_DIR, '.agents/skills');
 const CLAUDE_DIR                = path.join(ROOT_DIR, '.claude/skills');
 const MANIFEST_PATH             = path.join(SKILLS_DIR, 'skills.manifest.json');

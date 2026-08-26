@@ -74,7 +74,7 @@ function resolvePrimaryCheckout() {
     } catch {
         // fall through to script-local fallback
     }
-    return path.resolve(__dirname, '../../..');
+    return path.resolve(__dirname, '../..');
 }
 
 const projectRoot = resolvePrimaryCheckout();

@@ -77,7 +77,7 @@ import {classifyRequirement, diffCohortLeafSets} from './cohortAdmissibility.mjs
 
 const __filename          = fileURLToPath(import.meta.url);
 const __dirname           = path.dirname(__filename);
-const PROJECT_ROOT        = path.resolve(__dirname, '../../..');
+const PROJECT_ROOT        = path.resolve(__dirname, '../..');
 const TEMPLATE_RE         = /^ai\/mcp\/server\/([^/]+)\/config\.template\.mjs$/;
 const AST_IGNORED         = new Set(['start', 'end', 'loc', 'raw']);
 const STATIC_GLOBAL_NAMES = new Set([

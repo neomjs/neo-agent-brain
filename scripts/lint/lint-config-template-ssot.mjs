@@ -49,7 +49,7 @@ import {load as loadYaml} from 'js-yaml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
-const ROOT_DIR   = path.resolve(__dirname, '../../..');
+const ROOT_DIR   = path.resolve(__dirname, '../..');
 
 const CONFIG_TEMPLATE_BASENAME = 'config.template.mjs';
 // The Tier-1 root base: canonical default leaves live here since the template/base split — the

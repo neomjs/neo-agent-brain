@@ -20,7 +20,7 @@ import {fileURLToPath} from 'url';
 const
     __filename    = fileURLToPath(import.meta.url),
     __dirname     = path.dirname(__filename),
-    ROOT_DIR      = path.resolve(__dirname, '../../..'),
+    ROOT_DIR      = path.resolve(__dirname, '../..'),
     DECISIONS_DIR = path.join(ROOT_DIR, 'learn/agentos/decisions'),
     TABLE_MARKER  = '## §2 The Seam Table';
 

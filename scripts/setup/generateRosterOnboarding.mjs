@@ -1405,7 +1405,7 @@ async function main() {
     }
 
     const {plan}   = built,
-          repoRoot = requestedRoot ? path.resolve(requestedRoot) : path.resolve(path.dirname(__filename), '../../..'),
+          repoRoot = requestedRoot ? path.resolve(requestedRoot) : path.resolve(path.dirname(__filename), '../..'),
           files    = readSurfaceFiles(repoRoot),
           planned  = plan.mode === 'rotation' ? planRotationSurfaces(plan, files) : planOnboardingSurfaces(plan, files);
 

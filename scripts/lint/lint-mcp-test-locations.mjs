@@ -14,7 +14,7 @@ import {fileURLToPath} from 'node:url';
 
 const __filename                    = fileURLToPath(import.meta.url);
 const __dirname                     = path.dirname(__filename);
-const ROOT_DIR                      = path.resolve(__dirname, '../../..');
+const ROOT_DIR                      = path.resolve(__dirname, '../..');
 const DEPRECATED_MCP_TEST_DIR       = path.join(ROOT_DIR, 'test/playwright/mcp');
 const CANONICAL_MCP_SERVER_TEST_DIR = path.join(ROOT_DIR, 'test/playwright/unit/ai/mcp/server');
 const GRANDFATHERED_MCP_TEST_FILES  = Object.freeze([

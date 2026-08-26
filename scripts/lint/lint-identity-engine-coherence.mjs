@@ -87,7 +87,7 @@ const VERSION_TOKEN = /\b(?:v?\d+\.\d+(?:\.\d+)?|k\d+)\b/gi;
 
 const
     __filename  = fileURLToPath(import.meta.url),
-    ROOT_DIR    = path.resolve(path.dirname(__filename), '../../..'),
+    ROOT_DIR    = path.resolve(path.dirname(__filename), '../..'),
     MODEL_STATS = path.join(ROOT_DIR, 'learn/agentos/ModelStats.md');
 
 /**

@@ -38,7 +38,7 @@ import {
 
 const
     __filename   = fileURLToPath(import.meta.url),
-    PROJECT_ROOT = path.resolve(path.dirname(__filename), '../../..'),
+    PROJECT_ROOT = path.resolve(path.dirname(__filename), '../..'),
     require      = createRequire(import.meta.url);
 
 /**
