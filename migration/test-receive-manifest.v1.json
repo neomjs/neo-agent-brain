@@ -4,9 +4,9 @@
     "sourceSha": "294a7a31d9f16eb0fb94bd4afadf279b5f9e8703",
     "rule": "A test follows its SUBJECT, per ADR 0040 section 2.7. test/playwright/unit/ai/A/B/C.spec.mjs tests ai/A/B/C.mjs, so the source-receive manifest already decides its plane - there is no second authority and no directory guess. Layout mirrors the source planes: edge tests at test/unit/**, cloud tests at cloud/test/unit/** so the Cloud package installs and runs independently. A spec whose exact subject is not a Brain row is resolved by what it IMPORTS, never by its directory: reaching src/, buildScripts/, learn/ or apps/ means it exercises retained Engine surface and stays there. Directory fallback moved 68 specs wrongly and was caught by @neo-gpt-emmy.",
     "counts": {
-        "total": 722,
-        "cloud": 598,
-        "edge": 124
+        "total": 716,
+        "cloud": 603,
+        "edge": 113
     },
     "staysEngine": [
         {
@@ -333,6 +333,13 @@
             "origin": "subject-ancestor"
         },
         {
+            "identity": "test/playwright/unit/ai/DynamicImportShape.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/DynamicImportShape.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
+        },
+        {
             "identity": "test/playwright/unit/ai/Env.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/Env.spec.mjs",
@@ -382,32 +389,25 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/buildScripts/DataSyncPipeline.spec.mjs",
+            "identity": "test/playwright/unit/ai/buildScripts/util/check-aiconfig-antipatterns.spec.mjs",
             "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/DataSyncPipeline.spec.mjs",
+            "target": "cloud/test/unit/buildScripts/util/check-aiconfig-antipatterns.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "exact-set correction"
         },
         {
-            "identity": "test/playwright/unit/ai/buildScripts/release/PublishReleaseNoteOrphan.spec.mjs",
+            "identity": "test/playwright/unit/ai/buildScripts/util/check-aiconfig-test-mutation.spec.mjs",
             "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/release/PublishReleaseNoteOrphan.spec.mjs",
+            "target": "cloud/test/unit/buildScripts/util/check-aiconfig-test-mutation.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "exact-set correction"
         },
         {
-            "identity": "test/playwright/unit/ai/buildScripts/util/WorkflowConcurrency.spec.mjs",
+            "identity": "test/playwright/unit/ai/buildScripts/util/check-atomic-write-shape.spec.mjs",
             "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/WorkflowConcurrency.spec.mjs",
+            "target": "cloud/test/unit/buildScripts/util/check-atomic-write-shape.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-examples-body-only.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-examples-body-only.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "exact-set correction"
         },
         {
             "identity": "test/playwright/unit/ai/businessSchema.spec.mjs",
@@ -1474,13 +1474,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/initTier1ConfigMigration.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/initTier1ConfigMigration.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/inspectAgentRepo.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/inspectAgentRepo.spec.mjs",
@@ -1493,6 +1486,13 @@
             "target": "cloud/test/unit/inspectFleetRepos.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/Authorization.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/mcp/Authorization.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
         },
         {
             "identity": "test/playwright/unit/ai/mcp/advertisedSurfaceDigest.spec.mjs",
@@ -1675,6 +1675,13 @@
             "target": "cloud/test/unit/mcp/server/memory-core/SessionService-worker.mjs",
             "subject": null,
             "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/memory-core/SessionService.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/mcp/server/memory-core/SessionService.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
         },
         {
             "identity": "test/playwright/unit/ai/mcp/server/memory-core/config.template.spec.mjs",
@@ -2034,16 +2041,16 @@
             "origin": "subject-ancestor"
         },
         {
+            "identity": "test/playwright/unit/ai/scripts/benchmark/restoreEmptyTargetMeasurementAdapter.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/benchmark/restoreEmptyTargetMeasurementAdapter.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
+        },
+        {
             "identity": "test/playwright/unit/ai/scripts/benchmark/stats.spec.mjs",
             "plane": "edge",
             "target": "test/unit/scripts/benchmark/stats.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/CheckSubstrateSize.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/CheckSubstrateSize.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -2109,6 +2116,13 @@
             "target": "test/unit/scripts/diagnostics/devDependencyCensus.spec.mjs",
             "subject": "ai/scripts/diagnostics/devDependencyCensus.mjs",
             "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/fixtures/seatCost/syntheticFixtures.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/diagnostics/fixtures/seatCost/syntheticFixtures.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/diagnostics/fleetHealthcheck.spec.mjs",
@@ -2384,13 +2398,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/scripts/lint/checkFrontDoorFingerprint.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/checkFrontDoorFingerprint.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/scripts/lint/configTemplateParityProof.spec.mjs",
             "plane": "edge",
             "target": "test/unit/scripts/lint/configTemplateParityProof.spec.mjs",
@@ -2405,44 +2412,9 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintAdrSeamTable.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintAdrSeamTable.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintAdrStatus.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintAdrStatus.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintAgents.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintAgents.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/scripts/lint/lintConfigTemplateSsot.spec.mjs",
             "plane": "edge",
             "target": "test/unit/scripts/lint/lintConfigTemplateSsot.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintGuardCiParity.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintGuardCiParity.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintGuides.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintGuides.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -2464,34 +2436,6 @@
             "identity": "test/playwright/unit/ai/scripts/lint/lintNpmScriptEntrypoints.spec.mjs",
             "plane": "edge",
             "target": "test/unit/scripts/lint/lintNpmScriptEntrypoints.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintRetryBounds.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintRetryBounds.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintSkillManifest.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintSkillManifest.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintTreeJson.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintTreeJson.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintWorkflowScanRootParity.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintWorkflowScanRootParity.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -2678,6 +2622,13 @@
             "origin": "subject-row"
         },
         {
+            "identity": "test/playwright/unit/ai/scripts/maintenance/manualHeavyMaintenanceScriptLeaseAdoption.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/maintenance/manualHeavyMaintenanceScriptLeaseAdoption.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
+        },
+        {
             "identity": "test/playwright/unit/ai/scripts/maintenance/materializeDeploymentPrescriptions.spec.mjs",
             "plane": "edge",
             "target": "test/unit/scripts/maintenance/materializeDeploymentPrescriptions.spec.mjs",
@@ -2860,13 +2811,6 @@
             "origin": "subject-row"
         },
         {
-            "identity": "test/playwright/unit/ai/scripts/setup/initServerConfigs.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/setup/initServerConfigs.spec.mjs",
-            "subject": "ai/scripts/setup/initServerConfigs.mjs",
-            "origin": "subject-row"
-        },
-        {
             "identity": "test/playwright/unit/ai/scripts/setup/revisionConfigDiff.spec.mjs",
             "plane": "edge",
             "target": "test/unit/scripts/setup/revisionConfigDiff.spec.mjs",
@@ -2879,13 +2823,6 @@
             "target": "cloud/test/unit/scripts/setup/seedAgentIdentities.spec.mjs",
             "subject": "ai/scripts/setup/seedAgentIdentities.mjs",
             "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/services-resilient-load.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services-resilient-load.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
         },
         {
             "identity": "test/playwright/unit/ai/services/ConceptService.spec.mjs",
@@ -3658,6 +3595,20 @@
             "origin": "subject-row"
         },
         {
+            "identity": "test/playwright/unit/ai/services/graph/graphIsolationGate.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/services/graph/graphIsolationGate.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
+        },
+        {
+            "identity": "test/playwright/unit/ai/services/graph/graphIsolationGate.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/services/graph/graphIsolationGate.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
+        },
+        {
             "identity": "test/playwright/unit/ai/services/graph/laneLandscapeCensusSource.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/services/graph/laneLandscapeCensusSource.spec.mjs",
@@ -3747,20 +3698,6 @@
             "target": "cloud/test/unit/services/graph/typeGateRejectionLedgerStore.spec.mjs",
             "subject": "ai/services/graph/typeGateRejectionLedgerStore.mjs",
             "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/services/hostBarrelImportReach.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/hostBarrelImportReach.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/services/hostBarrelRuntimeReach.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/hostBarrelRuntimeReach.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
         },
         {
             "identity": "test/playwright/unit/ai/services/ingestion/AdrIngestor.spec.mjs",
@@ -4127,6 +4064,13 @@
             "origin": "subject-ancestor"
         },
         {
+            "identity": "test/playwright/unit/ai/services/knowledge-base/parser/Schemas.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/services/knowledge-base/parser/Schemas.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
+        },
+        {
             "identity": "test/playwright/unit/ai/services/knowledge-base/parser/SourceParser.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/services/knowledge-base/parser/SourceParser.spec.mjs",
@@ -4300,6 +4244,20 @@
             "target": "cloud/test/unit/services/memory-core/DatabaseService.backupPath.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/services/memory-core/DatabaseService.graphBackup.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/services/memory-core/DatabaseService.graphBackup.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
+        },
+        {
+            "identity": "test/playwright/unit/ai/services/memory-core/DatabaseService.graphReplaceReadAtPreserved.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/services/memory-core/DatabaseService.graphReplaceReadAtPreserved.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
         },
         {
             "identity": "test/playwright/unit/ai/services/memory-core/DatabaseService.importMergeChroma.spec.mjs",
@@ -5346,5 +5304,8 @@
         }
     ],
     "otherRepository": [],
-    "canonicalSha256": "272339df1a77b7c9cae18f4a87e40dd2ec4df880b106dd7e5acdc7bbc809ffa1"
+    "correction": [
+        "Exact-set delta applied by identity from @neo-gpt-emmy: 20 removed, 14 added. The net +6 between 722 and 716 hid 34 identity substitutions, which is exactly what comparing counts cannot see."
+    ],
+    "canonicalSha256": "12d0f58374c4b5b49c220d218e5e80b1645ffd9a789e6d0047a6110eab00b7ed"
 }
