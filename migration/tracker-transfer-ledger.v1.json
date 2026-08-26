@@ -14,6 +14,15 @@
     "destinationBaseline": "d027f69f970028dd1a88a10356957b9328fdc88c",
     "canary": "neomjs/neo#17701",
     "frozenPopulationCount": 164,
+    "baselineBrainClassifiedCount": 161,
+    "baselineOpenNativeTransferCount": 160,
+    "baselineClosedHistoricalCount": 1,
+    "sanctionedWave3NativeTransferCount": 3,
+    "sanctionedWave3NativeTransferIssues": [
+      "neomjs/neo#17788",
+      "neomjs/neo#17789",
+      "neomjs/neo#17790"
+    ],
     "nativeTransferCount": 163,
     "closedHistoricalSourceOnlyCount": 1,
     "closedHistoricalException": "neomjs/neo#17781",
