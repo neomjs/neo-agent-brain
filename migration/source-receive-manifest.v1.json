@@ -10,13 +10,13 @@
     "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
     "counts": {
         "total": 806,
-        "cloud": 639,
+        "cloud": 634,
         "edge": 166,
-        "shared": 1,
+        "shared": 6,
         "planeConflicts": 0,
         "censusDispositioned": 209,
         "fromRootScriptCommand": 11,
-        "planeByMembership": 586
+        "planeByMembership": 581
     },
     "rows": [
         {
@@ -33,9 +33,9 @@
         },
         {
             "identity": "ai/Env.mjs",
-            "plane": "cloud",
-            "target": "cloud/Env.mjs",
-            "origin": "measured"
+            "plane": "shared",
+            "target": "shared/Env.mjs",
+            "origin": "plane-neutral (ADR 0040 §2.2)"
         },
         {
             "identity": "ai/agent/AgentOrchestrator.mjs",
@@ -759,15 +759,15 @@
         },
         {
             "identity": "ai/embeddingProviders.mjs",
-            "plane": "cloud",
-            "target": "cloud/embeddingProviders.mjs",
-            "origin": "measured"
+            "plane": "shared",
+            "target": "shared/embeddingProviders.mjs",
+            "origin": "plane-neutral (ADR 0040 §2.2)"
         },
         {
             "identity": "ai/embeddingSafeBand.mjs",
-            "plane": "cloud",
-            "target": "cloud/embeddingSafeBand.mjs",
-            "origin": "measured"
+            "plane": "shared",
+            "target": "shared/embeddingSafeBand.mjs",
+            "origin": "plane-neutral (ADR 0040 §2.2)"
         },
         {
             "identity": "ai/examples/cloud-deployment/README.md",
@@ -1005,9 +1005,9 @@
         },
         {
             "identity": "ai/graph/identityRoots.mjs",
-            "plane": "cloud",
-            "target": "cloud/graph/identityRoots.mjs",
-            "origin": "measured"
+            "plane": "shared",
+            "target": "shared/graph/identityRoots.mjs",
+            "origin": "plane-neutral (ADR 0040 §2.2)"
         },
         {
             "identity": "ai/graph/identityRootsMigration.mjs",
@@ -1545,9 +1545,9 @@
         },
         {
             "identity": "ai/planeConfig.mjs",
-            "plane": "cloud",
-            "target": "cloud/planeConfig.mjs",
-            "origin": "measured"
+            "plane": "shared",
+            "target": "shared/planeConfig.mjs",
+            "origin": "plane-neutral (ADR 0040 §2.2)"
         },
         {
             "identity": "ai/provider/Base.mjs",
@@ -4862,7 +4862,8 @@
         "The 168-row emission was an authority-bearing SEED set, not the receive. Its custody discriminator (authoritySource present) excluded 47 tracked plane-dispositioned files, 19 of which the import closure could not rescue - including ai/daemons/orchestrator/daemon.mjs and the fleet server. Re-derived as roots-union-closure: 616 files. Reported by @neo-gpt-emmy and @neo-gpt.",
         "The 616-row receive left 206 tracked ai/** paths with no disposition at all, including six mcp-server.mjs entrypoints, the fleet server, and the orchestrator control plane. Reported by @neo-gpt-emmy as the fourth blocker and gated by @neo-gpt on whole-tree reconciliation. Now 819 received, 18 to PR #9, 2 stays-engine, 1 retire, 0 unclassified.",
         "Ten paths were received that should not have been. @neo-gpt-emmy dispositioned the same 206 independently and caught them: nine ai/examples/harnessEndurance/** files are an Engine subject (they benchmark Neo worker topology and are consumed only by Engine e2e), and ai/data/memory-core/lazy-edges.jsonl is genuinely ambiguous. My membership rule follows directory; ADR 0040 §2.7 follows subject, and an Engine subject can sit in an ai/ directory.",
-        "Final partition ruled jointly by @neo-gpt and @neo-gpt-emmy at 806/18/14/2 with zero ambiguous. Two corrections against my 809/18/11/1/1: nightly-e2e is a four-file Engine unit so the runner, digest and README join the explicit-stay plist rather than the plist following them, and lazy-edges.jsonl is retire rather than ambiguous."
+        "Final partition ruled jointly by @neo-gpt and @neo-gpt-emmy at 806/18/14/2 with zero ambiguous. Two corrections against my 809/18/11/1/1: nightly-e2e is a four-file Engine unit so the runner, digest and README join the explicit-stay plist rather than the plist following them, and lazy-edges.jsonl is retire rather than ambiguous.",
+        "Five rows still named cloud/ targets after the files were moved to shared/ as plane-neutral members. The manifest is the deletion authority for #17791, so a row that names a path the tree does not have is worse than a wrong plane: it is an instruction to delete a source whose destination cannot be verified. Caught by checking every target against the tree rather than trusting the write."
     ],
     "scope": "neo-agent-brain#13 receives the Agent OS source EXCEPT ai/deploy/**, which Brain PR #9 owns. PR #9 holds 18 movers; this manifest holds 616. The #17791 source-deletion predicate is the UNION of both sets (18 + 616 = 634), never this manifest alone and never PR #9 alone.",
     "population": "Census roots (custody rows AND plane-opener rows) union their transitive ai/** closure, tracked files only, minus ai/deploy/** which Brain PR #9 owns. Custody rows alone lost 19 tracked files including the orchestrator daemon and the fleet server; the closure alone cannot find files nothing imports, such as the five per-server config templates. Neither source is sufficient by itself.",
@@ -5181,5 +5182,5 @@
         "unclassified": 0,
         "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership."
     },
-    "canonicalSha256": "50ff3218f19f9f6d6652ff536c6d4ad198206aff8b3d733dac0a628c5342a6c2"
+    "canonicalSha256": "ac244fafb5d26b1fff5639b6566b27c40a683a6098ace8de4b32cd1b027120af"
 }
