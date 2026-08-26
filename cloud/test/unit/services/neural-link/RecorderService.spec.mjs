@@ -45,10 +45,10 @@ test.describe('Neo.ai.services.neural-link.RecorderService', () => {
     let RecorderService, setArchiveTransport, resetArchiveClient, calls;
 
     test.beforeAll(async () => {
-        RecorderService = (await import('../../../../services/neural-link/RecorderService.mjs')).default;
+        RecorderService = (await import('../../../../../services/neural-link/RecorderService.mjs')).default;
 
         ({setArchiveTransport, resetArchiveClient} =
-            await import('../../../../services/neural-link/memoryCoreArchiveClient.mjs'));
+            await import('../../../../../services/neural-link/memoryCoreArchiveClient.mjs'));
 
         await RecorderService.initAsync();
     });

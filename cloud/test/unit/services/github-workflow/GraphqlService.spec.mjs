@@ -36,7 +36,7 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — transient retr
     const QUERY = 'query TestQuery { viewer { login } }';
 
     test.beforeAll(async () => {
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
     });
 
     test.beforeEach(() => {
@@ -257,7 +257,7 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — rest() authent
     let originalRetryJitterRatio;
 
     test.beforeAll(async () => {
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
     });
 
     test.beforeEach(() => {
@@ -436,7 +436,7 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — credential res
     };
 
     test.beforeAll(async () => {
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
     });
 
     test.beforeEach(() => {

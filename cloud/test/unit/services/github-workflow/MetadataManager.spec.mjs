@@ -34,7 +34,7 @@ test.describe('Neo.ai.services.github-workflow.sync.MetadataManager', () => {
         testMetadataFile = path.join(os.tmpdir(), `neo-metadata-manager-test-${Date.now()}.json`);
         aiConfig.issueSync.metadataFile = testMetadataFile;
 
-        MetadataManager = (await import('../../../../services/github-workflow/sync/MetadataManager.mjs')).default;
+        MetadataManager = (await import('../../../../../services/github-workflow/sync/MetadataManager.mjs')).default;
     });
 
     test.afterAll(async () => {

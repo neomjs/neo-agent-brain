@@ -7,7 +7,7 @@ import {
     malformedCommentIdError,
     omitScopedBody,
     parseCommentId
-}                     from '../../../../services/github-workflow/shared/commentSelector.mjs';
+}                     from '../../../../../services/github-workflow/shared/commentSelector.mjs';
 
 test.describe('commentSelector', () => {
     test.describe('parseCommentId — the four spellings that exist in the wild', () => {

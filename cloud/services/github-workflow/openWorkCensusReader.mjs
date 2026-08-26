@@ -1,5 +1,5 @@
-import {FETCH_ISSUES_LIST_NO_FILTER}  from './queries/issueQueries.mjs';
-import {FETCH_PULL_REQUESTS_FOR_SYNC} from './queries/pullRequestQueries.mjs';
+import {FETCH_ISSUES_LIST_NO_FILTER}  from '../../../services/github-workflow/queries/issueQueries.mjs';
+import {FETCH_PULL_REQUESTS_FOR_SYNC} from '../../../services/github-workflow/queries/pullRequestQueries.mjs';
 
 /**
  * @module ai/services/github-workflow/openWorkCensusReader

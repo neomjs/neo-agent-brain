@@ -20,7 +20,7 @@ import fs                 from 'fs-extra';
 import fsPromises         from 'fs/promises';
 import matter             from 'gray-matter';
 import path               from 'path';
-import {readContentIndex} from '../../../../services/github-workflow/shared/contentIndex.mjs';
+import {readContentIndex} from '../../../../../services/github-workflow/shared/contentIndex.mjs';
 
 test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
     let aiConfig;
@@ -38,9 +38,9 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
 
     test.beforeAll(async () => {
         aiConfig          = (await import('../../../../../mcp/server/github-workflow/config.template.mjs')).default;
-        GraphqlService    = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        PullRequestSyncer = (await import('../../../../services/github-workflow/sync/PullRequestSyncer.mjs')).default;
-        ReleaseNotesSyncer = (await import('../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
+        GraphqlService    = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        PullRequestSyncer = (await import('../../../../../services/github-workflow/sync/PullRequestSyncer.mjs')).default;
+        ReleaseNotesSyncer = (await import('../../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
 
         originalArchiveRoot            = aiConfig.issueSync.archiveRoot;
         originalPullsDir               = aiConfig.issueSync.pullsDir;

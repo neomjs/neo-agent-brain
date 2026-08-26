@@ -5,7 +5,7 @@ import {execFile}                             from 'node:child_process';
 import {promisify}                            from 'node:util';
 import {fileURLToPath}                        from 'node:url';
 import {Command, InvalidArgumentError}        from 'commander';
-import {classifyDiscussionRoutingDisposition} from '../../cloud/services/github-workflow/shared/discussionRoutingDisposition.mjs';
+import {classifyDiscussionRoutingDisposition} from '../../services/github-workflow/shared/discussionRoutingDisposition.mjs';
 
 const execFileAsync = promisify(execFile);
 

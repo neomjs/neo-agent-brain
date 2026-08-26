@@ -41,8 +41,8 @@ test.describe('Neo.ai.services.github-workflow.toolService — getConversationRo
     test.beforeAll(async () => {
         const mod = await import('../../../../../mcp/server/github-workflow/toolService.mjs');
         getConversationRouter = mod.getConversationRouter;
-        IssueService          = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
-        PullRequestService    = (await import('../../../../services/github-workflow/PullRequestService.mjs')).default;
+        IssueService          = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
+        PullRequestService    = (await import('../../../../../services/github-workflow/PullRequestService.mjs')).default;
 
         originalIssueGetConversation = IssueService.getConversation.bind(IssueService);
         originalPrGetConversation    = PullRequestService.getConversation.bind(PullRequestService);

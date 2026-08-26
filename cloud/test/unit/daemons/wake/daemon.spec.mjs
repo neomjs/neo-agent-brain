@@ -6,10 +6,10 @@ import { spawn, spawnSync }                                                     
 import crypto                                                                                  from 'crypto';
 import http                                                                                    from 'http';
 import os                                                                                      from 'os';
-import { collapseDuplicateShapeCRoutes, getActiveHarnessPresence, getNodesData, getEdgesData } from '../../../../cloud/daemons/wake/queries.mjs';
-import { MESSAGE_WAKE_MAX_AGE_MS }                                                             from '../../../../cloud/services/memory-core/wakeCoalescePolicy.mjs';
-import { SQLITE_IN_CLAUSE_BATCH_SIZE }                                                         from '../../../../cloud/graph/storage/constants.mjs';
-import { withOutboxLock }                                                                      from '../../../../daemons/wake/outboxLock.mjs';
+import { collapseDuplicateShapeCRoutes, getActiveHarnessPresence, getNodesData, getEdgesData } from '../../../../daemons/wake/queries.mjs';
+import { MESSAGE_WAKE_MAX_AGE_MS }                                                             from '../../../../services/memory-core/wakeCoalescePolicy.mjs';
+import { SQLITE_IN_CLAUSE_BATCH_SIZE }                                                         from '../../../../graph/storage/constants.mjs';
+import { withOutboxLock }                                                                      from '../../../../../daemons/wake/outboxLock.mjs';
 
 /**
  * @summary Stubs `ps` for subprocess daemon tests so instance-resolution branches do not depend

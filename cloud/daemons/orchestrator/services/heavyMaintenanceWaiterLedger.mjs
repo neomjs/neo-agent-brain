@@ -1,7 +1,7 @@
 import fs   from 'fs';
 import path from 'path';
 
-import {writeFileAtomicSync} from '../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync} from '../../../../services/shared/atomicFileWrite.mjs';
 
 /**
  * @module ai/daemons/orchestrator/services/heavyMaintenanceWaiterLedger

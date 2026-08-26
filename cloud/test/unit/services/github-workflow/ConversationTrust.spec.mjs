@@ -17,7 +17,7 @@ import {test, expect}                                                           
 import Neo                                                                             from 'neo.mjs/src/Neo.mjs';
 import * as core                                                                       from 'neo.mjs/src/core/_export.mjs';
 import {TRUST_TIERS}                                                                   from '../../../../../shared/graph/identityRoots.mjs';
-import {createContentTrustSummary, projectAuthoredNodeTrust, projectConversationTrust} from '../../../../services/github-workflow/shared/conversationTrust.mjs';
+import {createContentTrustSummary, projectAuthoredNodeTrust, projectConversationTrust} from '../../../../../services/github-workflow/shared/conversationTrust.mjs';
 
 /**
  * @summary Read-boundary trust-projection fixtures — the pure helper + its wiring into the three
@@ -179,9 +179,9 @@ test.describe('Neo.ai.services.github-workflow — getConversation trust wiring'
     };
 
     test.beforeAll(async () => {
-        GraphqlService     = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        IssueService       = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
-        PullRequestService = (await import('../../../../services/github-workflow/PullRequestService.mjs')).default;
+        GraphqlService     = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        IssueService       = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
+        PullRequestService = (await import('../../../../../services/github-workflow/PullRequestService.mjs')).default;
         DiscussionService  = (await import('../../../../services/github-workflow/DiscussionService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService)

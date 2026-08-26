@@ -6,7 +6,7 @@ import {
     resetArchiveClient,
     saveTransactionArchive,
     setArchiveConnect
-} from '../../../../services/neural-link/memoryCoreArchiveClient.mjs';
+} from '../../../../../services/neural-link/memoryCoreArchiveClient.mjs';
 
 /**
  * @summary The archive client's CONNECT lifecycle: who owns a failure, how many clients a burst of callers

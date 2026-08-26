@@ -25,7 +25,7 @@ import contentPath, {
     validateNonNegativeInteger,
     validatePositiveInteger,
     validateSegment
-} from '../../../../services/github-workflow/shared/contentPath.mjs';
+} from '../../../../../services/github-workflow/shared/contentPath.mjs';
 import {
     contentIndexPath,
     contentRootFor,
@@ -34,7 +34,7 @@ import {
     readContentIndex,
     resolveIndexedPath,
     updateContentIndex
-} from '../../../../services/github-workflow/shared/contentIndex.mjs';
+} from '../../../../../services/github-workflow/shared/contentIndex.mjs';
 
 test.describe('contentPath — universal ordinal-100 path resolution (ADR 0004 §3.1 / #11379 Lane A)', () => {
     const contentRoot = path.join('resources', 'content');

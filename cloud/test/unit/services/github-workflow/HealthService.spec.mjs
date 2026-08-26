@@ -21,7 +21,7 @@ test.describe.serial('Neo.ai.services.github-workflow.HealthService - runtimeFre
     let HealthService;
 
     test.beforeAll(async () => {
-        HealthService = (await import('../../../../services/github-workflow/HealthService.mjs')).default;
+        HealthService = (await import('../../../../../services/github-workflow/HealthService.mjs')).default;
     });
 
     test.afterEach(() => {
@@ -139,7 +139,7 @@ test.describe('Neo.ai.services.github-workflow.HealthService notification projec
             buildNotificationPreview,
             getWakeRelevantNotifications,
             GITHUB_WAKE_NOTIFICATION_REASONS
-        } = await import('../../../../services/github-workflow/HealthService.mjs'));
+        } = await import('../../../../../services/github-workflow/HealthService.mjs'));
     });
 
     test('wake notification projection includes mentions and review requests only', () => {

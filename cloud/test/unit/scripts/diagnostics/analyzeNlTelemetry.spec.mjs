@@ -1,4 +1,4 @@
-import {setup} from '../../../setup.mjs';
+import {setup} from '../../../../../test/setup.mjs';
 
 const appName = 'AnalyzeNlTelemetryTest';
 

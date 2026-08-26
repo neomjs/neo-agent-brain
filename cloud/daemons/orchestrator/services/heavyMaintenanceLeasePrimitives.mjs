@@ -2,7 +2,7 @@ import crypto                                 from 'crypto';
 import fs                                     from 'fs-extra';
 import os                                     from 'node:os';
 import path                                   from 'path';
-import {writeFileAtomic, writeFileAtomicSync} from '../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic, writeFileAtomicSync} from '../../../../services/shared/atomicFileWrite.mjs';
 import {
     enterLifecycleGuard,
     enterLifecycleGuardSync,

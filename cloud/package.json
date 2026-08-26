@@ -64,6 +64,10 @@
         "ai:stale-embedding-census": "node ./scripts/diagnostics/staleEmbeddingCensus.mjs",
         "ai:stale-embedding-repair": "node ./scripts/migrations/repairStaleEmbeddings.mjs",
         "ai:summarize-sessions": "node ./scripts/lifecycle/summarize-sessions.mjs",
-        "ai:sync-kb": "node ./scripts/maintenance/syncKnowledgeBase.mjs"
+        "ai:sync-kb": "node ./scripts/maintenance/syncKnowledgeBase.mjs",
+        "test-unit": "playwright test -c test/playwright.config.unit.mjs"
+    },
+    "devDependencies": {
+        "@playwright/test": "^1.61.1"
     }
 }

@@ -48,7 +48,7 @@ test.describe('identityRenderContract — the render-model consumer read-contrac
     };
 
     test.beforeAll(async () => {
-        schema   = await import('../../../graph/identitySchema.mjs');
+        schema   = await import('../../../../graph/identitySchema.mjs');
         contract = await import('../../../graph/identityRenderContract.mjs');
     });
 

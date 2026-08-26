@@ -1,4 +1,4 @@
-import {setup} from '../../../setup.mjs';
+import {setup} from '../../../../../test/setup.mjs';
 
 const appName             = 'AllAgentIdleDetectionTest';
 const skipCiSubstrateData = !!process.env.NEO_TEST_SKIP_CI;
@@ -21,10 +21,10 @@ import os                                             from 'os';
 import path                                           from 'path';
 import Neo                                            from 'neo.mjs/src/Neo.mjs';
 import * as core                                      from 'neo.mjs/src/core/_export.mjs';
-import {deriveAllAgentIdleCycleId, checkAllAgentIdle} from '../../../../cloud/scripts/lifecycle/checkAllAgentIdle.mjs';
-import {resolveTargets}                               from '../../../../cloud/daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
-import SQLite                                         from '../../../../cloud/graph/storage/SQLite.mjs';
-import AiConfig                                       from '../../../../cloud/config.template.mjs';
+import {deriveAllAgentIdleCycleId, checkAllAgentIdle} from '../../../../scripts/lifecycle/checkAllAgentIdle.mjs';
+import {resolveTargets}                               from '../../../../daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
+import SQLite                                         from '../../../../graph/storage/SQLite.mjs';
+import AiConfig                                       from '../../../../config.template.mjs';
 
 /**
  * @summary Creates one disposable file-backed graph that a fresh detector process can reopen.
@@ -239,7 +239,7 @@ test.describe('ai/scripts/checkAllAgentIdle', () => {
         // AiConfig.orchestrator.swarmHeartbeat.idleThresholdMs — fails if the env name is misspelled
         // or the entrypoint silently uses the 600000 default. Run in-process so the seeded memory is
         // visible (the subprocess substrate path is bucket-C gated / skipped).
-        const GraphService = (await import('../../../../cloud/services/memory-core/GraphService.mjs')).default;
+        const GraphService = (await import('../../../../services/memory-core/GraphService.mjs')).default;
         await GraphService.initAsync();
 
         // Seed one active-local-team member with 5s-old memory; the rest have none (Infinity age → idle),

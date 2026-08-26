@@ -1,5 +1,5 @@
 import {test, expect}      from '@playwright/test';
-import {resolveCallTarget} from '../../services/neural-link/resolveCallTarget.mjs';
+import {resolveCallTarget} from '../../../services/neural-link/resolveCallTarget.mjs';
 
 // Pure function — imported directly (not via the Bridge-connected ConnectionService singleton), so the
 // suite has no host-runtime side effects and each case is fully isolated.

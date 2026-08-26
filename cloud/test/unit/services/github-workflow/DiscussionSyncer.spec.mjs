@@ -24,7 +24,7 @@ import {
     FETCH_DISCUSSION_REPLIES_PAGE,
     FETCH_DISCUSSIONS_FOR_SYNC,
     FETCH_SINGLE_DISCUSSION_FOR_SYNC
-} from '../../../../services/github-workflow/queries/discussionQueries.mjs';
+} from '../../../../../services/github-workflow/queries/discussionQueries.mjs';
 
 test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
     let aiConfig;
@@ -43,9 +43,9 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
 
     test.beforeAll(async () => {
         aiConfig         = (await import('../../../../../mcp/server/github-workflow/config.template.mjs')).default;
-        DiscussionSyncer = (await import('../../../../services/github-workflow/sync/DiscussionSyncer.mjs')).default;
-        GraphqlService   = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        ReleaseNotesSyncer    = (await import('../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
+        DiscussionSyncer = (await import('../../../../../services/github-workflow/sync/DiscussionSyncer.mjs')).default;
+        GraphqlService   = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        ReleaseNotesSyncer    = (await import('../../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
 
         originalArchiveRoot    = aiConfig.issueSync.archiveRoot;
         originalDiscussionsDir = aiConfig.issueSync.discussionsDir;

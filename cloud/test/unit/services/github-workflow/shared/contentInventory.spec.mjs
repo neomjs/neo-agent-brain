@@ -2,13 +2,13 @@ import {test, expect}                            from '@playwright/test';
 import fs                                        from 'fs/promises';
 import os                                        from 'os';
 import path                                      from 'path';
-import {parseContentPath, pathSegmentOptionsFor} from '../../../../../services/github-workflow/shared/contentPath.mjs';
-import {writeContentIndex}                       from '../../../../../services/github-workflow/shared/contentIndex.mjs';
+import {parseContentPath, pathSegmentOptionsFor} from '../../../../../../services/github-workflow/shared/contentPath.mjs';
+import {writeContentIndex}                       from '../../../../../../services/github-workflow/shared/contentIndex.mjs';
 import {
     buildContentInventory,
     resolveArchivedLocation,
     validateContentIntegrity
-} from '../../../../../services/github-workflow/shared/contentInventory.mjs';
+} from '../../../../../../services/github-workflow/shared/contentInventory.mjs';
 
 /**
  * @summary Falsifier coverage for the complete-corpus inventory and its integrity verdict.

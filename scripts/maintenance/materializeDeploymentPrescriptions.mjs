@@ -12,7 +12,7 @@ import {
     LEDGER_REFUSALS
 } from '../../cloud/services/memory-core/helpers/deploymentPrescriptionLedger.mjs';
 import {renderPrescribedEnvironment} from '../../cloud/services/memory-core/helpers/deploymentPrescriptionEnvironment.mjs';
-import {writeFileAtomic}             from '../../cloud/services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic}             from '../../services/shared/atomicFileWrite.mjs';
 import {
     appendDeploymentPrescription,
     readDeploymentPrescriptions,

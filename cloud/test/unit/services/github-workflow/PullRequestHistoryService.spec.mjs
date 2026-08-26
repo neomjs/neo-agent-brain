@@ -25,13 +25,13 @@ import PullRequestHistoryService, {
     fetchResolvedPullRequestsForHistory,
     scanPullRequestCorpus,
     synthesizePullRequestHistory
-}                     from '../../../../services/github-workflow/PullRequestHistoryService.mjs';
+}                     from '../../../../../services/github-workflow/PullRequestHistoryService.mjs';
 import {
     FETCH_PULL_REQUEST_HISTORY_CHILDREN,
     FETCH_RELEASES_FOR_HISTORY,
     FETCH_RESOLVED_PULL_REQUEST_CENSUS_REVISION,
     FETCH_RESOLVED_PULL_REQUESTS_FOR_HISTORY
-}                     from '../../../../services/github-workflow/queries/pullRequestQueries.mjs';
+}                     from '../../../../../services/github-workflow/queries/pullRequestQueries.mjs';
 import {synthesizeTemporalBirdView} from '../../../../services/memory-core/helpers/temporalBirdViewSynthesizer.mjs';
 
 const START_ISO = '2026-07-01T00:00:00.000Z',

@@ -24,7 +24,7 @@ import {
     hasCrossFamilyReview      as resolvePrCrossFamilyReview,
     parseSelfIdLogin          as parsePrSelfIdLogin,
     resolveAuthorFamily       as resolvePrAuthorFamily
-} from './agentFamilyResolution.mjs';
+} from '../../../services/graph/agentFamilyResolution.mjs';
 import {
     buildComputedRouteFromPass,
     buildFailureOutcome                          as buildRouteFailureOutcome,

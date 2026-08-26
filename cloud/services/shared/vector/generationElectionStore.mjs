@@ -48,7 +48,7 @@ import crypto            from 'crypto';
 import fs                from 'fs/promises';
 import fsExtra           from 'fs-extra';
 import path              from 'path';
-import {writeFileAtomic} from '../atomicFileWrite.mjs';
+import {writeFileAtomic} from '../../../../services/shared/atomicFileWrite.mjs';
 import {
     enterLifecycleGuard,
     exitLifecycleGuard,

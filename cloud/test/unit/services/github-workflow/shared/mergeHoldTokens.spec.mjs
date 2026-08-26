@@ -1,5 +1,5 @@
 import {test, expect}                     from '@playwright/test';
-import {mergeHoldToken, resolveMergeHold} from '../../../../../services/github-workflow/shared/mergeHoldTokens.mjs';
+import {mergeHoldToken, resolveMergeHold} from '../../../../../../services/github-workflow/shared/mergeHoldTokens.mjs';
 
 /**
  * Pure arms for the reviewer-hold reader.

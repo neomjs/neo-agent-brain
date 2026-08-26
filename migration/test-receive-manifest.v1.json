@@ -5,8 +5,8 @@
     "rule": "A test follows its SUBJECT, per ADR 0040 section 2.7. test/playwright/unit/ai/A/B/C.spec.mjs tests ai/A/B/C.mjs, so the source-receive manifest already decides its plane - there is no second authority and no directory guess. Layout mirrors the source planes: edge tests at test/unit/**, cloud tests at cloud/test/unit/** so the Cloud package installs and runs independently. A spec whose exact subject is not a Brain row is resolved by what it IMPORTS, never by its directory: reaching src/, buildScripts/, learn/ or apps/ means it exercises retained Engine surface and stays there. Directory fallback moved 68 specs wrongly and was caught by @neo-gpt-emmy.",
     "counts": {
         "total": 724,
-        "cloud": 607,
-        "edge": 117
+        "cloud": 616,
+        "edge": 108
     },
     "staysEngine": [
         {
@@ -4596,10 +4596,10 @@
         },
         {
             "identity": "test/playwright/unit/ai/daemons/wake/daemon.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/daemon.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/daemons/wake/daemon.spec.mjs",
             "subject": "ai/daemons/wake/daemon.mjs",
-            "origin": "subject-row"
+            "origin": "test follows subject (subject moved to cloud)"
         },
         {
             "identity": "test/playwright/unit/ai/daemons/wake/daemonDeliveryOwner.spec.mjs",
@@ -4918,10 +4918,10 @@
         },
         {
             "identity": "test/playwright/unit/ai/scripts/diagnostics/analyzeNlTelemetry.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/analyzeNlTelemetry.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/diagnostics/analyzeNlTelemetry.spec.mjs",
             "subject": "ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
-            "origin": "subject-row"
+            "origin": "test follows subject (subject moved to cloud)"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/diagnostics/auditDiscussionLifecycleFreshness.spec.mjs",
@@ -5065,24 +5065,24 @@
         },
         {
             "identity": "test/playwright/unit/ai/scripts/fleet/onboardPeer.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/fleet/onboardPeer.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/fleet/onboardPeer.spec.mjs",
             "subject": "ai/scripts/fleet/onboardPeer.mjs",
-            "origin": "subject-row"
+            "origin": "test follows subject (subject moved to cloud)"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/checkAllAgentIdle.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/checkAllAgentIdle.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/lifecycle/checkAllAgentIdle.spec.mjs",
             "subject": "ai/scripts/lifecycle/checkAllAgentIdle.mjs",
-            "origin": "subject-row"
+            "origin": "test follows subject (subject moved to cloud)"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/checkSunsetted.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/checkSunsetted.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/lifecycle/checkSunsetted.spec.mjs",
             "subject": "ai/scripts/lifecycle/checkSunsetted.mjs",
-            "origin": "subject-row"
+            "origin": "test follows subject (subject moved to cloud)"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/harnessLifecycle.spec.mjs",
@@ -5107,10 +5107,10 @@
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/idleOutNudge.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/idleOutNudge.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/lifecycle/idleOutNudge.spec.mjs",
             "subject": "ai/scripts/lifecycle/idleOutNudge.mjs",
-            "origin": "subject-row"
+            "origin": "test follows subject (subject moved to cloud)"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/inflightLock.spec.mjs",
@@ -5142,10 +5142,10 @@
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/resumeHarness.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/resumeHarness.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/lifecycle/resumeHarness.spec.mjs",
             "subject": "ai/scripts/lifecycle/resumeHarness.mjs",
-            "origin": "subject-row"
+            "origin": "test follows subject (subject moved to cloud)"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/revalidationSweep.spec.mjs",
@@ -5156,10 +5156,10 @@
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/swarmWakeCooldown.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/swarmWakeCooldown.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/lifecycle/swarmWakeCooldown.spec.mjs",
             "subject": "ai/scripts/lifecycle/swarmWakeCooldown.mjs",
-            "origin": "subject-row"
+            "origin": "test follows subject (subject moved to cloud)"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/sweepExpiredTasks.spec.mjs",
@@ -5191,10 +5191,10 @@
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lifecycle/wakeSafetyGate.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/wakeSafetyGate.spec.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/unit/scripts/lifecycle/wakeSafetyGate.spec.mjs",
             "subject": "ai/scripts/lifecycle/wakeSafetyGate.mjs",
-            "origin": "subject-row"
+            "origin": "test follows subject (subject moved to cloud)"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/lint/checkCommitAuthorship.spec.mjs",
@@ -5364,5 +5364,5 @@
         ],
         "reason": "Duplicated per plane rather than shared from the repository root: the Cloud package must run its suite independently, and a single root copy would make every cloud spec climb out of its own package to reach it — the ancestor reach the two package roots exist to refuse. findBridgeScriptRoot and the fixtures stay with the Engine."
     },
-    "canonicalSha256": "27e53513f6da57bd26067d8b5bf5b6dc35e778adbeac77883b174e1cffdf373e"
+    "canonicalSha256": "21ba26a526425c4c2e012c8f2e3522ee5503c902fa027ed60fd2a7ba72539751"
 }

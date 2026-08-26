@@ -1,4 +1,4 @@
-import {setup} from '../../../setup.mjs';
+import {setup} from '../../../../../test/setup.mjs';
 
 const appName             = 'SunsetDetectionTest';
 const skipCiSubstrateData = !!process.env.NEO_TEST_SKIP_CI;
@@ -22,8 +22,8 @@ import os                                from 'os';
 import path                              from 'path';
 import Neo                               from 'neo.mjs/src/Neo.mjs';
 import * as core                         from 'neo.mjs/src/core/_export.mjs';
-import {getLockPath, writeInflightLock}  from '../../../../scripts/lifecycle/inflightLock.mjs';
-import SQLite                            from '../../../../cloud/graph/storage/SQLite.mjs';
+import {getLockPath, writeInflightLock}  from '../../../../../scripts/lifecycle/inflightLock.mjs';
+import SQLite                            from '../../../../graph/storage/SQLite.mjs';
 
 /**
  * @summary Creates one disposable file-backed graph that a fresh detector process can reopen.
@@ -385,7 +385,7 @@ test.describe('ai/scripts/checkSunsetted', () => {
         // When a sunset_restart is already in flight (per inflightLock.mjs), the detector
         // MUST NOT recommend another sunset_restart action. The lock is the data-layer mutex
         // that prevents the runaway-spawn pattern documented in the forensic record.
-        const GraphService = (await import('../../../../cloud/services/memory-core/GraphService.mjs')).default;
+        const GraphService = (await import('../../../../services/memory-core/GraphService.mjs')).default;
         await GraphService.initAsync();
 
         const testIdentity  = '@neo-locked-sunset-test';

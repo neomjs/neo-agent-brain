@@ -12,7 +12,7 @@ import {
     Memory_GraphService     as GraphService,
     Memory_LifecycleService as LifecycleService
 }                    from '../../../services.mjs';
-import {getWakeRelevantNotifications} from '../../../services/github-workflow/HealthService.mjs';
+import {getWakeRelevantNotifications} from '../../../../services/github-workflow/HealthService.mjs';
 import MailboxService                 from '../../../services/memory-core/MailboxService.mjs';
 import RequestContextService          from '../../../mcp/server/shared/services/RequestContextService.mjs';
 import logger                         from '../../../mcp/server/memory-core/logger.mjs';

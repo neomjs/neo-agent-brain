@@ -27,7 +27,7 @@
 import fs                             from 'fs';
 import path                           from 'path';
 import {fileURLToPath, pathToFileURL} from 'url';
-import {writeFileAtomicSync}          from '../../cloud/services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync}          from '../../services/shared/atomicFileWrite.mjs';
 
 const __dirname  = path.dirname(fileURLToPath(import.meta.url));
 const neoRootDir = path.resolve(__dirname, '../../../');

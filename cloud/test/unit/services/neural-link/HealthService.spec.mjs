@@ -32,7 +32,7 @@ test.describe.serial('Neo.ai.services.neural-link.HealthService runtimeFreshness
     let HealthService, bootRuntimeIdentity, bootRuntimeFreshnessErrors;
 
     test.beforeAll(async () => {
-        HealthService              = (await import('../../../../services/neural-link/HealthService.mjs')).default;
+        HealthService              = (await import('../../../../../services/neural-link/HealthService.mjs')).default;
         bootRuntimeIdentity        = HealthService.bootRuntimeIdentity;
         bootRuntimeFreshnessErrors = HealthService.bootRuntimeFreshnessErrors;
     });

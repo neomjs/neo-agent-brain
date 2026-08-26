@@ -6,7 +6,7 @@ import aiConfig                 from '../../mcp/server/memory-core/config.mjs';
 import Base                     from 'neo.mjs/src/core/Base.mjs';
 import {isBundleRestorable}     from './helpers/bundleIntegrity.mjs';
 import {readDeployedRevision}   from '../shared/deployedRevision.mjs';
-import RuntimeFreshnessService  from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
+import RuntimeFreshnessService  from '../../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
 import ChromaManager            from './managers/ChromaManager.mjs';
 import StorageRouter            from './managers/StorageRouter.mjs';
 import ChromaLifecycleService   from './lifecycle/ChromaLifecycleService.mjs';

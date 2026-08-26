@@ -1,4 +1,4 @@
-import {setup} from '../../../setup.mjs';
+import {setup} from '../../../../../test/setup.mjs';
 
 const appName = 'IdleOutNudgeTest';
 
@@ -23,7 +23,7 @@ import fsp                       from 'fs/promises';
 import Neo                       from 'neo.mjs/src/Neo.mjs';
 import * as core                 from 'neo.mjs/src/core/_export.mjs';
 
-import {getLockPath, writeInflightLock} from '../../../../scripts/lifecycle/inflightLock.mjs';
+import {getLockPath, writeInflightLock} from '../../../../../scripts/lifecycle/inflightLock.mjs';
 
 /**
  * @summary Validation for the idle-out A2A nudge dispatcher.

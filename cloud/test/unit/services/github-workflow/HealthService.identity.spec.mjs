@@ -25,7 +25,7 @@ test.describe.serial('Neo.ai.services.github-workflow.HealthService - agent iden
     const originalIdentity = process.env.NEO_AGENT_IDENTITY;
 
     test.beforeAll(async () => {
-        HealthService = (await import('../../../../services/github-workflow/HealthService.mjs')).default;
+        HealthService = (await import('../../../../../services/github-workflow/HealthService.mjs')).default;
     });
 
     test.afterEach(() => {

@@ -1,6 +1,6 @@
 import Base                           from 'neo.mjs/src/core/Base.mjs';
 import CommunityBatchAdmissionService from '../memory-core/CommunityBatchAdmissionService.mjs';
-import GraphqlService                 from './GraphqlService.mjs';
+import GraphqlService                 from '../../../services/github-workflow/GraphqlService.mjs';
 import SourceRegistryService          from '../memory-core/SourceRegistryService.mjs';
 import {assembleIssueBatch}           from './community/assembleIssueBatch.mjs';
 import {classifyAbsences}             from './community/githubIssueAbsence.mjs';
@@ -8,7 +8,7 @@ import {reconcilePullRequestActivity} from './community/githubPullRequestReconci
 import {
     exhaustGraphqlConversation,
     exhaustRepositoryReviewComments
-} from './PullRequestHistoryService.mjs';
+} from '../../../services/github-workflow/PullRequestHistoryService.mjs';
 import {
     FETCH_RECONCILE_PULL_REQUEST_CENSUS,
     FETCH_RECONCILE_PULL_REQUEST_CHILDREN,

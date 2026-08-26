@@ -10,9 +10,9 @@ import {
     resolveAuthorFamilyFromLogins,
     resolveResidentFamily,
     resolveReviewerFamily
-} from '../../../../services/graph/agentFamilyResolution.mjs';
+} from '../../../../../services/graph/agentFamilyResolution.mjs';
 import {IDENTITIES}      from '../../../../../shared/graph/identityRoots.mjs';
-import {migrateResident} from '../../../../graph/identityRootsMigration.mjs';
+import {migrateResident} from '../../../../../graph/identityRootsMigration.mjs';
 
 /**
  * Consumer-migration coverage for the identityRoots flat-fact retirement: the family read-path

@@ -9,9 +9,9 @@ import fsExtra         from 'fs-extra';
 import path            from 'path';
 import {fileURLToPath} from 'url';
 
-import GraphqlService                                  from '../../cloud/services/github-workflow/GraphqlService.mjs';
+import GraphqlService                                  from '../../services/github-workflow/GraphqlService.mjs';
 import {makeCommunityActivityShadowReader}             from '../../cloud/services/github-workflow/communityActivityShadowReader.mjs';
-import {classifyAuthorTrust}                           from '../../cloud/services/shared/contentTrust/authorTrustClassifier.mjs';
+import {classifyAuthorTrust}                           from '../../services/shared/contentTrust/authorTrustClassifier.mjs';
 import {formatHumanSummary, parseArgs, runShadowProbe} from './communityActivityShadowProbeCore.mjs';
 
 const __filename   = fileURLToPath(import.meta.url);

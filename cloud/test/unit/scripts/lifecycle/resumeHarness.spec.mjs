@@ -1,4 +1,4 @@
-import {setup} from '../../../setup.mjs';
+import {setup} from '../../../../../test/setup.mjs';
 
 const appName             = 'ResumeHarnessTest';
 const skipCiSubstrateData = !!process.env.NEO_TEST_SKIP_CI;
@@ -25,11 +25,11 @@ import * as core                 from 'neo.mjs/src/core/_export.mjs';
 import {
     applyHarnessMetadataDefaults,
     resolveHarnessTargetForIdentity
-} from '../../../../scripts/lifecycle/harnessRouting.mjs';
+} from '../../../../../scripts/lifecycle/harnessRouting.mjs';
 import {
     resolveResumeHarnessInstanceAddress,
     resolveResumeHarnessInstancePid
-} from '../../../../cloud/scripts/lifecycle/resumeHarness.mjs';
+} from '../../../../scripts/lifecycle/resumeHarness.mjs';
 
 test.describe('ai/scripts/resumeHarness', () => {
     test.describe.configure({mode: 'serial'});
@@ -241,7 +241,7 @@ test.describe('ai/scripts/resumeHarness', () => {
     });
 
     test('normalizes GitHub-login identity form before harness dispatch (#11797)', async () => {
-        const {normalizeAgentIdentityNodeId} = await import('../../../../cloud/scripts/lifecycle/resumeHarness.mjs');
+        const {normalizeAgentIdentityNodeId} = await import('../../../../scripts/lifecycle/resumeHarness.mjs');
 
         expect(normalizeAgentIdentityNodeId('neo-opus-ada')).toBe('@neo-opus-ada');
         expect(normalizeAgentIdentityNodeId('@neo-gpt')).toBe('@neo-gpt');
@@ -448,7 +448,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         // (antigravity-cli; Claude now routes to the process-exempt osascript adapter). After a
         // successful CLI dispatch, resumeHarness records the spawned process's PID via
         // harnessLifecycle.recordHarnessProcess — the PID the NEXT invocation SIGTERMs during cleanup.
-        const harnessLifecycle = await import('../../../../scripts/lifecycle/harnessLifecycle.mjs');
+        const harnessLifecycle = await import('../../../../../scripts/lifecycle/harnessLifecycle.mjs');
         const stateFile        = harnessLifecycle.getStateFilePath('@neo-gemini-pro', {stateDir: harnessStateDir});
         if (fs.existsSync(stateFile)) fs.unlinkSync(stateFile);
 
@@ -477,7 +477,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         // resumeHarness via a process-tracked CLI adapter (antigravity-cli). The cleanup primitive
         // should detect ESRCH and proceed with a fresh spawn — cleanup never blocks fresh-spawn on
         // missing/dead PIDs.
-        const harnessLifecycle = await import('../../../../scripts/lifecycle/harnessLifecycle.mjs');
+        const harnessLifecycle = await import('../../../../../scripts/lifecycle/harnessLifecycle.mjs');
         const stateFile        = harnessLifecycle.getStateFilePath('@neo-gemini-pro', {stateDir: harnessStateDir});
         const stalePid         = 999999; // way above typical pid_max
         await import('fs/promises').then(({writeFile, mkdir}) => mkdir(path.dirname(stateFile), {recursive: true})
@@ -532,7 +532,7 @@ test.describe('ai/scripts/resumeHarness', () => {
     });
 
     test('Antigravity CLI: win32 uses native adapter after .cmd execution support (#11767)', async () => {
-        const { selectHarnessAdapter } = await import('../../../../cloud/scripts/lifecycle/resumeHarness.mjs');
+        const { selectHarnessAdapter } = await import('../../../../scripts/lifecycle/resumeHarness.mjs');
 
         expect(selectHarnessAdapter({ adapter: 'antigravity-cli' }, 'linux')).toBe('antigravity-cli');
         expect(selectHarnessAdapter({ adapter: 'antigravity-cli' }, 'darwin')).toBe('antigravity-cli');
@@ -546,7 +546,7 @@ test.describe('ai/scripts/resumeHarness', () => {
             buildWindowsBatchCommandLine,
             createSpawnRequest,
             quoteWindowsBatchArgument
-        } = await import('../../../../scripts/lifecycle/windowsBatchSpawn.mjs');
+        } = await import('../../../../../scripts/lifecycle/windowsBatchSpawn.mjs');
 
         const cmd  = 'C:\\Program Files\\Antigravity\\bin\\antigravity.cmd',
               args = ['chat', '-n', 'payload \\path & %PATH% | < > ^ ! "quoted"\r\nnext'];
@@ -572,7 +572,7 @@ test.describe('ai/scripts/resumeHarness', () => {
     });
 
     test('Antigravity CLI: non-batch spawn requests keep direct dispatch (#11775)', async () => {
-        const { createSpawnRequest } = await import('../../../../scripts/lifecycle/windowsBatchSpawn.mjs');
+        const { createSpawnRequest } = await import('../../../../../scripts/lifecycle/windowsBatchSpawn.mjs');
 
         expect(createSpawnRequest('/usr/local/bin/antigravity', ['chat'], 'linux')).toEqual({
             cmd    : '/usr/local/bin/antigravity',
@@ -608,7 +608,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         test.skip(process.platform !== 'darwin', 'Codex Desktop app-server adapter is currently mac-specific');
         test.skip(skipCiSubstrateData, 'CI-skip: substrate data not seeded - bucket C (#10903)');
 
-        const { getLockPath } = await import('../../../../scripts/lifecycle/inflightLock.mjs');
+        const { getLockPath } = await import('../../../../../scripts/lifecycle/inflightLock.mjs');
         const lockPath        = getLockPath('sunset_restart', '@neo-gpt', {wakeDaemonDir});
         if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
 
@@ -702,7 +702,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         // clears the lock -> the next interval can retry without waiting for BOOT_TIMEOUT_MS.
         const missingAgCli = path.join(os.tmpdir(), `missing-ag-fail-${randomUUID()}`);
 
-        const { getLockPath } = await import('../../../../scripts/lifecycle/inflightLock.mjs');
+        const { getLockPath } = await import('../../../../../scripts/lifecycle/inflightLock.mjs');
         const lockPath        = getLockPath('sunset_restart', '@neo-gemini-pro', {wakeDaemonDir});
         if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
 

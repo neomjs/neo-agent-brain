@@ -3,7 +3,7 @@ import {fileURLToPath}           from 'url';
 import AiConfig                  from '../../../config.mjs';
 import mcConfig                  from './config.mjs';
 import ToolService               from '../../../../mcp/ToolService.mjs';
-import PullRequestHistoryService from '../../../services/github-workflow/PullRequestHistoryService.mjs';
+import PullRequestHistoryService from '../../../../services/github-workflow/PullRequestHistoryService.mjs';
 import GraphService              from '../../../services/memory-core/GraphService.mjs';
 import HealthService, {
     foldHeavyMaintenanceStarvation,

@@ -46,7 +46,7 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
         await fs.ensureDir(aiConfig.issueSync.archiveRoot);
         await fs.ensureDir(aiConfig.issueSync.discussionsDir);
 
-        LocalFileService = (await import('../../../../services/github-workflow/LocalFileService.mjs')).default;
+        LocalFileService = (await import('../../../../../services/github-workflow/LocalFileService.mjs')).default;
     });
 
     test.afterAll(async () => {

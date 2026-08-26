@@ -1,7 +1,7 @@
 import {test, expect}                                                       from '@playwright/test';
 import {TRUST_TIERS}                                                        from '../../../../../../shared/graph/identityRoots.mjs';
-import {classifyAuthorTrust, isExternalTier, isTrustedTier, normalizeLogin} from '../../../../../services/shared/contentTrust/authorTrustClassifier.mjs';
-import {sanitizeContent}                                                    from '../../../../../services/shared/contentTrust/astroturfSanitizer.mjs';
+import {classifyAuthorTrust, isExternalTier, isTrustedTier, normalizeLogin} from '../../../../../../services/shared/contentTrust/authorTrustClassifier.mjs';
+import {sanitizeContent}                                                    from '../../../../../../services/shared/contentTrust/astroturfSanitizer.mjs';
 
 /**
  * @summary Fixtures for the pure content-trust helpers — author-tier classifier + astroturf sanitizer.

@@ -27,7 +27,7 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — manageDiscu
     let originalQuery;
 
     test.beforeAll(async () => {
-        GraphqlService    = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
+        GraphqlService    = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
         DiscussionService = (await import('../../../../services/github-workflow/DiscussionService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
@@ -295,7 +295,7 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — getConversa
     };
 
     test.beforeAll(async () => {
-        GraphqlService    = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
+        GraphqlService    = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
         DiscussionService = (await import('../../../../services/github-workflow/DiscussionService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
@@ -477,7 +477,7 @@ test.describe('Neo.ai.services.github-workflow.DiscussionService — manageDiscu
     let originalQuery;
 
     test.beforeAll(async () => {
-        GraphqlService    = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
+        GraphqlService    = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
         DiscussionService = (await import('../../../../services/github-workflow/DiscussionService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);

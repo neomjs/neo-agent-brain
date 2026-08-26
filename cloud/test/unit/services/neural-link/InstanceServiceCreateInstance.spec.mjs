@@ -30,11 +30,11 @@ test.describe('Neo.ai.services.neural-link.InstanceService - server boundary', (
     test.beforeAll(async () => {
         (await import('../../../../../mcp/server/neural-link/config.template.mjs')).default.data.autoConnect = false;
 
-        ConnectionService  = (await import('../../../../services/neural-link/ConnectionService.mjs')).default;
+        ConnectionService  = (await import('../../../../../services/neural-link/ConnectionService.mjs')).default;
         originalReady      = ConnectionService.ready;
         ConnectionService.ready = async () => {};
-        InstanceService    = (await import('../../../../services/neural-link/InstanceService.mjs')).default;
-        RecorderService    = (await import('../../../../services/neural-link/RecorderService.mjs')).default;
+        InstanceService    = (await import('../../../../../services/neural-link/InstanceService.mjs')).default;
+        RecorderService    = (await import('../../../../../services/neural-link/RecorderService.mjs')).default;
     });
 
     test.afterAll(() => {

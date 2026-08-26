@@ -18,7 +18,7 @@ import path                                           from 'path';
 import {fileURLToPath}                                from 'url';
 import Neo                                            from 'neo.mjs/src/Neo.mjs';
 import * as core                                      from 'neo.mjs/src/core/_export.mjs';
-import RuntimeFreshnessService, {resolveStatusFields} from '../../../../../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
+import RuntimeFreshnessService, {resolveStatusFields} from '../../../../../../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
 
 const
     testDir  = path.dirname(fileURLToPath(import.meta.url)),

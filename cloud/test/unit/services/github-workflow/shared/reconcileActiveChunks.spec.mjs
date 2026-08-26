@@ -2,7 +2,7 @@ import {test, expect}    from '@playwright/test';
 import fs                from 'fs/promises';
 import os                from 'os';
 import path              from 'path';
-import reconcileActiveChunks from '../../../../../services/github-workflow/shared/reconcileActiveChunks.mjs';
+import reconcileActiveChunks from '../../../../../../services/github-workflow/shared/reconcileActiveChunks.mjs';
 
 /**
  * @summary Falsifier coverage for the active-tier ordinal re-chunk.

@@ -1,7 +1,7 @@
 import fs                    from 'fs';
 import path                  from 'path';
 import {createHash}          from 'crypto';
-import {writeFileAtomicSync} from '../../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync} from '../../../../../services/shared/atomicFileWrite.mjs';
 import {
     generateLocalBearerToken,
     isLocalBearerToken

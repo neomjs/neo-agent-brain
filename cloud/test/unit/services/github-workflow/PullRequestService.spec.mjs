@@ -54,10 +54,10 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — list fresh
 
     test.beforeAll(async () => {
         GraphqlService     = (await import(
-            '../../../../services/github-workflow/GraphqlService.mjs'
+            '../../../../../services/github-workflow/GraphqlService.mjs'
         )).default;
         PullRequestService = (await import(
-            '../../../../services/github-workflow/PullRequestService.mjs'
+            '../../../../../services/github-workflow/PullRequestService.mjs'
         )).default;
         originalQuery      = GraphqlService.query.bind(GraphqlService)
     });
@@ -550,10 +550,10 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — merge-read
 
     test.beforeAll(async () => {
         PullRequestService = (await import(
-            '../../../../services/github-workflow/PullRequestService.mjs'
+            '../../../../../services/github-workflow/PullRequestService.mjs'
         )).default;
         ({GET_MERGE_READINESS} = await import(
-            '../../../../services/github-workflow/queries/pullRequestQueries.mjs'
+            '../../../../../services/github-workflow/queries/pullRequestQueries.mjs'
         ));
     });
 
@@ -1232,7 +1232,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — checkoutPu
     const silentLogger = {error: () => {}};
 
     test.beforeAll(async () => {
-        ({buildCheckoutPullRequest} = await import('../../../../services/github-workflow/PullRequestService.mjs'));
+        ({buildCheckoutPullRequest} = await import('../../../../../services/github-workflow/PullRequestService.mjs'));
     });
 
     test('refuses checkout when caller workspace repoPath is absent', async () => {
@@ -1410,8 +1410,8 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — getConvers
     };
 
     test.beforeAll(async () => {
-        GraphqlService      = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        PullRequestService  = (await import('../../../../services/github-workflow/PullRequestService.mjs')).default;
+        GraphqlService      = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        PullRequestService  = (await import('../../../../../services/github-workflow/PullRequestService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
     });
@@ -1634,7 +1634,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — getPullReq
     let aiConfig;
 
     test.beforeAll(async () => {
-        PullRequestService = (await import('../../../../services/github-workflow/PullRequestService.mjs')).default;
+        PullRequestService = (await import('../../../../../services/github-workflow/PullRequestService.mjs')).default;
         aiConfig           = (await import('../../../../../mcp/server/github-workflow/config.template.mjs')).default;
         fs                 = await import('fs/promises');
         path               = await import('path');
@@ -2124,12 +2124,12 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     ].join('\n');
 
     test.beforeAll(async () => {
-        GraphqlService     = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        const prServiceModule = await import('../../../../services/github-workflow/PullRequestService.mjs');
+        GraphqlService     = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        const prServiceModule = await import('../../../../../services/github-workflow/PullRequestService.mjs');
 
         PullRequestService                  = prServiceModule.default;
         getRound2DispositionRelationFailure = prServiceModule.getRound2DispositionRelationFailure;
-        RepositoryService  = (await import('../../../../services/github-workflow/RepositoryService.mjs')).default;
+        RepositoryService  = (await import('../../../../../services/github-workflow/RepositoryService.mjs')).default;
         originalQuery      = GraphqlService.query.bind(GraphqlService);
         originalViewerLogin = RepositoryService.viewerLogin;
     });

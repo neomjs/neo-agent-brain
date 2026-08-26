@@ -102,7 +102,7 @@ test.describe('PullRequestService.managePrReviewers — REST requested_reviewers
     };
 
     test.beforeAll(async () => {
-        PullRequestService = (await import('../../../../services/github-workflow/PullRequestService.mjs')).default;
+        PullRequestService = (await import('../../../../../services/github-workflow/PullRequestService.mjs')).default;
     });
 
     test('add → REST POST requested_reviewers (not gh pr edit), login @-stripped', async () => {

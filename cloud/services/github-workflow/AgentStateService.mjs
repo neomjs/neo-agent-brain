@@ -1,5 +1,5 @@
 import Base         from 'neo.mjs/src/core/Base.mjs';
-import IssueService from './IssueService.mjs';
+import IssueService from '../../../services/github-workflow/IssueService.mjs';
 import logger       from '../../../mcp/server/github-workflow/logger.mjs';
 
 /**

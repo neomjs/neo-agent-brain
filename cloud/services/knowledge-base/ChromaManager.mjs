@@ -3,7 +3,7 @@ import aiConfig                        from '../../mcp/server/knowledge-base/con
 import logger                          from '../../mcp/server/knowledge-base/logger.mjs';
 import Base                            from 'neo.mjs/src/core/Base.mjs';
 import DatabaseLifecycleService        from './DatabaseLifecycleService.mjs';
-import {assertDisposableRestoreTarget} from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+import {assertDisposableRestoreTarget} from '../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import {ensureChromaTestDatabase}      from '../shared/vector/chromaTestIsolation.mjs';
 import {
     chromaConnect,

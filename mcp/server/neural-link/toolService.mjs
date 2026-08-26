@@ -1,21 +1,21 @@
 import path               from 'path';
 import {fileURLToPath}    from 'url';
 import ToolService        from '../../ToolService.mjs';
-import ComponentService   from '../../../cloud/services/neural-link/ComponentService.mjs';
-import ConnectionService  from '../../../cloud/services/neural-link/ConnectionService.mjs';
-import DataService        from '../../../cloud/services/neural-link/DataService.mjs';
-import DockService        from '../../../cloud/services/neural-link/DockService.mjs';
-import HealthService      from '../../../cloud/services/neural-link/HealthService.mjs';
-import InstanceService    from '../../../cloud/services/neural-link/InstanceService.mjs';
-import InteractionService from '../../../cloud/services/neural-link/InteractionService.mjs';
-import RuntimeService     from '../../../cloud/services/neural-link/RuntimeService.mjs';
+import ComponentService   from '../../../services/neural-link/ComponentService.mjs';
+import ConnectionService  from '../../../services/neural-link/ConnectionService.mjs';
+import DataService        from '../../../services/neural-link/DataService.mjs';
+import DockService        from '../../../services/neural-link/DockService.mjs';
+import HealthService      from '../../../services/neural-link/HealthService.mjs';
+import InstanceService    from '../../../services/neural-link/InstanceService.mjs';
+import InteractionService from '../../../services/neural-link/InteractionService.mjs';
+import RuntimeService     from '../../../services/neural-link/RuntimeService.mjs';
 
 const __filename      = fileURLToPath(import.meta.url);
 const __dirname       = path.dirname(__filename);
 const openApiFilePath = path.join(__dirname, 'openapi.yaml');
 
 import {getCurrentTurnId} from './Server.mjs';
-import RecorderService    from '../../../cloud/services/neural-link/RecorderService.mjs';
+import RecorderService    from '../../../services/neural-link/RecorderService.mjs';
 
 const serviceMapping = {
     abort_transaction            : InstanceService   .abortTransaction          .bind(InstanceService),

@@ -68,15 +68,15 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         // and avoid ReferenceErrors from circular dependencies in dynamic imports.
         await import('../../../../services.mjs');
 
-        SyncService = (await import('../../../../services/github-workflow/SyncService.mjs')).default;
-        IssueSyncer = (await import('../../../../services/github-workflow/sync/IssueSyncer.mjs')).default;
-        ReleaseNotesSyncer = (await import('../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
-        DiscussionSyncer = (await import('../../../../services/github-workflow/sync/DiscussionSyncer.mjs')).default;
-        PullRequestSyncer = (await import('../../../../services/github-workflow/sync/PullRequestSyncer.mjs')).default;
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        MetadataManager = (await import('../../../../services/github-workflow/sync/MetadataManager.mjs')).default;
+        SyncService = (await import('../../../../../services/github-workflow/SyncService.mjs')).default;
+        IssueSyncer = (await import('../../../../../services/github-workflow/sync/IssueSyncer.mjs')).default;
+        ReleaseNotesSyncer = (await import('../../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
+        DiscussionSyncer = (await import('../../../../../services/github-workflow/sync/DiscussionSyncer.mjs')).default;
+        PullRequestSyncer = (await import('../../../../../services/github-workflow/sync/PullRequestSyncer.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        MetadataManager = (await import('../../../../../services/github-workflow/sync/MetadataManager.mjs')).default;
         IssueIngestor = (await import('../../../../services/ingestion/IssueIngestor.mjs')).default;
-        RepositoryService = (await import('../../../../services/github-workflow/RepositoryService.mjs')).default;
+        RepositoryService = (await import('../../../../../services/github-workflow/RepositoryService.mjs')).default;
     });
 
     test.beforeEach(() => {

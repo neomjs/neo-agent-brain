@@ -40,8 +40,8 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
 
         issueSyncConfig.contentRoot = tmpRoot;
 
-        ReleaseNotesSyncer = (await import('../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
-        GraphqlService     = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
+        ReleaseNotesSyncer = (await import('../../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
+        GraphqlService     = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
 
         logger = (await import('../../../../../mcp/server/github-workflow/logger.mjs')).default;
         logger.level = 'silent';

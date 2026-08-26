@@ -4,7 +4,7 @@ import {
     classifyDiscussionRoutingDisposition,
     findLifecycleMarkers,
     normalizeDiscussionRoutingProjection
-} from '../../../../services/github-workflow/shared/discussionRoutingDisposition.mjs';
+} from '../../../../../services/github-workflow/shared/discussionRoutingDisposition.mjs';
 
 test.describe('discussionRoutingDisposition', () => {
     test('classifies explicit trusted convergence and evergreen signals as active', () => {

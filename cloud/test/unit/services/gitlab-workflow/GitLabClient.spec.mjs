@@ -15,7 +15,7 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 let GitLabClient, originalFetch, originalAuthOverride, originalRetryBaseDelay, originalRetryMaxDelay;
 
 test.beforeAll(async () => {
-    GitLabClient           = (await import('../../../../services/gitlab-workflow/GitLabClient.mjs')).default;
+    GitLabClient           = (await import('../../../../../services/gitlab-workflow/GitLabClient.mjs')).default;
     originalAuthOverride   = GitLabClient.authTokenOverride;
     originalRetryBaseDelay = GitLabClient.retryBaseDelayMs;
     originalRetryMaxDelay  = GitLabClient.retryMaxDelayMs;

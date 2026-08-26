@@ -1,6 +1,6 @@
 import fs                from 'fs/promises';
 import path              from 'path';
-import {writeFileAtomic} from '../../shared/atomicFileWrite.mjs';
+import {writeFileAtomic} from '../../../../services/shared/atomicFileWrite.mjs';
 
 const ACTIVE_REM_CALL_FILE = 'active-rem-call.json';
 

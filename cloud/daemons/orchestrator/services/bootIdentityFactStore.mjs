@@ -1,5 +1,5 @@
 import {mkdir, readFile, stat} from 'fs/promises';
-import {writeFileAtomic}       from '../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic}       from '../../../../services/shared/atomicFileWrite.mjs';
 import path                    from 'path';
 import {BOOT_FRESHNESS_CLASS}  from './bootIdentityFreshness.mjs';
 

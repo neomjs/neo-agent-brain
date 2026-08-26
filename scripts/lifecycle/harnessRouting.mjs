@@ -12,7 +12,7 @@
  */
 import {IDENTITIES}                   from '../../shared/graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../cloud/graph/normalizeAgentIdentityNodeId.mjs';
-import {resolveResidentFamily}        from '../../cloud/services/graph/agentFamilyResolution.mjs';
+import {resolveResidentFamily}        from '../../services/graph/agentFamilyResolution.mjs';
 import {applyHarnessMetadataDefaults} from '../../daemons/wake/hostHarnessMetadata.mjs';
 
 export {applyHarnessMetadataDefaults, normalizeAgentIdentityNodeId};

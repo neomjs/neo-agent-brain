@@ -69,9 +69,9 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         issueSyncConfig.archiveRoot = path.join(tmpRoot, 'archive');
         issueSyncConfig.contentRoot = tmpRoot;
 
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        IssueSyncer    = (await import('../../../../services/github-workflow/sync/IssueSyncer.mjs')).default;
-        ReleaseNotesSyncer = (await import('../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        IssueSyncer    = (await import('../../../../../services/github-workflow/sync/IssueSyncer.mjs')).default;
+        ReleaseNotesSyncer = (await import('../../../../../services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
         logger         = (await import('../../../../../mcp/server/github-workflow/logger.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);

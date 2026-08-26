@@ -3,7 +3,7 @@ import {
     MCP_SERVERS,
     REMOTE_MCP_CREDENTIAL_ENV_VAR,
     supportsTenantMcpTarget
-} from './mcpServers.mjs';
+} from '../../../services/fleet/mcpServers.mjs';
 import {LAUNCHABLE_HARNESS_TYPES} from './deriveHarnessLaunchSpec.mjs';
 
 const NEO_MCP_NAME_PREFIX = 'neo-mjs-';

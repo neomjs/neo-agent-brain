@@ -3,7 +3,7 @@ import Base     from 'neo.mjs/src/core/Base.mjs';
 import AiConfig from '../../../../config.mjs';
 
 import {assertDisclosureAllowlist, projectDisclosedConfig} from '../helpers/resolvedConfigDisclosure.mjs';
-import {writeFileAtomicSync}                               from '../../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync}                               from '../../../../../services/shared/atomicFileWrite.mjs';
 
 /**
  * @summary Publishes the allowlisted subset of this process's own resolved config, so a sibling

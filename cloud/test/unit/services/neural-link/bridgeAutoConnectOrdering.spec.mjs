@@ -20,7 +20,7 @@ import path                                          from 'node:path';
 import {fileURLToPath}                               from 'node:url';
 import Neo                                           from 'neo.mjs/src/Neo.mjs';
 import * as core                                     from 'neo.mjs/src/core/_export.mjs';
-import ConnectionService, {resolveBridgeAutoConnect} from '../../../../services/neural-link/ConnectionService.mjs';
+import ConnectionService, {resolveBridgeAutoConnect} from '../../../../../services/neural-link/ConnectionService.mjs';
 
 const NEURAL_LINK_ENTRYPOINT = fileURLToPath(
     new URL('../../../../../../ai/mcp/server/neural-link/mcp-server.mjs', import.meta.url)

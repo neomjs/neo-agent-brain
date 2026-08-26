@@ -33,7 +33,7 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         originalSpawnBridge, originalSpawnBridgeProcess;
 
     test.beforeAll(async () => {
-        const module = await import('../../../../services/neural-link/ConnectionService.mjs');
+        const module = await import('../../../../../services/neural-link/ConnectionService.mjs');
 
         ConnectionService                    = module.default;
         getBridgeStdioLogPath                = module.getBridgeStdioLogPath;

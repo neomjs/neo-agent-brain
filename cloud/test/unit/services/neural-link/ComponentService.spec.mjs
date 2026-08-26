@@ -39,11 +39,11 @@ test.describe('Neo.ai.services.neural-link.ComponentService — createComponent 
         // from ConnectionService's own initAsync, gated by this config leaf.
         (await import('../../../../../mcp/server/neural-link/config.template.mjs')).default.data.autoConnect = false;
 
-        ConnectionService = (await import('../../../../services/neural-link/ConnectionService.mjs')).default;
+        ConnectionService = (await import('../../../../../services/neural-link/ConnectionService.mjs')).default;
         // Also stub the readiness gate so the ComponentService singleton's initAsync resolves without a live bridge.
         originalReady          = ConnectionService.ready;
         ConnectionService.ready = async () => {};
-        ComponentService = (await import('../../../../services/neural-link/ComponentService.mjs')).default;
+        ComponentService = (await import('../../../../../services/neural-link/ComponentService.mjs')).default;
     });
 
     test.afterAll(() => {

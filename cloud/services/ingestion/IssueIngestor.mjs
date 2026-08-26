@@ -11,7 +11,7 @@ import {IDENTITIES}                              from '../../../shared/graph/ide
 import {CORPUS_PROJECTION_OWNER}                 from '../graph/corpusProjectionContract.mjs';
 import {
     normalizeDiscussionRoutingProjection as normalizeSourceDiscussionRoutingProjection
-} from '../github-workflow/shared/discussionRoutingDisposition.mjs';
+} from '../../../services/github-workflow/shared/discussionRoutingDisposition.mjs';
 
 const __filename           = fileURLToPath(import.meta.url);
 const __dirname            = path.dirname(__filename);

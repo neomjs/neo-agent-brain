@@ -2,7 +2,7 @@ import {test, expect} from '@playwright/test';
 import {
     REPOSITORY_TARGET_INVALID,
     resolveRepositoryTarget
-} from '../../../../services/github-workflow/shared/repositoryTarget.mjs';
+} from '../../../../../services/github-workflow/shared/repositoryTarget.mjs';
 
 const HOME = Object.freeze({owner: 'neomjs', repo: 'neo'});
 

@@ -34,10 +34,10 @@ test.describe('Neo.ai.services.neural-link.DockService — perspective tool pass
         // time (autoConnect → initAsync → spawnBridge) — mirrors ComponentService.spec.mjs.
         (await import('../../../../../mcp/server/neural-link/config.template.mjs')).default.data.autoConnect = false;
 
-        ConnectionService = (await import('../../../../services/neural-link/ConnectionService.mjs')).default;
+        ConnectionService = (await import('../../../../../services/neural-link/ConnectionService.mjs')).default;
         originalReady           = ConnectionService.ready;
         ConnectionService.ready = async () => {};
-        DockService = (await import('../../../../services/neural-link/DockService.mjs')).default;
+        DockService = (await import('../../../../../services/neural-link/DockService.mjs')).default;
     });
 
     test.afterAll(() => {

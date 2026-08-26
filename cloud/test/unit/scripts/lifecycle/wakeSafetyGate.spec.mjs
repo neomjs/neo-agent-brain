@@ -1,4 +1,4 @@
-import {setup} from '../../../setup.mjs';
+import {setup} from '../../../../../test/setup.mjs';
 
 const appName = 'WakeSafetyGateTest';
 
@@ -36,7 +36,7 @@ test.describe('ai/scripts/wakeSafetyGate', () => {
     let wakeSafetyGate;
 
     test.beforeAll(async () => {
-        wakeSafetyGate = await import('../../../../cloud/scripts/lifecycle/wakeSafetyGate.mjs')
+        wakeSafetyGate = await import('../../../../scripts/lifecycle/wakeSafetyGate.mjs')
     });
 
     /**

@@ -17,8 +17,8 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 let IssueService, GitLabClient, originalQuery;
 
 test.beforeAll(async () => {
-    GitLabClient = (await import('../../../../services/gitlab-workflow/GitLabClient.mjs')).default;
-    IssueService = (await import('../../../../services/gitlab-workflow/IssueService.mjs')).default;
+    GitLabClient = (await import('../../../../../services/gitlab-workflow/GitLabClient.mjs')).default;
+    IssueService = (await import('../../../../../services/gitlab-workflow/IssueService.mjs')).default;
     originalQuery = GitLabClient.query.bind(GitLabClient);
 });
 

@@ -1,5 +1,5 @@
 import DataStore                 from 'neo.mjs/src/data/Store.mjs';
-import DestructiveOperationGuard from '../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+import DestructiveOperationGuard from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 
 /**
  * A highly specialized Store natively optimized for the Native Edge Graph Database engine.

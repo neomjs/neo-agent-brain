@@ -8,7 +8,7 @@ import {createBoundedRetryGate}   from '../shared/boundedRetryGate.mjs';
 import {buildEmbeddingProbeBlock} from '../shared/embeddingProbe.mjs';
 import {readDeployedRevision}     from '../shared/deployedRevision.mjs';
 import logger                     from '../../mcp/server/knowledge-base/logger.mjs';
-import RuntimeFreshnessService    from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
+import RuntimeFreshnessService    from '../../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
 import KBRecorderService          from './KBRecorderService.mjs';
 
 // The embedding-probe policy is NOT frozen here. It was, with five literals byte-identical to

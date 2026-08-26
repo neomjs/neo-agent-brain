@@ -1,4 +1,4 @@
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from './mcpServers.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from '../../../services/fleet/mcpServers.mjs';
 import {ensureAgentRepo}               from './ensureAgentRepo.mjs';
 import {prepareManagedAgentWorkspace}  from './prepareManagedAgentWorkspace.mjs';
 import path                            from 'node:path';

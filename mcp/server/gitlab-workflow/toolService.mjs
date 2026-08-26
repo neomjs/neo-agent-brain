@@ -1,9 +1,9 @@
 import path                from 'path';
 import {fileURLToPath}     from 'url';
 import HealthService       from '../../../cloud/services/gitlab-workflow/HealthService.mjs';
-import IssueService        from '../../../cloud/services/gitlab-workflow/IssueService.mjs';
+import IssueService        from '../../../services/gitlab-workflow/IssueService.mjs';
 import LocalFileService    from '../../../cloud/services/gitlab-workflow/LocalFileService.mjs';
-import MergeRequestService from '../../../cloud/services/gitlab-workflow/MergeRequestService.mjs';
+import MergeRequestService from '../../../services/gitlab-workflow/MergeRequestService.mjs';
 import ToolService         from '../../ToolService.mjs';
 
 const __filename      = fileURLToPath(import.meta.url);

@@ -56,7 +56,8 @@
         "ai:wake-manifest": "node ./daemons/wake/buildReceiverManifest.mjs",
         "ai:wake-receiver": "node ./daemons/wake/receiver.mjs",
         "postinstall": "neo-agent-skills-materialize",
-        "prepare": "husky"
+        "prepare": "husky",
+        "test-unit": "playwright test -c test/playwright.config.unit.mjs"
     },
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.29.0",
@@ -72,6 +73,7 @@
         "zod": "^4.4.3"
     },
     "devDependencies": {
+        "@playwright/test": "^1.61.1",
         "husky": "^9.1.7",
         "neo-agent-skills": "^0.1.1",
         "playwright": "^1.61.1"

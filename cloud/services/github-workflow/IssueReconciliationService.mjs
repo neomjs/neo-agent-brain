@@ -1,6 +1,6 @@
 import Base                           from 'neo.mjs/src/core/Base.mjs';
 import CommunityBatchAdmissionService from '../memory-core/CommunityBatchAdmissionService.mjs';
-import GraphqlService                 from './GraphqlService.mjs';
+import GraphqlService                 from '../../../services/github-workflow/GraphqlService.mjs';
 import SourceRegistryService          from '../memory-core/SourceRegistryService.mjs';
 import {assembleIssueBatch}           from './community/assembleIssueBatch.mjs';
 import {classifyAbsences}             from './community/githubIssueAbsence.mjs';

@@ -17,7 +17,7 @@ import {test, expect}        from '@playwright/test';
 import Neo                   from 'neo.mjs/src/Neo.mjs';
 import * as core             from 'neo.mjs/src/core/_export.mjs';
 import {IDENTITIES}          from '../../../../shared/graph/identityRoots.mjs';
-import * as MIGRATION        from '../../../graph/identityRootsMigration.mjs';
+import * as MIGRATION        from '../../../../graph/identityRootsMigration.mjs';
 import {seedAgentIdentities} from '../../../scripts/setup/seedAgentIdentities.mjs';
 
 /**

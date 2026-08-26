@@ -23,7 +23,7 @@ import {
     assertDisposableRestoreTarget,
     DisposableRestoreTargetError,
     GUARDED_CANONICAL_COLLECTION_NAMES
-} from '../../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+} from '../../../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 
 /**
  * A restore can be aimed somewhere disposable, and CANNOT be aimed at production.

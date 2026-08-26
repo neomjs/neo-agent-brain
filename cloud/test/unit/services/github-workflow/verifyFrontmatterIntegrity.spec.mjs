@@ -3,7 +3,7 @@ import {test, expect} from '@playwright/test';
 import {
     verifyDiscussionFrontmatter,
     verifyFrontmatterIntegrity
-} from '../../../../services/github-workflow/sync/verifyFrontmatterIntegrity.mjs';
+} from '../../../../../services/github-workflow/sync/verifyFrontmatterIntegrity.mjs';
 
 /**
  * @summary Coverage for the post-serialization integrity gate in

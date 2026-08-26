@@ -7,13 +7,13 @@ import path                       from 'node:path';
 import {promisify}                from 'node:util';
 import Neo                        from 'neo.mjs/src/Neo.mjs';
 import * as core                  from 'neo.mjs/src/core/_export.mjs';
-import FleetControlBridge         from '../../../../cloud/services/fleet/FleetControlBridge.mjs';
-import FleetLifecycleService      from '../../../../cloud/services/fleet/FleetLifecycleService.mjs';
-import FleetManager               from '../../../../cloud/services/fleet/FleetManager.mjs';
-import FleetRegistryService       from '../../../../cloud/services/fleet/FleetRegistryService.mjs';
-import {deriveAgentRepoPath}      from '../../../../cloud/services/fleet/deriveAgentRepoPath.mjs';
-import {startFleetBridgeServer}   from '../../../../cloud/services/fleet/fleetBridgeServer.mjs';
-import {generateLocalBearerToken} from '../../../../cloud/mcp/server/shared/helpers/localBearer.mjs';
+import FleetControlBridge         from '../../../../services/fleet/FleetControlBridge.mjs';
+import FleetLifecycleService      from '../../../../services/fleet/FleetLifecycleService.mjs';
+import FleetManager               from '../../../../services/fleet/FleetManager.mjs';
+import FleetRegistryService       from '../../../../services/fleet/FleetRegistryService.mjs';
+import {deriveAgentRepoPath}      from '../../../../services/fleet/deriveAgentRepoPath.mjs';
+import {startFleetBridgeServer}   from '../../../../services/fleet/fleetBridgeServer.mjs';
+import {generateLocalBearerToken} from '../../../../mcp/server/shared/helpers/localBearer.mjs';
 import {
     CURATED_HARNESS_TYPES,
     buildLoginCommand,
@@ -26,8 +26,8 @@ import {
     parseOnboardArgs,
     planOnboarding,
     renderPlan
-} from '../../../../cloud/scripts/fleet/onboardPeer.mjs';
-import {parseGenerateArgs} from '../../../../scripts/setup/generateRosterOnboarding.mjs';
+} from '../../../../scripts/fleet/onboardPeer.mjs';
+import {parseGenerateArgs} from '../../../../../scripts/setup/generateRosterOnboarding.mjs';
 
 const
     execFileAsync = promisify(execFile),

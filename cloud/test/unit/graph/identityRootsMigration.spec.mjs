@@ -21,8 +21,8 @@ test.describe('identityRootsMigration — the flat registry expressed through th
     let migration, schema, roots;
 
     test.beforeAll(async () => {
-        migration = await import('../../../graph/identityRootsMigration.mjs');
-        schema    = await import('../../../graph/identitySchema.mjs');
+        migration = await import('../../../../graph/identityRootsMigration.mjs');
+        schema    = await import('../../../../graph/identitySchema.mjs');
         roots     = await import('../../../../shared/graph/identityRoots.mjs');
     });
 

@@ -29,8 +29,8 @@ test.describe('identityHydration — the regenerable index, never a snapshot-as-
     };
 
     test.beforeAll(async () => {
-        schema    = await import('../../../graph/identitySchema.mjs');
-        hydration = await import('../../../graph/identityHydration.mjs');
+        schema    = await import('../../../../graph/identitySchema.mjs');
+        hydration = await import('../../../../graph/identityHydration.mjs');
     });
 
     test('projects the anchor + social layer + CURRENT-era facts over a validated chain', () => {

@@ -1,4 +1,4 @@
-import {normalizeDiscussionRoutingProjection}                    from '../github-workflow/shared/discussionRoutingDisposition.mjs';
+import {normalizeDiscussionRoutingProjection}                    from '../../../services/github-workflow/shared/discussionRoutingDisposition.mjs';
 import {normalizeLabels}                                         from './issueFocusSections.mjs';
 import {formatGoldenPathCapturedAt as formatGoldenPathTimestamp} from './goldenPathTimestamp.mjs';
 import {buildComputedRouteResult, computeSourceManifestHash}     from './computedRouteResult.mjs';

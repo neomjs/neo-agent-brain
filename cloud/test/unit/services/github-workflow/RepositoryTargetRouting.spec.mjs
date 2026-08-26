@@ -26,11 +26,11 @@ test.describe('github-workflow 18-operation repository-target boundary (#17420)'
 
     test.beforeAll(async () => {
         ({default: DiscussionService}  = await import('../../../../services/github-workflow/DiscussionService.mjs'));
-        ({default: GraphqlService}     = await import('../../../../services/github-workflow/GraphqlService.mjs'));
-        ({default: IssueService}       = await import('../../../../services/github-workflow/IssueService.mjs'));
-        ({default: LabelService}       = await import('../../../../services/github-workflow/LabelService.mjs'));
-        ({default: PullRequestService} = await import('../../../../services/github-workflow/PullRequestService.mjs'));
-        ({default: RepositoryService}  = await import('../../../../services/github-workflow/RepositoryService.mjs'));
+        ({default: GraphqlService}     = await import('../../../../../services/github-workflow/GraphqlService.mjs'));
+        ({default: IssueService}       = await import('../../../../../services/github-workflow/IssueService.mjs'));
+        ({default: LabelService}       = await import('../../../../../services/github-workflow/LabelService.mjs'));
+        ({default: PullRequestService} = await import('../../../../../services/github-workflow/PullRequestService.mjs'));
+        ({default: RepositoryService}  = await import('../../../../../services/github-workflow/RepositoryService.mjs'));
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
         originalRest  = GraphqlService.rest .bind(GraphqlService);

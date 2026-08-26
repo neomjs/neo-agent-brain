@@ -348,7 +348,7 @@ export function createSilentExecutor() {
  * @see https://github.com/neomjs/neo/issues/11652
  */
 export async function chromaDeleteCollection({client, name, subsystem, confirmation} = {}) {
-    const {assertCanonicalCollectionDeleteAllowed} = await import('../../../mcp/server/shared/services/DestructiveOperationGuard.mjs');
+    const {assertCanonicalCollectionDeleteAllowed} = await import('../../../../mcp/server/shared/services/DestructiveOperationGuard.mjs');
 
     assertCanonicalCollectionDeleteAllowed({name, subsystem, confirmation});
     return await client.deleteCollection({name})

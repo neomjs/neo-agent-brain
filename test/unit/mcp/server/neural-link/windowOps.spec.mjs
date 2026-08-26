@@ -1,5 +1,5 @@
 import {test, expect}        from '@playwright/test';
-import {resolveWindowTarget} from '../../../../../cloud/services/neural-link/windowOps.mjs';
+import {resolveWindowTarget} from '../../../../../services/neural-link/windowOps.mjs';
 
 test.describe('Neural Link window ops target resolution (#13446)', () => {
     test('resolves a known topology window to its owning session', () => {

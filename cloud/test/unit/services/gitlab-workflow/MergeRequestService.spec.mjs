@@ -19,8 +19,8 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 let MergeRequestService, GitLabClient, originalQuery;
 
 test.beforeAll(async () => {
-    GitLabClient         = (await import('../../../../services/gitlab-workflow/GitLabClient.mjs')).default;
-    MergeRequestService  = (await import('../../../../services/gitlab-workflow/MergeRequestService.mjs')).default;
+    GitLabClient         = (await import('../../../../../services/gitlab-workflow/GitLabClient.mjs')).default;
+    MergeRequestService  = (await import('../../../../../services/gitlab-workflow/MergeRequestService.mjs')).default;
     originalQuery        = GitLabClient.query.bind(GitLabClient);
 });
 

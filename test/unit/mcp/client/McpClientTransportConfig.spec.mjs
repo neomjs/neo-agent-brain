@@ -24,7 +24,7 @@ import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/st
 
 import Neo                             from 'neo.mjs/src/Neo.mjs';
 import * as core                       from 'neo.mjs/src/core/_export.mjs';
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from '../../../../cloud/services/fleet/mcpServers.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from '../../../../services/fleet/mcpServers.mjs';
 import Client                          from '../../../../mcp/client/Client.mjs';
 import ClientConfig                    from '../../../../mcp/client/config.mjs';
 

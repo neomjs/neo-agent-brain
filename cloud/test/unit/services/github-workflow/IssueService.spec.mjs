@@ -24,8 +24,8 @@ test.describe('Neo.ai.services.github-workflow.IssueService — listIssues proje
     let originalQuery;
 
     test.beforeAll(async () => {
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        IssueService   = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        IssueService   = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
     });
@@ -367,8 +367,8 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueComme
     let originalQuery;
 
     test.beforeAll(async () => {
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        IssueService   = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        IssueService   = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
     });
@@ -649,8 +649,8 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueLabel
     ];
 
     test.beforeAll(async () => {
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        IssueService   = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        IssueService   = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
     });
@@ -873,8 +873,8 @@ test.describe('Neo.ai.services.github-workflow.IssueService — manageIssueProje
     let originalQuery;
 
     test.beforeAll(async () => {
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        IssueService   = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        IssueService   = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
     });
@@ -1150,9 +1150,9 @@ test.describe('Neo.ai.services.github-workflow.IssueService — assignIssue prec
     let originalGetViewerPermission;
 
     test.beforeAll(async () => {
-        GraphqlService    = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        RepositoryService = (await import('../../../../services/github-workflow/RepositoryService.mjs')).default;
-        IssueService      = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
+        GraphqlService    = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        RepositoryService = (await import('../../../../../services/github-workflow/RepositoryService.mjs')).default;
+        IssueService      = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
 
         originalQuery               = GraphqlService.query.bind(GraphqlService);
         originalRest                = GraphqlService.rest.bind(GraphqlService);
@@ -1407,9 +1407,9 @@ test.describe('Neo.ai.services.github-workflow.IssueService — unassignIssue RE
     let originalGetViewerPermission;
 
     test.beforeAll(async () => {
-        GraphqlService    = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        RepositoryService = (await import('../../../../services/github-workflow/RepositoryService.mjs')).default;
-        IssueService      = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
+        GraphqlService    = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        RepositoryService = (await import('../../../../../services/github-workflow/RepositoryService.mjs')).default;
+        IssueService      = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
 
         originalRest                = GraphqlService.rest.bind(GraphqlService);
         originalGetViewerPermission = RepositoryService.getViewerPermission.bind(RepositoryService);
@@ -1487,8 +1487,8 @@ test.describe('Neo.ai.services.github-workflow.IssueService — getConversation 
     };
 
     test.beforeAll(async () => {
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        IssueService   = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        IssueService   = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
     });
@@ -1693,9 +1693,9 @@ test.describe('Neo.ai.services.github-workflow.IssueService — createIssue REST
     let originalGetViewerPermission;
 
     test.beforeAll(async () => {
-        GraphqlService    = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        RepositoryService = (await import('../../../../services/github-workflow/RepositoryService.mjs')).default;
-        IssueService      = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
+        GraphqlService    = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        RepositoryService = (await import('../../../../../services/github-workflow/RepositoryService.mjs')).default;
+        IssueService      = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
 
         originalRest                = GraphqlService.rest.bind(GraphqlService);
         originalGetViewerPermission = RepositoryService.getViewerPermission.bind(RepositoryService);
@@ -1837,8 +1837,8 @@ test.describe('Neo.ai.services.github-workflow.IssueService — listIssues @me a
     let originalRest;
 
     test.beforeAll(async () => {
-        GraphqlService = (await import('../../../../services/github-workflow/GraphqlService.mjs')).default;
-        IssueService   = (await import('../../../../services/github-workflow/IssueService.mjs')).default;
+        GraphqlService = (await import('../../../../../services/github-workflow/GraphqlService.mjs')).default;
+        IssueService   = (await import('../../../../../services/github-workflow/IssueService.mjs')).default;
 
         originalQuery = GraphqlService.query.bind(GraphqlService);
         originalRest  = GraphqlService.rest.bind(GraphqlService);

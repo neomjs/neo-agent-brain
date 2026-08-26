@@ -1,23 +1,23 @@
 import aiConfig          from '../../mcp/server/github-workflow/config.mjs';
 import Base              from 'neo.mjs/src/core/Base.mjs';
-import GraphqlService    from './GraphqlService.mjs';
+import GraphqlService    from '../../../services/github-workflow/GraphqlService.mjs';
 import logger            from '../../../mcp/server/github-workflow/logger.mjs';
 import {commentMatches, isSelectorPresent, malformedCommentIdError, omitScopedBody, parseCommentId}
-                                 from './shared/commentSelector.mjs';
-import {projectConversationTrust} from './shared/conversationTrust.mjs';
-import {resolveRepositoryTarget}  from './shared/repositoryTarget.mjs';
+                                 from '../../../services/github-workflow/shared/commentSelector.mjs';
+import {projectConversationTrust} from '../../../services/github-workflow/shared/conversationTrust.mjs';
+import {resolveRepositoryTarget}  from '../../../services/github-workflow/shared/repositoryTarget.mjs';
 import {
     GET_DISCUSSION_CONVERSATION,
     GET_REPO_AND_DISCUSSION_CATEGORIES,
     GET_DISCUSSION_ID
-} from './queries/discussionQueries.mjs';
+} from '../../../services/github-workflow/queries/discussionQueries.mjs';
 import {
     CREATE_DISCUSSION,
     ADD_DISCUSSION_COMMENT,
     UPDATE_DISCUSSION,
     UPDATE_DISCUSSION_COMMENT,
     GET_DISCUSSION_COMMENT_TARGET
-} from './queries/mutations.mjs';
+} from '../../../services/github-workflow/queries/mutations.mjs';
 
 /**
  * @summary Service for interacting with GitHub Discussions via the GraphQL API.
