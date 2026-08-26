@@ -19,7 +19,7 @@
 >
 > **The swarm-heartbeat lane is currently OFF.** It is `host-edge`-classed
 > (`ai/daemons/orchestrator/taskAuthority.mjs`), and the elected host-edge posture
-> (`ai/deploy/hostEdgeProfile.mjs`) disables it. So the "the heartbeat must run continuously"
+> (`deploy/hostEdgeProfile.mjs`) disables it. So the "the heartbeat must run continuously"
 > premise below does not describe the running system either.
 >
 > What remains accurate and worth keeping is **§1's rationale for why the heartbeat is a scheduled

@@ -12,7 +12,7 @@ record, see [ADR 0014](decisions/0014-cloud-deployment-topology-and-scheduler-ta
 
 ## Section 1: Current Baseline vs Target Topology
 
-The current reference compose file in [`ai/deploy/`](../../ai/deploy/) is a
+The current reference compose file in [`cloud/deploy/`](../../cloud/deploy/) is a
 profile-structured Agent OS stack. The default profile starts the MCP baseline:
 `chroma`, `kb-server`, and `mc-server`. The `cloud` profile adds the
 cloud-safe `orchestrator`; the `ingress` profile adds the Caddy reverse proxy;
@@ -200,9 +200,9 @@ NEO_LOCAL_MODEL_CONTEXT_LENGTH=131072 \
 NEO_LOCAL_MODEL_NUM_PARALLEL=1 \
 NEO_LOCAL_MODEL_MAX_LOADED_MODELS=2 \
 NEO_LOCAL_MODEL_MEMORY_LIMIT=32g \
-docker compose -f ai/deploy/docker-compose.yml --profile local-model up -d local-model
-docker compose -f ai/deploy/docker-compose.yml --profile local-model exec local-model ollama pull <chat-model>
-docker compose -f ai/deploy/docker-compose.yml --profile local-model exec local-model ollama pull <embedding-model>
+docker compose -f cloud/deploy/docker-compose.yml --profile local-model up -d local-model
+docker compose -f cloud/deploy/docker-compose.yml --profile local-model exec local-model ollama pull <chat-model>
+docker compose -f cloud/deploy/docker-compose.yml --profile local-model exec local-model ollama pull <embedding-model>
 ```
 
 Then start the Agent OS stack with explicit provider env:
@@ -215,7 +215,7 @@ NEO_OPENAI_COMPATIBLE_MODEL=<chat-model> \
 NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL=<embedding-model> \
 NEO_OPENAI_COMPATIBLE_KEEP_ALIVE=-1 \
 NEO_OPENAI_COMPATIBLE_REQUIRE_PARALLEL_MODELS=2 \
-docker compose -f ai/deploy/docker-compose.yml --profile cloud --profile local-model up --build
+docker compose -f cloud/deploy/docker-compose.yml --profile cloud --profile local-model up --build
 ```
 
 The `requireParallelModels` setting is Neo's observable contract for local
@@ -353,7 +353,7 @@ npm run ai:host-edge
 ```
 
 This resolves the complete host-edge posture — the `host-edge` role, `deploymentMode=local`, a
-state root outside every checkout, and the lane closure — from `ai/deploy/hostEdgeProfile.mjs`. It
+state root outside every checkout, and the lane closure — from `deploy/hostEdgeProfile.mjs`. It
 needs no installer and runs anywhere Node runs; the macOS LaunchAgent is optional supervision over
 the same command, and the platform matrix lives in
 [`ai/scripts/lifecycle/local-agent-os/README.md`](../../ai/scripts/lifecycle/local-agent-os/README.md).
@@ -409,7 +409,7 @@ Operator verification anchors:
   details; see [Memory Core](MemoryCore.md).
 
 For the local Dockerized fixture, run `npm run test-integration-unified`. The
-integration harness builds `ai/deploy/docker-compose.test.yml`, waits for
+integration harness builds `cloud/deploy/docker-compose.test.yml`, waits for
 Chroma, KB, and MC readiness, then calls the KB and MC `healthcheck` tools over
 `/mcp`.
 Sub D (#11725) extended the proof to the cloud-safe orchestrator profile and

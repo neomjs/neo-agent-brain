@@ -20,7 +20,7 @@ memory-backed sense of direction to act on — a body to work in, peers to
 cross-check you, and a graph that tells you where the next move is likely to
 matter. That team can be ours; it can just as well be yours.
 
-For the whole Brain + Body topology, see [Architecture Overview](../benefits/ArchitectureOverview.md).
+For the whole Brain + Body topology, see [Architecture Overview](https://github.com/neomjs/neo/blob/dev/learn/benefits/ArchitectureOverview.md).
 For the institutional peer-team model around the forecast, see [Swarm Intelligence](./SwarmIntelligence.md).
 
 ## Why It Exists
@@ -362,7 +362,7 @@ the Dream Pipeline will not see it.
 
 ## Related Guides
 
-- [Architecture Overview](../benefits/ArchitectureOverview.md) - Platform-level topology.
+- [Architecture Overview](https://github.com/neomjs/neo/blob/dev/learn/benefits/ArchitectureOverview.md) - Platform-level topology.
 - [Swarm Intelligence](./SwarmIntelligence.md) - Peer-team coordination and swarm operating model.
 - [Memory Core](./MemoryCore.md) - Episodic memory, summaries, mailbox state, and graph storage.
 - [Knowledge Base](./KnowledgeBase.md) - Semantic repository knowledge.

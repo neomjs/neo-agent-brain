@@ -2,7 +2,7 @@
 
 **Neo.mjs is a self-evolving software organism — a professional, end-to-end AI engineering team that lives in its own open-source repository. Deploying the Agent OS points that team at *your* codebase.**
 
-Most AI coding tools hand you output and forget the context the moment the session ends. A deployed Agent OS gives you an **engineering team instead of an autocomplete**: a cross-model swarm — Claude, Gemini, GPT — that builds durable, queryable understanding of your code, reviews its own changes across rival model families before they land, runs [self-healing loops](../SelfHealing.md), and gets better at your system the longer it runs. It is the same [Brain](../../benefits/ArchitectureOverview.md) that maintains Neo in public today, now pointed at your repositories.
+Most AI coding tools hand you output and forget the context the moment the session ends. A deployed Agent OS gives you an **engineering team instead of an autocomplete**: a cross-model swarm — Claude, Gemini, GPT — that builds durable, queryable understanding of your code, reviews its own changes across rival model families before they land, runs [self-healing loops](../SelfHealing.md), and gets better at your system the longer it runs. It is the same [Brain](https://github.com/neomjs/neo/blob/dev/learn/benefits/ArchitectureOverview.md) that maintains Neo in public today, now pointed at your repositories.
 
 Concretely, a deployed Brain gives you:
 
@@ -10,7 +10,7 @@ Concretely, a deployed Brain gives you:
 - **Cross-family review by default** — a change from one model family is checked by another before it merges, catching the self-authored blind spots a single agent shares with itself.
 - **Self-directed prioritization** — the Dream Pipeline forecasts the highest-ROI work across your repos, so the backlog is ranked by the system, not just hand-fed.
 
-The differentiated value is the [Brain](../../benefits/ArchitectureOverview.md), not a single agent — see [The Agent OS on Your Codebase](../../benefits/brain/AgentOSOnYourCodebase.md) for what is proven today versus the portable trajectory.
+The differentiated value is the [Brain](https://github.com/neomjs/neo/blob/dev/learn/benefits/ArchitectureOverview.md), not a single agent — see [The Agent OS on Your Codebase](https://github.com/neomjs/neo/blob/dev/learn/benefits/brain/AgentOSOnYourCodebase.md) for what is proven today versus the portable trajectory.
 
 ## What gets deployed — the whole Brain, not just KB ingestion
 
@@ -55,7 +55,7 @@ Tenant isolation is enforced by identity + write-stamping + read-filtering, not 
 This page is the hub for the cloud-deployment guide set. Read from the benefit
 altitude down into the mechanics:
 
-1. **[Deploying the Agent OS](../../benefits/brain/DeployingTheAgentOS.md)** — the
+1. **[Deploying the Agent OS](https://github.com/neomjs/neo/blob/dev/learn/benefits/brain/DeployingTheAgentOS.md)** — the
    Brain-benefit entry point: why a team would point Neo at its own code.
 2. **Why Deploy the Agent OS** — this hub: what actually stands up and why it is
    more than KB ingestion.
@@ -76,9 +76,9 @@ This is capability framing, not a product offer — it describes what the archit
 
 ## Related
 
-- [Deploying the Agent OS](../../benefits/brain/DeployingTheAgentOS.md) — the benefit-altitude entry point
-- [The Agent OS on Your Codebase](../../benefits/brain/AgentOSOnYourCodebase.md) — proven-today vs. portable-trajectory boundaries
-- [Architecture Overview: The Two Hemispheres](../../benefits/ArchitectureOverview.md)
+- [Deploying the Agent OS](https://github.com/neomjs/neo/blob/dev/learn/benefits/brain/DeployingTheAgentOS.md) — the benefit-altitude entry point
+- [The Agent OS on Your Codebase](https://github.com/neomjs/neo/blob/dev/learn/benefits/brain/AgentOSOnYourCodebase.md) — proven-today vs. portable-trajectory boundaries
+- [Architecture Overview: The Two Hemispheres](https://github.com/neomjs/neo/blob/dev/learn/benefits/ArchitectureOverview.md)
 - [Self-Healing Immune System](../SelfHealing.md) — why liveness is not integrity, and how the Brain recovers without paging a human
 - [Cloud-Native KB Ingestion Overview](./Overview.md) — the deep ingestion mechanics
-- [ADR 0018 — Neo Identity Source-of-Truth Model](../decisions/0018-neo-identity-source-of-truth-model.md)
+- [ADR 0018 — Neo Identity Source-of-Truth Model](https://github.com/neomjs/neo/blob/dev/learn/agentos/decisions/0018-neo-identity-source-of-truth-model.md)

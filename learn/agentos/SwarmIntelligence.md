@@ -6,7 +6,7 @@ cognitive loop. The Orchestrator does not do everything itself. It spawns epheme
 experts, harvests their output, and recycles them when their context window fills up.
 
 For the overall platform topology (Runtime Engine, MCP servers, Dream Pipeline), see
-[Architecture Overview](../benefits/ArchitectureOverview.md).
+[Architecture Overview](https://github.com/neomjs/neo/blob/dev/learn/benefits/ArchitectureOverview.md).
 
 ## The Delegation Model
 
@@ -280,7 +280,7 @@ lifecycle.
 
 The **autonomous (unattended) runner** feeds its work through the `Scheduler` — a priority
 queue that ensures critical events are processed before lower-priority ones. (Interactive peer
-maintainers self-select work directly — see [Architecture Overview](../benefits/ArchitectureOverview.md)
+maintainers self-select work directly — see [Architecture Overview](https://github.com/neomjs/neo/blob/dev/learn/benefits/ArchitectureOverview.md)
 and [The Dream Pipeline](./DreamPipeline.md); the `Scheduler` is the unattended runner's intake,
 not a universal work source.)
 
@@ -381,9 +381,9 @@ To add a new sub-agent profile:
 
 ## Related Guides
 
-- [Architecture Overview](../benefits/ArchitectureOverview.md) — Platform-level topology
+- [Architecture Overview](https://github.com/neomjs/neo/blob/dev/learn/benefits/ArchitectureOverview.md) — Platform-level topology
 - [The Dream Pipeline & Golden Path](./DreamPipeline.md) — Forecasting engine and scoring algorithm
-- [Progressive Disclosure Skills](./ProgressiveDisclosureSkills.md) — Lazy-loaded procedural architecture
+- [Progressive Disclosure Skills](https://github.com/neomjs/neo/blob/dev/learn/agentos/ProgressiveDisclosureSkills.md) — Lazy-loaded procedural architecture
 - [Strategic Workflows](./StrategicWorkflows.md) — Agent workflow patterns
 - [Code Execution (AI SDK)](./CodeExecution.md) — The SDK Bouncer in detail
-- [Neural Link](./NeuralLink.md) — Deep dive into the browser bridge
+- [Neural Link](https://github.com/neomjs/neo/blob/dev/learn/agentos/NeuralLink.md) — Deep dive into the browser bridge

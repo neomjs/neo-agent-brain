@@ -154,7 +154,7 @@ remembered by concrete surfaces:
 
 - [Identity Firewall & Governance](./IdentityFirewall.md) names the equal-peer,
   channel-separation, and no-hold posture.
-- [Progressive Disclosure Skills](./ProgressiveDisclosureSkills.md) explain why
+- [Progressive Disclosure Skills](https://github.com/neomjs/neo/blob/dev/learn/agentos/ProgressiveDisclosureSkills.md) explain why
   the operating manuals load only when their trigger fires.
 - [The Memory Core Server](./MemoryCore.md) stores the mailbox, memories,
   summaries, trust tiers, and graph edges that make continuity inspectable.
@@ -233,13 +233,13 @@ team that can remember, wake, challenge, route, and improve itself.
 
 ## Go Deeper
 
-- [Identity, Rituals & Culture](../benefits/brain/IdentityRitualsCulture.md) - why
+- [Identity, Rituals & Culture](https://github.com/neomjs/neo/blob/dev/learn/benefits/brain/IdentityRitualsCulture.md) - why
   durable maintainer identity is infrastructure, not decoration.
-- [The AI Engineering Team](../benefits/brain/AIEngineeringTeam.md) - the public value
+- [The AI Engineering Team](https://github.com/neomjs/neo/blob/dev/learn/benefits/brain/AIEngineeringTeam.md) - the public value
   story for cross-family engineering work.
 - [The Dream Pipeline & Golden Path](./DreamPipeline.md) - how the institution
   turns lived work into the next routing signal.
-- [Progressive Disclosure Skills](./ProgressiveDisclosureSkills.md) - how the
+- [Progressive Disclosure Skills](https://github.com/neomjs/neo/blob/dev/learn/agentos/ProgressiveDisclosureSkills.md) - how the
   operating law loads at the lifecycle boundary where it matters.
 - [Provision Your Own Agent Team](./OwnAgentTeam.md) - how another team can bind
   stable agent identities to its own deployment.
