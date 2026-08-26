@@ -9,14 +9,14 @@
     },
     "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
     "counts": {
-        "total": 819,
-        "cloud": 649,
+        "total": 809,
+        "cloud": 639,
         "edge": 169,
         "shared": 1,
         "planeConflicts": 0,
         "censusDispositioned": 211,
         "fromRootScriptCommand": 11,
-        "planeByMembership": 597
+        "planeByMembership": 587
     },
     "rows": [
         {
@@ -728,12 +728,6 @@
             "origin": "measured"
         },
         {
-            "identity": "ai/data/memory-core/lazy-edges.jsonl",
-            "plane": "cloud",
-            "target": "cloud/data/memory-core/lazy-edges.jsonl",
-            "origin": "membership"
-        },
-        {
             "identity": "ai/demo-agents/PROTOCOL.md",
             "plane": "cloud",
             "target": "cloud/demo-agents/PROTOCOL.md",
@@ -851,60 +845,6 @@
             "identity": "ai/examples/debug_session_state.mjs",
             "plane": "cloud",
             "target": "cloud/examples/debug_session_state.mjs",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/examples/harnessEndurance/README.md",
-            "plane": "cloud",
-            "target": "cloud/examples/harnessEndurance/README.md",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/examples/harnessEndurance/comparator/comparator.mjs",
-            "plane": "cloud",
-            "target": "cloud/examples/harnessEndurance/comparator/comparator.mjs",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/examples/harnessEndurance/comparator/index.html",
-            "plane": "cloud",
-            "target": "cloud/examples/harnessEndurance/comparator/index.html",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/examples/harnessEndurance/comparator/markdownBlocks.mjs",
-            "plane": "cloud",
-            "target": "cloud/examples/harnessEndurance/comparator/markdownBlocks.mjs",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/examples/harnessEndurance/neo/MainContainer.mjs",
-            "plane": "cloud",
-            "target": "cloud/examples/harnessEndurance/neo/MainContainer.mjs",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/examples/harnessEndurance/neo/app.mjs",
-            "plane": "cloud",
-            "target": "cloud/examples/harnessEndurance/neo/app.mjs",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/examples/harnessEndurance/neo/index.html",
-            "plane": "cloud",
-            "target": "cloud/examples/harnessEndurance/neo/index.html",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/examples/harnessEndurance/neo/neo-config.json",
-            "plane": "cloud",
-            "target": "cloud/examples/harnessEndurance/neo/neo-config.json",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/examples/harnessEndurance/shared/LoadProfile.mjs",
-            "plane": "cloud",
-            "target": "cloud/examples/harnessEndurance/shared/LoadProfile.mjs",
             "origin": "membership"
         },
         {
@@ -4938,7 +4878,8 @@
         "sourceSha initially recorded a neo-agent-brain commit while sourceRepository names neomjs/neo - the rev-parse ran in the wrong clone. Corrected to the neomjs/neo dev SHA the inventory actually ran against, verified clean at that head.",
         "The first emission carried 178 rows from an EXTENSION-shaped filter that silently dropped every file without a .mjs/.yml/.yaml suffix. That dropped 8 identities: 7 belonging to PR #9 (harmless) and ai/mcp/deploy/proxy/Caddyfile (a real miss), while leaving 11 PR #9 targets duplicated here. Re-derived with no extension filter and with ai/deploy/** excluded by scope: 168 rows. Caught by @neo-gpt-emmy.",
         "The 168-row emission was an authority-bearing SEED set, not the receive. Its custody discriminator (authoritySource present) excluded 47 tracked plane-dispositioned files, 19 of which the import closure could not rescue - including ai/daemons/orchestrator/daemon.mjs and the fleet server. Re-derived as roots-union-closure: 616 files. Reported by @neo-gpt-emmy and @neo-gpt.",
-        "The 616-row receive left 206 tracked ai/** paths with no disposition at all, including six mcp-server.mjs entrypoints, the fleet server, and the orchestrator control plane. Reported by @neo-gpt-emmy as the fourth blocker and gated by @neo-gpt on whole-tree reconciliation. Now 819 received, 18 to PR #9, 2 stays-engine, 1 retire, 0 unclassified."
+        "The 616-row receive left 206 tracked ai/** paths with no disposition at all, including six mcp-server.mjs entrypoints, the fleet server, and the orchestrator control plane. Reported by @neo-gpt-emmy as the fourth blocker and gated by @neo-gpt on whole-tree reconciliation. Now 819 received, 18 to PR #9, 2 stays-engine, 1 retire, 0 unclassified.",
+        "Ten paths were received that should not have been. @neo-gpt-emmy dispositioned the same 206 independently and caught them: nine ai/examples/harnessEndurance/** files are an Engine subject (they benchmark Neo worker topology and are consumed only by Engine e2e), and ai/data/memory-core/lazy-edges.jsonl is genuinely ambiguous. My membership rule follows directory; ADR 0040 §2.7 follows subject, and an Engine subject can sit in an ai/ directory."
     ],
     "scope": "neo-agent-brain#13 receives the Agent OS source EXCEPT ai/deploy/**, which Brain PR #9 owns. PR #9 holds 18 movers; this manifest holds 616. The #17791 source-deletion predicate is the UNION of both sets (18 + 616 = 634), never this manifest alone and never PR #9 alone.",
     "population": "Census roots (custody rows AND plane-opener rows) union their transitive ai/** closure, tracked files only, minus ai/deploy/** which Brain PR #9 owns. Custody rows alone lost 19 tracked files including the orchestrator daemon and the fleet server; the closure alone cannot find files nothing imports, such as the five per-server config templates. Neither source is sufficient by itself.",
@@ -5109,7 +5050,7 @@
     "wholeTreeReconciliation": {
         "invariant": "every tracked ai/** path carries exactly one explicit disposition: received here, owned by Brain PR #9, stays with the Engine, or retires",
         "trackedPaths": 840,
-        "receive": 819,
+        "receive": 809,
         "pr9Deploy": 18,
         "staysEngine": [
             {
@@ -5120,7 +5061,53 @@
             {
                 "identity": "ai/scripts/lifecycle/nightly-e2e/com.neomjs.nightly-e2e.plist",
                 "disposition": "stays-engine",
-                "reason": "census stays-engine row"
+                "reason": "census stays-engine row — HELD, but it contradicts the tree: this launchd plist runs ai/scripts/lifecycle/nightlyE2eRunner.mjs, and both that runner and this plist README are received to the Brain. Either the plist follows its runner or the runner stays. Census authority is honoured here rather than silently overridden; the contradiction is the finding.",
+                "conflict": "neomjs/neo#17787"
+            },
+            {
+                "identity": "ai/examples/harnessEndurance/README.md",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
+            },
+            {
+                "identity": "ai/examples/harnessEndurance/comparator/comparator.mjs",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
+            },
+            {
+                "identity": "ai/examples/harnessEndurance/comparator/index.html",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
+            },
+            {
+                "identity": "ai/examples/harnessEndurance/comparator/markdownBlocks.mjs",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
+            },
+            {
+                "identity": "ai/examples/harnessEndurance/neo/MainContainer.mjs",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
+            },
+            {
+                "identity": "ai/examples/harnessEndurance/neo/app.mjs",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
+            },
+            {
+                "identity": "ai/examples/harnessEndurance/neo/index.html",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
+            },
+            {
+                "identity": "ai/examples/harnessEndurance/neo/neo-config.json",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
+            },
+            {
+                "identity": "ai/examples/harnessEndurance/shared/LoadProfile.mjs",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
             }
         ],
         "retire": [
@@ -5131,7 +5118,14 @@
             }
         ],
         "unclassified": 0,
-        "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership."
+        "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership.",
+        "ambiguous": [
+            {
+                "identity": "ai/data/memory-core/lazy-edges.jsonl",
+                "reason": "tracked 12-row runtime queue with no custody row and no live reader; the runtime path is now .neo-ai-data/. Needs an explicit ruling rather than a guess.",
+                "owner": "neomjs/neo#17787"
+            }
+        ]
     },
-    "canonicalSha256": "aec170333c537c1322412b7399769b49e56c68e6da35c7a0a46fd0d43b359305"
+    "canonicalSha256": "4b5d19fbfb2c16a62d11257024f214586ac909291062e6a6ba7ca8c42e187fff"
 }
