@@ -9,6 +9,17 @@
     "sourceDiscussion": "neomjs/neo#discussion-17782",
     "sourceCommentId": 18154032,
     "sourceCommentUpdatedAt": "2026-08-25T22:17:37Z",
+    "sourcePopulationBaselineCount": 330,
+    "sourcePopulationSanctionedDeltaCount": 7,
+    "sourcePopulationCurrentCount": 337,
+    "nonTransferSanctionedDeltas": [
+      {
+        "ref": "neomjs/neo#17800",
+        "createdAt": "2026-08-26T12:21:50Z",
+        "disposition": "resolve-before-cut-stays-source",
+        "includedInTransferRows": false
+      }
+    ],
     "sourceRepository": "neomjs/neo",
     "destinationRepository": "neomjs/neo-agent-brain",
     "destinationBaseline": "d027f69f970028dd1a88a10356957b9328fdc88c",
