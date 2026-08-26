@@ -37,8 +37,9 @@ file ingests as a single whole-file chunk; no server-side registration is needed
 
 ```bash
 npm install
+export NEO_AGENTOS_RUNTIME_ROOT=/absolute/path/to/neo-agent-brain
 node -e 'const fs=require("fs");process.stdout.write(JSON.stringify({sourcePath:"proto/example.proto",content:fs.readFileSync("proto/example.proto","utf8")})+"\n")' \
-  | node node_modules/neo.mjs/buildScripts/ai/ingestTenant.mjs example-tenant --from-stdin
+  | node "$NEO_AGENTOS_RUNTIME_ROOT/ai/scripts/maintenance/ingestTenant.mjs" example-tenant --from-stdin
 ```
 
 A successful run prints a JSON summary — `{ingested, embeddingsGenerated, deleted, ...}`,
@@ -50,5 +51,5 @@ than the `raw-text` fallback:
 
 ```bash
 node -e 'const fs=require("fs");process.stdout.write(JSON.stringify({sourcePath:"proto/example.proto",content:fs.readFileSync("proto/example.proto","utf8"),parserId:"proto"})+"\n")' \
-  | node node_modules/neo.mjs/buildScripts/ai/ingestTenant.mjs example-tenant --from-stdin
+  | node "$NEO_AGENTOS_RUNTIME_ROOT/ai/scripts/maintenance/ingestTenant.mjs" example-tenant --from-stdin
 ```

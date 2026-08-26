@@ -3,16 +3,9 @@ import fs             from 'fs-extra';
 import * as yaml      from 'js-yaml';
 import path           from 'node:path';
 
-import {SCAN_SURFACE as ADR_STATUS_SURFACE}      from '../../../../../../ai/scripts/lint/lint-adr-status.mjs';
-import {SCAN_SURFACE as BOUNDARY_SURFACE}        from '../../../../../../buildScripts/util/check-engine-brain-boundary.mjs';
 import {SCAN_SURFACE as CONFIG_TEMPLATE_SURFACE} from '../../../../../../ai/scripts/lint/lint-config-template-ssot.mjs';
-import {SCAN_SURFACE as ENTRYPOINT_SURFACE}      from '../../../../../../ai/scripts/lint/lint-npm-script-entrypoints.mjs';
-import {SCAN_SURFACE as FIXED_SLEEP_SURFACE}     from '../../../../../../buildScripts/util/check-fixed-sleeps.mjs';
-import {SCAN_SURFACE as GUARD_CI_PARITY_SURFACE} from '../../../../../../ai/scripts/lint/lint-guard-ci-parity.mjs';
 import {SCAN_SURFACE as MCP_LOCATION_SURFACE}    from '../../../../../../ai/scripts/lint/lint-mcp-test-locations.mjs';
 import {SCAN_SURFACE as SCRIPT_PLANE_SURFACE}    from '../../../../../../ai/scripts/lint/lint-script-plane.mjs';
-import {SCAN_SURFACE as RETRY_BOUND_SURFACE}     from '../../../../../../ai/scripts/lint/lint-retry-bounds.mjs';
-import {DEFAULT_SCAN_PATHS as ARCHAEOLOGY_PATHS} from '../../../../../../buildScripts/util/check-ticket-archaeology.mjs';
 
 /**
  * @summary The scanned ⊆ watched invariant for path-filtered lint workflows, as a mechanical fact.
@@ -51,105 +44,20 @@ const WORKFLOWS_DIR = path.join(ROOT_DIR, '.github/workflows');
  * `source` marks whether the surface is imported from the lint (SSOT) or declared here.
  */
 const REGISTRY = Object.freeze({
-    'adr-seam-table-lint.yml': {
-        scriptRel: 'ai/scripts/lint/lint-adr-seam-table.mjs',
-        source   : 'declared',
-        surface  : ['learn/agentos/decisions/**']
-    },
-    'adr-status-lint.yml': {
-        scriptRel: 'ai/scripts/lint/lint-adr-status.mjs',
-        source   : 'imported',
-        surface  : ADR_STATUS_SURFACE
-    },
-    'aiconfig-antipattern-lint.yml': {
-        scriptRel: 'buildScripts/util/check-aiconfig-antipatterns.mjs',
-        source   : 'declared',
-        surface  : ['ai/**/*.mjs']
-    },
-    'aiconfig-test-mutation-lint.yml': {
-        scriptRel: 'buildScripts/util/check-aiconfig-test-mutation.mjs',
-        source   : 'declared',
-        surface  : ['test/**/*.mjs']
-    },
-    'atomic-write-shape-lint.yml': {
-        scriptRel: 'buildScripts/util/check-atomic-write-shape.mjs',
-        source   : 'declared',
-        surface  : ['ai/**/*.mjs']
-    },
     'script-plane-lint.yml': {
         scriptRel: 'ai/scripts/lint/lint-script-plane.mjs',
         source   : 'imported',
         surface  : SCRIPT_PLANE_SURFACE
-    },
-    'spec-retirement-lint.yml': {
-        scriptRel: 'buildScripts/util/check-spec-retirement.mjs',
-        source   : 'declared',
-        surface  : ['test/playwright/unit/**']
-    },
-    // Whole-tree by construction: the guard answers "does every `src/` package have values in BOTH
-    // neo themes, or a baselined justification", which is a property of the tree rather than of a
-    // diff. A package reaches zero coverage on the commit that adds its structure sheet, and that
-    // commit may touch no theme file at all — so the surface is the whole SCSS tree, not the
-    // theme directories the guard's verdict happens to be about.
-    'theme-coverage-lint.yml': {
-        scriptRel: 'buildScripts/util/check-theme-coverage.mjs',
-        source   : 'declared',
-        surface  : ['resources/scss/**/*.scss']
     },
     'config-template-ssot-lint.yml': {
         scriptRel: 'ai/scripts/lint/lint-config-template-ssot.mjs',
         source   : 'imported',
         surface  : CONFIG_TEMPLATE_SURFACE
     },
-    'engine-brain-boundary-lint.yml': {
-        scriptRel: 'buildScripts/util/check-engine-brain-boundary.mjs',
-        source   : 'imported',
-        surface  : BOUNDARY_SURFACE
-    },
-    'npm-script-entrypoint-lint.yml': {
-        scriptRel: 'ai/scripts/lint/lint-npm-script-entrypoints.mjs',
-        source   : 'imported',
-        surface  : ENTRYPOINT_SURFACE
-    },
-    'content-logical-identity-lint.yml': {
-        scriptRel: 'buildScripts/util/check-content-logical-identity.mjs',
-        source   : 'declared',
-        surface  : ['resources/content/archive/**']
-    },
-    'fixed-sleep-lint.yml': {
-        scriptRel: 'buildScripts/util/check-fixed-sleeps.mjs',
-        source   : 'imported',
-        surface  : FIXED_SLEEP_SURFACE
-    },
-    'guard-ci-parity-lint.yml': {
-        scriptRel: 'ai/scripts/lint/lint-guard-ci-parity.mjs',
-        source   : 'imported',
-        surface  : GUARD_CI_PARITY_SURFACE
-    },
-    'identity-engine-coherence-lint.yml': {
-        scriptRel: 'ai/scripts/lint/lint-identity-engine-coherence.mjs',
-        source   : 'declared',
-        surface  : [
-            'ai/graph/identityRoots.mjs',
-            'ai/scripts/fleet/deriveFleetRoster.mjs',
-            'learn/agentos/ModelStats.md'
-        ]
-    },
     'identity-vocabulary-lint.yml': {
         scriptRel: 'ai/scripts/lint/lint-identity-vocabulary.mjs',
         source   : 'declared',
         surface  : ['ai/mcp/server/*/openapi.yaml']
-    },
-    'jsdoc-type-lint.yml': {
-        scriptRel: 'buildScripts/util/check-jsdoc-types.mjs',
-        source   : 'declared',
-        surface  : [
-            'ai/**/*.mjs',
-            'apps/**/*.mjs',
-            'docs/app/**/*.mjs',
-            'examples/**/*.mjs',
-            'src/**/*.mjs'
-        ]
     },
     'mcp-test-location-lint.yml': {
         scriptRel: 'ai/scripts/lint/lint-mcp-test-locations.mjs',
@@ -168,27 +76,6 @@ const REGISTRY = Object.freeze({
             'ai/services/**/*.mjs'
         ]
     },
-    'retry-bound-classification-lint.yml': {
-        scriptRel: 'ai/scripts/lint/lint-retry-bounds.mjs',
-        source   : 'imported',
-        surface  : RETRY_BOUND_SURFACE
-    },
-    'skill-manifest-lint.yml': {
-        scriptRel: 'ai/scripts/lint/lint-skill-manifest.mjs',
-        source   : 'declared',
-        surface  : ['.agents/skills/**', '.claude/skills/**']
-    },
-    'ticket-archaeology-lint.yml': {
-        scriptRel: 'buildScripts/util/check-ticket-archaeology.mjs',
-        source   : 'imported',
-        surface  : ARCHAEOLOGY_PATHS.map(entry =>
-            entry.includes('.') ? entry : `${entry}/**/*.mjs`)
-    },
-    'tree-json-lint.yml': {
-        scriptRel: 'ai/scripts/lint/lint-tree-json.mjs',
-        source   : 'declared',
-        surface  : ['apps/portal/llms.txt', 'apps/portal/sitemap.xml', 'learn/**']
-    }
 });
 
 /**

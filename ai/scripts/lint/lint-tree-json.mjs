@@ -43,23 +43,23 @@
  *
  * Usage: `node ai/scripts/lint/lint-tree-json.mjs` (no arguments; validates the whole file).
  */
-import fs               from 'node:fs';
-import path             from 'node:path';
-import process          from 'node:process';
-import {fileURLToPath}  from 'node:url';
+import fs              from 'node:fs';
+import path            from 'node:path';
+import process         from 'node:process';
+import {fileURLToPath} from 'node:url';
 
 import {
     getLlmsTxt,
     getSitemapXml
 } from '../../../buildScripts/docs/seo/generate.mjs';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-const ROOT_DIR   = path.resolve(__dirname, '../../..');
-const LEARN_DIR  = path.join(ROOT_DIR, 'learn');
-const TREE_PATH  = path.join(LEARN_DIR, 'tree.json');
-const PORTAL_DIR = path.join(ROOT_DIR, 'apps/portal');
-const SITEMAP_PATH      = path.join(PORTAL_DIR, 'sitemap.xml');
+const __filename       = fileURLToPath(import.meta.url);
+const __dirname        = path.dirname(__filename);
+const ROOT_DIR         = path.resolve(__dirname, '../../..');
+const LEARN_DIR        = path.join(ROOT_DIR, 'learn');
+const TREE_PATH        = path.join(LEARN_DIR, 'tree.json');
+const PORTAL_DIR       = path.join(ROOT_DIR, 'apps/portal');
+const SITEMAP_PATH     = path.join(PORTAL_DIR, 'sitemap.xml');
 const DEFAULT_BASE_URL = 'https://neomjs.com';
 
 // Invariant 5: exploration/process-artifact basename suffixes that must never be published.
@@ -68,7 +68,7 @@ const DEFAULT_BASE_URL = 'https://neomjs.com';
 const EXPLORATION_ARTIFACT_SUFFIXES = 'audit/plan/sweep/census/forensics/benchmark (any case)';
 // Case-insensitive: the on-disk artifact inventory mixes CamelCase (`ConfigSubstrateEnvVarAudit`)
 // and kebab/lowercase (`gemma4-rem-benchmark`, `sandman-silent-failure-forensics`) basenames.
-const EXPLORATION_ARTIFACT_RE       = /(?:audit|plan|sweep|census|forensics|benchmark)$/i;
+const EXPLORATION_ARTIFACT_RE = /(?:audit|plan|sweep|census|forensics|benchmark)$/i;
 
 // Invariant 7: intentionally-internal top-level `learn/agentos/*.md` docs that are NOT in the
 // portal nav but ARE load-bearing reference substrate (referenced at-path by the turn-loaded
@@ -127,9 +127,9 @@ function getLeafIds(treeData) {
  */
 function getLlmsLearnUrls(llmsTxt, baseUrl=DEFAULT_BASE_URL) {
     const normalizedBase = baseUrl.replace(/\/$/, '');
-    const urls = new Set();
-    const escapedBase = normalizedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const urlRegex = new RegExp(`${escapedBase}/raw/learn/([^\\s)]+?\\.md)`, 'g');
+    const urls           = new Set();
+    const escapedBase    = normalizedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const urlRegex       = new RegExp(`${escapedBase}/raw/learn/([^\\s)]+?\\.md)`, 'g');
 
     for (const match of llmsTxt.matchAll(urlRegex)) {
         urls.add(match[1].replace(/\.md$/, ''));
@@ -146,9 +146,9 @@ function getLlmsLearnUrls(llmsTxt, baseUrl=DEFAULT_BASE_URL) {
  */
 function getSitemapLearnUrls(sitemapXml, baseUrl=DEFAULT_BASE_URL) {
     const normalizedBase = baseUrl.replace(/\/$/, '');
-    const urls = new Set();
-    const escapedBase = normalizedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const urlRegex = new RegExp(`<loc>${escapedBase}/learn/([^<]+)</loc>`, 'g');
+    const urls           = new Set();
+    const escapedBase    = normalizedBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const urlRegex       = new RegExp(`<loc>${escapedBase}/learn/([^<]+)</loc>`, 'g');
 
     for (const match of sitemapXml.matchAll(urlRegex)) {
         urls.add(match[1]);
@@ -166,8 +166,8 @@ function getSitemapLearnUrls(sitemapXml, baseUrl=DEFAULT_BASE_URL) {
  */
 function compareSeoSurface(surfaceName, expectedIds, actualIds) {
     const violations = [];
-    const missing = [...expectedIds].filter(id => !actualIds.has(id)).sort();
-    const extra   = [...actualIds].filter(id => !expectedIds.has(id)).sort();
+    const missing    = [...expectedIds].filter(id => !actualIds.has(id)).sort();
+    const extra      = [...actualIds].filter(id => !expectedIds.has(id)).sort();
 
     if (missing.length > 0) {
         violations.push({
