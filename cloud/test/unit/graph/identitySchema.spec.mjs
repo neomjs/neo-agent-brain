@@ -47,7 +47,7 @@ test.describe('identitySchema — node-types + the reflexive-landing acceptance 
     };
 
     test.beforeAll(async () => {
-        schema = await import('../../../../graph/identitySchema.mjs');
+        schema = await import('../../../graph/identitySchema.mjs');
     });
 
     test('node-type contracts: anchor immutability by construction, era-owned facts structurally excluded', () => {

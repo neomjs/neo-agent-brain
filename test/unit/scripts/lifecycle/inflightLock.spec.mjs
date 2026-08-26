@@ -40,7 +40,7 @@ test.describe('ai/scripts/inflightLock', () => {
 
     test.beforeAll(async () => {
         inflightLock = await import('../../../../scripts/lifecycle/inflightLock.mjs');
-        wakeSafetyGate = await import('../../../../cloud/scripts/lifecycle/wakeSafetyGate.mjs');
+        wakeSafetyGate = await import('../../../../scripts/lifecycle/wakeSafetyGate.mjs');
         getLockPath = inflightLock.getLockPath;
         BOOT_TIMEOUT_MS = inflightLock.BOOT_TIMEOUT_MS;
     });

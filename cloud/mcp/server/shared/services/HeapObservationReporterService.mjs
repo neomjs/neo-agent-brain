@@ -4,7 +4,7 @@ import Base     from 'neo.mjs/src/core/Base.mjs';
 import AiConfig from '../../../../config.mjs';
 
 import {collectProcessHeapObservation} from '../../../../services/shared/processHeapObservation.mjs';
-import {writeFileAtomicSync}           from '../../../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync}           from '../../../../services/shared/atomicFileWrite.mjs';
 
 /**
  * @summary Publishes this process's own heap/non-heap observation on a cadence, so a sibling process

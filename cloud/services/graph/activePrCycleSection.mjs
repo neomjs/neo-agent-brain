@@ -1,6 +1,6 @@
 import aiConfig               from '../../mcp/server/memory-core/config.mjs';
 import logger                 from '../../mcp/server/memory-core/logger.mjs';
-import {hasCrossFamilyReview} from '../../../services/graph/agentFamilyResolution.mjs';
+import {hasCrossFamilyReview} from './agentFamilyResolution.mjs';
 
 /**
  * @module ai/services/graph/activePrCycleSection

@@ -1,6 +1,6 @@
 import fs                 from 'fs/promises';
 import path               from 'path';
-import { writeGateState } from '../../cloud/scripts/lifecycle/wakeSafetyGate.mjs';
+import { writeGateState } from './wakeSafetyGate.mjs';
 
 export const BOOT_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 export const MAX_ABANDONED_ACTIONS = 3;

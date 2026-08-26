@@ -19,7 +19,7 @@ import {
     foldMemoryPressureIntoStatus
 }                                          from './memoryPressureDisposition.mjs';
 import {runHealthcheck}      from '../../../../scripts/diagnostics/mcpHealthcheck.mjs';
-import {writeFileAtomicSync} from '../../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync} from '../../../services/shared/atomicFileWrite.mjs';
 
 /**
  * The message `runHealthcheck` produces when the server ANSWERED and reported a status outside the

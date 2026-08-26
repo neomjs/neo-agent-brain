@@ -2,17 +2,17 @@ import {execFile}                                                               
 import path                                                                            from 'path';
 import {fileURLToPath}                                                                 from 'url';
 import {promisify}                                                                     from 'util';
-import AgentStateService                                                               from '../../../services/github-workflow/AgentStateService.mjs';
-import HealthService                                                                   from '../../../services/github-workflow/HealthService.mjs';
-import IssueService                                                                    from '../../../services/github-workflow/IssueService.mjs';
-import DiscussionService                                                               from '../../../services/github-workflow/DiscussionService.mjs';
-import LabelService                                                                    from '../../../services/github-workflow/LabelService.mjs';
-import LocalFileService                                                                from '../../../services/github-workflow/LocalFileService.mjs';
-import PullRequestService                                                              from '../../../services/github-workflow/PullRequestService.mjs';
-import RepositoryService                                                               from '../../../services/github-workflow/RepositoryService.mjs';
-import {resolveRepositoryTarget}                                                       from '../../../services/github-workflow/shared/repositoryTarget.mjs';
+import AgentStateService                                                               from '../../../cloud/services/github-workflow/AgentStateService.mjs';
+import HealthService                                                                   from '../../../cloud/services/github-workflow/HealthService.mjs';
+import IssueService                                                                    from '../../../cloud/services/github-workflow/IssueService.mjs';
+import DiscussionService                                                               from '../../../cloud/services/github-workflow/DiscussionService.mjs';
+import LabelService                                                                    from '../../../cloud/services/github-workflow/LabelService.mjs';
+import LocalFileService                                                                from '../../../cloud/services/github-workflow/LocalFileService.mjs';
+import PullRequestService                                                              from '../../../cloud/services/github-workflow/PullRequestService.mjs';
+import RepositoryService                                                               from '../../../cloud/services/github-workflow/RepositoryService.mjs';
+import {resolveRepositoryTarget}                                                       from '../../../cloud/services/github-workflow/shared/repositoryTarget.mjs';
 import ToolService                                                                     from '../../ToolService.mjs';
-import {assertExpectedIdentity as assertExpectedGitHubIdentity, IdentityAssertionCode} from '../../../graph/assertExpectedIdentity.mjs';
+import {assertExpectedIdentity as assertExpectedGitHubIdentity, IdentityAssertionCode} from '../../../cloud/graph/assertExpectedIdentity.mjs';
 import RequestContextService                                                           from '../../../cloud/mcp/server/shared/services/RequestContextService.mjs';
 import config                                                                          from './config.mjs';
 

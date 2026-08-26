@@ -5,7 +5,7 @@ import {fileURLToPath} from 'url';
 import Neo       from 'neo.mjs/src/Neo.mjs';
 import * as core from 'neo.mjs/src/core/_export.mjs';
 
-import {makeSafe, safeLoadYaml} from './services/shared/serviceProxy.mjs';
+import {makeSafe, safeLoadYaml} from './cloud/services/shared/serviceProxy.mjs';
 
 
 /**
@@ -62,26 +62,26 @@ import {makeSafe, safeLoadYaml} from './services/shared/serviceProxy.mjs';
  * host plane where they are absent.
  */
 
-import Shared_DestructiveOperationGuard from './mcp/server/shared/services/DestructiveOperationGuard.mjs';
+import Shared_DestructiveOperationGuard from './cloud/mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import GH_Config                        from './mcp/server/github-workflow/config.mjs';
-import _GH_HealthService                from './services/github-workflow/HealthService.mjs';
-import _GH_IssueService                 from './services/github-workflow/IssueService.mjs';
-import _GH_LabelService                 from './services/github-workflow/LabelService.mjs';
-import _GH_LocalFileService             from './services/github-workflow/LocalFileService.mjs';
-import _GH_PullRequestService           from './services/github-workflow/PullRequestService.mjs';
-import GH_PullRequestHistoryService     from './services/github-workflow/PullRequestHistoryService.mjs';
-import _GH_RepositoryService            from './services/github-workflow/RepositoryService.mjs';
-import _GH_SyncService                  from './services/github-workflow/SyncService.mjs';
-import _GL_IssueService                 from './services/gitlab-workflow/IssueService.mjs';
-import _GL_MergeRequestService          from './services/gitlab-workflow/MergeRequestService.mjs';
-import _NeuralLink_ComponentService     from './services/neural-link/ComponentService.mjs';
-import _NeuralLink_ConnectionService    from './services/neural-link/ConnectionService.mjs';
-import _NeuralLink_DataService          from './services/neural-link/DataService.mjs';
-import _NeuralLink_DockService          from './services/neural-link/DockService.mjs';
-import _NeuralLink_HealthService        from './services/neural-link/HealthService.mjs';
-import _NeuralLink_InstanceService      from './services/neural-link/InstanceService.mjs';
-import _NeuralLink_InteractionService   from './services/neural-link/InteractionService.mjs';
-import _NeuralLink_RuntimeService       from './services/neural-link/RuntimeService.mjs';
+import _GH_HealthService                from './cloud/services/github-workflow/HealthService.mjs';
+import _GH_IssueService                 from './cloud/services/github-workflow/IssueService.mjs';
+import _GH_LabelService                 from './cloud/services/github-workflow/LabelService.mjs';
+import _GH_LocalFileService             from './cloud/services/github-workflow/LocalFileService.mjs';
+import _GH_PullRequestService           from './cloud/services/github-workflow/PullRequestService.mjs';
+import GH_PullRequestHistoryService     from './cloud/services/github-workflow/PullRequestHistoryService.mjs';
+import _GH_RepositoryService            from './cloud/services/github-workflow/RepositoryService.mjs';
+import _GH_SyncService                  from './cloud/services/github-workflow/SyncService.mjs';
+import _GL_IssueService                 from './cloud/services/gitlab-workflow/IssueService.mjs';
+import _GL_MergeRequestService          from './cloud/services/gitlab-workflow/MergeRequestService.mjs';
+import _NeuralLink_ComponentService     from './cloud/services/neural-link/ComponentService.mjs';
+import _NeuralLink_ConnectionService    from './cloud/services/neural-link/ConnectionService.mjs';
+import _NeuralLink_DataService          from './cloud/services/neural-link/DataService.mjs';
+import _NeuralLink_DockService          from './cloud/services/neural-link/DockService.mjs';
+import _NeuralLink_HealthService        from './cloud/services/neural-link/HealthService.mjs';
+import _NeuralLink_InstanceService      from './cloud/services/neural-link/InstanceService.mjs';
+import _NeuralLink_InteractionService   from './cloud/services/neural-link/InteractionService.mjs';
+import _NeuralLink_RuntimeService       from './cloud/services/neural-link/RuntimeService.mjs';
 import NeuralLink_Config                from './mcp/server/neural-link/config.mjs';
 
 // --- Inherited boot-policy compatibility: ONE owning site, and it is debt ---

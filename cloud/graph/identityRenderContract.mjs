@@ -1,5 +1,5 @@
-import {IDENTITY_NODE_TYPES, validateEraChain} from '../../graph/identitySchema.mjs';
-import {buildHydrationIndex}                   from '../../graph/identityHydration.mjs';
+import {IDENTITY_NODE_TYPES, validateEraChain} from './identitySchema.mjs';
+import {buildHydrationIndex}                   from './identityHydration.mjs';
 
 /**
  * @module ai/graph/identityRenderContract

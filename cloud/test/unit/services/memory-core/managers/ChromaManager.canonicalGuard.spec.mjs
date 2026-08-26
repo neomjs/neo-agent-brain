@@ -21,7 +21,7 @@ import {
     CanonicalCollectionGuardError,
     DESTRUCTIVE_PRODUCTION_CONFIRMATION,
     GUARDED_CANONICAL_COLLECTION_NAMES
-} from '../../../../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+} from '../../../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 
 test.describe('Neo.ai.mcp.server.shared.services.DestructiveOperationGuard — canonical-collection guard (#11652)', () => {
 

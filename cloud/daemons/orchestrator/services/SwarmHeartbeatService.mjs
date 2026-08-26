@@ -12,28 +12,28 @@ import {
     Memory_GraphService     as GraphService,
     Memory_LifecycleService as LifecycleService
 }                    from '../../../services.mjs';
-import {getWakeRelevantNotifications} from '../../../../services/github-workflow/HealthService.mjs';
+import {getWakeRelevantNotifications} from '../../../services/github-workflow/HealthService.mjs';
 import MailboxService                 from '../../../services/memory-core/MailboxService.mjs';
 import RequestContextService          from '../../../mcp/server/shared/services/RequestContextService.mjs';
 import logger                         from '../../../mcp/server/memory-core/logger.mjs';
 import {
     isGateOpen,
     readGateState
-} from '../../../scripts/lifecycle/wakeSafetyGate.mjs';
+} from '../../../../scripts/lifecycle/wakeSafetyGate.mjs';
 import {
     inspectHeartbeatLock,
     releaseHeartbeatLock
 } from '../../../../scripts/lifecycle/heartbeatLock.mjs';
-import {checkSunsetted as checkSunsettedScript} from '../../../scripts/lifecycle/checkSunsetted.mjs';
+import {checkSunsetted as checkSunsettedScript} from '../../../../scripts/lifecycle/checkSunsetted.mjs';
 import {normalizeAgentIdentityNodeId}           from '../../../graph/normalizeAgentIdentityNodeId.mjs';
 import {
     resumeHarness as resumeHarnessScript
-} from '../../../scripts/lifecycle/resumeHarness.mjs';
-import {checkAllAgentIdle as checkAllAgentIdleScript}     from '../../../scripts/lifecycle/checkAllAgentIdle.mjs';
-import {idleOutNudge as idleOutNudgeScript}               from '../../../scripts/lifecycle/idleOutNudge.mjs';
+} from '../../../../scripts/lifecycle/resumeHarness.mjs';
+import {checkAllAgentIdle as checkAllAgentIdleScript}     from '../../../../scripts/lifecycle/checkAllAgentIdle.mjs';
+import {idleOutNudge as idleOutNudgeScript}               from '../../../../scripts/lifecycle/idleOutNudge.mjs';
 import WakeSubscriptionService                            from '../../../services/memory-core/WakeSubscriptionService.mjs';
 import wakeDecisionServiceInstance, {WakeDecisionService} from './WakeDecisionService.mjs';
-import {swarmWakeCooldown as swarmWakeCooldownScript}     from '../../../scripts/lifecycle/swarmWakeCooldown.mjs';
+import {swarmWakeCooldown as swarmWakeCooldownScript}     from '../../../../scripts/lifecycle/swarmWakeCooldown.mjs';
 import {
     activeWakeSubscriptionStatusSql,
     isActiveWakeSubscriptionStatus,

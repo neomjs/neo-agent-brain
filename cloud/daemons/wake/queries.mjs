@@ -1,6 +1,6 @@
 import fs                              from 'fs-extra';
 import Database                        from 'better-sqlite3';
-import {writeFileAtomicSync}           from '../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync}           from '../../services/shared/atomicFileWrite.mjs';
 import { SQLITE_IN_CLAUSE_BATCH_SIZE } from '../../graph/storage/constants.mjs';
 // Only the WAKE_SUBSCRIPTION reads below use this. The HARNESS_PRESENCE query later in this file
 // carries the same COALESCE idiom for a DIFFERENT entity and must not be folded into it.

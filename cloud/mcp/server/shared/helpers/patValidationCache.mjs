@@ -1,4 +1,4 @@
-import {writeFileAtomicSync} from '../../../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync} from '../../../../services/shared/atomicFileWrite.mjs';
 import {readFile}            from 'node:fs/promises';
 
 /**

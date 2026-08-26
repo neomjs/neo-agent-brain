@@ -1,5 +1,5 @@
 import {readFile}                         from 'fs/promises';
-import {writeFileAtomic}                  from '../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic}                  from '../shared/atomicFileWrite.mjs';
 import {normalizeCorpusProjectionReceipt} from './corpusProjectionContract.mjs';
 
 /**

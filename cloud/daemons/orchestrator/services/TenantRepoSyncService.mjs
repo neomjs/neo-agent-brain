@@ -12,7 +12,7 @@ import {
     normalizeSettlementCounts
 }                                from '../../../services/knowledge-base/helpers/corpusOutstanding.mjs';
 import {createBoundedRetryGate}   from '../../../services/shared/boundedRetryGate.mjs';
-import {writeFileAtomic}          from '../../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic}          from '../../../services/shared/atomicFileWrite.mjs';
 import {buildEmbeddingProbeBlock, buildEmbeddingProbeInput, EMBEDDING_PROBE_BAND_FRACTION, projectProbeCoverage} from '../../../services/shared/embeddingProbe.mjs';
 import {resolveEmbeddingAdmissionBand}                     from '../../../../shared/embeddingSafeBand.mjs';
 // The filter below and the codes it admits are one contract. Importing the pattern from the module

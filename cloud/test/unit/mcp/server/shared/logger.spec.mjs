@@ -24,7 +24,7 @@ import {
     pruneLoggerRetention,
     resolveLoggerRetention,
     selectPrunableLogFiles
-} from '../../../../../../mcp/server/shared/logger.mjs';
+} from '../../../../../mcp/server/shared/logger.mjs';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

@@ -4,12 +4,12 @@ import path                  from 'path';
 import aiConfig              from '../../config.mjs';
 import Base                  from 'neo.mjs/src/core/Base.mjs';
 import {HARNESS_TYPES}       from './harnessTypes.mjs';
-import {writeFileAtomicSync} from '../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
 import {
     normalizeMcpOverrides,
     normalizeMcpTarget,
     supportsTenantMcpTarget
-} from '../../../services/fleet/mcpServers.mjs';
+} from './mcpServers.mjs';
 
 const
     RETIRED_TARGET_FIELD    = ['mcp', 'Transport'].join(''),

@@ -2,7 +2,7 @@ import {test, expect} from '@playwright/test';
 
 import {aggregateWindow, buildMetricBags, classifySample}                from '../../../scripts/benchmark/helpers/servingCostCore.mjs';
 import {createMetricId, validateBusinessProperties}                      from '../../../cloud/graph/businessSchema.mjs';
-import {isLocalEndpoint, parseWindow, portFromHostUrl, resolveRolePorts, resolveWindowLifecycle} from '../../../cloud/scripts/benchmark/serving-cost-meter.mjs';
+import {isLocalEndpoint, parseWindow, portFromHostUrl, resolveRolePorts, resolveWindowLifecycle} from '../../../scripts/benchmark/serving-cost-meter.mjs';
 
 /**
  * Pins the serving-cost meter's pure core — the deterministic heart of the measurement

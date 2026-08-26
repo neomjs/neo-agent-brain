@@ -13,7 +13,7 @@ import WebhookDeliveryService                                                   
 import {DELIVERABLE_HARNESS_TARGET, wakeRouteWithdrawalReasonFor}                               from '../../../daemons/wake/buildReceiverManifest.mjs';
 import {buildWakeDigest, getHighestWakePriority}                                                from '../../../daemons/wake/wakeDigestBuilder.mjs';
 import {HEARTBEAT_PULSE_ENTITY_PREFIX, HEARTBEAT_PULSE_ENTITY_TYPE, match, matchHeartbeatPulse} from './heartbeatPulseEvaluator.mjs';
-import {resolveResidentFamilyById}                                                              from '../../../services/graph/agentFamilyResolution.mjs';
+import {resolveResidentFamilyById}                                                              from '../graph/agentFamilyResolution.mjs';
 import {PRESENCE_STATES}                                                                        from '../fleet/fleetPresenceStateAdapter.mjs';
 import {deriveReviewLoad}                                                                       from './helpers/reviewLoadProjection.mjs';
 import {readActiveWakeSubscriptionObservations}                                                 from './readActiveWakeSubscriptionIdentities.mjs';

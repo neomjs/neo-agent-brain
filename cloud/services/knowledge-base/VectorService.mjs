@@ -26,7 +26,7 @@ import fs                                                              from 'fs-
 import logger                                                          from '../../mcp/server/knowledge-base/logger.mjs';
 import path                                                            from 'path';
 import readline                                                        from 'readline';
-import DestructiveOperationGuard                                       from '../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+import DestructiveOperationGuard                                       from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import {computeCorpusFingerprint, decideResume, selectResumableChunks} from './helpers/resumableEmbedding.mjs';
 import {clearResumeState, readResumeState, writeResumeState}           from './helpers/kbEmbeddingResumeStore.mjs';
 import {

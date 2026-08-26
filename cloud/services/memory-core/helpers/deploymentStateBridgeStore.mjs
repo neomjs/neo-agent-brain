@@ -1,6 +1,6 @@
 import fs                from 'fs-extra';
 import {StringDecoder}   from 'node:string_decoder';
-import {writeFileAtomic} from '../../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic} from '../../shared/atomicFileWrite.mjs';
 
 export const DEPLOYMENT_STATE_BRIDGE_SCHEMA_VERSION = 1;
 

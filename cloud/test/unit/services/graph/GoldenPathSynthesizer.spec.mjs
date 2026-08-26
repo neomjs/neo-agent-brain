@@ -20,7 +20,7 @@ import fs                          from 'fs';
 import path                        from 'path';
 import os                          from 'os';
 import child_process               from 'child_process';
-import {resolveCrossFamilyVerdict} from '../../../../../services/graph/agentFamilyResolution.mjs';
+import {resolveCrossFamilyVerdict} from '../../../../services/graph/agentFamilyResolution.mjs';
 import {TestLifecycleHelper}       from '../memory-core/util.mjs';
 
 test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {

@@ -1,11 +1,11 @@
 import {constants as fsConstants}                  from 'node:fs';
 import fs                                          from 'node:fs/promises';
-import {writeFileAtomic}                           from '../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic}                           from '../shared/atomicFileWrite.mjs';
 import path                                        from 'node:path';
 import crypto                                      from 'node:crypto';
 import {isDeepStrictEqual}                         from 'node:util';
 import {hydrateCurrentWorktree}                    from '../../../scripts/migrations/bootstrapWorktree.mjs';
-import {MCP_SERVERS, resolveMcpMatrix}             from '../../../services/fleet/mcpServers.mjs';
+import {MCP_SERVERS, resolveMcpMatrix}             from './mcpServers.mjs';
 import {deriveAgentInstanceHome}                   from './deriveAgentInstanceHome.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig} from './generateKimiSeatConfig.mjs';
 import {

@@ -1,5 +1,5 @@
 import {IDENTITIES}                from '../../../shared/graph/identityRoots.mjs';
-import {resolveResidentFamilyById} from '../../../services/graph/agentFamilyResolution.mjs';
+import {resolveResidentFamilyById} from '../graph/agentFamilyResolution.mjs';
 
 /**
  * @summary The ONE fleet↔identity join seam (the single ratified resolver site): maps a

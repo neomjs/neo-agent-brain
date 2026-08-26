@@ -1,7 +1,7 @@
 import {test, expect} from '@playwright/test';
 import fs             from 'node:fs';
 
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from '../../../../../services/fleet/mcpServers.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from '../../../../services/fleet/mcpServers.mjs';
 
 const
     BRIDGE_ENTRYPOINT = 'ai/mcp/client/stdioToStreamableHttp.mjs',

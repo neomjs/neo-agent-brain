@@ -5,7 +5,7 @@ import {validateJsonlSourceFile}                                                
 import {assertNoNaturalKeyDivergence, classifyIncomingRow, DIVERGENCE_SCAN, KB_MERGE_NATURAL_KEY_DIVERGENCE, naturalKeyOf} from './helpers/mergeIdentityContract.mjs';
 import Base                                                                                                                from 'neo.mjs/src/core/Base.mjs';
 import ChromaManager                                                                                                       from './ChromaManager.mjs';
-import DestructiveOperationGuard                                                                                           from '../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+import DestructiveOperationGuard                                                                                           from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import VectorService                                                                                                       from './VectorService.mjs';
 // SourceRegistry owns KB source discovery. Importing `./source/_export.mjs` triggers
 // auto-registration of Neo's default Source classes when `aiConfig.useDefaultSources !== false`,

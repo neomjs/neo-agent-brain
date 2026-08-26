@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 // itself — a tautology that passes forever, which is the exact vacuity class this test exists to
 // prevent. It became importable when the machinery moved to a plain, Neo-free shared module; before
 // that it was private to `ai/services.mjs` and had to be regex-extracted from source and rebuilt.
-import {camelToSnake as runtimeCamelToSnake} from '../../../../services/shared/serviceProxy.mjs';
+import {camelToSnake as runtimeCamelToSnake} from '../../../../cloud/services/shared/serviceProxy.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..');
 

@@ -1,5 +1,5 @@
 import {test, expect}                                  from '@playwright/test';
-import {assertExpectedIdentity, IdentityAssertionCode} from '../../../../graph/assertExpectedIdentity.mjs';
+import {assertExpectedIdentity, IdentityAssertionCode} from '../../../graph/assertExpectedIdentity.mjs';
 
 // Pure function over the static IDENTITIES table — imported directly; no Neo globals, no setup, no I/O.
 // Uses REAL identityRoots entries (@neo-gpt, @neo-opus-ada, @system) so the test exercises the live

@@ -16,7 +16,7 @@ import fsExtra from 'fs-extra';
 import path    from 'path';
 import {isEmbedFailureCode}
                          from './embedFailureClassification.mjs';
-import {writeFileAtomic} from '../../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic} from '../../shared/atomicFileWrite.mjs';
 import {
     enterLifecycleGuard,
     exitLifecycleGuard,

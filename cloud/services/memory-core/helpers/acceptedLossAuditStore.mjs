@@ -1,5 +1,5 @@
 import {appendFile, mkdir, readFile, rename, stat, writeFile} from 'fs/promises';
-import {writeFileAtomic}                                      from '../../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomic}                                      from '../../shared/atomicFileWrite.mjs';
 import path                                                   from 'path';
 
 /**

@@ -3,7 +3,7 @@ import fs                                     from 'fs'
 import fsPromises                             from 'fs/promises'
 import os                                     from 'os'
 import path                                   from 'path'
-import {writeFileAtomic, writeFileAtomicSync} from '../../../../../services/shared/atomicFileWrite.mjs'
+import {writeFileAtomic, writeFileAtomicSync} from '../../../../services/shared/atomicFileWrite.mjs'
 
 /**
  * @summary Contract suite for the owned write-temp-then-rename primitive.

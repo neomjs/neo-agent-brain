@@ -24,7 +24,7 @@ import {
 import {IDENTITIES}                   from '../../../shared/graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {SQLITE_IN_CLAUSE_BATCH_SIZE}  from '../../graph/storage/constants.mjs';
-import {resolveResidentFamilyById}    from '../../../services/graph/agentFamilyResolution.mjs';
+import {resolveResidentFamilyById}    from '../graph/agentFamilyResolution.mjs';
 import {getMissingMemoryWalLeaves}    from './helpers/memoryWalStore.mjs';
 import {
     classifyMailboxReadState,

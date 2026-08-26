@@ -1,8 +1,8 @@
 import BaseServer              from '../BaseServer.mjs';
 import aiConfig                from './config.mjs';
 import logger                  from './logger.mjs';
-import ConnectionService       from '../../../services/neural-link/ConnectionService.mjs';
-import HealthService           from '../../../services/neural-link/HealthService.mjs';
+import ConnectionService       from '../../../cloud/services/neural-link/ConnectionService.mjs';
+import HealthService           from '../../../cloud/services/neural-link/HealthService.mjs';
 import {listTools, callTool}   from './toolService.mjs';
 import {attestDiagnosticPaths} from './diagnosticPathAttestation.mjs';
 

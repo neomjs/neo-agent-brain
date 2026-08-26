@@ -1,9 +1,9 @@
 import BaseServer            from '../BaseServer.mjs';
 import aiConfig              from './config.mjs';
 import logger                from './logger.mjs';
-import HealthService         from '../../../services/github-workflow/HealthService.mjs';
-import RepositoryService     from '../../../services/github-workflow/RepositoryService.mjs';
-import SyncService           from '../../../services/github-workflow/SyncService.mjs';
+import HealthService         from '../../../cloud/services/github-workflow/HealthService.mjs';
+import RepositoryService     from '../../../cloud/services/github-workflow/RepositoryService.mjs';
+import SyncService           from '../../../cloud/services/github-workflow/SyncService.mjs';
 import {listTools, callTool} from './toolService.mjs';
 
 /**

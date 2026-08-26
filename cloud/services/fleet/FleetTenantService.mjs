@@ -1,7 +1,7 @@
 import crypto                from 'node:crypto';
 import fs                    from 'node:fs';
 import path                  from 'node:path';
-import {writeFileAtomicSync} from '../../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
 import {
     InitializeResultSchema,
     SUPPORTED_PROTOCOL_VERSIONS

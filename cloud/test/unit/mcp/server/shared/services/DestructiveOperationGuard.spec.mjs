@@ -23,7 +23,7 @@ import DestructiveOperationGuard, {
     DESTRUCTIVE_PRODUCTION_BYPASS_ENV,
     DESTRUCTIVE_PRODUCTION_CONFIRMATION,
     GUARDED_CANONICAL_COLLECTION_NAMES
-} from '../../../../../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+} from '../../../../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import CollectionProxy       from '../../../../../../services/memory-core/managers/CollectionProxy.mjs';
 import MemoryDatabaseService from '../../../../../../services/memory-core/DatabaseService.mjs';
 import KbChromaManager       from '../../../../../../services/knowledge-base/ChromaManager.mjs';

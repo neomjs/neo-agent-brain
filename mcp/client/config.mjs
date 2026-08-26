@@ -3,7 +3,7 @@ import {readFileSync}                  from 'node:fs';
 import path                            from 'path';
 import {fileURLToPath}                 from 'node:url';
 import Base                            from 'neo.mjs/src/core/Base.mjs';
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from '../../services/fleet/mcpServers.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from '../../cloud/services/fleet/mcpServers.mjs';
 
 const NEURAL_LINK_MCP_SCRIPT = 'ai:mcp-server-neural-link';
 

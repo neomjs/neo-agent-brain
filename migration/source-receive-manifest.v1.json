@@ -9,10 +9,10 @@
     },
     "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
     "counts": {
-        "total": 805,
-        "cloud": 564,
-        "edge": 234,
-        "shared": 7,
+        "total": 806,
+        "cloud": 634,
+        "edge": 166,
+        "shared": 6,
         "planeConflicts": 0,
         "censusDispositioned": 209,
         "fromRootScriptCommand": 11,
@@ -645,9 +645,9 @@
         },
         {
             "identity": "ai/daemons/wake/daemon.mjs",
-            "plane": "cloud",
-            "target": "cloud/daemons/wake/daemon.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "daemons/wake/daemon.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/daemons/wake/flushDeferPolicy.mjs",
@@ -951,9 +951,9 @@
         },
         {
             "identity": "ai/graph/assertExpectedIdentity.mjs",
-            "plane": "edge",
-            "target": "graph/assertExpectedIdentity.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/graph/assertExpectedIdentity.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/graph/bootSeedManifest.mjs",
@@ -993,9 +993,9 @@
         },
         {
             "identity": "ai/graph/identityHydration.mjs",
-            "plane": "edge",
-            "target": "graph/identityHydration.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/graph/identityHydration.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/graph/identityRenderContract.mjs",
@@ -1011,15 +1011,15 @@
         },
         {
             "identity": "ai/graph/identityRootsMigration.mjs",
-            "plane": "edge",
-            "target": "graph/identityRootsMigration.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/graph/identityRootsMigration.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/graph/identitySchema.mjs",
-            "plane": "edge",
-            "target": "graph/identitySchema.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/graph/identitySchema.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/graph/normalizeAgentIdentityNodeId.mjs",
@@ -1467,9 +1467,9 @@
         },
         {
             "identity": "ai/mcp/server/shared/logger.mjs",
-            "plane": "edge",
-            "target": "mcp/server/shared/logger.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/logger.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/mcp/server/shared/services/AuthMiddleware.mjs",
@@ -1491,9 +1491,9 @@
         },
         {
             "identity": "ai/mcp/server/shared/services/DestructiveOperationGuard.mjs",
-            "plane": "edge",
-            "target": "mcp/server/shared/services/DestructiveOperationGuard.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/DestructiveOperationGuard.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/mcp/server/shared/services/HeapObservationReporterService.mjs",
@@ -1521,9 +1521,9 @@
         },
         {
             "identity": "ai/mcp/server/shared/services/RuntimeFreshnessService.mjs",
-            "plane": "edge",
-            "target": "mcp/server/shared/services/RuntimeFreshnessService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/RuntimeFreshnessService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/mcp/server/shared/services/StdioIdentityResolver.mjs",
@@ -1623,9 +1623,9 @@
         },
         {
             "identity": "ai/scripts/benchmark/gemma4-rem-benchmark.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/benchmark/gemma4-rem-benchmark.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/benchmark/gemma4-rem-benchmark.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/helpers/providerLaneElectionCore.mjs",
@@ -1653,15 +1653,15 @@
         },
         {
             "identity": "ai/scripts/benchmark/keep-alive-probe.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/benchmark/keep-alive-probe.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/benchmark/keep-alive-probe.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/provider-lane-election.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/benchmark/provider-lane-election.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/benchmark/provider-lane-election.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/benchmark/restore-empty-target-meter.mjs",
@@ -1671,9 +1671,9 @@
         },
         {
             "identity": "ai/scripts/benchmark/serving-cost-meter.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/benchmark/serving-cost-meter.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/benchmark/serving-cost-meter.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/agentOsExtractionInventory.json",
@@ -1695,9 +1695,9 @@
         },
         {
             "identity": "ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/diagnostics/analyzeNlTelemetry.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/diagnostics/analyzeNlTelemetry.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/diagnostics/audit-discussion-lifecycle.mjs",
@@ -1923,9 +1923,9 @@
         },
         {
             "identity": "ai/scripts/fleet/onboardPeer.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/fleet/onboardPeer.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/fleet/onboardPeer.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/backfill-memory-summaries.mjs",
@@ -1935,15 +1935,15 @@
         },
         {
             "identity": "ai/scripts/lifecycle/checkAllAgentIdle.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/lifecycle/checkAllAgentIdle.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/lifecycle/checkAllAgentIdle.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/checkSunsetted.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/lifecycle/checkSunsetted.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/lifecycle/checkSunsetted.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/deferencePhraseMatch.mjs",
@@ -1977,9 +1977,9 @@
         },
         {
             "identity": "ai/scripts/lifecycle/idleOutNudge.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/lifecycle/idleOutNudge.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/lifecycle/idleOutNudge.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/inflightLock.mjs",
@@ -2012,10 +2012,16 @@
             "origin": "census"
         },
         {
+            "identity": "ai/scripts/lifecycle/postReleaseSync.mjs",
+            "plane": "edge",
+            "target": "scripts/lifecycle/postReleaseSync.mjs",
+            "origin": "census"
+        },
+        {
             "identity": "ai/scripts/lifecycle/resumeHarness.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/lifecycle/resumeHarness.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/lifecycle/resumeHarness.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/revalidationSweep.mjs",
@@ -2037,9 +2043,9 @@
         },
         {
             "identity": "ai/scripts/lifecycle/swarmWakeCooldown.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/lifecycle/swarmWakeCooldown.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/lifecycle/swarmWakeCooldown.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/sweepExpiredTasks.mjs",
@@ -2061,9 +2067,9 @@
         },
         {
             "identity": "ai/scripts/lifecycle/wakeSafetyGate.mjs",
-            "plane": "cloud",
-            "target": "cloud/scripts/lifecycle/wakeSafetyGate.mjs",
-            "origin": "ownership (neo-agent-brain#13 disposition)"
+            "plane": "edge",
+            "target": "scripts/lifecycle/wakeSafetyGate.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/scripts/lifecycle/windowsBatchSpawn.mjs",
@@ -2189,6 +2195,12 @@
             "identity": "ai/scripts/lint/lint-skill-manifest.mjs",
             "plane": "edge",
             "target": "scripts/lint/lint-skill-manifest.mjs",
+            "origin": "census"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-tree-json.mjs",
+            "plane": "edge",
+            "target": "scripts/lint/lint-tree-json.mjs",
             "origin": "census"
         },
         {
@@ -2895,9 +2907,9 @@
         },
         {
             "identity": "ai/services/fleet/mcpServers.mjs",
-            "plane": "edge",
-            "target": "services/fleet/mcpServers.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/fleet/mcpServers.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/fleet/mcpWireParsing.mjs",
@@ -3039,345 +3051,345 @@
         },
         {
             "identity": "ai/services/github-workflow/AgentStateService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/AgentStateService.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/AgentStateService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/DiscussionService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/DiscussionService.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/DiscussionService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/GraphqlService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/GraphqlService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/GraphqlService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/HealthService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/HealthService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/HealthService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/IssueReconciliationService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/IssueReconciliationService.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/IssueReconciliationService.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/IssueService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/IssueService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/IssueService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/LabelService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/LabelService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/LabelService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/LocalFileService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/LocalFileService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/LocalFileService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/PullRequestHistoryService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/PullRequestHistoryService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/PullRequestHistoryService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/PullRequestReconciliationService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/PullRequestReconciliationService.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/PullRequestReconciliationService.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/PullRequestService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/PullRequestService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/PullRequestService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/RepositoryService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/RepositoryService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/RepositoryService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/SyncService.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/SyncService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/SyncService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/community/assembleIssueBatch.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/community/assembleIssueBatch.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/assembleIssueBatch.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/community/githubIssueAbsence.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/community/githubIssueAbsence.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubIssueAbsence.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/community/githubIssueObservations.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/community/githubIssueObservations.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubIssueObservations.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/community/githubIssueReconciliation.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/community/githubIssueReconciliation.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubIssueReconciliation.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/community/githubPullRequestObservations.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/community/githubPullRequestObservations.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubPullRequestObservations.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/community/githubPullRequestReconciliation.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/community/githubPullRequestReconciliation.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubPullRequestReconciliation.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/communityActivityShadowReader.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/communityActivityShadowReader.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/communityActivityShadowReader.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/openWorkCensusReader.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/openWorkCensusReader.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/openWorkCensusReader.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/queries/communityActivityShadowQueries.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/communityActivityShadowQueries.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/communityActivityShadowQueries.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/queries/discussionQueries.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/discussionQueries.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/discussionQueries.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/queries/issueQueries.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/issueQueries.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/issueQueries.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/queries/issueReconciliationQueries.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/issueReconciliationQueries.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/issueReconciliationQueries.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/queries/labelQueries.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/labelQueries.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/labelQueries.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/queries/mutations.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/mutations.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/mutations.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/queries/pullRequestQueries.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/pullRequestQueries.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/pullRequestQueries.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/queries/pullRequestReconciliationQueries.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/pullRequestReconciliationQueries.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/pullRequestReconciliationQueries.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/queries/releaseQueries.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/releaseQueries.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/releaseQueries.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/queries/repositoryQueries.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/queries/repositoryQueries.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/repositoryQueries.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/commentSelector.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/commentSelector.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/commentSelector.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/contentIndex.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/contentIndex.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/contentIndex.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/contentInventory.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/contentInventory.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/contentInventory.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/contentPath.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/contentPath.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/contentPath.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/conversationTrust.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/conversationTrust.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/conversationTrust.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/discussionRoutingDisposition.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/discussionRoutingDisposition.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/discussionRoutingDisposition.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/mergeHoldTokens.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/mergeHoldTokens.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/mergeHoldTokens.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/pruneEmptyDirs.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/pruneEmptyDirs.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/pruneEmptyDirs.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/reconcileActiveChunks.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/reconcileActiveChunks.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/reconcileActiveChunks.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/shared/repositoryTarget.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/shared/repositoryTarget.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/shared/repositoryTarget.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/sync/CONTENT_GRAMMAR.md",
-            "plane": "edge",
-            "target": "services/github-workflow/sync/CONTENT_GRAMMAR.md",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/CONTENT_GRAMMAR.md",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/sync/DiscussionSyncer.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/sync/DiscussionSyncer.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/DiscussionSyncer.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/sync/IssueSyncer.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/sync/IssueSyncer.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/IssueSyncer.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/sync/MetadataManager.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/sync/MetadataManager.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/MetadataManager.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/sync/PullRequestSyncer.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/sync/PullRequestSyncer.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/PullRequestSyncer.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/sync/ReleaseNotesSyncer.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/ReleaseNotesSyncer.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/github-workflow/sync/verifyFrontmatterIntegrity.mjs",
-            "plane": "edge",
-            "target": "services/github-workflow/sync/verifyFrontmatterIntegrity.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/verifyFrontmatterIntegrity.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/gitlab-workflow/GitLabClient.mjs",
-            "plane": "edge",
-            "target": "services/gitlab-workflow/GitLabClient.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/GitLabClient.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/gitlab-workflow/HealthService.mjs",
-            "plane": "edge",
-            "target": "services/gitlab-workflow/HealthService.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/HealthService.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/gitlab-workflow/IssueService.mjs",
-            "plane": "edge",
-            "target": "services/gitlab-workflow/IssueService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/IssueService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/gitlab-workflow/LocalFileService.mjs",
-            "plane": "edge",
-            "target": "services/gitlab-workflow/LocalFileService.mjs",
-            "origin": "operator plane correction — GH/GL/NL are Host Edge"
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/LocalFileService.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/gitlab-workflow/MergeRequestService.mjs",
-            "plane": "edge",
-            "target": "services/gitlab-workflow/MergeRequestService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/MergeRequestService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/gitlab-workflow/queries/issueQueries.mjs",
-            "plane": "edge",
-            "target": "services/gitlab-workflow/queries/issueQueries.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/queries/issueQueries.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/gitlab-workflow/queries/mrMutations.mjs",
-            "plane": "edge",
-            "target": "services/gitlab-workflow/queries/mrMutations.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/queries/mrMutations.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/gitlab-workflow/queries/mrQueries.mjs",
-            "plane": "edge",
-            "target": "services/gitlab-workflow/queries/mrQueries.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/queries/mrQueries.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/gitlab-workflow/queries/mutations.mjs",
-            "plane": "edge",
-            "target": "services/gitlab-workflow/queries/mutations.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/queries/mutations.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/graph/GapInferenceEngine.mjs",
@@ -3423,9 +3435,9 @@
         },
         {
             "identity": "ai/services/graph/agentFamilyResolution.mjs",
-            "plane": "edge",
-            "target": "services/graph/agentFamilyResolution.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/graph/agentFamilyResolution.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/graph/computedGoldenPathRouting.mjs",
@@ -4647,81 +4659,81 @@
         },
         {
             "identity": "ai/services/neural-link/ArchiveMcpClient.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/ArchiveMcpClient.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/ArchiveMcpClient.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/ComponentService.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/ComponentService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/ComponentService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/ConnectionService.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/ConnectionService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/ConnectionService.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/services/neural-link/DataService.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/DataService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/DataService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/DockService.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/DockService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/DockService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/HealthService.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/HealthService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/HealthService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/InstanceService.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/InstanceService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/InstanceService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/InteractionService.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/InteractionService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/InteractionService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/RecorderService.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/RecorderService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/RecorderService.mjs",
+            "origin": "census"
         },
         {
             "identity": "ai/services/neural-link/RuntimeService.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/RuntimeService.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/RuntimeService.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/memoryCoreArchiveClient.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/memoryCoreArchiveClient.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/memoryCoreArchiveClient.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/resolveCallTarget.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/resolveCallTarget.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/resolveCallTarget.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/neural-link/windowOps.mjs",
-            "plane": "edge",
-            "target": "services/neural-link/windowOps.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/neural-link/windowOps.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/shared/a2aCollisionTags.mjs",
@@ -4737,9 +4749,9 @@
         },
         {
             "identity": "ai/services/shared/atomicFileWrite.mjs",
-            "plane": "edge",
-            "target": "services/shared/atomicFileWrite.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/shared/atomicFileWrite.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/shared/boundedRetryGate.mjs",
@@ -4755,15 +4767,15 @@
         },
         {
             "identity": "ai/services/shared/contentTrust/astroturfSanitizer.mjs",
-            "plane": "edge",
-            "target": "services/shared/contentTrust/astroturfSanitizer.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/shared/contentTrust/astroturfSanitizer.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/shared/contentTrust/authorTrustClassifier.mjs",
-            "plane": "edge",
-            "target": "services/shared/contentTrust/authorTrustClassifier.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/shared/contentTrust/authorTrustClassifier.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/shared/deployedRevision.mjs",
@@ -4803,9 +4815,9 @@
         },
         {
             "identity": "ai/services/shared/serviceProxy.mjs",
-            "plane": "edge",
-            "target": "services/shared/serviceProxy.mjs",
-            "origin": "host barrel declaration (services.host.mjs)"
+            "plane": "cloud",
+            "target": "cloud/services/shared/serviceProxy.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/services/shared/storeWriteGuard.mjs",
@@ -4842,12 +4854,6 @@
             "plane": "cloud",
             "target": "cloud/services/shared/vector/lmsEmbeddingInputSuffix.mjs",
             "origin": "measured"
-        },
-        {
-            "identity": "buildScripts/util/sanitizer.mjs",
-            "plane": "shared",
-            "target": "shared/sanitizer.mjs",
-            "origin": "plane-neutral (ADR 0040 §2.2)"
         }
     ],
     "correction": [
@@ -5166,5 +5172,5 @@
         "unclassified": 0,
         "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership."
     },
-    "canonicalSha256": "6a896c86fc2553aa4ab380d83cefb57639a83500379154c949296084f0c6aec3"
+    "canonicalSha256": "edc15e972e7f079abf86e92ba2a5f60b3b634c945f4cfe0a7ab0dc0b163e3200"
 }

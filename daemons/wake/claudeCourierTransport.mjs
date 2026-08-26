@@ -36,7 +36,7 @@ import fs     from 'fs';
 import os     from 'os';
 import path   from 'path';
 
-import {writeFileAtomicSync} from '../../services/shared/atomicFileWrite.mjs';
+import {writeFileAtomicSync} from '../../cloud/services/shared/atomicFileWrite.mjs';
 
 /** The adapter name routes select in `harnessTargetMetadata.adapter`. @type {String} */
 export const COURIER_ADAPTER = 'claude-courier';

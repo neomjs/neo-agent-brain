@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import path                                                  from 'path';
 import {fileURLToPath}                                       from 'url';
-import {camelToSnake, findOperation, makeSafe, safeLoadYaml} from '../services/shared/serviceProxy.mjs';
+import {camelToSnake, findOperation, makeSafe, safeLoadYaml} from './services/shared/serviceProxy.mjs';
 
 // Host-plane services are constructed ONCE, in the host barrel, and re-exported here for consumers
 // that have not migrated. Re-export rather than re-wrap: wrapping in both places would produce two

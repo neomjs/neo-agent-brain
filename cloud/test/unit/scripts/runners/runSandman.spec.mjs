@@ -21,7 +21,7 @@ import os             from 'os';
 import path           from 'path';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
-import {createLogger} from '../../../../../mcp/server/shared/logger.mjs';
+import {createLogger} from '../../../../mcp/server/shared/logger.mjs';
 
 /**
  * @summary Validates the durable diagnostics emitted before `runSandman` exits on provider timeout.

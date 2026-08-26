@@ -5,7 +5,7 @@ import path                                                                  fro
 import readline                                                              from 'readline';
 import Base                                                                  from 'neo.mjs/src/core/Base.mjs';
 import StorageRouter                                                         from './managers/StorageRouter.mjs';
-import DestructiveOperationGuard                                             from '../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
+import DestructiveOperationGuard                                             from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import {classifyExportCompleteness, EXPORT_COMPLETENESS, recordExportGrowth} from './helpers/exportCompleteness.mjs';
 import {partitionRowsByVectorValidity, summarizeVectorRejections}            from './helpers/vectorWriteInvariant.mjs';
 import {validateJsonlSourceFile}                                             from './helpers/vectorJsonlSourceValidation.mjs';
