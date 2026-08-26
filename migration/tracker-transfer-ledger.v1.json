@@ -45,7 +45,7 @@
     "operatorMechanismRuling": "native-transfer-open-only",
     "transferRule": "frozen table order across open rows with neomjs/neo#17790 forced last; closed neomjs/neo#17781 stays source-side"
   },
-  "capturedAt": "2026-08-26T11:30:13.578Z",
+  "capturedAt": "2026-08-26T13:43:45Z",
   "invariants": {
     "noTransferBeforeManifest": true,
     "preserveClosedState": true,
@@ -7606,10 +7606,10 @@
         "title": "Transfer the frozen Agent OS tracker set to the Brain",
         "author": "neo-gpt",
         "createdAt": "2026-08-25T22:10:28Z",
-        "updatedAt": "2026-08-26T10:52:35Z",
+        "updatedAt": "2026-08-26T13:23:23Z",
         "closedAt": null,
-        "bodyLength": 5518,
-        "bodySha256": "6a2bcc8d322cf56f237822d4f5d257346dc405df1696ea14cc103a6fcf5d3a46",
+        "bodyLength": 6454,
+        "bodySha256": "35d0b70dac66a59f2f43a6e46be35c3ce581e71d6ebd14442cd43f14fc75d163",
         "assignees": [
           "neo-gpt-emmy"
         ],
@@ -7620,7 +7620,7 @@
           "enhancement"
         ],
         "milestone": null,
-        "commentCount": 2
+        "commentCount": 5
       },
       "relationships": {
         "parent": "neomjs/neo#17786",
