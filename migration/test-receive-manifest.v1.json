@@ -2,11 +2,11 @@
     "$schema": "test-receive-manifest.v1",
     "sourceRepository": "neomjs/neo",
     "sourceSha": "294a7a31d9f16eb0fb94bd4afadf279b5f9e8703",
-    "rule": "A test follows its SUBJECT, per ADR 0040 section 2.7. test/playwright/unit/ai/A/B/C.spec.mjs tests ai/A/B/C.mjs, so the source-receive manifest already decides its plane - there is no second authority and no directory guess. Layout mirrors the source planes: edge tests at test/unit/**, cloud tests at cloud/test/unit/** so the Cloud package installs and runs independently.",
+    "rule": "A test follows its SUBJECT, per ADR 0040 section 2.7. test/playwright/unit/ai/A/B/C.spec.mjs tests ai/A/B/C.mjs, so the source-receive manifest already decides its plane - there is no second authority and no directory guess. Layout mirrors the source planes: edge tests at test/unit/**, cloud tests at cloud/test/unit/** so the Cloud package installs and runs independently. A spec whose exact subject is not a Brain row is resolved by what it IMPORTS, never by its directory: reaching src/, buildScripts/, learn/ or apps/ means it exercises retained Engine surface and stays there. Directory fallback moved 68 specs wrongly and was caught by @neo-gpt-emmy.",
     "counts": {
-        "total": 784,
-        "cloud": 658,
-        "edge": 126
+        "total": 722,
+        "cloud": 598,
+        "edge": 124
     },
     "staysEngine": [
         {
@@ -33,6 +33,254 @@
             "test": "test/playwright/unit/ai/scripts/lifecycle/nightlyE2eRunner.spec.mjs",
             "subject": "ai/scripts/lifecycle/nightlyE2eRunner.mjs",
             "reason": "subject stays Engine"
+        },
+        {
+            "test": "test/playwright/unit/ai/ClientAgentDisconnect.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/ClientDispatcher.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/ClientWindowRegistration.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/DynamicImportShape.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/InitAsyncContractGuard.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/InstanceServiceCreateInstance.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/InstanceServiceCreateUndoCapture.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/InstanceServiceListTransactions.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/InstanceServiceNamedTransaction.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/InstanceServiceRedo.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/InstanceServiceRemoveUndoCapture.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/InstanceServiceUndo.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/InstanceServiceUndoCapture.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/LiveServiceGuards.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/LockRegistry.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/TransactionService.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/WriteGuard.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/admitWrite.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/DataSyncWatchdog.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/build/themes.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/docs/RebuildContentIndexesAndSeo.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/docs/index/PortalContentIndexes.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/docs/index/TicketIndex.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/docs/seo/Generate.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/helpers/watchThemes.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/WorkflowScopeClassifier.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/agent-push.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/branchFreshness.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-aiconfig-antipatterns.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-aiconfig-test-mutation.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-atomic-write-shape.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-block-alignment.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-branch-discipline.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-chore-sync.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-codeql-extraction.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-fixed-sleeps.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-jsdoc-types.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-parse.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-theme-surfaces.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-ticket-archaeology.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/check-whitespace.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/developmentThemeAssets.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/mergedPullRequestPush.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/buildScripts/util/stagedDiff.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/client/ComponentService.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/client/DockService.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/client/InstanceService.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/client/RuntimeService.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/client/TourRunner.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/deriveSubtreePath.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/mcp/Authorization.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/mcp/server/memory-core/SessionService.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/parseAgentEnvelope.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/resolveWriteLock.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/scripts/benchmark/restoreEmptyTargetMeasurementAdapter.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/scripts/diagnostics/fixtures/seatCost/syntheticFixtures.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/scripts/maintenance/manualHeavyMaintenanceScriptLeaseAdoption.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/services/graph/graphIsolationGate.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/services/graph/graphIsolationGate.spec.mjs",
+            "reason": "subject resolution: neither imports nor names any Brain surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/services/knowledge-base/parser/Schemas.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/services/memory-core/DatabaseService.graphBackup.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
+        },
+        {
+            "test": "test/playwright/unit/ai/services/memory-core/DatabaseService.graphReplaceReadAtPreserved.spec.mjs",
+            "reason": "subject resolution: imports retained Engine surface"
         }
     ],
     "retire": [
@@ -64,27 +312,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/ClientAgentDisconnect.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/ClientAgentDisconnect.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/ClientDispatcher.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/ClientDispatcher.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/ClientWindowRegistration.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/ClientWindowRegistration.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/ConfigProvider.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/ConfigProvider.spec.mjs",
@@ -102,13 +329,6 @@
             "identity": "test/playwright/unit/ai/DeployPipelineRevisionPin.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/DeployPipelineRevisionPin.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/DynamicImportShape.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/DynamicImportShape.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -141,107 +361,9 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/InitAsyncContractGuard.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/InitAsyncContractGuard.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/InstanceServiceCreateInstance.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/InstanceServiceCreateInstance.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/InstanceServiceCreateUndoCapture.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/InstanceServiceCreateUndoCapture.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/InstanceServiceListTransactions.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/InstanceServiceListTransactions.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/InstanceServiceNamedTransaction.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/InstanceServiceNamedTransaction.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/InstanceServiceRedo.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/InstanceServiceRedo.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/InstanceServiceRemoveUndoCapture.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/InstanceServiceRemoveUndoCapture.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/InstanceServiceUndo.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/InstanceServiceUndo.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/InstanceServiceUndoCapture.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/InstanceServiceUndoCapture.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/LiveServiceGuards.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/LiveServiceGuards.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/LockRegistry.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/LockRegistry.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/MigrateDeploymentApplyRefusal.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/MigrateDeploymentApplyRefusal.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/TransactionService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/TransactionService.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/WriteGuard.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/WriteGuard.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/admitWrite.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/admitWrite.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -267,55 +389,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/buildScripts/DataSyncWatchdog.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/DataSyncWatchdog.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/build/themes.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/build/themes.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/docs/RebuildContentIndexesAndSeo.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/docs/RebuildContentIndexesAndSeo.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/docs/index/PortalContentIndexes.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/docs/index/PortalContentIndexes.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/docs/index/TicketIndex.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/docs/index/TicketIndex.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/docs/seo/Generate.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/docs/seo/Generate.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/helpers/watchThemes.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/helpers/watchThemes.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/buildScripts/release/PublishReleaseNoteOrphan.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/buildScripts/release/PublishReleaseNoteOrphan.spec.mjs",
@@ -330,76 +403,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/buildScripts/util/WorkflowScopeClassifier.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/WorkflowScopeClassifier.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/agent-push.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/agent-push.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/branchFreshness.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/branchFreshness.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-aiconfig-antipatterns.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-aiconfig-antipatterns.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-aiconfig-test-mutation.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-aiconfig-test-mutation.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-atomic-write-shape.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-atomic-write-shape.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-block-alignment.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-block-alignment.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-branch-discipline.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-branch-discipline.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-chore-sync.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-chore-sync.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-codeql-extraction.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-codeql-extraction.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/buildScripts/util/check-examples-body-only.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/buildScripts/util/check-examples-body-only.spec.mjs",
@@ -407,107 +410,9 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-fixed-sleeps.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-fixed-sleeps.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-jsdoc-types.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-jsdoc-types.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-parse.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-parse.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-theme-surfaces.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-theme-surfaces.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-ticket-archaeology.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-ticket-archaeology.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/check-whitespace.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/check-whitespace.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/developmentThemeAssets.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/developmentThemeAssets.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/mergedPullRequestPush.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/mergedPullRequestPush.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/buildScripts/util/stagedDiff.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/buildScripts/util/stagedDiff.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/businessSchema.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/businessSchema.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/client/ComponentService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/client/ComponentService.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/client/DockService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/client/DockService.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/client/InstanceService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/client/InstanceService.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/client/RuntimeService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/client/RuntimeService.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/client/TourRunner.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/client/TourRunner.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -1415,13 +1320,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/deriveSubtreePath.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/deriveSubtreePath.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/embeddingProviders.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/embeddingProviders.spec.mjs",
@@ -1593,13 +1491,6 @@
             "identity": "test/playwright/unit/ai/inspectFleetRepos.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/inspectFleetRepos.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/Authorization.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/mcp/Authorization.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -1782,13 +1673,6 @@
             "identity": "test/playwright/unit/ai/mcp/server/memory-core/SessionService-worker.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/mcp/server/memory-core/SessionService-worker.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/memory-core/SessionService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/mcp/server/memory-core/SessionService.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -2010,13 +1894,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/parseAgentEnvelope.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/parseAgentEnvelope.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/planeConfig.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/planeConfig.spec.mjs",
@@ -2108,13 +1985,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/resolveWriteLock.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/resolveWriteLock.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/scripts/agent-preflight.acEvidence.spec.mjs",
             "plane": "edge",
             "target": "test/unit/scripts/agent-preflight.acEvidence.spec.mjs",
@@ -2160,13 +2030,6 @@
             "identity": "test/playwright/unit/ai/scripts/benchmark/TargetSetMeasurementCore.spec.mjs",
             "plane": "edge",
             "target": "test/unit/scripts/benchmark/TargetSetMeasurementCore.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/benchmark/restoreEmptyTargetMeasurementAdapter.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/benchmark/restoreEmptyTargetMeasurementAdapter.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -2246,13 +2109,6 @@
             "target": "test/unit/scripts/diagnostics/devDependencyCensus.spec.mjs",
             "subject": "ai/scripts/diagnostics/devDependencyCensus.mjs",
             "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/fixtures/seatCost/syntheticFixtures.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/fixtures/seatCost/syntheticFixtures.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/diagnostics/fleetHealthcheck.spec.mjs",
@@ -2820,13 +2676,6 @@
             "target": "cloud/test/unit/scripts/maintenance/knowledgeBaseArtifact.spec.mjs",
             "subject": "ai/scripts/maintenance/knowledgeBaseArtifact.mjs",
             "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/maintenance/manualHeavyMaintenanceScriptLeaseAdoption.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/scripts/maintenance/manualHeavyMaintenanceScriptLeaseAdoption.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/maintenance/materializeDeploymentPrescriptions.spec.mjs",
@@ -3809,20 +3658,6 @@
             "origin": "subject-row"
         },
         {
-            "identity": "test/playwright/unit/ai/services/graph/graphIsolationGate.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/graph/graphIsolationGate.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/services/graph/graphIsolationGate.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/graph/graphIsolationGate.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/services/graph/laneLandscapeCensusSource.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/services/graph/laneLandscapeCensusSource.spec.mjs",
@@ -4292,13 +4127,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/services/knowledge-base/parser/Schemas.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/knowledge-base/parser/Schemas.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/services/knowledge-base/parser/SourceParser.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/services/knowledge-base/parser/SourceParser.spec.mjs",
@@ -4470,20 +4298,6 @@
             "identity": "test/playwright/unit/ai/services/memory-core/DatabaseService.backupPath.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/services/memory-core/DatabaseService.backupPath.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/services/memory-core/DatabaseService.graphBackup.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/memory-core/DatabaseService.graphBackup.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/services/memory-core/DatabaseService.graphReplaceReadAtPreserved.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/memory-core/DatabaseService.graphReplaceReadAtPreserved.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -5531,5 +5345,6 @@
             "origin": "subject-ancestor"
         }
     ],
-    "canonicalSha256": "90c85f4145c8a30c3683720327a8f4be916525fcfe0b2b7197bf0086f4e7ecd1"
+    "otherRepository": [],
+    "canonicalSha256": "272339df1a77b7c9cae18f4a87e40dd2ec4df880b106dd7e5acdc7bbc809ffa1"
 }
