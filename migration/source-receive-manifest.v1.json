@@ -1,1520 +1,1444 @@
 {
-  "schemaVersion": "source-receive-manifest.v1",
-  "sourceRepository": "neomjs/neo",
-  "sourceSha": "294a7a31d9f16eb0fb94bd4afadf279b5f9e8703",
-  "derivedFrom": {
-    "instrument": "ai/scripts/diagnostics/agentOsExtractionInventory.mjs --json",
-    "inventoryRows": 1030,
-    "custodyDiscriminator": "a row assigns CUSTODY only when it carries an authoritySource; plane-opener rows state which plane a file reaches into and carry none. Filtering on disposition alone conflates the two and yields 13 false plane conflicts."
-  },
-  "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
-  "counts": {
-    "total": 178,
-    "cloud": 73,
-    "edge": 104,
-    "shared": 1,
-    "planeConflicts": 0
-  },
-  "rows": [
-    {
-      "identity": "ai/daemons/embed/daemon.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root"
-      ],
-      "target": "cloud/daemons/embed/daemon.mjs"
-    },
-    {
-      "identity": "ai/daemons/message/daemon.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root"
-      ],
-      "target": "cloud/daemons/message/daemon.mjs"
-    },
-    {
-      "identity": "ai/daemons/wake/daemon.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root"
-      ],
-      "target": "daemons/wake/daemon.mjs"
-    },
-    {
-      "identity": "ai/deploy/docker-compose.dev.yml",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/docker-compose.dev.yml"
-    },
-    {
-      "identity": "ai/deploy/docker-compose.local-agent-os.yml",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/docker-compose.local-agent-os.yml"
-    },
-    {
-      "identity": "ai/deploy/docker-compose.parity-capture.yml",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/docker-compose.parity-capture.yml"
-    },
-    {
-      "identity": "ai/deploy/docker-compose.parity-ci.yml",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/docker-compose.parity-ci.yml"
-    },
-    {
-      "identity": "ai/deploy/docker-compose.provider-lanes.yml",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/docker-compose.provider-lanes.yml"
-    },
-    {
-      "identity": "ai/deploy/docker-compose.test.yml",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/docker-compose.test.yml"
-    },
-    {
-      "identity": "ai/deploy/docker-compose.yml",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/docker-compose.yml"
-    },
-    {
-      "identity": "ai/deploy/hostEdgeProfile.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "deploy/hostEdgeProfile.mjs"
-    },
-    {
-      "identity": "ai/deploy/kb-config.yaml",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/kb-config.yaml"
-    },
-    {
-      "identity": "ai/deploy/mock-oidc-server.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/mock-oidc-server.mjs"
-    },
-    {
-      "identity": "ai/deploy/mock-openai-embedding-server.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "deployment-artifact"
-      ],
-      "target": "cloud/deploy/mock-openai-embedding-server.mjs"
-    },
-    {
-      "identity": "ai/mcp/server/neural-link/run-bridge.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root"
-      ],
-      "target": "mcp/server/neural-link/run-bridge.mjs"
-    },
-    {
-      "identity": "ai/scripts/agent-preflight.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/agent-preflight.mjs"
-    },
-    {
-      "identity": "ai/scripts/benchmark/gemma4-rem-benchmark.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/benchmark/gemma4-rem-benchmark.mjs"
-    },
-    {
-      "identity": "ai/scripts/benchmark/helpers/providerLaneElectionCore.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/benchmark/helpers/providerLaneElectionCore.mjs"
-    },
-    {
-      "identity": "ai/scripts/benchmark/helpers/servingCostCore.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/benchmark/helpers/servingCostCore.mjs"
-    },
-    {
-      "identity": "ai/scripts/benchmark/helpers/stats.mjs",
-      "plane": "shared",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "shared/scripts/benchmark/helpers/stats.mjs"
-    },
-    {
-      "identity": "ai/scripts/benchmark/helpers/targetSetMeasurementCore.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/benchmark/helpers/targetSetMeasurementCore.mjs"
-    },
-    {
-      "identity": "ai/scripts/benchmark/keep-alive-probe.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/benchmark/keep-alive-probe.mjs"
-    },
-    {
-      "identity": "ai/scripts/benchmark/provider-lane-election.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/benchmark/provider-lane-election.mjs"
-    },
-    {
-      "identity": "ai/scripts/benchmark/restore-empty-target-meter.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/benchmark/restore-empty-target-meter.mjs"
-    },
-    {
-      "identity": "ai/scripts/benchmark/serving-cost-meter.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/benchmark/serving-cost-meter.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/agentOsPlaneBoundaryProof.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/agentOsPlaneBoundaryProof.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/analyzeNlTelemetry.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/audit-discussion-lifecycle.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/audit-discussion-lifecycle.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/bootstrapCodexSandbox.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/bootstrapCodexSandbox.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/captureParityLatencyPair.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/captureParityLatencyPair.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/check-identity-facts.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/check-identity-facts.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/check-retired-primitives.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/check-retired-primitives.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/check-substrate-size.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/check-substrate-size.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/conceptNeighborhoodProbe.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/diagnostics/conceptNeighborhoodProbe.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/consumerRelevanceCensus.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/consumerRelevanceCensus.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/consumerRelevanceMap.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/consumerRelevanceMap.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/defectObservations.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/defectObservations.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/denyCloudPlanePackages.loader.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/denyCloudPlanePackages.loader.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/detectTruncatedTimelines.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/detectTruncatedTimelines.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/devDependencyCensus.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/devDependencyCensus.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/diagnoseMcpConcurrency.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/diagnoseMcpConcurrency.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/dialogGateRig.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/dialogGateRig.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/fleetHealthcheck.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/fleetHealthcheck.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/gemini-incident-cost-ledger.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/gemini-incident-cost-ledger.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/genesisProbe.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/genesisProbe.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/lmStudioEmbeddingInstances.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/lmStudioEmbeddingInstances.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/mailboxReadStateProbe.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/diagnostics/mailboxReadStateProbe.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/mcpHandlerSignatureCensus.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/mcpHandlerSignatureCensus.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/mcpHealthcheck.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/mcpHealthcheck.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/parityLatencyPair.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/parityLatencyPair.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/pilotPlaneTerminal.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/diagnostics/pilotPlaneTerminal.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/probePortClaims.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/probePortClaims.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/providerLaneComposition.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/providerLaneComposition.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/review-cost-meter.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/review-cost-meter.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/seatCostReport.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/seatCostReport.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/staleEmbeddingCensus.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/diagnostics/staleEmbeddingCensus.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/structureMap.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/diagnostics/structureMap.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/validateConceptEdges.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/diagnostics/validateConceptEdges.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/walReplayPlan.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/diagnostics/walReplayPlan.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/walSnapshotClone.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/diagnostics/walSnapshotClone.mjs"
-    },
-    {
-      "identity": "ai/scripts/diagnostics/walVolumeBaseline.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/diagnostics/walVolumeBaseline.mjs"
-    },
-    {
-      "identity": "ai/scripts/fleet/deriveFleetRoster.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/fleet/deriveFleetRoster.mjs"
-    },
-    {
-      "identity": "ai/scripts/fleet/devCockpit.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/fleet/devCockpit.mjs"
-    },
-    {
-      "identity": "ai/scripts/fleet/onboardPeer.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/fleet/onboardPeer.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/backfill-memory-summaries.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/lifecycle/backfill-memory-summaries.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/checkAllAgentIdle.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/checkAllAgentIdle.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/checkSunsetted.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/checkSunsetted.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/deferencePhraseMatch.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/deferencePhraseMatch.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/harnessLifecycle.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/harnessLifecycle.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/harnessRouting.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/harnessRouting.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/heartbeatLock.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/heartbeatLock.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/hookProjectionReader.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/hookProjectionReader.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/idleOutNudge.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/idleOutNudge.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/inflightLock.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/inflightLock.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/materialArtifactKey.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/materialArtifactKey.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/nightlyE2eDigest.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/nightlyE2eDigest.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/nightlyE2eRunner.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/nightlyE2eRunner.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/parseLaneState.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/parseLaneState.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/postReleasePreflight.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/postReleasePreflight.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/postReleaseSync.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/postReleaseSync.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/resumeHarness.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/resumeHarness.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/revalidationSweep.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/revalidationSweep.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/stopHookDecision.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/stopHookDecision.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/summarize-sessions.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/lifecycle/summarize-sessions.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/swarmWakeCooldown.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/swarmWakeCooldown.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/sweepExpiredTasks.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/sweepExpiredTasks.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/validateLaneStateTerminal.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/validateLaneStateTerminal.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/validateMergeReady.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/validateMergeReady.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/wakeSafetyGate.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/wakeSafetyGate.mjs"
-    },
-    {
-      "identity": "ai/scripts/lifecycle/windowsBatchSpawn.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lifecycle/windowsBatchSpawn.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/check-commit-authorship.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/check-commit-authorship.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/check-front-door-fingerprint.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/check-front-door-fingerprint.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-adr-seam-table.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-adr-seam-table.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-adr-status.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-adr-status.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-agents.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-agents.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-config-template-ssot.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-config-template-ssot.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-fleet-vocabulary-parity.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-fleet-vocabulary-parity.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-guard-ci-parity.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-guard-ci-parity.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-guides.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-guides.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-identity-engine-coherence.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-identity-engine-coherence.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-identity-vocabulary.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-identity-vocabulary.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-mcp-test-locations.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-mcp-test-locations.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-npm-script-entrypoints.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-npm-script-entrypoints.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-openapi-service-parity.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-openapi-service-parity.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-pr-stacking.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-pr-stacking.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-retry-bounds.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-retry-bounds.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-script-plane.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-script-plane.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-skill-manifest.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-skill-manifest.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/lint-tree-json.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/lint/lint-tree-json.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/prStackingGuard.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lint/prStackingGuard.mjs"
-    },
-    {
-      "identity": "ai/scripts/lint/scriptPlaneClosure.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/lint/scriptPlaneClosure.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/aggregate-temporal-summary.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/aggregate-temporal-summary.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/auditConceptSpineAliases.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/auditConceptSpineAliases.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/auditGraphIntegrity.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/auditGraphIntegrity.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/backup.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/backup.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/backupCorruptionTimeline.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/backupCorruptionTimeline.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/backupStagingResidueCore.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/backupStagingResidueCore.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/buildKbAgentFaqs.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/buildKbAgentFaqs.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/businessMetricsProbeCore.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/maintenance/businessMetricsProbeCore.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/checkChromaIntegrity.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/checkChromaIntegrity.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/checkDetectionRetentionSla.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/checkDetectionRetentionSla.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/communityActivityShadowProbeCore.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/maintenance/communityActivityShadowProbeCore.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/communityBatchPushClient.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/maintenance/communityBatchPushClient.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/communitySourceOperator.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/communitySourceOperator.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/compactGraphLog.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/compactGraphLog.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/defragChromaDB.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/defragChromaDB.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/defragSQLiteDB.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/defragSQLiteDB.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/deploymentMigrationCore.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/maintenance/deploymentMigrationCore.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/detectionRetentionSla.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/detectionRetentionSla.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/detectionRetentionSlaInputs.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/detectionRetentionSlaInputs.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/downloadKnowledgeBase.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/downloadKnowledgeBase.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/exportMemoryQuarantine.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/exportMemoryQuarantine.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/graphLifecycleReport.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/graphLifecycleReport.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/ingestTenant.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/ingestTenant.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/kbPushClient.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/maintenance/kbPushClient.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/knowledgeBaseArtifact.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/knowledgeBaseArtifact.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/materializeDeploymentPrescriptions.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/maintenance/materializeDeploymentPrescriptions.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/migrateDeployment.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/maintenance/migrateDeployment.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/migrationCensusReport.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/migrationCensusReport.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/offHostSync.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/offHostSync.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/probeBusinessMetrics.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/maintenance/probeBusinessMetrics.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/probeCollectionQueryHealth.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/probeCollectionQueryHealth.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/probeCommunityActivityShadow.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/maintenance/probeCommunityActivityShadow.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/projectCoreCorpus.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/projectCoreCorpus.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/purgeNoContentGraphMemories.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/purgeNoContentGraphMemories.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/purgeTestCollections.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/purgeTestCollections.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/recreateGraphDb.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/recreateGraphDb.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/redeployPreflight.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/maintenance/redeployPreflight.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/repairMemoryCoreStoredEmbeddings.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/repairMemoryCoreStoredEmbeddings.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/repairUnprojectedSessions.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/repairUnprojectedSessions.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/restore.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/restore.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/syncGithubWorkflow.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/maintenance/syncGithubWorkflow.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/syncGithubWorkflowBranchGuard.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/maintenance/syncGithubWorkflowBranchGuard.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/syncKnowledgeBase.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/syncKnowledgeBase.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/syncTenantRepos.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/syncTenantRepos.mjs"
-    },
-    {
-      "identity": "ai/scripts/maintenance/uploadKnowledgeBase.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/maintenance/uploadKnowledgeBase.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/backfillChromaSharedUserId.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/backfillChromaSharedUserId.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/bootstrapWorktree.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/migrations/bootstrapWorktree.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/canonicalizeStoredAgentIdentities.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/migrate-discussions-b1.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/migrate-discussions-b1.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/migrateMemoryCore.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/migrateMemoryCore.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/migrateWakeSubscriptions.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/migrateWakeSubscriptions.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/normalizeGraphIdentities.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/normalizeGraphIdentities.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/priorityBackfill.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/priorityBackfill.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/rebucketArchive.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/rebucketArchive.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/refetchStaleDiscussions.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/refetchStaleDiscussions.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/refetchStalePulls.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/refetchStalePulls.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/refetchTruncatedIssues.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/refetchTruncatedIssues.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/renameAgentIdentities.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/renameAgentIdentities.mjs"
-    },
-    {
-      "identity": "ai/scripts/migrations/repairStaleEmbeddings.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/migrations/repairStaleEmbeddings.mjs"
-    },
-    {
-      "identity": "ai/scripts/runners/runAgent.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "scripts/runners/runAgent.mjs"
-    },
-    {
-      "identity": "ai/scripts/runners/runSandman.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "launch-root",
-        "script-module"
-      ],
-      "target": "cloud/scripts/runners/runSandman.mjs"
-    },
-    {
-      "identity": "ai/scripts/setup/cohortAdmissibility.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/setup/cohortAdmissibility.mjs"
-    },
-    {
-      "identity": "ai/scripts/setup/generateRosterOnboarding.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/setup/generateRosterOnboarding.mjs"
-    },
-    {
-      "identity": "ai/scripts/setup/migrateConfigOverlay.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/setup/migrateConfigOverlay.mjs"
-    },
-    {
-      "identity": "ai/scripts/setup/revisionConfigDiff.mjs",
-      "plane": "edge",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "scripts/setup/revisionConfigDiff.mjs"
-    },
-    {
-      "identity": "ai/scripts/setup/seedAgentIdentities.mjs",
-      "plane": "cloud",
-      "surfaces": [
-        "script-module"
-      ],
-      "target": "cloud/scripts/setup/seedAgentIdentities.mjs"
-    }
-  ],
-  "correction": "sourceSha initially recorded a neo-agent-brain commit while sourceRepository names neomjs/neo — the rev-parse ran in the wrong clone. Corrected to the neomjs/neo dev SHA the inventory actually ran against, verified clean at that head.",
-  "canonicalSha256": "490b52ab20a61f265d8bfeff06f357ee657204c1dd2402d8db4b1adcb231feca"
+    "schemaVersion": "source-receive-manifest.v1",
+    "sourceRepository": "neomjs/neo",
+    "sourceSha": "294a7a31d9f16eb0fb94bd4afadf279b5f9e8703",
+    "derivedFrom": {
+        "instrument": "ai/scripts/diagnostics/agentOsExtractionInventory.mjs --json",
+        "inventoryRows": 1030,
+        "custodyDiscriminator": "a row assigns CUSTODY only when it carries an authoritySource; plane-opener rows state which plane a file reaches into and carry none. Filtering on disposition alone conflates the two and yields 13 false plane conflicts."
+    },
+    "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
+    "counts": {
+        "total": 168,
+        "cloud": 64,
+        "edge": 103,
+        "shared": 1,
+        "planeConflicts": 0
+    },
+    "rows": [
+        {
+            "identity": "ai/daemons/embed/daemon.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root"
+            ],
+            "target": "cloud/daemons/embed/daemon.mjs"
+        },
+        {
+            "identity": "ai/daemons/message/daemon.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root"
+            ],
+            "target": "cloud/daemons/message/daemon.mjs"
+        },
+        {
+            "identity": "ai/daemons/wake/daemon.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root"
+            ],
+            "target": "daemons/wake/daemon.mjs"
+        },
+        {
+            "identity": "ai/mcp/deploy/proxy/Caddyfile",
+            "plane": "cloud",
+            "surfaces": [
+                "deployment-artifact"
+            ],
+            "target": "cloud/mcp/deploy/proxy/Caddyfile"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/run-bridge.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root"
+            ],
+            "target": "mcp/server/neural-link/run-bridge.mjs"
+        },
+        {
+            "identity": "ai/scripts/agent-preflight.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/agent-preflight.mjs"
+        },
+        {
+            "identity": "ai/scripts/benchmark/gemma4-rem-benchmark.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/benchmark/gemma4-rem-benchmark.mjs"
+        },
+        {
+            "identity": "ai/scripts/benchmark/helpers/providerLaneElectionCore.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/benchmark/helpers/providerLaneElectionCore.mjs"
+        },
+        {
+            "identity": "ai/scripts/benchmark/helpers/servingCostCore.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/benchmark/helpers/servingCostCore.mjs"
+        },
+        {
+            "identity": "ai/scripts/benchmark/helpers/stats.mjs",
+            "plane": "shared",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "shared/scripts/benchmark/helpers/stats.mjs"
+        },
+        {
+            "identity": "ai/scripts/benchmark/helpers/targetSetMeasurementCore.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/benchmark/helpers/targetSetMeasurementCore.mjs"
+        },
+        {
+            "identity": "ai/scripts/benchmark/keep-alive-probe.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/benchmark/keep-alive-probe.mjs"
+        },
+        {
+            "identity": "ai/scripts/benchmark/provider-lane-election.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/benchmark/provider-lane-election.mjs"
+        },
+        {
+            "identity": "ai/scripts/benchmark/restore-empty-target-meter.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/benchmark/restore-empty-target-meter.mjs"
+        },
+        {
+            "identity": "ai/scripts/benchmark/serving-cost-meter.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/benchmark/serving-cost-meter.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/agentOsPlaneBoundaryProof.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/agentOsPlaneBoundaryProof.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/analyzeNlTelemetry.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/audit-discussion-lifecycle.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/audit-discussion-lifecycle.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/bootstrapCodexSandbox.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/bootstrapCodexSandbox.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/captureParityLatencyPair.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/captureParityLatencyPair.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/check-identity-facts.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/check-identity-facts.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/check-retired-primitives.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/check-retired-primitives.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/check-substrate-size.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/check-substrate-size.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/conceptNeighborhoodProbe.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/diagnostics/conceptNeighborhoodProbe.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/consumerRelevanceCensus.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/consumerRelevanceCensus.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/consumerRelevanceMap.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/consumerRelevanceMap.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/defectObservations.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/defectObservations.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/denyCloudPlanePackages.loader.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/denyCloudPlanePackages.loader.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/detectTruncatedTimelines.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/detectTruncatedTimelines.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/devDependencyCensus.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/devDependencyCensus.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/diagnoseMcpConcurrency.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/diagnoseMcpConcurrency.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/dialogGateRig.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/dialogGateRig.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/fleetHealthcheck.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/fleetHealthcheck.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/gemini-incident-cost-ledger.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/gemini-incident-cost-ledger.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/genesisProbe.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/genesisProbe.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/lmStudioEmbeddingInstances.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/lmStudioEmbeddingInstances.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/mailboxReadStateProbe.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/diagnostics/mailboxReadStateProbe.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/mcpHandlerSignatureCensus.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/mcpHandlerSignatureCensus.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/mcpHealthcheck.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/mcpHealthcheck.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/parityLatencyPair.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/parityLatencyPair.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/pilotPlaneTerminal.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/diagnostics/pilotPlaneTerminal.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/probePortClaims.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/probePortClaims.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/providerLaneComposition.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/providerLaneComposition.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/review-cost-meter.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/review-cost-meter.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/seatCostReport.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/seatCostReport.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/staleEmbeddingCensus.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/diagnostics/staleEmbeddingCensus.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/structureMap.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/diagnostics/structureMap.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/validateConceptEdges.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/diagnostics/validateConceptEdges.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/walReplayPlan.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/diagnostics/walReplayPlan.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/walSnapshotClone.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/diagnostics/walSnapshotClone.mjs"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/walVolumeBaseline.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/diagnostics/walVolumeBaseline.mjs"
+        },
+        {
+            "identity": "ai/scripts/fleet/deriveFleetRoster.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/fleet/deriveFleetRoster.mjs"
+        },
+        {
+            "identity": "ai/scripts/fleet/devCockpit.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/fleet/devCockpit.mjs"
+        },
+        {
+            "identity": "ai/scripts/fleet/onboardPeer.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/fleet/onboardPeer.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/backfill-memory-summaries.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/lifecycle/backfill-memory-summaries.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/checkAllAgentIdle.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/checkAllAgentIdle.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/checkSunsetted.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/checkSunsetted.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/deferencePhraseMatch.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/deferencePhraseMatch.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/harnessLifecycle.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/harnessLifecycle.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/harnessRouting.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/harnessRouting.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/heartbeatLock.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/heartbeatLock.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/hookProjectionReader.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/hookProjectionReader.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/idleOutNudge.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/idleOutNudge.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/inflightLock.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/inflightLock.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/materialArtifactKey.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/materialArtifactKey.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/nightlyE2eDigest.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/nightlyE2eDigest.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/nightlyE2eRunner.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/nightlyE2eRunner.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/parseLaneState.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/parseLaneState.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/postReleasePreflight.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/postReleasePreflight.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/postReleaseSync.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/postReleaseSync.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/resumeHarness.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/resumeHarness.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/revalidationSweep.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/revalidationSweep.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/stopHookDecision.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/stopHookDecision.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/summarize-sessions.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/lifecycle/summarize-sessions.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/swarmWakeCooldown.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/swarmWakeCooldown.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/sweepExpiredTasks.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/sweepExpiredTasks.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/validateLaneStateTerminal.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/validateLaneStateTerminal.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/validateMergeReady.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/validateMergeReady.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/wakeSafetyGate.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/wakeSafetyGate.mjs"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/windowsBatchSpawn.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lifecycle/windowsBatchSpawn.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/check-commit-authorship.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/check-commit-authorship.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/check-front-door-fingerprint.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/check-front-door-fingerprint.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-adr-seam-table.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-adr-seam-table.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-adr-status.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-adr-status.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-agents.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-agents.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-config-template-ssot.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-config-template-ssot.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-fleet-vocabulary-parity.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-fleet-vocabulary-parity.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-guard-ci-parity.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-guard-ci-parity.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-guides.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-guides.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-identity-engine-coherence.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-identity-engine-coherence.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-identity-vocabulary.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-identity-vocabulary.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-mcp-test-locations.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-mcp-test-locations.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-npm-script-entrypoints.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-npm-script-entrypoints.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-openapi-service-parity.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-openapi-service-parity.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-pr-stacking.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-pr-stacking.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-retry-bounds.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-retry-bounds.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-script-plane.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-script-plane.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-skill-manifest.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-skill-manifest.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/lint-tree-json.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/lint/lint-tree-json.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/prStackingGuard.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lint/prStackingGuard.mjs"
+        },
+        {
+            "identity": "ai/scripts/lint/scriptPlaneClosure.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/lint/scriptPlaneClosure.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/aggregate-temporal-summary.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/aggregate-temporal-summary.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/auditConceptSpineAliases.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/auditConceptSpineAliases.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/auditGraphIntegrity.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/auditGraphIntegrity.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/backup.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/backup.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/backupCorruptionTimeline.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/backupCorruptionTimeline.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/backupStagingResidueCore.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/backupStagingResidueCore.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/buildKbAgentFaqs.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/buildKbAgentFaqs.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/businessMetricsProbeCore.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/maintenance/businessMetricsProbeCore.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/checkChromaIntegrity.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/checkChromaIntegrity.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/checkDetectionRetentionSla.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/checkDetectionRetentionSla.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/communityActivityShadowProbeCore.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/maintenance/communityActivityShadowProbeCore.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/communityBatchPushClient.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/maintenance/communityBatchPushClient.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/communitySourceOperator.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/communitySourceOperator.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/compactGraphLog.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/compactGraphLog.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/defragChromaDB.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/defragChromaDB.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/defragSQLiteDB.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/defragSQLiteDB.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/deploymentMigrationCore.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/maintenance/deploymentMigrationCore.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/detectionRetentionSla.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/detectionRetentionSla.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/detectionRetentionSlaInputs.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/detectionRetentionSlaInputs.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/downloadKnowledgeBase.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/downloadKnowledgeBase.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/exportMemoryQuarantine.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/exportMemoryQuarantine.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/graphLifecycleReport.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/graphLifecycleReport.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/ingestTenant.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/ingestTenant.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/kbPushClient.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/maintenance/kbPushClient.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/knowledgeBaseArtifact.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/knowledgeBaseArtifact.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/materializeDeploymentPrescriptions.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/maintenance/materializeDeploymentPrescriptions.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/migrateDeployment.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/maintenance/migrateDeployment.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/migrationCensusReport.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/migrationCensusReport.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/offHostSync.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/offHostSync.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/probeBusinessMetrics.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/maintenance/probeBusinessMetrics.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/probeCollectionQueryHealth.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/probeCollectionQueryHealth.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/probeCommunityActivityShadow.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/maintenance/probeCommunityActivityShadow.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/projectCoreCorpus.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/projectCoreCorpus.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/purgeNoContentGraphMemories.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/purgeNoContentGraphMemories.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/purgeTestCollections.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/purgeTestCollections.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/recreateGraphDb.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/recreateGraphDb.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/redeployPreflight.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/maintenance/redeployPreflight.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/repairMemoryCoreStoredEmbeddings.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/repairMemoryCoreStoredEmbeddings.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/repairUnprojectedSessions.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/repairUnprojectedSessions.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/restore.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/restore.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/syncGithubWorkflow.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/maintenance/syncGithubWorkflow.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/syncGithubWorkflowBranchGuard.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/maintenance/syncGithubWorkflowBranchGuard.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/syncKnowledgeBase.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/syncKnowledgeBase.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/syncTenantRepos.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/syncTenantRepos.mjs"
+        },
+        {
+            "identity": "ai/scripts/maintenance/uploadKnowledgeBase.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/maintenance/uploadKnowledgeBase.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/backfillChromaSharedUserId.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/backfillChromaSharedUserId.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/bootstrapWorktree.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/migrations/bootstrapWorktree.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/canonicalizeStoredAgentIdentities.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/migrate-discussions-b1.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/migrate-discussions-b1.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/migrateMemoryCore.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/migrateMemoryCore.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/migrateWakeSubscriptions.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/migrateWakeSubscriptions.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/normalizeGraphIdentities.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/normalizeGraphIdentities.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/priorityBackfill.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/priorityBackfill.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/rebucketArchive.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/rebucketArchive.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/reconcileRawMemoryGraphIdentities.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/refetchStaleDiscussions.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/refetchStaleDiscussions.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/refetchStalePulls.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/refetchStalePulls.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/refetchTruncatedIssues.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/refetchTruncatedIssues.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/renameAgentIdentities.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/renameAgentIdentities.mjs"
+        },
+        {
+            "identity": "ai/scripts/migrations/repairStaleEmbeddings.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/migrations/repairStaleEmbeddings.mjs"
+        },
+        {
+            "identity": "ai/scripts/runners/runAgent.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "scripts/runners/runAgent.mjs"
+        },
+        {
+            "identity": "ai/scripts/runners/runSandman.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "launch-root",
+                "script-module"
+            ],
+            "target": "cloud/scripts/runners/runSandman.mjs"
+        },
+        {
+            "identity": "ai/scripts/setup/cohortAdmissibility.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/setup/cohortAdmissibility.mjs"
+        },
+        {
+            "identity": "ai/scripts/setup/generateRosterOnboarding.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/setup/generateRosterOnboarding.mjs"
+        },
+        {
+            "identity": "ai/scripts/setup/migrateConfigOverlay.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/setup/migrateConfigOverlay.mjs"
+        },
+        {
+            "identity": "ai/scripts/setup/revisionConfigDiff.mjs",
+            "plane": "edge",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "scripts/setup/revisionConfigDiff.mjs"
+        },
+        {
+            "identity": "ai/scripts/setup/seedAgentIdentities.mjs",
+            "plane": "cloud",
+            "surfaces": [
+                "script-module"
+            ],
+            "target": "cloud/scripts/setup/seedAgentIdentities.mjs"
+        }
+    ],
+    "correction": [
+        "sourceSha initially recorded a neo-agent-brain commit while sourceRepository names neomjs/neo - the rev-parse ran in the wrong clone. Corrected to the neomjs/neo dev SHA the inventory actually ran against, verified clean at that head.",
+        "The first emission carried 178 rows from an EXTENSION-shaped filter that silently dropped every file without a .mjs/.yml/.yaml suffix. That dropped 8 identities: 7 belonging to PR #9 (harmless) and ai/mcp/deploy/proxy/Caddyfile (a real miss), while leaving 11 PR #9 targets duplicated here. Re-derived with no extension filter and with ai/deploy/** excluded by scope: 168 rows. Caught by @neo-gpt-emmy."
+    ],
+    "scope": "neo-agent-brain#13 receives the Agent OS source movers EXCEPT ai/deploy/**, which PR #9 owns. Full custody population is 186; PR #9 holds 18; this manifest holds the remaining 168. The #17791 source-deletion predicate is the UNION of both sets, not this manifest alone.",
+    "canonicalSha256": "3627cedf2ae9c8ed9a36ce56af7fd58e8baf13a4d1e7cb0f1afd82426ebcac30"
 }
