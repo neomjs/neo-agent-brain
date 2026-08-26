@@ -26,7 +26,7 @@ import {
     parseOnboardArgs,
     planOnboarding,
     renderPlan
-} from '../../../../scripts/fleet/onboardPeer.mjs';
+} from '../../../../cloud/scripts/fleet/onboardPeer.mjs';
 import {parseGenerateArgs} from '../../../../scripts/setup/generateRosterOnboarding.mjs';
 
 const

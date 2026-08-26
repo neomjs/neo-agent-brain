@@ -34,11 +34,11 @@ test.describe('ai/scripts wake dual-mode exports', () => {
             nudgeModule,
             swarmModule
         ] = await Promise.all([
-            import('../../../../scripts/lifecycle/checkSunsetted.mjs'),
-            import('../../../../scripts/lifecycle/resumeHarness.mjs'),
-            import('../../../../scripts/lifecycle/checkAllAgentIdle.mjs'),
-            import('../../../../scripts/lifecycle/idleOutNudge.mjs'),
-            import('../../../../scripts/lifecycle/swarmWakeCooldown.mjs')
+            import('../../../../cloud/scripts/lifecycle/checkSunsetted.mjs'),
+            import('../../../../cloud/scripts/lifecycle/resumeHarness.mjs'),
+            import('../../../../cloud/scripts/lifecycle/checkAllAgentIdle.mjs'),
+            import('../../../../cloud/scripts/lifecycle/idleOutNudge.mjs'),
+            import('../../../../cloud/scripts/lifecycle/swarmWakeCooldown.mjs')
         ]);
 
         expect(typeof sunsetModule.checkSunsetted).toBe('function');

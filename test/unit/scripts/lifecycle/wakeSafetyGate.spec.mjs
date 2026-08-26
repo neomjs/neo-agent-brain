@@ -36,7 +36,7 @@ test.describe('ai/scripts/wakeSafetyGate', () => {
     let wakeSafetyGate;
 
     test.beforeAll(async () => {
-        wakeSafetyGate = await import('../../../../scripts/lifecycle/wakeSafetyGate.mjs')
+        wakeSafetyGate = await import('../../../../cloud/scripts/lifecycle/wakeSafetyGate.mjs')
     });
 
     /**

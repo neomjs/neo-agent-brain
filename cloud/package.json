@@ -29,8 +29,10 @@
         "yaml": "2.9.0"
     },
     "scripts": {
+        "ai:analyze-nl-telemetry": "node ./scripts/diagnostics/analyzeNlTelemetry.mjs",
         "ai:audit-integrity": "node ./scripts/maintenance/auditGraphIntegrity.mjs",
         "ai:backup": "node ./scripts/maintenance/backup.mjs",
+        "ai:benchmark-gemma4": "node ./scripts/benchmark/gemma4-rem-benchmark.mjs",
         "ai:build-kb-faqs": "node ./scripts/maintenance/buildKbAgentFaqs.mjs",
         "ai:check-backup-integrity": "node ./scripts/maintenance/backupCorruptionTimeline.mjs",
         "ai:check-chroma-integrity": "node ./scripts/maintenance/checkChromaIntegrity.mjs",
@@ -50,6 +52,8 @@
         "ai:mcp-server-memory-core": "node ./mcp/server/memory-core/mcp-server.mjs",
         "ai:migration-census-report": "node ./scripts/maintenance/migrationCensusReport.mjs",
         "ai:orchestrator": "node ./daemons/orchestrator/daemon.mjs",
+        "ai:probe-keep-alive": "node ./scripts/benchmark/keep-alive-probe.mjs",
+        "ai:provider-lane-election": "node ./scripts/benchmark/provider-lane-election.mjs",
         "ai:purge-no-content-graph-memories": "node ./scripts/maintenance/purgeNoContentGraphMemories.mjs",
         "ai:purge-test-collections": "node ./scripts/maintenance/purgeTestCollections.mjs",
         "ai:reconcile-raw-memory-identities": "node ./scripts/migrations/reconcileRawMemoryGraphIdentities.mjs",

@@ -11,7 +11,7 @@ import ChromaManager            from './managers/ChromaManager.mjs';
 import StorageRouter            from './managers/StorageRouter.mjs';
 import ChromaLifecycleService   from './lifecycle/ChromaLifecycleService.mjs';
 import logger                   from '../../mcp/server/memory-core/logger.mjs';
-import {readGateState}          from '../../../scripts/lifecycle/wakeSafetyGate.mjs';
+import {readGateState}          from '../../scripts/lifecycle/wakeSafetyGate.mjs';
 import {createBoundedRetryGate} from '../shared/boundedRetryGate.mjs';
 import {
     buildEmbeddingProbeBlock,

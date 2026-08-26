@@ -21,7 +21,7 @@ import os                                             from 'os';
 import path                                           from 'path';
 import Neo                                            from 'neo.mjs/src/Neo.mjs';
 import * as core                                      from 'neo.mjs/src/core/_export.mjs';
-import {deriveAllAgentIdleCycleId, checkAllAgentIdle} from '../../../../scripts/lifecycle/checkAllAgentIdle.mjs';
+import {deriveAllAgentIdleCycleId, checkAllAgentIdle} from '../../../../cloud/scripts/lifecycle/checkAllAgentIdle.mjs';
 import {resolveTargets}                               from '../../../../cloud/daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
 import SQLite                                         from '../../../../cloud/graph/storage/SQLite.mjs';
 import AiConfig                                       from '../../../../cloud/config.template.mjs';

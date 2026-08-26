@@ -20,7 +20,7 @@ import dotenv                           from 'dotenv';
 import {exec}                           from 'child_process';
 import {promisify}                      from 'util';
 import {GoogleGenerativeAI, SchemaType} from '@google/generative-ai';
-import {sanitizeInput}                  from '../../buildScripts/util/sanitizer.mjs';
+import {sanitizeInput}                  from '../../shared/sanitizer.mjs';
 
 import {
     GH_LocalFileService,

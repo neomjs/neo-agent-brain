@@ -9,10 +9,10 @@
     },
     "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
     "counts": {
-        "total": 806,
-        "cloud": 634,
-        "edge": 166,
-        "shared": 6,
+        "total": 805,
+        "cloud": 647,
+        "edge": 151,
+        "shared": 7,
         "planeConflicts": 0,
         "censusDispositioned": 209,
         "fromRootScriptCommand": 11,
@@ -645,9 +645,9 @@
         },
         {
             "identity": "ai/daemons/wake/daemon.mjs",
-            "plane": "edge",
-            "target": "daemons/wake/daemon.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/daemons/wake/daemon.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/daemons/wake/flushDeferPolicy.mjs",
@@ -1623,9 +1623,9 @@
         },
         {
             "identity": "ai/scripts/benchmark/gemma4-rem-benchmark.mjs",
-            "plane": "edge",
-            "target": "scripts/benchmark/gemma4-rem-benchmark.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/benchmark/gemma4-rem-benchmark.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/benchmark/helpers/providerLaneElectionCore.mjs",
@@ -1653,15 +1653,15 @@
         },
         {
             "identity": "ai/scripts/benchmark/keep-alive-probe.mjs",
-            "plane": "edge",
-            "target": "scripts/benchmark/keep-alive-probe.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/benchmark/keep-alive-probe.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/benchmark/provider-lane-election.mjs",
-            "plane": "edge",
-            "target": "scripts/benchmark/provider-lane-election.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/benchmark/provider-lane-election.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/benchmark/restore-empty-target-meter.mjs",
@@ -1671,9 +1671,9 @@
         },
         {
             "identity": "ai/scripts/benchmark/serving-cost-meter.mjs",
-            "plane": "edge",
-            "target": "scripts/benchmark/serving-cost-meter.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/benchmark/serving-cost-meter.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/diagnostics/agentOsExtractionInventory.json",
@@ -1695,9 +1695,9 @@
         },
         {
             "identity": "ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
-            "plane": "edge",
-            "target": "scripts/diagnostics/analyzeNlTelemetry.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/diagnostics/analyzeNlTelemetry.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/diagnostics/audit-discussion-lifecycle.mjs",
@@ -1923,9 +1923,9 @@
         },
         {
             "identity": "ai/scripts/fleet/onboardPeer.mjs",
-            "plane": "edge",
-            "target": "scripts/fleet/onboardPeer.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/fleet/onboardPeer.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/lifecycle/backfill-memory-summaries.mjs",
@@ -1935,15 +1935,15 @@
         },
         {
             "identity": "ai/scripts/lifecycle/checkAllAgentIdle.mjs",
-            "plane": "edge",
-            "target": "scripts/lifecycle/checkAllAgentIdle.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/lifecycle/checkAllAgentIdle.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/lifecycle/checkSunsetted.mjs",
-            "plane": "edge",
-            "target": "scripts/lifecycle/checkSunsetted.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/lifecycle/checkSunsetted.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/lifecycle/deferencePhraseMatch.mjs",
@@ -1977,9 +1977,9 @@
         },
         {
             "identity": "ai/scripts/lifecycle/idleOutNudge.mjs",
-            "plane": "edge",
-            "target": "scripts/lifecycle/idleOutNudge.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/lifecycle/idleOutNudge.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/lifecycle/inflightLock.mjs",
@@ -2012,16 +2012,10 @@
             "origin": "census"
         },
         {
-            "identity": "ai/scripts/lifecycle/postReleaseSync.mjs",
-            "plane": "edge",
-            "target": "scripts/lifecycle/postReleaseSync.mjs",
-            "origin": "census"
-        },
-        {
             "identity": "ai/scripts/lifecycle/resumeHarness.mjs",
-            "plane": "edge",
-            "target": "scripts/lifecycle/resumeHarness.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/lifecycle/resumeHarness.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/lifecycle/revalidationSweep.mjs",
@@ -2043,9 +2037,9 @@
         },
         {
             "identity": "ai/scripts/lifecycle/swarmWakeCooldown.mjs",
-            "plane": "edge",
-            "target": "scripts/lifecycle/swarmWakeCooldown.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/lifecycle/swarmWakeCooldown.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/lifecycle/sweepExpiredTasks.mjs",
@@ -2067,9 +2061,9 @@
         },
         {
             "identity": "ai/scripts/lifecycle/wakeSafetyGate.mjs",
-            "plane": "edge",
-            "target": "scripts/lifecycle/wakeSafetyGate.mjs",
-            "origin": "census"
+            "plane": "cloud",
+            "target": "cloud/scripts/lifecycle/wakeSafetyGate.mjs",
+            "origin": "ownership (neo-agent-brain#13 disposition)"
         },
         {
             "identity": "ai/scripts/lifecycle/windowsBatchSpawn.mjs",
@@ -2195,12 +2189,6 @@
             "identity": "ai/scripts/lint/lint-skill-manifest.mjs",
             "plane": "edge",
             "target": "scripts/lint/lint-skill-manifest.mjs",
-            "origin": "census"
-        },
-        {
-            "identity": "ai/scripts/lint/lint-tree-json.mjs",
-            "plane": "edge",
-            "target": "scripts/lint/lint-tree-json.mjs",
             "origin": "census"
         },
         {
@@ -4854,6 +4842,12 @@
             "plane": "cloud",
             "target": "cloud/services/shared/vector/lmsEmbeddingInputSuffix.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "buildScripts/util/sanitizer.mjs",
+            "plane": "shared",
+            "target": "shared/sanitizer.mjs",
+            "origin": "plane-neutral (ADR 0040 §2.2)"
         }
     ],
     "correction": [
@@ -4863,7 +4857,8 @@
         "The 616-row receive left 206 tracked ai/** paths with no disposition at all, including six mcp-server.mjs entrypoints, the fleet server, and the orchestrator control plane. Reported by @neo-gpt-emmy as the fourth blocker and gated by @neo-gpt on whole-tree reconciliation. Now 819 received, 18 to PR #9, 2 stays-engine, 1 retire, 0 unclassified.",
         "Ten paths were received that should not have been. @neo-gpt-emmy dispositioned the same 206 independently and caught them: nine ai/examples/harnessEndurance/** files are an Engine subject (they benchmark Neo worker topology and are consumed only by Engine e2e), and ai/data/memory-core/lazy-edges.jsonl is genuinely ambiguous. My membership rule follows directory; ADR 0040 §2.7 follows subject, and an Engine subject can sit in an ai/ directory.",
         "Final partition ruled jointly by @neo-gpt and @neo-gpt-emmy at 806/18/14/2 with zero ambiguous. Two corrections against my 809/18/11/1/1: nightly-e2e is a four-file Engine unit so the runner, digest and README join the explicit-stay plist rather than the plist following them, and lazy-edges.jsonl is retire rather than ambiguous.",
-        "Five rows still named cloud/ targets after the files were moved to shared/ as plane-neutral members. The manifest is the deletion authority for #17791, so a row that names a path the tree does not have is worse than a wrong plane: it is an instruction to delete a source whose destination cannot be verified. Caught by checking every target against the tree rather than trusting the write."
+        "Five rows still named cloud/ targets after the files were moved to shared/ as plane-neutral members. The manifest is the deletion authority for #17791, so a row that names a path the tree does not have is worse than a wrong plane: it is an instruction to delete a source whose destination cannot be verified. Caught by checking every target against the tree rather than trusting the write.",
+        "Unresolved-edge disposition from @neo-gpt, applied as ownership rather than string rewrites: 13 scripts whose only blocker was Cloud config are Cloud and moved there with their npm entries; postReleaseSync and lint-tree-json import Engine buildScripts, so they stay Engine and left the Brain; the 13-line zero-import sanitizer five MCP entrypoints need is received as a plane-neutral shared member. Repointing the strings instead would have made every import resolve while leaving Host-Edge scripts depending on Cloud configuration."
     ],
     "scope": "neo-agent-brain#13 receives the Agent OS source EXCEPT ai/deploy/**, which Brain PR #9 owns. PR #9 holds 18 movers; this manifest holds 616. The #17791 source-deletion predicate is the UNION of both sets (18 + 616 = 634), never this manifest alone and never PR #9 alone.",
     "population": "Census roots (custody rows AND plane-opener rows) union their transitive ai/** closure, tracked files only, minus ai/deploy/** which Brain PR #9 owns. Custody rows alone lost 19 tracked files including the orchestrator daemon and the fleet server; the closure alone cannot find files nothing imports, such as the five per-server config templates. Neither source is sufficient by itself.",
@@ -5182,5 +5177,5 @@
         "unclassified": 0,
         "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership."
     },
-    "canonicalSha256": "ac244fafb5d26b1fff5639b6566b27c40a683a6098ace8de4b32cd1b027120af"
+    "canonicalSha256": "e8137b46d44063293be9d2815af2bcc9c7211eb1d61a32ba918225d9db94c950"
 }

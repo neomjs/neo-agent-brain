@@ -197,7 +197,7 @@ test.describe('ai/scripts/swarmWakeCooldown', () => {
         });
 
         test('refuses to run at all when no wake-daemon member is injected', async () => {
-            const {swarmWakeCooldown} = await import('../../../../scripts/lifecycle/swarmWakeCooldown.mjs');
+            const {swarmWakeCooldown} = await import('../../../../cloud/scripts/lifecycle/swarmWakeCooldown.mjs');
 
             // Ahead of the signal guards on purpose: a composition error that only surfaced on the
             // rare all-idle branch would stay invisible through every ordinary call.

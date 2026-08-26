@@ -32,7 +32,7 @@ import {
     resolveProviderLaneAdapters,
     validateProviderLaneElectionReport,
     validateProviderLaneRunPlan
-} from '../../../../scripts/benchmark/provider-lane-election.mjs';
+} from '../../../../cloud/scripts/benchmark/provider-lane-election.mjs';
 import {
     buildProviderLaneCandidateSchedule,
     evaluateProviderLaneElection

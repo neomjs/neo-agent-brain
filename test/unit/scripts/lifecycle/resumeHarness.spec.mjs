@@ -29,7 +29,7 @@ import {
 import {
     resolveResumeHarnessInstanceAddress,
     resolveResumeHarnessInstancePid
-} from '../../../../scripts/lifecycle/resumeHarness.mjs';
+} from '../../../../cloud/scripts/lifecycle/resumeHarness.mjs';
 
 test.describe('ai/scripts/resumeHarness', () => {
     test.describe.configure({mode: 'serial'});
@@ -241,7 +241,7 @@ test.describe('ai/scripts/resumeHarness', () => {
     });
 
     test('normalizes GitHub-login identity form before harness dispatch (#11797)', async () => {
-        const {normalizeAgentIdentityNodeId} = await import('../../../../scripts/lifecycle/resumeHarness.mjs');
+        const {normalizeAgentIdentityNodeId} = await import('../../../../cloud/scripts/lifecycle/resumeHarness.mjs');
 
         expect(normalizeAgentIdentityNodeId('neo-opus-ada')).toBe('@neo-opus-ada');
         expect(normalizeAgentIdentityNodeId('@neo-gpt')).toBe('@neo-gpt');
@@ -532,7 +532,7 @@ test.describe('ai/scripts/resumeHarness', () => {
     });
 
     test('Antigravity CLI: win32 uses native adapter after .cmd execution support (#11767)', async () => {
-        const { selectHarnessAdapter } = await import('../../../../scripts/lifecycle/resumeHarness.mjs');
+        const { selectHarnessAdapter } = await import('../../../../cloud/scripts/lifecycle/resumeHarness.mjs');
 
         expect(selectHarnessAdapter({ adapter: 'antigravity-cli' }, 'linux')).toBe('antigravity-cli');
         expect(selectHarnessAdapter({ adapter: 'antigravity-cli' }, 'darwin')).toBe('antigravity-cli');

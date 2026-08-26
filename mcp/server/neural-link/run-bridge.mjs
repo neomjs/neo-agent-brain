@@ -4,7 +4,7 @@ import * as core           from 'neo.mjs/src/core/_export.mjs';
 import Bridge              from './Bridge.mjs';
 import aiConfig            from './config.mjs';
 import logger              from './logger.mjs';
-import {sanitizeInput}     from '../../../../buildScripts/util/sanitizer.mjs';
+import {sanitizeInput}     from '../../../shared/sanitizer.mjs';
 import {fileURLToPath}     from 'node:url';
 import {assertConfigFresh} from '../../../scripts/setup/initServerConfigs.mjs';
 import {

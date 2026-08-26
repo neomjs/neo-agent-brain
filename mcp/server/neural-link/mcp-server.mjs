@@ -6,7 +6,7 @@ import InstanceManager                     from 'neo.mjs/src/manager/Instance.mj
 import aiConfig                            from './config.mjs';
 import logger                              from './logger.mjs';
 import Server, {resolveToolProjectionMode} from './Server.mjs';
-import {sanitizeInput}                     from '../../../../buildScripts/util/sanitizer.mjs';
+import {sanitizeInput}                     from '../../../shared/sanitizer.mjs';
 import {fileURLToPath}                     from 'node:url';
 import {assertConfigFresh}                 from '../../../scripts/setup/initServerConfigs.mjs';
 import {
