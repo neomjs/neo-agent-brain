@@ -1,7 +1,7 @@
 {
   "schemaVersion": "source-receive-manifest.v1",
   "sourceRepository": "neomjs/neo",
-  "sourceSha": "d027f69f970028dd1a88a10356957b9328fdc88c",
+  "sourceSha": "294a7a31d9f16eb0fb94bd4afadf279b5f9e8703",
   "derivedFrom": {
     "instrument": "ai/scripts/diagnostics/agentOsExtractionInventory.mjs --json",
     "inventoryRows": 1030,
@@ -1515,5 +1515,6 @@
       "target": "cloud/scripts/setup/seedAgentIdentities.mjs"
     }
   ],
-  "canonicalSha256": "a05f4b7f60b45d531853a72c9eaa2e2712aa3bf8d3b7479fce24178482aa8de3"
+  "correction": "sourceSha initially recorded a neo-agent-brain commit while sourceRepository names neomjs/neo — the rev-parse ran in the wrong clone. Corrected to the neomjs/neo dev SHA the inventory actually ran against, verified clean at that head.",
+  "canonicalSha256": "490b52ab20a61f265d8bfeff06f357ee657204c1dd2402d8db4b1adcb231feca"
 }
