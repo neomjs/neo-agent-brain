@@ -1565,6 +1565,11 @@ test.describe('agentOsExtractionInventory — exact population × explicit autho
     });
 
     test('the committed receipt is zero-residue, exhaustive, and independent of rendered overlays', () => {
+        test.skip(
+            !fs.existsSync(path.join(REPO_ROOT, 'package.brain.json')),
+            'the source-repository extraction receipt does not apply after the Agent OS is received'
+        );
+
         const overlayHiddenResolve = (specifier, fromFile) => {
                   const requested = path.resolve(path.dirname(fromFile), specifier),
                         template  = requested.endsWith(`${path.sep}config.mjs`)
@@ -1655,7 +1660,9 @@ test.describe('agentOsExtractionInventory — exact population × explicit autho
         expect(first.consumerEdges.byDirection[CONSUMER_EDGE_DIRECTION.outsideToAgentOs]).toBeGreaterThan(0);
         expect(first.consumerEdges.residue).toEqual({diskMinusAuthority: [], authorityMinusDisk: []});
         expect(first.workflowFiles.total).toBe(20);
-        expect(first.workflowFiles.occurrenceTotal).toBe(73);
+        // 70, down from 73: the three `lint-skill-manifest.mjs` occurrences in skill-manifest-lint.yml
+        // went with the lint when the corpus moved to neomjs/neo-agent-skills.
+        expect(first.workflowFiles.occurrenceTotal).toBe(70);
         expect(first.workflowFiles.byDisposition).toEqual({move: 7, 'pin-fetch': 13, retire: 0});
         expect(first.workflowFiles.residue).toEqual({diskMinusAuthority: [], authorityMinusDisk: []});
         expect(first.workflowFiles.rows.map(row => row.identity)).toEqual(workflowFiles.sort());
@@ -1788,7 +1795,7 @@ test.describe('agentOsExtractionInventory — exact population × explicit autho
         expect(human).toContain('package.brain.json::devDependencies::better-sqlite3 @');
         expect(human).toContain('consumer-edge identities:');
         expect(human).toContain('preclassified source classes:');
-        expect(human).toContain('workflow-file identities: 20 · occurrences 73');
+        expect(human).toContain('workflow-file identities: 20 · occurrences 70');
         expect(human).toContain('pin-fetch: 13');
         expect(human).toContain('Engine→AgentOS forbidden packages:');
 

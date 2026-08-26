@@ -35,10 +35,15 @@ import process        from 'node:process';
 
 const SEARCH_ROOT = 'ai/';
 
-/** Active surfaces where current Antigravity setup guidance is allowed to live. */
+/**
+ * Active surfaces where current Antigravity setup guidance is allowed to live.
+ *
+ * The debugging-antigravity skill is no longer among them: skills are consumed from the canonical
+ * package and materialized as untracked symlinks, so the path is absent from a fresh checkout and a
+ * grep scoped to it fails the whole check rather than finding nothing.
+ */
 const ACTIVE_ANTIGRAVITY_ROOTS = [
     '.agents/ANTIGRAVITY_RULES.md',
-    '.agents/skills/debugging-antigravity/',
     '.gemini/concepts/',
     '.github/AI_QUICK_START.md',
     '.gitignore',
@@ -215,12 +220,18 @@ function buildCategories() {
  * @returns {string}
  */
 function runScan(pattern, {include = [], exclude = [], roots = [SEARCH_ROOT]} = {}) {
+    const existingRoots = roots.filter(root => fs.existsSync(path.resolve(root)));
+
+    if (existingRoots.length === 0) {
+        return ''
+    }
+
     const args = [
         '-rnE',
         ...exclude.map(g => `--exclude=${g}`),
         ...include.map(g => `--include=${g}`),
         pattern,
-        ...roots
+        ...existingRoots
     ];
 
     try {

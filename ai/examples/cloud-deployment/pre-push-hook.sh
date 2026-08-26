@@ -12,11 +12,27 @@ set -euo pipefail
 TENANT_ID="${NEO_KB_TENANT_ID:-example-tenant}"
 REPO_SLUG="${NEO_KB_REPO_SLUG:-example/repo}"
 MCP_URL="${NEO_KB_MCP_URL:-}"
-# The tenant-side MCP push client inside the neo.mjs dependency. Override via NEO_KB_PUSH_CLIENT.
-PUSH_CLIENT="${NEO_KB_PUSH_CLIENT:-node_modules/neo.mjs/ai/scripts/maintenance/kbPushClient.mjs}"
-# The ai:ingest-tenant CLI inside the neo.mjs dependency. Override via NEO_INGEST_CLI.
-INGEST_CLI="${NEO_INGEST_CLI:-node_modules/neo.mjs/ai/scripts/maintenance/ingestTenant.mjs}"
 EMPTY="0000000000000000000000000000000000000000"
+
+fail_runtime_root() {
+    printf '%s\n' "[kb-pre-push] $1" >&2
+    exit 2
+}
+
+AGENTOS_ROOT="${NEO_AGENTOS_RUNTIME_ROOT:-}"
+
+[ -n "$AGENTOS_ROOT" ] ||
+    fail_runtime_root "NEO_AGENTOS_RUNTIME_ROOT is required and must name the absolute neo-agent-brain checkout"
+[[ "$AGENTOS_ROOT" = /* ]] ||
+    fail_runtime_root "NEO_AGENTOS_RUNTIME_ROOT must be absolute: $AGENTOS_ROOT"
+[ -d "$AGENTOS_ROOT" ] ||
+    fail_runtime_root "NEO_AGENTOS_RUNTIME_ROOT is not a directory: $AGENTOS_ROOT"
+
+PUSH_CLIENT="$AGENTOS_ROOT/ai/scripts/maintenance/kbPushClient.mjs"
+INGEST_CLI="$AGENTOS_ROOT/ai/scripts/maintenance/ingestTenant.mjs"
+
+[ -f "$PUSH_CLIENT" ] || fail_runtime_root "KB push client not found: $PUSH_CLIENT"
+[ -f "$INGEST_CLI" ]  || fail_runtime_root "tenant ingest CLI not found: $INGEST_CLI"
 
 build_remote_envelope() {
     CHANGED_PATHS="$changed" \

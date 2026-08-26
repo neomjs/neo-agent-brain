@@ -1,8 +1,8 @@
 import {existsSync}        from 'node:fs';
 import {readdir, readFile} from 'node:fs/promises';
 import path                from 'node:path';
-import Base                from 'neo.mjs/ai/services/knowledge-base/source/Base.mjs';
-import aiConfig            from 'neo.mjs/ai/mcp/server/knowledge-base/config.mjs';
+import Base                from '../../../../services/knowledge-base/source/Base.mjs';
+import aiConfig            from '../../../../mcp/server/knowledge-base/config.mjs';
 
 /**
  * @summary Example custom Source — indexes a tenant's `.proto` schema files in the full-corpus build.
