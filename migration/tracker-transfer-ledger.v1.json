@@ -14,12 +14,18 @@
     "destinationBaseline": "d027f69f970028dd1a88a10356957b9328fdc88c",
     "canary": "neomjs/neo#17701",
     "frozenPopulationCount": 164,
-    "transferRule": "frozen table order with neomjs/neo#17790 forced last"
+    "nativeTransferCount": 163,
+    "closedHistoricalSourceOnlyCount": 1,
+    "closedHistoricalException": "neomjs/neo#17781",
+    "operatorMechanismRuling": "native-transfer-open-only",
+    "transferRule": "frozen table order across open rows with neomjs/neo#17790 forced last; closed neomjs/neo#17781 stays source-side"
   },
   "capturedAt": "2026-08-26T11:30:13.578Z",
   "invariants": {
     "noTransferBeforeManifest": true,
     "preserveClosedState": true,
+    "transferOpenIssuesOnly": true,
+    "neverReopenOrCloneClosedHistory": true,
     "preserveLabelsByName": true,
     "milestonesExpectedToDrop": [
       "Agent OS extraction wave",
@@ -195,8 +201,21 @@
         }
       ],
       "destination": null,
-      "transfer": null,
-      "verification": null
+      "transfer": {
+        "status": "not-applicable",
+        "disposition": "closed-historical-stays-source",
+        "reason": "GitHub native transfer supports open issues only; final operator ruling keeps resolved neomjs/neo#17781 as source-side history",
+        "operatorRulingAt": "2026-08-26T12:07:36Z"
+      },
+      "verification": {
+        "status": "verified",
+        "verifiedAt": "2026-08-26T12:09:13Z",
+        "sourceState": "CLOSED",
+        "sourceUrl": "https://github.com/neomjs/neo/issues/17781",
+        "resolvingPullRequest": "https://github.com/neomjs/neo/pull/17797",
+        "reopened": false,
+        "cloned": false
+      }
     },
     {
       "transferOrdinal": 4,
