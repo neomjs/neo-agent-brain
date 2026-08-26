@@ -5,14 +5,14 @@ import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 /**
- * @summary Proves every `ai:*` npm script entry pointing into `ai/scripts` resolves its static
+ * @summary Proves every `ai:*` npm script entry pointing into `scripts/` resolves its static
  * relative imports — the dead-published-entrypoint guard.
  *
  * A script nobody runs cannot fail: a broken import surfaces only at invocation, and nothing
  * invokes a rotted entrypoint, so a published capability can sit dead behind a green board for
  * months (the `ai:build-kb-faqs` specimen — its import target moved in a service migration and
  * no surface reported it). This guard makes the failure reportable: for every `ai:*` script
- * whose command names a file under `ai/scripts`, the entry file must exist and every relative
+ * whose command names a file under `scripts/`, the entry file must exist and every relative
  * specifier in its transitive static-import graph must resolve. Bare specifiers (`node:*`,
  * node_modules) are the runtime's concern, not this guard's; dynamic `import()` is out of scope
  * by construction (the contract is static resolvability).
@@ -29,7 +29,7 @@ import {fileURLToPath} from 'node:url';
  * overlays are materialized on any box that has ever installed.)
  *
  * Usage:
- *   node ai/scripts/lint/lint-npm-script-entrypoints.mjs [--root <repoRoot>]
+ *   node scripts/lint/lint-npm-script-entrypoints.mjs [--root <repoRoot>]
  */
 
 /**
@@ -72,11 +72,11 @@ export function readRelativeSpecifiers(source, absPath) {
 }
 
 /**
- * Extracts the `ai:*` script entries whose command executes a file under `ai/scripts`, plus the
- * entries it cannot classify. Extraction is global — every `ai/scripts/*.mjs` path in the
+ * Extracts the `ai:*` script entries whose command executes a file under `scripts/`, plus the
+ * entries it cannot classify. Extraction is global — every `scripts/*.mjs` path in the
  * command becomes an entry (a compound command's second entrypoint is checked, never silently
- * dropped) — and tolerant of the bare `ai/scripts/…` form (no leading `./`). An `ai:*` command
- * that references `ai/scripts` yet yields no entry is reported as unclassifiable: the guard's
+ * dropped) — and tolerant of the bare `scripts/…` form (no leading `./`). An `ai:*` command
+ * that references `scripts/` yet yields no entry is reported as unclassifiable: the guard's
  * coverage count must never be able to shrink without saying so.
  * @param {Object<String,String>} scripts package.json `scripts`.
  * @returns {{entries: Array<{name: String, entry: String}>, unclassifiable: Array<{name: String, command: String}>}}
@@ -84,7 +84,7 @@ export function readRelativeSpecifiers(source, absPath) {
 export function extractEntrypoints(scripts) {
     const entries        = [];
     const unclassifiable = [];
-    const ENTRY_PATTERN  = /(?:^|[\s;&|'"(])((?:\.\/)?ai\/scripts\/[^\s;&|'"]+\.mjs)/g;
+    const ENTRY_PATTERN  = /(?:^|[\s;&|'"(])((?:\.\/)?scripts\/[^\s;&|'"]+\.mjs)/g;
 
     for (const [name, command] of Object.entries(scripts ?? {})) {
         if (!name.startsWith('ai:')) continue;
@@ -99,7 +99,7 @@ export function extractEntrypoints(scripts) {
             entries.push({name, entry: match[1].startsWith('./') ? match[1] : `./${match[1]}`});
         }
 
-        if (entries.length === before && text.includes('ai/scripts')) {
+        if (entries.length === before && text.includes('scripts')) {
             unclassifiable.push({name, command: text});
         }
     }
@@ -206,10 +206,10 @@ if (isMain) {
     }
 
     // Unclassifiable entries are printed, never silently excluded — and never a verdict: an
-    // `ai:*` command that references ai/scripts without running one of its files is not a
+    // `ai:*` command that references scripts without running one of its files is not a
     // broken entrypoint, but the coverage count must say what it could not classify.
     for (const {name, command} of unclassifiable) {
-        console.warn(`[lint-npm-script-entrypoints] note — "${name}" references ai/scripts but no entrypoint was extractable; not checked: ${command}`);
+        console.warn(`[lint-npm-script-entrypoints] note — "${name}" references scripts but no entrypoint was extractable; not checked: ${command}`);
     }
 
     if (violations.length > 0) {
@@ -219,5 +219,5 @@ if (isMain) {
         process.exit(1);
     }
 
-    console.log(`[lint-npm-script-entrypoints] OK — ${entries.length} ai:* entr(ies) into ai/scripts, every static relative import resolvable${unclassifiable.length ? ` (${unclassifiable.length} unclassifiable, see notes)` : ''}.`);
+    console.log(`[lint-npm-script-entrypoints] OK — ${entries.length} ai:* entr(ies) into scripts, every static relative import resolvable${unclassifiable.length ? ` (${unclassifiable.length} unclassifiable, see notes)` : ''}.`);
 }

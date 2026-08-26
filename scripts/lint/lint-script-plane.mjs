@@ -13,7 +13,7 @@ import {
 }                              from './scriptPlaneClosure.mjs';
 
 /**
- * Fails a build when an `ai/scripts` entrypoint's declared execution authority disagrees with what
+ * Fails a build when an `scripts/` entrypoint's declared execution authority disagrees with what
  * its code actually reaches.
  *
  * The entrypoint population is read from `package.json`'s `ai:*` scripts rather than from a directory
@@ -45,7 +45,7 @@ const
  * @summary Paths this lint reads. Imported by the workflow scan-root parity spec as the SSOT.
  *
  * `ai/**` is deliberately broad: the closure walks transitively, so a capability introduced anywhere
- * a script can reach changes a verdict here. Narrowing this to `ai/scripts/**` would mean the guard
+ * a script can reach changes a verdict here. Narrowing this to `scripts/**` would mean the guard
  * does not RUN on the edit that changes its own answer — the failure mode the parity spec exists to
  * prevent.
  * @type {String[]}
@@ -53,8 +53,8 @@ const
 export const SCAN_SURFACE = Object.freeze([
     'package.json',
     'ai/**',
-    'ai/scripts/lint/lint-script-plane.mjs',
-    'ai/scripts/lint/scriptPlaneClosure.mjs',
+    'scripts/lint/lint-script-plane.mjs',
+    'scripts/lint/scriptPlaneClosure.mjs',
     '.github/workflows/script-plane-lint.yml'
 ]);
 
@@ -95,7 +95,7 @@ export function edgeIdentity(finding, projectRoot = PROJECT_ROOT) {
  * resolved; a new identity fails the build even when one of these vanishes in the same commit, which
  * is the case a count-based baseline waves through.
  *
- * The dominant cause is a single site — `ai/ConfigProvider.mjs`'s `await import(absolutePath)` on a
+ * The dominant cause is a single site — `cloud/ConfigProvider.mjs`'s `await import(absolutePath)` on a
  * runtime-resolved overlay path. It is deliberately NOT special-cased: a dynamic import on a computed
  * path could statically carry anything, and an exemption to make the number look better is precisely
  * the hand-authored metadata this lane exists to remove.
@@ -105,7 +105,7 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
     // Dynamic imports on runtime-computed paths, keyed by the member that performs them — three of
     // these live in ONE module, and until the identity carried its member they collapsed into a
     // single entry. The measured population was 9 while the real one was 12.
-    'ai/ConfigProvider.mjs::dynamic-import::load',
+    'cloud/ConfigProvider.mjs::dynamic-import::load',
     // The tenant-parser loader. Unfollowable is this edge's PURPOSE, not a limitation of it: a
     // deployment pins a root, a tenant names a module below it, and the module is chosen at runtime
     // — so no static closure can name the target, by construction. The soundness the closure loses
@@ -113,20 +113,20 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
     // the pinned root and re-verified to sit under it after symlinks, in one module that reads no
     // config of its own (`source/tenantParserLoader.mjs`). Recorded rather than special-cased,
     // per this ledger's own rule.
-    'ai/services/knowledge-base/source/tenantParserLoader.mjs::dynamic-import::importModule',
-    'ai/mcp/client/config.mjs::dynamic-import::load',
-    'ai/scripts/diagnostics/printAiConfig.mjs::dynamic-import::main',
-    'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::buildConfigEnvDefaultsForTemplate',
-    'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::collectConfigPathKindsFromTemplate',
-    'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::withTier1ConfigForLint',
-    'ai/scripts/maintenance/defragChromaDB.mjs::dynamic-import::loadConfig',
-    'ai/scripts/maintenance/purgeTestCollections.mjs::dynamic-import::resolveChromaEndpoint',
+    'cloud/services/knowledge-base/source/tenantParserLoader.mjs::dynamic-import::importModule',
+    'mcp/client/config.mjs::dynamic-import::load',
+    'scripts/diagnostics/printAiConfig.mjs::dynamic-import::main',
+    'scripts/lint/lint-config-template-ssot.mjs::dynamic-import::buildConfigEnvDefaultsForTemplate',
+    'scripts/lint/lint-config-template-ssot.mjs::dynamic-import::collectConfigPathKindsFromTemplate',
+    'scripts/lint/lint-config-template-ssot.mjs::dynamic-import::withTier1ConfigForLint',
+    'cloud/scripts/maintenance/defragChromaDB.mjs::dynamic-import::loadConfig',
+    'cloud/scripts/maintenance/purgeTestCollections.mjs::dynamic-import::resolveChromaEndpoint',
 
     // Dispatch through a value the closure cannot name, with a capability behind the edge. The
     // callee is part of the identity, so the reader knows WHAT could not be followed.
-    'ai/agent/AgentOrchestrator.mjs::unresolved-dispatch::createAgent->agentFactory',
-    'ai/agent/AgentOrchestrator.mjs::unresolved-dispatch::emitHandoff->handoffEmitter',
-    'ai/services/knowledge-base/DatabaseService.mjs::unresolved-dispatch::createKnowledgeBase->SourceRegistry.getSources'
+    'cloud/agent/AgentOrchestrator.mjs::unresolved-dispatch::createAgent->agentFactory',
+    'cloud/agent/AgentOrchestrator.mjs::unresolved-dispatch::emitHandoff->handoffEmitter',
+    'cloud/services/knowledge-base/DatabaseService.mjs::unresolved-dispatch::createKnowledgeBase->SourceRegistry.getSources'
 ]);
 
 /**
@@ -151,7 +151,7 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
 export const KNOWN_AUTHORITY_CONFLICTS = Object.freeze([
     // #17217 — `child_process` is a subprocess predicate, not a plane predicate. ticket-ref-ok: the
     // ticket IS this entry's warrant, and an entry that outlives it fails the lint's own check above.
-    'ai/scripts/maintenance/aggregate-temporal-summary.mjs::temporal-summary::authority-conflict-in-plane'
+    'cloud/scripts/maintenance/aggregate-temporal-summary.mjs::temporal-summary::authority-conflict-in-plane'
 ]);
 
 /**
@@ -169,7 +169,7 @@ export function conflictIdentity(finding) {
  * **A population is a claim, and this one was wrong twice in the same direction.** It began as npm
  * scripts alone, which missed the modules a workflow runs directly — including this lint, which
  * invokes itself from a workflow and did not score itself. Adding workflows still missed the roots the
- * ORCHESTRATOR spawns: two `ai/scripts` modules and three daemons that appear in no npm script and no
+ * ORCHESTRATOR spawns: two `scripts/` modules and three daemons that appear in no npm script and no
  * workflow, and that carry a declared authority class the lint therefore never checked. A gate whose
  * population omits the artifacts with the strongest declarations is not conservative — it is quiet
  * exactly where it is most needed.
@@ -177,7 +177,7 @@ export function conflictIdentity(finding) {
  * The third channel is `taskDefinitions`, joined the same way the authority map is: **on the script
  * path from the definition's `args`**, never on a name.
  *
- * Daemons are included even though they are not under `ai/scripts`, and that is deliberate. The
+ * Daemons are included even though they are not under `scripts/`, and that is deliberate. The
  * population is *executable roots that declare a plane*, not *files in a directory* — a
  * directory-keyed predicate is the exact shape this lane retired, and re-introducing it as a
  * population filter would smuggle it back in through the census.
@@ -193,7 +193,7 @@ export function readEntrypoints(
     const byRel = new Map();
 
     Object.entries(scripts).forEach(([name, command]) => {
-        const rel = command.match(/(ai\/scripts\/[\w./-]+\.mjs)/)?.[1];
+        const rel = command.match(/(scripts\/[\w./-]+\.mjs)/)?.[1];
 
         // Two npm aliases can point at one script (`defragChromaDB` has two); the population is
         // MODULES with a plane, not invocation names, so it dedupes on the path.
@@ -218,10 +218,10 @@ export function readEntrypoints(
 }
 
 /**
- * @summary `ai/scripts` modules a GitHub workflow invokes directly, without going through npm.
+ * @summary `scripts/` modules a GitHub workflow invokes directly, without going through npm.
  *
  * The npm block is not the whole invocation surface. Several workflows run a script straight —
- * `run: node ./ai/scripts/lint/lint-guard-ci-parity.mjs` — so an npm-only census misses them, and the
+ * `run: node ./scripts/lint/lint-guard-ci-parity.mjs` — so an npm-only census misses them, and the
  * omission was self-demonstrating: **this lint invokes itself from a workflow and did not score
  * itself.** A guard blind to its own execution path is the shape it exists to catch.
  *
@@ -257,7 +257,7 @@ export function readWorkflowEntrypoints({
                 (job?.steps ?? []).forEach(step => {
                     const run = typeof step?.run === 'string' ? step.run : '';
 
-                    for (const match of run.matchAll(/node\s+\.?\/?(ai\/scripts\/[\w./-]+\.mjs)/g)) {
+                    for (const match of run.matchAll(/node\s+\.?\/?(scripts\/[\w./-]+\.mjs)/g)) {
                         found.add(match[1])
                     }
                 })
@@ -343,7 +343,7 @@ export function buildAuthorityByScript({
 /**
  * @summary Per-folder plane tally over the npm-declared entrypoints, for the structure map.
  *
- * The navigational answer the map could not give before: `ai/scripts` names its folders after the
+ * The navigational answer the map could not give before: `scripts/` names its folders after the
  * VERB (`maintenance`, `diagnostics`, `runners`) and never the plane, so "can this run where there is
  * no host shell" required opening the file. A folder carrying more than one plane is flagged `mixed`,
  * because that is the case a reader most needs to see and the one a folder name most reliably hides.
@@ -387,7 +387,7 @@ export function buildPlaneProjection({
 }
 
 /**
- * @summary Runs the lint over every npm-declared `ai/scripts` entrypoint.
+ * @summary Runs the lint over every npm-declared `scripts/` entrypoint.
  * @param {Object} [options]
  * @returns {{exitCode: Number, conflicts: Object[], edges: String[], appeared: String[],
  * resolved: String[], resolvedConflicts: String[], unobservableConflicts: String[], planes: Object}}

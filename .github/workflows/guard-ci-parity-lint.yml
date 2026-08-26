@@ -1,0 +1,54 @@
+name: Guard CI Parity Lint
+
+# Received from neomjs/neo under neomjs/neo#17783: every path this workflow invoked left the
+# Engine with the Agent OS, so after the #17791 deletion it had no executable owner there.
+# Run targets AND path filters are both translated through the receive manifests - a workflow
+# that runs the right script while watching the old paths is the "guard present, correct, and
+# never run" failure its own filters exist to prevent.
+
+# CI mirror of the .husky/pre-commit `lint-guard-ci-parity` guard, so `git commit --no-verify`
+# cannot bypass it — the same convention this guard exists to enforce on everything else. A guard
+# that audits CI coverage while having none itself would be the joke it is meant to prevent.
+#
+# Path coverage MUST span every input the predicate reads: the lint-staged config that defines the
+# guard population, the Git hook that makes lint-staged commit-time reachable, the workflow directory
+# that defines CI mirrors, and the registry that records accepted exceptions. A narrower filter would
+# let the population or its coverage change without the gate running — the "reaches no surface"
+# failure this guard is about, merely scoped smaller.
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'package.json'
+      - '.husky/pre-commit'
+      - '.github/workflows/**'
+      - 'scripts/lint/lint-guard-ci-parity.mjs'
+      - 'scripts/lint/guard-ci-parity-registry.json'
+      - 'test/unit/scripts/lint/lintGuardCiParity.spec.mjs'
+  push:
+    branches: [dev]
+    paths:
+      - 'package.json'
+      - '.husky/pre-commit'
+      - '.github/workflows/**'
+      - 'scripts/lint/lint-guard-ci-parity.mjs'
+      - 'scripts/lint/guard-ci-parity-registry.json'
+      - 'test/unit/scripts/lint/lintGuardCiParity.spec.mjs'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # --ignore-scripts skips the heavy prepare lifecycle (Husky + generated local configs) the
+      # predicate does not need — it reads package.json, the hook, workflows, and the registry.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Lint guard CI parity (every lint-staged guard is mirrored or registered)
+        run: node ./scripts/lint/lint-guard-ci-parity.mjs

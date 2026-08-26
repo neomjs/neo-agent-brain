@@ -1,0 +1,81 @@
+name: OpenAPI Service Parity Lint
+
+# Received from neomjs/neo under neomjs/neo#17783: every path this workflow invoked left the
+# Engine with the Agent OS, so after the #17791 deletion it had no executable owner there.
+# Run targets AND path filters are both translated through the receive manifests - a workflow
+# that runs the right script while watching the old paths is the "guard present, correct, and
+# never run" failure its own filters exist to prevent.
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      # The service implementations: a method that starts reading a new parameter is the defect's
+      # origin, so any change under here must re-run the check.
+      - 'services/**/*.mjs'
+      # The contracts. A parameter can also become undeclared by being REMOVED from a schema, which
+      # leaves the service reading a key nothing declares any more — same defect, opposite direction.
+      - 'mcp/server/**/openapi.yaml'
+      # The wiring table the checker derives its service list from. If a service stops being wrapped
+      # here it silently leaves the guard's scope, so editing this must re-run it.
+      - 'cloud/services.mjs'
+      # The SECOND wiring table, for the ToolService dispatch join. A `serviceMapping` entry is the
+      # authority for which handler answers an operation, so rebinding, removing or repointing one
+      # changes that join's scope exactly as editing `cloud/services.mjs` changes the other's. Without
+      # this the join could exist and never RUN on the change that broke it — a guard whose absence
+      # from a PR reads as a pass.
+      - 'mcp/server/**/toolService.mjs'
+      # Handler implementations that do NOT live under `services/`. The dispatch join resolves
+      # mapping values into whatever module owns them, and several land here (the ingest facade, the
+      # dispatcher itself) rather than in the service tree the filter above covers.
+      - 'mcp/server/**/*.mjs'
+      - 'mcp/ToolService.mjs'
+      # The shared AST helpers. The checker imports them rather than re-deriving, so a change there
+      # changes what the checker can see.
+      - 'scripts/diagnostics/mcpHandlerSignatureCensus.mjs'
+      - 'scripts/lint/lint-openapi-service-parity.mjs'
+      - '.github/workflows/openapi-service-parity-lint.yml'
+  push:
+    branches: [dev]
+    # MUST stay identical to `pull_request.paths` above. GitHub Actions does not reliably expand YAML
+    # anchors in workflow files, so this is a second copy of one list — and two lists that must agree
+    # are a list that will not. `OpenApiServiceParityTriggerReachability.spec.mjs` asserts set-equality
+    # between the two, because that is the only thing standing between them and silent divergence.
+    #
+    # It already happened once: the three ToolService authorities were added above and not here, so
+    # `push` never ran the guard on the mapping table the join derives its handler list from.
+    # @neo-gpt caught it with micromatch, and the same shape is the defect I had removed from
+    # `backup.mjs` hours earlier — two substrate lists drifted apart as separate literals.
+    paths:
+      - 'services/**/*.mjs'
+      - 'mcp/server/**/openapi.yaml'
+      - 'cloud/services.mjs'
+      - 'mcp/server/**/toolService.mjs'
+      - 'mcp/server/**/*.mjs'
+      - 'mcp/ToolService.mjs'
+      - 'scripts/diagnostics/mcpHandlerSignatureCensus.mjs'
+      - 'scripts/lint/lint-openapi-service-parity.mjs'
+      - '.github/workflows/openapi-service-parity-lint.yml'
+
+concurrency:
+  group: openapi-service-parity-lint-${{ github.run_attempt == '1' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Lint service methods for parameters their OpenAPI operation does not declare
+        run: node scripts/lint/lint-openapi-service-parity.mjs
