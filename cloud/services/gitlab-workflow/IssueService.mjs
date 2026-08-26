@@ -1,6 +1,6 @@
 import Base          from 'neo.mjs/src/core/Base.mjs';
 import GitLabClient  from './GitLabClient.mjs';
-import aiConfig      from '../../mcp/server/gitlab-workflow/config.mjs';
+import aiConfig      from '../../../mcp/server/gitlab-workflow/config.mjs';
 import logger        from '../../../mcp/server/gitlab-workflow/logger.mjs';
 import {LIST_ISSUES, GET_ISSUE_GID, GET_PROJECT_LABEL_IDS}                          from './queries/issueQueries.mjs';
 import {CREATE_ISSUE, CREATE_NOTE, UPDATE_NOTE, UPDATE_ISSUE_LABELS, ISSUE_SET_ASSIGNEES} from './queries/mutations.mjs';

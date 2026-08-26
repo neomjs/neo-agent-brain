@@ -1,5 +1,5 @@
 // Tier-1 must register before ConfigBase evaluates, so materialized operator overlays win the realm root.
-import '../../../config.template.mjs';
+import '../../../config.mjs';
 import ConfigBase          from './configBase.mjs';
 import {createConfigProxy} from '../../../cloud/ConfigProvider.mjs';
 

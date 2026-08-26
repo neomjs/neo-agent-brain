@@ -5,7 +5,7 @@ import path                               from 'path';
 import {promisify}                        from 'util';
 import Base                               from 'neo.mjs/src/core/Base.mjs';
 import GraphqlService                     from './GraphqlService.mjs';
-import aiConfig                           from '../../mcp/server/github-workflow/config.mjs';
+import aiConfig                           from '../../../mcp/server/github-workflow/config.mjs';
 import logger                             from '../../../mcp/server/github-workflow/logger.mjs';
 import RepositoryService                  from './RepositoryService.mjs';
 import {validateMergeReady}               from '../../../scripts/lifecycle/validateMergeReady.mjs';

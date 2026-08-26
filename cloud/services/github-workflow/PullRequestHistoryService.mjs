@@ -3,7 +3,7 @@ import fs             from 'fs/promises';
 import matter         from 'gray-matter';
 import path           from 'path';
 import Base           from 'neo.mjs/src/core/Base.mjs';
-import aiConfig       from '../../mcp/server/github-workflow/config.mjs';
+import aiConfig       from '../../../mcp/server/github-workflow/config.mjs';
 import GraphqlService from './GraphqlService.mjs';
 import {
     FETCH_PULL_REQUEST_HISTORY_CHILDREN,

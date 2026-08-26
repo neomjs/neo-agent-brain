@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs     from 'fs';
 import path   from 'path';
 import Base   from 'neo.mjs/src/core/Base.mjs';
-import config from '../../mcp/server/neural-link/config.mjs';
+import config from '../../../mcp/server/neural-link/config.mjs';
 import logger from '../../../mcp/server/neural-link/logger.mjs';
 import {
     admitActions             as admitActionsViaMemoryCore,

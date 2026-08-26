@@ -1,4 +1,4 @@
-import aiConfig  from '../../mcp/server/neural-link/config.mjs';
+import aiConfig  from '../../../mcp/server/neural-link/config.mjs';
 import {spawn}   from 'child_process';
 import crypto    from 'crypto';
 import fs        from 'fs';

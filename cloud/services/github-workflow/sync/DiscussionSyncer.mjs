@@ -1,4 +1,4 @@
-import aiConfig           from '../../../mcp/server/github-workflow/config.mjs';
+import aiConfig           from '../../../../mcp/server/github-workflow/config.mjs';
 import Base               from 'neo.mjs/src/core/Base.mjs';
 import crypto             from 'crypto';
 import fs                 from 'fs/promises';

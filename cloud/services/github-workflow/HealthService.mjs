@@ -1,6 +1,6 @@
 import {exec}                  from 'child_process';
 import {promisify}             from 'util';
-import aiConfig                from '../../mcp/server/github-workflow/config.mjs';
+import aiConfig                from '../../../mcp/server/github-workflow/config.mjs';
 import RuntimeFreshnessService from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
 import Base                    from 'neo.mjs/src/core/Base.mjs';
 import logger                  from '../../../mcp/server/github-workflow/logger.mjs';

@@ -1,6 +1,6 @@
 import path             from 'path';
 import AiConfig         from '../../../config.mjs';
-import neuralLinkConfig from '../../../mcp/server/neural-link/config.mjs';
+import neuralLinkConfig from '../../../../mcp/server/neural-link/config.mjs';
 import {
     buildLmsPreloadConfig,
     buildOllamaReadinessConfig,

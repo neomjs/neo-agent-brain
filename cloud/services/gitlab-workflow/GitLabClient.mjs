@@ -1,4 +1,4 @@
-import aiConfig from '../../mcp/server/gitlab-workflow/config.mjs';
+import aiConfig from '../../../mcp/server/gitlab-workflow/config.mjs';
 import Base     from 'neo.mjs/src/core/Base.mjs';
 import logger   from '../../../mcp/server/gitlab-workflow/logger.mjs';
 
