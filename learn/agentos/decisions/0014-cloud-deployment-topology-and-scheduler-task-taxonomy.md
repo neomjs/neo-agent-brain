@@ -18,11 +18,11 @@
 
 Epic #11720's mission: an external dev team can deploy Neo's Agent OS (KB + MC MCP servers + `Orchestrator` + supporting infra) into a containerized cloud environment and use it against their own repositories — *without tacit maintainer knowledge*.
 
-The blocking gap is not a missing capability — it is **substrate drift plus an un-containerizable supervisor**. `ai/deploy/docker-compose.yml` is a stale 3-service baseline (`chroma` + `kb-server` + `mc-server`) and carries **no `Orchestrator`**. And the `Orchestrator` cannot simply be added: `Neo.ai.daemons.Orchestrator` is a **mixed-responsibility local Agent OS supervisor**. Its `poll()` loop schedules one task set that interleaves cloud-relevant maintenance lanes with local-maintainer-only lanes (`git pull origin/dev`, local-worktree discovery, `osascript` / `tmux` desktop-harness wake-delivery). Containerizing it as-is drags local-only behavior into a cloud tenant deployment.
+The blocking gap is not a missing capability — it is **substrate drift plus an un-containerizable supervisor**. `cloud/deploy/docker-compose.yml` is a stale 3-service baseline (`chroma` + `kb-server` + `mc-server`) and carries **no `Orchestrator`**. And the `Orchestrator` cannot simply be added: `Neo.ai.daemons.Orchestrator` is a **mixed-responsibility local Agent OS supervisor**. Its `poll()` loop schedules one task set that interleaves cloud-relevant maintenance lanes with local-maintainer-only lanes (`git pull origin/dev`, local-worktree discovery, `osascript` / `tmux` desktop-harness wake-delivery). Containerizing it as-is drags local-only behavior into a cloud tenant deployment.
 
 D0 is the **first** Epic workstream because the topology cannot be designed until every scheduler lane is classified. **The classification *is* the unblock:** once the local-only lanes are identified and excluded by config, the `Orchestrator` has no local-checkout / git / desktop-harness dependency and containerizes cleanly.
 
-**Substrate audited at `dev`:** `ai/daemons/TaskDefinitions.mjs`, `ai/daemons/Orchestrator.mjs#poll`, `ai/daemons/services/PrimaryRepoSyncService.mjs`, `ai/daemons/wake/daemon.mjs`, `buildScripts/ai/syncKnowledgeBase.mjs`, `ai/daemons/services/GoldenPathSynthesizer.mjs`, `buildScripts/ai/backup.mjs`, `ai/deploy/docker-compose.yml`.
+**Substrate audited at `dev`:** `ai/daemons/TaskDefinitions.mjs`, `ai/daemons/Orchestrator.mjs#poll`, `ai/daemons/services/PrimaryRepoSyncService.mjs`, `ai/daemons/wake/daemon.mjs`, `buildScripts/ai/syncKnowledgeBase.mjs`, `ai/daemons/services/GoldenPathSynthesizer.mjs`, `buildScripts/ai/backup.mjs`, `cloud/deploy/docker-compose.yml`.
 
 ## 2. Decision
 
@@ -172,7 +172,7 @@ Service boundaries derive from the lane taxonomy + resource-isolation needs. Pic
 - **Unblocks:** #11723, #11724, #11725, #11727
 - **Informs:** #11722 (Sub A — the toggle + `golden-path`-gating handoff), #11726 (Sub E — the local `kbSync` exclusion is *why* push-based ingestion is the cloud KB path)
 - **ADRs:** 0003 (unified Chroma — swept, not stale), 0009 (cross-daemon lease — swept, not stale), 0005 (ADR-at-graduation), 0006 (ADRs as graph-queryable entities)
-- **Substrate:** `ai/daemons/TaskDefinitions.mjs`, `ai/daemons/Orchestrator.mjs`, `ai/daemons/services/PrimaryRepoSyncService.mjs`, `ai/daemons/wake/daemon.mjs`, `buildScripts/ai/syncKnowledgeBase.mjs`, `ai/daemons/services/GoldenPathSynthesizer.mjs`, `buildScripts/ai/backup.mjs`, `ai/deploy/docker-compose.yml`
+- **Substrate:** `ai/daemons/TaskDefinitions.mjs`, `ai/daemons/Orchestrator.mjs`, `ai/daemons/services/PrimaryRepoSyncService.mjs`, `ai/daemons/wake/daemon.mjs`, `buildScripts/ai/syncKnowledgeBase.mjs`, `ai/daemons/services/GoldenPathSynthesizer.mjs`, `buildScripts/ai/backup.mjs`, `cloud/deploy/docker-compose.yml`
 
 ## 8. Amendments
 
@@ -315,7 +315,7 @@ checkout did not disappear — it moved: the container is built from the repo an
 read.
 
 **Measured consequence of leaving them unmoved.** The container plane declined both lanes to
-`host-edge`; `ai/deploy/hostEdgeProfile.mjs` declined the same lanes as *"lanes this topology does
+`host-edge`; `deploy/hostEdgeProfile.mjs` declined the same lanes as *"lanes this topology does
 not elect for the host edge"*. Five lanes ended up with no owner and `lastRunAt = NEVER`, and the
 Knowledge Base ran to **0 documents** with no producer. `auditAuthorityTopology` passed throughout,
 correctly: it audits **class ownership**, and enablement is a different axis.
@@ -329,7 +329,7 @@ heartbeat redundant).
 
 **Ownership does not start a lane, and the enablement is declared separately.** Both leaves stay
 under `orchestrator.localOnly`, whose `null` default resolves local-enables / cloud-disables — so on
-a cloud-mode plane the new owner would never start what it owns. `ai/deploy/docker-compose.yml`
+a cloud-mode plane the new owner would never start what it owns. `cloud/deploy/docker-compose.yml`
 therefore declares `NEO_ORCHESTRATOR_KB_SYNC_ENABLED=true` and
 `NEO_ORCHESTRATOR_TEMPORAL_SUMMARY_ENABLED=true` as deployment inputs, the same class of artifact as
 `hostEdgeProfile`'s closure.

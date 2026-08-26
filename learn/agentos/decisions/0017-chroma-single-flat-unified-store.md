@@ -19,7 +19,7 @@
 
 ADR 0003 retired the federated (per-subsystem-daemon) Chroma topology in favor of **one daemon**, but recorded the daemon decision without pinning the store's concrete on-disk shape. In the interim the local layout drifted off-piste: the live daemon runs `--path .neo-ai-data/chroma/knowledge-base`, and that single dir now holds **all** realms as distinct collections — `neo-knowledge-base`, `neo-agent-memory`, `neo-agent-sessions`, `neo-native-graph` — while a stale `.neo-ai-data/chroma/memory-core/` dir (a pre-0003 federated leftover) lingers, and ~1,134 leaked `test-*` collections pollute the live store (#12143).
 
-Two problems follow: (a) the persist dir named `knowledge-base` is **misleading** — it holds every realm, so config that reads `dataDir = …/knowledge-base` reads as "Memory Core stores into the Knowledge Base"; (b) the cloud deployment (ADR 0014, `ai/deploy/docker-compose.yml`) runs **one** `chroma` container with a flat volume, so local (two-folder) and cloud (one flat volume) have **diverged** — there is no dev/prod parity.
+Two problems follow: (a) the persist dir named `knowledge-base` is **misleading** — it holds every realm, so config that reads `dataDir = …/knowledge-base` reads as "Memory Core stores into the Knowledge Base"; (b) the cloud deployment (ADR 0014, `cloud/deploy/docker-compose.yml`) runs **one** `chroma` container with a flat volume, so local (two-folder) and cloud (one flat volume) have **diverged** — there is no dev/prod parity.
 
 Critically, the KB ships a release artifact (`uploadKnowledgeBase.mjs`) that every consumer ingests on install. The privacy boundary — Neo's private memories / sessions / graph must never ship; users must ingest the KB without risk to their own Memory Core — was historically a **physical** boundary (the KB lived alone in its dir). Unification dissolved that physical boundary, turning a structurally-safe "zip the KB dir" into a leak risk.
 
@@ -84,7 +84,7 @@ The published `chromadb/chroma:1.5.9` container's entrypoint executes `chroma ru
 - **Touches:** ADR 0014 §2.5 (Cloud Deployment Topology)
 - **Epic:** #12153 · **Resolves:** #12154 · **Informs:** #12155, #12156, #12157, #12158
 - **Companions:** #12143 (test-pollution → ephemeral store), #12152 (the `engines.chroma.dataDir` SSOT foundation), #12139 (orchestrator owns the one daemon)
-- **Substrate:** `ai/config.template.mjs`, `ai/daemons/orchestrator/TaskDefinitions.mjs`, `ai/deploy/docker-compose.yml`, `ai/scripts/maintenance/{defragChromaDB,uploadKnowledgeBase,downloadKnowledgeBase,backup,restore}.mjs`
+- **Substrate:** `ai/config.template.mjs`, `ai/daemons/orchestrator/TaskDefinitions.mjs`, `cloud/deploy/docker-compose.yml`, `ai/scripts/maintenance/{defragChromaDB,uploadKnowledgeBase,downloadKnowledgeBase,backup,restore}.mjs`
 
 ## 7. Status / Lifecycle
 Proposed until the introducing PR is approved, green, and merged at the human merge gate. Re-review trigger: any change that re-introduces a per-realm persist folder, a second daemon, or a directory-level KB artifact MUST cite this ADR.
