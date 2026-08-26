@@ -78,7 +78,11 @@ import * as acorn      from 'acorn';
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
-const PROJECT_ROOT = path.resolve(__dirname, '../../..');
+// Two segments, not three. In the source repository this file sat at `ai/scripts/diagnostics/` and
+// the third climb was what cleared `ai/` to reach the repo root. Here the Agent OS IS the
+// repository and the file sits at `scripts/diagnostics/`, so a third climb walks out of the
+// checkout — which is exactly how this crashed against `<parent-of-repo>/ai/configBase.mjs`.
+const PROJECT_ROOT = path.resolve(__dirname, '../..');
 
 /**
  * Directory name of the AI data plane inside a seat.
@@ -91,21 +95,31 @@ export const PLANE_DIR_NAME = '.neo-ai-data';
  * test-isolation question, not a deployment cost.
  * @type {String[]}
  */
-export const OPENER_SEARCH_TREES = ['ai', 'buildScripts', 'src', 'apps'];
+// The Brain's own source trees. Not one of the source repository's four (`ai`, `buildScripts`,
+// `src`, `apps`) exists here, so carrying them over would have made `git ls-files` match nothing and
+// the census report a clean, plausible, much smaller total — precisely the green-by-omission this
+// instrument's own contract says it exists to kill. A search region that cannot reach the subject
+// fails silently, which is worse than failing loud.
+export const OPENER_SEARCH_TREES = ['cloud', 'daemons', 'mcp', 'scripts', 'shared'];
 
 /**
  * The config modules that DECLARE plane membership, each exporting a frozen `PLANE_MEMBER_PATHS`.
  *
- * All four, not just Tier 1: the three MCP server configs declare their own members (`memoryWal.*`,
+ * All five, not just Tier 1: the three MCP server configs declare their own members (`memoryWal.*`,
  * `remRunStateDir`, `hookProjectionRoot`, …) and a census reading only the Tier-1 list is blind to every
  * module that reaches the plane through a server config — which is what left both WAL daemons uncounted.
+ *
+ * Five rather than the source repository's four because the Tier-1 config root is now split per plane:
+ * the root `configBase.mjs` serves Host-Edge and `cloud/configBase.mjs` serves Cloud. Reading only one
+ * of them would make the census blind to every plane member declared by the other.
  * @type {String[]}
  */
 export const PLANE_MEMBER_CONFIGS = [
-    'ai/configBase.mjs',
-    'ai/mcp/server/memory-core/configBase.mjs',
-    'ai/mcp/server/knowledge-base/configBase.mjs',
-    'ai/mcp/server/neural-link/configBase.mjs'
+    'configBase.mjs',
+    'cloud/configBase.mjs',
+    'cloud/mcp/server/memory-core/configBase.mjs',
+    'cloud/mcp/server/knowledge-base/configBase.mjs',
+    'mcp/server/neural-link/configBase.mjs'
 ];
 
 /**
@@ -255,13 +269,13 @@ export const PLANE_FS_OPERATION = /\bfs(?:p|Extra|Sync)?\.(?:read|write|open|cre
  * Path prefixes whose modules run as their own host process (CLI scripts, daemons, build tooling).
  * @type {String[]}
  */
-export const HOST_SIDE_PREFIXES = ['ai/scripts/', 'ai/daemons/', 'buildScripts/'];
+export const HOST_SIDE_PREFIXES = ['scripts/', 'daemons/', 'cloud/scripts/', 'cloud/daemons/'];
 
 /**
  * Path prefixes loaded INSIDE a server process, so a container's volume serves them for free.
  * @type {String[]}
  */
-export const IN_SERVER_PREFIXES = ['ai/services/', 'ai/mcp/'];
+export const IN_SERVER_PREFIXES = ['services/', 'mcp/', 'cloud/services/', 'cloud/mcp/'];
 
 /**
  * Blanks out comment ranges so a doc-comment mention of a plane path is not counted as a code path.
@@ -303,7 +317,7 @@ export function stripComments(source) {
  * not silently one-off.
  * @type {String}
  */
-export const CENSUS_SELF_PATH = 'ai/scripts/diagnostics/planePlacementCensus.mjs';
+export const CENSUS_SELF_PATH = 'scripts/diagnostics/planePlacementCensus.mjs';
 
 /**
  * Lists git-tracked `.mjs` files under the census trees, excluding tests AND the census itself.

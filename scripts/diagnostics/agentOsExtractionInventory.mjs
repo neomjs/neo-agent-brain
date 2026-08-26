@@ -55,8 +55,11 @@ import {censusPlaneOpeners}           from './planePlacementCensus.mjs';
 
 const
     __filename                  = fileURLToPath(import.meta.url),
-    PROJECT_ROOT                = path.resolve(path.dirname(__filename), '../../..'),
-    DEFAULT_REGISTRY_PATH       = path.join(PROJECT_ROOT, 'ai/scripts/diagnostics/agentOsExtractionInventory.json'),
+    // Two climbs, not three, and no `ai/` segment: in the source repository this file sat under
+    // `ai/`, so the third climb cleared it. Here the Agent OS IS the repository and the third climb
+    // walked out of the checkout, which is how this read `<parent-of-repo>/ai/scripts/...`.
+    PROJECT_ROOT                = path.resolve(path.dirname(__filename), '../..'),
+    DEFAULT_REGISTRY_PATH       = path.join(PROJECT_ROOT, 'scripts/diagnostics/agentOsExtractionInventory.json'),
     SCRIPT_PATH_RE              = /\bai\/scripts\/[A-Za-z0-9_./-]+\.mjs\b/g,
     WORKFLOW_ARTIFACT_RE        = /\b(?:test\/playwright\/unit\/)?ai\/scripts\/[A-Za-z0-9_./-]+\.(?:json|mjs)\b/g,
     AGENTOS_TARGET_REPOSITORY   = 'neomjs/neo-agent-brain',

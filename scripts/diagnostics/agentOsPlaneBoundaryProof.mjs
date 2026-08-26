@@ -70,11 +70,21 @@ import {edgeIdentity}                    from '../lint/lint-script-plane.mjs';
 
 const
     __filename       = fileURLToPath(import.meta.url),
-    PROJECT_ROOT     = path.resolve(path.dirname(__filename), '../../..'),
-    BRAIN_MANIFEST   = path.join(PROJECT_ROOT, 'package.brain.json'),
+    // Two climbs, not three: this file sat at `ai/scripts/diagnostics/` in the source repository and
+    // the third cleared `ai/`. Here the Agent OS IS the repository, so a third climb leaves the
+    // checkout and every path derived from it addresses a tree that does not exist.
+    PROJECT_ROOT     = path.resolve(path.dirname(__filename), '../..'),
+    // The Cloud-only package declaration is no longer a brain-tier side file inside the Engine repo;
+    // it is the nested Cloud package's own manifest, which is the thing `npm ci` actually installs.
+    BRAIN_MANIFEST   = path.join(PROJECT_ROOT, 'cloud', 'package.json'),
     DENIAL_LOADER    = path.join(path.dirname(__filename), 'denyCloudPlanePackages.loader.mjs'),
     PROBE_BASENAME   = 'resolve-probe.cjs',
-    REGISTRY_REGION  = 'ai',
+    // Post-cut there is no `ai/` region to be inside or outside of — the repository is the region.
+    // What used to be "outside the registry region" is now one of two very different things, and
+    // collapsing them would relabel a legal dependency as a boundary violation: a reach into the
+    // published Engine package is DECLARED and fine, while a reach that resolves to neither the repo
+    // nor a declared dependency is the real escape. ENGINE_PACKAGE names the legal half.
+    ENGINE_PACKAGE   = 'neo.mjs',
     PROBE_TIMEOUT_MS = 30000,
 
     /**
@@ -656,16 +666,28 @@ export function runStaticClosureProof({
             const disposition = dispositionBySurfaceIdentity.get(rowKey(SURFACE.scriptModule, identity));
 
             if (disposition === undefined) {
-                if (identity.startsWith(`${REGISTRY_REGION}/`)) {
+                // Post-cut the repository IS the Agent OS, so a repo-relative identity that cleared
+                // the escape check above is in-region by construction. The only remaining way out is
+                // an installed package, and those split in two: `neo.mjs` is the declared Engine
+                // dependency this topology is BUILT on, while anything else resolving through
+                // `node_modules/` is an undeclared reach. Treating the first as a boundary violation
+                // would report the architecture working as a defect.
+                if (!identity.startsWith('node_modules/')) {
                     // Proof 1 reconciles DECLARED surfaces, not every module the closure reaches.
                     // Preserve that distinct null as cut context without promoting it into a
                     // missing-inventory blocker or letting an unrelated surface classify custody.
                     withoutCustody.push(identity)
-                } else {
-                    // The inventory never claims the Engine-side region, so proof 2 carries that
-                    // crossing to its dedicated owner.
+                } else if (!identity.startsWith(`node_modules/${ENGINE_PACKAGE}/`)) {
+                    // An installed package that is NOT the declared Engine. Pre-cut this class read
+                    // "outside the registry region"; post-cut it means the closure left the Agent OS
+                    // through a dependency the topology never declared, which is the escape the two
+                    // package roots exist to make impossible.
                     outOfRegion.push(identity)
                 }
+                // else: node_modules/neo.mjs/** — the declared Engine dependency. ADR 0040 §2.3 says
+                // AgentOS depends on the published Engine and the Engine never depends back, so this
+                // reach is the topology behaving, not a finding. Recording it as one is how a proof
+                // teaches its readers to ignore it.
             } else if (disposition === 'cloud') {
                 topologyFindings.push({
                     class               : PROOF_CLASS.closureReachesCloudModule,
@@ -727,17 +749,18 @@ export function runStaticClosureProof({
         })
     }
 
-    // The inventory's governed surfaces live in `ai/**`; reached Engine source is a real
-    // cross-repository boundary with a separate owner, not a module-membership gap.
+    // Pre-cut this class predicted a package crossing that did not exist yet. It exists now, and the
+    // declared half of it — `node_modules/neo.mjs/**` — is filtered out above, so what survives here
+    // is an Edge entrypoint reaching an installed package the topology never declared.
     if (outOfRegion.length > 0) {
         const identities = [...new Set(outOfRegion)].sort();
 
         topologyFindings.push({
             class               : PROOF_CLASS.closureOutOfRegistryRegion,
             identity            : `${identities.length} module(s)`,
-            detail              : `reached from an Edge entrypoint but outside the registry's \`${REGISTRY_REGION}/\` region — post-cut these cross a package boundary`,
+            detail              : `reached from an Edge entrypoint through an installed package other than \`${ENGINE_PACKAGE}\` — an undeclared dependency edge the two package roots exist to prevent`,
             identities,
-            successorOwner      : 'reconcile out-of-AgentOS consumers (#17631)',
+            successorOwner      : 'the Edge manifest authority — declare it or sever the reach',
             preRelocationBlocker: true
         })
     }
@@ -867,12 +890,32 @@ export function formatReceipt(receipt) {
 }
 
 /**
- * @summary Reads the committed Cloud-only package declaration.
- * @param {String} [manifestPath=BRAIN_MANIFEST]
+ * @summary The packages the Cloud package declares and the Host-Edge package does not.
+ *
+ * Pre-cut this read `package.brain.json`'s `devDependencies`, because a brain-tier side file inside
+ * the Engine repository had nothing but dev dependencies to declare. The nested Cloud package
+ * declares real runtime `dependencies`, so reading `devDependencies` here returns an empty set — and
+ * an empty population makes every downstream denial vacuous, which is why the fixture guard refuses
+ * it by name rather than proceeding to a green.
+ *
+ * Cloud-ONLY is a subtraction, not a copy. The two planes legitimately share packages (`neo.mjs`,
+ * `dotenv`, `fs-extra` and friends are declared independently by each root, which is what replaces
+ * ancestor hoisting). Only what Cloud declares and Edge does not can be proven ABSENT from the Edge
+ * root, so a shared package in this set would turn a correct install into a false finding.
+ *
+ * @param {String} [cloudManifestPath=BRAIN_MANIFEST] The nested Cloud package manifest.
+ * @param {String} [edgeManifestPath] The Host-Edge (repository root) manifest.
  * @returns {String[]} Sorted package names.
  */
-export function readCloudOnlyPackages(manifestPath = BRAIN_MANIFEST) {
-    return Object.keys(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).devDependencies || {}).sort()
+export function readCloudOnlyPackages(
+    cloudManifestPath = BRAIN_MANIFEST,
+    edgeManifestPath  = path.join(PROJECT_ROOT, 'package.json')
+) {
+    const
+        cloud = JSON.parse(fs.readFileSync(cloudManifestPath, 'utf8')).dependencies || {},
+        edge  = JSON.parse(fs.readFileSync(edgeManifestPath,  'utf8')).dependencies || {};
+
+    return Object.keys(cloud).filter(name => !(name in edge)).sort()
 }
 
 /**
@@ -898,14 +941,14 @@ async function main() {
         options      = program.opts(),
         cloudOnly    = readCloudOnlyPackages(),
         rootManifest = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8')),
-        // The Engine root declares ZERO runtime dependencies (the package ships dependency-free);
-        // the monorepo's toolchain lives entirely in devDependencies. The interim Edge population is
-        // therefore devDependencies minus the brain tier — deliberately a SUPERSET of the true Edge
-        // set (build/test-only packages included), because a superset keeps the denial exact (the
-        // Cloud-only three are still absent by declaration) while an undershot population would make
-        // resolution greens vacuous. The authoritative split is H1's deliverable.
-        edgeDeps      = Object.fromEntries(Object.entries(rootManifest.devDependencies || {})
-            .filter(([name]) => !cloudOnly.includes(name))),
+        // H1's deliverable has landed, so the interim superset is retired. Pre-cut, the Edge
+        // population had to be guessed as "the Engine's devDependencies minus the brain tier",
+        // deliberately overshooting because an undershot population makes every resolution green
+        // vacuous. Post-cut the Host-Edge package declares its own runtime dependencies and they were
+        // derived by measuring what the Edge tree actually imports, so the authoritative set is
+        // simply what the root manifest says. A proof that kept deriving a superset here would be
+        // asserting an uncertainty the topology no longer has.
+        edgeDeps      = {...(rootManifest.dependencies || {})},
         head          = execFileSync('git', ['rev-parse', 'HEAD'], {cwd: PROJECT_ROOT, encoding: 'utf8'}).trim(),
         // Read from git rather than re-splitting the binding error's joined key: that key is a
         // display string, and parsing a display string back into data loses whatever the join
@@ -913,7 +956,7 @@ async function main() {
         dirtyPaths    = execFileSync('git', ['status', '--porcelain=v1', '--untracked-files=all'],
             {cwd: PROJECT_ROOT, encoding: 'utf8'}).split('\n').filter(Boolean).map(line => line.slice(3)).sort(),
         cloudDeps     = Object.fromEntries(cloudOnly.map(name =>
-            [name, JSON.parse(fs.readFileSync(BRAIN_MANIFEST, 'utf8')).devDependencies[name]]));
+            [name, JSON.parse(fs.readFileSync(BRAIN_MANIFEST, 'utf8')).dependencies[name]]));
 
     const {fixtureRoot, edgeRoot, cloudRoot} = materializeBoundaryFixture({
         baseDir          : os.tmpdir(),
@@ -941,19 +984,37 @@ async function main() {
             // artifact nobody could reproduce, with no indicator that anything differed.
             inventory             = buildInventory(),
             bindingError          = inventory.errors.find(error => error.kind === 'dirty-worktree') ?? null,
+            // The registry speaks in SOURCE identities (`ai/**`); this tree speaks in target paths.
+            // Measured, not assumed: zero of the registry's 876 identities match any of the 814
+            // tracked paths here. Keying the disposition map on raw identities would therefore make
+            // every lookup miss, drop every reached module into `withoutCustody`, and emit an empty
+            // topology layer — green-by-omission, which this proof's own contract exists to kill and
+            // which is strictly worse than the crash it replaced.
+            //
+            // The receive manifest is the authority for that translation and nothing else is: it is
+            // the committed record of which source identity landed at which target, hashed, with the
+            // whole-tree partition it belongs to. Re-deriving the mapping from directory shape here
+            // would be inventing a second authority that can drift from the first.
+            identityToTarget      = new Map(JSON.parse(fs.readFileSync(
+                path.join(PROJECT_ROOT, 'migration/source-receive-manifest.v1.json'), 'utf8'
+            )).rows.map(row => [row.identity, row.target])),
+            toTargetPath          = identity => identityToTarget.get(identity) ?? identity,
             dispositionBySurfaceIdentity = new Map(inventory.rows.map(row => [
-                rowKey(row.surface, row.identity),
+                rowKey(row.surface, toTargetPath(row.identity)),
                 row.disposition
             ])),
             edgeEntrypoints       = inventory.launchRoots.rows
                 .filter(row => row.disposition === 'edge')
-                .map(row => path.join(PROJECT_ROOT, row.identity)),
+                .map(row => path.join(PROJECT_ROOT, toTargetPath(row.identity)))
+                .filter(fs.existsSync),
             closure               = runStaticClosureProof({
                 entrypoints      : edgeEntrypoints,
                 dispositionBySurfaceIdentity,
                 cloudOnlyPackages: cloudOnly,
                 planeRoot        : PROJECT_ROOT,
-                ledgeredEdges    : new Set(inventory.rows.filter(row => row.surface === SURFACE.closureEdge).map(row => row.identity))
+                ledgeredEdges    : new Set(inventory.rows
+                    .filter(row => row.surface === SURFACE.closureEdge)
+                    .map(row => toTargetPath(row.identity)))
             });
 
         if (bindingError) {
