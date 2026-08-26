@@ -9,13 +9,14 @@
     },
     "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
     "counts": {
-        "total": 616,
-        "cloud": 477,
-        "edge": 138,
+        "total": 819,
+        "cloud": 649,
+        "edge": 169,
         "shared": 1,
         "planeConflicts": 0,
         "censusDispositioned": 211,
-        "planeByMeasurement": 405
+        "fromRootScriptCommand": 11,
+        "planeByMembership": 597
     },
     "rows": [
         {
@@ -115,6 +116,42 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/daemons/kb-alerting/KbAlertingService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/kb-alerting/KbAlertingService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/kb-alerting/daemon.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/kb-alerting/daemon.mjs",
+            "origin": "root-script-command"
+        },
+        {
+            "identity": "ai/daemons/kb-gc/KbGarbageCollectionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/kb-gc/KbGarbageCollectionService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/kb-gc/daemon.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/kb-gc/daemon.mjs",
+            "origin": "root-script-command"
+        },
+        {
+            "identity": "ai/daemons/kb-reconciliation/KbReconciliationService.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/kb-reconciliation/KbReconciliationService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/kb-reconciliation/daemon.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/kb-reconciliation/daemon.mjs",
+            "origin": "root-script-command"
+        },
+        {
             "identity": "ai/daemons/message/daemon.mjs",
             "plane": "cloud",
             "target": "cloud/daemons/message/daemon.mjs",
@@ -145,10 +182,22 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/daemons/orchestrator/control-plane/restartActuator.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/control-plane/restartActuator.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/daemons/orchestrator/daemon.mjs",
             "plane": "cloud",
             "target": "cloud/daemons/orchestrator/daemon.mjs",
             "origin": "census"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/hostEdge.mjs",
+            "plane": "edge",
+            "target": "daemons/orchestrator/hostEdge.mjs",
+            "origin": "root-script-command"
         },
         {
             "identity": "ai/daemons/orchestrator/scheduling/backup.mjs",
@@ -205,6 +254,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/daemons/orchestrator/scheduling/nightShiftPolicy.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/scheduling/nightShiftPolicy.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/daemons/orchestrator/scheduling/picker.mjs",
             "plane": "cloud",
             "target": "cloud/daemons/orchestrator/scheduling/picker.mjs",
@@ -257,6 +312,12 @@
             "plane": "cloud",
             "target": "cloud/daemons/orchestrator/services/BootIdentityHealthService.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/CadenceEngine.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/CadenceEngine.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/daemons/orchestrator/services/ConfiguredTaskDefinitionsService.mjs",
@@ -451,16 +512,46 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/daemons/orchestrator/services/leaseMonitor.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/leaseMonitor.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/leaseWatchdog.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/leaseWatchdog.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/daemons/orchestrator/services/memoryPressureDisposition.mjs",
             "plane": "cloud",
             "target": "cloud/daemons/orchestrator/services/memoryPressureDisposition.mjs",
             "origin": "measured"
         },
         {
+            "identity": "ai/daemons/orchestrator/services/miniSummaryStarvationDiagnosis.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/miniSummaryStarvationDiagnosis.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/daemons/orchestrator/services/recordBootIdentityFact.mjs",
             "plane": "cloud",
             "target": "cloud/daemons/orchestrator/services/recordBootIdentityFact.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/sqliteIntegrityDiagnosis.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/sqliteIntegrityDiagnosis.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/storeBloatDiagnosis.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/storeBloatDiagnosis.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/daemons/orchestrator/services/taskOutcomeDiagnosis.mjs",
@@ -473,6 +564,12 @@
             "plane": "cloud",
             "target": "cloud/daemons/orchestrator/services/tenantRepoCheckpointValidity.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/orchestrator/services/vectorCountMonotonicityDiagnosis.mjs",
+            "plane": "cloud",
+            "target": "cloud/daemons/orchestrator/services/vectorCountMonotonicityDiagnosis.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/daemons/orchestrator/taskAuthority.mjs",
@@ -517,6 +614,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/daemons/wake/armSeatWakeRoute.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/armSeatWakeRoute.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/daemons/wake/buildReceiverManifest.mjs",
             "plane": "edge",
             "target": "daemons/wake/buildReceiverManifest.mjs",
@@ -527,6 +630,12 @@
             "plane": "edge",
             "target": "daemons/wake/claudeCourierTransport.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/daemons/wake/consumeWakeOutbox.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/consumeWakeOutbox.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/daemons/wake/contextGatePolicy.mjs",
@@ -577,6 +686,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/daemons/wake/readSubscriptionsOverMcp.mjs",
+            "plane": "edge",
+            "target": "daemons/wake/readSubscriptionsOverMcp.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/daemons/wake/receiver.mjs",
             "plane": "edge",
             "target": "daemons/wake/receiver.mjs",
@@ -613,6 +728,42 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/data/memory-core/lazy-edges.jsonl",
+            "plane": "cloud",
+            "target": "cloud/data/memory-core/lazy-edges.jsonl",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/demo-agents/PROTOCOL.md",
+            "plane": "cloud",
+            "target": "cloud/demo-agents/PROTOCOL.md",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/demo-agents/dev.mjs",
+            "plane": "cloud",
+            "target": "cloud/demo-agents/dev.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/demo-agents/mcp-demo-agent.mjs",
+            "plane": "cloud",
+            "target": "cloud/demo-agents/mcp-demo-agent.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/demo-agents/pm.mjs",
+            "plane": "cloud",
+            "target": "cloud/demo-agents/pm.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/docs/wake-prompt-landing-matrix.md",
+            "plane": "cloud",
+            "target": "cloud/docs/wake-prompt-landing-matrix.md",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/embeddingProviders.mjs",
             "plane": "cloud",
             "target": "cloud/embeddingProviders.mjs",
@@ -625,16 +776,202 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/examples/cloud-deployment/README.md",
+            "plane": "cloud",
+            "target": "cloud/examples/cloud-deployment/README.md",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/cloud-deployment/deploy-pipeline.sh",
+            "plane": "cloud",
+            "target": "cloud/examples/cloud-deployment/deploy-pipeline.sh",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/cloud-deployment/minimal-external-workspace/README.md",
+            "plane": "cloud",
+            "target": "cloud/examples/cloud-deployment/minimal-external-workspace/README.md",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/cloud-deployment/minimal-external-workspace/package.json",
+            "plane": "cloud",
+            "target": "cloud/examples/cloud-deployment/minimal-external-workspace/package.json",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/cloud-deployment/minimal-external-workspace/proto/example.proto",
+            "plane": "cloud",
+            "target": "cloud/examples/cloud-deployment/minimal-external-workspace/proto/example.proto",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/cloud-deployment/minimal-external-workspace/src/ProtoParser.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/cloud-deployment/minimal-external-workspace/src/ProtoParser.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/cloud-deployment/minimal-external-workspace/src/ProtoSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/cloud-deployment/minimal-external-workspace/src/ProtoSource.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/cloud-deployment/pre-push-hook.sh",
+            "plane": "cloud",
+            "target": "cloud/examples/cloud-deployment/pre-push-hook.sh",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/convergenceTerrainDemo.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/convergenceTerrainDemo.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/db-backup.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/db-backup.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/examples/db-restore-graph.mjs",
             "plane": "cloud",
             "target": "cloud/examples/db-restore-graph.mjs",
             "origin": "census"
         },
         {
+            "identity": "ai/examples/db-restore.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/db-restore.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/debug_session_state.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/debug_session_state.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/harnessEndurance/README.md",
+            "plane": "cloud",
+            "target": "cloud/examples/harnessEndurance/README.md",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/harnessEndurance/comparator/comparator.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/harnessEndurance/comparator/comparator.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/harnessEndurance/comparator/index.html",
+            "plane": "cloud",
+            "target": "cloud/examples/harnessEndurance/comparator/index.html",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/harnessEndurance/comparator/markdownBlocks.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/harnessEndurance/comparator/markdownBlocks.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/harnessEndurance/neo/MainContainer.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/harnessEndurance/neo/MainContainer.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/harnessEndurance/neo/app.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/harnessEndurance/neo/app.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/harnessEndurance/neo/index.html",
+            "plane": "cloud",
+            "target": "cloud/examples/harnessEndurance/neo/index.html",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/harnessEndurance/neo/neo-config.json",
+            "plane": "cloud",
+            "target": "cloud/examples/harnessEndurance/neo/neo-config.json",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/harnessEndurance/shared/LoadProfile.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/harnessEndurance/shared/LoadProfile.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/examples/inspectGraph.mjs",
             "plane": "cloud",
             "target": "cloud/examples/inspectGraph.mjs",
             "origin": "census"
+        },
+        {
+            "identity": "ai/examples/migrate_timestamps.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/migrate_timestamps.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/self-healing.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/self-healing.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/smart-search.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/smart-search.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/test-agent.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/test-agent.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/test-app-worker.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/test-app-worker.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/test-context-assembler.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/test-context-assembler.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/test-loop-harden.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/test-loop-harden.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/test-loop.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/test-loop.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/test-safety.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/test-safety.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/examples/test_rag.mjs",
+            "plane": "cloud",
+            "target": "cloud/examples/test_rag.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/graph/Database.mjs",
@@ -691,10 +1028,40 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/graph/directionAttribution.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/directionAttribution.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/graph/directionHindcastReplay.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/directionHindcastReplay.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/graph/directionSchema.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/directionSchema.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/graph/directionVelocity.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/directionVelocity.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/graph/identityHydration.mjs",
             "plane": "cloud",
             "target": "cloud/graph/identityHydration.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/identityRenderContract.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/identityRenderContract.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/graph/identityRoots.mjs",
@@ -719,6 +1086,12 @@
             "plane": "cloud",
             "target": "cloud/graph/normalizeAgentIdentityNodeId.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/graph/queries/traversal.mjs",
+            "plane": "cloud",
+            "target": "cloud/graph/queries/traversal.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/graph/storage/Base.mjs",
@@ -763,10 +1136,70 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/mcp/client/mcp-cli.mjs",
+            "plane": "edge",
+            "target": "mcp/client/mcp-cli.mjs",
+            "origin": "root-script-command"
+        },
+        {
+            "identity": "ai/mcp/client/stdioToStreamableHttp.mjs",
+            "plane": "edge",
+            "target": "mcp/client/stdioToStreamableHttp.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/mcp/deploy/proxy/Caddyfile",
             "plane": "cloud",
             "target": "cloud/mcp/deploy/proxy/Caddyfile",
             "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/deploy/proxy/nginx.conf",
+            "plane": "cloud",
+            "target": "cloud/mcp/deploy/proxy/nginx.conf",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/BaseServer.mjs",
+            "plane": "edge",
+            "target": "mcp/server/BaseServer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/file-system/Server.mjs",
+            "plane": "edge",
+            "target": "mcp/server/file-system/Server.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/file-system/mcp-server.mjs",
+            "plane": "edge",
+            "target": "mcp/server/file-system/mcp-server.mjs",
+            "origin": "root-script-command"
+        },
+        {
+            "identity": "ai/mcp/server/file-system/openapi.yaml",
+            "plane": "edge",
+            "target": "mcp/server/file-system/openapi.yaml",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/file-system/services/FileSystemService.mjs",
+            "plane": "edge",
+            "target": "mcp/server/file-system/services/FileSystemService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/file-system/services/toolService.mjs",
+            "plane": "edge",
+            "target": "mcp/server/file-system/services/toolService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/github-workflow/Server.mjs",
+            "plane": "edge",
+            "target": "mcp/server/github-workflow/Server.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/mcp/server/github-workflow/config.template.mjs",
@@ -787,6 +1220,30 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/mcp/server/github-workflow/mcp-server.mjs",
+            "plane": "edge",
+            "target": "mcp/server/github-workflow/mcp-server.mjs",
+            "origin": "root-script-command"
+        },
+        {
+            "identity": "ai/mcp/server/github-workflow/openapi.yaml",
+            "plane": "edge",
+            "target": "mcp/server/github-workflow/openapi.yaml",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/github-workflow/toolService.mjs",
+            "plane": "edge",
+            "target": "mcp/server/github-workflow/toolService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/gitlab-workflow/Server.mjs",
+            "plane": "edge",
+            "target": "mcp/server/gitlab-workflow/Server.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/mcp/server/gitlab-workflow/config.template.mjs",
             "plane": "edge",
             "target": "mcp/server/gitlab-workflow/config.template.mjs",
@@ -805,6 +1262,30 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/mcp/server/gitlab-workflow/mcp-server.mjs",
+            "plane": "edge",
+            "target": "mcp/server/gitlab-workflow/mcp-server.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/gitlab-workflow/openapi.yaml",
+            "plane": "edge",
+            "target": "mcp/server/gitlab-workflow/openapi.yaml",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/gitlab-workflow/toolService.mjs",
+            "plane": "edge",
+            "target": "mcp/server/gitlab-workflow/toolService.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/knowledge-base/Server.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/knowledge-base/Server.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/mcp/server/knowledge-base/config.template.mjs",
             "plane": "cloud",
             "target": "cloud/mcp/server/knowledge-base/config.template.mjs",
@@ -817,9 +1298,51 @@
             "origin": "census"
         },
         {
+            "identity": "ai/mcp/server/knowledge-base/describeCollectionStats.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/knowledge-base/describeCollectionStats.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/knowledge-base/ingestSourceFilesTool.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/knowledge-base/ingestSourceFilesTool.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/mcp/server/knowledge-base/logger.mjs",
             "plane": "cloud",
             "target": "cloud/mcp/server/knowledge-base/logger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/knowledge-base/mcp-server.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/knowledge-base/mcp-server.mjs",
+            "origin": "root-script-command"
+        },
+        {
+            "identity": "ai/mcp/server/knowledge-base/openapi.yaml",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/knowledge-base/openapi.yaml",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/knowledge-base/toolService.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/knowledge-base/toolService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/Server.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/Server.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/communityBatchTool.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/communityBatchTool.mjs",
             "origin": "measured"
         },
         {
@@ -835,15 +1358,57 @@
             "origin": "census"
         },
         {
+            "identity": "ai/mcp/server/memory-core/helpers/EmbeddingProviderConfig.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/helpers/EmbeddingProviderConfig.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/mcp/server/memory-core/helpers/TurnPresenceConfig.mjs",
             "plane": "cloud",
             "target": "cloud/mcp/server/memory-core/helpers/TurnPresenceConfig.mjs",
             "origin": "measured"
         },
         {
+            "identity": "ai/mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/helpers/recordTurnPresenceOverMcp.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/helpers/recordTurnPresenceOverMcp.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/mcp/server/memory-core/logger.mjs",
             "plane": "cloud",
             "target": "cloud/mcp/server/memory-core/logger.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/mcp-server.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/mcp-server.mjs",
+            "origin": "root-script-command"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/openapi.yaml",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/openapi.yaml",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/scripts/setup_mlx.sh",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/scripts/setup_mlx.sh",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/memory-core/toolService.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/memory-core/toolService.mjs",
             "origin": "measured"
         },
         {
@@ -856,6 +1421,12 @@
             "identity": "ai/mcp/server/neural-link/BridgeProtocol.mjs",
             "plane": "edge",
             "target": "mcp/server/neural-link/BridgeProtocol.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/Server.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/Server.mjs",
             "origin": "measured"
         },
         {
@@ -883,15 +1454,51 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/mcp/server/neural-link/mcp-server.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/mcp-server.mjs",
+            "origin": "root-script-command"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/openapi.yaml",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/openapi.yaml",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/mcp/server/neural-link/run-bridge.mjs",
             "plane": "edge",
             "target": "mcp/server/neural-link/run-bridge.mjs",
             "origin": "census"
         },
         {
+            "identity": "ai/mcp/server/neural-link/test_connection_service.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/test_connection_service.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/neural-link/toolService.mjs",
+            "plane": "edge",
+            "target": "mcp/server/neural-link/toolService.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/mcp/server/neural-link/verifyBridgeToken.mjs",
             "plane": "edge",
             "target": "mcp/server/neural-link/verifyBridgeToken.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/helpers/deploymentConfig.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/helpers/deploymentConfig.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/mcp/server/shared/helpers/hostEndpoint.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/helpers/hostEndpoint.mjs",
             "origin": "measured"
         },
         {
@@ -907,6 +1514,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/mcp/server/shared/helpers/resolvedConfigDisclosure.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/helpers/resolvedConfigDisclosure.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/mcp/server/shared/helpers/seatToken.mjs",
             "plane": "cloud",
             "target": "cloud/mcp/server/shared/helpers/seatToken.mjs",
@@ -919,10 +1532,22 @@
             "origin": "census"
         },
         {
+            "identity": "ai/mcp/server/shared/services/AuthMiddleware.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/AuthMiddleware.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/mcp/server/shared/services/AuthService.mjs",
             "plane": "cloud",
             "target": "cloud/mcp/server/shared/services/AuthService.mjs",
             "origin": "census"
+        },
+        {
+            "identity": "ai/mcp/server/shared/services/BootEnvelopeResolver.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/BootEnvelopeResolver.mjs",
+            "origin": "measured"
         },
         {
             "identity": "ai/mcp/server/shared/services/DestructiveOperationGuard.mjs",
@@ -931,9 +1556,27 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/mcp/server/shared/services/HeapObservationReporterService.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/HeapObservationReporterService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/services/PolicyService.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/PolicyService.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/mcp/server/shared/services/RequestContextService.mjs",
             "plane": "cloud",
             "target": "cloud/mcp/server/shared/services/RequestContextService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/mcp/server/shared/services/ResolvedConfigReporterService.mjs",
+            "plane": "cloud",
+            "target": "cloud/mcp/server/shared/services/ResolvedConfigReporterService.mjs",
             "origin": "measured"
         },
         {
@@ -1021,6 +1664,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/provider/test-gemini.mjs",
+            "plane": "cloud",
+            "target": "cloud/provider/test-gemini.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/providerLaneLiveShape.mjs",
             "plane": "cloud",
             "target": "cloud/providerLaneLiveShape.mjs",
@@ -1085,6 +1734,12 @@
             "plane": "edge",
             "target": "scripts/benchmark/serving-cost-meter.mjs",
             "origin": "census"
+        },
+        {
+            "identity": "ai/scripts/diagnostics/agentOsExtractionInventory.json",
+            "plane": "edge",
+            "target": "scripts/diagnostics/agentOsExtractionInventory.json",
+            "origin": "membership"
         },
         {
             "identity": "ai/scripts/diagnostics/agentOsExtractionInventory.mjs",
@@ -1393,10 +2048,22 @@
             "origin": "census"
         },
         {
+            "identity": "ai/scripts/lifecycle/local-agent-os/README.md",
+            "plane": "edge",
+            "target": "scripts/lifecycle/local-agent-os/README.md",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/scripts/lifecycle/materialArtifactKey.mjs",
             "plane": "edge",
             "target": "scripts/lifecycle/materialArtifactKey.mjs",
             "origin": "census"
+        },
+        {
+            "identity": "ai/scripts/lifecycle/nightly-e2e/README.md",
+            "plane": "edge",
+            "target": "scripts/lifecycle/nightly-e2e/README.md",
+            "origin": "membership"
         },
         {
             "identity": "ai/scripts/lifecycle/nightlyE2eDigest.mjs",
@@ -1499,6 +2166,18 @@
             "plane": "edge",
             "target": "scripts/lint/check-front-door-fingerprint.mjs",
             "origin": "census"
+        },
+        {
+            "identity": "ai/scripts/lint/config-leaf-parity.json",
+            "plane": "edge",
+            "target": "scripts/lint/config-leaf-parity.json",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/scripts/lint/guard-ci-parity-registry.json",
+            "plane": "edge",
+            "target": "scripts/lint/guard-ci-parity-registry.json",
+            "origin": "membership"
         },
         {
             "identity": "ai/scripts/lint/lint-adr-seam-table.mjs",
@@ -1607,6 +2286,12 @@
             "plane": "edge",
             "target": "scripts/lint/prStackingGuard.mjs",
             "origin": "census"
+        },
+        {
+            "identity": "ai/scripts/lint/retry-bound-registry.json",
+            "plane": "edge",
+            "target": "scripts/lint/retry-bound-registry.json",
+            "origin": "membership"
         },
         {
             "identity": "ai/scripts/lint/scriptPlaneClosure.mjs",
@@ -2023,6 +2708,12 @@
             "origin": "census"
         },
         {
+            "identity": "ai/sdk-manifest.md",
+            "plane": "cloud",
+            "target": "cloud/sdk-manifest.md",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services.host.mjs",
             "plane": "edge",
             "target": "services.host.mjs",
@@ -2071,6 +2762,12 @@
             "origin": "census"
         },
         {
+            "identity": "ai/services/fleet/createBootIdentityReadSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/createBootIdentityReadSource.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/fleet/createFleetRegistryBridge.mjs",
             "plane": "cloud",
             "target": "cloud/services/fleet/createFleetRegistryBridge.mjs",
@@ -2095,6 +2792,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/fleet/devFleetServer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/devFleetServer.mjs",
+            "origin": "root-script-command"
+        },
+        {
             "identity": "ai/services/fleet/dispatchFleetRequest.mjs",
             "plane": "cloud",
             "target": "cloud/services/fleet/dispatchFleetRequest.mjs",
@@ -2107,9 +2810,39 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/fleet/fleetA2AActivityAdapter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetA2AActivityAdapter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetActivityComposer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetActivityComposer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetBridgeServer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetBridgeServer.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetCatchUpSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetCatchUpSource.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/fleet/fleetCockpitStatus.mjs",
             "plane": "cloud",
             "target": "cloud/services/fleet/fleetCockpitStatus.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetIngressAuth.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetIngressAuth.mjs",
             "origin": "measured"
         },
         {
@@ -2122,6 +2855,18 @@
             "identity": "ai/services/fleet/fleetMailboxMirrorAdapter.mjs",
             "plane": "cloud",
             "target": "cloud/services/fleet/fleetMailboxMirrorAdapter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetMemoriesSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetMemoriesSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetPrLaneActivityAdapter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetPrLaneActivityAdapter.mjs",
             "origin": "measured"
         },
         {
@@ -2143,6 +2888,18 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/fleet/fleetSessionMemoriesSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetSessionMemoriesSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetTasksSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetTasksSource.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/fleet/fleetThrottleStateAdapter.mjs",
             "plane": "cloud",
             "target": "cloud/services/fleet/fleetThrottleStateAdapter.mjs",
@@ -2158,6 +2915,18 @@
             "identity": "ai/services/fleet/fleetWakeReceiver.mjs",
             "plane": "cloud",
             "target": "cloud/services/fleet/fleetWakeReceiver.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetWakeRoutesSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetWakeRoutesSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/fleetWakeSseConsumer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/fleetWakeSseConsumer.mjs",
             "origin": "measured"
         },
         {
@@ -2227,9 +2996,33 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/fleet/opencodeWakeEnvelopePlugin.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/opencodeWakeEnvelopePlugin.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/fleet/operatorSeatConflation.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/operatorSeatConflation.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/fleet/planeMailboxClient.mjs",
             "plane": "cloud",
             "target": "cloud/services/fleet/planeMailboxClient.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/planeWakeIdentitiesReader.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/planeWakeIdentitiesReader.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/planeWhoIsOnlineReader.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/planeWhoIsOnlineReader.mjs",
             "origin": "measured"
         },
         {
@@ -2257,9 +3050,21 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/fleet/removeAgentRepo.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/removeAgentRepo.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/fleet/resolveIdentityDisplay.mjs",
             "plane": "cloud",
             "target": "cloud/services/fleet/resolveIdentityDisplay.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/seatArmingReader.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/seatArmingReader.mjs",
             "origin": "measured"
         },
         {
@@ -2275,6 +3080,66 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/fleet/wireBootIdentityReadSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/wireBootIdentityReadSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/wireFleetActivityReadSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/wireFleetActivityReadSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/wireFleetCatchUpSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/wireFleetCatchUpSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/wireFleetMemoriesSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/wireFleetMemoriesSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/wireFleetSessionMemoriesSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/wireFleetSessionMemoriesSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/wireFleetTasksSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/wireFleetTasksSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/wireFleetWakeRoutesSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/wireFleetWakeRoutesSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/fleet/wireOperatorComposeWriter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/fleet/wireOperatorComposeWriter.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/AgentStateService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/AgentStateService.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/DiscussionService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/DiscussionService.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/github-workflow/GraphqlService.mjs",
             "plane": "cloud",
             "target": "cloud/services/github-workflow/GraphqlService.mjs",
@@ -2285,6 +3150,12 @@
             "plane": "cloud",
             "target": "cloud/services/github-workflow/HealthService.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/IssueReconciliationService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/IssueReconciliationService.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/IssueService.mjs",
@@ -2311,6 +3182,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/github-workflow/PullRequestReconciliationService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/PullRequestReconciliationService.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/github-workflow/PullRequestService.mjs",
             "plane": "cloud",
             "target": "cloud/services/github-workflow/PullRequestService.mjs",
@@ -2329,10 +3206,52 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/github-workflow/community/assembleIssueBatch.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/assembleIssueBatch.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/github-workflow/community/githubIssueAbsence.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubIssueAbsence.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/github-workflow/community/githubIssueObservations.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubIssueObservations.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/github-workflow/community/githubIssueReconciliation.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubIssueReconciliation.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/github-workflow/community/githubPullRequestObservations.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubPullRequestObservations.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/github-workflow/community/githubPullRequestReconciliation.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/community/githubPullRequestReconciliation.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/github-workflow/communityActivityShadowReader.mjs",
             "plane": "cloud",
             "target": "cloud/services/github-workflow/communityActivityShadowReader.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/openWorkCensusReader.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/openWorkCensusReader.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/queries/communityActivityShadowQueries.mjs",
@@ -2353,6 +3272,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/github-workflow/queries/issueReconciliationQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/issueReconciliationQueries.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/github-workflow/queries/labelQueries.mjs",
             "plane": "cloud",
             "target": "cloud/services/github-workflow/queries/labelQueries.mjs",
@@ -2369,6 +3294,12 @@
             "plane": "cloud",
             "target": "cloud/services/github-workflow/queries/pullRequestQueries.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/services/github-workflow/queries/pullRequestReconciliationQueries.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/queries/pullRequestReconciliationQueries.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/github-workflow/queries/releaseQueries.mjs",
@@ -2443,6 +3374,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/github-workflow/sync/CONTENT_GRAMMAR.md",
+            "plane": "cloud",
+            "target": "cloud/services/github-workflow/sync/CONTENT_GRAMMAR.md",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/github-workflow/sync/DiscussionSyncer.mjs",
             "plane": "cloud",
             "target": "cloud/services/github-workflow/sync/DiscussionSyncer.mjs",
@@ -2485,10 +3422,22 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/gitlab-workflow/HealthService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/HealthService.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/gitlab-workflow/IssueService.mjs",
             "plane": "cloud",
             "target": "cloud/services/gitlab-workflow/IssueService.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/services/gitlab-workflow/LocalFileService.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/gitlab-workflow/LocalFileService.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/gitlab-workflow/MergeRequestService.mjs",
@@ -2605,6 +3554,30 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/graph/conceptTouchMeasurement.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/conceptTouchMeasurement.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/graph/convergenceCompute.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/convergenceCompute.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/graph/convergenceRenderLedger.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/convergenceRenderLedger.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/graph/convergenceSnapshotSchema.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/convergenceSnapshotSchema.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/graph/corpusProjectionContract.mjs",
             "plane": "cloud",
             "target": "cloud/services/graph/corpusProjectionContract.mjs",
@@ -2620,6 +3593,12 @@
             "identity": "ai/services/graph/embeddingDimension.mjs",
             "plane": "cloud",
             "target": "cloud/services/graph/embeddingDimension.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/exploreLaneLandscape.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/exploreLaneLandscape.mjs",
             "origin": "measured"
         },
         {
@@ -2647,10 +3626,46 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/graph/laneLandscapeCensusSource.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/laneLandscapeCensusSource.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/laneLandscapeCensusWalk.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/laneLandscapeCensusWalk.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/laneLandscapeProjection.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/laneLandscapeProjection.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/laneLandscapeSynthesis.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/laneLandscapeSynthesis.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/lifecycleAdmission.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/lifecycleAdmission.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/graph/lifecycleFrontier.mjs",
             "plane": "cloud",
             "target": "cloud/services/graph/lifecycleFrontier.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/services/graph/produceLifecycleFrontier.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/graph/produceLifecycleFrontier.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/graph/providerDispatch.mjs",
@@ -2711,6 +3726,24 @@
             "plane": "cloud",
             "target": "cloud/services/ingestion/MemorySessionIngestor.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/services/ingestion/PrOutcomeReward.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/ingestion/PrOutcomeReward.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/ingestion/RevertDetection.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/ingestion/RevertDetection.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/ingestion/parseCiFailures.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/ingestion/parseCiFailures.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/knowledge-base/ChromaManager.mjs",
@@ -2839,6 +3872,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/knowledge-base/helpers/kbAlertRuleEngine.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/kbAlertRuleEngine.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/knowledge-base/helpers/kbEmbeddingPoisonStore.mjs",
             "plane": "cloud",
             "target": "cloud/services/knowledge-base/helpers/kbEmbeddingPoisonStore.mjs",
@@ -2848,6 +3887,18 @@
             "identity": "ai/services/knowledge-base/helpers/kbEmbeddingResumeStore.mjs",
             "plane": "cloud",
             "target": "cloud/services/knowledge-base/helpers/kbEmbeddingResumeStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/kbGarbageCollectionEngine.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/kbGarbageCollectionEngine.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/helpers/kbReconciliationEngine.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/helpers/kbReconciliationEngine.mjs",
             "origin": "measured"
         },
         {
@@ -2903,6 +3954,30 @@
             "plane": "cloud",
             "target": "cloud/services/knowledge-base/parser/TestParser.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/services/knowledge-base/parser/backup-record-v1.schema.json",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/parser/backup-record-v1.schema.json",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/knowledge-base/parser/deletion-signaling-contract.md",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/parser/deletion-signaling-contract.md",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/knowledge-base/parser/identity-tuple.md",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/parser/identity-tuple.md",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/knowledge-base/parser/parsed-chunk-v1.schema.json",
+            "plane": "cloud",
+            "target": "cloud/services/knowledge-base/parser/parsed-chunk-v1.schema.json",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/knowledge-base/retrievalProvenance.mjs",
@@ -3151,6 +4226,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/memory-core/helpers/acceptedLossAck.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/acceptedLossAck.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/memory-core/helpers/acceptedLossAuditStore.mjs",
             "plane": "cloud",
             "target": "cloud/services/memory-core/helpers/acceptedLossAuditStore.mjs",
@@ -3163,9 +4244,33 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/memory-core/helpers/birdViewCitations.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/birdViewCitations.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/memory-core/helpers/bundleIntegrity.mjs",
             "plane": "cloud",
             "target": "cloud/services/memory-core/helpers/bundleIntegrity.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/chatModelGenerate.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/chatModelGenerate.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/chronologicalWindowSources.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/chronologicalWindowSources.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/citationProminence.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/citationProminence.mjs",
             "origin": "measured"
         },
         {
@@ -3220,6 +4325,18 @@
             "identity": "ai/services/memory-core/helpers/embeddingDispatchPlan.mjs",
             "plane": "cloud",
             "target": "cloud/services/memory-core/helpers/embeddingDispatchPlan.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/embeddingProviderConfig.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/embeddingProviderConfig.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/exploreMemoryHistory.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/exploreMemoryHistory.mjs",
             "origin": "measured"
         },
         {
@@ -3313,6 +4430,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/memory-core/helpers/nlTransactionArchiveStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/nlTransactionArchiveStore.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/memory-core/helpers/offHostSyncStore.mjs",
             "plane": "cloud",
             "target": "cloud/services/memory-core/helpers/offHostSyncStore.mjs",
@@ -3334,6 +4457,12 @@
             "identity": "ai/services/memory-core/helpers/reEmbedMissingHeal.mjs",
             "plane": "cloud",
             "target": "cloud/services/memory-core/helpers/reEmbedMissingHeal.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/recentTurnsFetchPage.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/recentTurnsFetchPage.mjs",
             "origin": "measured"
         },
         {
@@ -3409,15 +4538,57 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/memory-core/helpers/sandmanHandoffStore.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/sandmanHandoffStore.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/semanticEnrichment.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/semanticEnrichment.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/sessionSummaryReader.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/sessionSummaryReader.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/memory-core/helpers/sessionSummaryReceiptStore.mjs",
             "plane": "cloud",
             "target": "cloud/services/memory-core/helpers/sessionSummaryReceiptStore.mjs",
             "origin": "measured"
         },
         {
+            "identity": "ai/services/memory-core/helpers/temporalBirdViewEnvelope.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/temporalBirdViewEnvelope.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/temporalBirdViewSynthesizer.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/temporalBirdViewSynthesizer.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/memory-core/helpers/temporalSummaryAggregationEngine.mjs",
             "plane": "cloud",
             "target": "cloud/services/memory-core/helpers/temporalSummaryAggregationEngine.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/temporalSynthesis.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/temporalSynthesis.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/helpers/temporalWindowResolver.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/helpers/temporalWindowResolver.mjs",
             "origin": "measured"
         },
         {
@@ -3467,6 +4638,30 @@
             "plane": "cloud",
             "target": "cloud/services/memory-core/helpers/withTimeout.mjs",
             "origin": "measured"
+        },
+        {
+            "identity": "ai/services/memory-core/hookProjectionLease.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/hookProjectionLease.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/memory-core/hookProjectionSubmission.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/hookProjectionSubmission.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/memory-core/hookProjectionTransport.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/hookProjectionTransport.mjs",
+            "origin": "membership"
+        },
+        {
+            "identity": "ai/services/memory-core/hookProjectionWriter.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/memory-core/hookProjectionWriter.mjs",
+            "origin": "membership"
         },
         {
             "identity": "ai/services/memory-core/lifecycle/ChromaLifecycleService.mjs",
@@ -3619,6 +4814,18 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/shared/a2aCollisionTags.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/a2aCollisionTags.mjs",
+            "origin": "measured"
+        },
+        {
+            "identity": "ai/services/shared/activationReceipt.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/activationReceipt.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/shared/atomicFileWrite.mjs",
             "plane": "cloud",
             "target": "cloud/services/shared/atomicFileWrite.mjs",
@@ -3667,6 +4874,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/shared/processHeapObservation.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/processHeapObservation.mjs",
+            "origin": "measured"
+        },
+        {
             "identity": "ai/services/shared/providerActivityLedger.mjs",
             "plane": "cloud",
             "target": "cloud/services/shared/providerActivityLedger.mjs",
@@ -3703,6 +4916,12 @@
             "origin": "measured"
         },
         {
+            "identity": "ai/services/shared/vector/electionGatedPromote.mjs",
+            "plane": "cloud",
+            "target": "cloud/services/shared/vector/electionGatedPromote.mjs",
+            "origin": "membership"
+        },
+        {
             "identity": "ai/services/shared/vector/generationElectionStore.mjs",
             "plane": "cloud",
             "target": "cloud/services/shared/vector/generationElectionStore.mjs",
@@ -3718,7 +4937,8 @@
     "correction": [
         "sourceSha initially recorded a neo-agent-brain commit while sourceRepository names neomjs/neo - the rev-parse ran in the wrong clone. Corrected to the neomjs/neo dev SHA the inventory actually ran against, verified clean at that head.",
         "The first emission carried 178 rows from an EXTENSION-shaped filter that silently dropped every file without a .mjs/.yml/.yaml suffix. That dropped 8 identities: 7 belonging to PR #9 (harmless) and ai/mcp/deploy/proxy/Caddyfile (a real miss), while leaving 11 PR #9 targets duplicated here. Re-derived with no extension filter and with ai/deploy/** excluded by scope: 168 rows. Caught by @neo-gpt-emmy.",
-        "The 168-row emission was an authority-bearing SEED set, not the receive. Its custody discriminator (authoritySource present) excluded 47 tracked plane-dispositioned files, 19 of which the import closure could not rescue - including ai/daemons/orchestrator/daemon.mjs and the fleet server. Re-derived as roots-union-closure: 616 files. Reported by @neo-gpt-emmy and @neo-gpt."
+        "The 168-row emission was an authority-bearing SEED set, not the receive. Its custody discriminator (authoritySource present) excluded 47 tracked plane-dispositioned files, 19 of which the import closure could not rescue - including ai/daemons/orchestrator/daemon.mjs and the fleet server. Re-derived as roots-union-closure: 616 files. Reported by @neo-gpt-emmy and @neo-gpt.",
+        "The 616-row receive left 206 tracked ai/** paths with no disposition at all, including six mcp-server.mjs entrypoints, the fleet server, and the orchestrator control plane. Reported by @neo-gpt-emmy as the fourth blocker and gated by @neo-gpt on whole-tree reconciliation. Now 819 received, 18 to PR #9, 2 stays-engine, 1 retire, 0 unclassified."
     ],
     "scope": "neo-agent-brain#13 receives the Agent OS source EXCEPT ai/deploy/**, which Brain PR #9 owns. PR #9 holds 18 movers; this manifest holds 616. The #17791 source-deletion predicate is the UNION of both sets (18 + 616 = 634), never this manifest alone and never PR #9 alone.",
     "population": "Census roots (custody rows AND plane-opener rows) union their transitive ai/** closure, tracked files only, minus ai/deploy/** which Brain PR #9 owns. Custody rows alone lost 19 tracked files including the orchestrator daemon and the fleet server; the closure alone cannot find files nothing imports, such as the five per-server config templates. Neither source is sufficient by itself.",
@@ -3886,5 +5106,32 @@
         },
         "tests": "ZERO test files are received. ADR 0040 section 2.7 makes test custody follow SUBJECT, not directory, so the inventory row matching /ai/ by path is a census SEED to classify rather than a move set. An exact subject-owned test census is required before this receive is complete. Raised by @neo-gpt-emmy."
     },
-    "canonicalSha256": "318f44da7e98a2eb8124d1b0b0ff4167f18e80a0b836bb2ae3724d009b300051"
+    "wholeTreeReconciliation": {
+        "invariant": "every tracked ai/** path carries exactly one explicit disposition: received here, owned by Brain PR #9, stays with the Engine, or retires",
+        "trackedPaths": 840,
+        "receive": 819,
+        "pr9Deploy": 18,
+        "staysEngine": [
+            {
+                "identity": "ai/scripts/benchmark/setupClass-cold-start.mjs",
+                "disposition": "stays-engine",
+                "reason": "census stays-engine row"
+            },
+            {
+                "identity": "ai/scripts/lifecycle/nightly-e2e/com.neomjs.nightly-e2e.plist",
+                "disposition": "stays-engine",
+                "reason": "census stays-engine row"
+            }
+        ],
+        "retire": [
+            {
+                "identity": "ai/scripts/diagnostics/printAiConfig.mjs",
+                "disposition": "retire",
+                "reason": "census retire row"
+            }
+        ],
+        "unclassified": 0,
+        "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership."
+    },
+    "canonicalSha256": "aec170333c537c1322412b7399769b49e56c68e6da35c7a0a46fd0d43b359305"
 }
