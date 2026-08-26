@@ -17,7 +17,12 @@
         "ref": "neomjs/neo#17800",
         "createdAt": "2026-08-26T12:21:50Z",
         "disposition": "resolve-before-cut-stays-source",
-        "includedInTransferRows": false
+        "includedInTransferRows": false,
+        "state": "CLOSED",
+        "stateReason": "COMPLETED",
+        "closedAt": "2026-08-26T12:54:25Z",
+        "resolvingPullRequest": "https://github.com/neomjs/neo/pull/17801",
+        "mergedAuthoritySha": "aeed7ee52c3e2baf40348023d3473e77ae638dea"
       }
     ],
     "sourceRepository": "neomjs/neo",
