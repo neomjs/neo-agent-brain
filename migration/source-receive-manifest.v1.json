@@ -5061,6 +5061,32 @@
             ],
             "reason": "Recreating them now would produce two receivers that fail on their first run, which is worse than the gap they were meant to close.",
             "owner": "neomjs/neo#17783"
+        },
+        "brainCoupledOutsideAi": {
+            "finding": "This manifest partitions ai/**, so anything Brain-owned or Brain-coupled outside that prefix was structurally invisible to it however complete the partition looked. harness/** (received at 642d4ae) and the 82 npm entrypoints were both found this way, one report at a time. This is the enumeration so the rest are not.",
+            "count": 123,
+            "method": "tracked files outside ai/, not already received, whose text references a path this receive actually took",
+            "byDirectory": {
+                ".agents/skills": 1,
+                ".claude/claude_desktop_config.example.json": 1,
+                ".claude/hooks": 3,
+                ".codex/config.template.toml": 1,
+                ".codex/hooks": 2,
+                ".github/workflows": 21,
+                ".kimi-code/hooks": 2,
+                "apps/agentos": 10,
+                "apps/portal": 9,
+                "buildScripts/dataSyncPipeline.mjs": 1,
+                "buildScripts/docs": 1,
+                "buildScripts/release": 1,
+                "buildScripts/util": 5,
+                "package.json": 1,
+                "src/Neo.mjs": 1,
+                "src/collection": 1,
+                "test/playwright": 62
+            },
+            "note": "These are NOT all movers. Most are Engine files that legitimately reference Brain surface and need REPOINTING or severing, not relocation - the apps/agentos cockpit, buildScripts, the retained workflows. The per-harness agent hooks (.claude, .codex, .kimi-code) are a genuine open question: they are Agent OS configuration, but both repositories host agents, so duplication may be correct where it is wrong everywhere else.",
+            "owner": "neomjs/neo#17791 for severing, neomjs/neo#17787 for any custody call"
         }
     },
     "wholeTreeReconciliation": {
@@ -5155,5 +5181,5 @@
         "unclassified": 0,
         "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership."
     },
-    "canonicalSha256": "bb6a2dbcfc2bc3e5a97a59c7772a2ca0223a27fb342187dada4f5278832ba771"
+    "canonicalSha256": "50ff3218f19f9f6d6652ff536c6d4ad198206aff8b3d733dac0a628c5342a6c2"
 }
