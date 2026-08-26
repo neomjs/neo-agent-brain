@@ -1,4 +1,4 @@
-import {setup}                  from '../../../../setup.mjs';
+import {setup}                  from '../../../setup.mjs';
 import {expect, test}           from '@playwright/test';
 import Neo                      from 'neo.mjs/src/Neo.mjs';
 import * as core                from 'neo.mjs/src/core/_export.mjs';

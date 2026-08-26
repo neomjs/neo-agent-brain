@@ -1,4 +1,4 @@
-import {setup} from '../../../../../setup.mjs';
+import {setup} from '../../../../setup.mjs';
 import fs      from 'fs/promises';
 import os      from 'os';
 import path    from 'path';

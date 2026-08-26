@@ -1,4 +1,4 @@
-import {setup} from '../../../../setup.mjs';
+import {setup} from '../../../setup.mjs';
 
 const appName = 'GitLabIssueServiceTest';
 setup({neoConfig: {unitTestMode: true}, appConfig: {name: appName, isMounted: () => true, vnodeInitialising: false}});

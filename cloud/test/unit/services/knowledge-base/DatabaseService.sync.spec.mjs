@@ -1,4 +1,4 @@
-import {setup} from '../../../../setup.mjs';
+import {setup} from '../../../setup.mjs';
 setup({neoConfig: {unitTestMode: true}});
 
 import {test, expect} from '@playwright/test';

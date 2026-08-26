@@ -4,9 +4,9 @@
     "sourceSha": "294a7a31d9f16eb0fb94bd4afadf279b5f9e8703",
     "rule": "A test follows its SUBJECT, per ADR 0040 section 2.7. test/playwright/unit/ai/A/B/C.spec.mjs tests ai/A/B/C.mjs, so the source-receive manifest already decides its plane - there is no second authority and no directory guess. Layout mirrors the source planes: edge tests at test/unit/**, cloud tests at cloud/test/unit/** so the Cloud package installs and runs independently. A spec whose exact subject is not a Brain row is resolved by what it IMPORTS, never by its directory: reaching src/, buildScripts/, learn/ or apps/ means it exercises retained Engine surface and stays there. Directory fallback moved 68 specs wrongly and was caught by @neo-gpt-emmy.",
     "counts": {
-        "total": 716,
-        "cloud": 603,
-        "edge": 113
+        "total": 724,
+        "cloud": 607,
+        "edge": 117
     },
     "staysEngine": [
         {
@@ -290,6 +290,54 @@
         }
     ],
     "rows": [
+        {
+            "identity": "test/playwright/chromaProcess.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/chromaProcess.mjs",
+            "origin": "test harness (per-plane copy)"
+        },
+        {
+            "identity": "test/playwright/configTemplateResolver.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/configTemplateResolver.mjs",
+            "origin": "test harness (per-plane copy)"
+        },
+        {
+            "identity": "test/playwright/resolveFreePort.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/resolveFreePort.mjs",
+            "origin": "test harness (per-plane copy)"
+        },
+        {
+            "identity": "test/playwright/setup.mjs",
+            "plane": "cloud",
+            "target": "cloud/test/setup.mjs",
+            "origin": "test harness (per-plane copy)"
+        },
+        {
+            "identity": "test/playwright/chromaProcess.mjs",
+            "plane": "edge",
+            "target": "test/chromaProcess.mjs",
+            "origin": "test harness (per-plane copy)"
+        },
+        {
+            "identity": "test/playwright/configTemplateResolver.mjs",
+            "plane": "edge",
+            "target": "test/configTemplateResolver.mjs",
+            "origin": "test harness (per-plane copy)"
+        },
+        {
+            "identity": "test/playwright/resolveFreePort.mjs",
+            "plane": "edge",
+            "target": "test/resolveFreePort.mjs",
+            "origin": "test harness (per-plane copy)"
+        },
+        {
+            "identity": "test/playwright/setup.mjs",
+            "plane": "edge",
+            "target": "test/setup.mjs",
+            "origin": "test harness (per-plane copy)"
+        },
         {
             "identity": "test/playwright/unit/ai/AgentOrchestrator.spec.mjs",
             "plane": "cloud",
@@ -1075,150 +1123,10 @@
             "origin": "subject-row"
         },
         {
-            "identity": "test/playwright/unit/ai/daemons/wake/buildReceiverManifest.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/buildReceiverManifest.spec.mjs",
-            "subject": "ai/daemons/wake/buildReceiverManifest.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/claudeCourierTransport.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/claudeCourierTransport.spec.mjs",
-            "subject": "ai/daemons/wake/claudeCourierTransport.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/coalescePolicy.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/coalescePolicy.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/consumeWakeOutbox.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/consumeWakeOutbox.spec.mjs",
-            "subject": "ai/daemons/wake/consumeWakeOutbox.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/contextGatePolicy.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/contextGatePolicy.spec.mjs",
-            "subject": "ai/daemons/wake/contextGatePolicy.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/daemon.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/daemon.spec.mjs",
-            "subject": "ai/daemons/wake/daemon.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/daemonDeliveryOwner.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/daemonDeliveryOwner.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/digestCountLabel.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/digestCountLabel.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/flushDeferPolicy.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/flushDeferPolicy.spec.mjs",
-            "subject": "ai/daemons/wake/flushDeferPolicy.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/instanceResolver.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/instanceResolver.spec.mjs",
-            "subject": "ai/daemons/wake/instanceResolver.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/localWakeAdapters.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/localWakeAdapters.spec.mjs",
-            "subject": "ai/daemons/wake/localWakeAdapters.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/localWakeAdaptersDialogGate.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/localWakeAdaptersDialogGate.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/outboxLock.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/outboxLock.spec.mjs",
-            "subject": "ai/daemons/wake/outboxLock.mjs",
-            "origin": "subject-row"
-        },
-        {
             "identity": "test/playwright/unit/ai/daemons/wake/queries.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/daemons/wake/queries.spec.mjs",
             "subject": "ai/daemons/wake/queries.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/receiver.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/receiver.spec.mjs",
-            "subject": "ai/daemons/wake/receiver.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/receiverDependencyClosure.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/receiverDependencyClosure.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/receiverState.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/receiverState.spec.mjs",
-            "subject": "ai/daemons/wake/receiverState.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/wakeDigestBuilder.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/wakeDigestBuilder.spec.mjs",
-            "subject": "ai/daemons/wake/wakeDigestBuilder.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/wakeLaneDirective.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/wakeLaneDirective.spec.mjs",
-            "subject": "ai/daemons/wake/wakeLaneDirective.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/wakeTargetEligibility.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/wakeTargetEligibility.spec.mjs",
-            "subject": "ai/daemons/wake/wakeTargetEligibility.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/daemons/wake/wokenWatermark.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/daemons/wake/wokenWatermark.spec.mjs",
-            "subject": "ai/daemons/wake/wokenWatermark.mjs",
             "origin": "subject-row"
         },
         {
@@ -1502,39 +1410,11 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/mcp/client/McpClientTransportConfig.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/client/McpClientTransportConfig.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/client/McpServersHealth.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/client/McpServersHealth.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/client/StdioToStreamableHttp.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/client/StdioToStreamableHttp.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/mcp/schemaCompaction.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/mcp/schemaCompaction.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/BaseServer.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/BaseServer.spec.mjs",
-            "subject": "ai/mcp/server/BaseServer.mjs",
-            "origin": "subject-row"
         },
         {
             "identity": "test/playwright/unit/ai/mcp/server/FileSystemPolicy.spec.mjs",
@@ -1547,41 +1427,6 @@
             "identity": "test/playwright/unit/ai/mcp/server/McpServerListToolsSmoke.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/mcp/server/McpServerListToolsSmoke.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/file-system/FileSystemService.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/file-system/FileSystemService.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/file-system/toolServiceDispatch.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/file-system/toolServiceDispatch.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/github-workflow/CommentGuidanceTiers.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/github-workflow/CommentGuidanceTiers.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/github-workflow/ConfigCompleteness.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/github-workflow/ConfigCompleteness.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/github-workflow/ToolRegistration.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/github-workflow/ToolRegistration.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
         },
@@ -1705,41 +1550,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/mcp/server/neural-link/Bridge.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/neural-link/Bridge.spec.mjs",
-            "subject": "ai/mcp/server/neural-link/Bridge.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/neural-link/CapabilityMatrix.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/neural-link/CapabilityMatrix.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/neural-link/logger.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/neural-link/logger.spec.mjs",
-            "subject": "ai/mcp/server/neural-link/logger.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/neural-link/verifyBridgeToken.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/neural-link/verifyBridgeToken.spec.mjs",
-            "subject": "ai/mcp/server/neural-link/verifyBridgeToken.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/server/neural-link/windowOps.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/server/neural-link/windowOps.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/mcp/server/seatToken.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/mcp/server/seatToken.spec.mjs",
@@ -1852,48 +1662,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/mcp/validation/GuideToolParity.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/validation/GuideToolParity.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/validation/McpHandlerSignatureGate.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/validation/McpHandlerSignatureGate.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/validation/OpenApiServiceParityEndToEnd.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/validation/OpenApiServiceParityEndToEnd.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/validation/OpenApiServiceParityGate.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/validation/OpenApiServiceParityGate.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/validation/OpenApiServiceParityTriggerReachability.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/validation/OpenApiServiceParityTriggerReachability.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/mcp/validation/OpenApiValidatorCompliance.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/mcp/validation/OpenApiValidatorCompliance.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
             "identity": "test/playwright/unit/ai/migrateConfigOverlay.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/migrateConfigOverlay.spec.mjs",
@@ -1992,165 +1760,11 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/scripts/agent-preflight.acEvidence.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/agent-preflight.acEvidence.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/agent-preflight.residualOwner.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/agent-preflight.residualOwner.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/agent-preflight.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/agent-preflight.spec.mjs",
-            "subject": "ai/scripts/agent-preflight.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/agent-preflight.structuralAnchors.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/agent-preflight.structuralAnchors.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/benchmark/ProviderLaneElectionCore.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/benchmark/ProviderLaneElectionCore.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/benchmark/ProviderLaneElectionRunner.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/benchmark/ProviderLaneElectionRunner.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/benchmark/TargetSetMeasurementCore.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/benchmark/TargetSetMeasurementCore.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/benchmark/restoreEmptyTargetMeasurementAdapter.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/benchmark/restoreEmptyTargetMeasurementAdapter.spec.mjs",
-            "subject": null,
-            "origin": "exact-set correction"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/benchmark/stats.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/benchmark/stats.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/ReviewCostMeter.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/ReviewCostMeter.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/agentOsExtractionInventory.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/agentOsExtractionInventory.spec.mjs",
-            "subject": "ai/scripts/diagnostics/agentOsExtractionInventory.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/analyzeNlTelemetry.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/analyzeNlTelemetry.spec.mjs",
-            "subject": "ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/auditDiscussionLifecycleFreshness.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/auditDiscussionLifecycleFreshness.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/bootstrapCodexSandbox.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/bootstrapCodexSandbox.spec.mjs",
-            "subject": "ai/scripts/diagnostics/bootstrapCodexSandbox.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/captureParityLatencyPair.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/captureParityLatencyPair.spec.mjs",
-            "subject": "ai/scripts/diagnostics/captureParityLatencyPair.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/checkRetiredPrimitives.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/checkRetiredPrimitives.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/consumerRelevanceCensus.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/consumerRelevanceCensus.spec.mjs",
-            "subject": "ai/scripts/diagnostics/consumerRelevanceCensus.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/devDependencyCensus.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/devDependencyCensus.spec.mjs",
-            "subject": "ai/scripts/diagnostics/devDependencyCensus.mjs",
-            "origin": "subject-row"
-        },
-        {
             "identity": "test/playwright/unit/ai/scripts/diagnostics/fixtures/seatCost/syntheticFixtures.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/scripts/diagnostics/fixtures/seatCost/syntheticFixtures.mjs",
             "subject": null,
             "origin": "exact-set correction"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/fleetHealthcheck.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/fleetHealthcheck.spec.mjs",
-            "subject": "ai/scripts/diagnostics/fleetHealthcheck.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/geminiIncidentCostLedger.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/geminiIncidentCostLedger.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/genesisProbe.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/genesisProbe.spec.mjs",
-            "subject": "ai/scripts/diagnostics/genesisProbe.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/lmStudioEmbeddingInstances.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/lmStudioEmbeddingInstances.spec.mjs",
-            "subject": "ai/scripts/diagnostics/lmStudioEmbeddingInstances.mjs",
-            "origin": "subject-row"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/diagnostics/mailboxReadStateProbe.spec.mjs",
@@ -2160,66 +1774,10 @@
             "origin": "subject-row"
         },
         {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/mcpHandlerSignatureCensus.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/mcpHandlerSignatureCensus.spec.mjs",
-            "subject": "ai/scripts/diagnostics/mcpHandlerSignatureCensus.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/mcpHealthcheck.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/mcpHealthcheck.spec.mjs",
-            "subject": "ai/scripts/diagnostics/mcpHealthcheck.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/parityLatencyPair.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/parityLatencyPair.spec.mjs",
-            "subject": "ai/scripts/diagnostics/parityLatencyPair.mjs",
-            "origin": "subject-row"
-        },
-        {
             "identity": "test/playwright/unit/ai/scripts/diagnostics/pilotPlaneTerminal.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/scripts/diagnostics/pilotPlaneTerminal.spec.mjs",
             "subject": "ai/scripts/diagnostics/pilotPlaneTerminal.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/planePlacementCensus.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/planePlacementCensus.spec.mjs",
-            "subject": "ai/scripts/diagnostics/planePlacementCensus.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/probePortClaims.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/probePortClaims.spec.mjs",
-            "subject": "ai/scripts/diagnostics/probePortClaims.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/providerLaneComposition.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/providerLaneComposition.spec.mjs",
-            "subject": "ai/scripts/diagnostics/providerLaneComposition.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/seatCostReport.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/seatCostReport.spec.mjs",
-            "subject": "ai/scripts/diagnostics/seatCostReport.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/diagnostics/structureMap.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/diagnostics/structureMap.spec.mjs",
-            "subject": "ai/scripts/diagnostics/structureMap.mjs",
             "origin": "subject-row"
         },
         {
@@ -2241,216 +1799,6 @@
             "plane": "cloud",
             "target": "cloud/test/unit/scripts/diagnostics/walVolumeBaseline.spec.mjs",
             "subject": "ai/scripts/diagnostics/walVolumeBaseline.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/fleet/deriveFleetRoster.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/fleet/deriveFleetRoster.spec.mjs",
-            "subject": "ai/scripts/fleet/deriveFleetRoster.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/fleet/devCockpit.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/fleet/devCockpit.spec.mjs",
-            "subject": "ai/scripts/fleet/devCockpit.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/fleet/onboardPeer.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/fleet/onboardPeer.spec.mjs",
-            "subject": "ai/scripts/fleet/onboardPeer.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/checkAllAgentIdle.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/checkAllAgentIdle.spec.mjs",
-            "subject": "ai/scripts/lifecycle/checkAllAgentIdle.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/checkSunsetted.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/checkSunsetted.spec.mjs",
-            "subject": "ai/scripts/lifecycle/checkSunsetted.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/harnessLifecycle.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/harnessLifecycle.spec.mjs",
-            "subject": "ai/scripts/lifecycle/harnessLifecycle.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/heartbeatLock.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/heartbeatLock.spec.mjs",
-            "subject": "ai/scripts/lifecycle/heartbeatLock.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/hookProjectionReader.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/hookProjectionReader.spec.mjs",
-            "subject": "ai/scripts/lifecycle/hookProjectionReader.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/idleOutNudge.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/idleOutNudge.spec.mjs",
-            "subject": "ai/scripts/lifecycle/idleOutNudge.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/inflightLock.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/inflightLock.spec.mjs",
-            "subject": "ai/scripts/lifecycle/inflightLock.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/materialArtifactKey.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/materialArtifactKey.spec.mjs",
-            "subject": "ai/scripts/lifecycle/materialArtifactKey.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/parseLaneState.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/parseLaneState.spec.mjs",
-            "subject": "ai/scripts/lifecycle/parseLaneState.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/postReleasePreflight.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/postReleasePreflight.spec.mjs",
-            "subject": "ai/scripts/lifecycle/postReleasePreflight.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/resumeHarness.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/resumeHarness.spec.mjs",
-            "subject": "ai/scripts/lifecycle/resumeHarness.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/revalidationSweep.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/revalidationSweep.spec.mjs",
-            "subject": "ai/scripts/lifecycle/revalidationSweep.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/swarmWakeCooldown.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/swarmWakeCooldown.spec.mjs",
-            "subject": "ai/scripts/lifecycle/swarmWakeCooldown.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/sweepExpiredTasks.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/sweepExpiredTasks.spec.mjs",
-            "subject": "ai/scripts/lifecycle/sweepExpiredTasks.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/validateLaneStateTerminal.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/validateLaneStateTerminal.spec.mjs",
-            "subject": "ai/scripts/lifecycle/validateLaneStateTerminal.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/validateMergeReady.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/validateMergeReady.spec.mjs",
-            "subject": "ai/scripts/lifecycle/validateMergeReady.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/wakeDualModeExports.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/wakeDualModeExports.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lifecycle/wakeSafetyGate.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lifecycle/wakeSafetyGate.spec.mjs",
-            "subject": "ai/scripts/lifecycle/wakeSafetyGate.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/checkCommitAuthorship.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/checkCommitAuthorship.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/configTemplateParityProof.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/configTemplateParityProof.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/identityVocabulary.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/identityVocabulary.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintConfigTemplateSsot.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintConfigTemplateSsot.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintIdentityEngineCoherence.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintIdentityEngineCoherence.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintMcpTestLocations.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintMcpTestLocations.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/lintNpmScriptEntrypoints.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/lintNpmScriptEntrypoints.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/prStackingGuard.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/prStackingGuard.spec.mjs",
-            "subject": "ai/scripts/lint/prStackingGuard.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/lint/scriptPlaneClosure.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/lint/scriptPlaneClosure.spec.mjs",
-            "subject": "ai/scripts/lint/scriptPlaneClosure.mjs",
             "origin": "subject-row"
         },
         {
@@ -2510,27 +1858,6 @@
             "origin": "subject-row"
         },
         {
-            "identity": "test/playwright/unit/ai/scripts/maintenance/businessMetricsProbeCore.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/maintenance/businessMetricsProbeCore.spec.mjs",
-            "subject": "ai/scripts/maintenance/businessMetricsProbeCore.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/maintenance/communityActivityShadowProbeCore.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/maintenance/communityActivityShadowProbeCore.spec.mjs",
-            "subject": "ai/scripts/maintenance/communityActivityShadowProbeCore.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/maintenance/communityBatchPushClient.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/maintenance/communityBatchPushClient.spec.mjs",
-            "subject": "ai/scripts/maintenance/communityBatchPushClient.mjs",
-            "origin": "subject-row"
-        },
-        {
             "identity": "test/playwright/unit/ai/scripts/maintenance/communitySourceOperator.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/scripts/maintenance/communitySourceOperator.spec.mjs",
@@ -2557,13 +1884,6 @@
             "target": "cloud/test/unit/scripts/maintenance/defragMemoryCoreRepair.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/maintenance/deploymentMigrationCore.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/maintenance/deploymentMigrationCore.spec.mjs",
-            "subject": "ai/scripts/maintenance/deploymentMigrationCore.mjs",
-            "origin": "subject-row"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/maintenance/detectionRetentionSla.spec.mjs",
@@ -2608,13 +1928,6 @@
             "origin": "subject-row"
         },
         {
-            "identity": "test/playwright/unit/ai/scripts/maintenance/kbPushClient.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/maintenance/kbPushClient.spec.mjs",
-            "subject": "ai/scripts/maintenance/kbPushClient.mjs",
-            "origin": "subject-row"
-        },
-        {
             "identity": "test/playwright/unit/ai/scripts/maintenance/knowledgeBaseArtifact.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/scripts/maintenance/knowledgeBaseArtifact.spec.mjs",
@@ -2627,13 +1940,6 @@
             "target": "cloud/test/unit/scripts/maintenance/manualHeavyMaintenanceScriptLeaseAdoption.spec.mjs",
             "subject": null,
             "origin": "exact-set correction"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/maintenance/materializeDeploymentPrescriptions.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/maintenance/materializeDeploymentPrescriptions.spec.mjs",
-            "subject": "ai/scripts/maintenance/materializeDeploymentPrescriptions.mjs",
-            "origin": "subject-row"
         },
         {
             "identity": "test/playwright/unit/ai/scripts/maintenance/migrationCensusReport.spec.mjs",
@@ -2668,13 +1974,6 @@
             "plane": "cloud",
             "target": "cloud/test/unit/scripts/maintenance/purgeTestCollections.spec.mjs",
             "subject": "ai/scripts/maintenance/purgeTestCollections.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/maintenance/redeployPreflight.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/maintenance/redeployPreflight.spec.mjs",
-            "subject": "ai/scripts/maintenance/redeployPreflight.mjs",
             "origin": "subject-row"
         },
         {
@@ -2720,13 +2019,6 @@
             "origin": "subject-ancestor"
         },
         {
-            "identity": "test/playwright/unit/ai/scripts/maintenance/syncGithubWorkflow.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/maintenance/syncGithubWorkflow.spec.mjs",
-            "subject": "ai/scripts/maintenance/syncGithubWorkflow.mjs",
-            "origin": "subject-row"
-        },
-        {
             "identity": "test/playwright/unit/ai/scripts/maintenance/syncGithubWorkflowImportException.spec.mjs",
             "plane": "cloud",
             "target": "cloud/test/unit/scripts/maintenance/syncGithubWorkflowImportException.spec.mjs",
@@ -2738,13 +2030,6 @@
             "plane": "cloud",
             "target": "cloud/test/unit/scripts/maintenance/syncKnowledgeBase.spec.mjs",
             "subject": "ai/scripts/maintenance/syncKnowledgeBase.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/migrations/bootstrapWorktree.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/migrations/bootstrapWorktree.spec.mjs",
-            "subject": "ai/scripts/migrations/bootstrapWorktree.mjs",
             "origin": "subject-row"
         },
         {
@@ -2787,34 +2072,6 @@
             "plane": "cloud",
             "target": "cloud/test/unit/scripts/runners/runSandman.spec.mjs",
             "subject": "ai/scripts/runners/runSandman.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/servingCostCore.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/servingCostCore.spec.mjs",
-            "subject": null,
-            "origin": "subject-ancestor"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/setup/cohortAdmissibility.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/setup/cohortAdmissibility.spec.mjs",
-            "subject": "ai/scripts/setup/cohortAdmissibility.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/setup/generateRosterOnboarding.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/setup/generateRosterOnboarding.spec.mjs",
-            "subject": "ai/scripts/setup/generateRosterOnboarding.mjs",
-            "origin": "subject-row"
-        },
-        {
-            "identity": "test/playwright/unit/ai/scripts/setup/revisionConfigDiff.spec.mjs",
-            "plane": "edge",
-            "target": "test/unit/scripts/setup/revisionConfigDiff.spec.mjs",
-            "subject": "ai/scripts/setup/revisionConfigDiff.mjs",
             "origin": "subject-row"
         },
         {
@@ -5301,11 +4558,811 @@
             "target": "cloud/test/unit/startAgentProvisioned.spec.mjs",
             "subject": null,
             "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/buildReceiverManifest.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/buildReceiverManifest.spec.mjs",
+            "subject": "ai/daemons/wake/buildReceiverManifest.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/claudeCourierTransport.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/claudeCourierTransport.spec.mjs",
+            "subject": "ai/daemons/wake/claudeCourierTransport.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/coalescePolicy.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/coalescePolicy.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/consumeWakeOutbox.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/consumeWakeOutbox.spec.mjs",
+            "subject": "ai/daemons/wake/consumeWakeOutbox.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/contextGatePolicy.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/contextGatePolicy.spec.mjs",
+            "subject": "ai/daemons/wake/contextGatePolicy.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/daemon.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/daemon.spec.mjs",
+            "subject": "ai/daemons/wake/daemon.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/daemonDeliveryOwner.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/daemonDeliveryOwner.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/digestCountLabel.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/digestCountLabel.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/flushDeferPolicy.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/flushDeferPolicy.spec.mjs",
+            "subject": "ai/daemons/wake/flushDeferPolicy.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/instanceResolver.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/instanceResolver.spec.mjs",
+            "subject": "ai/daemons/wake/instanceResolver.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/localWakeAdapters.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/localWakeAdapters.spec.mjs",
+            "subject": "ai/daemons/wake/localWakeAdapters.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/localWakeAdaptersDialogGate.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/localWakeAdaptersDialogGate.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/outboxLock.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/outboxLock.spec.mjs",
+            "subject": "ai/daemons/wake/outboxLock.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/receiver.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/receiver.spec.mjs",
+            "subject": "ai/daemons/wake/receiver.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/receiverDependencyClosure.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/receiverDependencyClosure.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/receiverState.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/receiverState.spec.mjs",
+            "subject": "ai/daemons/wake/receiverState.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/wakeDigestBuilder.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/wakeDigestBuilder.spec.mjs",
+            "subject": "ai/daemons/wake/wakeDigestBuilder.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/wakeLaneDirective.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/wakeLaneDirective.spec.mjs",
+            "subject": "ai/daemons/wake/wakeLaneDirective.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/wakeTargetEligibility.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/wakeTargetEligibility.spec.mjs",
+            "subject": "ai/daemons/wake/wakeTargetEligibility.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/daemons/wake/wokenWatermark.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/daemons/wake/wokenWatermark.spec.mjs",
+            "subject": "ai/daemons/wake/wokenWatermark.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/client/McpClientTransportConfig.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/client/McpClientTransportConfig.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/client/McpServersHealth.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/client/McpServersHealth.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/client/StdioToStreamableHttp.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/client/StdioToStreamableHttp.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/BaseServer.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/BaseServer.spec.mjs",
+            "subject": "ai/mcp/server/BaseServer.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/file-system/FileSystemService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/file-system/FileSystemService.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/file-system/toolServiceDispatch.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/file-system/toolServiceDispatch.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/github-workflow/CommentGuidanceTiers.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/github-workflow/CommentGuidanceTiers.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/github-workflow/ConfigCompleteness.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/github-workflow/ConfigCompleteness.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/github-workflow/ToolRegistration.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/github-workflow/ToolRegistration.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/neural-link/Bridge.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/neural-link/Bridge.spec.mjs",
+            "subject": "ai/mcp/server/neural-link/Bridge.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/neural-link/CapabilityMatrix.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/neural-link/CapabilityMatrix.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/neural-link/logger.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/neural-link/logger.spec.mjs",
+            "subject": "ai/mcp/server/neural-link/logger.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/neural-link/verifyBridgeToken.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/neural-link/verifyBridgeToken.spec.mjs",
+            "subject": "ai/mcp/server/neural-link/verifyBridgeToken.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/server/neural-link/windowOps.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/server/neural-link/windowOps.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/validation/GuideToolParity.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/validation/GuideToolParity.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/validation/McpHandlerSignatureGate.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/validation/McpHandlerSignatureGate.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/validation/OpenApiServiceParityEndToEnd.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/validation/OpenApiServiceParityEndToEnd.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/validation/OpenApiServiceParityGate.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/validation/OpenApiServiceParityGate.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/validation/OpenApiServiceParityTriggerReachability.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/validation/OpenApiServiceParityTriggerReachability.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/mcp/validation/OpenApiValidatorCompliance.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/mcp/validation/OpenApiValidatorCompliance.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/agent-preflight.acEvidence.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/agent-preflight.acEvidence.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/agent-preflight.residualOwner.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/agent-preflight.residualOwner.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/agent-preflight.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/agent-preflight.spec.mjs",
+            "subject": "ai/scripts/agent-preflight.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/agent-preflight.structuralAnchors.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/agent-preflight.structuralAnchors.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/benchmark/ProviderLaneElectionCore.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/benchmark/ProviderLaneElectionCore.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/benchmark/ProviderLaneElectionRunner.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/benchmark/ProviderLaneElectionRunner.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/benchmark/TargetSetMeasurementCore.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/benchmark/TargetSetMeasurementCore.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/benchmark/restoreEmptyTargetMeasurementAdapter.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/benchmark/restoreEmptyTargetMeasurementAdapter.spec.mjs",
+            "subject": null,
+            "origin": "exact-set correction"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/benchmark/stats.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/benchmark/stats.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/ReviewCostMeter.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/ReviewCostMeter.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/agentOsExtractionInventory.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/agentOsExtractionInventory.spec.mjs",
+            "subject": "ai/scripts/diagnostics/agentOsExtractionInventory.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/analyzeNlTelemetry.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/analyzeNlTelemetry.spec.mjs",
+            "subject": "ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/auditDiscussionLifecycleFreshness.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/auditDiscussionLifecycleFreshness.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/bootstrapCodexSandbox.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/bootstrapCodexSandbox.spec.mjs",
+            "subject": "ai/scripts/diagnostics/bootstrapCodexSandbox.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/captureParityLatencyPair.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/captureParityLatencyPair.spec.mjs",
+            "subject": "ai/scripts/diagnostics/captureParityLatencyPair.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/checkRetiredPrimitives.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/checkRetiredPrimitives.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/consumerRelevanceCensus.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/consumerRelevanceCensus.spec.mjs",
+            "subject": "ai/scripts/diagnostics/consumerRelevanceCensus.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/devDependencyCensus.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/devDependencyCensus.spec.mjs",
+            "subject": "ai/scripts/diagnostics/devDependencyCensus.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/fleetHealthcheck.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/fleetHealthcheck.spec.mjs",
+            "subject": "ai/scripts/diagnostics/fleetHealthcheck.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/geminiIncidentCostLedger.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/geminiIncidentCostLedger.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/genesisProbe.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/genesisProbe.spec.mjs",
+            "subject": "ai/scripts/diagnostics/genesisProbe.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/lmStudioEmbeddingInstances.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/lmStudioEmbeddingInstances.spec.mjs",
+            "subject": "ai/scripts/diagnostics/lmStudioEmbeddingInstances.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/mcpHandlerSignatureCensus.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/mcpHandlerSignatureCensus.spec.mjs",
+            "subject": "ai/scripts/diagnostics/mcpHandlerSignatureCensus.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/mcpHealthcheck.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/mcpHealthcheck.spec.mjs",
+            "subject": "ai/scripts/diagnostics/mcpHealthcheck.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/parityLatencyPair.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/parityLatencyPair.spec.mjs",
+            "subject": "ai/scripts/diagnostics/parityLatencyPair.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/planePlacementCensus.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/planePlacementCensus.spec.mjs",
+            "subject": "ai/scripts/diagnostics/planePlacementCensus.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/probePortClaims.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/probePortClaims.spec.mjs",
+            "subject": "ai/scripts/diagnostics/probePortClaims.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/providerLaneComposition.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/providerLaneComposition.spec.mjs",
+            "subject": "ai/scripts/diagnostics/providerLaneComposition.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/seatCostReport.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/seatCostReport.spec.mjs",
+            "subject": "ai/scripts/diagnostics/seatCostReport.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/diagnostics/structureMap.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/diagnostics/structureMap.spec.mjs",
+            "subject": "ai/scripts/diagnostics/structureMap.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/fleet/deriveFleetRoster.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/fleet/deriveFleetRoster.spec.mjs",
+            "subject": "ai/scripts/fleet/deriveFleetRoster.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/fleet/devCockpit.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/fleet/devCockpit.spec.mjs",
+            "subject": "ai/scripts/fleet/devCockpit.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/fleet/onboardPeer.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/fleet/onboardPeer.spec.mjs",
+            "subject": "ai/scripts/fleet/onboardPeer.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/checkAllAgentIdle.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/checkAllAgentIdle.spec.mjs",
+            "subject": "ai/scripts/lifecycle/checkAllAgentIdle.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/checkSunsetted.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/checkSunsetted.spec.mjs",
+            "subject": "ai/scripts/lifecycle/checkSunsetted.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/harnessLifecycle.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/harnessLifecycle.spec.mjs",
+            "subject": "ai/scripts/lifecycle/harnessLifecycle.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/heartbeatLock.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/heartbeatLock.spec.mjs",
+            "subject": "ai/scripts/lifecycle/heartbeatLock.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/hookProjectionReader.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/hookProjectionReader.spec.mjs",
+            "subject": "ai/scripts/lifecycle/hookProjectionReader.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/idleOutNudge.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/idleOutNudge.spec.mjs",
+            "subject": "ai/scripts/lifecycle/idleOutNudge.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/inflightLock.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/inflightLock.spec.mjs",
+            "subject": "ai/scripts/lifecycle/inflightLock.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/materialArtifactKey.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/materialArtifactKey.spec.mjs",
+            "subject": "ai/scripts/lifecycle/materialArtifactKey.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/parseLaneState.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/parseLaneState.spec.mjs",
+            "subject": "ai/scripts/lifecycle/parseLaneState.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/postReleasePreflight.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/postReleasePreflight.spec.mjs",
+            "subject": "ai/scripts/lifecycle/postReleasePreflight.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/resumeHarness.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/resumeHarness.spec.mjs",
+            "subject": "ai/scripts/lifecycle/resumeHarness.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/revalidationSweep.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/revalidationSweep.spec.mjs",
+            "subject": "ai/scripts/lifecycle/revalidationSweep.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/swarmWakeCooldown.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/swarmWakeCooldown.spec.mjs",
+            "subject": "ai/scripts/lifecycle/swarmWakeCooldown.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/sweepExpiredTasks.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/sweepExpiredTasks.spec.mjs",
+            "subject": "ai/scripts/lifecycle/sweepExpiredTasks.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/validateLaneStateTerminal.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/validateLaneStateTerminal.spec.mjs",
+            "subject": "ai/scripts/lifecycle/validateLaneStateTerminal.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/validateMergeReady.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/validateMergeReady.spec.mjs",
+            "subject": "ai/scripts/lifecycle/validateMergeReady.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/wakeDualModeExports.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/wakeDualModeExports.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lifecycle/wakeSafetyGate.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lifecycle/wakeSafetyGate.spec.mjs",
+            "subject": "ai/scripts/lifecycle/wakeSafetyGate.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lint/checkCommitAuthorship.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lint/checkCommitAuthorship.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lint/configTemplateParityProof.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lint/configTemplateParityProof.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lint/identityVocabulary.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lint/identityVocabulary.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lint/lintConfigTemplateSsot.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lint/lintConfigTemplateSsot.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lint/lintIdentityEngineCoherence.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lint/lintIdentityEngineCoherence.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lint/lintMcpTestLocations.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lint/lintMcpTestLocations.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lint/lintNpmScriptEntrypoints.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lint/lintNpmScriptEntrypoints.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lint/prStackingGuard.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lint/prStackingGuard.spec.mjs",
+            "subject": "ai/scripts/lint/prStackingGuard.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/lint/scriptPlaneClosure.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/lint/scriptPlaneClosure.spec.mjs",
+            "subject": "ai/scripts/lint/scriptPlaneClosure.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/maintenance/businessMetricsProbeCore.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/maintenance/businessMetricsProbeCore.spec.mjs",
+            "subject": "ai/scripts/maintenance/businessMetricsProbeCore.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/maintenance/communityActivityShadowProbeCore.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/maintenance/communityActivityShadowProbeCore.spec.mjs",
+            "subject": "ai/scripts/maintenance/communityActivityShadowProbeCore.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/maintenance/communityBatchPushClient.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/maintenance/communityBatchPushClient.spec.mjs",
+            "subject": "ai/scripts/maintenance/communityBatchPushClient.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/maintenance/deploymentMigrationCore.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/maintenance/deploymentMigrationCore.spec.mjs",
+            "subject": "ai/scripts/maintenance/deploymentMigrationCore.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/maintenance/kbPushClient.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/maintenance/kbPushClient.spec.mjs",
+            "subject": "ai/scripts/maintenance/kbPushClient.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/maintenance/materializeDeploymentPrescriptions.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/maintenance/materializeDeploymentPrescriptions.spec.mjs",
+            "subject": "ai/scripts/maintenance/materializeDeploymentPrescriptions.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/maintenance/redeployPreflight.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/maintenance/redeployPreflight.spec.mjs",
+            "subject": "ai/scripts/maintenance/redeployPreflight.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/maintenance/syncGithubWorkflow.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/maintenance/syncGithubWorkflow.spec.mjs",
+            "subject": "ai/scripts/maintenance/syncGithubWorkflow.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/migrations/bootstrapWorktree.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/migrations/bootstrapWorktree.spec.mjs",
+            "subject": "ai/scripts/migrations/bootstrapWorktree.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/servingCostCore.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/servingCostCore.spec.mjs",
+            "subject": null,
+            "origin": "subject-ancestor"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/setup/cohortAdmissibility.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/setup/cohortAdmissibility.spec.mjs",
+            "subject": "ai/scripts/setup/cohortAdmissibility.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/setup/generateRosterOnboarding.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/setup/generateRosterOnboarding.spec.mjs",
+            "subject": "ai/scripts/setup/generateRosterOnboarding.mjs",
+            "origin": "subject-row"
+        },
+        {
+            "identity": "test/playwright/unit/ai/scripts/setup/revisionConfigDiff.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/scripts/setup/revisionConfigDiff.spec.mjs",
+            "subject": "ai/scripts/setup/revisionConfigDiff.mjs",
+            "origin": "subject-row"
         }
     ],
     "otherRepository": [],
     "correction": [
         "Exact-set delta applied by identity from @neo-gpt-emmy: 20 removed, 14 added. The net +6 between 722 and 716 hid 34 identity substitutions, which is exactly what comparing counts cannot see."
     ],
-    "canonicalSha256": "12d0f58374c4b5b49c220d218e5e80b1645ffd9a789e6d0047a6110eab00b7ed"
+    "harness": {
+        "perPlane": [
+            "setup.mjs",
+            "resolveFreePort.mjs",
+            "configTemplateResolver.mjs",
+            "chromaProcess.mjs"
+        ],
+        "reason": "Duplicated per plane rather than shared from the repository root: the Cloud package must run its suite independently, and a single root copy would make every cloud spec climb out of its own package to reach it — the ancestor reach the two package roots exist to refuse. findBridgeScriptRoot and the fixtures stay with the Engine."
+    },
+    "canonicalSha256": "27e53513f6da57bd26067d8b5bf5b6dc35e778adbeac77883b174e1cffdf373e"
 }

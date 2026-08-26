@@ -1,5 +1,5 @@
 import {createHash} from 'crypto';
-import {setup} from '../../../../../setup.mjs';
+import {setup} from '../../../../setup.mjs';
 
 const appName = 'AuthServicePatTest';
 

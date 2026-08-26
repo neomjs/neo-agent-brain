@@ -1,7 +1,7 @@
 import {test, expect}  from '@playwright/test';
 import path            from 'path';
 import {fileURLToPath} from 'url';
-import {setup}         from '../../../../../setup.mjs';
+import {setup}         from '../../../../setup.mjs';
 import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import fs              from 'fs';

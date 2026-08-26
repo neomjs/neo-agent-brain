@@ -1,4 +1,4 @@
-import {setup}      from '../../../../setup.mjs';
+import {setup}      from '../../../setup.mjs';
 import {createHash} from 'node:crypto';
 
 const appName                    = 'PullRequestServiceTest';

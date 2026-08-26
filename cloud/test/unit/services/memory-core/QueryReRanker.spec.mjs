@@ -1,4 +1,4 @@
-import {setup} from '../../../../setup.mjs';
+import {setup} from '../../../setup.mjs';
 
 const appName             = 'QueryReRankerTest';
 const skipCiSubstrateData = !!process.env.NEO_TEST_SKIP_CI;

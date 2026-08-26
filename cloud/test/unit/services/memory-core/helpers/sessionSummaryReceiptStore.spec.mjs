@@ -5,7 +5,7 @@ import {gzipSync} from 'node:zlib';
 
 import {knownEmbeddingFunctions, registerEmbeddingFunction, ChromaClient} from 'chromadb';
 import Database                                                           from 'better-sqlite3';
-import {setup}                                                            from '../../../../../setup.mjs';
+import {setup}                                                            from '../../../../setup.mjs';
 import {test, expect}                                                     from '@playwright/test';
 
 import 'neo.mjs/src/Neo.mjs';
@@ -26,8 +26,8 @@ import {
     isDetachedProcessAlive,
     startChromaProcess,
     stopDetachedProcess
-} from '../../../../../chromaProcess.mjs';
-import {resolveFreePortSync} from '../../../../../resolveFreePort.mjs';
+} from '../../../../chromaProcess.mjs';
+import {resolveFreePortSync} from '../../../../resolveFreePort.mjs';
 
 setup({
     neoConfig: {

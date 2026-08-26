@@ -1,4 +1,4 @@
-import {setup} from '../../../../setup.mjs';
+import {setup} from '../../../setup.mjs';
 
 // Action logging is OFF by default per seat, so this suite — which exercises the telemetry admission
 // path — must opt IN. Set before `setup()` because the config leaf binds this env at module-load time,

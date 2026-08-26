@@ -1,4 +1,4 @@
-import {setup} from '../../../../setup.mjs';
+import {setup} from '../../../setup.mjs';
 
 const appName             = 'ResumeHarnessTest';
 const skipCiSubstrateData = !!process.env.NEO_TEST_SKIP_CI;

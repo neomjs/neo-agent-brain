@@ -1,4 +1,4 @@
-import {setup}         from '../../../../../setup.mjs';
+import {setup}         from '../../../../setup.mjs';
 import {test, expect}  from '@playwright/test';
 import fs              from 'fs';
 import path            from 'path';

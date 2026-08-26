@@ -1,4 +1,4 @@
-import {setup} from '../../../../setup.mjs';
+import {setup} from '../../../setup.mjs';
 
 // The diagnosis module pulls in the Neo class system at load, so the harness must be armed before the
 // dynamic import in `beforeAll` — otherwise the import fails with `Neo is not defined` and the spec

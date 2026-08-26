@@ -1,4 +1,4 @@
-import {setup} from '../../../../setup.mjs';
+import {setup} from '../../../setup.mjs';
 
 const appName = 'TextEmbeddingServiceProviderTest';
 
@@ -53,7 +53,7 @@ async function waitForCondition(condition, message, timeoutMs = 500) {
  */
 async function runIsolatedEmbeddingProbe(probe, env = {}) {
     const source = `
-        const {setup} = await import('./test/playwright/setup.mjs');
+        const {setup} = await import('../../../setup.mjs');
         await import('./src/Neo.mjs');
         await import('./src/core/_export.mjs');
         setup({
