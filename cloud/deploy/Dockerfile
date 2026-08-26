@@ -109,6 +109,15 @@ RUN node ./buildScripts/util/installBrain.mjs --ignore-scripts
 # image so clean external checkouts do not need manual template copies.
 RUN npm rebuild better-sqlite3 && node ./ai/scripts/setup/initServerConfigs.mjs
 
+# Skills reach this image the same way configs do: an EXPLICIT step, because every install
+# above runs `--ignore-scripts` on purpose, so `neo-agent-skills`' `postinstall` materializer
+# never fires here. Without this the image ships with zero skills — present in node_modules,
+# projected nowhere — and an agent in a container silently has no lifecycle substrate. The
+# `--check` arm is the fail-loud half: it exits non-zero when nothing is projected, so a future
+# base-image or flag change cannot turn this into a quiet no-op the way a lifecycle hook would.
+RUN npx --no-install neo-agent-skills-materialize \
+ && npx --no-install neo-agent-skills-materialize --check
+
 FROM node:24-alpine
 WORKDIR /app
 
