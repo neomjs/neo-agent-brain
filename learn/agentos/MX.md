@@ -12,7 +12,7 @@ MX describes the closed loop where **model-friction surfaces as tickets, the Gol
 
 The load-bearing claim of MX is an inversion of traditional software priorities: **meta-value > product value.**
 
-For agent-facing infrastructure, the process of building—where models attempt tasks, hit friction, file tickets, and ship improvements—is the actual product. The artifact they produce (the feature, the bugfix, the documentation) is a by-product.
+For agent-facing infrastructure, the process of building—where models attempt tasks, hit friction, file tickets, and ship improvements—is the actual product. The artifact they produce (the feature, the bugfix, the documentation) is a by-product. 
 
 The harness exists so that models using it surface tooling gaps. The Golden Path then prioritizes those gaps. The surface itself is the forcing function that drives the evolution of the underlying substrate.
 
@@ -20,7 +20,7 @@ The harness exists so that models using it surface tooling gaps. The Golden Path
 
 ## AX vs. MX: Complementary Dimensions
 
-**Agent Experience (AX)**—popularized by Biilmann (Netlify) and adopted across the industry (Speakeasy, Nordic APIs)—focuses on making external products and APIs friendly for agent consumption. **Machine Experience** focuses on system-to-system predictability.
+**Agent Experience (AX)**—popularized by Biilmann (Netlify) and adopted across the industry (Speakeasy, Nordic APIs)—focuses on making external products and APIs friendly for agent consumption. **Machine Experience** focuses on system-to-system predictability. 
 
 MX is **not a competitor** to AX or Machine Experience; it answers a completely different architectural question. Most agent-era infrastructure needs both, cleanly separated.
 

@@ -107,5 +107,5 @@ This architecture allows each MCP server to be a self-contained, standalone appl
 ## See Also
 
 - [Model Context Protocol Specification](https://modelcontextprotocol.io/)
-- [Chrome DevTools MCP Server Guide](https://github.com/neomjs/neo/blob/dev/learn/agentos/tooling/ChromeDevToolsMcpServer.md)
-- [Strategic AI Workflows](../StrategicWorkflows.md)
+- [Chrome DevTools MCP Server Guide](./ChromeDevToolsMcpServer.md)
+- [Strategic AI Workflows](./StrategicWorkflows.md)

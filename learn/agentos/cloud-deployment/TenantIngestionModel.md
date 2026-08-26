@@ -218,7 +218,7 @@ or suppress the normal retry path.
 
 **`branchRef` (optional)** selects which git ref to ingest from. Omitted = `'HEAD'` = the remote's default branch. Useful when the canonical product-source-of-truth branch differs from the repo's default branch — e.g., trunk-based teams using `dev` as integration line + `main` as release-tag-only. Validated as a non-empty string at config normalization; accepts any git ref name (branch, tag, sha) since it flows through `gitMirror.resolveHead()`.
 
-For the canonical config schema and rejection rules, see [`tenantRepoAccessContract.mjs`](../../../ai/services/knowledge-base/helpers/tenantRepoAccessContract.mjs).
+For the canonical config schema and rejection rules, see [`TenantRepoAccessContract.mjs`](../../../ai/services/knowledge-base/helpers/TenantRepoAccessContract.mjs).
 
 ### Triggers
 

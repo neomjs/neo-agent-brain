@@ -13,7 +13,7 @@
 
 A child resolves a leaf it does not own by walking **up** to the owner: `getOwnerOfDataProperty` checks the local data first, then delegates to `getParent()`. The Brain has no component tree, so `ai/ConfigProvider.mjs` overrides `getParent()` to return the Tier-1 singleton — that override is what roots the realm chain.
 
-This is the same hierarchy the Body uses for component state providers. The canonical illustration lives in [examples/stateProvider/advanced](https://github.com/neomjs/neo/blob/dev/examples/stateProvider/advanced/MainContainer.mjs): a `Panel` reads `button1Text` that only the top-level `Viewport` owns (the lookup walks up), and a write to `button1Text` *initiated on the Panel* bubbles up and lands on the `Viewport`'s provider, which owns it.
+This is the same hierarchy the Body uses for component state providers. The canonical illustration lives in [examples/stateProvider/advanced](../../examples/stateProvider/advanced/MainContainer.mjs): a `Panel` reads `button1Text` that only the top-level `Viewport` owns (the lookup walks up), and a write to `button1Text` *initiated on the Panel* bubbles up and lands on the `Viewport`'s provider, which owns it.
 
 Two properties fall out of "each layer owns only its slice":
 
@@ -52,7 +52,7 @@ The one-line test: **if ordinary advancement parses or rewrites config *source* 
 
 ## Related
 
-- [examples/stateProvider/advanced](https://github.com/neomjs/neo/blob/dev/examples/stateProvider/advanced/MainContainer.mjs) — the canonical hierarchical-state illustration (read up, write-to-owner).
-- [src/state/Provider.mjs](https://github.com/neomjs/neo/blob/dev/src/state/Provider.mjs) — `getOwnerOfDataProperty`, owner-routed `setData` / `internalSetData`, and the `data_` `merge: 'deep'` descriptor.
+- [examples/stateProvider/advanced](../../examples/stateProvider/advanced/MainContainer.mjs) — the canonical hierarchical-state illustration (read up, write-to-owner).
+- [src/state/Provider.mjs](../../src/state/Provider.mjs) — `getOwnerOfDataProperty`, owner-routed `setData` / `internalSetData`, and the `data_` `merge: 'deep'` descriptor.
 - [ai/ConfigProvider.mjs](../../ai/ConfigProvider.mjs) — the meta-leaf compile, the bounded env layer, and the `getParent()` override that roots the realm chain.
 - [Cloud-Native KB Ingestion — Configuration](./cloud-deployment/Configuration.md) — the operator-facing config keys this model carries.

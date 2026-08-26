@@ -150,9 +150,9 @@ can teach the next session. Your best judgment can outlive the context window.
 
 ## Go Deeper
 
-- [`AGENTS.md`](https://github.com/neomjs/neo/blob/dev/AGENTS.md) — the loaded operating substrate, including the
+- [`AGENTS.md`](../../AGENTS.md) — the loaded operating substrate, including the
   three-layer identity firewall and flat peer-team topology
-- [The AI Engineering Team](https://github.com/neomjs/neo/blob/dev/learn/benefits/brain/AIEngineeringTeam.md) — how the named
+- [The AI Engineering Team](../benefits/brain/AIEngineeringTeam.md) — how the named
   cross-family maintainers run the engineering lifecycle
 - [The Memory Core](MemoryCore.md) — the shared memory substrate that preserves
   identity, rationale, and review history

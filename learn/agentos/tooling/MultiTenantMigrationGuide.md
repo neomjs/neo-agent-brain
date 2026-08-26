@@ -2,11 +2,11 @@
 
 This document is the **design source of truth** for how the Neo.mjs Memory Core handles data written before multi-tenancy existed, how tenant-aware reads interact with that legacy data, and how operators migrate installations toward the post-tenant substrate without downtime or retroactive tagging.
 
-It is the product of cross-family design alignment during session `cff20948-2dbb-4ac4-99e2-df2ebe967a4b` (Claude Opus 4.7, Claude Code) and `1c5933cc-a2d0-4296-ae3f-f4e815d385a2` (Gemini 3.1 Pro, Antigravity), resolving [#10017 Migration & Backward Compatibility for Multi-Tenant Schema](https://github.com/neomjs/neo/blob/dev/resources/content/archive/issues/v13.0.0/chunk-4/issue-10017.md) under the updated prescription adopted at intake-reshape time.
+It is the product of cross-family design alignment during session `cff20948-2dbb-4ac4-99e2-df2ebe967a4b` (Claude Opus 4.7, Claude Code) and `1c5933cc-a2d0-4296-ae3f-f4e815d385a2` (Gemini 3.1 Pro, Antigravity), resolving [#10017 Migration & Backward Compatibility for Multi-Tenant Schema](../../../resources/content/issues/issue-10017.md) under the updated prescription adopted at intake-reshape time.
 
 Consumers:
-- **[#10010 Memory Core: Team vs Private Context Retrieval Flag](https://github.com/neomjs/neo/blob/dev/resources/content/archive/issues/v13.0.0/chunk-4/issue-10010.md)** — the retrieval-side `memorySharing` flag implementation references the enum + semantics pinned below.
-- **[#10011 Native Edge Graph (SQLite): Row-Level Security & Tenant Isolation](https://github.com/neomjs/neo/blob/dev/resources/content/archive/issues/v13.0.0/chunk-4/issue-10011.md)** — the RLS policy implementation respects the untagged-legacy-never-retroactively-tagged invariant established here.
+- **[#10010 Memory Core: Team vs Private Context Retrieval Flag](../../../resources/content/issues/issue-10010.md)** — the retrieval-side `memorySharing` flag implementation references the enum + semantics pinned below.
+- **[#10011 Native Edge Graph (SQLite): Row-Level Security & Tenant Isolation](../../../resources/content/issues/issue-10011.md)** — the RLS policy implementation respects the untagged-legacy-never-retroactively-tagged invariant established here.
 - **Memory Core operators** — operational guidance for running the migration window, monitoring legacy-surface-area shrinkage, and flipping the default read policy after the window closes.
 
 ## The Core Decision: Lazy-Tag-on-Read, Not Back-Fill
@@ -41,7 +41,7 @@ if (!sentBy) {
 
 ### 2. Read-side `memorySharing` flag semantics
 
-The `memorySharing` enum — implementation lives in [#10010](https://github.com/neomjs/neo/blob/dev/resources/content/archive/issues/v13.0.0/chunk-4/issue-10010.md), design pinned here — interacts directly with the SQLite Row-Level Security (RLS) enforcement mechanism (implemented in `#10011`):
+The `memorySharing` enum — implementation lives in [#10010](../../../resources/content/issues/issue-10010.md), design pinned here — interacts directly with the SQLite Row-Level Security (RLS) enforcement mechanism (implemented in `#10011`):
 
 | Value | Semantics (SQLite RLS Enforcement) | Intended Use |
 |---|---|---|

@@ -182,9 +182,9 @@ Canonical retrospectives for past incidents accumulate as comments on the parent
 
 ## Related Guides
 
-- [Strategic Workflows](../StrategicWorkflows.md) — General agent operational protocols
-- [Memory Core](../MemoryCore.md) — Durable mailbox storage substrate (`add_message` / `list_messages`)
-- [Swarm Intelligence & Sub-Agents](../SwarmIntelligence.md) — Cross-agent task delegation patterns
+- [Strategic Workflows](./StrategicWorkflows.md) — General agent operational protocols
+- [Memory Core](./MemoryCore.md) — Durable mailbox storage substrate (`add_message` / `list_messages`)
+- [Swarm Intelligence & Sub-Agents](./SwarmIntelligence.md) — Cross-agent task delegation patterns
 
 ## Related Tickets
 

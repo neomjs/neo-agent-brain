@@ -26,7 +26,7 @@ work, the [Connection Troubleshooting](./Troubleshooting.md) guide maps each
 connect-error (Invalid Host, missing `Accept` header, the auth layers, the
 `initialize` handshake) to its fix.
 
-When using the optional ingress profile, `cloud/deploy/Caddyfile` binds
+When using the optional ingress profile, `ai/deploy/Caddyfile` binds
 `tls internal` to `NEO_DEPLOY_HOSTNAME`, defaulting to `localhost`. Set
 `NEO_DEPLOY_HOSTNAME` before starting the ingress service when testing a named
 host. If you enable the `gitlab-pat` auth profile and compose reports unhealthy
@@ -45,7 +45,7 @@ cd neo
 npm install
 ```
 
-> **Deploy images source neo independently.** The `cloud/deploy` images build by
+> **Deploy images source neo independently.** The `ai/deploy` images build by
 > cloning neo at a pinned ref (`NEO_REF`), so they do **not** require a
 > co-located checkout — any operator or CI host can build them. This local checkout is for
 > running the tutorial's commands and for dev iteration (`--build-arg NEO_SOURCE=local`,
@@ -110,7 +110,7 @@ export NEO_DAY0_PROJECT="neo-day0"
 
 docker compose \
   -p "$NEO_DAY0_PROJECT" \
-  -f cloud/deploy/docker-compose.test.yml \
+  -f ai/deploy/docker-compose.test.yml \
   up --build -d chroma embedding-server kb-server mc-server
 ```
 
@@ -199,7 +199,7 @@ cloud deployment to agents. For llama.cpp, run the dedicated
 Agent OS-ready.
 
 For the production profile, the same readiness idea is encoded in
-[`cloud/deploy/docker-compose.yml`](../../../cloud/deploy/docker-compose.yml): Chroma
+[`ai/deploy/docker-compose.yml`](../../../ai/deploy/docker-compose.yml): Chroma
 must be healthy before KB and MC start. The day-0 proof above is the operator
 check that the remote KB and MC MCP endpoints themselves answer before the
 deployment is handed to agents.
@@ -332,7 +332,7 @@ Seed the Neo-shared corpus once inside the KB container before querying it:
 ```bash
 docker compose \
   -p "$NEO_DAY0_PROJECT" \
-  -f cloud/deploy/docker-compose.test.yml \
+  -f ai/deploy/docker-compose.test.yml \
   exec -T kb-server \
   npm run ai:sync-kb
 ```
@@ -567,7 +567,7 @@ NODE
 
 cat /tmp/day0-bulk.jsonl | docker compose \
   -p "$NEO_DAY0_PROJECT" \
-  -f cloud/deploy/docker-compose.test.yml \
+  -f ai/deploy/docker-compose.test.yml \
   exec -T kb-server \
   node ./buildScripts/ai/ingestTenant.mjs client-org --from-stdin --batch-size 2
 ```
@@ -652,7 +652,7 @@ Failure signatures:
 
 | Signature | Meaning | Fix |
 |---|---|---|
-| `KB_GITMIRROR_CLONE_FAILED` | Clone subprocess failed (network, auth, missing repo, or — Day-0 — missing `git` binary in older deploy images per [#12036](https://github.com/neomjs/neo/issues/12036)). | Verify `read_repository` scope on the token; verify deploy image is built from current `cloud/deploy/Dockerfile` (post-#12037 ships `git`). |
+| `KB_GITMIRROR_CLONE_FAILED` | Clone subprocess failed (network, auth, missing repo, or — Day-0 — missing `git` binary in older deploy images per [#12036](https://github.com/neomjs/neo/issues/12036)). | Verify `read_repository` scope on the token; verify deploy image is built from current `ai/deploy/Dockerfile` (post-#12037 ships `git`). |
 | `KB_TENANT_REPO_CREDENTIAL_REF_REQUIRED` / `KB_GITMIRROR_CREDENTIAL_REF_INVALID` | `credentialRef` missing or doesn't resolve at runtime. | Confirm the env var name matches the `credentialRef` exactly; for `file:` scheme, confirm the file exists + is non-empty. |
 | `KB_TENANT_REPO_MIRROR_ROOT_REQUIRED` | No per-repo `mirrorRoot`, no Tier-1 default, no env var. | Set `NEO_TENANT_REPO_MIRROR_ROOT=/app/.neo-ai-data` in compose env (the canonical default, env-bound to `aiConfig.orchestrator.tenantRepoMirrorRoot` per [#12050](https://github.com/neomjs/neo/pull/12050)). |
 

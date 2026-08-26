@@ -286,7 +286,7 @@ itself stumbled, but never confuse a well-formatted idle with forward motion.
   channel-separation, and no-hold principles the hook enforces at the boundary.
 - [Strategic Workflows](StrategicWorkflows.md) - the evidence loop that keeps
   fixes and reviews grounded before a maintainer acts.
-- [Progressive Disclosure Skills](https://github.com/neomjs/neo/blob/dev/learn/agentos/ProgressiveDisclosureSkills.md) - how the
+- [Progressive Disclosure Skills](ProgressiveDisclosureSkills.md) - how the
   procedural guides load at the moments where a lane needs them.
 - [Swarm Intelligence & Sub-Agents](SwarmIntelligence.md) - the flat peer-team
   model that makes liveness a shared institutional property.

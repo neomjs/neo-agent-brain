@@ -77,3 +77,4 @@ read timestamp — live edges churn (#14422 OQ4); unstamped rows are unciteable.
 - Zero-memory-attachment members: 14/22
 - Four-axis property hits across all raw edges: 69
 - Projection note: `getNeighbors` exposes ONLY `weight` from edge properties — every axis field above is invisible through the MCP projection by construction.
+

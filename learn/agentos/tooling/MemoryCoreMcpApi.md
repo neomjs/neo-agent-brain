@@ -235,4 +235,4 @@ This specification can be:
 - [Model Context Protocol Specification](https://modelcontextprotocol.io/)
 - [Agent-Agnostic MCP Configuration](./AgentAgnosticMcpConfig.md)
 - [Knowledge Base MCP Server API Design](./KnowledgeBaseMcpApi.md) (coming soon)
-- [Strategic AI Workflows](../StrategicWorkflows.md)
+- [Strategic AI Workflows](./StrategicWorkflows.md)
