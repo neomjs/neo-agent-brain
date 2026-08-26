@@ -114,7 +114,7 @@ function runFixture({lintStaged, workflows, clientOnly = {}, preCommit = 'npx li
             env     : {
                 ...process.env,
                 NEO_GUARD_CI_PARITY_REGISTRY : registryPath,
-                NEO_GUARD_CI_PARITY_REPO_ROOT: dir
+                NEO_TARGET_REPO_ROOT: dir
             }
         });
 
@@ -125,6 +125,11 @@ function runFixture({lintStaged, workflows, clientOnly = {}, preCommit = 'npx li
 }
 
 test.describe('every lint-staged guard has a CI mirror or a recorded reason', () => {
+    test.skip(
+        !fs.existsSync(path.join(REPO_ROOT, '.husky/pre-commit')),
+        'the committed-carrier suite executes against the Engine target repository'
+    );
+
     test('the committed registry is GREEN — the population is fully classified today', () => {
         const {code, output} = runLint();
 

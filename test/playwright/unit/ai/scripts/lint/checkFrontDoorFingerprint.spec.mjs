@@ -131,6 +131,11 @@ test.describe('ai.scripts.lint.check-front-door-fingerprint', () => {
     });
 
     test('the LIVE front door passes its own fingerprint check', () => {
+        test.skip(
+            !fs.existsSync(path.join(process.cwd(), 'learn/benefits/Introduction.md')),
+            'the live front-door assertion belongs to the Engine target repository'
+        );
+
         const result = checkFingerprint();
 
         expect(result.ok, result.mismatches.join('; ')).toBe(true);

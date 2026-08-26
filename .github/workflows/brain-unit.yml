@@ -50,6 +50,10 @@ jobs:
                   test/playwright/unit/ai/buildScripts/util/check-aiconfig-antipatterns.spec.mjs
                   test/playwright/unit/ai/buildScripts/util/check-aiconfig-test-mutation.spec.mjs
                   test/playwright/unit/ai/buildScripts/util/check-atomic-write-shape.spec.mjs
+                  test/playwright/unit/ai/scripts/lint/lintAdrSeamTable.spec.mjs
+                  test/playwright/unit/ai/scripts/lint/checkFrontDoorFingerprint.spec.mjs
+                  test/playwright/unit/ai/scripts/lint/lintTreeJson.spec.mjs
+                  test/playwright/unit/ai/scripts/lint/lintGuardCiParity.spec.mjs
                   test/playwright/unit/ai/scripts/lint/lintWorkflowScanRootParity.spec.mjs
                   test/playwright/unit/harness/terminateDaemon.spec.mjs
                   test/playwright/unit/hooks

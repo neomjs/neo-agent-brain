@@ -55,7 +55,9 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
-const ROOT_DIR   = path.resolve(__dirname, '../../..');
+const ROOT_DIR   = process.env.NEO_TARGET_REPO_ROOT
+    ? path.resolve(process.env.NEO_TARGET_REPO_ROOT)
+    : path.resolve(__dirname, '../../..');
 const LEARN_DIR  = path.join(ROOT_DIR, 'learn');
 const TREE_PATH  = path.join(LEARN_DIR, 'tree.json');
 const PORTAL_DIR = path.join(ROOT_DIR, 'apps/portal');
