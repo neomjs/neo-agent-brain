@@ -2,7 +2,7 @@
 
 > The Brain of the Neo.mjs organism — the Agent OS.
 
-This repository owns the Agent OS runtime, its tests, deployment substrate, harness, learning
+This repository owns the Agent OS runtime, its tests, deployment substrate, learning
 guides, and decision records. The sibling [`neomjs/neo`](https://github.com/neomjs/neo) repository
 owns the application Engine and Body surfaces.
 

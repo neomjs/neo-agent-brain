@@ -41,7 +41,7 @@ const MATERIALIZED_SERVER_IMPORTS = new Set([
     '../../../config.mjs',
     '../../../config.mjs:default'
 ]);
-const ENGINE_LINK_PROJECTIONS = Object.freeze(['apps', 'examples', 'resources', 'src']);
+const ENGINE_LINK_PROJECTIONS = Object.freeze(['apps', 'examples', 'harness', 'resources', 'src']);
 const ENGINE_COPY_PROJECTIONS = Object.freeze(['buildScripts']);
 
 /**

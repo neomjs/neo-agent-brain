@@ -44,5 +44,5 @@ jobs:
             - name: Run the move-first Brain smoke
               run: >-
                   npm run test-unit --
-                  test/playwright/unit/harness/brain.spec.mjs
+                  test/playwright/unit/ai/AgentOrchestrator.spec.mjs
                   test/playwright/unit/ai/Env.spec.mjs

@@ -91,5 +91,6 @@ node_modules/
 /apps
 /buildScripts
 /examples
+/harness
 /resources
 /src
