@@ -5028,7 +5028,40 @@
                 }
             ]
         },
-        "tests": "ZERO test files are received. ADR 0040 section 2.7 makes test custody follow SUBJECT, not directory, so the inventory row matching /ai/ by path is a census SEED to classify rather than a move set. An exact subject-owned test census is required before this receive is complete. Raised by @neo-gpt-emmy."
+        "tests": "ZERO test files are received. ADR 0040 section 2.7 makes test custody follow SUBJECT, not directory, so the inventory row matching /ai/ by path is a census SEED to classify rather than a move set. An exact subject-owned test census is required before this receive is complete. Raised by @neo-gpt-emmy.",
+        "enginePackageStaleness": {
+            "finding": "neo.mjs@13.1.0 was published 2026-07-03, predates the cut, and still ships the entire Agent OS: 500 ai/ files in the tarball, 466 of them .mjs and resolvable from this repository as neo.mjs/ai/** right now. The Brain therefore depends on a package containing a stale copy of the Brain, and the failure is silent by construction because such an import resolves and the module loads.",
+            "liveOccurrence": {
+                "file": "cloud/examples/cloud-deployment/minimal-external-workspace/src/ProtoSource.mjs",
+                "specifiers": [
+                    "neo.mjs/ai/services/knowledge-base/source/Base.mjs",
+                    "neo.mjs/ai/mcp/server/knowledge-base/config.mjs"
+                ],
+                "note": "Pre-existing example content, correct before the cut because that was genuinely how an external workspace reached the Agent OS. NOT rewritten here: its correct post-split form depends on an unanswered question — how does an external workspace reach the Agent OS once it is a separate, unpublished repository? Answering that inside a receive PR would be inventing the answer."
+            },
+            "boundsResolutions": "Two straddles blocking the workflow receive point at files that postdate the release, so reaching them through neo.mjs is unavailable even in principle: apps/agentos/config/cockpitSources.mjs (added 2026-08-08) and buildScripts/util/check-aiconfig-antipatterns.mjs (added 2026-07-16). Its sibling check-aiconfig-test-mutation.mjs (2026-06-14) IS in 13.1.0, so a Brain-side config lint would be half-enforceable.",
+            "notExposed": "All ten neo.mjs/src/** specifiers this receive rewrote are present in 13.1.0, verified against the tarball rather than the tree. The receive itself is unaffected.",
+            "owner": "neomjs/neo#17787 / neomjs/neo#17791 — a neo.mjs/ai/** specifier guard is the obvious mitigation with a clean sunset (it retires the moment an Engine release ships without ai/, which #17791 causes), but the same outcome arrives free with the next publish."
+        },
+        "workflowReceive": {
+            "finding": "Brain has only substrate-sync.yml, so deleting config-template-ssot-lint.yml and identity-engine-coherence-lint.yml from the Engine drops enforcement with no receiver. Both lint scripts and every input are received; the workflows cannot be recreated because each has one genuine straddle.",
+            "straddles": [
+                {
+                    "workflow": "identity-engine-coherence-lint",
+                    "via": "scripts/fleet/deriveFleetRoster.mjs",
+                    "target": "apps/agentos/config/cockpitSources.mjs",
+                    "note": "a 29-line frozen constant in the Engine cockpit app; exactly one field is read (.roster)"
+                },
+                {
+                    "workflow": "config-template-ssot-lint",
+                    "via": "scripts/lint/lint-config-template-ssot.mjs",
+                    "target": "buildScripts/util/check-aiconfig-{antipatterns,test-mutation}.mjs",
+                    "note": "read for ADR-0019 two-way ownership. This is the inverse straddle neomjs/neo#17783 named in its own problem statement: a stay-side guard whose subject departs goes green forever. Now concrete rather than forecast."
+                }
+            ],
+            "reason": "Recreating them now would produce two receivers that fail on their first run, which is worse than the gap they were meant to close.",
+            "owner": "neomjs/neo#17783"
+        }
     },
     "wholeTreeReconciliation": {
         "invariant": "every tracked ai/** path carries exactly one explicit disposition: received here, owned by Brain PR #9, stays with the Engine, or retires",
@@ -5122,5 +5155,5 @@
         "unclassified": 0,
         "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership."
     },
-    "canonicalSha256": "4fa9c2766a24b4b9ecc63372de6ef02d2d00f904c4d65167f058ec0fe291d1db"
+    "canonicalSha256": "bb6a2dbcfc2bc3e5a97a59c7772a2ca0223a27fb342187dada4f5278832ba771"
 }
