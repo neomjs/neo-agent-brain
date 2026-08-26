@@ -46,7 +46,7 @@ function buildTree() {
 test.describe('Neo.ai.ConfigProvider (data + afterSetData seam + leaf() factory)', () => {
     test.beforeAll(async () => {
         ({default: ConfigProvider, createConfigProxy, leaf} = await import('../../ConfigProvider.mjs'));
-        Env         = (await import('../../Env.mjs')).default;
+        Env         = (await import('../../../shared/Env.mjs')).default;
         originalEnv = {...process.env}
     });
 

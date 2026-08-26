@@ -1,4 +1,4 @@
-import {IDENTITIES, TRUST_TIER_ORDER, TRUST_TIERS} from '../../graph/identityRoots.mjs';
+import {IDENTITIES, TRUST_TIER_ORDER, TRUST_TIERS} from '../../../shared/graph/identityRoots.mjs';
 
 /**
  * @module ai/services/graph/conceptTouchMeasurement

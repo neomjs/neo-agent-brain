@@ -23,7 +23,7 @@ import {createTenantRepoMaterializationDigest}
 import {isChromaConnectionError}
                             from '../shared/vector/chromaClientPrimitives.mjs';
 import {resolveEmbeddingAdmissionBand}
-                            from '../../embeddingSafeBand.mjs';
+                            from '../../../shared/embeddingSafeBand.mjs';
 import {
     KB_VECTOR_EMBED_UNCLASSIFIED,
     KB_VECTOR_EMBED_UNDELIVERABLE_AT_GEOMETRY,
@@ -48,7 +48,7 @@ import path            from 'path';
 import * as yaml       from 'js-yaml';
 import {fileURLToPath} from 'url';
 import {IMPLEMENTED_EMBEDDING_PROVIDERS, resolveEmbeddingProviderModel}
-                       from '../../embeddingProviders.mjs';
+                       from '../../../shared/embeddingProviders.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);

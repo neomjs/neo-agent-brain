@@ -4,7 +4,7 @@ import logger                          from '../../mcp/server/memory-core/logger
 import Base                            from 'neo.mjs/src/core/Base.mjs';
 import CoreDatabase                    from '../../graph/Database.mjs';
 import SQLite                          from '../../graph/storage/SQLite.mjs';
-import { IDENTITIES }                  from '../../graph/identityRoots.mjs';
+import { IDENTITIES }                  from '../../../shared/graph/identityRoots.mjs';
 import {createGraphBootSeedManifest}   from '../../graph/bootSeedManifest.mjs';
 import {createGraphBootSeedNodeRecord} from '../../graph/bootSeedManifest.mjs';
 import {getGraphBootSeedNodeSpec}      from '../../graph/bootSeedManifest.mjs';

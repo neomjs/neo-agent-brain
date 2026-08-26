@@ -6,7 +6,7 @@ import {
     EMBEDDING_PROBE_BAND_FRACTION,
     projectProbeCoverage
 }                                       from '../../../../services/shared/embeddingProbe.mjs';
-import {resolveEmbeddingAdmissionBand}  from '../../../../embeddingSafeBand.mjs';
+import {resolveEmbeddingAdmissionBand}  from '../../../../../shared/embeddingSafeBand.mjs';
 
 /**
  * A probe that cannot fail the way its subject fails is not a control.

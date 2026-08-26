@@ -1,4 +1,4 @@
-import {IDENTITIES} from './identityRoots.mjs';
+import {IDENTITIES} from '../../shared/graph/identityRoots.mjs';
 
 /**
  * @summary Pure, fail-closed assertion that the live authed identity is the *expected* agent —

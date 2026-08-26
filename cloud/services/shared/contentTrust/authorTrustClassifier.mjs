@@ -1,4 +1,4 @@
-import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../../graph/identityRoots.mjs';
+import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../../../shared/graph/identityRoots.mjs';
 
 /**
  * @summary Fail-closed GitHub-author → content-trust-tier classifier (organism self-defense substrate).

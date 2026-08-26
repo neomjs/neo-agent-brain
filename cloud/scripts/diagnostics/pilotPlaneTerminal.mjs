@@ -61,7 +61,7 @@
  * reader gets one citation that is maintained, instead of decaying references scattered through code.
  */
 
-import {UNKNOWN_PLANE_ID, isOpaquePlaneId}     from '../../planeConfig.mjs';
+import {UNKNOWN_PLANE_ID, isOpaquePlaneId}     from '../../../shared/planeConfig.mjs';
 import {readMemoryWalProvenanceSegments}       from '../../services/memory-core/helpers/memoryWalStore.mjs';
 import {readMessageWalProvenanceSegments}      from '../../services/memory-core/helpers/messageWalStore.mjs';
 import {planWalReplay, verifyReplayContinuity} from './walReplayPlan.mjs';

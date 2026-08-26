@@ -2,7 +2,7 @@ import fs                             from 'node:fs';
 import path                           from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
-import {isEmbeddingContextBelowSafeBand} from '../../cloud/embeddingSafeBand.mjs';
+import {isEmbeddingContextBelowSafeBand} from '../../shared/embeddingSafeBand.mjs';
 
 /**
  * @module ai/scripts/diagnostics/providerLaneComposition

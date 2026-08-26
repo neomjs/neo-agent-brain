@@ -58,7 +58,7 @@ test.describe('VectorService — embedding admission band (#17343)', () => {
         KB_VectorService = (await import('../../../../services/knowledge-base/VectorService.mjs')).default;
 
         ({resolveEmbeddingAdmissionBand, EMBEDDING_TOKEN_ESTIMATE_DRIFT_FACTOR} =
-            await import('../../../../embeddingSafeBand.mjs'));
+            await import('../../../../../shared/embeddingSafeBand.mjs'));
     });
 
     test('RED-PROOF: an input between the engine slot and the safe band is refused, not admitted', () => {

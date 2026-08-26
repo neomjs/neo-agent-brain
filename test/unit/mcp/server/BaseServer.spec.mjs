@@ -22,7 +22,7 @@ import Neo                                                         from 'neo.mjs
 import * as core                                                   from 'neo.mjs/src/core/_export.mjs';
 import ConfigProvider, {createConfigProxy}                         from '../../../../cloud/ConfigProvider.mjs';
 import Tier1ConfigBase, {PLANE_MEMBER_PATHS as TIER1_MEMBER_PATHS} from '../../../../cloud/configBase.mjs';
-import {derivePlaneMemberPaths}                                    from '../../../../cloud/planeConfig.mjs';
+import {derivePlaneMemberPaths}                                    from '../../../../shared/planeConfig.mjs';
 import BaseServer                                                  from '../../../../mcp/server/BaseServer.mjs';
 // The committed template, never `ai/config.mjs` — tests resolve committed config templates and never a
 // repo-local ignored overlay. ticket-ref-ok: ADR-0019 B1/C3 is the authority lint-config-template-ssot

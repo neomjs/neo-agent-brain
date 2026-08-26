@@ -26,7 +26,7 @@
 
 import { execFileSync }              from 'child_process';
 import { Command }                   from 'commander';
-import { IDENTITIES }                from '../../cloud/graph/identityRoots.mjs';
+import { IDENTITIES }                from '../../shared/graph/identityRoots.mjs';
 import { resolveResidentFamilyById } from '../../cloud/services/graph/agentFamilyResolution.mjs';
 
 export const SWEEP_VERSION = '1.0.0';

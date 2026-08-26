@@ -1,5 +1,5 @@
 import {test, expect}                                                       from '@playwright/test';
-import {TRUST_TIERS}                                                        from '../../../../../graph/identityRoots.mjs';
+import {TRUST_TIERS}                                                        from '../../../../../../shared/graph/identityRoots.mjs';
 import {classifyAuthorTrust, isExternalTier, isTrustedTier, normalizeLogin} from '../../../../../services/shared/contentTrust/authorTrustClassifier.mjs';
 import {sanitizeContent}                                                    from '../../../../../services/shared/contentTrust/astroturfSanitizer.mjs';
 

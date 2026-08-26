@@ -18,7 +18,7 @@ import Neo            from 'neo.mjs/src/Neo.mjs'
 import * as core      from 'neo.mjs/src/core/_export.mjs'
 
 import {seedAgentIdentities} from '../../../../scripts/setup/seedAgentIdentities.mjs'
-import {IDENTITIES}          from '../../../../graph/identityRoots.mjs'
+import {IDENTITIES}          from '../../../../../shared/graph/identityRoots.mjs'
 
 /**
  * Minimal GraphService double exposing exactly the three surfaces the script touches: `ready()`,

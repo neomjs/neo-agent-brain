@@ -8,7 +8,7 @@ import {
     getGraphBootSeedNodeSpec,
     GRAPH_BOOT_SEED_VERSION
 } from '../../../graph/bootSeedManifest.mjs';
-import {IDENTITIES} from '../../../graph/identityRoots.mjs';
+import {IDENTITIES} from '../../../../shared/graph/identityRoots.mjs';
 
 test.describe('graph boot-seed manifest', () => {
     test('enumerates the fixed roots, every identity root, and one system edge', () => {

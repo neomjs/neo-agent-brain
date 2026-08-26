@@ -1,4 +1,4 @@
-import {IDENTITIES}                                                           from './identityRoots.mjs';
+import {IDENTITIES}                                                           from '../../shared/graph/identityRoots.mjs';
 import {createEmbodiedEpisodeNode, createIdentityStateNode, validateEraChain} from './identitySchema.mjs';
 import {buildHydrationIndex}                                                  from './identityHydration.mjs';
 

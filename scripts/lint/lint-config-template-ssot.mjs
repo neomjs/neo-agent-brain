@@ -55,24 +55,76 @@ const CONFIG_TEMPLATE_BASENAME = 'config.template.mjs';
 // The Tier-1 root base: canonical default leaves live here since the template/base split — the
 // declarative-SSOT rules must cover it exactly like a template, or base-only leaves bypass the lint.
 const CONFIG_BASE_BASENAME            = 'configBase.mjs';
-const CONFIG_LEAF_PARITY_REL          = 'ai/scripts/lint/config-leaf-parity.json';
+const CONFIG_LEAF_PARITY_REL          = 'scripts/lint/config-leaf-parity.json';
 const COMPOSE_DEFAULT_PARITY_KEY      = '$composeDefaultParity';
 const BEHAVIOR_BINDING_PROJECTION_KEY = '$behaviorBindingProjection';
 const CONFIG_OVERLAY_BASENAME         = 'config.mjs';
-const SCAN_ROOT_REL                   = 'ai';
+// In the source repository the Agent OS was one directory, so a single `ai` prefix answered both
+// "where do I walk" and "is this path mine". Here the Agent OS IS the repository and its source is
+// split across plane roots, so the two questions separate: SCAN_ROOTS is what to walk, and
+// isAgentOsPath is the membership test. Collapsing them back into one string would either miss a
+// plane or claim node_modules.
+const SCAN_ROOTS                      = Object.freeze(['cloud', 'daemons', 'mcp', 'scripts', 'services', 'shared']);
+const ROOT_LEVEL_CONFIG_FILES         = Object.freeze(['config.template.mjs', 'configBase.mjs', 'ConfigProvider.mjs', 'config.mjs']);
 const TEST_SCAN_ROOT_REL              = 'test';
-const DEPLOY_SCAN_ROOT_REL            = 'ai/deploy';
-const SELF_REL_FILE                   = 'ai/scripts/lint/lint-config-template-ssot.mjs';
+const DEPLOY_SCAN_ROOT_REL            = 'cloud/deploy';
+
+/**
+ * @param {String} relPath Repository-relative, POSIX separators.
+ * @returns {Boolean} Whether the path is Agent OS source this lint owns.
+ */
+const isAgentOsPath = relPath => !isTestPath(relPath) &&
+    (SCAN_ROOTS.some(root => relPath.startsWith(`${root}/`)) || ROOT_LEVEL_CONFIG_FILES.includes(relPath));
+
+/**
+ * Tests are a separate scan root with separate rules, and keeping them out of the SOURCE scan is
+ * load-bearing rather than tidy: the antipattern guards' own specs quote antipatterns as fixtures.
+ * In the source repository that separation was free, because specs lived under `test/` while the
+ * source root was `ai/`. Here a plane root contains its own suite (`cloud/test/**`), so the
+ * exclusion has to be explicit or the guard reports its own test data as 34 violations.
+ * @param {String} relPath Repository-relative, POSIX separators.
+ * @returns {Boolean}
+ */
+const isTestPath = relPath => relPath.startsWith(`${TEST_SCAN_ROOT_REL}/`) ||
+    relPath.includes(`/${TEST_SCAN_ROOT_REL}/`);
+
+/**
+ * Walks every plane root for config templates, plus the repository root itself for the Host-Edge
+ * Tier-1 authority. A single-root walk would silently miss whichever plane it was not pointed at,
+ * and this lint's whole contract is that a missed file reads as a satisfied invariant.
+ * @param {String} rootDir
+ * @returns {String[]} Absolute paths.
+ */
+const walkAgentOsConfigTemplates = rootDir => [
+    ...SCAN_ROOTS.flatMap(root => walkConfigTemplates(path.join(rootDir, root)))
+        .filter(abs => !isTestPath(path.relative(rootDir, abs).split(path.sep).join("/"))),
+    ...ROOT_LEVEL_CONFIG_FILES
+        .map(file => path.join(rootDir, file))
+        .filter(abs => abs.endsWith(CONFIG_TEMPLATE_BASENAME) && fs.existsSync(abs))
+];
+
+/**
+ * Walks every plane root for .mjs sources, plus the root-level Tier-1 config files.
+ * @param {String} rootDir
+ * @returns {String[]} Absolute paths.
+ */
+const walkAgentOsMjsFiles = rootDir => [
+    ...SCAN_ROOTS.flatMap(root => walkMjsFiles(path.join(rootDir, root)))
+        .filter(abs => !isTestPath(path.relative(rootDir, abs).split(path.sep).join("/"))),
+    ...ROOT_LEVEL_CONFIG_FILES.map(file => path.join(rootDir, file)).filter(abs => fs.existsSync(abs))
+];
+const SELF_REL_FILE                   = 'scripts/lint/lint-config-template-ssot.mjs';
 const ADR_0019_REL_FILE               = 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md';
-const ANTIPATTERN_GUARD_REL_FILE      = 'buildScripts/util/check-aiconfig-antipatterns.mjs';
-const TEST_MUTATION_GUARD_REL_FILE    = 'buildScripts/util/check-aiconfig-test-mutation.mjs';
+const ANTIPATTERN_GUARD_REL_FILE      = 'scripts/lint/check-aiconfig-antipatterns.mjs';
+const TEST_MUTATION_GUARD_REL_FILE    = 'scripts/lint/check-aiconfig-test-mutation.mjs';
 
 // The workflow-parity SSOT: every glob a path-filtered workflow must watch for this lint's
 // verdict to stay reproducible at PR time (scanned ⊆ watched as a mechanical fact, not YAML
 // prose). Consumed by lintWorkflowScanRootParity.spec.mjs; derived from the scan roots above
 // so a new root cannot silently widen the scan without widening this surface.
 export const SCAN_SURFACE = Object.freeze([
-    `${SCAN_ROOT_REL}/**/*.mjs`,
+    ...SCAN_ROOTS.map(root => `${root}/**/*.mjs`),
+    ...ROOT_LEVEL_CONFIG_FILES,
     `${TEST_SCAN_ROOT_REL}/**/*.mjs`,
     // The Compose/default parity and behavior-binding projection rules both read deploy templates,
     // so this lint's scan is wider than its `.mjs` roots. Declaring it here is what makes the
@@ -89,10 +141,10 @@ export const SCAN_SURFACE = Object.freeze([
 ]);
 const CONFIG_TEMPLATE_KIND_CACHE         = new Map();
 const SERVICE_EXPORT_CONFIG_TEMPLATE_REL = Object.freeze({
-    GH_Config        : 'ai/mcp/server/github-workflow/config.template.mjs',
-    KB_Config        : 'ai/mcp/server/knowledge-base/config.template.mjs',
-    Memory_Config    : 'ai/mcp/server/memory-core/config.template.mjs',
-    NeuralLink_Config: 'ai/mcp/server/neural-link/config.template.mjs'
+    GH_Config        : 'mcp/server/github-workflow/config.template.mjs',
+    KB_Config        : 'cloud/mcp/server/knowledge-base/config.template.mjs',
+    Memory_Config    : 'cloud/mcp/server/memory-core/config.template.mjs',
+    NeuralLink_Config: 'mcp/server/neural-link/config.template.mjs'
 });
 
 /**
@@ -115,21 +167,21 @@ export const BASELINE = Object.freeze([
  */
 export const AI_CONFIG_IMPLEMENTATION_BASELINE = Object.freeze([
     {
-        file  : 'ai/daemons/orchestrator/Orchestrator.mjs',
+        file  : 'cloud/daemons/orchestrator/Orchestrator.mjs',
         kind  : 'config-pass-through',
         text  : 'runtimeAccessConfig: AiConfig.orchestrator.deploymentRuntimeAccess,',
         ticket: '#13939',
         reason: 'Existing bootstrap handoff; cleanup belongs to the #12456 fan-out.'
     },
     {
-        file  : 'ai/daemons/orchestrator/Orchestrator.mjs',
+        file  : 'cloud/daemons/orchestrator/Orchestrator.mjs',
         kind  : 'config-pass-through',
         text  : 'actuatorConfig                : AiConfig.orchestrator.recoveryActuator',
         ticket: '#13939',
         reason: 'Existing bootstrap handoff; cleanup belongs to the #12456 fan-out.'
     },
     {
-        file  : 'ai/daemons/orchestrator/daemon.mjs',
+        file  : 'cloud/daemons/orchestrator/daemon.mjs',
         kind  : 'config-pass-through',
         text  : 'primaryDevSyncRootsConfig: AiConfig.orchestrator.devSyncRoots,',
         ticket: '#13939',
@@ -146,28 +198,28 @@ export const AI_CONFIG_IMPLEMENTATION_BASELINE = Object.freeze([
  */
 export const AI_CONFIG_MODULE_SCOPE_BASELINE = Object.freeze([
     {
-        file  : 'ai/scripts/diagnostics/analyzeNlTelemetry.mjs',
+        file  : 'scripts/diagnostics/analyzeNlTelemetry.mjs',
         kind  : 'module-scope-leaf-capture',
         text  : 'const DB_PATH = aiConfig.storagePaths.graph;',
         ticket: '#14239',
         reason: 'Frozen primitive path leaf; existing P1 burndown debt.'
     },
     {
-        file  : 'ai/scripts/diagnostics/analyzeNlTelemetry.mjs',
+        file  : 'scripts/diagnostics/analyzeNlTelemetry.mjs',
         kind  : 'module-scope-leaf-capture',
         text  : 'const RLAIF_PATH = aiConfig.datasets.rlaif.trajectories;',
         ticket: '#14239',
         reason: 'Frozen primitive dataset leaf; existing P1 burndown debt.'
     },
     {
-        file  : 'ai/services/knowledge-base/DatabaseService.mjs',
+        file  : 'cloud/services/knowledge-base/DatabaseService.mjs',
         kind  : 'module-scope-leaf-capture',
         text  : 'const cwd       = aiConfig.neoRootDir;',
         ticket: '#14239',
         reason: 'Frozen primitive root path leaf; existing P1 burndown debt.'
     },
     {
-        file  : 'ai/services/knowledge-base/QueryService.mjs',
+        file  : 'cloud/services/knowledge-base/QueryService.mjs',
         kind  : 'module-scope-leaf-capture',
         text  : 'const cwd       = aiConfig.neoRootDir;',
         ticket: '#14239',
@@ -241,7 +293,7 @@ function shouldScanAiConfigImplementation(file) {
     const normalized = normalizeFile(file),
           basename   = path.basename(normalized);
 
-    return normalized.startsWith(`${SCAN_ROOT_REL}/`) &&
+    return isAgentOsPath(normalized) &&
         normalized.endsWith('.mjs') &&
         normalized !== SELF_REL_FILE &&
         basename !== CONFIG_TEMPLATE_BASENAME &&
@@ -447,13 +499,16 @@ async function withTier1ConfigForLint(rootDir, callback) {
     globalThis.Neo ??= {};
     globalThis.Neo.config ??= {environment: 'development'};
 
-    await import(pathToFileURL(path.join(rootDir, 'src/Neo.mjs')).href);
+    // The Engine is a published dependency here, not a sibling directory, so it resolves by package
+    // specifier instead of by joining a repo-relative path onto rootDir. ADR 0040 §2.3.
+    await import('neo.mjs/src/Neo.mjs');
 
     let transientRoot;
 
     if (!Neo.ai?.Config) {
+        // The Tier-1 base sits at the Host-Edge root; there is no `ai/` segment to climb into.
         const RootConfigBase = (await import(
-            pathToFileURL(path.join(rootDir, 'ai', CONFIG_BASE_BASENAME)).href
+            pathToFileURL(path.join(rootDir, CONFIG_BASE_BASENAME)).href
         )).default;
 
         transientRoot = Neo.create(RootConfigBase);
@@ -500,7 +555,8 @@ async function withTier1ConfigForLint(rootDir, callback) {
  */
 export async function collectConfigPathKindsFromTemplate(templatePath) {
     const
-        neoRootDir         = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
+        // Two climbs from scripts/lint, not three: there is no `ai/` segment to clear here.
+        neoRootDir         = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..'),
         primitiveLeafPaths = new Set(),
           liveProxyPaths     = new Set(),
           isDescriptor       = v => v && typeof v === 'object' && !Array.isArray(v) &&
@@ -610,7 +666,8 @@ function collectConfigEnvDefaultsFromData(data, parts = [], out = {}) {
 export async function buildConfigEnvDefaultsForTemplate({template, rootDir = ROOT_DIR}) {
     return withTier1ConfigForLint(rootDir, async () => {
         const
-            rootBase    = path.join(rootDir, 'ai', CONFIG_BASE_BASENAME),
+            // The Host-Edge Tier-1 base sits at the repository root; there is no `ai/` to descend into.
+            rootBase    = path.join(rootDir, CONFIG_BASE_BASENAME),
             templateAbs = path.join(rootDir, template),
             serverBase  = path.join(path.dirname(templateAbs), CONFIG_BASE_BASENAME),
             files       = [...new Set([rootBase, serverBase])],
@@ -662,7 +719,7 @@ function resolveRepoAiSpecifierPath({rootDir, file, specifier}) {
         }
     } else if (cleanSpecifier.startsWith('neo.mjs/')) {
         abs = path.join(rootDir, cleanSpecifier.slice('neo.mjs/'.length));
-    } else if (cleanSpecifier.startsWith(`${SCAN_ROOT_REL}/`)) {
+    } else if (isAgentOsPath(cleanSpecifier)) {
         abs = path.join(rootDir, cleanSpecifier);
     } else if (cleanSpecifier.startsWith('.')) {
         abs = path.resolve(path.dirname(path.join(rootDir, file)), cleanSpecifier);
@@ -675,8 +732,7 @@ function resolveRepoAiSpecifierPath({rootDir, file, specifier}) {
     const relative = path.relative(rootDir, abs);
 
     if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
-    if (!(relative === `${SCAN_ROOT_REL}${path.sep}${CONFIG_OVERLAY_BASENAME}` ||
-        relative.startsWith(`${SCAN_ROOT_REL}${path.sep}`))) return null;
+    if (!isAgentOsPath(relative.split(path.sep).join('/'))) return null;
 
     return abs;
 }
@@ -1278,7 +1334,7 @@ export function collectDeclaredConfigPaths(templatePath) {
 export async function buildConfigLeafParitySnapshot({rootDir = ROOT_DIR} = {}) {
     const out = {};
 
-    for (const file of walkConfigTemplates(path.join(rootDir, SCAN_ROOT_REL))) {
+    for (const file of walkAgentOsConfigTemplates(rootDir)) {
         // The base is read THROUGH its template, never as a surface of its own: it declares no runtime
         // namespace, and listing it separately would double-count every path it contributes.
         if (path.basename(file) !== CONFIG_TEMPLATE_BASENAME) continue;
@@ -1943,7 +1999,7 @@ export async function buildConfigPathKindsByIdentifier({rootDir = ROOT_DIR, file
     }
 
     if (!out.has('AiConfig')) {
-        const rootTemplate = path.join(rootDir, 'ai/config.template.mjs');
+        const rootTemplate = path.join(rootDir, 'config.template.mjs');
         if (fs.existsSync(rootTemplate)) {
             out.set('AiConfig', await getConfigPathKindsForTemplate(rootTemplate));
         }
@@ -2163,7 +2219,7 @@ export function collectConfigEnvNamesFromSource(source) {
 export function collectDeclaredAiConfigEnvNames(rootDir = ROOT_DIR) {
     const names = new Set();
 
-    walkMjsFiles(path.join(rootDir, SCAN_ROOT_REL))
+    walkAgentOsMjsFiles(rootDir)
         .filter(file => [CONFIG_BASE_BASENAME, CONFIG_TEMPLATE_BASENAME].includes(path.basename(file)))
         .forEach(file => {
             collectConfigEnvNamesFromSource(fs.readFileSync(file, 'utf8')).forEach(name => names.add(name))
@@ -2548,7 +2604,7 @@ export function lintAdr0019GuardOwnership({
  * @returns {{violations: Object[], newViolations: Object[], staleBaseline: Object[]}}
  */
 export function lintConfigTemplateSsot({rootDir = ROOT_DIR, files, baseline = BASELINE} = {}) {
-    const records = files || walkConfigTemplates(path.join(rootDir, SCAN_ROOT_REL)).map(abs => ({
+    const records = files || walkAgentOsConfigTemplates(rootDir).map(abs => ({
         file  : path.relative(rootDir, abs).split(path.sep).join('/'),
         source: fs.readFileSync(abs, 'utf8')
     }));
@@ -2585,7 +2641,7 @@ export function lintAiConfigImplementationSsot({
     files,
     baseline = AI_CONFIG_IMPLEMENTATION_BASELINE
 } = {}) {
-    const records = files || walkMjsFiles(path.join(rootDir, SCAN_ROOT_REL))
+    const records = files || walkAgentOsMjsFiles(rootDir)
         .map(abs => ({
             file  : normalizeFile(path.relative(rootDir, abs)),
             source: fs.readFileSync(abs, 'utf8')
@@ -2626,7 +2682,7 @@ export async function lintAiConfigModuleScopeCaptures({
     files,
     baseline = AI_CONFIG_MODULE_SCOPE_BASELINE
 } = {}) {
-    const records = files || walkMjsFiles(path.join(rootDir, SCAN_ROOT_REL))
+    const records = files || walkAgentOsMjsFiles(rootDir)
         .map(abs => ({
             file  : normalizeFile(path.relative(rootDir, abs)),
             source: fs.readFileSync(abs, 'utf8')
@@ -2669,7 +2725,7 @@ export function lintNonEntrypointConfigResolvers({
     files,
     configEnvNames = collectDeclaredAiConfigEnvNames(rootDir)
 } = {}) {
-    const records = files || walkMjsFiles(path.join(rootDir, SCAN_ROOT_REL))
+    const records = files || walkAgentOsMjsFiles(rootDir)
         .map(abs => ({
             file  : normalizeFile(path.relative(rootDir, abs)),
             source: fs.readFileSync(abs, 'utf8')
@@ -2932,7 +2988,7 @@ async function main() {
     const arg = process.argv[2];
 
     if (arg === '--help' || arg === '-h') {
-        console.log('Usage: node ai/scripts/lint/lint-config-template-ssot.mjs');
+        console.log('Usage: node scripts/lint/lint-config-template-ssot.mjs');
         console.log('');
         console.log('Fails when a config.template.mjs leaf default reads process.env inline');
         console.log('(outside the BASELINE), when a BASELINE row no longer matches a violation,');

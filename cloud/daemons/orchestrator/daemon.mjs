@@ -44,7 +44,7 @@ import {
     assertPlaneMemberCoherence,
     collectPlaneMembers,
     resolvePlaneDataRoot
-} from '../../planeConfig.mjs';
+} from '../../../shared/planeConfig.mjs';
 
 const ORCHESTRATOR_DAEMON_PATH_TAIL = 'ai/daemons/orchestrator/daemon.mjs';
 

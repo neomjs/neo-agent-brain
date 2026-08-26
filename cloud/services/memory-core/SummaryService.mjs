@@ -6,7 +6,7 @@ import Base                                                     from 'neo.mjs/sr
 import StorageRouter                                            from './managers/StorageRouter.mjs';
 import logger                                                   from '../../mcp/server/memory-core/logger.mjs';
 import RequestContextService, {SHARED_USER_ID, normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
-import {TRUST_TIERS, TRUST_TIER_ORDER}                          from '../../graph/identityRoots.mjs';
+import {TRUST_TIERS, TRUST_TIER_ORDER}                          from '../../../shared/graph/identityRoots.mjs';
 
 /**
  * @summary Service for handling deleting, listing, and querying session summaries.

@@ -2,9 +2,9 @@ import os                                                          from 'os';
 import path                                                        from 'path';
 import {fileURLToPath}                                             from 'url';
 import ConfigProvider, {leaf}                                      from './ConfigProvider.mjs';
-import {parseEmbeddingProviderEnv}                                 from './embeddingProviders.mjs';
-import {EMBEDDING_SAFE_PROCESSING_LIMIT_TOKENS}                    from './embeddingSafeBand.mjs';
-import {CANONICAL_PLANE_ID, parsePlaneIdEnv, resolvePlaneDataRoot} from './planeConfig.mjs';
+import {parseEmbeddingProviderEnv}                                 from './shared/embeddingProviders.mjs';
+import {EMBEDDING_SAFE_PROCESSING_LIMIT_TOKENS}                    from './shared/embeddingSafeBand.mjs';
+import {CANONICAL_PLANE_ID, parsePlaneIdEnv, resolvePlaneDataRoot} from './shared/planeConfig.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);

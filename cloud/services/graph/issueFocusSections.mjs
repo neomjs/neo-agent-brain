@@ -4,7 +4,7 @@ import path                                  from 'path';
 import {Memory_Config as aiConfig}           from '../../services.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
 import logger                                from '../../mcp/server/memory-core/logger.mjs';
-import {IDENTITIES}                          from '../../graph/identityRoots.mjs';
+import {IDENTITIES}                          from '../../../shared/graph/identityRoots.mjs';
 
 /**
  * @module ai/services/graph/issueFocusSections

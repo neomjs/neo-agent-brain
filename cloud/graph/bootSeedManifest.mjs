@@ -1,6 +1,6 @@
 import {createHash} from 'crypto';
 
-import {IDENTITIES} from './identityRoots.mjs';
+import {IDENTITIES} from '../../shared/graph/identityRoots.mjs';
 
 /**
  * @module ai/graph/bootSeedManifest

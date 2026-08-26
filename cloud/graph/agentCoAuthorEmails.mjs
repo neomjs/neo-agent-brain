@@ -1,4 +1,4 @@
-import {IDENTITIES} from './identityRoots.mjs';
+import {IDENTITIES} from '../../shared/graph/identityRoots.mjs';
 
 /**
  * @summary The `githubLogin → commit email` map behind the pre-push co-author trailer check.

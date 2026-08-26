@@ -4,7 +4,7 @@ import crypto                        from 'crypto';
 import fs                            from 'fs';
 import path                          from 'path';
 import {fileURLToPath}               from 'url';
-import {resolvePlaneDataRoot}        from '../planeConfig.mjs';
+import {resolvePlaneDataRoot}        from '../../shared/planeConfig.mjs';
 import {validateComputedRouteResult} from '../services/graph/computedRouteResult.mjs';
 
 /*

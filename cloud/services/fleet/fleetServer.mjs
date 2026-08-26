@@ -17,7 +17,7 @@ import {
     assertPlaneMemberCoherence,
     collectPlaneMembers,
     resolvePlaneDataRoot
-}                                          from '../../planeConfig.mjs';
+}                                          from '../../../shared/planeConfig.mjs';
 import AuthService                from '../../mcp/server/shared/services/AuthService.mjs';
 import RequestContextService      from '../../mcp/server/shared/services/RequestContextService.mjs';
 import TransportService           from '../../mcp/server/shared/services/TransportService.mjs';

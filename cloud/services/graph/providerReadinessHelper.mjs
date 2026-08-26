@@ -3,7 +3,7 @@ import {execFile}                        from 'child_process';
 import os                                from 'os';
 import path                              from 'path';
 import aiConfig                          from '../../mcp/server/memory-core/config.mjs';
-import {isEmbeddingContextBelowSafeBand} from '../../embeddingSafeBand.mjs';
+import {isEmbeddingContextBelowSafeBand} from '../../../shared/embeddingSafeBand.mjs';
 import {PROVIDER_LANE_ENDPOINT_CONTRACT} from '../../../scripts/diagnostics/providerLaneComposition.mjs';
 import logger                            from '../../mcp/server/memory-core/logger.mjs';
 import {

@@ -34,7 +34,7 @@ import {
 import {acquireMessageDrainLock}        from '../../../daemons/message/drainLock.mjs';
 import {getMissingMessageWalLeaves}     from '../../../services/memory-core/helpers/messageWalStore.mjs';
 import {LOOPBACK_PROBE_HEALTH_KEY}      from '../../../services/memory-core/helpers/loopbackFamilyProbe.mjs';
-import {TRUST_TIERS}                    from '../../../graph/identityRoots.mjs';
+import {TRUST_TIERS}                    from '../../../../shared/graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId}   from '../../../graph/normalizeAgentIdentityNodeId.mjs';
 import ConfigBase, {PLANE_MEMBER_PATHS} from './configBase.mjs';
 import {readBackgroundDeliveryState}    from '../../../services/memory-core/MailboxService.mjs';

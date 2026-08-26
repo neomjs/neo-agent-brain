@@ -13,7 +13,7 @@ import logger         from '../../mcp/server/memory-core/logger.mjs';
 import OllamaProvider from '../../provider/Ollama.mjs';
 import {
     isEmbeddingContextBelowSafeBand
-}                           from '../../embeddingSafeBand.mjs';
+}                           from '../../../shared/embeddingSafeBand.mjs';
 import {
     withLmsEmbeddingInputSuffix
 }                           from '../shared/vector/lmsEmbeddingInputSuffix.mjs';

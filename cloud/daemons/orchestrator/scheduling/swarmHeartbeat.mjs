@@ -1,4 +1,4 @@
-import {IDENTITIES}                   from '../../../graph/identityRoots.mjs';
+import {IDENTITIES}                   from '../../../../shared/graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../../graph/normalizeAgentIdentityNodeId.mjs';
 
 /**

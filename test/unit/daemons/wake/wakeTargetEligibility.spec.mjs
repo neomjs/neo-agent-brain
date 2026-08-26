@@ -1,6 +1,6 @@
 import {test, expect} from '@playwright/test';
 
-import {IDENTITIES}   from '../../../../cloud/graph/identityRoots.mjs';
+import {IDENTITIES}   from '../../../../shared/graph/identityRoots.mjs';
 
 import {
     identityParticipationById,

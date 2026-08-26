@@ -21,7 +21,7 @@ import {
     readWalMessagesByIds,
     readPendingMessageWalRecords
 } from './helpers/messageWalStore.mjs';
-import {IDENTITIES}                   from '../../graph/identityRoots.mjs';
+import {IDENTITIES}                   from '../../../shared/graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
 import {SQLITE_IN_CLAUSE_BATCH_SIZE}  from '../../graph/storage/constants.mjs';
 import {resolveResidentFamilyById}    from '../graph/agentFamilyResolution.mjs';

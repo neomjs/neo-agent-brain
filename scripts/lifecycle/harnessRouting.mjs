@@ -10,7 +10,7 @@
  * @see ai/scripts/lifecycle/resumeHarness.mjs
  * @see ai/daemons/wake/daemon.mjs
  */
-import {IDENTITIES}                   from '../../cloud/graph/identityRoots.mjs';
+import {IDENTITIES}                   from '../../shared/graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../cloud/graph/normalizeAgentIdentityNodeId.mjs';
 import {resolveResidentFamily}        from '../../cloud/services/graph/agentFamilyResolution.mjs';
 import {applyHarnessMetadataDefaults} from '../../daemons/wake/hostHarnessMetadata.mjs';

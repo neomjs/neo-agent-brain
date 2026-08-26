@@ -1,0 +1,62 @@
+name: Identity Engine Coherence Lint
+
+# The engine fact for a resident is hand-maintained in three independent files with no propagation
+# between them. They may be stale TOGETHER — currency is a human judgement this guard does not make
+# — but they may not DISAGREE, because a disagreement means one published surface contradicts
+# another and nothing notices. That is what happened before this lint existed.
+#
+# Path-filtered to the three places plus the guard itself: a PR that touches none of them cannot
+# introduce this drift, so running it there would be noise.
+#
+# Received from neomjs/neo with the subject it polices. Three of the four watched paths changed
+# shape in the move and one is new:
+#   ai/graph/identityRoots.mjs      -> shared/graph/identityRoots.mjs
+#     (pure frozen data, zero imports, read by both planes — ADR 0040 §2.2's plane-neutral package;
+#      it sat in cloud/ at first, which forced every Host-Edge reader across the forbidden direction)
+#   ai/scripts/fleet/deriveFleetRoster.mjs -> scripts/fleet/deriveFleetRoster.mjs
+#   ai/scripts/lint/lint-identity-engine-coherence.mjs -> scripts/lint/...
+#   scripts/fleet/cockpitSources.mjs  (new) — the Host-Edge vocabulary twin the roster derivation
+#     reads. The split created a third realm and the vocabulary's own design gives each realm a twin.
+# learn/agentos/ModelStats.md keeps its path, having arrived with the guide receive.
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - 'shared/graph/identityRoots.mjs'
+      - 'learn/agentos/ModelStats.md'
+      - 'scripts/fleet/deriveFleetRoster.mjs'
+      - 'scripts/fleet/cockpitSources.mjs'
+      - 'scripts/lint/lint-identity-engine-coherence.mjs'
+      - '.github/workflows/identity-engine-coherence-lint.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'shared/graph/identityRoots.mjs'
+      - 'learn/agentos/ModelStats.md'
+      - 'scripts/fleet/deriveFleetRoster.mjs'
+      - 'scripts/fleet/cockpitSources.mjs'
+      - 'scripts/lint/lint-identity-engine-coherence.mjs'
+      - '.github/workflows/identity-engine-coherence-lint.yml'
+
+concurrency:
+  group: identity-engine-coherence-lint-${{ github.run_attempt == '1' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      # The lint reads frozen data and markdown and imports nothing external, so it needs no install.
+      # Adding one would make this workflow fail on an unrelated dependency problem and report it as
+      # identity drift.
+      - name: Lint identity engine coherence
+        run: node scripts/lint/lint-identity-engine-coherence.mjs

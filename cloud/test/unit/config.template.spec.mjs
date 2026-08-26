@@ -8,7 +8,7 @@ import 'neo.mjs/src/core/_export.mjs';
 import ConfigProvider, {createConfigProxy, leaf} from '../../ConfigProvider.mjs';
 import RootConfigBase                            from '../../configBase.mjs';
 import {CHROMA_TEST_DATABASE}                    from '../../services/shared/vector/chromaTestIsolation.mjs';
-import Env                                       from '../../Env.mjs';
+import Env                                       from '../../../shared/Env.mjs';
 
 test.describe('Tier 1 Config Immutability', () => {
     let Config;

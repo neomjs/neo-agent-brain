@@ -16,7 +16,7 @@ setup({
 import {test, expect}           from '@playwright/test';
 import Neo                      from 'neo.mjs/src/Neo.mjs';
 import * as core                from 'neo.mjs/src/core/_export.mjs';
-import {IDENTITIES}                from '../../../../graph/identityRoots.mjs';
+import {IDENTITIES}                from '../../../../../shared/graph/identityRoots.mjs';
 import {resolveIdentityDisplay}    from '../../../../services/fleet/resolveIdentityDisplay.mjs';
 import {resolveResidentFamilyById} from '../../../../services/graph/agentFamilyResolution.mjs';
 

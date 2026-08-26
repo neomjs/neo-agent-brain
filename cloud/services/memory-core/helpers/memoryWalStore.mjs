@@ -1,6 +1,6 @@
 import fs                                  from 'fs/promises';
 import path                                from 'path';
-import {UNKNOWN_PLANE_ID, isOpaquePlaneId} from '../../../planeConfig.mjs';
+import {UNKNOWN_PLANE_ID, isOpaquePlaneId} from '../../../../shared/planeConfig.mjs';
 import {withAppendLock}                    from './walAppendLock.mjs';
 
 /**

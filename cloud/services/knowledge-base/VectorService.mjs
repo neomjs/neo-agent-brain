@@ -7,9 +7,9 @@ import mcConfig                from '../../mcp/server/memory-core/config.mjs';
 import {isProviderTimeoutCode} from '../../provider/createTimeoutError.mjs';
 import Base                    from 'neo.mjs/src/core/Base.mjs';
 import {IMPLEMENTED_EMBEDDING_PROVIDERS, resolveEmbeddingProviderModel}
-                              from '../../embeddingProviders.mjs';
+                              from '../../../shared/embeddingProviders.mjs';
 import {resolveEmbeddingAdmissionBand}
-                              from '../../embeddingSafeBand.mjs';
+                              from '../../../shared/embeddingSafeBand.mjs';
 import {
     buildEmbeddingInputHeader,
     buildEmbeddingInputText

@@ -1,6 +1,6 @@
 import fs       from 'fs/promises';
 import path     from 'path';
-import Env      from './Env.mjs';
+import Env      from '../shared/Env.mjs';
 import Provider from 'neo.mjs/src/state/Provider.mjs';
 
 /**

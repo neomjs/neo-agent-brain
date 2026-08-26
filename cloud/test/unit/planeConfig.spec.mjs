@@ -17,7 +17,7 @@ import {
     isOpaquePlaneId,
     parsePlaneIdEnv,
     resolvePlaneDataRoot
-} from '../../planeConfig.mjs';
+} from '../../../shared/planeConfig.mjs';
 import ConfigBase, {PLANE_MEMBER_PATHS} from '../../configBase.mjs';
 import McConfigBase                     from '../../mcp/server/memory-core/configBase.mjs';
 import NlConfigBase, {

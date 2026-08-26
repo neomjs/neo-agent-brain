@@ -2,7 +2,7 @@ import os                     from 'os';
 import path                   from 'path';
 import ConfigProvider, {leaf} from '../../../ConfigProvider.mjs';
 import {fileURLToPath}        from 'url';
-import {resolvePlaneDataRoot} from '../../../planeConfig.mjs';
+import {resolvePlaneDataRoot} from '../../../../shared/planeConfig.mjs';
 import {
     MEMORY_CORE_GRAPH_DB_ENV,
     TURN_PRESENCE_DEFAULTS,

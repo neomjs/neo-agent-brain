@@ -16,7 +16,7 @@ setup({
 import {test, expect}                              from '@playwright/test';
 import Neo                                         from 'neo.mjs/src/Neo.mjs';
 import * as core                                   from 'neo.mjs/src/core/_export.mjs';
-import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../../../graph/identityRoots.mjs';
+import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../../../../shared/graph/identityRoots.mjs';
 import MemoryService                               from '../../../../services/memory-core/MemoryService.mjs';
 import StorageRouter                               from '../../../../services/memory-core/managers/StorageRouter.mjs';
 import RequestContextService                       from '../../../../mcp/server/shared/services/RequestContextService.mjs';

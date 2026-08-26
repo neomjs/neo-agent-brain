@@ -25,7 +25,7 @@ import {
     resolveIdentityForFamily,
     revalidationSweep
 } from '../../../../scripts/lifecycle/revalidationSweep.mjs';
-import {IDENTITIES} from '../../../../cloud/graph/identityRoots.mjs';
+import {IDENTITIES} from '../../../../shared/graph/identityRoots.mjs';
 
 test.describe('Neo.ai.scripts.revalidationSweep', () => {
     test.describe('parseArgs (commander-backed)', () => {

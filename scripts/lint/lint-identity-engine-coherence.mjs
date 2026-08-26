@@ -79,7 +79,7 @@
 import fs                 from 'node:fs';
 import path               from 'node:path';
 import {fileURLToPath}    from 'node:url';
-import {IDENTITIES}       from '../../cloud/graph/identityRoots.mjs';
+import {IDENTITIES}       from '../../shared/graph/identityRoots.mjs';
 import {ENGINE_TAG_BY_ID} from '../fleet/deriveFleetRoster.mjs';
 
 /** Version-ish tokens: `4.8`, `5`, `3.1`, `k3`. Bare years are excluded — a date is not a version. */

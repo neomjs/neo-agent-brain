@@ -8,7 +8,7 @@ import {
     assertPlaneMemberCoherence,
     collectPlaneMembers,
     resolvePlaneDataRoot
-} from '../../cloud/planeConfig.mjs';
+} from '../../shared/planeConfig.mjs';
 import Tier1ConfigBase, {PLANE_MEMBER_PATHS as TIER1_PLANE_MEMBER_PATHS} from '../../cloud/configBase.mjs';
 import HeapObservationReporterService                                    from '../../cloud/mcp/server/shared/services/HeapObservationReporterService.mjs';
 import ResolvedConfigReporterService                                     from '../../cloud/mcp/server/shared/services/ResolvedConfigReporterService.mjs';

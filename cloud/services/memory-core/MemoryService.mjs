@@ -30,7 +30,7 @@ import {isCollectionQuarantined}                                from './helpers/
 import {buildChatModel}                                         from '../../provider/buildChatModel.mjs';
 import aiConfig                                                 from '../../mcp/server/memory-core/config.mjs';
 import RequestContextService, {SHARED_USER_ID, normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
-import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER}              from '../../graph/identityRoots.mjs';
+import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER}              from '../../../shared/graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId}                           from '../../graph/normalizeAgentIdentityNodeId.mjs';
 
 import {CONCEPT_EXPANSION_EDGE_TYPES, MEMORY_TERMINAL_EDGE_TYPES, enrichWithConceptWalk} from '../graph/conceptAnchoredRetrieval.mjs';

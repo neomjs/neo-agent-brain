@@ -4,7 +4,7 @@ import {
     resolveTargets,
     VALID_TARGET_SOURCES
 } from '../../../../../daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
-import {IDENTITIES} from '../../../../../graph/identityRoots.mjs';
+import {IDENTITIES} from '../../../../../../shared/graph/identityRoots.mjs';
 
 test.describe('orchestrator/scheduling/swarmHeartbeat (#11859 / Epic #11831)', () => {
     test('returns a periodic-heartbeat trigger when the interval has elapsed since lastRunAt', () => {

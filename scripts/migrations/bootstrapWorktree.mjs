@@ -126,7 +126,7 @@ import path            from 'path';
 import {fileURLToPath} from 'url';
 import {promisify}     from 'util';
 
-import {IDENTITIES}                                                                    from '../../cloud/graph/identityRoots.mjs';
+import {IDENTITIES}                                                                    from '../../shared/graph/identityRoots.mjs';
 import {rosterEmailForLogin}                                                           from '../../cloud/graph/agentCoAuthorEmails.mjs';
 import {initClaudeSettings, listServersWithTemplates, materializeServerConfigTemplate} from '../setup/initServerConfigs.mjs';
 

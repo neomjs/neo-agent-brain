@@ -46,7 +46,7 @@
 
 import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {IDENTITIES}    from '../../graph/identityRoots.mjs';
+import {IDENTITIES}    from '../../../shared/graph/identityRoots.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 

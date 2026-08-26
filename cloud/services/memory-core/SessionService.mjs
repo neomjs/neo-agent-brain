@@ -18,7 +18,7 @@ import {
 import crypto                                      from 'crypto';
 import GraphService                                from './GraphService.mjs';
 import {capSessionsForSweep}                       from './capSessionsForSweep.mjs';
-import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../graph/identityRoots.mjs';
+import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../../shared/graph/identityRoots.mjs';
 
 import StorageRouter from './managers/StorageRouter.mjs';
 import Json          from 'neo.mjs/src/util/Json.mjs';

@@ -1,4 +1,4 @@
-import {isEmbeddingContextBelowSafeBand} from './embeddingSafeBand.mjs';
+import {isEmbeddingContextBelowSafeBand} from '../shared/embeddingSafeBand.mjs';
 
 /**
  * @module ai/providerLaneLiveShape

@@ -22,7 +22,7 @@ import * as authorityWire    from '../../cloud/services/fleet/fleetWireMethods.m
 
 import * as twinHarness from '../../../apps/agentos/config/harnessTypes.mjs';
 import * as twinMcp     from '../../../apps/agentos/config/mcpServers.mjs';
-import * as twinSources from '../../../apps/agentos/config/cockpitSources.mjs';
+import * as twinSources from '../fleet/cockpitSources.mjs';
 import * as twinWire    from '../../../apps/agentos/config/fleetWireMethods.mjs';
 
 import process         from 'node:process';

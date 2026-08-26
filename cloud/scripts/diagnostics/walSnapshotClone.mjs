@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import path   from 'node:path';
 
-import {CANONICAL_PLANE_ID, assertPlaneCoherence} from '../../planeConfig.mjs';
+import {CANONICAL_PLANE_ID, assertPlaneCoherence} from '../../../shared/planeConfig.mjs';
 
 /**
  * @module ai/scripts/diagnostics/walSnapshotClone

@@ -1,4 +1,4 @@
-import {IDENTITIES}                from '../../graph/identityRoots.mjs';
+import {IDENTITIES}                from '../../../shared/graph/identityRoots.mjs';
 import {resolveResidentFamilyById} from '../graph/agentFamilyResolution.mjs';
 
 /**

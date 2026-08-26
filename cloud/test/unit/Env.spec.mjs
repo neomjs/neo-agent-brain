@@ -11,7 +11,7 @@ setup({
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
-import Env            from '../../Env.mjs';
+import Env            from '../../../shared/Env.mjs';
 
 test.describe('Neo.ai.Env', () => {
     let warns;

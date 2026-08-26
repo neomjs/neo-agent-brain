@@ -3,7 +3,7 @@ import {EventEmitter}                           from 'node:events';
 import fs                                       from 'node:fs';
 import path                                     from 'node:path';
 import {load as loadYaml}                       from 'js-yaml';
-import {EMBEDDING_SAFE_PROCESSING_LIMIT_TOKENS} from '../../../../cloud/embeddingSafeBand.mjs';
+import {EMBEDDING_SAFE_PROCESSING_LIMIT_TOKENS} from '../../../../shared/embeddingSafeBand.mjs';
 
 import {
     analyzeProviderLaneComposition,

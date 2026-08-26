@@ -1,6 +1,6 @@
 import {buildHydrationIndex} from '../../graph/identityHydration.mjs';
 import {migrateResident}     from '../../graph/identityRootsMigration.mjs';
-import {IDENTITIES}          from '../../graph/identityRoots.mjs';
+import {IDENTITIES}          from '../../../shared/graph/identityRoots.mjs';
 
 /**
  * @module ai/services/graph/agentFamilyResolution

@@ -3,7 +3,7 @@ import {
     IMPLEMENTED_EMBEDDING_PROVIDERS,
     parseEmbeddingProviderEnv,
     resolveEmbeddingProviderModel
-} from '../../embeddingProviders.mjs';
+} from '../../../shared/embeddingProviders.mjs';
 
 // Pure module — no Neo runtime, no config singleton; the aiConfig tree is a plain stub. Mirrors
 // planeConfig.spec.mjs (same config-legible module class).

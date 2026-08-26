@@ -16,7 +16,7 @@ setup({
 import {test, expect}                                                                  from '@playwright/test';
 import Neo                                                                             from 'neo.mjs/src/Neo.mjs';
 import * as core                                                                       from 'neo.mjs/src/core/_export.mjs';
-import {TRUST_TIERS}                                                                   from '../../../../graph/identityRoots.mjs';
+import {TRUST_TIERS}                                                                   from '../../../../../shared/graph/identityRoots.mjs';
 import {createContentTrustSummary, projectAuthoredNodeTrust, projectConversationTrust} from '../../../../services/github-workflow/shared/conversationTrust.mjs';
 
 /**

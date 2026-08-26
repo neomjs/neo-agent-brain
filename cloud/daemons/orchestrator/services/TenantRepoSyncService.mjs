@@ -14,7 +14,7 @@ import {
 import {createBoundedRetryGate}   from '../../../services/shared/boundedRetryGate.mjs';
 import {writeFileAtomic}          from '../../../services/shared/atomicFileWrite.mjs';
 import {buildEmbeddingProbeBlock, buildEmbeddingProbeInput, EMBEDDING_PROBE_BAND_FRACTION, projectProbeCoverage} from '../../../services/shared/embeddingProbe.mjs';
-import {resolveEmbeddingAdmissionBand}                     from '../../../embeddingSafeBand.mjs';
+import {resolveEmbeddingAdmissionBand}                     from '../../../../shared/embeddingSafeBand.mjs';
 // The filter below and the codes it admits are one contract. Importing the pattern from the module
 // that PRODUCES bounded codes keeps a re-declared copy from drifting into a pair that separately
 // look right — the producer widening a code the filter still rejects is exactly this ticket's defect.

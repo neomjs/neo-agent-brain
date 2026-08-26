@@ -2,7 +2,7 @@ import os                                        from 'os';
 import path                                      from 'path';
 import ConfigProvider, {createConfigProxy, leaf} from '../../../ConfigProvider.mjs';
 import {fileURLToPath}                           from 'url';
-import {resolvePlaneDataRoot}                    from '../../../planeConfig.mjs';
+import {resolvePlaneDataRoot}                    from '../../../../shared/planeConfig.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);

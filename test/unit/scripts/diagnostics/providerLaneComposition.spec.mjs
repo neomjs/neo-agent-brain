@@ -6,7 +6,7 @@ import {load as loadYaml} from 'js-yaml';
 import {
     EMBEDDING_SAFE_PROCESSING_LIMIT_TOKENS,
     isEmbeddingContextBelowSafeBand
-} from '../../../../cloud/embeddingSafeBand.mjs';
+} from '../../../../shared/embeddingSafeBand.mjs';
 import {
     PROVIDER_LANE_COMPOSITION_SCHEMA_VERSION,
     PROVIDER_LANE_DEPLOYMENT_INPUT_ENVS,

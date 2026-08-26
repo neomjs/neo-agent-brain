@@ -7,7 +7,7 @@ import Base                                      from 'neo.mjs/src/core/Base.mjs
 import { Memory_StorageRouter as StorageRouter } from '../../services.mjs';
 import { Memory_GraphService as GraphService }   from '../../services.mjs';
 import logger                                    from '../../mcp/server/memory-core/logger.mjs';
-import {IDENTITIES}                              from '../../graph/identityRoots.mjs';
+import {IDENTITIES}                              from '../../../shared/graph/identityRoots.mjs';
 import {CORPUS_PROJECTION_OWNER}                 from '../graph/corpusProjectionContract.mjs';
 import {
     normalizeDiscussionRoutingProjection as normalizeSourceDiscussionRoutingProjection
