@@ -44,21 +44,6 @@ const WORKFLOWS_DIR = path.join(ROOT_DIR, '.github/workflows');
  * `source` marks whether the surface is imported from the lint (SSOT) or declared here.
  */
 const REGISTRY = Object.freeze({
-    'aiconfig-antipattern-lint.yml': {
-        scriptRel: 'buildScripts/util/check-aiconfig-antipatterns.mjs',
-        source   : 'declared',
-        surface  : ['ai/**/*.mjs']
-    },
-    'aiconfig-test-mutation-lint.yml': {
-        scriptRel: 'buildScripts/util/check-aiconfig-test-mutation.mjs',
-        source   : 'declared',
-        surface  : ['test/**/*.mjs']
-    },
-    'atomic-write-shape-lint.yml': {
-        scriptRel: 'buildScripts/util/check-atomic-write-shape.mjs',
-        source   : 'declared',
-        surface  : ['ai/**/*.mjs']
-    },
     'script-plane-lint.yml': {
         scriptRel: 'ai/scripts/lint/lint-script-plane.mjs',
         source   : 'imported',

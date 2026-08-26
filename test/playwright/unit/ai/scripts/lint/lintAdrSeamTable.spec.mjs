@@ -93,19 +93,6 @@ test.describe('ai.scripts.lint.lint-adr-seam-table (#14525)', () => {
         fs.rmSync(dir, {recursive: true, force: true});
     });
 
-    test('checkSeamTable composes the explicit Engine and Brain ADR roots', () => {
-        const
-            brainDir  = fixtureDir({'0001-brain.md': 'x'}),
-            engineDir = fixtureDir({'0002-comp.md': TABLE(['0001', '0002'])}),
-            result    = checkSeamTable([engineDir, brainDir]);
-
-        expect(result.ok).toBe(true);
-        expect(result.missingRows).toEqual([]);
-        expect(result.ghostRows).toEqual([]);
-        fs.rmSync(brainDir,  {recursive: true, force: true});
-        fs.rmSync(engineDir, {recursive: true, force: true})
-    });
-
     test('checkSeamTable fails with a MISSING row when a present ADR has no table entry', () => {
         const dir = fixtureDir({
             '0001-a.md'   : 'x',

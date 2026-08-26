@@ -43,31 +43,6 @@ const MATERIALIZED_SERVER_IMPORTS = new Set([
 ]);
 const ENGINE_LINK_PROJECTIONS = Object.freeze(['apps', 'examples', 'harness', 'resources', 'src']);
 const ENGINE_COPY_PROJECTIONS = Object.freeze(['buildScripts']);
-const ENGINE_COPY_OWNED_PATHS = Object.freeze({
-    buildScripts: Object.freeze([
-        'util/check-aiconfig-antipatterns.mjs',
-        'util/check-aiconfig-test-mutation.mjs',
-        'util/check-atomic-write-shape.mjs'
-    ])
-});
-
-/**
- * @summary Lists every file inside a projection using normalized relative paths.
- * @param {String} root Projection root.
- * @param {String} [current=root] Current recursive directory.
- * @returns {String[]}
- */
-function listProjectionFiles(root, current = root) {
-    if (!fs.existsSync(current)) return [];
-
-    return fs.readdirSync(current, {withFileTypes: true}).flatMap(entry => {
-        const absolute = path.join(current, entry.name);
-
-        return entry.isDirectory()
-            ? listProjectionFiles(root, absolute)
-            : [path.relative(root, absolute).split(path.sep).join('/')]
-    })
-}
 
 /**
  * @summary Resolves the installed Engine package using Node's package-resolution algorithm.
@@ -155,8 +130,7 @@ export function materializeEngineDependency({
             projectionPath = path.join(root, projection),
             targetPath     = path.join(engineRoot, projection),
             markerPath     = path.join(projectionPath, '.neo-engine-projection.json'),
-            revision       = resolveEngineRevision(root),
-            ownedPaths     = new Set(ENGINE_COPY_OWNED_PATHS[projection] ?? []);
+            revision       = resolveEngineRevision(root);
 
         if (!fs.existsSync(targetPath)) {
             throw new Error(`Engine dependency is missing projected tree '${projection}' at ${targetPath}`)
@@ -182,43 +156,19 @@ export function materializeEngineDependency({
         }
 
         if (status) {
-            if (!status.isDirectory()) {
+            if (!status.isDirectory() || !fs.existsSync(markerPath)) {
                 throw new Error(`Refusing to replace existing non-projection Engine path: ${projectionPath}`)
             }
 
-            if (!fs.existsSync(markerPath)) {
-                const unexpected = listProjectionFiles(projectionPath)
-                    .filter(file => !ownedPaths.has(file));
+            const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
 
-                if (unexpected.length > 0) {
-                    throw new Error(
-                        `Refusing to overlay Engine projection '${projection}' onto unowned files: ` +
-                        unexpected.join(', ')
-                    )
-                }
-            } else {
-                const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-
-                if (marker.revision === revision) {
-                    continue
-                }
-
-                listProjectionFiles(projectionPath)
-                    .filter(file => !ownedPaths.has(file))
-                    .forEach(file => fs.rmSync(path.join(projectionPath, file), {force: true}))
+            if (marker.revision !== revision) {
+                throw new Error(
+                    `Engine projection '${projection}' is pinned to '${marker.revision}', expected '${revision}'. ` +
+                    'Remove this ignored projection and rerun prepare.'
+                )
             }
 
-            fs.cpSync(targetPath, projectionPath, {
-                recursive: true,
-                force    : true,
-                filter(source) {
-                    const relative = path.relative(targetPath, source).split(path.sep).join('/');
-
-                    return relative === '' || !ownedPaths.has(relative)
-                }
-            });
-            fs.writeFileSync(markerPath, JSON.stringify({revision}, null, 4) + '\n');
-            created.push(projection);
             continue
         }
 

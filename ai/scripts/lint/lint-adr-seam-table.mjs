@@ -20,34 +20,18 @@ import {fileURLToPath} from 'url';
 const
     __filename    = fileURLToPath(import.meta.url),
     __dirname     = path.dirname(__filename),
-    AGENTOS_ROOT  = process.env.NEO_AGENTOS_RUNTIME_ROOT
-        ? path.resolve(process.env.NEO_AGENTOS_RUNTIME_ROOT)
-        : path.resolve(__dirname, '../../..'),
-    TARGET_ROOT   = process.env.NEO_TARGET_REPO_ROOT
-        ? path.resolve(process.env.NEO_TARGET_REPO_ROOT)
-        : AGENTOS_ROOT,
-    DECISIONS_DIRS = [...new Set([TARGET_ROOT, AGENTOS_ROOT])]
-        .map(root => path.join(root, 'learn/agentos/decisions'))
-        .filter(dir => fs.existsSync(dir)),
+    ROOT_DIR      = path.resolve(__dirname, '../../..'),
+    DECISIONS_DIR = path.join(ROOT_DIR, 'learn/agentos/decisions'),
     TABLE_MARKER  = '## §2 The Seam Table';
 
 /**
- * @summary Normalizes one decision directory or a cross-repository directory set.
- * @param {String|String[]} dirs
- * @returns {String[]}
- */
-function normalizeDecisionDirs(dirs) {
-    return Array.isArray(dirs) ? dirs : [dirs]
-}
-
-/**
  * @summary Lists the 4-digit ids of all present ADR files.
- * @param {String|String[]} [dirs=DECISIONS_DIRS] Decision directories across the target and Brain runtime.
+ * @param {String} [dir=DECISIONS_DIR] Decisions directory.
  * @returns {String[]} Sorted unique ids, e.g. `['0001', …]`.
  */
-export function listPresentAdrIds(dirs = DECISIONS_DIRS) {
+export function listPresentAdrIds(dir = DECISIONS_DIR) {
     return [...new Set(
-        normalizeDecisionDirs(dirs).flatMap(dir => fs.readdirSync(dir))
+        fs.readdirSync(dir)
             .map(name => /^(\d{4})-.*\.md$/.exec(name)?.[1])
             .filter(Boolean)
     )].sort()
@@ -55,22 +39,20 @@ export function listPresentAdrIds(dirs = DECISIONS_DIRS) {
 
 /**
  * @summary Finds the composition ADR by its seam-table content marker, enforcing marker uniqueness.
- * @param {String|String[]} [dirs=DECISIONS_DIRS] Decision directories across the target and Brain runtime.
+ * @param {String} [dir=DECISIONS_DIR] Decisions directory.
  * @returns {{file: String, content: String, ambiguousFiles: String[]}|null} null when no marker file
  *          exists; `ambiguousFiles` lists every match when more than one file carries the marker.
  */
-export function findCompositionAdr(dirs = DECISIONS_DIRS) {
+export function findCompositionAdr(dir = DECISIONS_DIR) {
     const matches = [];
 
-    for (const dir of normalizeDecisionDirs(dirs)) {
-        for (const name of fs.readdirSync(dir).sort()) {
-            if (!/\.md$/.test(name)) continue;
+    for (const name of fs.readdirSync(dir).sort()) {
+        if (!/\.md$/.test(name)) continue;
 
-            const content = fs.readFileSync(path.join(dir, name), 'utf8');
+        const content = fs.readFileSync(path.join(dir, name), 'utf8');
 
-            if (content.includes(TABLE_MARKER)) {
-                matches.push({file: name, content})
-            }
+        if (content.includes(TABLE_MARKER)) {
+            matches.push({file: name, content})
         }
     }
 
@@ -101,19 +83,19 @@ export function listSeamTableRowIds(content) {
 
 /**
  * @summary Runs the seam-table check: missing rows, ghost rows, duplicate rows, marker ambiguity.
- * @param {String|String[]} [dirs=DECISIONS_DIRS] Decision directories across the target and Brain runtime.
+ * @param {String} [dir=DECISIONS_DIR] Decisions directory.
  * @returns {{ok: Boolean, missingRows: String[], ghostRows: String[], duplicateRows: String[],
  *            ambiguousFiles: String[], file: String|null}}
  */
-export function checkSeamTable(dirs = DECISIONS_DIRS) {
-    const composition = findCompositionAdr(dirs);
+export function checkSeamTable(dir = DECISIONS_DIR) {
+    const composition = findCompositionAdr(dir);
 
     if (!composition) {
         return {ok: false, missingRows: [], ghostRows: [], duplicateRows: [], ambiguousFiles: [], file: null}
     }
 
     const
-        present       = listPresentAdrIds(dirs),
+        present       = listPresentAdrIds(dir),
         rows          = listSeamTableRowIds(composition.content),
         rowSet        = new Set(rows),
         presentSet    = new Set(present),

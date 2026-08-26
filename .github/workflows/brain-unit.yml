@@ -46,28 +46,4 @@ jobs:
                   npm run test-unit --
                   test/playwright/unit/ai/AgentOrchestrator.spec.mjs
                   test/playwright/unit/ai/Env.spec.mjs
-                  test/playwright/unit/ai/scripts/setup/initServerConfigs.spec.mjs
-                  test/playwright/unit/ai/buildScripts/util/check-aiconfig-antipatterns.spec.mjs
-                  test/playwright/unit/ai/buildScripts/util/check-aiconfig-test-mutation.spec.mjs
-                  test/playwright/unit/ai/buildScripts/util/check-atomic-write-shape.spec.mjs
-                  test/playwright/unit/ai/scripts/lint/lintAdrSeamTable.spec.mjs
-                  test/playwright/unit/ai/scripts/lint/checkFrontDoorFingerprint.spec.mjs
-                  test/playwright/unit/ai/scripts/lint/lintTreeJson.spec.mjs
-                  test/playwright/unit/ai/scripts/lint/lintGuardCiParity.spec.mjs
-                  test/playwright/unit/ai/scripts/lint/lintWorkflowScanRootParity.spec.mjs
                   test/playwright/unit/harness/terminateDaemon.spec.mjs
-                  test/playwright/unit/hooks
-                  test/playwright/unit/test/ConfigTemplateResolver.spec.mjs
-                  test/playwright/unit/test/assertSustainedHealth.spec.mjs
-                  test/playwright/unit/test/chromaProcess.spec.mjs
-
-            - name: Parse relocated non-default specs
-              run: >-
-                  node --check
-                  test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs
-                  &&
-                  node --check
-                  test/playwright/mcp/github-workflow/OpenapiIssues.spec.mjs
-                  &&
-                  node --check
-                  test/playwright/update-chain/UpdateChainGoal.spec.mjs

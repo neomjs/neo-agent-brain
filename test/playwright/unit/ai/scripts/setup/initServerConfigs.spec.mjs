@@ -29,7 +29,7 @@ test.describe('initServerConfigs — template drift detection (#10815)', () => {
     let initConfigs, projectSourceShape, projectShape, projectConfigDefaultsShape, detectDrift,
         detectServerOverlayDrift, materializeServerConfigTemplate, listServersWithTemplates,
         hasConfigTemplate, collectStaleOverlayFindings, formatStaleOverlayDriftItems,
-        createConfigInitializationOutcome, materializeEngineDependency;
+        createConfigInitializationOutcome;
     let workRoot;
 
     function recordingLogger() {
@@ -77,8 +77,7 @@ test.describe('initServerConfigs — template drift detection (#10815)', () => {
             hasConfigTemplate,
             collectStaleOverlayFindings,
             formatStaleOverlayDriftItems,
-            createConfigInitializationOutcome,
-            materializeEngineDependency
+            createConfigInitializationOutcome
         } = await import('../../../../../../ai/scripts/setup/initServerConfigs.mjs'));
 
         workRoot = path.resolve(process.cwd(), 'tmp', `init-server-configs-${process.pid}-${Date.now()}`);
@@ -89,46 +88,6 @@ test.describe('initServerConfigs — template drift detection (#10815)', () => {
         if (workRoot && fs.existsSync(workRoot)) {
             fs.rmSync(workRoot, {recursive: true, force: true});
         }
-    });
-
-    test('Engine copy projections preserve Brain-owned files and refresh the pinned overlay', () => {
-        const
-            root       = path.join(workRoot, 'engine-copy-overlay'),
-            engineRoot = path.join(workRoot, 'engine-package'),
-            ownedRel   = 'util/check-aiconfig-antipatterns.mjs',
-            generated  = 'util/generated-engine-helper.mjs';
-
-        fs.mkdirSync(path.join(root, 'buildScripts', 'util'), {recursive: true});
-        fs.mkdirSync(path.join(engineRoot, 'buildScripts', 'util'), {recursive: true});
-        fs.writeFileSync(path.join(root, 'buildScripts', ownedRel), 'brain-owned\n');
-        fs.writeFileSync(path.join(engineRoot, 'buildScripts', ownedRel), 'engine-copy\n');
-        fs.writeFileSync(path.join(engineRoot, 'buildScripts', generated), 'revision-a\n');
-        fs.writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({
-            packages: {'node_modules/neo.mjs': {resolved: 'revision-a'}}
-        }));
-
-        expect(materializeEngineDependency({
-            root,
-            engineRoot,
-            linkProjections: [],
-            copyProjections: ['buildScripts']
-        })).toEqual(['buildScripts']);
-        expect(fs.readFileSync(path.join(root, 'buildScripts', ownedRel), 'utf8')).toBe('brain-owned\n');
-        expect(fs.readFileSync(path.join(root, 'buildScripts', generated), 'utf8')).toBe('revision-a\n');
-
-        fs.writeFileSync(path.join(engineRoot, 'buildScripts', generated), 'revision-b\n');
-        fs.writeFileSync(path.join(root, 'package-lock.json'), JSON.stringify({
-            packages: {'node_modules/neo.mjs': {resolved: 'revision-b'}}
-        }));
-
-        expect(materializeEngineDependency({
-            root,
-            engineRoot,
-            linkProjections: [],
-            copyProjections: ['buildScripts']
-        })).toEqual(['buildScripts']);
-        expect(fs.readFileSync(path.join(root, 'buildScripts', ownedRel), 'utf8')).toBe('brain-owned\n');
-        expect(fs.readFileSync(path.join(root, 'buildScripts', generated), 'utf8')).toBe('revision-b\n')
     });
 
     test('AC1: missing config.mjs is cloned from template', async () => {

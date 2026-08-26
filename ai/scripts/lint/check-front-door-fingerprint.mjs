@@ -18,9 +18,7 @@ import {fileURLToPath} from 'url';
 const
     __filename      = fileURLToPath(import.meta.url),
     __dirname       = path.dirname(__filename),
-    ROOT_DIR        = process.env.NEO_TARGET_REPO_ROOT
-        ? path.resolve(process.env.NEO_TARGET_REPO_ROOT)
-        : path.resolve(__dirname, '../../..'),
+    ROOT_DIR        = path.resolve(__dirname, '../../..'),
     FRONT_DOOR_PATH = path.join(ROOT_DIR, 'learn/benefits/Introduction.md'),
     FINGERPRINT_RE  = /\*\*([\d,]+) bytes \/ (\d+) lines \/ (\d+) sections\*\*/,
     SALUTE          = '🖖';

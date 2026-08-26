@@ -1,6 +1,5 @@
 import {test, expect} from '@playwright/test';
 import {spawnSync}    from 'node:child_process';
-import fs             from 'node:fs';
 import path           from 'node:path';
 
 import {
@@ -91,10 +90,6 @@ test.describe('ai/scripts/lint-tree-json (learn/tree.json mirrors learn/ folder 
     // (process boundary + exit code); the `runLint` test below reaches the same walk through the
     // module export. Different seams, same ~27s cost, so both carry the budget.
     test('CLI: the real learn/tree.json passes (mirrors the folder structure)', () => {
-        test.skip(
-            !fs.existsSync(path.join(process.cwd(), 'learn/tree.json')),
-            'the real-tree assertion belongs to the Engine target repository'
-        );
         test.setTimeout(REAL_TREE_TIMEOUT);
 
         const result = spawnSync('node', [scriptPath], {cwd: process.cwd(), encoding: 'utf8'});
@@ -307,10 +302,6 @@ test.describe('ai/scripts/lint-tree-json (learn/tree.json mirrors learn/ folder 
     // Real-tree test 2 of 2 — see REAL_TREE_TIMEOUT. Reaches the full walk through the module
     // export (no process boundary), the CLI test above through the shell-out.
     test('runLint: exported entry returns a numeric exit code on the real tree', async () => {
-        test.skip(
-            !fs.existsSync(path.join(process.cwd(), 'learn/tree.json')),
-            'the real-tree assertion belongs to the Engine target repository'
-        );
         test.setTimeout(REAL_TREE_TIMEOUT);
 
         const {exitCode, violations} = await runLint();
