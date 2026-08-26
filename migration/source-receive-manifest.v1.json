@@ -9,14 +9,14 @@
     },
     "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
     "counts": {
-        "total": 809,
+        "total": 806,
         "cloud": 639,
-        "edge": 169,
+        "edge": 166,
         "shared": 1,
         "planeConflicts": 0,
-        "censusDispositioned": 211,
+        "censusDispositioned": 209,
         "fromRootScriptCommand": 11,
-        "planeByMembership": 587
+        "planeByMembership": 586
     },
     "rows": [
         {
@@ -1997,24 +1997,6 @@
             "identity": "ai/scripts/lifecycle/materialArtifactKey.mjs",
             "plane": "edge",
             "target": "scripts/lifecycle/materialArtifactKey.mjs",
-            "origin": "census"
-        },
-        {
-            "identity": "ai/scripts/lifecycle/nightly-e2e/README.md",
-            "plane": "edge",
-            "target": "scripts/lifecycle/nightly-e2e/README.md",
-            "origin": "membership"
-        },
-        {
-            "identity": "ai/scripts/lifecycle/nightlyE2eDigest.mjs",
-            "plane": "edge",
-            "target": "scripts/lifecycle/nightlyE2eDigest.mjs",
-            "origin": "census"
-        },
-        {
-            "identity": "ai/scripts/lifecycle/nightlyE2eRunner.mjs",
-            "plane": "edge",
-            "target": "scripts/lifecycle/nightlyE2eRunner.mjs",
             "origin": "census"
         },
         {
@@ -4879,7 +4861,8 @@
         "The first emission carried 178 rows from an EXTENSION-shaped filter that silently dropped every file without a .mjs/.yml/.yaml suffix. That dropped 8 identities: 7 belonging to PR #9 (harmless) and ai/mcp/deploy/proxy/Caddyfile (a real miss), while leaving 11 PR #9 targets duplicated here. Re-derived with no extension filter and with ai/deploy/** excluded by scope: 168 rows. Caught by @neo-gpt-emmy.",
         "The 168-row emission was an authority-bearing SEED set, not the receive. Its custody discriminator (authoritySource present) excluded 47 tracked plane-dispositioned files, 19 of which the import closure could not rescue - including ai/daemons/orchestrator/daemon.mjs and the fleet server. Re-derived as roots-union-closure: 616 files. Reported by @neo-gpt-emmy and @neo-gpt.",
         "The 616-row receive left 206 tracked ai/** paths with no disposition at all, including six mcp-server.mjs entrypoints, the fleet server, and the orchestrator control plane. Reported by @neo-gpt-emmy as the fourth blocker and gated by @neo-gpt on whole-tree reconciliation. Now 819 received, 18 to PR #9, 2 stays-engine, 1 retire, 0 unclassified.",
-        "Ten paths were received that should not have been. @neo-gpt-emmy dispositioned the same 206 independently and caught them: nine ai/examples/harnessEndurance/** files are an Engine subject (they benchmark Neo worker topology and are consumed only by Engine e2e), and ai/data/memory-core/lazy-edges.jsonl is genuinely ambiguous. My membership rule follows directory; ADR 0040 §2.7 follows subject, and an Engine subject can sit in an ai/ directory."
+        "Ten paths were received that should not have been. @neo-gpt-emmy dispositioned the same 206 independently and caught them: nine ai/examples/harnessEndurance/** files are an Engine subject (they benchmark Neo worker topology and are consumed only by Engine e2e), and ai/data/memory-core/lazy-edges.jsonl is genuinely ambiguous. My membership rule follows directory; ADR 0040 §2.7 follows subject, and an Engine subject can sit in an ai/ directory.",
+        "Final partition ruled jointly by @neo-gpt and @neo-gpt-emmy at 806/18/14/2 with zero ambiguous. Two corrections against my 809/18/11/1/1: nightly-e2e is a four-file Engine unit so the runner, digest and README join the explicit-stay plist rather than the plist following them, and lazy-edges.jsonl is retire rather than ambiguous."
     ],
     "scope": "neo-agent-brain#13 receives the Agent OS source EXCEPT ai/deploy/**, which Brain PR #9 owns. PR #9 holds 18 movers; this manifest holds 616. The #17791 source-deletion predicate is the UNION of both sets (18 + 616 = 634), never this manifest alone and never PR #9 alone.",
     "population": "Census roots (custody rows AND plane-opener rows) union their transitive ai/** closure, tracked files only, minus ai/deploy/** which Brain PR #9 owns. Custody rows alone lost 19 tracked files including the orchestrator daemon and the fleet server; the closure alone cannot find files nothing imports, such as the five per-server config templates. Neither source is sufficient by itself.",
@@ -5050,7 +5033,7 @@
     "wholeTreeReconciliation": {
         "invariant": "every tracked ai/** path carries exactly one explicit disposition: received here, owned by Brain PR #9, stays with the Engine, or retires",
         "trackedPaths": 840,
-        "receive": 809,
+        "receive": 806,
         "pr9Deploy": 18,
         "staysEngine": [
             {
@@ -5061,8 +5044,7 @@
             {
                 "identity": "ai/scripts/lifecycle/nightly-e2e/com.neomjs.nightly-e2e.plist",
                 "disposition": "stays-engine",
-                "reason": "census stays-engine row — HELD, but it contradicts the tree: this launchd plist runs ai/scripts/lifecycle/nightlyE2eRunner.mjs, and both that runner and this plist README are received to the Brain. Either the plist follows its runner or the runner stays. Census authority is honoured here rather than silently overridden; the contradiction is the finding.",
-                "conflict": "neomjs/neo#17787"
+                "reason": "census stays-engine row, upheld — and the contradiction I recorded is resolved: the runner, digest and README join it rather than the plist following them. All four are one Engine-owned unit."
             },
             {
                 "identity": "ai/examples/harnessEndurance/README.md",
@@ -5108,6 +5090,21 @@
                 "identity": "ai/examples/harnessEndurance/shared/LoadProfile.mjs",
                 "disposition": "stays-engine",
                 "reason": "ADR 0040 §2.7 subject rule — benchmarks Neo worker topology (App + VDom workers, MarkdownVdom, virtualize); consumed only by test/playwright/e2e/benchmarks/HarnessEnduranceBenchmark.spec.mjs and Engine unit specs; zero consumers under ai/"
+            },
+            {
+                "identity": "ai/scripts/lifecycle/nightly-e2e/README.md",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §§2.3/2.7 — part of the four-file nightly-e2e Engine unit with the explicit-stay plist. The runner's sole workload is test/playwright/playwright.config.e2e.mjs and it imports src/Neo.mjs; the plist WorkingDirectory is the Neo checkout. Engine whitebox subject, not Brain runtime."
+            },
+            {
+                "identity": "ai/scripts/lifecycle/nightlyE2eDigest.mjs",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §§2.3/2.7 — part of the four-file nightly-e2e Engine unit with the explicit-stay plist. The runner's sole workload is test/playwright/playwright.config.e2e.mjs and it imports src/Neo.mjs; the plist WorkingDirectory is the Neo checkout. Engine whitebox subject, not Brain runtime."
+            },
+            {
+                "identity": "ai/scripts/lifecycle/nightlyE2eRunner.mjs",
+                "disposition": "stays-engine",
+                "reason": "ADR 0040 §§2.3/2.7 — part of the four-file nightly-e2e Engine unit with the explicit-stay plist. The runner's sole workload is test/playwright/playwright.config.e2e.mjs and it imports src/Neo.mjs; the plist WorkingDirectory is the Neo checkout. Engine whitebox subject, not Brain runtime."
             }
         ],
         "retire": [
@@ -5115,17 +5112,15 @@
                 "identity": "ai/scripts/diagnostics/printAiConfig.mjs",
                 "disposition": "retire",
                 "reason": "census retire row"
+            },
+            {
+                "identity": "ai/data/memory-core/lazy-edges.jsonl",
+                "disposition": "retire",
+                "reason": "accidentally tracked runtime queue — twelve rows, no custody row, no live reader; the runtime path is .neo-ai-data/. Ruled retire rather than moved."
             }
         ],
         "unclassified": 0,
-        "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership.",
-        "ambiguous": [
-            {
-                "identity": "ai/data/memory-core/lazy-edges.jsonl",
-                "reason": "tracked 12-row runtime queue with no custody row and no live reader; the runtime path is now .neo-ai-data/. Needs an explicit ruling rather than a guess.",
-                "owner": "neomjs/neo#17787"
-            }
-        ]
+        "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership."
     },
-    "canonicalSha256": "4b5d19fbfb2c16a62d11257024f214586ac909291062e6a6ba7ca8c42e187fff"
+    "canonicalSha256": "4fa9c2766a24b4b9ecc63372de6ef02d2d00f904c4d65167f058ec0fe291d1db"
 }
