@@ -3720,10 +3720,171 @@
         "The first emission carried 178 rows from an EXTENSION-shaped filter that silently dropped every file without a .mjs/.yml/.yaml suffix. That dropped 8 identities: 7 belonging to PR #9 (harmless) and ai/mcp/deploy/proxy/Caddyfile (a real miss), while leaving 11 PR #9 targets duplicated here. Re-derived with no extension filter and with ai/deploy/** excluded by scope: 168 rows. Caught by @neo-gpt-emmy.",
         "The 168-row emission was an authority-bearing SEED set, not the receive. Its custody discriminator (authoritySource present) excluded 47 tracked plane-dispositioned files, 19 of which the import closure could not rescue - including ai/daemons/orchestrator/daemon.mjs and the fleet server. Re-derived as roots-union-closure: 616 files. Reported by @neo-gpt-emmy and @neo-gpt."
     ],
-    "scope": "neo-agent-brain#13 receives the Agent OS source movers EXCEPT ai/deploy/**, which PR #9 owns. Full custody population is 186; PR #9 holds 18; this manifest holds the remaining 168. The #17791 source-deletion predicate is the UNION of both sets, not this manifest alone.",
+    "scope": "neo-agent-brain#13 receives the Agent OS source EXCEPT ai/deploy/**, which Brain PR #9 owns. PR #9 holds 18 movers; this manifest holds 616. The #17791 source-deletion predicate is the UNION of both sets (18 + 616 = 634), never this manifest alone and never PR #9 alone.",
     "population": "Census roots (custody rows AND plane-opener rows) union their transitive ai/** closure, tracked files only, minus ai/deploy/** which Brain PR #9 owns. Custody rows alone lost 19 tracked files including the orchestrator daemon and the fleet server; the closure alone cannot find files nothing imports, such as the five per-server config templates. Neither source is sufficient by itself.",
     "planeRule": "Census disposition wins. Otherwise SUBSYSTEM MEMBERSHIP - the nearest census-dispositioned ancestor directory - with cloud-safety as an override: a module whose transitive closure reaches chromadb, better-sqlite3, @google/generative-ai or @chroma-core/default-embed never lands on edge. Membership beats reachability-as-assignment by 3.2x on cross-plane edges (176 vs 562): \"could this run on edge\" and \"whose subsystem is this\" are different questions, and only the second predicts where the coupling is.",
     "specifierRule": "Every relative specifier is RECOMPUTED from the plane map, never preserved - a file moving from ai/x/ to cloud/x/ changes depth relative to a target that stayed at the root. src/** specifiers become the published Engine package (neo.mjs/src/**) per ADR 0040 section 2.3.",
-    "residual": "Unresolved: 186 relative edges across 34 targets. 161 of them import one of the six generated, gitignored config.mjs files (ai/config.mjs plus five ai/mcp/server/*/config.mjs). Those are produced by ai/scripts/setup/initServerConfigs.mjs at npm prepare from tracked config.template.mjs siblings. The five per-server templates carry edge/cloud dispositions and travel; their generator carries retire. So the Brain receives the templates and no way to materialize them. That is one named decision on neomjs/neo#17787, not a repair inside this receive.",
-    "canonicalSha256": "2eebf498dd234638c80854098a71d773c41c70235c44c806617e2b504e5feb78"
+    "residual": {
+        "generatedConfigOverlays": {
+            "edges": 161,
+            "targets": [
+                "cloud/config.mjs",
+                "cloud/mcp/server/github-workflow/config.mjs",
+                "cloud/mcp/server/gitlab-workflow/config.mjs",
+                "cloud/mcp/server/knowledge-base/config.mjs",
+                "cloud/mcp/server/memory-core/config.mjs",
+                "cloud/mcp/server/neural-link/config.mjs",
+                "config.mjs",
+                "mcp/server/github-workflow/config.mjs",
+                "mcp/server/gitlab-workflow/config.mjs",
+                "mcp/server/knowledge-base/config.mjs",
+                "mcp/server/memory-core/config.mjs",
+                "mcp/server/neural-link/config.mjs"
+            ],
+            "cause": "All six are gitignored and produced by ai/scripts/setup/initServerConfigs.mjs at npm prepare, which copies each tracked config.template.mjs over its gitignored sibling. The five per-server templates carry edge/cloud dispositions and travel; their generator carries retire. The Brain therefore receives the templates and no way to materialize them.",
+            "owner": "neomjs/neo#17787 — the per-server half needs the plane-owned bootstrap its own retire rationale already promises."
+        },
+        "other": {
+            "edges": 25,
+            "targets": [
+                {
+                    "target": "../Env.mjs",
+                    "importers": [
+                        "scripts/setup/initServerConfigs.mjs"
+                    ]
+                },
+                {
+                    "target": "../apps/agentos/config/cockpitSources.mjs",
+                    "importers": [
+                        "scripts/fleet/deriveFleetRoster.mjs",
+                        "scripts/lint/lint-fleet-vocabulary-parity.mjs"
+                    ]
+                },
+                {
+                    "target": "../apps/agentos/config/fleetWireMethods.mjs",
+                    "importers": [
+                        "scripts/lint/lint-fleet-vocabulary-parity.mjs"
+                    ]
+                },
+                {
+                    "target": "../apps/agentos/config/harnessTypes.mjs",
+                    "importers": [
+                        "scripts/lint/lint-fleet-vocabulary-parity.mjs"
+                    ]
+                },
+                {
+                    "target": "../apps/agentos/config/mcpServers.mjs",
+                    "importers": [
+                        "scripts/lint/lint-fleet-vocabulary-parity.mjs"
+                    ]
+                },
+                {
+                    "target": "../buildScripts/docs/seo/generate.mjs",
+                    "importers": [
+                        "scripts/lint/lint-tree-json.mjs"
+                    ]
+                },
+                {
+                    "target": "../buildScripts/util/check-content-logical-identity.mjs",
+                    "importers": [
+                        "scripts/lifecycle/postReleaseSync.mjs"
+                    ]
+                },
+                {
+                    "target": "../buildScripts/util/sanitizer.mjs",
+                    "importers": [
+                        "mcp/server/neural-link/run-bridge.mjs"
+                    ]
+                },
+                {
+                    "target": "../src/Neo.mjs",
+                    "importers": [
+                        "cloud/agent/profile/QA.mjs"
+                    ]
+                },
+                {
+                    "target": "../src/core/_export.mjs",
+                    "importers": [
+                        "cloud/agent/profile/QA.mjs"
+                    ]
+                },
+                {
+                    "target": "buildScripts/docs/rebuildContentIndexesAndSeo.mjs",
+                    "importers": [
+                        "cloud/services/github-workflow/SyncService.mjs"
+                    ]
+                },
+                {
+                    "target": "buildScripts/util/check-content-logical-identity.mjs",
+                    "importers": [
+                        "cloud/services/github-workflow/SyncService.mjs"
+                    ]
+                },
+                {
+                    "target": "cloud/ai/services.mjs",
+                    "importers": [
+                        "cloud/services.mjs"
+                    ]
+                },
+                {
+                    "target": "cloud/services/knowledge-base/source/my-tenant/MyEs5Source.mjs",
+                    "importers": [
+                        "cloud/services/knowledge-base/source/_export.mjs"
+                    ]
+                },
+                {
+                    "target": "cloud/services/knowledge-base/source/my-tenant/MyProtoParser.mjs",
+                    "importers": [
+                        "cloud/services/knowledge-base/source/_export.mjs"
+                    ]
+                },
+                {
+                    "target": "cloud/setup.mjs",
+                    "importers": [
+                        "cloud/agent/profile/QA.mjs"
+                    ]
+                },
+                {
+                    "target": "scripts/diagnostics/ai/graph/identityRoots.mjs",
+                    "importers": [
+                        "scripts/diagnostics/captureParityLatencyPair.mjs"
+                    ]
+                },
+                {
+                    "target": "scripts/diagnostics/ai/scripts/setup/seedAgentIdentities.mjs",
+                    "importers": [
+                        "scripts/diagnostics/captureParityLatencyPair.mjs"
+                    ]
+                },
+                {
+                    "target": "scripts/lint/module.mjs",
+                    "importers": [
+                        "scripts/lint/scriptPlaneClosure.mjs"
+                    ]
+                },
+                {
+                    "target": "scripts/lint/p.mjs",
+                    "importers": [
+                        "scripts/lint/scriptPlaneClosure.mjs"
+                    ]
+                },
+                {
+                    "target": "scripts/lint/placeholder.mjs",
+                    "importers": [
+                        "scripts/lint/lint-npm-script-entrypoints.mjs"
+                    ]
+                },
+                {
+                    "target": "scripts/setup/...",
+                    "importers": [
+                        "scripts/setup/initServerConfigs.mjs",
+                        "scripts/setup/initServerConfigs.mjs",
+                        "scripts/setup/initServerConfigs.mjs"
+                    ]
+                }
+            ]
+        },
+        "tests": "ZERO test files are received. ADR 0040 section 2.7 makes test custody follow SUBJECT, not directory, so the inventory row matching /ai/ by path is a census SEED to classify rather than a move set. An exact subject-owned test census is required before this receive is complete. Raised by @neo-gpt-emmy."
+    },
+    "canonicalSha256": "318f44da7e98a2eb8124d1b0b0ff4167f18e80a0b836bb2ae3724d009b300051"
 }
