@@ -135,9 +135,14 @@ ENV NEO_TRANSPORT=streamable-http
 # `TARGET_SERVER` selects an MCP server image ('knowledge-base' or 'memory-core').
 # `SERVICE_ENTRYPOINT` generalizes the entrypoint so non-MCP-server services — e.g.
 # the Agent OS orchestrator (ADR 0014 cloud topology, Sub B #11723) — build from the
-# same image: pass `SERVICE_ENTRYPOINT=ai/daemons/orchestrator/daemon.mjs`.
+# same image: pass `SERVICE_ENTRYPOINT=cloud/daemons/orchestrator/daemon.mjs`.
+# NOTE: that path is INHERITANCE-derived, not dispositioned. `ai/daemons/orchestrator/daemon.mjs`
+# carries no exact row in the cut manifest while three siblings do — `wake/daemon.mjs` is `edge`,
+# `embed/` and `message/` are `cloud` — so this example resolves only via manifestAuthority's
+# "embedded deployment entrypoint inherits its owning artifact plane" clause. An explicit row
+# would win over it, and an `edge` row would move this example out of this image entirely.
 ARG TARGET_SERVER
-ARG SERVICE_ENTRYPOINT=ai/mcp/server/${TARGET_SERVER}/mcp-server.mjs
+ARG SERVICE_ENTRYPOINT=cloud/mcp/server/${TARGET_SERVER}/mcp-server.mjs
 ENV SERVER_ENTRYPOINT=${SERVICE_ENTRYPOINT}
 
 # Deployment provenance (#15774). THREE facts, each on a surface that cannot lie:

@@ -14,7 +14,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>__NODE_BIN__</string>
-        <string>ai/daemons/wake/receiver.mjs</string>
+        <string>daemons/wake/receiver.mjs</string>
         <string>--manifest</string>
         <string>__WAKE_RECEIVER_MANIFEST__</string>
         <string>--state-dir</string>

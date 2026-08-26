@@ -4,7 +4,7 @@
   Per-user macOS LaunchAgent template for the graphless host-edge orchestrator
   role (#16210), thinned to a pure SUPERVISION wrapper by #16229.
 
-  It launches `ai/daemons/orchestrator/hostEdge.mjs`, which owns the host-edge
+  It launches `daemons/orchestrator/hostEdge.mjs`, which owns the host-edge
   posture — role, deployment mode, state root, lane closure — in substrate that
   runs anywhere Node runs. launchd contributes restart-on-login and nothing
   else, so the supervised path and a bare `npm run ai:host-edge` cannot drift.
@@ -21,7 +21,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>__NODE_BIN__</string>
-        <string>ai/daemons/orchestrator/hostEdge.mjs</string>
+        <string>daemons/orchestrator/hostEdge.mjs</string>
     </array>
 
     <key>WorkingDirectory</key>
