@@ -5,8 +5,9 @@
     "rule": "A test follows its SUBJECT, per ADR 0040 section 2.7. test/playwright/unit/ai/A/B/C.spec.mjs tests ai/A/B/C.mjs, so the source-receive manifest already decides its plane - there is no second authority and no directory guess. Layout mirrors the source planes: edge tests at test/unit/**, cloud tests at cloud/test/unit/** so the Cloud package installs and runs independently. A spec whose exact subject is not a Brain row is resolved by what it IMPORTS, never by its directory: reaching src/, buildScripts/, learn/ or apps/ means it exercises retained Engine surface and stays there. Directory fallback moved 68 specs wrongly and was caught by @neo-gpt-emmy.",
     "counts": {
         "total": 724,
-        "cloud": 616,
-        "edge": 108
+        "cloud": 566,
+        "edge": 158,
+        "shared": 0
     },
     "staysEngine": [
         {
@@ -2433,283 +2434,283 @@
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/ContentPath.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/ContentPath.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/ContentPath.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/ConversationTrust.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/ConversationTrust.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/ConversationTrust.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/DiscussionService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/DiscussionService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/DiscussionService.spec.mjs",
             "subject": "ai/services/github-workflow/DiscussionService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/DiscussionSyncer.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/DiscussionSyncer.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/DiscussionSyncer.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/GraphqlService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/GraphqlService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/GraphqlService.spec.mjs",
             "subject": "ai/services/github-workflow/GraphqlService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/HealthService.identity.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/HealthService.identity.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/HealthService.identity.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/HealthService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/HealthService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/HealthService.spec.mjs",
             "subject": "ai/services/github-workflow/HealthService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/IssueReconciliationService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/IssueReconciliationService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/IssueReconciliationService.spec.mjs",
             "subject": "ai/services/github-workflow/IssueReconciliationService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/IssueService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/IssueService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/IssueService.spec.mjs",
             "subject": "ai/services/github-workflow/IssueService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/IssueSyncer.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/IssueSyncer.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/IssueSyncer.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/LabelService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/LabelService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/LabelService.spec.mjs",
             "subject": "ai/services/github-workflow/LabelService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/LocalFileService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/LocalFileService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/LocalFileService.spec.mjs",
             "subject": "ai/services/github-workflow/LocalFileService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/MetadataManager.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/MetadataManager.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/MetadataManager.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/PullRequestHistoryService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/PullRequestHistoryService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/PullRequestHistoryService.spec.mjs",
             "subject": "ai/services/github-workflow/PullRequestHistoryService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/PullRequestReconciliationService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/PullRequestReconciliationService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/PullRequestReconciliationService.spec.mjs",
             "subject": "ai/services/github-workflow/PullRequestReconciliationService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/PullRequestService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/PullRequestService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/PullRequestService.spec.mjs",
             "subject": "ai/services/github-workflow/PullRequestService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/PullRequestServiceReviewers.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/PullRequestServiceReviewers.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/PullRequestServiceReviewers.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/PullRequestSyncer.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/PullRequestSyncer.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/PullRequestSyncer.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/ReleaseNotesSyncer.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/ReleaseNotesSyncer.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/ReleaseNotesSyncer.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/RepositoryTarget.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/RepositoryTarget.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/RepositoryTarget.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/RepositoryTargetRouting.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/RepositoryTargetRouting.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/RepositoryTargetRouting.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/SyncService.Stage2.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/SyncService.Stage2.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/SyncService.Stage2.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/commentSelector.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/commentSelector.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/commentSelector.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/community/assembleIssueBatch.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/community/assembleIssueBatch.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/community/assembleIssueBatch.spec.mjs",
             "subject": "ai/services/github-workflow/community/assembleIssueBatch.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/community/githubIssueAbsence.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/community/githubIssueAbsence.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/community/githubIssueAbsence.spec.mjs",
             "subject": "ai/services/github-workflow/community/githubIssueAbsence.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/community/githubIssueObservations.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/community/githubIssueObservations.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/community/githubIssueObservations.spec.mjs",
             "subject": "ai/services/github-workflow/community/githubIssueObservations.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/community/githubIssueReconciliation.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/community/githubIssueReconciliation.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/community/githubIssueReconciliation.spec.mjs",
             "subject": "ai/services/github-workflow/community/githubIssueReconciliation.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/community/githubPullRequestObservations.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/community/githubPullRequestObservations.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/community/githubPullRequestObservations.spec.mjs",
             "subject": "ai/services/github-workflow/community/githubPullRequestObservations.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/community/githubPullRequestReconciliation.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/community/githubPullRequestReconciliation.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/community/githubPullRequestReconciliation.spec.mjs",
             "subject": "ai/services/github-workflow/community/githubPullRequestReconciliation.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/communityActivityShadowReader.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/communityActivityShadowReader.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/communityActivityShadowReader.spec.mjs",
             "subject": "ai/services/github-workflow/communityActivityShadowReader.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/discussionRoutingDisposition.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/discussionRoutingDisposition.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/discussionRoutingDisposition.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/openWorkCensusReader.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/openWorkCensusReader.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/openWorkCensusReader.spec.mjs",
             "subject": "ai/services/github-workflow/openWorkCensusReader.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/shared/contentInventory.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/shared/contentInventory.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/shared/contentInventory.spec.mjs",
             "subject": "ai/services/github-workflow/shared/contentInventory.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/shared/mergeHoldTokens.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/shared/mergeHoldTokens.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/shared/mergeHoldTokens.spec.mjs",
             "subject": "ai/services/github-workflow/shared/mergeHoldTokens.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/shared/reconcileActiveChunks.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/shared/reconcileActiveChunks.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/shared/reconcileActiveChunks.spec.mjs",
             "subject": "ai/services/github-workflow/shared/reconcileActiveChunks.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/toolService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/toolService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/toolService.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/github-workflow/verifyFrontmatterIntegrity.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/github-workflow/verifyFrontmatterIntegrity.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/github-workflow/verifyFrontmatterIntegrity.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/gitlab-workflow/GitLabClient.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/gitlab-workflow/GitLabClient.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/gitlab-workflow/GitLabClient.spec.mjs",
             "subject": "ai/services/gitlab-workflow/GitLabClient.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/gitlab-workflow/IssueService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/gitlab-workflow/IssueService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/gitlab-workflow/IssueService.spec.mjs",
             "subject": "ai/services/gitlab-workflow/IssueService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/gitlab-workflow/MergeRequestService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/gitlab-workflow/MergeRequestService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/gitlab-workflow/MergeRequestService.spec.mjs",
             "subject": "ai/services/gitlab-workflow/MergeRequestService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/graph/GoldenPathSynthesizer.spec.mjs",
@@ -4358,73 +4359,73 @@
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/ArchiveClientConnect.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/ArchiveClientConnect.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/ArchiveClientConnect.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/ComponentService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/ComponentService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/ComponentService.spec.mjs",
             "subject": "ai/services/neural-link/ComponentService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/ConnectionService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/ConnectionService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/ConnectionService.spec.mjs",
             "subject": "ai/services/neural-link/ConnectionService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/DockService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/DockService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/DockService.spec.mjs",
             "subject": "ai/services/neural-link/DockService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/HealthService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/HealthService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/HealthService.spec.mjs",
             "subject": "ai/services/neural-link/HealthService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/InstanceServiceCreateInstance.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/InstanceServiceCreateInstance.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/InstanceServiceCreateInstance.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/RecorderService.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/RecorderService.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/RecorderService.spec.mjs",
             "subject": "ai/services/neural-link/RecorderService.mjs",
-            "origin": "subject-row"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/RecorderServiceDefaultOff.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/RecorderServiceDefaultOff.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/RecorderServiceDefaultOff.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/bridgeAutoConnectOrdering.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/bridgeAutoConnectOrdering.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/bridgeAutoConnectOrdering.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/neural-link/relocationInvariants.spec.mjs",
-            "plane": "cloud",
-            "target": "cloud/test/unit/services/neural-link/relocationInvariants.spec.mjs",
+            "plane": "edge",
+            "target": "test/unit/services/neural-link/relocationInvariants.spec.mjs",
             "subject": null,
-            "origin": "subject-ancestor"
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "test/playwright/unit/ai/services/rem-observability.spec.mjs",
@@ -5364,5 +5365,5 @@
         ],
         "reason": "Duplicated per plane rather than shared from the repository root: the Cloud package must run its suite independently, and a single root copy would make every cloud spec climb out of its own package to reach it — the ancestor reach the two package roots exist to refuse. findBridgeScriptRoot and the fixtures stay with the Engine."
     },
-    "canonicalSha256": "21ba26a526425c4c2e012c8f2e3522ee5503c902fa027ed60fd2a7ba72539751"
+    "canonicalSha256": "3370f2f4018d0d3c3f00324568dbae2dbc2b7210a433b9023a278b79a60b594e"
 }

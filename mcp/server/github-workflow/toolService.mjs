@@ -2,10 +2,10 @@ import {execFile}                                                               
 import path                                                                            from 'path';
 import {fileURLToPath}                                                                 from 'url';
 import {promisify}                                                                     from 'util';
-import AgentStateService                                                               from '../../../cloud/services/github-workflow/AgentStateService.mjs';
+import AgentStateService                                                               from '../../../services/github-workflow/AgentStateService.mjs';
 import HealthService                                                                   from '../../../services/github-workflow/HealthService.mjs';
 import IssueService                                                                    from '../../../services/github-workflow/IssueService.mjs';
-import DiscussionService                                                               from '../../../cloud/services/github-workflow/DiscussionService.mjs';
+import DiscussionService                                                               from '../../../services/github-workflow/DiscussionService.mjs';
 import LabelService                                                                    from '../../../services/github-workflow/LabelService.mjs';
 import LocalFileService                                                                from '../../../services/github-workflow/LocalFileService.mjs';
 import PullRequestService                                                              from '../../../services/github-workflow/PullRequestService.mjs';

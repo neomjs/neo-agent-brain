@@ -24,8 +24,8 @@
 .neo-ai-data-parity
 # Resolved per-operator config overlays. `configBase.mjs` is the tracked authority; these are
 # the local deltas that override it, and they routinely carry hosts, ports, and keys.
-ai/config.mjs
-ai/mcp/server/*/config.mjs
+config.mjs
+mcp/server/*/config.mjs
 # Runtime telemetry written beside the graph storage path during SENT_TO edge culls.
 sent-to-cull.jsonl
 
@@ -84,3 +84,9 @@ Thumbs.db
 .agents/skills
 .claude/skills/
 node_modules/
+
+cloud/config.mjs
+cloud/mcp/server/*/config.mjs
+
+# tracked, not generated — the client config has no template
+!mcp/client/config.mjs

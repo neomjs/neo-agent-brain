@@ -10,7 +10,7 @@ import path            from 'path';
 import {fileURLToPath} from 'url';
 
 import GraphqlService                                  from '../../services/github-workflow/GraphqlService.mjs';
-import {makeCommunityActivityShadowReader}             from '../../cloud/services/github-workflow/communityActivityShadowReader.mjs';
+import {makeCommunityActivityShadowReader}             from '../../services/github-workflow/communityActivityShadowReader.mjs';
 import {classifyAuthorTrust}                           from '../../services/shared/contentTrust/authorTrustClassifier.mjs';
 import {formatHumanSummary, parseArgs, runShadowProbe} from './communityActivityShadowProbeCore.mjs';
 

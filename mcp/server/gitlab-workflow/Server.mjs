@@ -1,7 +1,7 @@
 import BaseServer            from '../BaseServer.mjs';
 import aiConfig              from './config.mjs';
 import logger                from './logger.mjs';
-import HealthService         from '../../../cloud/services/gitlab-workflow/HealthService.mjs';
+import HealthService         from '../../../services/gitlab-workflow/HealthService.mjs';
 import {listTools, callTool} from './toolService.mjs';
 
 /**

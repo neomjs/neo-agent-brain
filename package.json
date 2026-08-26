@@ -56,7 +56,7 @@
         "ai:wake-manifest": "node ./daemons/wake/buildReceiverManifest.mjs",
         "ai:wake-receiver": "node ./daemons/wake/receiver.mjs",
         "postinstall": "neo-agent-skills-materialize",
-        "prepare": "husky",
+        "prepare": "husky && node ./scripts/setup/initServerConfigs.mjs",
         "test-unit": "playwright test -c test/playwright.config.unit.mjs"
     },
     "dependencies": {

@@ -31,9 +31,35 @@ import {fileURLToPath} from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
-const cwd        = path.resolve(__dirname, '../../../');
-const serversDir = path.join(cwd, 'ai', 'mcp', 'server');
-const aiDir      = path.join(cwd, 'ai');
+// Two climbs, not three, and no `ai` segment: the Agent OS IS this repository.
+const cwd = path.resolve(__dirname, '../..');
+
+/**
+ * @summary The Tier-1 and server roots this bootstrap walks, one entry per plane.
+ *
+ * The source repository had ONE Tier-1 pair and ONE server root because the Agent OS was a single
+ * directory. The split gives each plane its own, and BOTH must be walked: a run that visits one
+ * plane reports success while leaving the other's overlays absent, which is a green that means half
+ * a job — the same shape as every other silent gap this cut has produced.
+ *
+ * Exactly seven overlays are materialized:
+ *   `config.mjs`                                                Host-Edge Tier-1
+ *   `cloud/config.mjs`                                          Cloud Tier-1
+ *   `mcp/server/{github-workflow,gitlab-workflow,neural-link}/config.mjs`   Host-Edge MCP servers
+ *   `cloud/mcp/server/{knowledge-base,memory-core}/config.mjs`  Cloud MCP servers
+ *
+ * Knowledge Base and Memory Core are the only Cloud MCP servers; GitHub-workflow, GitLab-workflow
+ * and Neural-Link are Host Edge. `mcp/client/config.mjs` is TRACKED rather than generated and is
+ * deliberately absent from this list.
+ * @type {Array<{plane: String, aiRoot: String, serversRoot: String}>}
+ */
+export const PLANE_ROOTS = Object.freeze([
+    {plane: 'edge',  aiRoot: cwd,                     serversRoot: path.join(cwd, 'mcp', 'server')},
+    {plane: 'cloud', aiRoot: path.join(cwd, 'cloud'), serversRoot: path.join(cwd, 'cloud', 'mcp', 'server')}
+]);
+
+const serversDir = PLANE_ROOTS[0].serversRoot;
+const aiDir      = PLANE_ROOTS[0].aiRoot;
 
 const MIGRATE_FLAG                = '--migrate-config';
 const MATERIALIZED_SERVER_IMPORTS = new Set([
@@ -1203,8 +1229,17 @@ export function createConfigInitializationOutcome(migrationRequired = []) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     (async () => {
-        await initTier1Config();
-        const {migrationRequired} = await initConfigs();
+        // Once per plane. Visiting only the default roots would materialize the Host-Edge overlays,
+        // exit 0, and leave every Cloud overlay absent — a bootstrap that reports success having
+        // done half its work is worse than one that fails, because nothing downstream re-checks.
+        const migrationRequired = [];
+
+        for (const {aiRoot, serversRoot} of PLANE_ROOTS) {
+            await initTier1Config({aiRoot});
+            const result = await initConfigs({serversRoot});
+            migrationRequired.push(...(result.migrationRequired ?? []));
+        }
+
         await initClaudeSettings();
 
         const outcome = createConfigInitializationOutcome(migrationRequired);

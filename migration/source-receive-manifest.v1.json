@@ -10,8 +10,8 @@
     "targetRule": "ADR 0040 §2.1 — edge lands at the repository root (the root manifest IS the Host-Edge package); cloud lands under the independent nested cloud/ package; shared under the inventory-owned shared/ package. The ai/ prefix is dropped in every case.",
     "counts": {
         "total": 805,
-        "cloud": 582,
-        "edge": 216,
+        "cloud": 564,
+        "edge": 234,
         "shared": 7,
         "planeConflicts": 0,
         "censusDispositioned": 209,
@@ -3039,15 +3039,15 @@
         },
         {
             "identity": "ai/services/github-workflow/AgentStateService.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/AgentStateService.mjs",
-            "origin": "measured"
+            "plane": "edge",
+            "target": "services/github-workflow/AgentStateService.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/DiscussionService.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/DiscussionService.mjs",
-            "origin": "measured"
+            "plane": "edge",
+            "target": "services/github-workflow/DiscussionService.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/GraphqlService.mjs",
@@ -3063,9 +3063,9 @@
         },
         {
             "identity": "ai/services/github-workflow/IssueReconciliationService.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/IssueReconciliationService.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/IssueReconciliationService.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/IssueService.mjs",
@@ -3093,9 +3093,9 @@
         },
         {
             "identity": "ai/services/github-workflow/PullRequestReconciliationService.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/PullRequestReconciliationService.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/PullRequestReconciliationService.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/PullRequestService.mjs",
@@ -3117,57 +3117,57 @@
         },
         {
             "identity": "ai/services/github-workflow/community/assembleIssueBatch.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/community/assembleIssueBatch.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/community/assembleIssueBatch.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/community/githubIssueAbsence.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/community/githubIssueAbsence.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/community/githubIssueAbsence.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/community/githubIssueObservations.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/community/githubIssueObservations.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/community/githubIssueObservations.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/community/githubIssueReconciliation.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/community/githubIssueReconciliation.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/community/githubIssueReconciliation.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/community/githubPullRequestObservations.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/community/githubPullRequestObservations.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/community/githubPullRequestObservations.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/community/githubPullRequestReconciliation.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/community/githubPullRequestReconciliation.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/community/githubPullRequestReconciliation.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/communityActivityShadowReader.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/communityActivityShadowReader.mjs",
-            "origin": "measured"
+            "plane": "edge",
+            "target": "services/github-workflow/communityActivityShadowReader.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/openWorkCensusReader.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/openWorkCensusReader.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/openWorkCensusReader.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/queries/communityActivityShadowQueries.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/queries/communityActivityShadowQueries.mjs",
-            "origin": "measured"
+            "plane": "edge",
+            "target": "services/github-workflow/queries/communityActivityShadowQueries.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/queries/discussionQueries.mjs",
@@ -3183,9 +3183,9 @@
         },
         {
             "identity": "ai/services/github-workflow/queries/issueReconciliationQueries.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/queries/issueReconciliationQueries.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/queries/issueReconciliationQueries.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/queries/labelQueries.mjs",
@@ -3207,9 +3207,9 @@
         },
         {
             "identity": "ai/services/github-workflow/queries/pullRequestReconciliationQueries.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/queries/pullRequestReconciliationQueries.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/queries/pullRequestReconciliationQueries.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/queries/releaseQueries.mjs",
@@ -3285,9 +3285,9 @@
         },
         {
             "identity": "ai/services/github-workflow/sync/CONTENT_GRAMMAR.md",
-            "plane": "cloud",
-            "target": "cloud/services/github-workflow/sync/CONTENT_GRAMMAR.md",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/github-workflow/sync/CONTENT_GRAMMAR.md",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/github-workflow/sync/DiscussionSyncer.mjs",
@@ -3333,9 +3333,9 @@
         },
         {
             "identity": "ai/services/gitlab-workflow/HealthService.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/gitlab-workflow/HealthService.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/gitlab-workflow/HealthService.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/gitlab-workflow/IssueService.mjs",
@@ -3345,9 +3345,9 @@
         },
         {
             "identity": "ai/services/gitlab-workflow/LocalFileService.mjs",
-            "plane": "cloud",
-            "target": "cloud/services/gitlab-workflow/LocalFileService.mjs",
-            "origin": "membership"
+            "plane": "edge",
+            "target": "services/gitlab-workflow/LocalFileService.mjs",
+            "origin": "operator plane correction — GH/GL/NL are Host Edge"
         },
         {
             "identity": "ai/services/gitlab-workflow/MergeRequestService.mjs",
@@ -4859,32 +4859,15 @@
         "Final partition ruled jointly by @neo-gpt and @neo-gpt-emmy at 806/18/14/2 with zero ambiguous. Two corrections against my 809/18/11/1/1: nightly-e2e is a four-file Engine unit so the runner, digest and README join the explicit-stay plist rather than the plist following them, and lazy-edges.jsonl is retire rather than ambiguous.",
         "Five rows still named cloud/ targets after the files were moved to shared/ as plane-neutral members. The manifest is the deletion authority for #17791, so a row that names a path the tree does not have is worse than a wrong plane: it is an instruction to delete a source whose destination cannot be verified. Caught by checking every target against the tree rather than trusting the write.",
         "Unresolved-edge disposition from @neo-gpt, applied as ownership rather than string rewrites: 13 scripts whose only blocker was Cloud config are Cloud and moved there with their npm entries; postReleaseSync and lint-tree-json import Engine buildScripts, so they stay Engine and left the Brain; the 13-line zero-import sanitizer five MCP entrypoints need is received as a plane-neutral shared member. Repointing the strings instead would have made every import resolve while leaving Host-Edge scripts depending on Cloud configuration.",
-        "65 rows were planed Cloud while sitting inside ai/services.host.mjs's own closure — the declared authority for host-plane membership, whose JSDoc states the set is 90 files with no cloud-only externals. Directory dominance overrode an explicit declaration. Found by RUNNING the edge suite: 47 of 113 specs reached into cloud/, loaded a second neo.mjs from cloud/node_modules, and died on a namespace collision. Independent installation turns a plane violation into a hard runtime failure rather than a silent one."
+        "65 rows were planed Cloud while sitting inside ai/services.host.mjs's own closure — the declared authority for host-plane membership, whose JSDoc states the set is 90 files with no cloud-only externals. Directory dominance overrode an explicit declaration. Found by RUNNING the edge suite: 47 of 113 specs reached into cloud/, loaded a second neo.mjs from cloud/node_modules, and died on a namespace collision. Independent installation turns a plane violation into a hard runtime failure rather than a silent one.",
+        "An earlier revision tracked seven config.mjs wrappers and removed the generator. The operator rejected that and restored move-first semantics: the Brain inherits the generated gitignored overlay lifecycle, the generator is kept and ported to walk both plane roots, and the seven tracked outputs are untracked. The stale twelve-target and mirrored-target prose is deleted rather than layered over, because a superseded decision left in place reads as a live one.",
+        "GitHub-workflow, GitLab-workflow and Neural-Link are Host Edge; only Knowledge Base and Memory Core are Cloud. 68 source and test rows were still planed Cloud and are moved to the root plane. Cloud may reach root; root may never reach Cloud."
     ],
     "scope": "neo-agent-brain#13 receives the Agent OS source EXCEPT ai/deploy/**, which Brain PR #9 owns. PR #9 holds 18 movers; this manifest holds 616. The #17791 source-deletion predicate is the UNION of both sets (18 + 616 = 634), never this manifest alone and never PR #9 alone.",
     "population": "Census roots (custody rows AND plane-opener rows) union their transitive ai/** closure, tracked files only, minus ai/deploy/** which Brain PR #9 owns. Custody rows alone lost 19 tracked files including the orchestrator daemon and the fleet server; the closure alone cannot find files nothing imports, such as the five per-server config templates. Neither source is sufficient by itself.",
     "planeRule": "Census disposition wins. Otherwise SUBSYSTEM MEMBERSHIP - the nearest census-dispositioned ancestor directory - with cloud-safety as an override: a module whose transitive closure reaches chromadb, better-sqlite3, @google/generative-ai or @chroma-core/default-embed never lands on edge. Membership beats reachability-as-assignment by 3.2x on cross-plane edges (176 vs 562): \"could this run on edge\" and \"whose subsystem is this\" are different questions, and only the second predicts where the coupling is.",
     "specifierRule": "Every relative specifier is RECOMPUTED from the plane map, never preserved - a file moving from ai/x/ to cloud/x/ changes depth relative to a target that stayed at the root. src/** specifiers become the published Engine package (neo.mjs/src/**) per ADR 0040 section 2.3.",
     "residual": {
-        "generatedConfigOverlays": {
-            "edges": 161,
-            "targets": [
-                "cloud/config.mjs",
-                "cloud/mcp/server/github-workflow/config.mjs",
-                "cloud/mcp/server/gitlab-workflow/config.mjs",
-                "cloud/mcp/server/knowledge-base/config.mjs",
-                "cloud/mcp/server/memory-core/config.mjs",
-                "cloud/mcp/server/neural-link/config.mjs",
-                "config.mjs",
-                "mcp/server/github-workflow/config.mjs",
-                "mcp/server/gitlab-workflow/config.mjs",
-                "mcp/server/knowledge-base/config.mjs",
-                "mcp/server/memory-core/config.mjs",
-                "mcp/server/neural-link/config.mjs"
-            ],
-            "cause": "All six are gitignored and produced by ai/scripts/setup/initServerConfigs.mjs at npm prepare, which copies each tracked config.template.mjs over its gitignored sibling. The five per-server templates carry edge/cloud dispositions and travel; their generator carries retire. The Brain therefore receives the templates and no way to materialize them.",
-            "owner": "neomjs/neo#17787 — the per-server half needs the plane-owned bootstrap its own retire rationale already promises."
-        },
         "other": {
             "edges": 25,
             "targets": [
@@ -5084,6 +5067,11 @@
             },
             "note": "These are NOT all movers. Most are Engine files that legitimately reference Brain surface and need REPOINTING or severing, not relocation - the apps/agentos cockpit, buildScripts, the retained workflows. The per-harness agent hooks (.claude, .codex, .kimi-code) are a genuine open question: they are Agent OS configuration, but both repositories host agents, so duplication may be correct where it is wrong everywhere else.",
             "owner": "neomjs/neo#17791 for severing, neomjs/neo#17787 for any custody call"
+        },
+        "generatedConfigOverlays": {
+            "mechanism": "Move-first, inherited from neomjs/neo: the overlays are gitignored and materialized by scripts/setup/initServerConfigs.mjs at npm prepare. Exactly seven outputs — root config.mjs, cloud/config.mjs, the three Host-Edge MCP servers (github-workflow, gitlab-workflow, neural-link) and the two Cloud ones (knowledge-base, memory-core). mcp/client/config.mjs is tracked rather than generated and is not among them.",
+            "planes": "The bootstrap walks BOTH plane roots. Visiting only the default pair would materialize the Host-Edge overlays, exit 0, and leave every Cloud overlay absent — success reported for half a job.",
+            "proof": "Deleted all seven and re-ran: 7/7 materialized."
         }
     },
     "wholeTreeReconciliation": {
@@ -5178,5 +5166,5 @@
         "unclassified": 0,
         "note": "A closure alone reached 616 of these. The gap was that root-script rows carry their executable inside evidence.command as a string while evidence.targets is empty, so a consumer keying on targets loses every npm-script entrypoint — six mcp-server.mjs among them — and losing an entrypoint loses its whole service tree. Recovering them from the command string added 86 files; a further 117 are unimported leaves no closure can reach and were classified by subsystem membership."
     },
-    "canonicalSha256": "30f582550adf2bb8eee0d498a323843299ceacbca5fbf7d90fbbdd9c6491b465"
+    "canonicalSha256": "6a896c86fc2553aa4ab380d83cefb57639a83500379154c949296084f0c6aec3"
 }
