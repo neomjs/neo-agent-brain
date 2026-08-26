@@ -31,7 +31,7 @@ The hard decision is **actuator privilege**. ADR-0025 §2.2 framed the actuator 
 
 The generic failure this answers end-to-end: a sibling saturates or wedges; diagnostics (0025) detects on resource reality + multi-fact evidence and emits a diagnosis; the recovery actuator (this ADR) applies the **lowest-privilege action that fits the class** — a B0 restart for a supervised child, a B1 container-restart for an external sibling — within a persisted anti-thrash envelope; `config-drift` routes to the autonomous lifecycle action and an un-healable class is **recorded** with its diagnosis (durable async-audit, never a blocking page — #14191).
 
-**Substrate audited at `dev`:** `ai/daemons/orchestrator/services/ProcessSupervisorService.mjs` (the B0 actuator — the shipped `killTask` + health-recycle path, #13900), `cloud/deploy/docker-compose*.yml` (services carry `healthcheck` + `depends_on` but **no `restart:` policy and no docker-socket mount** — B1 is unbuilt), ADR-0025 (the diagnosis contract this consumes).
+**Substrate audited at `dev`:** `ai/daemons/orchestrator/services/ProcessSupervisorService.mjs` (the B0 actuator — the shipped `killTask` + health-recycle path, #13900), `ai/deploy/docker-compose*.yml` (services carry `healthcheck` + `depends_on` but **no `restart:` policy and no docker-socket mount** — B1 is unbuilt), ADR-0025 (the diagnosis contract this consumes).
 
 ## 2. Decision
 
