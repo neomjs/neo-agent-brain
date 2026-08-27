@@ -4,7 +4,7 @@
     "version": "0.0.0",
     "private": true,
     "type": "module",
-    "description": "The Brain of the Neo.mjs organism — the Agent OS.",
+    "description": "The Agent OS and Brain of Neo.mjs: Memory Core, Knowledge Base, Active Hybrid GraphRAG, DreamService, MCP services, and cross-model collaboration.",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/neomjs/neo-agent-brain.git"
@@ -12,7 +12,49 @@
     "engines": {
         "node": ">=24.0.0"
     },
+    "author": "Tobias Uhlig",
     "license": "MIT",
+    "bugs": {
+        "url": "https://github.com/neomjs/neo-agent-brain/issues"
+    },
+    "homepage": "https://github.com/neomjs/neo-agent-brain#readme",
+    "keywords": [
+        "neo-mjs",
+        "software-organism",
+        "self-evolving",
+        "agent-operating-system",
+        "agent-os",
+        "autonomous-agent-os",
+        "ai-engineering-team",
+        "professional-ai-engineering-team",
+        "self-healing-software-organism",
+        "cross-model-swarm",
+        "cross-family-pr-review",
+        "autonomous-code-execution",
+        "active-hybrid-graphrag",
+        "memory-core",
+        "knowledge-base",
+        "dreamservice",
+        "dream-pipeline",
+        "neural-link",
+        "possession-interface",
+        "conversational-application-embodiment",
+        "live-application-mutability",
+        "model-context-protocol",
+        "mcp",
+        "mcp-server",
+        "ai-native",
+        "agentic",
+        "multi-agent",
+        "ai-agents",
+        "ai-code-review",
+        "ai-code-execution",
+        "ai-hot-patching",
+        "context-engineering",
+        "semantic-code-search",
+        "self-healing-code",
+        "runtime-inspection"
+    ],
     "scripts": {
         "postinstall": "neo-agent-skills-materialize",
         "prepare": "node ./ai/scripts/setup/initServerConfigs.mjs",
