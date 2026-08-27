@@ -524,6 +524,7 @@ test.describe('PLANE-LITERAL — cwd-relative plane literals', () => {
             // Brain consumes this guard from its Engine pin. Pins predating the Engine-side removal still
             // carry the retired Engine runner entry; prove the target stays absent until a newer pin
             // removes the external ledger row, rather than trying to read a deleted Brain file.
+            // Remove this compatibility branch and `retiredNightlyE2eEntry` when that row disappears.
             if (entry === retiredNightlyE2eEntry) {
                 expect(fs.existsSync(path.join(repoRoot, file))).toBe(false);
                 continue

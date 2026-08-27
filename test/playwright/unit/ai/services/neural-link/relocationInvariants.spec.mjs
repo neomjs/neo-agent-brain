@@ -216,10 +216,19 @@ test.describe('Neural Link relocation invariants', () => {
         // Same guard: an empty scan would make this zero a statement about nothing.
         expect(scanned.length).toBeGreaterThan(9);
 
-        // POSITIVE CONTROL: prove the detector reaches the exact process-listener shape, so the zero
-        // above is a measurement rather than a regex that matches nothing anywhere.
-        const processOwner = "process.on('unhandledRejection', () => {})";
+        // RED CONTROL: mutate one real scanned module through every forbidden registration form and
+        // run the exact same population filter. This proves the whole scan would identify the file,
+        // including statement indentation, rather than only proving the regex matches its own fixture.
+        const [controlModule] = scanned;
 
-        expect(installsListener.test(processOwner)).toBe(true);
+        for (const method of ['on', 'once', 'addListener', 'prependListener', 'prependOnceListener']) {
+            const mutated = scanned.map(module => module === controlModule ? {
+                      ...module,
+                      source: `${module.source}\n    process.${method}('unhandledRejection', () => {});`
+                  } : module),
+                  detected = mutated.filter(module => installsListener.test(module.source)).map(module => module.file);
+
+            expect(detected, method).toEqual([controlModule.file])
+        }
     });
 });
