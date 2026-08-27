@@ -216,11 +216,10 @@ test.describe('Neural Link relocation invariants', () => {
         // Same guard: an empty scan would make this zero a statement about nothing.
         expect(scanned.length).toBeGreaterThan(9);
 
-        // POSITIVE CONTROL: a module that legitimately owns one, because it IS the process — so the
-        // pattern finds a real listener, and the zero above is a measurement rather than a regex that
-        // matches nothing anywhere.
-        const runner = fs.readFileSync(path.join(rootDir, 'ai/scripts/lifecycle/nightlyE2eRunner.mjs'), 'utf8');
+        // POSITIVE CONTROL: prove the detector reaches the exact process-listener shape, so the zero
+        // above is a measurement rather than a regex that matches nothing anywhere.
+        const processOwner = "process.on('unhandledRejection', () => {})";
 
-        expect(installsListener.test(runner)).toBe(true);
+        expect(installsListener.test(processOwner)).toBe(true);
     });
 });
