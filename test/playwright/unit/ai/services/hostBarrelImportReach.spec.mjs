@@ -26,9 +26,9 @@ import {fileURLToPath} from 'node:url';
  *
  * ## Why acorn and not a grep
  *
- * `ai/scripts/diagnostics/planePlacementCensus.mjs` records the cost of the shortcut: a naive line
- * match counted doc-comment *mentions* of plane paths as code paths and inflated its census by roughly
- * 20% (61 → 52 once comments were stripped). An import inside a JSDoc block or a commented-out line is
+ * A measured plane-placement audit recorded the cost of the shortcut: a naive line match counted
+ * doc-comment *mentions* of plane paths as code paths and inflated its census by roughly 20%
+ * (61 → 52 once comments were stripped). An import inside a JSDoc block or a commented-out line is
  * not an import. Parsing is the only way to be sure the edge is real.
  *
  * ## What this does NOT establish
