@@ -31,7 +31,7 @@ import {
 const
     repoRoot     = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
     CLI          = path.join(repoRoot, 'ai/scripts/maintenance/materializeDeploymentPrescriptions.mjs'),
-    COMPOSE_FILE = path.join(repoRoot, 'ai/deploy/docker-compose.yml'),
+    COMPOSE_FILE = path.join(repoRoot, 'deploy/cloud/docker-compose.yml'),
     KNOB         = 'container-memory-ceiling',
     LEAF         = 'deploy.chroma.memoryCeilingBytes',
     ENV_KEY      = 'NEO_CHROMA_MEMORY_LIMIT',

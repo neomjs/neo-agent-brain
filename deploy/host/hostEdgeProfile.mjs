@@ -1,5 +1,5 @@
 /**
- * @module ai/deploy/hostEdgeProfile
+ * @module deploy/cloud/hostEdgeProfile
  * @summary THE host-edge posture contract — the one place the graphless machine-local
  * Orchestrator's deployment inputs are declared, consumed identically by the portable
  * `ai:host-edge` entrypoint and the macOS LaunchAgent that supervises it.
@@ -28,7 +28,7 @@
  * real boot and by the proof".
  *
  * @see ai/daemons/orchestrator/hostEdge.mjs
- * @see ai/deploy/com.neomjs.agent-os-host-edge.plist
+ * @see deploy/host/com.neomjs.agent-os-host-edge.plist
  * @see learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md
  */
 import os   from 'os';

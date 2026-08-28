@@ -16,7 +16,7 @@ import {
 } from '../../../../../../ai/scripts/diagnostics/providerLaneComposition.mjs';
 
 const repoRoot    = path.resolve(process.cwd());
-const profilePath = path.join(repoRoot, 'ai/deploy/docker-compose.provider-lanes.yml');
+const profilePath = path.join(repoRoot, 'deploy/cloud/docker-compose.provider-lanes.yml');
 
 const FIXTURE_ENV = Object.freeze({
     NEO_PROVIDER_LANES_CPU_TOTAL                                : '4',
@@ -591,7 +591,7 @@ test.describe('provider-lane composition receipt (#17021)', () => {
         const selectorNames = ['NEO_MODEL_PROVIDER', 'NEO_GRAPH_PROVIDER', 'NEO_EMBEDDING_PROVIDER'];
 
         for (const file of files) {
-            const source = fs.readFileSync(path.join(repoRoot, 'ai/deploy', file), 'utf8').replace(/!override\b/g, '');
+            const source = fs.readFileSync(path.join(repoRoot, 'deploy/cloud', file), 'utf8').replace(/!override\b/g, '');
             const doc    = loadYaml(source);
 
             for (const [serviceKey, service] of Object.entries(doc.services || {})) {

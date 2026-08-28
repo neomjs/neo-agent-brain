@@ -30,8 +30,8 @@ v13 ships **tiny slim MCP servers** backed by a **mature SDK** and a **clean dae
 | Service logic placement | Mostly in MCP server `services/*` directories | Mostly in SDK (`ai/services.mjs`); MCP servers thin |
 | In-process daemon-shaped services | `ai/daemons/` (DreamService, SwarmHeartbeatService, services/*) — invoked via SDK or operator scripts | Same classes, scheduled by Orchestrator daemon |
 | Standalone daemon processes | 1 (`ai/daemons/wake/daemon.mjs` — wake-event delivery, per-host singleton) | 2 (wake + orchestrator); both per-host singleton |
-| Summarization automation | Gated off ([#9942](https://github.com/neomjs/neo/issues/9942) daemon-collision fix); operator-runs only via `npm run ai:summarize-sessions` | Auto, daemon-driven, single-source-of-truth |
-| Sandman / Golden Path automation | Manual via `npm run ai:run-sandman` | Auto, scheduled by Orchestrator |
+| Summarization automation | Gated off ([#9942](https://github.com/neomjs/neo/issues/9942) daemon-collision fix); operator-runs only via `npm --prefix deploy/cloud run ai:summarize-sessions` | Auto, daemon-driven, single-source-of-truth |
+| Sandman / Golden Path automation | Manual via `npm --prefix deploy/cloud run ai:run-sandman` | Auto, scheduled by Orchestrator |
 | `NEO_MC_PRIMARY` single-writer gate | Active in-process gate for LOCAL multi-harness fleet (Claude Code worktrees + Antigravity + Codex Desktop + per-workspace language servers each spawning their own MC instance) | Retired (Orchestrator's per-host singleton supersedes it) |
 | `ai/services.mjs` SDK boundary | Mature; consumed by scripts, tests, and the MC server's own `processPendingSummarizations` path | Same shape, expanded scope |
 
@@ -81,12 +81,12 @@ A new per-host singleton Node process responsible for ALL scheduled work that to
 
 **Scope:**
 - Periodic summarization sweep ([#10813](https://github.com/neomjs/neo/issues/10813) Piece C, corrected substrate)
-- Sandman / Dream cycle (currently `npm run ai:run-sandman`)
-- Golden Path synthesis (currently `npm run ai:run-sandman`'s last phase)
+- Sandman / Dream cycle (currently `npm --prefix deploy/cloud run ai:run-sandman`)
+- Golden Path synthesis (currently `npm --prefix deploy/cloud run ai:run-sandman`'s last phase)
 - Graph maintenance (Hebbian decay, etc.)
 - Heartbeat coordination (currently `SwarmHeartbeatService` invoked manually)
 - Concept ingestion ([#10085](https://github.com/neomjs/neo/issues/10085) etc.)
-- **Knowledge Base delta-update sync** (currently `npm run ai:sync-kb`; KB already supports delta updates — orchestrator schedules them on a configurable cadence per the same per-host singleton pattern that drives summarization)
+- **Knowledge Base delta-update sync** (currently `npm --prefix deploy/cloud run ai:sync-kb`; KB already supports delta updates — orchestrator schedules them on a configurable cadence per the same per-host singleton pattern that drives summarization)
 - **Primary-checkout `dev` auto-sync + KB cascade** ([#11017](https://github.com/neomjs/neo/issues/11017)) — orchestrator detects `origin/dev` advances, fast-forwards the primary checkout when safe, and cascades KB sync from the refreshed primary context.
 - **Daily backup with rotation cap (PRIO 0 — non-negotiable)** — orchestrator-owned scheduled task; 30-day rotation cap (one month coverage); backup-success precondition for any DreamMode/Sandman task spawn ([#10780](https://github.com/neomjs/neo/issues/10780) discipline + post-#11018-retraction architectural correction; BackupService extraction lands as M4 per-task coordinator)
 - **Filesystem ingestor for graph** (transitive via DreamService — already wired at `ai/daemons/DreamService.mjs:16-179` invoking `FileSystemIngestor.syncWorkspaceToGraph()`; orchestrator-drives-DreamService-cycle naturally restores FS ingestion without separate scope item)
@@ -133,7 +133,7 @@ Per [Discussion #11025](https://github.com/orgs/neomjs/discussions/11025) gradua
 ### D4: SDK Migration Boundary
 
 `ai/services.mjs` is already the SDK boundary — imports services from each server's `services/` directory and exposes namespaced singletons (`Memory_SessionService`, `KB_QueryService`, etc.). Already consumed by:
-- Operator scripts (`ai:summarize-sessions`, `ai:run-sandman`, `ai:backup`)
+- Container-Cloud operator scripts (`npm --prefix deploy/cloud run ai:summarize-sessions`, `npm --prefix deploy/cloud run ai:run-sandman`, `npm --prefix deploy/cloud run ai:backup`)
 - Test fixtures
 - The MC server's own `processPendingSummarizations` (at the SDK boundary, not via MCP tool dispatch)
 
@@ -200,7 +200,7 @@ Extracted services land in `ai/daemons/services/` (Discussion #11025 OQ1 locatio
 ### M4 — Migrate Decomposed Daemon Services to Orchestrator
 [#10013](https://github.com/neomjs/neo/issues/10013) sub-epic + [#10028](https://github.com/neomjs/neo/issues/10028) — DreamService decomposition is partially done; remaining work re-shapes per-task coordinators to the Orchestrator-collaborator pattern (DreamCoordinatorService / SandmanCoordinatorService / BackupService / GoldenPathCoordinatorService / GraphMaintenanceCoordinatorService — each owning "what work is due" semantics; supervisor executes; orchestrator wires per D3.1 boundary). Same shape for SwarmHeartbeatService. **FS ingestor is transitive** (already in DreamService; coordinator-drives-cycle restores it naturally).
 
-**Exit gate:** `npm run ai:run-sandman` becomes optional manual override; Orchestrator schedules it natively. Sandman + Golden Path back automatically — single source of truth. **DreamService restoration thesis closed** — `sandman_handoff.md` produced by daemon-driven mathematical-weighted-priorities replaces manual cross-family next-task-selection cognition (per D3.1).
+**Exit gate:** `npm --prefix deploy/cloud run ai:run-sandman` becomes optional manual override; Orchestrator schedules it natively. Sandman + Golden Path back automatically — single source of truth. **DreamService restoration thesis closed** — `sandman_handoff.md` produced by daemon-driven mathematical-weighted-priorities replaces manual cross-family next-task-selection cognition (per D3.1).
 
 ### M5 — NEO_MC_PRIMARY Retirement
 Per D5. Strip in-process gates from `SessionService`, `HealthService`, `config.template.mjs`, docs, tests. [#10956](https://github.com/neomjs/neo/issues/10956) re-scoped accordingly.

@@ -1323,7 +1323,7 @@ class ConfigBase extends ConfigProvider {
                  * heap error into an uncatchable kernel OOM kill with no diagnostic.
                  *
                  * Sized with the orchestrator container limit and the parent ceiling as one decision
-                 * — see `ai/deploy/docker-compose.yml`, the orchestrator `deploy.resources` block.
+                 * — see `deploy/cloud/docker-compose.yml`, the orchestrator `deploy.resources` block.
                  * Raising this alone overruns the container; raising the container alone lifts the
                  * implicit ceiling of any child that lacks an explicit one. Lowering it is an
                  * optimization gated on a plane that has run unbroken long enough to show a real

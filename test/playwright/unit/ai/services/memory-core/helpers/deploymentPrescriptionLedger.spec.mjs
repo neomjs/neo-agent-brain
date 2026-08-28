@@ -23,14 +23,14 @@ import {renderPrescribedEnvironment} from '../../../../../../../ai/services/memo
  *    whose clock is newer and whose watermark is older.
  *
  * `docker compose config` resolves interpolation with no reachable daemon, so the effect boundary is
- * testable here. It runs against the REAL `ai/deploy/docker-compose.yml` via `--env-file` pointing at a
+ * testable here. It runs against the REAL `deploy/cloud/docker-compose.yml` via `--env-file` pointing at a
  * temp file: a hand-written compose fixture could be looser than production and pass on an expression
- * production does not use, and writing the real `ai/deploy/.env` would leave a window in which a peer's
+ * production does not use, and writing the real `deploy/cloud/.env` would leave a window in which a peer's
  * recreate picks up a test value.
  */
 
 const
-    COMPOSE_RELATIVE = 'ai/deploy/docker-compose.yml',
+    COMPOSE_RELATIVE = 'deploy/cloud/docker-compose.yml',
     KNOB             = 'container-memory-ceiling',
     LEAF             = 'deploy.chroma.memoryCeilingBytes',
     ENV_KEY          = 'NEO_CHROMA_MEMORY_LIMIT',

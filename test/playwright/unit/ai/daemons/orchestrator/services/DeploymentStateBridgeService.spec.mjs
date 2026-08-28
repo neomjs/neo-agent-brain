@@ -3523,7 +3523,7 @@ test.describe('classifyDirectProbeOutcome — a probe fault is not a service fau
         //
         // Asserted ACROSS the two artifacts rather than as a magic number, so moving either one without
         // the other fails here instead of on a live plane.
-        const compose = readFileSync(new URL('../../../../../../../ai/deploy/docker-compose.yml', import.meta.url), 'utf8'),
+        const compose = readFileSync(new URL('../../../../../../../deploy/cloud/docker-compose.yml', import.meta.url), 'utf8'),
               // `timeout\s*:` — the block-alignment gate pads compose keys to the house style
               // (`timeout     : 5s`), so any compose-touching commit re-aligns these blocks; the
               // extraction must accept both the padded and unpadded forms.
@@ -4740,7 +4740,7 @@ test.describe('direct-probe bearer credential — evidence that cannot authentic
         // Paired-contract assertion scoped to the ORCHESTRATOR BLOCK ONLY. A whole-file match is
         // decorative here: fleet-server carries the identical secret, so a global regex stays green
         // even when the orchestrator's own mount is deleted (measured — that false-green shipped).
-        const compose = readFileSync(new URL('../../../../../../../ai/deploy/docker-compose.yml', import.meta.url), 'utf8');
+        const compose = readFileSync(new URL('../../../../../../../deploy/cloud/docker-compose.yml', import.meta.url), 'utf8');
 
         const orchestratorBlock = compose
             .split(/^ {2}(?=\w[\w-]*:[ \t]*$)/m)

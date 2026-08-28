@@ -5,9 +5,9 @@
 # #17024 elects the fixed-envelope allocation; this profile consumes that result and never guesses it.
 #
 # Render + validate without starting containers:
-#   docker compose -f ai/deploy/docker-compose.yml \
-#     -f ai/deploy/docker-compose.provider-lanes.yml --profile cloud config --format json \
-#   | node ai/scripts/diagnostics/providerLaneComposition.mjs
+#   docker compose -f docker-compose.yml \
+#     -f docker-compose.provider-lanes.yml --profile cloud config --format json \
+#   | node ./node_modules/neo-agent-brain/ai/scripts/diagnostics/providerLaneComposition.mjs
 
 x-provider-lane-contract:
   schemaVersion: provider-lane-composition.v2

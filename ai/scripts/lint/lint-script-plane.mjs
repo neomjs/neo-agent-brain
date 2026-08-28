@@ -16,7 +16,7 @@ import {
  * Fails a build when an `ai/scripts` entrypoint's declared execution authority disagrees with what
  * its code actually reaches.
  *
- * The entrypoint population is read from `package.json`'s `ai:*` scripts rather than from a directory
+ * The entrypoint population is read from the repository package manifests' `ai:*` scripts rather than from a directory
  * listing, because the npm entry is the real invocation contract: a file nobody can invoke has no
  * plane to be wrong about, and a file invoked under a name is exactly where a wrong plane bites.
  *
@@ -52,6 +52,7 @@ const
  */
 export const SCAN_SURFACE = Object.freeze([
     'package.json',
+    'deploy/cloud/package.json',
     'ai/**',
     'ai/scripts/lint/lint-script-plane.mjs',
     'ai/scripts/lint/scriptPlaneClosure.mjs',
@@ -115,7 +116,6 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
     // per this ledger's own rule.
     'ai/services/knowledge-base/source/tenantParserLoader.mjs::dynamic-import::importModule',
     'ai/mcp/client/config.mjs::dynamic-import::load',
-    'ai/scripts/diagnostics/printAiConfig.mjs::dynamic-import::main',
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::buildConfigEnvDefaultsForTemplate',
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::collectConfigPathKindsFromTemplate',
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::withTier1ConfigForLint',
@@ -181,12 +181,12 @@ export function conflictIdentity(finding) {
  * directory-keyed predicate is the exact shape this lane retired, and re-introducing it as a
  * population filter would smuggle it back in through the census.
  *
- * @param {Object} [scripts] `package.json` scripts block.
+ * @param {Object} [scripts] Combined repository package scripts.
  * @param {Object} [authorityByScript] Output of `buildAuthorityByScript`.
  * @returns {Array<{name: String, rel: String, via: String}>}
  */
 export function readEntrypoints(
-    scripts           = require(path.join(PROJECT_ROOT, 'package.json')).scripts,
+    scripts           = readPackageScripts(),
     authorityByScript = buildAuthorityByScript()
 ) {
     const byRel = new Map();
@@ -214,6 +214,27 @@ export function readEntrypoints(
     });
 
     return [...byRel.values()]
+}
+
+/**
+ * @summary Reads executable script contracts from the Host root and independent Cloud package.
+ * @param {String} [projectRoot=PROJECT_ROOT]
+ * @returns {Object<String, String>} Combined script map; duplicate names retain the first manifest.
+ */
+export function readPackageScripts(projectRoot = PROJECT_ROOT) {
+    const scripts = {};
+
+    for (const relative of ['package.json', 'deploy/cloud/package.json']) {
+        const file = path.join(projectRoot, relative);
+
+        if (!fs.existsSync(file)) continue;
+
+        Object.entries(require(file).scripts || {}).forEach(([name, command]) => {
+            scripts[name] ??= command
+        })
+    }
+
+    return scripts
 }
 
 /**

@@ -131,7 +131,7 @@ export function parseArgs(argv) {
               mode,
               target : 'dev',
               project: null,
-              profile: 'ai/deploy/docker-compose.yml',
+              profile: 'deploy/cloud/docker-compose.yml',
               // The cohort whose revision receipt must move. `--services` narrows it.
               services      : DEFAULT_SERVICES,
               // The cohort whose config is observed and repaired. `null` means DISCOVER it from the plane's

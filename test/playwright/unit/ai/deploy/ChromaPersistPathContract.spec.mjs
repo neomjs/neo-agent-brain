@@ -22,9 +22,9 @@ const
     IMAGE_PERSIST_PATH = '/data',
     RETIRED_LEAF       = '/chroma/unified',
     COMPOSE_FILES      = [
-        'ai/deploy/docker-compose.yml',
-        'ai/deploy/docker-compose.dev.yml',
-        'ai/deploy/docker-compose.test.yml'
+        'deploy/cloud/docker-compose.yml',
+        'deploy/cloud/docker-compose.dev.yml',
+        'deploy/cloud/docker-compose.test.yml'
     ];
 
 /**

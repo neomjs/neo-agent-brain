@@ -7,7 +7,7 @@ import {load as yamlLoad} from 'js-yaml';
 
 const
     repoRoot      = path.resolve(process.cwd()),
-    deployDir     = path.join(repoRoot, 'ai/deploy'),
+    deployDir     = path.join(repoRoot, 'deploy/cloud'),
     basePath      = path.join(deployDir, 'docker-compose.yml'),
     overlayPath   = path.join(deployDir, 'docker-compose.local-agent-os.yml'),
     baseSource    = fs.readFileSync(basePath, 'utf8'),

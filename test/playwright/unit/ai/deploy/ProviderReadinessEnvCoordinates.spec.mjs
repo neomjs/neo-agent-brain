@@ -48,7 +48,7 @@ const
     // coordinate absent there is exactly as unreachable as one absent from the public root. A guard
     // reading one document proves consumer x leaf and silently permits the same defect on the other:
     // a deployment coordinate is a product of consumer x leaf x ROOT.
-    ROOTS       = ['ai/deploy/docker-compose.yml', 'ai/deploy/docker-compose.dev.yml'].map(rel => ({
+    ROOTS       = ['deploy/cloud/docker-compose.yml', 'deploy/cloud/docker-compose.dev.yml'].map(rel => ({
         rel,
         doc: yamlLoad(fs.readFileSync(path.join(repoRoot, rel), 'utf8'))
     })),

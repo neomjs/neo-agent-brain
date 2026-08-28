@@ -413,7 +413,7 @@ test.describe('ai/daemons/orchestrator/daemon.mjs (#11006/#11009)', () => {
     });
 
     test('#15759: cloud Compose gives the AiConfig data dir one dedicated, sole-owner volume', () => {
-        const compose        = yaml.load(fs.readFileSync(path.resolve(process.cwd(), 'ai/deploy/docker-compose.yml'), 'utf8'));
+        const compose        = yaml.load(fs.readFileSync(path.resolve(process.cwd(), 'deploy/cloud/docker-compose.yml'), 'utf8'));
         const dataDir        = '/app/.neo-ai-data/orchestrator-daemon';
         const volumeName     = 'orchestrator-state';
         const expectedMount  = `${volumeName}:${dataDir}`;
@@ -453,7 +453,7 @@ test.describe('ai/daemons/orchestrator/daemon.mjs (#11006/#11009)', () => {
     });
 
     test('#16283: cloud health follows the authority lease, not task completion', () => {
-        const compose      = yaml.load(fs.readFileSync(path.resolve(process.cwd(), 'ai/deploy/docker-compose.yml'), 'utf8'));
+        const compose      = yaml.load(fs.readFileSync(path.resolve(process.cwd(), 'deploy/cloud/docker-compose.yml'), 'utf8'));
         const orchestrator = compose.services.orchestrator;
         const probeDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-orchestrator-health-'));
         const stateFile    = path.join(probeDataDir, 'orchestrator-state.json');

@@ -105,7 +105,8 @@ test.describe('agentOsExtractionInventory — exact population × explicit autho
     test('deployment artifacts include the declared root and tracked shapes anywhere else', () => {
         const rows = collectDeploymentArtifacts({
             trackedFiles: [
-                'ai/deploy/kb-config.yaml',
+                'deploy/host/hostEdgeProfile.mjs',
+                'deploy/cloud/kb-config.yaml',
                 'ai/mcp/deploy/proxy/Caddyfile',
                 'ai/scripts/lifecycle/nightly-e2e/com.neomjs.nightly-e2e.plist',
                 'apps/example/README.md'
@@ -113,14 +114,16 @@ test.describe('agentOsExtractionInventory — exact population × explicit autho
         });
 
         expect(rows.map(row => row.identity)).toEqual([
-            'ai/deploy/kb-config.yaml',
             'ai/mcp/deploy/proxy/Caddyfile',
-            'ai/scripts/lifecycle/nightly-e2e/com.neomjs.nightly-e2e.plist'
+            'ai/scripts/lifecycle/nightly-e2e/com.neomjs.nightly-e2e.plist',
+            'deploy/cloud/kb-config.yaml',
+            'deploy/host/hostEdgeProfile.mjs'
         ]);
         expect(rows.map(row => row.evidence.discoveredVia)).toEqual([
-            'declared-root',
             'tracked-shape-sweep',
-            'tracked-shape-sweep'
+            'tracked-shape-sweep',
+            'declared-root',
+            'declared-root'
         ])
     });
 
@@ -1678,8 +1681,8 @@ test.describe('agentOsExtractionInventory — exact population × explicit autho
             .filter(row => row.surface === SURFACE.deploymentArtifact)
             .map(row => [row.identity, row]));
 
-        expect(deploymentByIdentity['ai/deploy/com.neomjs.agent-os-wake.plist'].disposition).toBe('edge');
-        expect(deploymentByIdentity['ai/deploy/Dockerfile'].disposition).toBe('cloud');
+        expect(deploymentByIdentity['deploy/host/com.neomjs.agent-os-wake.plist'].disposition).toBe('edge');
+        expect(deploymentByIdentity['deploy/cloud/Dockerfile'].disposition).toBe('cloud');
         expect(deploymentByIdentity['ai/mcp/deploy/proxy/Caddyfile'].disposition).toBe('cloud');
         expect(deploymentByIdentity['ai/scripts/lifecycle/nightly-e2e/com.neomjs.nightly-e2e.plist'].disposition)
             .toBe('stays-engine');

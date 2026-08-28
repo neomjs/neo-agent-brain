@@ -69,7 +69,7 @@ Windows-appropriate manifest-permission contract in `receiver.mjs`, which is a
 runtime change and not something this guide can assert on its behalf.
 
 `npm run ai:host-edge` resolves the complete **host-edge** posture from
-`ai/deploy/hostEdgeProfile.mjs`: the `host-edge` role, `deploymentMode=local`,
+`deploy/host/hostEdgeProfile.mjs`: the `host-edge` role, `deploymentMode=local`,
 a state root outside every checkout, and the lane closure. No installer, no
 plist, no shell-specific syntax. Complete for that role — it does **not** start
 the wake receiver, which is a separate final-mile boundary with its own
@@ -125,8 +125,8 @@ whatever `dev` pointed at the first time it ran and report success doing it:
 export NEO_REVISION=$(git ls-remote https://github.com/neomjs/neo.git dev | cut -f1)
 
 docker compose --env-file .env \
-  -f ai/deploy/docker-compose.yml \
-  -f ai/deploy/docker-compose.local-agent-os.yml \
+  -f deploy/cloud/docker-compose.yml \
+  -f deploy/cloud/docker-compose.local-agent-os.yml \
   --profile cloud --profile ingress --profile fleet up -d --wait
 ```
 
@@ -161,8 +161,8 @@ Verify what actually shipped by reading the artifact rather than the graph:
 
 ```sh
 docker compose --env-file .env \
-  -f ai/deploy/docker-compose.yml \
-  -f ai/deploy/docker-compose.local-agent-os.yml \
+  -f deploy/cloud/docker-compose.yml \
+  -f deploy/cloud/docker-compose.local-agent-os.yml \
   --profile cloud exec mc-server cat /app/.neo-revision
 ```
 
@@ -403,7 +403,7 @@ if launchctl print "gui/$(id -u)/com.neomjs.agent-os-host-edge" >/dev/null 2>&1;
   launchctl bootout "gui/$(id -u)/com.neomjs.agent-os-host-edge"
 fi
 
-cp ai/deploy/com.neomjs.agent-os-wake.plist "${NEO_WAKE_PLIST}"
+cp deploy/host/com.neomjs.agent-os-wake.plist "${NEO_WAKE_PLIST}"
 plutil -replace ProgramArguments -json "[
   \"$(command -v node)\", \"ai/daemons/wake/receiver.mjs\",
   \"--manifest\",  \"${NEO_WAKE_RECEIVER_MANIFEST}\",
@@ -442,7 +442,7 @@ an unnecessary widening — keep it loopback unless a measured LAN path requires
 otherwise.
 
 ```sh
-cp ai/deploy/com.neomjs.agent-os-host-edge.plist "${NEO_HOST_EDGE_PLIST}"
+cp deploy/host/com.neomjs.agent-os-host-edge.plist "${NEO_HOST_EDGE_PLIST}"
 plutil -replace ProgramArguments -json "[\"$(command -v node)\", \"ai/daemons/orchestrator/hostEdge.mjs\"]" "${NEO_HOST_EDGE_PLIST}"
 plutil -replace WorkingDirectory -string "${NEO_REPO_ROOT}" "${NEO_HOST_EDGE_PLIST}"
 plutil -replace EnvironmentVariables.PATH -string "${PATH}" "${NEO_HOST_EDGE_PLIST}"
@@ -471,8 +471,8 @@ path and the portable one cannot drift apart.
 
 ```sh
 docker compose --env-file .env \
-  -f ai/deploy/docker-compose.yml \
-  -f ai/deploy/docker-compose.local-agent-os.yml \
+  -f deploy/cloud/docker-compose.yml \
+  -f deploy/cloud/docker-compose.local-agent-os.yml \
   --profile cloud --profile ingress --profile fleet ps
 
 node ai/scripts/diagnostics/fleetHealthcheck.mjs \

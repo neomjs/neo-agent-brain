@@ -19,12 +19,14 @@ on:
     branches: [dev]
     paths:
       - 'package.json'
+      - 'deploy/cloud/package.json'
       - 'ai/**'
       - '.github/workflows/script-plane-lint.yml'
   push:
     branches: [dev]
     paths:
       - 'package.json'
+      - 'deploy/cloud/package.json'
       - 'ai/**'
       - '.github/workflows/script-plane-lint.yml'
 

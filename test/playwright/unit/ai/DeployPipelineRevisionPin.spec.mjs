@@ -12,7 +12,7 @@ import {load as yamlLoad}        from 'js-yaml';
  * WHY this is a unit spec and not an integration one: every assertion here is about what the script
  * decides BEFORE Docker runs. Faking `git` and `docker` on `PATH` keeps the whole contract testable
  * with no Docker daemon and no network — which matters because no agent sandbox has a reachable
- * daemon, and CI's integration lane builds `ai/deploy/docker-compose.test.yml`, a different stack
+ * daemon, and CI's integration lane builds `deploy/cloud/docker-compose.test.yml`, a different stack
  * that never exercises this script.
  *
  * The load-bearing assertion is NEGATIVE: on any unresolvable selector the script must exit non-zero
@@ -27,8 +27,8 @@ import {load as yamlLoad}        from 'js-yaml';
 
 const
     repoRoot       = path.resolve(process.cwd()),
-    composePath    = path.join(repoRoot, 'ai/deploy/docker-compose.yml'),
-    dockerfilePath = path.join(repoRoot, 'ai/deploy/Dockerfile'),
+    composePath    = path.join(repoRoot, 'deploy/cloud/docker-compose.yml'),
+    dockerfilePath = path.join(repoRoot, 'deploy/cloud/Dockerfile'),
     scriptPath     = path.join(repoRoot, 'ai/examples/cloud-deployment/deploy-pipeline.sh'),
     FULL_SHA       = '6be5afc1c30000000000000000000000000000aa';
 
@@ -57,7 +57,7 @@ async function createFakeBin(plainLines, peelLine = '') {
 
     // The deployment pipeline now owns a durable project `.env` carrier. Keeping composition in
     // the fixture root makes that carrier per-test instead of adopting the operator's real
-    // `ai/deploy/.env` or contending on one host-global deploy lock across parallel workers.
+    // `deploy/cloud/.env` or contending on one host-global deploy lock across parallel workers.
     await fs.writeFile(composeFile, 'services: {}\n');
 
     await fs.writeFile(path.join(bin, 'git'), [

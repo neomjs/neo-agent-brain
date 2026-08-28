@@ -12,8 +12,8 @@ import {isEmbeddingContextBelowSafeBand} from '../../embeddingSafeBand.mjs';
  * conventions never become a second authority in the election runner.
  *
  * @example
- * docker compose -f ai/deploy/docker-compose.yml \
- *   -f ai/deploy/docker-compose.provider-lanes.yml --profile cloud config --format json \
+ * docker compose -f deploy/cloud/docker-compose.yml \
+ *   -f deploy/cloud/docker-compose.provider-lanes.yml --profile cloud config --format json \
  * | node ai/scripts/diagnostics/providerLaneComposition.mjs
  */
 

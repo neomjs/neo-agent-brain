@@ -17,7 +17,7 @@ import {callHealthcheck, callJsonTool, createIdentityClient, getReadiness} from 
  * completes the adoption ladder without tacit maintainer knowledge").
  *
  * Test-evidence lane (1) — CI-safe deterministic: runs against
- * `ai/deploy/docker-compose.test.yml` via the
+ * `deploy/cloud/docker-compose.test.yml` via the
  * integration `composeWebServer`; no heavyweight local-model inference. Lanes (2) the
  * heavyweight local/docker provider proof and (3) the manual real-world harness demo are
  * kept distinct and are not run here.
@@ -45,7 +45,7 @@ import {callHealthcheck, callJsonTool, createIdentityClient, getReadiness} from 
 const KB_URL                  = process.env.NEO_INTEGRATION_KB_URL || 'http://127.0.0.1:13000';
 const MC_URL                  = process.env.NEO_INTEGRATION_MC_URL || 'http://127.0.0.1:13001';
 const PRODUCTION_COMPOSE_PATH = fileURLToPath(
-    new URL('../../../ai/deploy/docker-compose.yml', import.meta.url)
+    new URL('../../../deploy/cloud/docker-compose.yml', import.meta.url)
 );
 
 /**

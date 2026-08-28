@@ -29,7 +29,7 @@ on:
       # class the filters above already call out twice. The projection rule exists because a clock
       # went unprojected across two plane generations; leaving its own trigger unwatched would
       # rebuild that blind spot one layer up.
-      - 'ai/deploy/**'
+      - 'deploy/cloud/**'
       # The invariant is scanned ⊆ watched: the lint's implementation/capture rules walk every
       # `ai/**/*.mjs` and its test config-authority (C3) rule walks every `test/**/*.mjs`, so a
       # filter without these lets an introducing PR land ungated and turns the NEXT unrelated
@@ -65,7 +65,7 @@ on:
       # class the filters above already call out twice. The projection rule exists because a clock
       # went unprojected across two plane generations; leaving its own trigger unwatched would
       # rebuild that blind spot one layer up.
-      - 'ai/deploy/**'
+      - 'deploy/cloud/**'
       # The invariant is scanned ⊆ watched: the lint's implementation/capture rules walk every
       # `ai/**/*.mjs` and its test config-authority (C3) rule walks every `test/**/*.mjs`, so a
       # filter without these lets an introducing PR land ungated and turns the NEXT unrelated

@@ -42,7 +42,7 @@ import {load as yamlLoad} from 'js-yaml';
 const
     repoRoot    = path.resolve(process.cwd()),
     configText  = fs.readFileSync(path.join(repoRoot, 'ai/configBase.mjs'), 'utf8'),
-    composePath = path.join(repoRoot, 'ai/deploy/docker-compose.yml'),
+    composePath = path.join(repoRoot, 'deploy/cloud/docker-compose.yml'),
     composeDoc  = yamlLoad(fs.readFileSync(composePath, 'utf8')),
     // The Neo services built from the shared image. `local-model` is the ollama server itself and
     // is configured through `OLLAMA_*`, not through the client-side `NEO_OLLAMA_*` leaves.

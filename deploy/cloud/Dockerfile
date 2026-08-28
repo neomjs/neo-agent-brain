@@ -2,7 +2,7 @@
 # Neo source acquisition. DEFAULT: a pinned git clone — portable (no co-located
 # local checkout required, so any operator / CI host can build), correct-branch + freshly
 # pulled, reproducible per ref. Dev iteration can opt into the local build context with
-# `--build-arg NEO_SOURCE=local` (the build context must then be the neo repo root). A
+# `--build-arg NEO_SOURCE=local` (the context must contain the Brain package root). A
 # published npm package supersedes this after the v13 release.
 #   NEO_SOURCE   : 'git' (default) | 'local'
 #   NEO_REF      : git ref to fetch. MUST be a full 40-hex commit SHA — a mutable ref is

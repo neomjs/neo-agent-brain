@@ -9,7 +9,6 @@ const chatModel  = process.env.NEO_TEST_CHAT_MODEL || process.env.NEO_OPENAI_COM
 
 /**
  * @summary Reads a JSON request body.
- * Reads a JSON request body.
  * @param {http.IncomingMessage} request The incoming HTTP request.
  * @returns {Promise<Object>} The parsed JSON payload.
  */
@@ -31,7 +30,6 @@ function readJson(request) {
 
 /**
  * @summary Sends a JSON response.
- * Sends a JSON response.
  * @param {http.ServerResponse} response The outgoing HTTP response.
  * @param {Number} statusCode The HTTP status code.
  * @param {Object} payload The JSON payload.
@@ -44,7 +42,6 @@ function sendJson(response, statusCode, payload) {
 
 /**
  * @summary Builds a deterministic embedding vector for integration tests.
- * Builds a deterministic embedding vector for integration tests.
  * @param {String} text The input text.
  * @returns {Number[]} A vector matching the configured embedding dimensions.
  */
@@ -60,20 +57,19 @@ function buildEmbedding(text) {
 
 /**
  * @summary Extracts a deterministic chat response from an OpenAI-compatible payload.
- * Extracts a deterministic chat response from an OpenAI-compatible payload.
  * @param {Object} payload The OpenAI-compatible chat completion payload.
  * @returns {String} A deterministic response body.
  */
 function buildChatResponse(payload) {
-    const messages = Array.isArray(payload.messages) ? payload.messages : [];
-    const lastUser = [...messages].reverse().find(message => message.role === 'user');
-    const content  = lastUser?.content || messages.at(-1)?.content || '';
+    const messages   = Array.isArray(payload.messages) ? payload.messages : [];
+    const lastUser   = [...messages].reverse().find(message => message.role === 'user');
+    const content    = lastUser?.content || messages.at(-1)?.content || '';
     const fullPrompt = messages.map(message => message.content).join('\n');
 
     if (fullPrompt.includes('session_artifact') && fullPrompt.includes('cloud-readiness-graph-sentinel')) {
         return JSON.stringify({
-            a2a_version: '1.0',
-            agent_id   : 'neo-integration',
+            a2a_version     : '1.0',
+            agent_id        : 'neo-integration',
             session_artifact: {
                 graph: {
                     nodes: [{
@@ -97,7 +93,6 @@ function buildChatResponse(payload) {
 
 /**
  * @summary Sends a streaming OpenAI-compatible chat completion response.
- * Sends a streaming OpenAI-compatible chat completion response.
  * @param {http.ServerResponse} response The outgoing HTTP response.
  * @param {String} content The deterministic completion content.
  * @returns {void}

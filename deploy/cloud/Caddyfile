@@ -5,7 +5,7 @@
 # path routing to the Knowledge Base / Memory Core MCP servers plus the optional
 # Fleet control service, and identity-header spoofing defense.
 #
-# Wired into ai/deploy/docker-compose.yml as the `ingress` profile service:
+# Wired into docker-compose.yml as the `ingress` profile service:
 #   docker compose --profile cloud --profile ingress up
 #
 # Copy-paste-runnable as-is: NEO_DEPLOY_HOSTNAME defaults to localhost, giving
@@ -22,7 +22,8 @@
 # The request-handling directives are wrapped in a `route` block so Caddy honors
 # their written order: header-stripping MUST run before the (optional) auth layer,
 # but Caddy's default directive order would otherwise sort `forward_auth` ahead of
-# `request_header`. `route` pins literal order — see ai/mcp/deploy/proxy/Caddyfile.
+# `request_header`. `route` pins literal order — see the Brain package's
+# `ai/mcp/deploy/proxy/Caddyfile` reference variant.
 # ------------------------------------------------------------------------------
 
 {$NEO_DEPLOY_HOSTNAME:localhost}:443 {

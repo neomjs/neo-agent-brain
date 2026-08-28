@@ -95,7 +95,7 @@ export const PATH_RULES = [
     {prefix: 'ai/services/fleet/',              subsystem: 'fleet-tooling'},
     {prefix: 'ai/daemons/services/',            subsystem: 'dream-nightshift'},
     {prefix: 'ai/daemons/',                     subsystem: 'agent-cloud'},
-    {prefix: 'ai/deploy/',                      subsystem: 'agent-cloud'},
+    {prefix: 'deploy/cloud/',                      subsystem: 'agent-cloud'},
     {prefix: 'ai/agent/',                       subsystem: 'fleet-tooling'},
     {prefix: 'ai/scripts/',                     subsystem: 'ci-test-infra'},
     {prefix: 'ai/',                             subsystem: 'skill-machinery'},

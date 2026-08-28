@@ -44,8 +44,8 @@ import {load as yamlLoad} from 'js-yaml';
 
 const
     repoRoot         = path.resolve(process.cwd()),
-    baseComposePath  = path.join(repoRoot, 'ai/deploy/docker-compose.yml'),
-    devComposePath   = path.join(repoRoot, 'ai/deploy/docker-compose.dev.yml'),
+    baseComposePath  = path.join(repoRoot, 'deploy/cloud/docker-compose.yml'),
+    devComposePath   = path.join(repoRoot, 'deploy/cloud/docker-compose.dev.yml'),
     CONTAINER_TARGET = '/app/.neo-ai-data/backups',
     HOST_SOURCE_ENV  = 'NEO_HOST_BACKUP_ROOT',
     TARGET_ENV       = 'NEO_BACKUP_PATH',

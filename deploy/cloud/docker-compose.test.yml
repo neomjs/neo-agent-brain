@@ -36,12 +36,12 @@ services:
   embedding-server:
     image: node:24-alpine
     working_dir: /app
-    command: ["node", "ai/deploy/mock-openai-embedding-server.mjs"]
+    command: ["node", "./mock-openai-embedding-server.mjs"]
     environment:
       - NEO_TEST_EMBEDDING_DIMENSIONS=4096
       - NEO_TEST_EMBEDDING_MODEL=text-embedding-qwen3-embedding-8b
     volumes:
-      - ../..:/app:ro
+      - ./mock-openai-embedding-server.mjs:/app/mock-openai-embedding-server.mjs:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:11434/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s
@@ -52,10 +52,10 @@ services:
 
   kb-server:
     build:
-      context: ../..
-      dockerfile: ai/deploy/Dockerfile
+      context: ./node_modules/neo-agent-brain
+      dockerfile: ../../Dockerfile
       args:
-        NEO_SOURCE: local  # build the local checkout under test, not a remote clone
+        NEO_SOURCE: local  # build the installed Brain dependency under test, not a remote clone
         TARGET_SERVER: knowledge-base
     environment:
       - NEO_TRANSPORT=streamable-http
@@ -78,7 +78,7 @@ services:
       # Production deploy images keep the broad `test` tree out of the build
       # context; this test-only mount preserves the KB ingestion golden fixtures
       # that the integration matrix executes from inside the kb-server container.
-      - ../../test/playwright/integration/ai/kb-ingestion/fixtures/external-workspaces:/app/test/playwright/integration/ai/kb-ingestion/fixtures/external-workspaces:ro
+      - ./node_modules/neo-agent-brain/test/playwright/integration/ai/kb-ingestion/fixtures/external-workspaces:/app/test/playwright/integration/ai/kb-ingestion/fixtures/external-workspaces:ro
     depends_on:
       chroma:
         condition: service_healthy
@@ -91,10 +91,10 @@ services:
 
   kb-server-oidc:
     build:
-      context: ../..
-      dockerfile: ai/deploy/Dockerfile
+      context: ./node_modules/neo-agent-brain
+      dockerfile: ../../Dockerfile
       args:
-        NEO_SOURCE: local  # build the local checkout under test, not a remote clone
+        NEO_SOURCE: local  # build the installed Brain dependency under test, not a remote clone
         TARGET_SERVER: knowledge-base
     environment:
       - NEO_TRANSPORT=streamable-http
@@ -130,10 +130,10 @@ services:
 
   mc-server:
     build:
-      context: ../..
-      dockerfile: ai/deploy/Dockerfile
+      context: ./node_modules/neo-agent-brain
+      dockerfile: ../../Dockerfile
       args:
-        NEO_SOURCE: local  # build the local checkout under test, not a remote clone
+        NEO_SOURCE: local  # build the installed Brain dependency under test, not a remote clone
         TARGET_SERVER: memory-core
     environment:
       - NEO_TRANSPORT=streamable-http
@@ -181,9 +181,9 @@ services:
   oidc-server:
     image: node:24-alpine
     working_dir: /app
-    command: ["node", "ai/deploy/mock-oidc-server.mjs"]
+    command: ["node", "./mock-oidc-server.mjs"]
     volumes:
-      - ../..:/app:ro
+      - ./mock-oidc-server.mjs:/app/mock-oidc-server.mjs:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s
@@ -194,10 +194,10 @@ services:
 
   mc-server-oidc:
     build:
-      context: ../..
-      dockerfile: ai/deploy/Dockerfile
+      context: ./node_modules/neo-agent-brain
+      dockerfile: ../../Dockerfile
       args:
-        NEO_SOURCE: local  # build the local checkout under test, not a remote clone
+        NEO_SOURCE: local  # build the installed Brain dependency under test, not a remote clone
         TARGET_SERVER: memory-core
     environment:
       - NEO_TRANSPORT=streamable-http
@@ -245,7 +245,8 @@ services:
       - "13002:3002"
 
   # Exact documented strip -> authenticate -> inject reference ingress. The test stack overrides
-  # only coordinates; route semantics come directly from ai/mcp/deploy/proxy/Caddyfile.
+  # only coordinates; route semantics come from the installed Brain dependency's
+  # ai/mcp/deploy/proxy/Caddyfile.
   reference-ingress:
     image: caddy:2-alpine
     environment:
@@ -254,7 +255,7 @@ services:
       - NEO_MCP_PROXY_KB_UPSTREAM=kb-server:3000
       - NEO_MCP_PROXY_MC_UPSTREAM=mc-server:3001
     volumes:
-      - ../mcp/deploy/proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./node_modules/neo-agent-brain/ai/mcp/deploy/proxy/Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
       kb-server:
         condition: service_started

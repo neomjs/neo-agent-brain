@@ -13,7 +13,7 @@ import {buildComposeFragment, buildPipelineEnv, parseArgs} from '../../../../../
 
 const repoRoot   = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
       PARITY_REL = 'ai/scripts/lint/config-leaf-parity.json',
-      PROFILE    = 'ai/deploy/docker-compose.yml',
+      PROFILE    = 'deploy/cloud/docker-compose.yml',
       TARGET_SHA = '8a5808007ac4647041d2b425ceba76426a707a50',
       OLD_SHA    = 'efe4490dd7fef0beb9df9ae21363b8e44e05ad3d',
       AUTHORITY  = 'NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE';
@@ -117,19 +117,19 @@ test.describe('resolveCensus fails closed', () => {
         // deployment to a contract that is not its own.
         const parity = {$composeDefaultParity: {profiles: {[PROFILE]: {}}, census: {}, forbiddenEnv: {}}};
 
-        expect(() => resolveCensus(parity, 'ai/deploy/invented.yml')).toThrow(/refusing to plan against a defaulted contract/)
+        expect(() => resolveCensus(parity, 'deploy/cloud/invented.yml')).toThrow(/refusing to plan against a defaulted contract/)
     });
 
     test('throws when the census block describes a different profile than requested', () => {
         const parity = {
             $composeDefaultParity: {
-                profiles    : {[PROFILE]: {}, 'ai/deploy/docker-compose.dev.yml': {}},
+                profiles    : {[PROFILE]: {}, 'deploy/cloud/docker-compose.dev.yml': {}},
                 census      : {profile: PROFILE, requiredDeploymentInputs: []},
                 forbiddenEnv: {}
             }
         };
 
-        expect(() => resolveCensus(parity, 'ai/deploy/docker-compose.dev.yml')).toThrow(/per-profile and cannot be reused/)
+        expect(() => resolveCensus(parity, 'deploy/cloud/docker-compose.dev.yml')).toThrow(/per-profile and cannot be reused/)
     });
 
     test('the LIVE parity document still resolves, and still declares the boot-blocking key', async () => {
