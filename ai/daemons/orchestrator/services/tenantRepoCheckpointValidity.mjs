@@ -366,6 +366,12 @@ function normalizeEmbeddingRecovery(value) {
  * has never been tried by this contract (`pending`) from one whose bounded replay
  * failed (`failed`) without relying on historical failure counters.
  *
+ * The same field carries that distinction across the **absent-rev** case, which is
+ * the harder one: a repo with no `lastIngestedRev` may be one nobody has started,
+ * or one that has started and failed every single time. Only the second is
+ * actionable, and reporting both as `uninitialized` hides it behind the reading
+ * that invites no investigation.
+ *
  * @param {String|Object|null} state Persisted checkpoint state.
  * @returns {String} One `TenantRepoCheckpointStatus` value.
  */
@@ -393,7 +399,13 @@ export function classifyTenantRepoCheckpoint(state) {
     }
 
     if (!normalizedState?.lastIngestedRev) {
-        return TenantRepoCheckpointStatus.UNINITIALIZED;
+        // A repo that has ATTEMPTED at the current contract version and never succeeded is not
+        // uninitialized — it is failed. Decided HERE rather than at the `FAILED` return below,
+        // because that return is unreachable for this population: the absent-rev branch wins first,
+        // so a repo could fail every sweep forever and still report "nobody has started this".
+        return attemptVersion === TENANT_REPO_INGEST_CONTRACT_VERSION
+            ? TenantRepoCheckpointStatus.FAILED
+            : TenantRepoCheckpointStatus.UNINITIALIZED;
     }
 
     if (

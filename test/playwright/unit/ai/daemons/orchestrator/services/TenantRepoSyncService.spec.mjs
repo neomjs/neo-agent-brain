@@ -2322,6 +2322,60 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         )).toBe('complete');
     });
 
+    // A repo with no `lastIngestedRev` is either one nobody has started or one that has started and
+    // failed every time. Only the second is actionable, and `uninitialized` is the reading that
+    // invites no investigation — so collapsing them hid the alarming case behind the boring one.
+    // Specimen that motivated this: 41 consecutive failures reported as `uninitialized` (#64).
+    const nullRevState = (overrides = {}) => ({
+        lastIngestedRev                      : null,
+        lastRunAttemptAt                     : 1_700_000_000_000,
+        consecutiveFailures                  : 0,
+        ingestContractVersion                : null,
+        lastAttemptedIngestContractVersion   : null,
+        lastCommittedMaterializationAttemptId: null,
+        ...overrides
+    });
+
+    test('a repo that ATTEMPTED at the current contract and never succeeded reports failed, not uninitialized (#64)', () => {
+        const attemptedAndFailed = nullRevState({
+            lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION,
+            consecutiveFailures               : 41
+        });
+
+        expect(classifyTenantRepoCheckpoint(attemptedAndFailed)).toBe('failed');
+    });
+
+    test('a repo nobody has started still reports uninitialized', () => {
+        // The distinction has to survive in BOTH directions, or the fix trades one wrong reading for
+        // another: a genuinely untouched repo must not start looking like a failure.
+        expect(classifyTenantRepoCheckpoint(nullRevState())).toBe('uninitialized');
+    });
+
+    test('an attempt at a PRIOR contract version does not count as a current-contract failure', () => {
+        // `failed` means "this contract tried and could not". A legacy attempt predating the current
+        // contract has not been tried by it, which is the `pending`/`uninitialized` reading the
+        // existing `lastAttemptedIngestContractVersion` checks already draw elsewhere.
+        expect(classifyTenantRepoCheckpoint(nullRevState({
+            lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION - 1
+        }))).toBe('uninitialized');
+    });
+
+    test('the reclassified state becomes revalidation-eligible, which is what the admission cap is for', () => {
+        // Not incidental: the per-sweep cap exists to bound "automatic null-base replays", and a
+        // never-succeeded repo does one every sweep. While it classified `uninitialized` it bypassed
+        // that bound entirely.
+        //
+        // This is also the precondition that made `TenantRepoSyncService`'s deferral row unsafe: it
+        // dereferenced `priorState.lastIngestedRev.slice(0, 8)` unguarded, which could only ever be
+        // reached with a non-null rev while this returned false. Guarded in the same change.
+        const attemptedAndFailed = nullRevState({
+            lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION
+        });
+
+        expect(requiresTenantRepoCheckpointRevalidation(attemptedAndFailed)).toBe(true);
+        expect(requiresTenantRepoCheckpointRevalidation(nullRevState())).toBe(false);
+    });
+
     test('a repeated manual full replay of an unchanged EMPTY repo completes the SECOND time too (#16897)', async () => {
         // The sibling above runs a CADENCE sweep, whose second envelope is manifest-less and incremental,
         // so it never reaches the zero-effect chain. This one forces `fullReplay: true` on both sweeps,
