@@ -62,19 +62,26 @@ export const memoryCoreConfigTemplateTestMatch =
 // green that means nothing. Reintroduce it here the same way if neo ever grows its own wall-clock
 // budgets — a ratio or a loose timeout is NOT one, since those survive contention.
 
-// Brain-tier install gate (the two-path install tier: Body default, Brain opt-in).
-// A base `npm install` no longer installs the Brain set (`package.brain.json`: better-sqlite3,
-// chromadb, @chroma-core/default-embed). Brain specs import `better-sqlite3` directly, so
-// without the set they cannot even be COLLECTED — the gate therefore excludes every
-// Brain-dependent project at config load (one named skip line) instead of crashing
-// mid-collection. `npm run install-brain` arms the set; any plain `npm install` / `npm ci`
-// prunes it again (npm removes extraneous packages), which simply re-engages this gate.
+// Brain-tier install gate.
+// The Brain root manifest owns better-sqlite3, chromadb, and @chroma-core/default-embed. Without a
+// complete root install, Brain specs cannot even be COLLECTED — the gate therefore excludes every
+// Brain-dependent project locally (one named skip line) instead of crashing mid-collection, while
+// CI fails before collection. A normal `npm ci` restores the set. CI deliberately installs with
+// `--ignore-scripts`, so its workflow rebuilds better-sqlite3 explicitly before invoking this config.
 //
 // Two graph-fixture hook specs live outside the `ai/**` path seam yet statically import
 // `better-sqlite3`, so they are Brain-tier by function. Named here per this config's own
 // named-match idiom — a THIRD brain-importing hook spec must be added explicitly (that is the
 // fragility the path seam exists to avoid; keep the list at two).
 export const brainHookTestMatch = /[\\/]hooks[\\/](codexContextHook|kimiTurnPresenceHook)\.spec\.mjs$/;
+
+/**
+ * @summary Current recovery path for an absent or partial Brain dependency set.
+ * @type {String}
+ */
+export const BRAIN_TIER_SETUP_GUIDANCE =
+    'Run `npm ci`. When reproducing CI with `--ignore-scripts`, follow it with ' +
+    '`npm rebuild better-sqlite3`.';
 
 /**
  * @summary Probes whether the Brain-tier set is installed AND consumable, as resolved from `rootDir`.
@@ -124,7 +131,7 @@ export function assertBrainTierForEnvironment({brainPresent, isCI}) {
         throw new Error(
             '[playwright.config.unit] CI requires the complete Brain tier (better-sqlite3, chromadb, ' +
             '@chroma-core/default-embed) but it is absent or partial — a skipped brain matrix on a ' +
-            'green CI run is silent coverage loss. Run `npm run install-brain` before this suite.'
+            `green CI run is silent coverage loss. ${BRAIN_TIER_SETUP_GUIDANCE}`
         )
     }
 }
@@ -215,7 +222,10 @@ const
 assertBrainTierForEnvironment({brainPresent, isCI});
 
 if (!brainPresent) {
-    console.info('[playwright.config.unit] Brain-tier set not installed (see package.brain.json) — skipping chroma-setup + unit-brain* projects. Run `npm run install-brain` to arm them.');
+    console.info(
+        '[playwright.config.unit] Brain-tier set is absent or partial — skipping chroma-setup + ' +
+        `unit-brain* projects. ${BRAIN_TIER_SETUP_GUIDANCE}`
+    );
 }
 
 export default defineConfig({
