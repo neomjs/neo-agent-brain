@@ -205,3 +205,28 @@ test('every Compose build and non-dev bind resolves inside the Cloud package', (
 
     expect(liveDevBinds.sort()).toEqual(['kb-server', 'mc-server', 'orchestrator'])
 });
+
+test('integration installs the independent package and then tests the exact checkout', () => {
+    const
+        workflow = loadYaml(fs.readFileSync(path.join(repoRoot, '.github/workflows/brain-integration.yml'), 'utf8')),
+        setup    = workflow.jobs.test.steps.find(step => step.uses === 'actions/setup-node@v6'),
+        commands = workflow.jobs.test.steps.filter(step => step.run).map(step => ({
+            cwd: step['working-directory'] || '.',
+            run: step.run
+        }));
+
+    expect(setup.with['cache-dependency-path']).toContain('package-lock.json');
+    expect(setup.with['cache-dependency-path']).toContain('deploy/cloud/package-lock.json');
+    expect(commands).toContainEqual({
+        cwd: 'deploy/cloud',
+        run: 'npm ci --ignore-scripts --no-audit --no-fund'
+    });
+    expect(commands).toContainEqual({
+        cwd: '.',
+        run: 'npm pack --ignore-scripts --pack-destination deploy/cloud'
+    });
+    expect(commands).toContainEqual({
+        cwd: 'deploy/cloud',
+        run: 'npm install --ignore-scripts --no-save --package-lock=false ./neo-agent-brain-0.0.0.tgz'
+    })
+});
