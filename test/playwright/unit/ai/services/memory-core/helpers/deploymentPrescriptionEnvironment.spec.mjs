@@ -20,7 +20,7 @@ import {
  * absent — and skipping is safe only because the render-level tests below stand on their own.
  */
 
-const COMPOSE_RELATIVE = 'ai/deploy/docker-compose.yml';
+const COMPOSE_RELATIVE = 'deploy/cloud/docker-compose.yml';
 
 /**
  * @returns {Boolean} whether `docker compose config` can run in this environment
@@ -35,7 +35,7 @@ function composeConfigAvailable() {
 }
 
 /**
- * @summary True when `ai/deploy/.env` is a symlink whose target does not exist.
+ * @summary True when `deploy/cloud/.env` is a symlink whose target does not exist.
  *
  * The deployment-prescription workflow links that path at a per-operator store outside the repo, so
  * a machine that has run it once carries the link whether or not the target survives. `existsSync`
@@ -133,12 +133,12 @@ test.describe('deployment prescription -> env file', () => {
 
         const
             repoRoot = process.cwd(),
-            envPath  = path.join(repoRoot, 'ai/deploy/.env');
+            envPath  = path.join(repoRoot, 'deploy/cloud/.env');
 
         // An environment precondition, exactly like the compose-CLI check above: this test WRITES the
         // env file, and a link to a vanished prescription store cannot be written through. Skipping
         // states that; failing would blame the suite for the machine.
-        test.skip(danglingEnvSymlink(envPath), 'ai/deploy/.env is a symlink to a missing prescription store');
+        test.skip(danglingEnvSymlink(envPath), 'deploy/cloud/.env is a symlink to a missing prescription store');
 
         const
             existed  = fs.existsSync(envPath),

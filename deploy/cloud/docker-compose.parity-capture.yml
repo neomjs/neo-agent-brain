@@ -24,12 +24,12 @@ services:
   embedding-server:
     image: node:24-alpine
     working_dir: /app
-    command: ["node", "ai/deploy/mock-openai-embedding-server.mjs"]
+    command: ["node", "./mock-openai-embedding-server.mjs"]
     environment:
       NEO_TEST_EMBEDDING_DIMENSIONS: "4096"
       NEO_TEST_EMBEDDING_MODEL: text-embedding-qwen3-embedding-8b
     volumes:
-      - ../..:/app:ro
+      - ./mock-openai-embedding-server.mjs:/app/mock-openai-embedding-server.mjs:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:11434/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s

@@ -221,7 +221,7 @@ export function listTrackedFiles({projectRoot = PROJECT_ROOT, pathspecs = []} = 
 
 /**
  * @summary Discovers every tracked deployment artifact, including deployment-shaped files outside
- * the canonical `ai/deploy/` root.
+ * the canonical `deploy/host/` and `deploy/cloud/` roots.
  *
  * The root population stays exact even for support files whose basename is not deployment-shaped
  * (`kb-config.yaml`, mock servers, Host-Edge profile code). The global shape sweep catches the
@@ -237,7 +237,8 @@ export function collectDeploymentArtifacts({
     projectRoot = PROJECT_ROOT,
     trackedFiles = listTrackedFiles({projectRoot})
 } = {}) {
-    return trackedFiles.map(normalizePath).filter(file => file.startsWith('ai/deploy/') ||
+    return trackedFiles.map(normalizePath).filter(file => file.startsWith('deploy/host/') ||
+        file.startsWith('deploy/cloud/') ||
         DEPLOYMENT_ARTIFACT_RE.test(path.posix.basename(file))).map(file => ({
         surface    : SURFACE.deploymentArtifact,
         identity   : file,
@@ -245,7 +246,7 @@ export function collectDeploymentArtifacts({
         disposition: null,
         rationale  : null,
         evidence   : {
-            discoveredVia: file.startsWith('ai/deploy/') ? 'declared-root' : 'tracked-shape-sweep'
+            discoveredVia: file.startsWith('deploy/') ? 'declared-root' : 'tracked-shape-sweep'
         }
     })).sort(compareRows)
 }

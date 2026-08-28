@@ -297,7 +297,7 @@ test.describe('GitHub workflow concurrency (#15593)', () => {
     test('the Tests classifier routes the parity surface to its lane (and only for those paths)', async () => {
         const workflow = readWorkflow('test.yml'),
               script   = workflow.jobs.changes.steps.find(step => step.id === 'scope').with.script,
-              parity   = createRuntime({ eventHead: 'current-head', files: ['ai/deploy/docker-compose.dev.yml'] }),
+              parity   = createRuntime({ eventHead: 'current-head', files: ['deploy/cloud/docker-compose.dev.yml'] }),
               docsOnly = createRuntime({ eventHead: 'current-head', files: ['learn/guides/README.md'] });
 
         await executeScript(script, parity);

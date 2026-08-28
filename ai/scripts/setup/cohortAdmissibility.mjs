@@ -62,7 +62,7 @@
  * cannot tolerate: a FALSE INADMISSIBLE that refuses a migration which would have succeeded.
  *
  * The reference Compose profile does not template every required value. `NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE`
- * is written as a literal — `ai/deploy/docker-compose.yml:270` and `docker-compose.dev.yml:318` both
+ * is written as a literal — `deploy/cloud/docker-compose.yml:270` and `docker-compose.dev.yml:318` both
  * pin `container-plane` directly rather than interpolating `${...}`. A caller that reads the
  * deployment's `.env` file and passes that as `providedEnv` therefore sees the key as absent, and this
  * predicate correctly reports the input it was given as missing — while the daemon it is asked about

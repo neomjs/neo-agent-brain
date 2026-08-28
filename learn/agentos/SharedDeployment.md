@@ -10,7 +10,7 @@ Shared deployment removes that staleness by giving the team **one Chroma process
 
 This document is the single source of truth for the shared-deployment MVP profile. It deliberately does not cover full multi-tenant data privacy isolation — that work continues under [#10011](https://github.com/neomjs/neo/issues/10011) and is out of MVP scope.
 
-For the current Agent OS cloud deployment authority and reference topology handoffs, see the [Deployment Cookbook](DeploymentCookbook.md) and the [`ai/deploy/`](../../ai/deploy/) directory.
+For the current Agent OS cloud deployment authority and reference topology handoffs, see the [Deployment Cookbook](DeploymentCookbook.md) and the [`deploy/cloud/`](../../deploy/cloud/) directory.
 
 ## Architecture: One Process, Many Collections, Two Servers
 
@@ -211,7 +211,7 @@ See [`MemoryCore.md` §Healthcheck Response Shape](./MemoryCore.md) for the full
 
 The Knowledge Base's healthcheck mirrors the connectivity assertion (collection counts, embedding status). When both servers report `connected: true` against the same shared `{host, port}`, the topology is verified.
 
-The local staged-stack fixture verifies this deployed shape with `npm run test-integration-unified`: Playwright starts `ai/deploy/docker-compose.test.yml`, then calls both servers' MCP `healthcheck` tools over `/mcp` (see [HeartbeatPropagation.integration.spec.mjs](https://github.com/neomjs/neo/blob/dev/test/playwright/integration/HeartbeatPropagation.integration.spec.mjs)). This is the canonical local smoke path for KB + MC + shared Chroma healthcheck validation. It also writes and queries same-session memories as different proxy identities in `test/playwright/integration/CrossTenantIsolation.integration.spec.mjs`, proving tenant-scoped memory reads do not leak across the trusted proxy-identity boundary.
+The local staged-stack fixture verifies this deployed shape with `npm run test-integration-unified`: Playwright starts `deploy/cloud/docker-compose.test.yml`, then calls both servers' MCP `healthcheck` tools over `/mcp` (see [HeartbeatPropagation.integration.spec.mjs](https://github.com/neomjs/neo/blob/dev/test/playwright/integration/HeartbeatPropagation.integration.spec.mjs)). This is the canonical local smoke path for KB + MC + shared Chroma healthcheck validation. It also writes and queries same-session memories as different proxy identities in `test/playwright/integration/CrossTenantIsolation.integration.spec.mjs`, proving tenant-scoped memory reads do not leak across the trusted proxy-identity boundary.
 
 The Memory Core's healthcheck additionally surfaces active provider observability under `providers.*` (#10723, #10724):
 

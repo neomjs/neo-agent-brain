@@ -7,7 +7,7 @@ import {fileURLToPath}    from 'node:url';
 const __filename  = fileURLToPath(import.meta.url);
 const __dirname   = path.dirname(__filename);
 const repoRoot    = path.resolve(__dirname, '../../../..');
-const composeFile = path.join(repoRoot, 'ai/deploy/docker-compose.test.yml');
+const composeFile = path.join(repoRoot, 'deploy/cloud/docker-compose.test.yml');
 const projectName = process.env.NEO_INTEGRATION_COMPOSE_PROJECT || 'neo-integration-test';
 const readyPort   = Number(process.env.NEO_INTEGRATION_READY_PORT || 13090);
 

@@ -40,7 +40,7 @@ import {
 
 const
     repoRoot    = path.resolve(process.cwd()),
-    profilePath = path.join(repoRoot, 'ai/deploy/docker-compose.provider-lanes.yml'),
+    profilePath = path.join(repoRoot, 'deploy/cloud/docker-compose.provider-lanes.yml'),
     REVISION    = '1'.repeat(40);
 
 function buildComposition(candidate) {

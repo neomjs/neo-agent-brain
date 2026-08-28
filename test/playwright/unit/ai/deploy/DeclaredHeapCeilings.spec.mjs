@@ -41,7 +41,7 @@ function composeCliAvailable() {
 
 const
     repoRoot    = path.resolve(process.cwd()),
-    composeDir  = path.join(repoRoot, 'ai/deploy'),
+    composeDir  = path.join(repoRoot, 'deploy/cloud'),
     composePath = path.join(composeDir, 'docker-compose.yml'),
     composeText = fs.readFileSync(composePath, 'utf8'),
     compose     = yamlLoad(composeText),

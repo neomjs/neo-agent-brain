@@ -6,7 +6,7 @@ import path           from 'node:path';
 import process        from 'node:process';
 
 /**
- * Guards the source-acquisition ref contract of `ai/deploy/Dockerfile`.
+ * Guards the source-acquisition ref contract of `deploy/cloud/Dockerfile`.
  *
  * ## The defect this exists to keep closed
  *
@@ -39,7 +39,7 @@ import process        from 'node:process';
 
 const
     repoRoot       = path.resolve(process.cwd()),
-    dockerfilePath = path.join(repoRoot, 'ai/deploy/Dockerfile'),
+    dockerfilePath = path.join(repoRoot, 'deploy/cloud/Dockerfile'),
 
     REPO_URL       = 'https://github.com/neomjs/neo.git',
     SHA_A          = '6b52663db329aa90df52d0b5d64d9a9bac07312e',

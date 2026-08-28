@@ -867,7 +867,7 @@ export async function main(argv = process.argv.slice(2)) {
                 envPath,
                 statePath,
                 deploymentRunId,
-                projectEnvPath  : options.projectEnv || path.resolve('ai/deploy/.env'),
+                projectEnvPath  : options.projectEnv || path.resolve('deploy/cloud/.env'),
                 adoptExistingEnv: Boolean(options.adoptExistingEnv),
                 resolveContext  : record => resolveDeploymentRuntimeContext(record, {
                     composeProject: options.composeProject

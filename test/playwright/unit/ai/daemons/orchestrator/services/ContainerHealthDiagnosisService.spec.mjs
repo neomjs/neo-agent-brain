@@ -1908,7 +1908,7 @@ test.describe('sustained window is measured, not asserted', () => {
  */
 test.describe('service classification is exhaustive over the real roster and genuinely immutable', () => {
     const providerProfile = loadYaml(fs.readFileSync(
-        path.resolve(process.cwd(), 'ai/deploy/docker-compose.provider-lanes.yml'),
+        path.resolve(process.cwd(), 'deploy/cloud/docker-compose.provider-lanes.yml'),
         'utf8'
     ));
     const roster = [...new Set([

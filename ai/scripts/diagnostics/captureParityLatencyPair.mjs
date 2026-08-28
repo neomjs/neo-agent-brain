@@ -46,8 +46,8 @@ const
         'mc-server'
     ]),
     COMPOSE_FILE_PATHS       = Object.freeze([
-        'ai/deploy/docker-compose.dev.yml',
-        'ai/deploy/docker-compose.parity-capture.yml'
+        'deploy/cloud/docker-compose.dev.yml',
+        'deploy/cloud/docker-compose.parity-capture.yml'
     ]),
     RUNTIME_CONFIG_PATHS     = Object.freeze([
         'ai/config.mjs',

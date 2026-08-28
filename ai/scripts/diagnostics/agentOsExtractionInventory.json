@@ -4,7 +4,7 @@
         "schemaVersion": "agentos-extraction-inventory.v6",
         "runtimeProbeEligibility": "eligible means import and eager evaluation settle safely inside the disposable denial child; ineligible rows name the exact unguarded or external-work boundary",
         "manifestAuthority": "launch-root targets and package declarations are exact identity populations; every package row names explicit engine/edge/cloud/shared manifestTargets and never relies on workspace hoisting; an embedded deployment entrypoint with no exact target row inherits its owning deployment artifact plane, while an exact target disposition wins (retire requires rewrite rather than copy)",
-        "deploymentArtifactAuthority": "all tracked ai/deploy files plus tracked deployment-shaped files elsewhere are reconciled; directory-only discovery cannot omit an out-of-root Caddyfile or launchd plist",
+        "deploymentArtifactAuthority": "all tracked deploy/host and deploy/cloud files plus tracked deployment-shaped files elsewhere are reconciled; directory-only discovery cannot omit an out-of-root Caddyfile or launchd plist",
         "learningArtifactAuthority": "every tracked learn/agentos path is reconciled by exact identity; no directory default may decide Brain, Engine, Fleet, or skills subject custody",
         "consumerEdgeAuthority": "consumerEdges reconcile both outside-to-AgentOS and Edge-reached AgentOS-to-outside imports; line numbers are evidence while source/kind/specifier/target/ordinal form stable identity",
         "consumerSourceClassAuthority": "source classes already owned by AgentOS through an independent project/custody contract are one exact registry row, never thousands of internal-import rows",
@@ -803,9 +803,9 @@
         {
             "surface": "deployment-artifact",
             "identities": [
-                "ai/deploy/com.neomjs.agent-os-host-edge.plist",
-                "ai/deploy/com.neomjs.agent-os-wake.plist",
-                "ai/deploy/hostEdgeProfile.mjs"
+                "deploy/host/com.neomjs.agent-os-host-edge.plist",
+                "deploy/host/com.neomjs.agent-os-wake.plist",
+                "deploy/host/hostEdgeProfile.mjs"
             ],
             "disposition": "edge",
             "source": "ADR 0040 §2.1 plus neomjs/neo-agent-brain PR #9 placement receipt",
@@ -814,21 +814,21 @@
         {
             "surface": "deployment-artifact",
             "identities": [
-                "ai/deploy/Caddyfile",
-                "ai/deploy/Caddyfile.local-agent-os",
-                "ai/deploy/Caddyfile.parity-capture",
-                "ai/deploy/Dockerfile",
-                "ai/deploy/Dockerfile.dockerignore",
-                "ai/deploy/docker-compose.dev.yml",
-                "ai/deploy/docker-compose.local-agent-os.yml",
-                "ai/deploy/docker-compose.parity-capture.yml",
-                "ai/deploy/docker-compose.parity-ci.yml",
-                "ai/deploy/docker-compose.provider-lanes.yml",
-                "ai/deploy/docker-compose.test.yml",
-                "ai/deploy/docker-compose.yml",
-                "ai/deploy/kb-config.yaml",
-                "ai/deploy/mock-oidc-server.mjs",
-                "ai/deploy/mock-openai-embedding-server.mjs"
+                "deploy/cloud/Caddyfile",
+                "deploy/cloud/Caddyfile.local-agent-os",
+                "deploy/cloud/Caddyfile.parity-capture",
+                "deploy/cloud/Dockerfile",
+                "deploy/cloud/Dockerfile.dockerignore",
+                "deploy/cloud/docker-compose.dev.yml",
+                "deploy/cloud/docker-compose.local-agent-os.yml",
+                "deploy/cloud/docker-compose.parity-capture.yml",
+                "deploy/cloud/docker-compose.parity-ci.yml",
+                "deploy/cloud/docker-compose.provider-lanes.yml",
+                "deploy/cloud/docker-compose.test.yml",
+                "deploy/cloud/docker-compose.yml",
+                "deploy/cloud/kb-config.yaml",
+                "deploy/cloud/mock-oidc-server.mjs",
+                "deploy/cloud/mock-openai-embedding-server.mjs"
             ],
             "disposition": "cloud",
             "source": "ADR 0040 §2.1 plus neomjs/neo-agent-brain PR #9 placement receipt",

@@ -366,7 +366,7 @@ test.describe('cohortAdmissibility — may target T take cohort C? (#16453)', ()
      * correct thing to be told, not a brittle assertion.
      */
     test('providedEnv must be the RENDERED env — the declared-only case is a false inadmissible', () => {
-        const composeSrc = readFileSync(new URL('../../../../../../ai/deploy/docker-compose.yml', import.meta.url), 'utf8');
+        const composeSrc = readFileSync(new URL('../../../../../../deploy/cloud/docker-compose.yml', import.meta.url), 'utf8');
 
         // The premise: pinned literally, NOT as `${NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE...}`.
         expect(composeSrc).toContain('NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE=container-plane');

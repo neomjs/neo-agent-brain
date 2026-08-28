@@ -11,7 +11,7 @@ test.describe('ai/scripts/diagnostics/mcpHealthcheck (#11725)', () => {
     let runHealthcheck;
     let formatHealthcheckError;
     const readProductionCompose = () => yaml.load(fs.readFileSync(
-        new URL('../../../../../../ai/deploy/docker-compose.yml', import.meta.url),
+        new URL('../../../../../../deploy/cloud/docker-compose.yml', import.meta.url),
         'utf8'
     ));
 
@@ -465,7 +465,7 @@ test.describe('ai/scripts/diagnostics/mcpHealthcheck (#11725)', () => {
 
     test('local Agent OS overlay inherits the Docker-owned plane and exposes only routed loopback MCP', () => {
         const source = fs.readFileSync(
-            new URL('../../../../../../ai/deploy/docker-compose.local-agent-os.yml', import.meta.url),
+            new URL('../../../../../../deploy/cloud/docker-compose.local-agent-os.yml', import.meta.url),
             'utf8'
         );
 
@@ -612,7 +612,7 @@ test.describe('mcpHealthcheck — a liveness expectation is a SET', () => {
     let parseExpectedStatuses, runHealthcheck;
 
     const readProductionCompose = () => yaml.load(fs.readFileSync(
-        new URL('../../../../../../ai/deploy/docker-compose.yml', import.meta.url),
+        new URL('../../../../../../deploy/cloud/docker-compose.yml', import.meta.url),
         'utf8'
     ));
 
@@ -705,7 +705,7 @@ test.describe('mcpHealthcheck — a liveness expectation is a SET', () => {
      */
     function healthcheckCommands(file) {
         const source = fs
-            .readFileSync(new URL(`../../../../../../ai/deploy/${file}`, import.meta.url), 'utf8')
+            .readFileSync(new URL(`../../../../../../deploy/cloud/${file}`, import.meta.url), 'utf8')
             .replace(/(:[ \t]*)![a-z]+\b/g, '$1');
 
         const doc = yaml.load(source);

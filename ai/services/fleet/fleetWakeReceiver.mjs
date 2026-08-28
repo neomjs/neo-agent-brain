@@ -20,7 +20,7 @@ import {verifyWakeSignature} from '../../daemons/wake/receiver.mjs';
  * provider bearer, and the signature over exact body bytes is a stronger statement than any
  * ambient property of the request. Reachability is never authentication, so the route stays
  * compose-internal AND signed: `/wake` is deliberately absent from
- * the ingress route table (`ai/deploy/Caddyfile*`).
+ * the ingress route table (`deploy/cloud/Caddyfile*`).
  *
  * The raw body is read manually — a JSON body parser upstream would re-serialize and destroy
  * the exact bytes the HMAC covers.

@@ -12,7 +12,7 @@ import {
     partitionRegistryByAuthority,
     resolveAuthorityClassOwner
 } from '../../../../../../ai/daemons/orchestrator/taskAuthority.mjs';
-import {buildHostEdgeEnv} from '../../../../../../ai/deploy/hostEdgeProfile.mjs';
+import {buildHostEdgeEnv} from '../../../../../../deploy/host/hostEdgeProfile.mjs';
 
 /**
  * Lane enablement is a DERIVATION, not seven per-lane flags — authored falsifier-first.
@@ -392,7 +392,7 @@ test.describe('corpus lanes are owned by the role that can run them (#16554)', (
 
     test('the production compose does NOT restate the enablement — the leaf group carries it', () => {
         const compose = readFileSync(
-            new URL('../../../../../../ai/deploy/docker-compose.yml', import.meta.url),
+            new URL('../../../../../../deploy/cloud/docker-compose.yml', import.meta.url),
             'utf8'
         );
 

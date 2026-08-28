@@ -40,7 +40,7 @@ export function readToolJson(result) {
  *
  * This exists instead of a direct `better-sqlite3` handle because a host process cannot reach the
  * containerized Memory Core's SQLite at all: `shared-sqlite-data` is a Docker-managed **named volume**
- * (`ai/deploy/docker-compose.yml`), so on macOS it lives inside the Docker Desktop VM and there is no
+ * (`deploy/cloud/docker-compose.yml`), so on macOS it lives inside the Docker Desktop VM and there is no
  * host path to point an env var at. A path-based write therefore lands in the maintainer's *checkout*
  * and **succeeds** — which is the whole failure mode, because a successful write to an unread file is
  * indistinguishable from a working beacon until someone reads liveness and finds `turnPresence: null`.

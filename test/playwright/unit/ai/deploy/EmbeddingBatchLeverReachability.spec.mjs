@@ -25,7 +25,7 @@ import {load as yamlLoad} from 'js-yaml';
 
 const
     repoRoot  = path.resolve(process.cwd()),
-    deployDir = path.join(repoRoot, 'ai/deploy'),
+    deployDir = path.join(repoRoot, 'deploy/cloud'),
     LEAVES    = ['NEO_KB_EMBEDDING_BATCH_SIZE', 'NEO_KB_EMBEDDING_BATCH_DELAY_MS', 'NEO_KB_EMBEDDING_MAX_RETRIES'],
     /**
      * Profiles an operator boots on their own, each with the services that read these leaves.

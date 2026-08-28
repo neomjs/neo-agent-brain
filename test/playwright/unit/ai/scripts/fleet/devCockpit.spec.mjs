@@ -676,7 +676,7 @@ test.describe('ai/scripts/fleet/devCockpit — admission-token alias-guard armin
     });
 
     test('the JS custody default and the Compose secret source render the same home \u2014 drift ratchet', () => {
-        const composeSource  = fs.readFileSync(path.join(repoRoot, 'ai/deploy/docker-compose.local-agent-os.yml'), 'utf8'),
+        const composeSource  = fs.readFileSync(path.join(repoRoot, 'deploy/cloud/docker-compose.local-agent-os.yml'), 'utf8'),
               launcherSource = fs.readFileSync(path.join(repoRoot, 'ai/scripts/fleet/devCockpit.mjs'), 'utf8');
 
         expect(composeSource).toContain('${NEO_MCP_AUTH_TOKEN_FILE:-${HOME}/.neo-ai/secrets/mcp-auth-token}');

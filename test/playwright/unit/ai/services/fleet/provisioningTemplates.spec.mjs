@@ -23,7 +23,7 @@ function readRepoFile(relativePath) {
  */
 function publishedIngressPort() {
     const
-        compose = readRepoFile('ai/deploy/docker-compose.local-agent-os.yml'),
+        compose = readRepoFile('deploy/cloud/docker-compose.local-agent-os.yml'),
         block   = compose.split(/^ {2}(?=\S)/m).find(section => section.startsWith('ingress:'));
 
     expect(block, 'Compose no longer declares an ingress service').toBeTruthy();

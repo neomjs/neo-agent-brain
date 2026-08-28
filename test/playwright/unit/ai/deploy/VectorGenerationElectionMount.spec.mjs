@@ -8,7 +8,7 @@ import {
 } from '../../../../../ai/services/shared/vector/generationElectionStore.mjs';
 
 const repoRoot             = path.resolve(process.cwd());
-const composePath          = path.join(repoRoot, 'ai/deploy/docker-compose.yml');
+const composePath          = path.join(repoRoot, 'deploy/cloud/docker-compose.yml');
 const VOLUME_NAME          = 'shared-vector-generation-data';
 const CONTAINER_PLANE_ROOT = '/app/.neo-ai-data';
 

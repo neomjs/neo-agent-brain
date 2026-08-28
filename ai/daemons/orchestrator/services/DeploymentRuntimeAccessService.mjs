@@ -37,7 +37,7 @@ export const DEPLOYMENT_RUNTIME_LIFECYCLE_OPERATIONS = Object.freeze([
  * deployment for which self-restart-via-self-bridge is the right behaviour, so it is not offered.
  *
  * Kept honest by a fixture asserting this string equals the orchestrator service key in
- * `ai/deploy/docker-compose.yml` — a rename there must fail a test rather than silently disarm the
+ * `deploy/cloud/docker-compose.yml` — a rename there must fail a test rather than silently disarm the
  * lifecycle refusal by making it match nothing.
  * @type {String}
  */

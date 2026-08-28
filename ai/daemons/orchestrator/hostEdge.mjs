@@ -3,7 +3,7 @@
  * @summary The portable host-edge Orchestrator entrypoint — one cross-platform command
  * that starts a correctly-roled graphless host edge, with no OS-specific installer.
  *
- * `npm run ai:host-edge` runs this file. It applies the {@link module:ai/deploy/hostEdgeProfile}
+ * `npm run ai:host-edge` runs this file. It applies the {@link module:deploy/host/hostEdgeProfile}
  * posture to the process environment and then hands off to the daemon's own boot sequence, so the
  * portable path and the launchd-supervised path execute the SAME code with the SAME inputs —
  * launchd supplies restart-on-login, never the configuration.
@@ -16,7 +16,7 @@
  * shadow default, or mutates `AiConfig` (ticket-ref-ok: ADR 0019 §3/§5 is the mandated read-gate for
  * any AiConfig-adjacent authoring, and the sanctioned-pattern list a reviewer checks this against).
  *
- * @see ai/deploy/hostEdgeProfile.mjs
+ * @see deploy/host/hostEdgeProfile.mjs
  * @see ai/daemons/orchestrator/daemon.mjs
  */
 // dotenv BEFORE the posture is applied, not after: an operator's `.env` must be visible to the
@@ -24,7 +24,7 @@
 // again at the daemon entrypoint is idempotent.
 import 'dotenv/config';
 
-import {buildHostEdgeEnv} from '../../deploy/hostEdgeProfile.mjs';
+import {buildHostEdgeEnv} from '../../../deploy/host/hostEdgeProfile.mjs';
 
 /**
  * @summary Env key whose value IS the declaration this entrypoint makes.

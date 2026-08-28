@@ -27,7 +27,7 @@ import {load}         from 'js-yaml';
 const yamlLoad = (source, {compose = false} = {}) => load(compose ? source.replace(/!override/g, '') : source);
 
 /**
- * Guards the tracked tenant bootstrap (`ai/deploy/kb-config.yaml`) through the PRODUCTION
+ * Guards the tracked tenant bootstrap (`deploy/cloud/kb-config.yaml`) through the PRODUCTION
  * read and normalization paths — not a schema the test invents.
  *
  * The deployment mounts this file at `<neoRootDir>/kb-config.yaml`, where the tenant-config
@@ -39,11 +39,11 @@ const yamlLoad = (source, {compose = false} = {}) => load(compose ? source.repla
 
 const
     repoRoot     = path.resolve(process.cwd()),
-    bootstrapRel = 'ai/deploy/kb-config.yaml',
-    overlayRel   = 'ai/deploy/docker-compose.local-agent-os.yml',
+    bootstrapRel = 'deploy/cloud/kb-config.yaml',
+    overlayRel   = 'deploy/cloud/docker-compose.local-agent-os.yml',
     MOUNT_ENTRY  = './kb-config.yaml:/app/kb-config.yaml:ro';
 
-test.describe('ai/deploy/kb-config.yaml — tenant bootstrap contract', () => {
+test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () => {
     let IngestionService, normalizeTenantRepoEntry;
 
     test.beforeAll(async () => {

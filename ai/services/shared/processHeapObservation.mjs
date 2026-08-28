@@ -101,7 +101,7 @@ export const CEILING_STATE = Object.freeze({
 
 /**
  * Where a declared ceiling was read from. Published because the deployment forbids one of them:
- * `ai/deploy/docker-compose.yml` sets every heap ceiling `command:`-scoped and never through
+ * `deploy/cloud/docker-compose.yml` sets every heap ceiling `command:`-scoped and never through
  * `NODE_OPTIONS`, because `ProcessSupervisorService` spawns children with `{...process.env}` and a
  * service-level `NODE_OPTIONS` would silently multiply the container budget by the number of
  * concurrent Node processes. A record naming `node-options` is therefore a deployment-drift signal

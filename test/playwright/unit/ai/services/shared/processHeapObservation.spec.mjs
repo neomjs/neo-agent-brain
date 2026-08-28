@@ -321,7 +321,7 @@ test.describe('ai/services/shared/processHeapObservation — the declared ceilin
     });
 
     test('a quoted NODE_OPTIONS ceiling agreeing with a plain execArgv one is declared once', () => {
-        // The deployment-drift signal has to survive quoting: `ai/deploy/docker-compose.yml` forbids
+        // The deployment-drift signal has to survive quoting: `deploy/cloud/docker-compose.yml` forbids
         // the NODE_OPTIONS channel, and a quoted declaration that read as `undeclared` would hide
         // exactly the drift `sources` exists to expose.
         expect(readDeclaredCeiling(['--max-old-space-size=256'], '"--max-old-space-size=256"')).toEqual({

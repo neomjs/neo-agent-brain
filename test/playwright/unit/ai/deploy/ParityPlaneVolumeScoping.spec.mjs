@@ -3,7 +3,7 @@ import fs                 from 'node:fs';
 import path               from 'node:path';
 import process            from 'node:process';
 import {load as yamlLoad} from 'js-yaml';
-import {buildHostEdgeEnv} from '../../../../../ai/deploy/hostEdgeProfile.mjs';
+import {buildHostEdgeEnv} from '../../../../../deploy/host/hostEdgeProfile.mjs';
 
 /**
  * Guards the parity profile's volume-scoping invariant.
@@ -38,14 +38,14 @@ import {buildHostEdgeEnv} from '../../../../../ai/deploy/hostEdgeProfile.mjs';
 
 const
     repoRoot               = path.resolve(process.cwd()),
-    baseComposePath        = path.join(repoRoot, 'ai/deploy/docker-compose.yml'),
-    localOverlayPath       = path.join(repoRoot, 'ai/deploy/docker-compose.local-agent-os.yml'),
-    localHostEdgePlistPath = path.join(repoRoot, 'ai/deploy/com.neomjs.agent-os-host-edge.plist'),
-    localWakePlistPath     = path.join(repoRoot, 'ai/deploy/com.neomjs.agent-os-wake.plist'),
+    baseComposePath        = path.join(repoRoot, 'deploy/cloud/docker-compose.yml'),
+    localOverlayPath       = path.join(repoRoot, 'deploy/cloud/docker-compose.local-agent-os.yml'),
+    localHostEdgePlistPath = path.join(repoRoot, 'deploy/host/com.neomjs.agent-os-host-edge.plist'),
+    localWakePlistPath     = path.join(repoRoot, 'deploy/host/com.neomjs.agent-os-wake.plist'),
     localRunbookPath       = path.join(repoRoot, 'ai/scripts/lifecycle/local-agent-os/README.md'),
-    composePath            = path.join(repoRoot, 'ai/deploy/docker-compose.dev.yml'),
-    parityOverlayPath      = path.join(repoRoot, 'ai/deploy/docker-compose.parity-ci.yml'),
-    testComposePath        = path.join(repoRoot, 'ai/deploy/docker-compose.test.yml'),
+    composePath            = path.join(repoRoot, 'deploy/cloud/docker-compose.dev.yml'),
+    parityOverlayPath      = path.join(repoRoot, 'deploy/cloud/docker-compose.parity-ci.yml'),
+    testComposePath        = path.join(repoRoot, 'deploy/cloud/docker-compose.test.yml'),
     parityConfigPath       = path.join(repoRoot, 'test/playwright/playwright.config.integration-parity.mjs'),
     paritySpecPath         = path.join(repoRoot, 'test/playwright/integration-parity/ParityTopology.integration.spec.mjs'),
     parityServerPath       = path.join(repoRoot, 'test/playwright/integration-parity/fixtures/parityComposeWebServer.mjs'),
@@ -504,7 +504,7 @@ test.describe('data-plane profile election — base and integration-fixture disp
         expect(plistSource).toMatch(/<key>KeepAlive<\/key>\s*<true\/>/);
 
         // The host-edge POSTURE moved out of this macOS artifact and into
-        // `ai/deploy/hostEdgeProfile.mjs`, so the plist supervises the portable entrypoint instead
+        // `deploy/host/hostEdgeProfile.mjs`, so the plist supervises the portable entrypoint instead
         // of carrying the configuration. The hard-cut guarantee this test names — the host edge is
         // graphless — is unchanged; it is asserted at the posture's new address. What stays below
         // is what the plist still legitimately owns: THIS machine's state root and local provider
@@ -570,8 +570,8 @@ test.describe('data-plane profile election — base and integration-fixture disp
         expect(source).toContain('The pre-Docker checkout `.neo-ai-data`');
         expect(source).toContain('is an import source, never a');
         expect(source).toContain('live target');
-        expect(source).toContain('-f ai/deploy/docker-compose.yml');
-        expect(source).toContain('-f ai/deploy/docker-compose.local-agent-os.yml');
+        expect(source).toContain('-f deploy/cloud/docker-compose.yml');
+        expect(source).toContain('-f deploy/cloud/docker-compose.local-agent-os.yml');
         expect(source).toContain('--profile cloud --profile ingress --profile fleet up -d --wait');
         expect(source).toContain('neo-local-agent-os');
         expect(source).toContain('Application Support/Neo/AgentOS');
@@ -584,7 +584,7 @@ test.describe('data-plane profile election — base and integration-fixture disp
         expect(source).toContain('orchestrator-authority.json');
         expect(source).toContain('launchctl bootout');
         expect(source.indexOf('launchctl bootout')).toBeLessThan(
-            source.indexOf('cp ai/deploy/com.neomjs.agent-os-wake.plist')
+            source.indexOf('cp deploy/host/com.neomjs.agent-os-wake.plist')
         );
         expect(source).not.toContain('rsync -aL .neo-ai-data');
         expect(source).not.toContain('mv .neo-ai-data');

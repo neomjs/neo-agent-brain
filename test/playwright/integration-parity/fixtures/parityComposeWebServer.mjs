@@ -12,8 +12,8 @@ const repoRoot   = path.resolve(__dirname, '../../../..');
 // deterministic mock embedding contract and marks the network internal. Order matters —
 // later files merge over earlier ones.
 const composeFiles = [
-    path.join(repoRoot, 'ai/deploy/docker-compose.dev.yml'),
-    path.join(repoRoot, 'ai/deploy/docker-compose.parity-ci.yml')
+    path.join(repoRoot, 'deploy/cloud/docker-compose.dev.yml'),
+    path.join(repoRoot, 'deploy/cloud/docker-compose.parity-ci.yml')
 ];
 
 // The compose project IS the overlay plane id (the dev file's &plane-id anchor resolves

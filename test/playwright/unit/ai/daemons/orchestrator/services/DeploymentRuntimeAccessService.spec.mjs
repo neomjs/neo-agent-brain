@@ -105,7 +105,7 @@ function createService({
 test.describe('Neo.ai.daemons.services.DeploymentRuntimeAccessService', () => {
     test('canonical cloud Compose binds project naming and runtime access to one deployment variable', () => {
         const composeText = readFileSync(
-            new URL('../../../../../../../ai/deploy/docker-compose.yml', import.meta.url),
+            new URL('../../../../../../../deploy/cloud/docker-compose.yml', import.meta.url),
             'utf8'
         );
 
@@ -719,7 +719,7 @@ test.describe('Neo.ai.daemons.services.DeploymentRuntimeAccessService', () => {
         // A rename in either would silently disarm the refusal by making it match nothing, so the
         // coupling is asserted rather than assumed.
         const
-            compose  = readFileSync(new URL('../../../../../../../ai/deploy/docker-compose.yml', import.meta.url), 'utf8'),
+            compose  = readFileSync(new URL('../../../../../../../deploy/cloud/docker-compose.yml', import.meta.url), 'utf8'),
             services = [...compose.matchAll(/^ {2}([a-z0-9][a-z0-9_.-]*):$/gmu)].map(match => match[1]);
 
         expect(services, 'the compose parse found no services — the guard is looking at nothing').toContain('chroma');

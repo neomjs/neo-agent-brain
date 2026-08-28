@@ -28,7 +28,7 @@ Neo is a self-evolving digital organism (`README.md` L16) with a Brain, a Swarm,
 
 The generic failure class this answers: a deployment's local-model container saturates its CPU cap, and a co-scheduled embedding model starves behind a chat model on the shared cap (the contention / parallel-slot class — the #13700 `lms --parallel` twin). The container flips healthy→unhealthy; **nothing detects, diagnoses, heals, or escalates it.** The organism has no immune system, and the human-repair path may itself be unavailable. This ADR is the **response** layer; #13852 (config-side resource caps) is the complementary **prevention** layer — both are needed, neither substitutes for the other.
 
-**Substrate audited at `dev`:** `ai/daemons/orchestrator/services/{ProcessSupervisorService,HealthService}.mjs`, `ai/daemons/orchestrator/scheduling/*Watchdog*.mjs`, `ai/deploy/docker-compose*.yml` (services carry `healthcheck` + `depends_on` but **no `restart:` policy and no docker-socket mount**), `.agents/skills/self-repair/`.
+**Substrate audited at `dev`:** `ai/daemons/orchestrator/services/{ProcessSupervisorService,HealthService}.mjs`, `ai/daemons/orchestrator/scheduling/*Watchdog*.mjs`, `deploy/cloud/docker-compose*.yml` (services carry `healthcheck` + `depends_on` but **no `restart:` policy and no docker-socket mount**), `.agents/skills/self-repair/`.
 
 ## 2. Decision
 

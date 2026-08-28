@@ -5,7 +5,8 @@
 # RELOCATED plane root — never sharing the canonical durable plane.
 #
 # Shape forced by the phase-0 F-invariant (ADR 0019 §10.4/§10.5):
-# - A non-canonical planeId must NOT resolve the canonical durable root. The `../..:/app`
+# - A non-canonical planeId must NOT resolve the canonical durable root. The explicit
+#   `neo-agent-brain` package mount at `/app`
 #   bind mount makes `/app/.neo-ai-data` the canonical root in-container, so the parity
 #   plane RELOCATES to `/app/.neo-ai-data-parity` (`assertPlaneCoherence` fails the boot
 #   otherwise — identity-without-isolation).
@@ -179,10 +180,10 @@ services:
 
   kb-server:
     build:
-      context: ../..
-      dockerfile: ai/deploy/Dockerfile
+      context: ./node_modules/neo-agent-brain
+      dockerfile: ../../Dockerfile
       args:
-        NEO_SOURCE: local  # build the local checkout for dev iteration, not a remote clone
+        NEO_SOURCE: local  # build the installed Brain dependency for dev iteration
         TARGET_SERVER: knowledge-base
     environment:
       <<: [*plane-env, *provider-auth-env]
@@ -221,7 +222,7 @@ services:
       NEO_ORCHESTRATOR_PROVIDER_READY_TIMEOUT_MS: ${NEO_ORCHESTRATOR_PROVIDER_READY_TIMEOUT_MS:-}
     volumes:
       - ../..:/app
-      # The PLANE ROOT rides a project-scoped named volume, not the repo bind above. Docker applies
+      # The PLANE ROOT rides a project-scoped named volume, not the live repo bind above. Docker applies
       # the more specific mount, so this overrides `/app/.neo-ai-data-parity` while source stays
       # bind-mounted for dev iteration. Without it the elected named volume covered only Chroma and
       # the rest of the plane — WAL dirs, daemon state, sqlite — sat on a PATH-ADDRESSED host bind,
@@ -268,10 +269,10 @@ services:
 
   mc-server:
     build:
-      context: ../..
-      dockerfile: ai/deploy/Dockerfile
+      context: ./node_modules/neo-agent-brain
+      dockerfile: ../../Dockerfile
       args:
-        NEO_SOURCE: local  # build the local checkout for dev iteration, not a remote clone
+        NEO_SOURCE: local  # build the installed Brain dependency for dev iteration
         TARGET_SERVER: memory-core
     environment:
       <<: [*plane-env, *provider-auth-env]
@@ -298,7 +299,7 @@ services:
       NEO_ORCHESTRATOR_PROVIDER_READY_ROUTINE_CACHE_TTL_MS: ${NEO_ORCHESTRATOR_PROVIDER_READY_ROUTINE_CACHE_TTL_MS:-}
     volumes:
       - ../..:/app
-      # The PLANE ROOT rides a project-scoped named volume, not the repo bind above. Docker applies
+      # The PLANE ROOT rides a project-scoped named volume, not the live repo bind above. Docker applies
       # the more specific mount, so this overrides `/app/.neo-ai-data-parity` while source stays
       # bind-mounted for dev iteration. Without it the elected named volume covered only Chroma and
       # the rest of the plane — WAL dirs, daemon state, sqlite — sat on a PATH-ADDRESSED host bind,
@@ -352,8 +353,8 @@ services:
   # notices; a scheduler on the wrong plane mutates the wrong durable store on a timer.
   orchestrator:
     build:
-      context: ../..
-      dockerfile: ai/deploy/Dockerfile
+      context: ./node_modules/neo-agent-brain
+      dockerfile: ../../Dockerfile
       args:
         NEO_SOURCE: local
         SERVICE_ENTRYPOINT: ai/daemons/orchestrator/daemon.mjs
@@ -392,7 +393,7 @@ services:
       NEO_ORCHESTRATOR_PROVIDER_READY_ROUTINE_CACHE_TTL_MS: ${NEO_ORCHESTRATOR_PROVIDER_READY_ROUTINE_CACHE_TTL_MS:-}
     volumes:
       - ../..:/app
-      # The PLANE ROOT rides a project-scoped named volume, not the repo bind above. Docker applies
+      # The PLANE ROOT rides a project-scoped named volume, not the live repo bind above. Docker applies
       # the more specific mount, so this overrides `/app/.neo-ai-data-parity` while source stays
       # bind-mounted for dev iteration. Without it the elected named volume covered only Chroma and
       # the rest of the plane — WAL dirs, daemon state, sqlite — sat on a PATH-ADDRESSED host bind,

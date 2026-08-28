@@ -68,7 +68,7 @@ export const SIDE_RULES = [
     {prefix: 'ai/mcp/',                     side: 'container-plane'},
     {prefix: 'ai/graph/',                   side: 'container-plane'},
     {prefix: 'ai/daemons/orchestrator/',    side: 'container-plane'},
-    {prefix: 'ai/deploy/',                  side: 'container-plane'},
+    {prefix: 'deploy/cloud/',                  side: 'container-plane'},
     {prefix: 'ai/daemons/',                 side: 'host-edge'},
     {prefix: 'ai/agent/',                   side: 'host-edge'},
     {prefix: 'harness/',                    side: 'host-edge'},

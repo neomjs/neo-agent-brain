@@ -34,7 +34,7 @@ import {load as yamlLoad} from 'js-yaml';
 const
     repoRoot    = path.resolve(process.cwd()),
     configText  = fs.readFileSync(path.join(repoRoot, 'ai/configBase.mjs'), 'utf8'),
-    composePath = path.join(repoRoot, 'ai/deploy/docker-compose.yml'),
+    composePath = path.join(repoRoot, 'deploy/cloud/docker-compose.yml'),
     composeDoc  = yamlLoad(fs.readFileSync(composePath, 'utf8')),
     // A leaf default that is a bare loopback host or a loopback URL, with its env binding.
     LOOPBACK_LEAF = /leaf\(\s*'(?:https?:\/\/)?(?:127\.0\.0\.1|localhost|\[::1\])[^']*'\s*,\s*'([A-Z][A-Z0-9_]*)'/g;

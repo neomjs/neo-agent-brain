@@ -24,8 +24,8 @@ const DEFAULT_READY_URL   = process.env.NEO_PARITY_READY_URL || 'http://127.0.0.
 function compose(args) {
     return spawnSync('docker', [
         'compose', '-p', PLANE_ID,
-        '-f', 'ai/deploy/docker-compose.dev.yml',
-        '-f', 'ai/deploy/docker-compose.parity-ci.yml',
+        '-f', 'deploy/cloud/docker-compose.dev.yml',
+        '-f', 'deploy/cloud/docker-compose.parity-ci.yml',
         ...args
     ], {cwd: repoRoot, encoding: 'utf8', env: process.env, timeout: 150000});
 }
@@ -50,8 +50,8 @@ function composeCanonicalAuth(args, env) {
         'compose',
         '--env-file', os.devNull,
         '-p', PLANE_ID,
-        '-f', 'ai/deploy/docker-compose.dev.yml',
-        '-f', 'ai/deploy/docker-compose.parity-ci.yml',
+        '-f', 'deploy/cloud/docker-compose.dev.yml',
+        '-f', 'deploy/cloud/docker-compose.parity-ci.yml',
         ...args
     ], {cwd: repoRoot, encoding: 'utf8', env, timeout: 150000});
 }

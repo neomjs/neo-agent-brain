@@ -16,7 +16,7 @@
  *     the trap where `classDef graph` silently breaks the parse and merges CI-green.
  *   - Mermaid self-loop edges (`X --> X`) — the documented illegible anti-pattern.
  *   - Dead local doc links — `](./x.md)` / `](../x.md)` targets absent on disk.
- *   - Dead `ai:*` script refs — `` `ai:foo` `` / `npm run ai:foo` not in `package.json` scripts
+ *   - Dead `ai:*` script refs — `` `ai:foo` `` / `npm run ai:foo` absent from all package scripts
  *     (the hallucinated-command class).
  *   - Tool-table refs under a Tools heading that resolve to no `ai/mcp/server/*​/openapi.yaml`
  *     operationId — the MCP-tool analogue of the hallucinated-command class.
@@ -217,7 +217,7 @@ function checkDeadLinks(content, fileDir, existsFn = existsSync) {
  * Conservative — only flags backtick-wrapped `` `ai:foo` `` or `npm run ai:foo` forms, so prose
  * mentioning a namespace casually isn't caught.
  * @param {string} content
- * @param {Set<string>} scriptKeys the set of defined `package.json` script names
+ * @param {Set<string>} scriptKeys the set of defined repository package script names
  * @returns {Array<{severity: string, rule: string, line: number, detail: string}>}
  */
 function checkDeadScriptRefs(content, scriptKeys) {
@@ -233,7 +233,7 @@ function checkDeadScriptRefs(content, scriptKeys) {
         if (scriptKeys.has(ref) || seen.has(key)) continue;
         seen.add(key);
         findings.push({severity: 'HARD', rule: 'dead-script-ref', line: lineOf(content, match.index),
-            detail: `"${ref}" is not a script in package.json`});
+            detail: `"${ref}" is not a script in any package manifest`});
     }
 
     return findings;
@@ -474,10 +474,21 @@ function isGuideSeriesFile(file) {
         && relative.endsWith('.md');
 }
 
-/** @returns {Set<string>} the defined `package.json` script names. */
+/** @returns {Set<string>} the scripts defined by the Host root and Container-Cloud package. */
 function loadScriptKeys() {
-    const pkg = JSON.parse(readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
-    return new Set(Object.keys(pkg.scripts || {}));
+    const keys = new Set();
+
+    for (const relative of ['package.json', 'deploy/cloud/package.json']) {
+        const file = path.join(ROOT_DIR, relative);
+
+        if (!existsSync(file)) continue;
+
+        const manifest = JSON.parse(readFileSync(file, 'utf8'));
+
+        for (const key of Object.keys(manifest.scripts || {})) keys.add(key)
+    }
+
+    return keys
 }
 
 /**

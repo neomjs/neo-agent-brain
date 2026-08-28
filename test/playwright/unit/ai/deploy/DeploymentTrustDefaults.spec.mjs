@@ -29,7 +29,7 @@ import {load as yamlLoad} from 'js-yaml';
 
 const
     root        = process.cwd(),
-    composePath = path.join(root, 'ai/deploy/docker-compose.yml'),
+    composePath = path.join(root, 'deploy/cloud/docker-compose.yml'),
     MAILBOX_KEY = 'NEO_MAILBOX_DEFAULT_REPLY_POLICY',
     SHARING_KEY = 'NEO_MEMORY_SHARING_DEFAULT_POLICY';
 

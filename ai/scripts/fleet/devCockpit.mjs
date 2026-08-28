@@ -475,7 +475,7 @@ export async function probePlaneIdentity({planeBase, fetchImpl = globalThis.fetc
     } catch (error) {
         return {
             status: 'unreachable',
-            detail: `no plane answering at ${url} (${error.cause?.code || error.message}) — start the canonical local plane first: docker compose --env-file .env -f ai/deploy/docker-compose.yml -f ai/deploy/docker-compose.local-agent-os.yml --profile cloud --profile ingress --profile fleet up -d --wait (see ai/scripts/lifecycle/local-agent-os/README.md)`
+            detail: `no plane answering at ${url} (${error.cause?.code || error.message}) — start the canonical local plane first: docker compose --env-file .env -f deploy/cloud/docker-compose.yml -f deploy/cloud/docker-compose.local-agent-os.yml --profile cloud --profile ingress --profile fleet up -d --wait (see ai/scripts/lifecycle/local-agent-os/README.md)`
         }
     }
 

@@ -4,7 +4,7 @@ import fs                                                                       
 import os                                                                            from 'os';
 import path                                                                          from 'path';
 import * as yaml                                                                     from 'js-yaml';
-import {buildHostEdgeEnv, HOST_EDGE_STATE_DIR_ENV}                                   from '../../../../../../ai/deploy/hostEdgeProfile.mjs';
+import {buildHostEdgeEnv, HOST_EDGE_STATE_DIR_ENV}                                   from '../../../../../../deploy/host/hostEdgeProfile.mjs';
 import {buildBrainProfile, buildPackagedBrainEnv}                                    from '../../../../../../harness/brain.mjs';
 import {ORCHESTRATOR_AUTHORITY_PROFILE, getTaskAuthorityClass, isTaskOwnedByProfile} from '../../../../../../ai/daemons/orchestrator/taskAuthority.mjs';
 
@@ -49,10 +49,10 @@ const
  */
 const DECLARED_LAUNCHERS = Object.freeze([
     'ai/daemons/orchestrator/hostEdge.mjs',
-    'ai/deploy/com.neomjs.agent-os-host-edge.plist',
-    'ai/deploy/docker-compose.dev.yml',
-    'ai/deploy/docker-compose.yml',
-    'harness/brain.mjs',
+    'deploy/host/com.neomjs.agent-os-host-edge.plist',
+    'deploy/cloud/docker-compose.dev.yml',
+    'deploy/cloud/docker-compose.yml',
+    'deploy/cloud/package.json',
     'package.json'
 ]);
 
@@ -68,8 +68,8 @@ const NON_LAUNCHER_REFERENCES = Object.freeze([
     'ai/daemons/orchestrator/Orchestrator.mjs',
     'ai/daemons/orchestrator/daemon.mjs',
     'ai/daemons/wake/daemon.mjs',
-    'ai/deploy/Dockerfile',
-    'ai/deploy/hostEdgeProfile.mjs',
+    'deploy/cloud/Dockerfile',
+    'deploy/host/hostEdgeProfile.mjs',
     'ai/scripts/lint/lint-config-template-ssot.mjs',
     // Cites the four fail-closed daemons in prose to explain WHY a cohort can be inadmissible.
     // Reads only; it spawns nothing and resolves no entrypoint.
@@ -92,7 +92,7 @@ function readRepoFile(relPath) {
  */
 function parseHostEdgePlist() {
     const
-        source = readRepoFile('ai/deploy/com.neomjs.agent-os-host-edge.plist'),
+        source = readRepoFile('deploy/host/com.neomjs.agent-os-host-edge.plist'),
         env    = {};
 
     const
@@ -160,7 +160,7 @@ test.describe('#16229 — host-edge posture: every producer declares a valid rol
     });
 
     test('both Compose profiles declare container-plane explicitly, never by inheritance', () => {
-        for (const file of ['ai/deploy/docker-compose.yml', 'ai/deploy/docker-compose.dev.yml']) {
+        for (const file of ['deploy/cloud/docker-compose.yml', 'deploy/cloud/docker-compose.dev.yml']) {
             const
                 compose       = yaml.load(readRepoFile(file)),
                 {environment} = compose.services.orchestrator,

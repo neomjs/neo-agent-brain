@@ -98,7 +98,7 @@ export function parseObservedEnv(envArray) {
  * canonical cloud contract for a deployment running a different one, and the resulting plan would read
  * as authoritative — the census is per-profile precisely because the contracts differ.
  * @param {Object} parity The parsed `ai/scripts/lint/config-leaf-parity.json`.
- * @param {String} profile Repo-relative Compose path, e.g. `ai/deploy/docker-compose.yml`.
+ * @param {String} profile Repo-relative Compose path, e.g. `deploy/cloud/docker-compose.yml`.
  * @returns {Object} `{requiredDeploymentInputs, optionalOverrides, secrets, forbiddenEnv, profile}`
  * @throws {Error} When the parity document, its parity block, or the profile is absent or mismatched.
  */

@@ -191,22 +191,27 @@ package while the Agent Institution cutover is in progress.
 | **Host Edge** | Local maintainer runtime and host-managed Agent OS services | [`DeploymentCookbook.md`](learn/agentos/DeploymentCookbook.md) and root `npm` scripts |
 | **Container Cloud** | Containerized, multi-tenant Agent OS deployment | [`cloud-deployment/Overview.md`](learn/agentos/cloud-deployment/Overview.md) and [`Day0Tutorial.md`](learn/agentos/cloud-deployment/Day0Tutorial.md) |
 
-Key local entrypoints include:
+The Host-Edge root exposes its local runtime directly:
 
 ```bash
 npm run ai:host-edge
-npm run ai:orchestrator
 ```
 
-Both require the relevant local config overlays and credentials; the deployment guides own those
-details.
+The Container-Cloud package installs and runs independently:
 
-> **Package-topology transition:** [ADR 0040](learn/agentos/decisions/0040-agentos-extraction-topology.md)
-> requires the repository root to become the Host-Edge package and `cloud/` to become an independent
-> nested Container-Cloud package, with no npm workspaces or dependency hoisting between them. That
-> final topology is not yet complete. [Brain #12](https://github.com/neomjs/neo-agent-brain/issues/12)
-> owns the deployment/package receive and isolation proof. The current root manifest is transitional,
-> not the final Host/Cloud contract.
+```bash
+cd deploy/cloud
+npm ci
+npm run compose:up
+```
+
+Both planes require the relevant config overlays and credentials; the deployment guides own those
+details. Cloud commands are intentionally absent from the Host root.
+
+> **Package topology:** [ADR 0040](learn/agentos/decisions/0040-agentos-extraction-topology.md)
+> defines the repository root as the Host-Edge package and `deploy/cloud/` as the independent
+> Container-Cloud package. They do not use npm workspaces or dependency hoisting. The remaining
+> source/import migration does not reopen this package boundary.
 
 ## MCP services
 

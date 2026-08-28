@@ -103,7 +103,7 @@ services:
       # the dispatch seam, and EMBEDDING_TIMEOUT_MS because ingestion is the process that waits on a
       # CPU-only provider. REQUIRE_PARALLEL_MODELS is deliberately NOT here: its only reader is
       # called from the orchestrator. Coordinates are enforced per service by
-      # test/playwright/unit/ai/deploy/OllamaProviderEnvCoordinates.spec.mjs.
+      # the installed Brain dependency's OllamaProviderEnvCoordinates spec.
       - NEO_OLLAMA_HOST=${NEO_OLLAMA_HOST:-}
       - NEO_OLLAMA_KEEP_ALIVE=${NEO_OLLAMA_KEEP_ALIVE:-}
       - NEO_OLLAMA_MODEL=${NEO_OLLAMA_MODEL:-}
@@ -677,7 +677,7 @@ services:
   # deployment (Sub C #11724). `ingress` profile — `docker compose --profile
   # ingress up` (combine with `--profile cloud` for the full stack). Caddy
   # terminates TLS and path-routes `/kb/*` -> kb-server:3000, `/mc/*` -> mc-server:3001.
-  # Config: ai/deploy/Caddyfile.
+  # Config: Caddyfile.
   ingress:
     image: caddy:2-alpine
     ports:

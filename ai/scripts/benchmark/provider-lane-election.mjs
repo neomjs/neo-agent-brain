@@ -36,8 +36,8 @@ const
     DOCKER_TOP_BYTE_CAP  = 1024 * 1024,
     EMBEDDING_CHUNK_SIZE = 5,
 
-    BASE_COMPOSE_FILE     = 'ai/deploy/docker-compose.yml',
-    LANE_COMPOSE_FILE     = 'ai/deploy/docker-compose.provider-lanes.yml',
+    BASE_COMPOSE_FILE     = 'deploy/cloud/docker-compose.yml',
+    LANE_COMPOSE_FILE     = 'deploy/cloud/docker-compose.provider-lanes.yml',
     COMPOSITION_ANALYZER  = 'ai/scripts/diagnostics/providerLaneComposition.mjs',
     RUNNER_ENTRYPOINT     = 'ai/scripts/benchmark/provider-lane-election.mjs',
 
