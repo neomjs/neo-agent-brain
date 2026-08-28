@@ -223,10 +223,10 @@ test('integration installs the independent package and then tests the exact chec
     });
     expect(commands).toContainEqual({
         cwd: '.',
-        run: 'npm pack --ignore-scripts --pack-destination deploy/cloud'
+        run: 'git archive --format=tar.gz --prefix=package/ --output=deploy/cloud/neo-agent-brain-head.tgz HEAD'
     });
     expect(commands).toContainEqual({
         cwd: 'deploy/cloud',
-        run: 'npm install --ignore-scripts --no-save --package-lock=false ./neo-agent-brain-0.0.0.tgz'
+        run: 'npm install --ignore-scripts --no-save --package-lock=false ./neo-agent-brain-head.tgz'
     })
 });

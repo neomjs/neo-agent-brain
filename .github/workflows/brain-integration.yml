@@ -46,11 +46,11 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Pack the exact Brain checkout for current-head integration
-        run: npm pack --ignore-scripts --pack-destination deploy/cloud
+        run: git archive --format=tar.gz --prefix=package/ --output=deploy/cloud/neo-agent-brain-head.tgz HEAD
 
       - name: Replace the pinned dependency with the exact checkout artifact
         working-directory: deploy/cloud
-        run: npm install --ignore-scripts --no-save --package-lock=false ./neo-agent-brain-0.0.0.tgz
+        run: npm install --ignore-scripts --no-save --package-lock=false ./neo-agent-brain-head.tgz
 
       - name: Build the native SQLite binding
         run: npm rebuild better-sqlite3
