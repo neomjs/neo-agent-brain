@@ -25,7 +25,7 @@
         <string>__WAKE_RECEIVER_PORT__</string>
     </array>
 
-    <!-- ADR 0040 §2.7: the Agent OS runtime root — where the Agent OS is installed
+    <!-- ADR 0040 §2.5: the Agent OS runtime root — where the Agent OS is installed
          and runs — never the Engine clone. `ProgramArguments` above resolves
          `ai/daemons/wake/receiver.mjs` RELATIVE to this, and the Engine repo no
          longer carries an `ai/` tree, so a root pointed there installs cleanly and

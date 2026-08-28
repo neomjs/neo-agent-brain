@@ -214,7 +214,7 @@ boots on. Leave it unset on a machine with no local wake lane and that axis
 reports typed-unobserved instead of guessing.
 
 ```sh
-# ADR 0040 §2.7's `agentosRuntimeRoot`: where the Agent OS is installed and runs.
+# ADR 0040 §2.5's `agentosRuntimeRoot`: where the Agent OS is installed and runs.
 # Run this guide from the Brain checkout. Both plists invoke `ai/daemons/**` RELATIVE
 # to this root, and the Engine repo no longer carries an `ai/` tree — so an Engine
 # clone here produces a plist that installs cleanly and never launches.
