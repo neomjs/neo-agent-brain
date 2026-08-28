@@ -8,9 +8,10 @@ import process                                                                  
 import {fileURLToPath}                                                                     from 'node:url';
 
 const
-    __dirname   = path.dirname(fileURLToPath(import.meta.url)),
-    repoRoot    = path.resolve(__dirname, '../../../../../..'),
-    checkerPath = path.join(repoRoot, 'buildScripts/util/check-aiconfig-antipatterns.mjs');
+    __dirname              = path.dirname(fileURLToPath(import.meta.url)),
+    repoRoot               = path.resolve(__dirname, '../../../../../..'),
+    checkerPath            = path.join(repoRoot, 'buildScripts/util/check-aiconfig-antipatterns.mjs'),
+    retiredNightlyE2eEntry = "ai/scripts/lifecycle/nightlyE2eRunner.mjs::const STATE_DIR     = '.neo-ai-data/nightly-e2e',";
 
 /**
  * Self-test for the AiConfig antipattern guard: the mechanical enforcement of B3 (defensive
@@ -494,13 +495,12 @@ test.describe('PLANE-LITERAL — cwd-relative plane literals', () => {
         expect(both).not.toContain('PLANE-LITERAL')
     });
 
-    test('ACQUITTAL: the three checkout-owned sites are silenced, and the ledger is what silences them', () => {
+    test('ACQUITTAL: the two checkout-owned sites are silenced, and the ledger is what silences them', () => {
         // Two directions, because either alone is satisfiable by a rule that does nothing. Without
         // the ledger every one of them must go RED — that is what proves the entries are load-
         // bearing rather than decoration for sites the predicate never reached.
         const noLedger = {...ALLOWLIST, 'PLANE-LITERAL': new Set()},
               sites    = [
-                  ['ai/scripts/lifecycle/nightlyE2eRunner.mjs',       "const STATE_DIR     = '.neo-ai-data/nightly-e2e',"],
                   ['ai/scripts/diagnostics/bootstrapCodexSandbox.mjs', "export const DEFAULT_SQLITE_DIR = '.neo-ai-data/sqlite';"],
                   ['ai/daemons/orchestrator/taskDefinitions.mjs',      "    chromaDataDir = '.neo-ai-data/chroma/unified',"]
               ];
@@ -519,9 +519,19 @@ test.describe('PLANE-LITERAL — cwd-relative plane literals', () => {
         // direction is the other one: the site gets DELETED and the entry lingers, exempting a
         // future line that happens to match. Nothing else reports that, so this arm does.
         for (const entry of ALLOWLIST['PLANE-LITERAL']) {
-            const [file, site] = entry.split('::'),
-                  content      = fs.readFileSync(path.join(repoRoot, file), 'utf8'),
-                  present      = content.split('\n').some(line => line.trim() === site.trim());
+            const [file, site] = entry.split('::');
+
+            // Brain consumes this guard from its Engine pin. Pins predating the Engine-side removal still
+            // carry the retired Engine runner entry; prove the target stays absent until a newer pin
+            // removes the external ledger row, rather than trying to read a deleted Brain file.
+            // Remove this compatibility branch and `retiredNightlyE2eEntry` when that row disappears.
+            if (entry === retiredNightlyE2eEntry) {
+                expect(fs.existsSync(path.join(repoRoot, file))).toBe(false);
+                continue
+            }
+
+            const content = fs.readFileSync(path.join(repoRoot, file), 'utf8'),
+                  present = content.split('\n').some(line => line.trim() === site.trim());
 
             expect(present, `${file} no longer contains the ledgered site: ${site}`).toBe(true)
         }
@@ -529,8 +539,8 @@ test.describe('PLANE-LITERAL — cwd-relative plane literals', () => {
 
     test('RATCHET: a second site inside a ledgered file stays RED — exact-site entries prove growth', () => {
         const
-            file      = 'ai/scripts/lifecycle/nightlyE2eRunner.mjs',
-            knownSite = "const STATE_DIR     = '.neo-ai-data/nightly-e2e',",
+            file      = 'ai/scripts/diagnostics/bootstrapCodexSandbox.mjs',
+            knownSite = "export const DEFAULT_SQLITE_DIR = '.neo-ai-data/sqlite';",
             newSite   = "const sneak = '.neo-ai-data/sneaky/state.json';",
             hits      = planeLiteralHits(`${knownSite}\n${newSite}\n`),
             kept      = filterAllowlistedHits(hits, file);
