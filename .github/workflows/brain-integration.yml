@@ -34,8 +34,15 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            deploy/cloud/package-lock.json
 
       - name: Install exact dependency graph without dependency lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Install the independent Container-Cloud package
+        working-directory: deploy/cloud
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Build the native SQLite binding
