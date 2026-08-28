@@ -214,7 +214,11 @@ boots on. Leave it unset on a machine with no local wake lane and that axis
 reports typed-unobserved instead of guessing.
 
 ```sh
-export NEO_REPO_ROOT="$(pwd -P)"
+# ADR 0040 §2.5's `agentosRuntimeRoot`: where the Agent OS is installed and runs.
+# Run this guide from the Brain checkout. Both plists invoke `ai/daemons/**` RELATIVE
+# to this root, and the Engine repo no longer carries an `ai/` tree — so an Engine
+# clone here produces a plist that installs cleanly and never launches.
+export AGENTOS_RUNTIME_ROOT="$(pwd -P)"
 export NEO_AGENT_OS_HOST_ROOT="${HOME}/Library/Application Support/Neo/AgentOS"
 export NEO_WAKE_RECEIVER_ROOT="${NEO_AGENT_OS_HOST_ROOT}/wake"
 export NEO_WAKE_RECEIVER_MANIFEST="${NEO_WAKE_RECEIVER_ROOT}/routes.json"
@@ -411,7 +415,7 @@ plutil -replace ProgramArguments -json "[
   \"--host\",      \"127.0.0.1\",
   \"--port\",      \"3199\"
 ]" "${NEO_WAKE_PLIST}"
-plutil -replace WorkingDirectory -string "${NEO_REPO_ROOT}" "${NEO_WAKE_PLIST}"
+plutil -replace WorkingDirectory -string "${AGENTOS_RUNTIME_ROOT}" "${NEO_WAKE_PLIST}"
 plutil -replace EnvironmentVariables.PATH -string "${PATH}" "${NEO_WAKE_PLIST}"
 plutil -replace StandardOutPath -string "${NEO_WAKE_RECEIVER_STATE_DIR}/launchd.out.log" "${NEO_WAKE_PLIST}"
 plutil -replace StandardErrorPath -string "${NEO_WAKE_RECEIVER_STATE_DIR}/launchd.err.log" "${NEO_WAKE_PLIST}"
@@ -419,6 +423,11 @@ plutil -lint "${NEO_WAKE_PLIST}"
 
 # `lint` is NOT sufficient here — see the note after this block. Assert no placeholder survived.
 plutil -p "${NEO_WAKE_PLIST}" | grep -q '__' && { echo 'FAIL: placeholder survived in wake plist'; exit 1; }
+
+# Same class of silent failure, a different dimension: a substituted root that does not
+# carry the entrypoint passes both `lint` and the placeholder check, and the agent then
+# never launches. Assert the resolved root, not just the absence of placeholders.
+[ -f "${AGENTOS_RUNTIME_ROOT}/ai/daemons/wake/receiver.mjs" ] || { echo "FAIL: AGENTOS_RUNTIME_ROOT=${AGENTOS_RUNTIME_ROOT} carries no ai/daemons/wake/receiver.mjs — point it at the Brain runtime root, not the Engine clone"; exit 1; }
 ```
 
 **Replace the whole `ProgramArguments` array, never an index.** `plutil -replace
@@ -444,13 +453,14 @@ otherwise.
 ```sh
 cp deploy/host/com.neomjs.agent-os-host-edge.plist "${NEO_HOST_EDGE_PLIST}"
 plutil -replace ProgramArguments -json "[\"$(command -v node)\", \"ai/daemons/orchestrator/hostEdge.mjs\"]" "${NEO_HOST_EDGE_PLIST}"
-plutil -replace WorkingDirectory -string "${NEO_REPO_ROOT}" "${NEO_HOST_EDGE_PLIST}"
+plutil -replace WorkingDirectory -string "${AGENTOS_RUNTIME_ROOT}" "${NEO_HOST_EDGE_PLIST}"
 plutil -replace EnvironmentVariables.PATH -string "${PATH}" "${NEO_HOST_EDGE_PLIST}"
 plutil -replace EnvironmentVariables.NEO_AI_ORCHESTRATOR_DIR -string "${NEO_HOST_EDGE_STATE_DIR}" "${NEO_HOST_EDGE_PLIST}"
 plutil -replace StandardOutPath -string "${NEO_HOST_EDGE_STATE_DIR}/launchd.out.log" "${NEO_HOST_EDGE_PLIST}"
 plutil -replace StandardErrorPath -string "${NEO_HOST_EDGE_STATE_DIR}/launchd.err.log" "${NEO_HOST_EDGE_PLIST}"
 plutil -lint "${NEO_HOST_EDGE_PLIST}"
 plutil -p "${NEO_HOST_EDGE_PLIST}" | grep -q '__' && { echo 'FAIL: placeholder survived in host-edge plist'; exit 1; }
+[ -f "${AGENTOS_RUNTIME_ROOT}/ai/daemons/orchestrator/hostEdge.mjs" ] || { echo "FAIL: AGENTOS_RUNTIME_ROOT=${AGENTOS_RUNTIME_ROOT} carries no ai/daemons/orchestrator/hostEdge.mjs — point it at the Brain runtime root, not the Engine clone"; exit 1; }
 
 launchctl bootstrap "gui/$(id -u)" "${NEO_WAKE_PLIST}"
 launchctl bootstrap "gui/$(id -u)" "${NEO_HOST_EDGE_PLIST}"

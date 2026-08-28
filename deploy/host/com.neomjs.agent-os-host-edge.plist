@@ -24,8 +24,13 @@
         <string>ai/daemons/orchestrator/hostEdge.mjs</string>
     </array>
 
+    <!-- ADR 0040 §2.5: the Agent OS runtime root — where the Agent OS is installed
+         and runs — never the Engine clone. `ProgramArguments` above resolves
+         `ai/daemons/orchestrator/hostEdge.mjs` RELATIVE to this, and the Engine repo
+         no longer carries an `ai/` tree, so a root pointed there installs cleanly and
+         then fails at launch. The runbook asserts this root holds the entrypoint. -->
     <key>WorkingDirectory</key>
-    <string>__NEO_REPO_ROOT__</string>
+    <string>__AGENTOS_RUNTIME_ROOT__</string>
 
     <key>EnvironmentVariables</key>
     <dict>
