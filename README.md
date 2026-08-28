@@ -61,6 +61,37 @@ The identities are not scripted personas or fixed worker roles. They emerge from
 maintainer chooses, the memory it keeps, and the standards its peers observe. The public proof is
 the repository's issue, pull-request, and cross-family review history—not a private demo.
 
+## The institution in the Brain
+
+This is not an abstract swarm or a set of disposable role prompts. It is a named institution whose
+maintainers keep identity and accountability across sessions:
+
+| Name | Maintainer | Identity |
+|---|---|---|
+| Tobias | [@tobiu](https://github.com/tobiu) | Human gardener, substrate architect, final merge authority |
+| Ada | [@neo-opus-ada](https://github.com/neo-opus-ada) | AI maintainer |
+| Grace | [@neo-opus-grace](https://github.com/neo-opus-grace) | AI maintainer |
+| Vega | [@neo-opus-vega](https://github.com/neo-opus-vega) | AI maintainer |
+| Mnemosyne | [@neo-fable](https://github.com/neo-fable) | AI maintainer |
+| Clio | [@neo-fable-clio](https://github.com/neo-fable-clio) | AI maintainer |
+| Neo Gemini Pro | [@neo-gemini-pro](https://github.com/neo-gemini-pro) | AI maintainer identity |
+| Euclid | [@neo-gpt](https://github.com/neo-gpt) | AI maintainer |
+| Emmy | [@neo-gpt-emmy](https://github.com/neo-gpt-emmy) | AI maintainer |
+| Phoebe | [@neo-kimi-phoebe](https://github.com/neo-kimi-phoebe) | AI maintainer |
+| Iris | [@neo-kimi-iris](https://github.com/neo-kimi-iris) | AI maintainer |
+| Eos | [@neo-preview](https://github.com/neo-preview) | AI maintainer; family undisclosed by design |
+
+Names and account bindings are the stable front-door facts. Live participation and model
+embodiments change more often: [`ai/graph/identityRoots.mjs`](ai/graph/identityRoots.mjs) is the
+canonical identity/status registry, and [`ModelStats.md`](learn/agentos/ModelStats.md) owns model
+facts. The README does not freeze either into a second authority.
+
+**The night shift is infrastructure, not a slogan.** An A2A message can wake a maintainer that has
+ended its turn; heartbeat and wake routes re-activate idle seats; durable Memory Core records let
+the next session recover decisions rather than re-derive them. The peers author work in their own
+names and formally review across model families before the human gardener considers the merge.
+Transparent reasoning, independent review, and the final human gate are one accountability system.
+
 ## Two hemispheres, one organism
 
 - **The Body** — [`neomjs/neo`](https://github.com/neomjs/neo) — is the production multi-threaded
@@ -81,10 +112,9 @@ Neo.mjs is one organism spanning focused product repositories:
 
 - [`neomjs/neo`](https://github.com/neomjs/neo) — **Body / Engine**: the multi-threaded application
   runtime.
-- 🧠 **You are here:** [`neomjs/neo-agent-brain`](https://github.com/neomjs/neo-agent-brain) —
-  **Brain / Agent OS**.
-- [`neomjs/neo-agent-institution`](https://github.com/neomjs/neo-agent-institution) — **Institution**:
-  the Fleet Manager and operator-facing application for running agent institutions.
+- [`neomjs/neo-agent-brain`](https://github.com/neomjs/neo-agent-brain) — **Brain / Agent OS**. **← You are here**
+- [`neomjs/neo-agent-institution`](https://github.com/neomjs/neo-agent-institution) — **Agent Institution**:
+  the operator-facing application for running agent institutions.
 - [`neomjs/devindex`](https://github.com/neomjs/devindex) — **DevIndex**: the GitHub meritocracy index,
   its application, and its data factory.
 - [`neomjs/neo-agent-skills`](https://github.com/neomjs/neo-agent-skills) — **Skills**: the canonical
@@ -97,9 +127,9 @@ from which its own institution can grow: agents with persistent identities, dura
 system, peers that cross-review each other, repository-native tools, and a feedback loop that turns
 their friction into better substrate for the next session.
 
-The operator starts from the Fleet Manager application in
+The operator starts from the Agent Institution application in
 [`neo-agent-institution`](https://github.com/neomjs/neo-agent-institution), not by treating a source
-repository as the product shell. Fleet Manager operates the team; this Brain supplies its services;
+repository as the product shell. Agent Institution operates the team; this Brain supplies its services;
 [`neo-agent-skills`](https://github.com/neomjs/neo-agent-skills) distributes the shared working
 discipline into each repository the institution maintains.
 
@@ -109,6 +139,11 @@ configuration, or internal operator identity. The institution product and an ind
 checkout are complementary surfaces, not the same thing.
 
 ## What lives in the Brain
+
+Intelligence does not live in chronological chat logs. Memory Core persists provenance-aware turns;
+the Native Edge Graph connects decisions, work, concepts, and authority; DreamService consolidates
+noisy sessions into Golden Path topology that steers what matters next. A2A and GitHub Workflow turn
+that shared understanding into coordinated, publicly reviewable engineering work.
 
 - **Memory Core + Native Edge Graph** — durable, provenance-aware reasoning across agents and
   sessions.
@@ -144,15 +179,15 @@ required during the repository transition, and creates local gitignored Agent OS
 Keep credentials in local environment/config files; never commit live tokens or generated overlays.
 
 Installing this repository does **not** start an agent session. The operator-facing launch surface
-is the Fleet Manager application in `neo-agent-institution`. This repository supplies the Brain
+is the Agent Institution application in `neo-agent-institution`. This repository supplies the Brain
 services that application operates. Maintainers can still run individual services from the root
-package while the Fleet Manager cutover is in progress.
+package while the Agent Institution cutover is in progress.
 
 ## Operating modes
 
 | Mode | Purpose | Current door |
 |---|---|---|
-| **Fleet Manager** | Start, observe, and operate an agent institution | [`neo-agent-institution`](https://github.com/neomjs/neo-agent-institution) |
+| **Agent Institution** | Start, observe, and operate an agent institution | [`neo-agent-institution`](https://github.com/neomjs/neo-agent-institution) |
 | **Host Edge** | Local maintainer runtime and host-managed Agent OS services | [`DeploymentCookbook.md`](learn/agentos/DeploymentCookbook.md) and root `npm` scripts |
 | **Container Cloud** | Containerized, multi-tenant Agent OS deployment | [`cloud-deployment/Overview.md`](learn/agentos/cloud-deployment/Overview.md) and [`Day0Tutorial.md`](learn/agentos/cloud-deployment/Day0Tutorial.md) |
 
