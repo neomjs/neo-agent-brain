@@ -212,6 +212,41 @@ test.describe('EmbeddingAdmission — weighted, live-budget, abort-aware admissi
         expect(admission.inFlight).toBe(0)
     });
 
+    test('canAdmit answers without taking; admit takes without re-deciding', () => {
+        const admission = gate(4);
+
+        // The queued path genuinely needs check-then-act: a post it declines stays QUEUED, so taking
+        // weight at the check would be a slot briefly held for a task that never ran.
+        expect(admission.canAdmit({weight: 3})).toBe(true);
+        expect(admission.inFlight).toBe(0);
+
+        admission.admit({weight: 3});
+        expect(admission.inFlight).toBe(3);
+
+        expect(admission.canAdmit({weight: 3})).toBe(false);
+        expect(admission.inFlight).toBe(3)
+    });
+
+    test('the batch ceiling and idle bypass hold through canAdmit too', () => {
+        const admission = gate(4);
+
+        admission.admit({weight: 1});
+
+        expect(admission.canAdmit({weight: 3, priority: 'batch'})).toBe(false);
+        expect(admission.canAdmit({weight: 2, priority: 'batch'})).toBe(true);
+        expect(admission.canAdmit({weight: 3, priority: 'interactive'})).toBe(true);
+
+        // Same rule, one implementation — this is what stops the queued and native paths from
+        // agreeing only by coincidence.
+        expect(gate(2).canAdmit({weight: 99})).toBe(true)
+    });
+
+    test('canAdmit fails closed on an unusable budget, like tryAcquire', () => {
+        const admission = new EmbeddingAdmission({resolveBudget: () => 0, createAbortError: abortError});
+
+        expect(() => admission.canAdmit({weight: 1})).toThrow(/positive integer/)
+    });
+
     test('weights are normalised to at least one unit', () => {
         expect(EmbeddingAdmission.normaliseWeight(0)).toBe(1);
         expect(EmbeddingAdmission.normaliseWeight(-3)).toBe(1);

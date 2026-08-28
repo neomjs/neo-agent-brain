@@ -718,8 +718,13 @@ class TextEmbeddingService extends Base {
     // width is the only authority.
     #openAiCompatiblePostQueueWorkers = 0;
     // Provider TASKS in flight, not posts. One multi-input POST is one task per input, and the budget
-    // is written in tasks, so admission has to count the same unit.
-    #openAiCompatibleInFlightTasks    = 0;
+    // is written in tasks, so admission counts the same unit. The gate owns that count and the
+    // interactive-headroom ceiling; this queue keeps only its ORDERING — selection among waiting posts
+    // is a concern the native path never had, so it is not the duplication #200 set out to remove.
+    #openAiAdmission = new EmbeddingAdmission({
+        resolveBudget   : () => resolveEmbeddingTaskBudget(aiConfig.localModels.embedding.parallel),
+        createAbortError: getEmbeddingAbortError
+    });
 
     // Native Ollama admission control. This path reached the provider through
     // `observeUnqueuedProviderActivity` — which observes and does NOT admit — so its concurrency was
@@ -889,7 +894,7 @@ class TextEmbeddingService extends Base {
             if (index === -1) break;
 
             // A slot withheld here returns the moment a settling worker re-drains.
-            if (!this.#mayAdmitOpenAiCompatiblePost(this.#openAiCompatiblePostQueue[index])) {
+            if (!this.#openAiAdmission.canAdmit(this.#openAiCompatibleAdmissionShape(this.#openAiCompatiblePostQueue[index]))) {
                 break
             }
 
@@ -899,41 +904,21 @@ class TextEmbeddingService extends Base {
     }
 
     /**
-     * @summary The number of provider tasks one queued post represents.
+     * @summary The admission shape one queued post presents to the gate.
+     *
+     * One multi-input POST is one provider task PER INPUT, so weight is the input count rather than
+     * one-post-one-slot. Both the batch ceiling and the idle bypass now live in the gate, which is
+     * what makes the native and queued paths share a single admission rule instead of two that agreed
+     * only by coincidence.
      * @param {Object} task Queued post.
-     * @returns {Number} One per input, minimum one.
+     * @returns {{weight: Number, priority: String}}
      * @private
      */
-    #openAiCompatibleTaskWeight(task) {
-        return Array.isArray(task?.inputData) ? Math.max(task.inputData.length, 1) : 1
-    }
-
-    /**
-     * @summary Whether one queued post may be dispatched against the declared task budget.
-     *
-     * BATCH work is admitted only up to `budget - 1`, which is the interactive-headroom contract
-     * expressed where it can actually hold. Reserving per `embedTexts` call cannot hold it: two batch
-     * callers each satisfy their own reservation and jointly fill the budget, leaving an interactive
-     * post no slot — the falsifier a reviewer supplied against an earlier version of this guard, where
-     * admission ran to the full budget for every lane.
-     *
-     * INTERACTIVE work may use the whole budget, because the reserved slot exists FOR it.
-     *
-     * `inFlightTasks === 0` always admits, so a post wider than the budget still makes forward
-     * progress rather than livelocking, and a single-slot deployment is untouched.
-     * @param {Object} task Queued post.
-     * @returns {Boolean}
-     * @private
-     */
-    #mayAdmitOpenAiCompatiblePost(task) {
-        if (this.#openAiCompatibleInFlightTasks === 0) {
-            return true
+    #openAiCompatibleAdmissionShape(task) {
+        return {
+            weight  : EmbeddingAdmission.normaliseWeight(task?.inputData?.length),
+            priority: task?.priority
         }
-
-        const budget  = resolveEmbeddingTaskBudget(aiConfig.localModels.embedding.parallel),
-              ceiling = task?.priority === 'interactive' ? budget : Math.max(budget - 1, 1);
-
-        return this.#openAiCompatibleInFlightTasks + this.#openAiCompatibleTaskWeight(task) <= ceiling
     }
 
     /**
@@ -948,12 +933,17 @@ class TextEmbeddingService extends Base {
 
                 if (taskIndex === -1) break;
 
-                const weight = this.#openAiCompatibleTaskWeight(this.#openAiCompatiblePostQueue[taskIndex]);
+                const shape  = this.#openAiCompatibleAdmissionShape(this.#openAiCompatiblePostQueue[taskIndex]),
+                      weight = shape.weight;
 
                 // The drain admitted this worker once. A worker looping to a SECOND task re-checks,
                 // because capacity may have been taken since. Exiting is safe and cannot spin: this
                 // worker has already awaited, so its count is live when the drain next runs.
-                if (!this.#mayAdmitOpenAiCompatiblePost(this.#openAiCompatiblePostQueue[taskIndex])) {
+                //
+                // `canAdmit` rather than `tryAcquire` because this is a genuine check-then-act: the
+                // post stays QUEUED when the answer is no, so taking the weight here and handing it
+                // back would be a slot this worker briefly owned on behalf of a task it never ran.
+                if (!this.#openAiAdmission.canAdmit(shape)) {
                     break
                 }
 
@@ -962,7 +952,7 @@ class TextEmbeddingService extends Base {
                 const task = this.#openAiCompatiblePostQueue.splice(taskIndex, 1)[0];
 
                 task.markDispatched();
-                this.#openAiCompatibleInFlightTasks += weight;
+                this.#openAiAdmission.admit({weight});
 
                 const startedAt = Date.now();
 
@@ -971,11 +961,11 @@ class TextEmbeddingService extends Base {
                 try {
                     const result = await this.#postOpenAiCompatible(task.inputData, task.options);
 
-                    this.#openAiCompatibleInFlightTasks -= weight;
+                    this.#openAiAdmission.release({weight});
                     task.lifecycle.onSettled({completedAt: Date.now(), success: true});
                     task.resolve(result);
                 } catch (err) {
-                    this.#openAiCompatibleInFlightTasks -= weight;
+                    this.#openAiAdmission.release({weight});
                     task.lifecycle.onSettled({completedAt: Date.now(), success: false});
 
                     // The queue task — not each transport attempt — owns final failure, so by the

@@ -136,29 +136,57 @@ export default class EmbeddingAdmission {
      * @throws {TypeError} Propagated from `resolveBudget` when the configured budget is unusable.
      */
     tryAcquire({weight = 1, priority = 'interactive'} = {}) {
+        if (!this.canAdmit({weight, priority})) return false;
+
+        this.admit({weight});
+
+        return true
+    }
+
+    /**
+     * @summary Whether a request of this shape would be admitted right now. Takes NOTHING.
+     *
+     * Separate from {@link admit} because one caller genuinely needs check-then-act: a queue that
+     * selects among waiting posts must ask whether the one it picked would fit *before* committing to
+     * dispatch it, and it may then decline and leave the post queued. A caller with no such selection
+     * step should use {@link tryAcquire}, which composes the two without the gap.
+     *
+     * @param {Object} [options]
+     * @param {Number} [options.weight=1] Weight units the request would consume.
+     * @param {'interactive'|'batch'} [options.priority='interactive'] Lane priority.
+     * @returns {Boolean}
+     * @throws {TypeError} Propagated from `resolveBudget` when the configured budget is unusable.
+     */
+    canAdmit({weight = 1, priority = 'interactive'} = {}) {
         const units = EmbeddingAdmission.normaliseWeight(weight);
 
         // Resolved BEFORE the idle bypass on purpose: a misconfigured budget must fail loud on the
-        // very first admission, not lie dormant until the lane happens to contend.
+        // very first decision, not lie dormant until the lane happens to contend.
         const budget = this.#resolveBudget();
 
         if (!Number.isInteger(budget) || budget < 1) {
             throw new TypeError(`EmbeddingAdmission: resolveBudget must yield a positive integer; received ${JSON.stringify(budget)}`)
         }
 
-        if (this.#inFlight === 0) {
-            this.#inFlight = units;
-            return true
-        }
+        if (this.#inFlight === 0) return true;
 
         const ceiling = priority === 'interactive' ? budget : Math.max(budget - 1, 1);
 
-        if (this.#inFlight + units <= ceiling) {
-            this.#inFlight += units;
-            return true
-        }
+        return this.#inFlight + units <= ceiling
+    }
 
-        return false
+    /**
+     * @summary Takes weight the caller has already established it may take.
+     *
+     * Pairs with {@link canAdmit}. Unconditional by design: a gate that silently re-decided here would
+     * make the caller's own check meaningless and hide the disagreement.
+     *
+     * @param {Object} [options]
+     * @param {Number} [options.weight=1] Weight units to take.
+     * @returns {void}
+     */
+    admit({weight = 1} = {}) {
+        this.#inFlight += EmbeddingAdmission.normaliseWeight(weight)
     }
 
     /**
