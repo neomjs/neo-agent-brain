@@ -8,8 +8,8 @@ import {listActiveWaitersSync} from '../../../../../../../ai/daemons/orchestrato
 
 const HOUR = 60 * 60 * 1000;
 
-function waiterEntry({taskName, deferredSince, updatedAt = deferredSince, priorityZero = false, bootstrapCritical = false}) {
-    return {taskName, deferredSince, updatedAt, priorityZero, bootstrapCritical, pid: 4242};
+function waiterEntry({taskName, deferredSince, updatedAt = deferredSince, priorityZero = false, bootstrapCritical = false, reasonCode = null, blockingTaskName = null}) {
+    return {taskName, deferredSince, updatedAt, priorityZero, bootstrapCritical, reasonCode, blockingTaskName, pid: 4242};
 }
 
 test.describe('orchestrator/scheduling/heavyMaintenanceStarvationWatchdog (#17049 / #16561)', () => {
@@ -32,13 +32,20 @@ test.describe('orchestrator/scheduling/heavyMaintenanceStarvationWatchdog (#1704
         expect(evaluation.degraded).toBe(true);
         expect(evaluation.waiterCount).toBe(2);
         expect(evaluation.breaches).toHaveLength(1);
+        // Exact-shape on purpose: this is the receipt contract, so a field arriving or leaving is a
+        // deliberate change rather than a silent one. #239 added the three causal fields below — the
+        // fixture supplies no cause, so they read `null`, which is the honest value for a waiter
+        // whose reason was never recorded.
         expect(evaluation.breaches[0]).toEqual({
             taskName         : 'backup',
             priorityZero     : true,
             bootstrapCritical: false,
             deferredSince    : new Date(now - 2 * HOUR).toISOString(),
             starvedForMs     : 2 * HOUR,
-            leaseHolder      : 'dream'
+            leaseHolder      : 'dream',
+            reasonCode       : null,
+            blockingTaskName : null,
+            leaseStatus      : null
         });
     });
 
@@ -236,5 +243,72 @@ test.describe('describeStarvationReceiptReachability — the producer/consumer p
         for (const pair of [{checkMs: NaN, staleAfterMs: 120000}, {checkMs: 600000, staleAfterMs: undefined}]) {
             expect(describeStarvationReceiptReachability(pair).reachable).toBe(false);
         }
+    });
+});
+
+// #239. `leaseHolder` describes ONE of the three reason classes that can register a waiter
+// (`lease-held`, `backpressure`, `yield-to-waiter`), so a breach carrying only the holder cannot say
+// why any particular waiter is waiting. Three live plane samples of one starvation produced three
+// different mechanisms for exactly this reason — sampling a surface that reports only the symptom
+// cannot converge on the cause.
+test.describe('the waiter\'s OWN cause reaches the breach (#239)', () => {
+    const NOW = Date.parse('2026-08-30T00:00:00.000Z'),
+          OLD = new Date(NOW - 4 * HOUR).toISOString(),
+
+          evaluate = (waiters, extra = {}) => evaluateWaiterStarvation({
+              ledgerReading : {waiters, unreadable: []},
+              now           : NOW,
+              degradeAfterMs: HOUR,
+              ...extra
+          });
+
+    test('two waiters with the SAME null holder are distinguishable by their own reason codes', () => {
+        const {breaches} = evaluate([
+            waiterEntry({taskName: 'dream',  deferredSince: OLD, reasonCode: 'heavy-maintenance-lease-held'}),
+            waiterEntry({taskName: 'kbSync', deferredSince: OLD, reasonCode: 'heavy-maintenance-backpressure', blockingTaskName: 'summary'})
+        ], {leaseHolder: null});
+
+        // The field that used to be the only causal one is identical across both.
+        expect(breaches.map(b => b.leaseHolder)).toEqual([null, null]);
+
+        // The field that discriminates them is not.
+        expect(breaches.map(b => b.reasonCode))
+            .toEqual(['heavy-maintenance-lease-held', 'heavy-maintenance-backpressure']);
+        expect(breaches[1].blockingTaskName).toBe('summary');
+    });
+
+    test('a waiter whose cause was never recorded reports null, never a guessed one', () => {
+        const {breaches} = evaluate([waiterEntry({taskName: 'dream', deferredSince: OLD})], {leaseHolder: 'summary'});
+
+        // An entry written before the field existed still reads — the ledger projects the whole
+        // entry rather than an allowlist — and its unknown cause stays unknown.
+        expect(breaches[0].reasonCode).toBe(null);
+        expect(breaches[0].blockingTaskName).toBe(null);
+        expect(breaches[0].leaseHolder).toBe('summary');
+    });
+
+    // #224 shipped `leaseStatus` to qualify a null holder, but it landed on the maintenance block —
+    // so the two halves of "why is nothing running" lived on different objects.
+    test('the holder-side discriminator travels WITH the breach, not beside it', () => {
+        const {breaches, leaseStatus} = evaluate(
+            [waiterEntry({taskName: 'dream', deferredSince: OLD, reasonCode: 'heavy-maintenance-lease-held'})],
+            {leaseHolder: null, leaseStatus: 'stale'}
+        );
+
+        expect(breaches[0].leaseStatus).toBe('stale');
+        expect(leaseStatus).toBe('stale');
+    });
+
+    // 🔴 THE FALSIFIER THIS EXISTS TO ENABLE. A payload whose breaches report a null holder and no
+    // cause must not be readable as a lease finding. If this passes while every causal field is
+    // absent, the exposure did not do its job.
+    test('a holder-only breach carries no evidence for ANY specific mechanism', () => {
+        const {breaches} = evaluate([waiterEntry({taskName: 'dream', deferredSince: OLD})], {leaseHolder: null});
+        const causal     = ['reasonCode', 'blockingTaskName', 'leaseStatus'].filter(k => breaches[0][k] != null);
+
+        // Nothing here identifies a mechanism — and the shape says so explicitly rather than
+        // leaving `leaseHolder: null` to be read as "the lease is the problem".
+        expect(causal).toEqual([]);
+        expect(breaches[0].leaseHolder).toBe(null);
     });
 });

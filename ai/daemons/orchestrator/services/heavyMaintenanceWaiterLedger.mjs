@@ -62,7 +62,7 @@ function waiterFilePath(dir, taskName) {
  * @param {Number} [options.pid=process.pid] Recorded for forensics, not liveness.
  * @returns {Object} The persisted waiter entry.
  */
-export function registerWaiterSync({leasePath, taskName, priorityZero = false, bootstrapCritical = false, deferredSince, fsModule = fs, now = new Date(), pid = process.pid} = {}) {
+export function registerWaiterSync({leasePath, taskName, priorityZero = false, bootstrapCritical = false, deferredSince, reasonCode = null, blockingTaskName = null, leaseOwner = null, fsModule = fs, now = new Date(), pid = process.pid} = {}) {
     if (!taskName) {
         throw new TypeError('registerWaiterSync: taskName is required');
     }
@@ -73,11 +73,24 @@ export function registerWaiterSync({leasePath, taskName, priorityZero = false, b
 
     const dir = resolveWaitersDir({leasePath});
 
+    // The waiter's OWN cause travels with it. Three reason classes register here, and
+    // `leaseHolder` on the starvation surface describes exactly one of them — so without this a
+    // breach cannot distinguish a lease-held waiter from an intra-process-backpressure one or a
+    // fairness abstention, and a reader is left inferring a mechanism from the one field that
+    // happens to be exposed. ticket-ref-ok: #239 measured that gap against three live plane
+    // samples that each produced a different mechanism.
+    //
+    // Null-tolerant by design: an older entry written before this field existed still reads,
+    // because `listActiveWaitersSync` projects the whole entry rather than an allowlist. A waiter
+    // whose cause is unknown reports `null` — never a guessed one.
     const entry = {
         taskName,
         priorityZero     : priorityZero === true,
         bootstrapCritical: bootstrapCritical === true,
         deferredSince,
+        reasonCode       : typeof reasonCode === 'string' && reasonCode ? reasonCode : null,
+        blockingTaskName : typeof blockingTaskName === 'string' && blockingTaskName ? blockingTaskName : null,
+        leaseOwner       : typeof leaseOwner === 'string' && leaseOwner ? leaseOwner : null,
         updatedAt        : new Date(typeof now === 'number' ? now : now.getTime()).toISOString(),
         pid
     };

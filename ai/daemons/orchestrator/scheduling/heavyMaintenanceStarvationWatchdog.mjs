@@ -59,10 +59,12 @@
  * @param {String|null} [options.leaseHolder=null] Owner of the currently ACTIVE lease, or null when none.
  * @returns {{posture: String, degraded: Boolean, breaches: Object[], waiterCount: Number,
  *   unreadableCount: Number, degradeAfterMs: Number, leaseHolder: (String|null)}} `breaches` entries
- *   carry `{taskName, priorityZero, bootstrapCritical, deferredSince, starvedForMs, leaseHolder}` —
+ *   carry `{taskName, priorityZero, bootstrapCritical, deferredSince, starvedForMs, leaseHolder,
+ *   reasonCode, blockingTaskName, leaseStatus}` — the last three are the waiter's OWN cause, without
+ *   which `leaseHolder` discriminates one of the three registering reason classes and leaves two —
  *   the receipt the consumed health projection publishes.
  */
-export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, leaseHolder = null} = {}) {
+export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, leaseHolder = null, leaseStatus = null} = {}) {
     const waiters    = Array.isArray(ledgerReading?.waiters)    ? ledgerReading.waiters    : [];
     const unreadable = Array.isArray(ledgerReading?.unreadable) ? ledgerReading.unreadable : [];
     const breaches   = [];
@@ -79,7 +81,17 @@ export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, le
                     bootstrapCritical: entry.bootstrapCritical === true,
                     deferredSince    : entry.deferredSince,
                     starvedForMs,
-                    leaseHolder
+                    leaseHolder,
+                    // `leaseHolder` describes ONE of the three reason classes that can register a
+                    // waiter, so on its own a breach cannot tell a lease-held waiter from an
+                    // intra-process-backpressure one or a fairness abstention. These three fields are
+                    // the waiter's own cause, carried from the emitter that knew it.
+                    reasonCode      : entry.reasonCode ?? null,
+                    blockingTaskName: entry.blockingTaskName ?? null,
+                    // The holder-side discriminator (#224/#222) qualified a null `leaseHolder` on the
+                    // maintenance block but never reached the breach, so the two halves of one
+                    // question lived on different objects.
+                    leaseStatus      : leaseStatus ?? null
                 });
             }
         }
@@ -98,6 +110,7 @@ export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, le
         degraded       : posture === 'degraded',
         breaches,
         waiterCount    : waiters.length,
+        leaseStatus,
         unreadableCount: unreadable.length,
         degradeAfterMs,
         leaseHolder

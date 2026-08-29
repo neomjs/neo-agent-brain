@@ -57,7 +57,14 @@ export const RECOGNIZED_DEFERRAL_REASON_CODES = Object.freeze([
     'heavy-maintenance-backpressure',
     'heavy-maintenance-lease-acquire-error',
     'heavy-maintenance-lease-held',
-    'golden-path-dependency-backpressure'
+    'golden-path-dependency-backpressure',
+    // Restored 2026-08-30: absent while `MaintenanceBackpressureService` had emitted it, which broke
+    // this list's own docblock contract ("keep in lockstep with the recordDeferral emitters"). The
+    // consequence is one line up — an unrecognized skip "can never mask a genuine stall" — so the
+    // FAIRNESS class, the one that exists to protect a starving peer, produced a skip the stall
+    // detector could not classify. ticket-ref-ok: #239; the drift is now guarded by a spec comparing
+    // the two sets rather than by a comment asking an editor to remember.
+    'heavy-maintenance-yield-to-waiter'
 ]);
 
 /**
@@ -811,7 +818,11 @@ async function runHeavyMaintenanceStarvationWatchdogTask({taskName, reason, serv
             ledgerReading,
             now,
             degradeAfterMs: runtime.heavyMaintenanceStarvationDegradeAfterMs,
-            leaseHolder
+            leaseHolder,
+            // The holder-side discriminator from #224 was already computed here and published to the
+            // maintenance block; the breach never received it, so the two halves of "why is nothing
+            // running" lived on different objects.
+            leaseStatus   : inspection.status
         });
 
         if (evaluation.unreadableCount > 0) {
@@ -850,7 +861,16 @@ async function runHeavyMaintenanceStarvationWatchdogTask({taskName, reason, serv
 
         if (evaluation.posture === 'degraded') {
             services.healthService?.recordTaskOutcome?.(taskName, 'failed', details);
-            runtime.writeLog?.('WARN', `[Orchestrator] heavy-maintenance-starvation-watchdog: ${evaluation.breaches.length} waiter(s) starved past ${evaluation.degradeAfterMs}ms under holder ${evaluation.leaseHolder ?? 'none'}: ${evaluation.breaches.map(breach => `${breach.taskName} (deferred since ${breach.deferredSince})`).join(', ')} — the fairness yield bound has been exceeded; the lease pipeline is not admitting its waiters.`);
+            // Names the cause each waiter REPORTS, and says so plainly when it has none. The previous
+            // wording ended "the fairness yield bound has been exceeded; the lease pipeline is not
+            // admitting its waiters" — a definite claim about ONE of the three reason classes that
+            // can register a waiter, emitted from a reading that could not isolate it. That sentence
+            // sent two maintainers after the wrong mechanism for an afternoon with the code open, so
+            // the log now reports what was observed and leaves the diagnosis to whoever reads it.
+            // ticket-ref-ok: #239 is where the misdirection was measured against three plane samples.
+            const causes = evaluation.breaches.map(breach => `${breach.taskName} (deferred since ${breach.deferredSince}, cause ${breach.reasonCode ?? 'unreported'}${breach.blockingTaskName ? ` behind ${breach.blockingTaskName}` : ''})`);
+
+            runtime.writeLog?.('WARN', `[Orchestrator] heavy-maintenance-starvation-watchdog: ${evaluation.breaches.length} waiter(s) starved past ${evaluation.degradeAfterMs}ms; lease holder ${evaluation.leaseHolder ?? 'none'} (status ${evaluation.leaseStatus ?? 'unknown'}): ${causes.join(', ')}. Each waiter's own reason code is the discriminator; the holder alone does not identify why any of them is waiting.`);
         } else if (evaluation.posture === 'unknown') {
             // Inconclusive is neither green nor red: recorded as skipped (the check ran, the answer
             // could not be asserted), and the posture — not the outcome word — is what consumers read.
