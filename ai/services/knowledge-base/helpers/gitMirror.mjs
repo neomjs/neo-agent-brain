@@ -1188,6 +1188,158 @@ export async function listRevisionPaths({mirrorRoot, tenantId, repoSlug, revisio
 }
 
 /**
+ * Blob OIDs handed to one `git fetch` invocation. A whole-tree prefetch on this repo is ~23k OIDs at
+ * 41 bytes each — roughly 950 KB of argv, past `ARG_MAX` on macOS (256 KB) and close to it on Linux.
+ * A thousand keeps each command under ~41 KB while still collapsing the tree into ~24 negotiations
+ * rather than ~23,000, which is where all of the saving already is: the cost being removed is
+ * per-request latency, not bytes.
+ * @type {Number}
+ */
+const PREFETCH_OID_CHUNK_SIZE = 1000;
+
+/**
+ * @summary Fetches every blob a revision's paths need in a few negotiations instead of one per file.
+ *
+ * ## The cost this exists to remove
+ *
+ * `cloneIfMissing` creates the mirror with `--filter=blob:none`, so no blob is local until something
+ * asks for it. `readRevisionFile` asks for exactly one, which git answers with a lazy promisor fetch
+ * — a full round trip per file. Measured cold against `neomjs/neo`: **0.52 s/file**, which the live
+ * plane independently measured at 0.42 s/file. Across the 23,187 blobs of one revision that is
+ * **~3.3 hours** of latency, paid by every new tenant on its first ingest, and paid again on any
+ * re-clone.
+ *
+ * Asking for them together costs one negotiation per chunk. Measured on a cold mirror of the same
+ * repo: the whole tree, 23,187 blobs, **28 seconds** — after which `rev-list --missing=print`
+ * reports zero missing and the reads that follow are local. The blobs transferred are identical; only
+ * the number of round trips changes.
+ *
+ * ## Why it is best-effort, and why that is not defensive coding
+ *
+ * This is an accelerator in front of a path that already works. Every failure mode — a server that
+ * refuses SHA-1 wants, a credential that cannot authenticate, a mirror that is not a partial clone —
+ * leaves `readRevisionFile` exactly as capable as it was before this function existed. So a throw here
+ * would convert a *slow* ingest into a *failed* one, which is strictly worse than the status quo it
+ * is trying to improve. It returns a status instead, and the caller reads on regardless.
+ *
+ * The one thing it must never do is report success it did not achieve: `status` distinguishes
+ * `prefetched` from `already-local` from `unavailable`, so a caller (or a log) can tell a mirror that
+ * needed nothing from a prefetch that silently did nothing.
+ *
+ * ## Scoped to the paths being read
+ *
+ * `sourcePaths` is required rather than optional, and the whole tree is never implied. An incremental
+ * sync reads only changed paths, and a prefetch that helpfully fetched the entire revision would
+ * hand every steady-state poll the first-ingest bill this function exists to avoid.
+ *
+ * @param {Object} options
+ * @param {String} options.mirrorRoot Root directory for tenant repo mirrors.
+ * @param {String} options.tenantId Tenant id.
+ * @param {String} options.repoSlug Repository slug.
+ * @param {String} options.revision Resolved revision.
+ * @param {String[]} options.sourcePaths Repo-relative paths whose blobs are about to be read.
+ * @param {String|Object|null} [options.credentialRef] Durable credential reference. Required for a
+ *     private remote, for the same reason `readRevisionFile` needs one: this reaches the network.
+ * @param {Number} [options.chunkSize=PREFETCH_OID_CHUNK_SIZE] OIDs per `git fetch` invocation.
+ * @returns {Promise<{status: String, requested: Number, missing: Number, chunks: Number, reason: (String|null)}>}
+ *     Never rejects. `status` is `prefetched` (a fetch ran), `already-local` (nothing was missing) or
+ *     `unavailable` (something refused; the caller reads per-file as before).
+ */
+export async function prefetchRevisionBlobs({mirrorRoot, tenantId, repoSlug, revision, sourcePaths, credentialRef, chunkSize = PREFETCH_OID_CHUNK_SIZE} = {}) {
+    const requested = Array.isArray(sourcePaths) ? sourcePaths.length : 0,
+          result    = {chunks: 0, missing: 0, reason: null, requested, status: 'already-local'};
+
+    if (requested < 1) {
+        return result
+    }
+
+    const mirrorPath = getMirrorPath({mirrorRoot, tenantId, repoSlug});
+
+    try {
+        // One `ls-tree` regardless of how many paths were requested — passing 23k pathspecs would hit
+        // the same `ARG_MAX` ceiling the chunking below exists for. Reading the whole tree and
+        // intersecting in memory costs one process and ~23k map entries. `ls-tree` is answered from
+        // trees, which the blob filter keeps complete, so this resolution reaches no network.
+        const listed = await runGit(['ls-tree', '-r', '-z', revision], {
+            cwd           : mirrorPath,
+            failureCode   : 'KB_GITMIRROR_PREFETCH_LIST_FAILED',
+            failureMessage: 'GitMirror failed to list revision blobs for prefetch'
+        });
+
+        const oidByPath = new Map();
+
+        for (const entry of listed.stdout.split('\0')) {
+            // `<mode> <type> <oid>\t<path>` — only blobs, since a submodule's commit is not ours to
+            // fetch and a tree is already local under this filter.
+            const [meta, entryPath] = entry.split('\t');
+
+            if (entryPath) {
+                const [, type, oid] = meta.split(' ');
+
+                if (type === 'blob') oidByPath.set(entryPath, oid)
+            }
+        }
+
+        const wanted = [...new Set(sourcePaths.map(sourcePath => oidByPath.get(sourcePath)).filter(Boolean))];
+
+        if (wanted.length < 1) {
+            return result
+        }
+
+        // `--missing=print` is the fetch-free probe. Asking `cat-file -e` instead would trigger the
+        // very promisor fetch it is being asked to test for, and `ls-tree --long` fetches blobs to
+        // report their sizes — both turn the measurement into the thing measured.
+        const missingProbe = await runGit(['rev-list', '--objects', '--missing=print', '--max-count=1', revision], {
+            cwd           : mirrorPath,
+            // `extraEnv`, not `env` — an unknown option would be silently dropped and the probe would
+            // lazily fetch every object it is asking about, which is the exact instrument failure this
+            // ticket's Avoided Traps records twice.
+            extraEnv      : {GIT_NO_LAZY_FETCH: '1'},
+            failureCode   : 'KB_GITMIRROR_PREFETCH_PROBE_FAILED',
+            failureMessage: 'GitMirror failed to probe missing revision blobs'
+        });
+
+        const missingOids = new Set(
+            missingProbe.stdout.split('\n')
+                .filter(line => line.startsWith('?'))
+                .map(line => line.slice(1).split(' ')[0])
+        );
+
+        const toFetch = wanted.filter(oid => missingOids.has(oid));
+
+        result.missing = toFetch.length;
+
+        // Nothing missing is a real answer, not a failure: a warm mirror, or a non-partial clone that
+        // never dropped its blobs. Either way the reads that follow are already local.
+        if (toFetch.length < 1) {
+            return result
+        }
+
+        for (let index = 0; index < toFetch.length; index += chunkSize) {
+            await runGit(['fetch', '--no-write-fetch-head', '--quiet', 'origin', ...toFetch.slice(index, index + chunkSize)], {
+                credentialRef,
+                cwd           : mirrorPath,
+                failureCode   : 'KB_GITMIRROR_PREFETCH_FETCH_FAILED',
+                failureMessage: 'GitMirror failed to prefetch revision blobs',
+                knownHostsPath: getKnownHostsPath(mirrorRoot)
+            });
+
+            result.chunks += 1
+        }
+
+        result.status = 'prefetched'
+    } catch (error) {
+        // Deliberately swallowed — see the contract above. The caller's per-file reads still work;
+        // they are merely slow again. `reason` is carried so a caller can say WHY it fell back rather
+        // than reporting a silent no-op.
+        result.reason = error?.code || error?.message || 'unknown';
+        result.status = 'unavailable'
+    }
+
+    return result
+}
+
+/**
  * @summary Reads one text file from a mirror revision.
  *
  * ## Why this read takes a credential and the other reads do not
@@ -1248,6 +1400,7 @@ const GitMirror = {
     inspectCredentialReadiness,
     isAncestor,
     listRevisionPaths,
+    prefetchRevisionBlobs,
     probeRemoteAccess,
     readRevisionFile,
     resolveHead

@@ -247,6 +247,18 @@ async function readRevisionFile({gitMirror, identity, revision, sourcePath, cred
 async function buildFilePayloads({gitMirror, identity, revision, paths, rootKind, parserId, parserVersion, credentialRef}) {
     const files = [];
 
+    // One negotiation for the whole batch before the per-file loop below. On a `blob:none` mirror each
+    // `readRevisionFile` is a lazy promisor fetch — a network round trip per file, measured at
+    // 0.468 s/file cold — so a first ingest of this repo's 23,187 blobs costs ~3.0 hours of pure
+    // latency. Asking for them together took 28 seconds for the same blobs. Every new tenant pays the
+    // sequential bill on its first ingest, and pays it again on any re-clone.
+    //
+    // Best-effort by contract: `prefetchRevisionBlobs` never rejects. If the remote refuses SHA-1
+    // wants, or the mirror is not a partial clone, the loop below reads exactly as it did before —
+    // slowly, but correctly. That is why this is not guarded by a feature flag: there is no behaviour
+    // to fall back FROM.
+    await gitMirror.prefetchRevisionBlobs?.({...identity, revision, sourcePaths: paths, credentialRef});
+
     for (const sourcePath of paths) {
         files.push({
             sourcePath,
