@@ -599,7 +599,11 @@ export class DeploymentStateBridgeService extends Base {
      * run here" indistinguishable from "nothing about maintenance is worth reporting". A deployment
      * one command away from unrecoverable data loss read as silence.
      *
-     * `lastBackup` keeps its absent-before-first-run semantics and is simply omitted in that case.
+     * `lastBackup` keeps its absent-before-first-run semantics and is simply omitted in that case —
+     * and omission now MEANS that, which it previously did not. An unmounted backup root raises the
+     * same `ENOENT` as an empty one, so a blind observer used to project the same `null` a fresh
+     * deployment does, and the verdict function documents that null as observed-absent. Unreachable
+     * roots project `{status: 'unreachable', kind}` instead; only an observed-empty root omits.
      * @returns {Promise<Object|null>}
      */
     async collectMaintenanceSnapshot({
@@ -656,6 +660,16 @@ export class DeploymentStateBridgeService extends Base {
                     finishedAt: outcome.finishedAt,
                     kind      : outcome.kind,
                     status    : 'unreadable'
+                }
+            } else if (outcome.status === 'unreachable') {
+                // Projected as a PRESENT object rather than left null, because null is precisely the
+                // value the verdict function reads as observed-absent. An observer that cannot see
+                // the backup root has to say so in a field; staying quiet is indistinguishable from
+                // reporting that the lane has never run.
+                lastBackup = {
+                    finishedAt: null,
+                    kind      : outcome.kind,
+                    status    : 'unreachable'
                 }
             } else if (outcome.status === 'ok') {
                 lastBackup = outcome.receipt

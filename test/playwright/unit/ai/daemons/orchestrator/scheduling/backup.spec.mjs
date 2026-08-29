@@ -498,4 +498,70 @@ test.describe('orchestrator/scheduling/backup — receipt/retry reconciliation (
         expect(conflicted().status).toBe('degraded');
         expect(conflicted({durability: {posture: 'unmet'}}).status).toBe('degraded');
     });
+
+    // #233. The third state. Every arm above reconciles two records the observer CAN read; these
+    // bind what happens when it can read neither, which is the deployment that actually shipped the
+    // false alarm. `unreachable` is what the reader emits when the backup ROOT is not visible, and
+    // the whole point is that it carries no history claim in either direction.
+    const unreachable = (overrides = {}) => conflicted({
+        lastBackup: {finishedAt: null, kind: 'root-absent', status: 'unreachable'},
+        ...overrides
+    });
+
+    // The live shape: an exhausted streak, no ledger success, and no way to see the 31 bundles that
+    // falsify the negative. Reddens the moment `receiptEvidence` collapses back to a boolean —
+    // `unreachable` has no `backup.status`, so a boolean scores it `no-success` and the definite
+    // negative returns, which is precisely the escalation this ticket exists to stop.
+    test('an unreachable receipt reports its own blindness, never a history claim', () => {
+        expect(unreachable().reasonCodes).toEqual([
+            'backup-retry-exhausted',
+            'backup-receipt-unreachable'
+        ]);
+    });
+
+    // Neither direction, not just the negative one. A blind observer holds no evidence FOR the lane
+    // either, so laundering the silence into `backup-state-conflict` would be the same error wearing
+    // the other sign.
+    test('an unreachable receipt yields no conflict verdict either', () => {
+        expect(unreachable().reasonCodes).not.toContain('backup-never-succeeded');
+        expect(unreachable().reasonCodes).not.toContain('backup-state-conflict');
+        expect(unreachable().status).toBe('degraded');
+    });
+
+    // 🔴 THE ANTI-CHEAP-HALF MUTATION, in the form the ticket specifies. The cheap fix — suppress
+    // `backup-never-succeeded` whenever the receipt is not a proven success — passes every arm above
+    // and is wrong, because it also silences the code on a lane that genuinely never succeeded. The
+    // negative control at `lastBackup: null` is what separates them, and it is the assertion that
+    // reddens for a scorer that simply deleted the branch.
+    test('suppression is scoped to blindness — an OBSERVED empty root still reports the negative', () => {
+        // Reachable, read, and genuinely empty: the honest definite negative survives.
+        expect(conflicted({lastBackup: null}).reasonCodes).toContain('backup-never-succeeded');
+        // Unreachable: same ledger, same streak, no history claim.
+        expect(unreachable().reasonCodes).not.toContain('backup-never-succeeded');
+    });
+
+    // Mounting the volume must flip the code the FIX emits, never the code the DEFECT emitted. If a
+    // reviewer can make this pass by adding a mount rather than by teaching the reader to see, the
+    // class is still live in every subsystem the observer cannot reach.
+    test('gaining reach removes backup-receipt-unreachable, and never-succeeded was never emitted', () => {
+        const blind  = unreachable().reasonCodes,
+              seeing = conflicted().reasonCodes;   // same lane, receipt now readable
+
+        expect(blind).toContain('backup-receipt-unreachable');
+        expect(seeing).not.toContain('backup-receipt-unreachable');
+        expect(blind).not.toContain('backup-never-succeeded');
+        expect(seeing).not.toContain('backup-never-succeeded');
+    });
+
+    // An unreachable receipt is not proof the lane has run, so it must not license the code that
+    // says its retry posture merely went unread. Reddens if `lastBackup` truthiness alone gates it.
+    test('an unreachable receipt does not imply an unobserved retry state', () => {
+        expect(describeBackupMaintenanceHealth({
+            backupIntervalMs: DAY_MS,
+            durability      : {posture: 'configured'},
+            lastBackup      : {finishedAt: null, kind: 'root-absent', status: 'unreachable'},
+            retryState      : null,
+            retryWindowMs   : WINDOW_MS
+        }).reasonCodes).toEqual(['backup-receipt-unreachable']);
+    });
 });
