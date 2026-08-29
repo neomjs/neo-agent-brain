@@ -34,7 +34,7 @@ The Golden Path is borrowed from two literary traditions:
   course for civilization by treating individual actions as statistical noise and
   focusing on structural forces.
 
-The DreamService operates on the same principle: individual agent sessions are
+The RemDigestion operates on the same principle: individual agent sessions are
 noisy and tactical. But when you digest them into a graph — extracting concepts,
 relationships, capability gaps, blocking dependencies, and identity-bound
 memory — structural patterns emerge. The system can then predict which tasks
@@ -52,7 +52,7 @@ That makes the loop self-steering:
 
 1. Agents do work.
 2. Memory Core stores raw turns and summaries.
-3. DreamService digests those sessions into graph structure.
+3. RemDigestion digests those sessions into graph structure.
 4. GoldenPathSynthesizer fuses graph vectors with SQLite edge weight.
 5. The next shift reads a fresher forecast.
 6. New work changes the graph, which changes the next forecast.
@@ -106,7 +106,7 @@ misleading priorities.
 ## REM Digest Cycle
 
 The scheduled `dream` task and the manual `npm --prefix deploy/cloud run ai:run-sandman` command both
-enter `DreamService.executeRemCycle()`. That method owns the typed REM outcome:
+enter `RemDigestion.executeRemCycle()`. That method owns the typed REM outcome:
 `completed`, `skipped`, or `failed`. It records per-phase state so the operator
 can tell the difference between "no sessions", "provider unreachable", "already
 processing", and "work completed".
@@ -151,7 +151,7 @@ available to later gap inference.
 
 ### 3. Per-Session Digest
 
-For each session, DreamService hydrates complete raw turns from
+For each session, RemDigestion hydrates complete raw turns from
 `neo-agent-memory`, then runs:
 
 | Stage | Purpose |
@@ -168,7 +168,7 @@ so a digestible session is not silently dropped.
 
 ### 4. Cycle-Scoped Inference
 
-After the session loop, DreamService runs cycle-level inference once:
+After the session loop, RemDigestion runs cycle-level inference once:
 
 - `executeNLActionDigest()` adds weak runtime-interaction evidence from Neural
   Link action logs without removing test-gap requirements.
@@ -305,8 +305,8 @@ This runs `ai/scripts/runners/runSandman.mjs`. It:
 
 1. Enables debug output through the reactive config override API.
 2. Acquires the shared heavy-maintenance lease with owner `sandman`.
-3. Waits for `LifecycleService` and `DreamService` readiness.
-4. Calls `DreamService.executeRemCycle({reason: 'manual-cli', mode: 'cli', includeDecay: true})`.
+3. Waits for `LifecycleService` and `RemDigestion` readiness.
+4. Calls `RemDigestion.executeRemCycle({reason: 'manual-cli', mode: 'cli', includeDecay: true})`.
 5. Exits from the typed REM outcome.
 
 It does not directly invoke `GoldenPathSynthesizer`. The Golden Path is refreshed
@@ -316,12 +316,14 @@ by the orchestrator `golden-path` task.
 
 | Config surface | Key | Default / role |
 |---|---|---|
-| `ai/mcp/server/memory-core/config*.mjs` | `remSleepBatchLimit` | Default `10`; caps undigested sessions per REM cycle. |
-| `ai/mcp/server/memory-core/config*.mjs` | `maxDigestAttempts` | Default `3`; bounds retry-exhausted terminal schema failures. |
+| `src/evolution/config*.mjs` | `remSleepBatchLimit` | Default `10`; caps undigested sessions per REM cycle. |
+| `src/evolution/config*.mjs` | `maxDigestAttempts` | Default `3`; bounds retry-exhausted terminal schema failures. |
+| `src/evolution/config*.mjs` | `sessionScanPageLimit` | Default `2000`; pages retained summary and raw-turn scans independently of Memory Core summarization policy. |
 | `ai/mcp/server/memory-core/config*.mjs` | `handoffFilePath` | Resolves to `resources/content/sandman_handoff.md` in production and a test path under test mode. |
 | `ai/mcp/server/memory-core/config*.mjs` | `goldenPathTopNodeRenderLimit` | Default `10`; caps Computed Golden Path entries. |
 | `ai/mcp/server/memory-core/config*.mjs` | `guideGapWeightThreshold` | Default `0.8`; minimum concept weight for guide/example/orphan concept signals. |
 | `ai/config*.mjs` | `graphProvider` | Default `openAiCompatible`; graph-generation provider selector. |
+| `ai/config*.mjs` | `remRunStateDir` | Shared plane coordinate written by Evolution and read by Orchestrator/Memory Core liveness. |
 | `ai/config*.mjs` | `orchestrator.intervals.dreamMs` | REM digest cadence. |
 | `ai/config*.mjs` | `orchestrator.intervals.goldenPathMs` | Golden Path refresh cadence. |
 
@@ -331,7 +333,8 @@ Older startup toggle names are not the current control plane for this guide.
 
 | File | Purpose |
 |---|---|
-| `ai/daemons/orchestrator/services/DreamService.mjs` | Typed REM digest cycle and per-session graph digestion. |
+| `src/evolution/RemDigestion.mjs` | Evolution-owned typed REM digest cycle and per-session graph digestion. |
+| `src/evolution/createRemDigestion.mjs` | Explicit Host/Cloud profile composition for Memory Core, graph, provider, projection, clock, and logging collaborators. |
 | `ai/daemons/orchestrator/scheduling/pipeline.mjs` | Orchestrator execution path for `dream` and `golden-path` tasks. |
 | `ai/daemons/orchestrator/scheduling/goldenPath.mjs` | Pure due-trigger projection for the Golden Path cadence. |
 | `ai/services/graph/GoldenPathSynthesizer.mjs` | Hybrid GraphRAG priority synthesis and handoff rendering. |
@@ -352,7 +355,7 @@ Older startup toggle names are not the current control plane for this guide.
 ## Project State Is Observability Only
 
 GitHub ProjectV2 boards are visualization layers over canonical issue substrate.
-DreamService and GoldenPathSynthesizer read issue relationships, labels, state,
+RemDigestion and GoldenPathSynthesizer read issue relationships, labels, state,
 comments, memories, graph vectors, and KB/graph substrate. They do not read
 Project board membership, status fields, iteration fields, or Project-only
 custom fields.

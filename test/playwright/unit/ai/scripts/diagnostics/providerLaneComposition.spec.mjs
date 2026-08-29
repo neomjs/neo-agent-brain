@@ -608,7 +608,8 @@ test.describe('provider-lane composition receipt (#17021)', () => {
     test('the graph-role census equals independently discovered production call sites', () => {
         const roots = [
             path.join(repoRoot, 'ai/services'),
-            path.join(repoRoot, 'ai/daemons')
+            path.join(repoRoot, 'ai/daemons'),
+            path.join(repoRoot, 'src')
         ];
         const productionCallers = roots.flatMap(walkMjsFiles).filter(file => {
             if (file.endsWith('/graph/providerDispatch.mjs')) return false;
@@ -617,7 +618,8 @@ test.describe('provider-lane composition receipt (#17021)', () => {
             return source.includes('buildGraphProvider({') ||
                 source.includes('resolveGraphModelProvider(aiConfig)') ||
                 source.includes('getGraphProviderReadinessTarget(aiConfig)') ||
-                source.includes("aiConfig.graphProvider === 'openAiCompatible'")
+                source.includes("aiConfig.graphProvider === 'openAiCompatible'") ||
+                source.includes("AiConfig.graphProvider === 'openAiCompatible'")
         }).map(file => path.relative(repoRoot, file)).sort();
 
         const receipt  = analyzeProviderLaneComposition(loadComposition());

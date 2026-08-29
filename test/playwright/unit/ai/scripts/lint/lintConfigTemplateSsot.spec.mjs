@@ -1082,7 +1082,8 @@ test.describe('ai/scripts/lint-config-template-ssot (#12451 — declarative conf
             'ai/mcp/server/gitlab-workflow/config.template.mjs',
             'ai/mcp/server/knowledge-base/config.template.mjs',
             'ai/mcp/server/memory-core/config.template.mjs',
-            'ai/mcp/server/neural-link/config.template.mjs'
+            'ai/mcp/server/neural-link/config.template.mjs',
+            'src/evolution/config.template.mjs'
         ];
 
         await expect.poll(async () => Object.keys(await buildConfigLeafParitySnapshot()).sort(), {

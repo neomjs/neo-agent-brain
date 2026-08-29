@@ -29,7 +29,7 @@ import {createLogger} from '../../../../../../ai/mcp/server/shared/logger.mjs';
  * This coverage keeps the Sandman REM operator path testable without a real MLX,
  * LM Studio, or OpenAI-compatible server. The script's hard-fail branch must leave
  * a queryable Memory Core log breadcrumb so future agents can distinguish expected
- * provider-unavailable state from missing DreamService / Golden Path output.
+ * provider-unavailable state from missing RemDigestion / Golden Path output.
  */
 test.describe('runSandman.mjs provider readiness diagnostics (#10587)', () => {
     test.describe.configure({mode: 'serial'});
@@ -121,22 +121,26 @@ test.describe('runSandman.mjs provider readiness diagnostics (#10587)', () => {
         const lifecycleService = {
             ready: async () => calls.push({type: 'lifecycle-ready'})
         };
-        const dreamService = {
+        const remDigestion = {
             ready          : async () => calls.push({type: 'dream-ready'}),
             executeRemCycle: async options => {
                 calls.push({type: 'execute-rem-cycle', options});
                 return {
-                    status           : 'skipped',
-                    skipReason       : 'no undigested sessions',
-                    sessionsProcessed: 0,
-                    durationMs       : 5
+                    status             : 'skipped',
+                    skipReason         : 'no undigested sessions',
+                    sessionsProcessed  : 0,
+                    durationMs         : 5,
+                    cycleOverflowSignal: true,
+                    wallClockMs        : 900,
+                    configuredCadenceMs: 1000,
+                    overflowThreshold  : 0.8
                 };
             }
         };
         let leaseOptions;
 
         const exitCode = await runSandmanModule.runSandman({
-            dreamService,
+            remDigestion,
             lifecycleService,
             output,
             withLease: async (fn, options) => {
@@ -155,12 +159,19 @@ test.describe('runSandman.mjs provider readiness diagnostics (#10587)', () => {
             metadata    : {script: 'ai/scripts/runners/runSandman.mjs'}
         });
         expect(calls.find(call => call.type === 'execute-rem-cycle').options).toEqual({
-            reason      : 'manual-cli',
-            mode        : 'cli',
-            includeDecay: true
+            reason             : 'manual-cli',
+            mode               : 'cli',
+            includeDecay       : true,
+            cycleBudgetMs      : aiConfig.orchestrator.intervals.dreamCycleBudgetMs,
+            configuredCadenceMs: aiConfig.orchestrator.intervals.dreamMs,
+            overflowThreshold  : aiConfig.orchestrator.intervals.dreamOverflowThreshold
         });
         expect(calls.map(call => call.type)).toContain('lifecycle-ready');
         expect(calls.map(call => call.type)).toContain('dream-ready');
+        expect(calls.some(call =>
+            call.type === 'log' &&
+            call.message.includes('900ms exceeded 80% of configured cadence 1000ms')
+        )).toBe(true);
     });
 
     test('extracts OpenAI-compatible model ids from provider variants', () => {
@@ -2380,7 +2391,7 @@ test.describe('runSandman.mjs provider readiness diagnostics (#10587)', () => {
         const exitCodes = [];
 
         const result = await runSandmanModule.runSandman({
-            dreamService: {
+            remDigestion: {
                 ready          : async () => calls.push('dream.ready'),
                 executeRemCycle: async options => {
                     calls.push(['executeRemCycle', options]);
@@ -2424,9 +2435,12 @@ test.describe('runSandman.mjs provider readiness diagnostics (#10587)', () => {
             'lifecycle.ready',
             'dream.ready',
             ['executeRemCycle', {
-                reason      : 'manual-cli',
-                mode        : 'cli',
-                includeDecay: true
+                reason             : 'manual-cli',
+                mode               : 'cli',
+                includeDecay       : true,
+                cycleBudgetMs      : aiConfig.orchestrator.intervals.dreamCycleBudgetMs,
+                configuredCadenceMs: aiConfig.orchestrator.intervals.dreamMs,
+                overflowThreshold  : aiConfig.orchestrator.intervals.dreamOverflowThreshold
             }]
         ]);
         expect(logs.some(message => message.includes('Sandman cycle complete (2 session(s) processed)'))).toBe(true);
@@ -2437,7 +2451,7 @@ test.describe('runSandman.mjs provider readiness diagnostics (#10587)', () => {
         const exitCodes = [];
 
         const result = await runSandmanModule.runSandman({
-            dreamService: {
+            remDigestion: {
                 ready          : async () => {},
                 executeRemCycle: async () => ({
                     status: 'failed',
@@ -2467,14 +2481,14 @@ test.describe('runSandman.mjs provider readiness diagnostics (#10587)', () => {
         expect(logs.some(message => message.includes('simulated REM failure'))).toBe(true);
     });
 
-    test('runSandman defers without running DreamService when the maintenance lease is held (#12070)', async () => {
+    test('runSandman defers without running RemDigestion when the maintenance lease is held (#12070)', async () => {
         const logs      = [];
         const exitCodes = [];
 
         const result = await runSandmanModule.runSandman({
-            dreamService: {
+            remDigestion: {
                 ready: async () => {
-                    throw new Error('DreamService must not initialize when lease is held');
+                    throw new Error('RemDigestion must not initialize when lease is held');
                 }
             },
             lifecycleService: {

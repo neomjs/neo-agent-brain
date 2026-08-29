@@ -185,9 +185,9 @@ function getMessageSortTimestamp(message) {
  * (`guideGapWeightThreshold`) plus the `validated: false` flag silence unvalidated rows in
  * `sandman_handoff.md`; git diff on `nodes.jsonl` is the review UI.
  *
- * **Why deferred from REM-cycle loop?** LLM invocations cost real tokens. Running discovery
- * every REM cycle would flood the JSONL and burn budget. `DreamService.runConceptDiscovery`
- * is a manual-invocation facade; curator / operator decides cadence.
+ * **Why separate from the REM-cycle loop?** LLM invocations cost real tokens. Running discovery
+ * every REM cycle would flood the JSONL and burn budget. The Orchestrator schedules message
+ * concept harvesting as its own task; manual discovery calls this service directly.
  *
  * @class Neo.ai.daemons.services.ConceptDiscoveryService
  * @extends Neo.core.Base
@@ -842,7 +842,7 @@ class ConceptDiscoveryService extends Base {
      * candidates already present in ConceptService (curated or previously-mined) are filtered
      * out in `extractConceptsFromSource` before append.
      *
-     * Safe to call standalone (manual invocation via `DreamService.runConceptDiscovery`).
+     * Safe to call standalone through this service's public `runDiscoveryCycle()` contract.
      * Does NOT touch the Native Edge Graph — `ConceptIngestor.syncConceptsToGraph` picks up
      * the new rows on its next run and materializes them as CONCEPT nodes with `validated:
      * false` flowing through to the graph property (so `GapInferenceEngine` silences them).

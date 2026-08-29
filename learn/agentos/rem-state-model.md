@@ -107,7 +107,7 @@ its own message slots, not the prior session's payload.
 
 ## Durable Cycle State
 
-`DreamService.executeRemCycle()` writes one append-only JSONL artifact per run
+`RemDigestion.executeRemCycle()` writes one append-only JSONL artifact per run
 under the gitignored `NEO_REM_RUN_STATE_DIR` directory
 (`.neo-ai-data/rem-runs` by default). The file name is the sanitized `runId`, and
 each line is a complete cycle snapshot:
@@ -147,6 +147,9 @@ cadence). `appendRemRunState` applies a **write-side retention cap** on every ap
 after writing, it prunes the oldest artifacts beyond `remRunRetentionLimit`
 (`NEO_REM_RUN_RETENTION_LIMIT`, default `200`). Retention sorts by `mtime`, removing the
 oldest and never the recent window.
+
+Evolution configuration owns the retention policy; Tier-1 Brain configuration owns the shared
+`remRunStateDir` coordinate consumed by Evolution, Orchestrator liveness, and Memory Core health.
 
 Bounding the artifact count on the write side also bounds the **read path**:
 `readRecentRemRunStates` — and therefore every `get_rem_pipeline_state` / healthcheck call

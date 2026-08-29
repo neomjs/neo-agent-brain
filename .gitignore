@@ -87,10 +87,10 @@ node_modules/
 
 # Temporary move-first projections from the exact-SHA neo.mjs dependency. These Engine-owned
 # trees are materialized by the Brain prepare lifecycle and remain untracked until the post-cut
-# package boundary replaces the compatibility layer.
+# package boundary replaces the compatibility layer. `src/` is intentionally absent: it is now
+# the Brain's canonical domain-owned source root.
 /apps
 /buildScripts
 /examples
 /harness
 /resources
-/src

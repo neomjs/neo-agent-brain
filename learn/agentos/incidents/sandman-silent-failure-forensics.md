@@ -10,13 +10,16 @@ after the graph-provider selector fix was present in the checkout. It did not
 run `npm run ai:run-sandman`, because live REM mutates Memory Core graph state
 and remains operator-gated.
 
+The implementation now lives at `src/evolution/RemDigestion.mjs`; historical findings below
+retain the former class name where they describe the substrate that was inspected at the time.
+
 ## Source Map
 
 Primary source anchors:
 
 - `ai/daemons/orchestrator/Orchestrator.mjs` owns periodic task scheduling,
   task-state transitions, and the in-process `dream` task executor.
-- `ai/daemons/orchestrator/services/DreamService.mjs` owns the REM session
+- `src/evolution/RemDigestion.mjs` owns the REM session
   digest body.
 - `ai/scripts/runners/runSandman.mjs` is the manual CLI path; it is transitional
   while the orchestrator becomes the source of truth.

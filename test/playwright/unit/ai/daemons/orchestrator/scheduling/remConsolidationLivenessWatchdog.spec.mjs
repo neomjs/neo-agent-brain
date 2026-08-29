@@ -235,7 +235,7 @@ test.describe('orchestrator/scheduling/remConsolidationLivenessWatchdog — pipe
 
     function makeServices({taskStateService, outcomes, dispatcher, undigestedCount = 5, taskOutcomes = {}}) {
         return {
-            dreamService: {
+            remDigestion: {
                 findUndigestedSessions: async () => Array.from({length: undigestedCount}, (_, index) => ({id: `s-${index}`}))
             },
             healthService: {

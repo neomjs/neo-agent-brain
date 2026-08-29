@@ -199,7 +199,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
         // `await withHeavyMaintenanceLease(...)` settles would mutate Memory Core graph state
         // OUTSIDE the lease — defeating the substrate protection this PR is shipping.
         //
-        // Current SSOT shape: DreamService.executeRemCycle() owns graph decay. The CLI must call
+        // Current SSOT shape: RemDigestion.executeRemCycle() owns graph decay. The CLI must call
         // that canonical cycle with `includeDecay: true` from inside the async task passed to
         // `withHeavyMaintenanceLease`; any post-wrapper call would run after lease release.
         //
@@ -209,8 +209,8 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
         // already been released by the wrapper.
         const source = await fs.readFile(scriptPath('runners/runSandman.mjs'), 'utf-8');
 
-        const remCallMatch = source.match(/dreamService\.executeRemCycle\(\{[\s\S]*?includeDecay\s*:\s*true[\s\S]*?\}\)/);
-        expect(remCallMatch, 'DreamService.executeRemCycle({includeDecay:true}) call must exist in runSandman.mjs').not.toBeNull();
+        const remCallMatch = source.match(/remDigestion\.executeRemCycle\(\{[\s\S]*?includeDecay\s*:\s*true[\s\S]*?\}\)/);
+        expect(remCallMatch, 'RemDigestion.executeRemCycle({includeDecay:true}) call must exist in runSandman.mjs').not.toBeNull();
 
         // The wrapper's options trailer `}, {owner: 'sandman', ...})` marks the end of the
         // async-task argument. The REM cycle must appear textually BEFORE this trailer to be inside

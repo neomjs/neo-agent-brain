@@ -3,7 +3,7 @@ import {readRecentRemRunStates} from '../../../services/memory-core/helpers/remR
 /**
  * @summary Read-only liveness watchdog for the REM consolidation cycle.
  *
- * The DreamService REM cycle (`executeRemCycle`) digests session memory into the Native Edge Graph.
+ * The RemDigestion REM cycle (`executeRemCycle`) digests session memory into the Native Edge Graph.
  * It is decoupled from the Golden Path forecast — correct (the forecast must never stall on
  * a model-dependent digest), but it means a dead/stalled consolidation produces NO user-visible
  * error: the forecast keeps regenerating fresh while the undigested backlog grows un-consolidated

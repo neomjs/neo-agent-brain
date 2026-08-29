@@ -4,7 +4,7 @@
     "version": "0.0.0",
     "private": true,
     "type": "module",
-    "description": "The Agent OS and Brain of Neo.mjs: Memory Core, Knowledge Base, Active Hybrid GraphRAG, DreamService, MCP services, and cross-model collaboration.",
+    "description": "The Agent OS and Brain of Neo.mjs: Memory Core, Knowledge Base, Active Hybrid GraphRAG, RemDigestion, MCP services, and cross-model collaboration.",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/neomjs/neo-agent-brain.git"

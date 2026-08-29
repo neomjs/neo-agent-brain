@@ -46,7 +46,11 @@ export function resolveConfigTemplateUrl(url, {rootDir = ROOT_DIR, existsSync = 
     const relative = path.relative(rootDir, file);
 
     if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return null;
-    if (!(relative === `ai${path.sep}${CONFIG_BASENAME}` || relative.startsWith(`ai${path.sep}`))) return null;
+    const configRoots = ['ai', 'src'];
+    if (!configRoots.some(root =>
+        relative === `${root}${path.sep}${CONFIG_BASENAME}` ||
+        relative.startsWith(`${root}${path.sep}`)
+    )) return null;
     if (path.basename(file) !== CONFIG_BASENAME) return null;
 
     const template = path.join(path.dirname(file), TEMPLATE_BASENAME);

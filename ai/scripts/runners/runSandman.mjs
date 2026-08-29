@@ -1,8 +1,8 @@
-import Neo           from 'neo.mjs/src/Neo.mjs';
-import AiConfig      from '../../config.mjs';
-import * as core     from 'neo.mjs/src/core/_export.mjs';
-import Memory_Config from '../../mcp/server/memory-core/config.mjs';
-import DreamService  from '../../daemons/orchestrator/services/DreamService.mjs';
+import Neo                  from 'neo.mjs/src/Neo.mjs';
+import AiConfig             from '../../config.mjs';
+import * as core            from 'neo.mjs/src/core/_export.mjs';
+import Memory_Config        from '../../mcp/server/memory-core/config.mjs';
+import {createRemDigestion} from '../../../src/evolution/createRemDigestion.mjs';
 import {
     assertProviderReadinessConfig,
     checkProvider,
@@ -35,7 +35,7 @@ export {
 
 /**
  * @summary Emits CLI-facing REM cycle outcome text and maps the typed outcome to a process code.
- * @param {Object} outcome Result envelope returned by `DreamService.executeRemCycle()`.
+ * @param {Object} outcome Result envelope returned by `RemDigestion.executeRemCycle()`.
  * @param {Object} options
  * @param {Object} [options.output=console] Terminal sink.
  * @returns {Promise<Number>} Process exit code.
@@ -71,16 +71,16 @@ export async function recordRemCycleOutcome(outcome, {output = console} = {}) {
 }
 
 /**
- * @summary Thin CLI wrapper for the canonical DreamService REM cycle.
+ * @summary Thin CLI wrapper for the canonical RemDigestion REM cycle.
  *
- * `DreamService.executeRemCycle()` owns the REM contract: provider readiness,
+ * `RemDigestion.executeRemCycle()` owns the REM contract: provider readiness,
  * zero-session semantics, failure envelopes, and graph decay. The CLI's only
  * responsibility is to initialize services, acquire the cross-process heavy
  * maintenance lease, call the canonical method inside that lease window, and
  * translate the typed result into terminal output plus an exit code.
  *
  * @param {Object} options
- * @param {Object} [options.dreamService=DreamService] Injectable DreamService facade for tests.
+ * @param {Object} [options.remDigestion] Injectable RemDigestion facade for tests.
  * @param {Object} [options.lifecycleService=LifecycleService] Injectable lifecycle facade for tests.
  * @param {Function} [options.withLease=withHeavyMaintenanceLease] Injectable lease wrapper for tests.
  * @param {Object} [options.output=console] Terminal sink.
@@ -88,7 +88,7 @@ export async function recordRemCycleOutcome(outcome, {output = console} = {}) {
  * @returns {Promise<*>}
  */
 export async function runSandman({
-    dreamService     = DreamService,
+    remDigestion     = createRemDigestion(),
     lifecycleService = LifecycleService,
     withLease        = withHeavyMaintenanceLease,
     output           = console,
@@ -110,16 +110,19 @@ export async function runSandman({
             await lifecycleService.ready();
             output.log('   Lifecycle Service Ready. Database should be running.');
 
-            output.log('   Waiting for DreamService Initialization...');
-            await dreamService.ready();
-            output.log('   DreamService Ready.');
+            output.log('   Waiting for RemDigestion Initialization...');
+            await remDigestion.ready();
+            output.log('   RemDigestion Ready.');
 
             output.log('✅ Services Ready. Entering REM Sleep...');
 
-            return dreamService.executeRemCycle({
-                reason      : 'manual-cli',
-                mode        : 'cli',
-                includeDecay: true
+            return remDigestion.executeRemCycle({
+                reason             : 'manual-cli',
+                mode               : 'cli',
+                includeDecay       : true,
+                cycleBudgetMs      : AiConfig.orchestrator.intervals.dreamCycleBudgetMs,
+                configuredCadenceMs: AiConfig.orchestrator.intervals.dreamMs,
+                overflowThreshold  : AiConfig.orchestrator.intervals.dreamOverflowThreshold
             });
         }, {
             leasePath   : resolveHeavyMaintenanceLeasePath({dataDir: AiConfig.orchestrator.dataDir}),
@@ -142,7 +145,18 @@ export async function runSandman({
         return exit(0);
     }
 
-    const exitCode = await recordRemCycleOutcome(outcome?.result, {output});
+    const result = outcome?.result;
+
+    if (result?.cycleOverflowSignal) {
+        const warning =
+            `⚠️  REM cycle wall-clock ${result.wallClockMs}ms exceeded ` +
+            `${Math.round(result.overflowThreshold * 100)}% of configured cadence ` +
+            `${result.configuredCadenceMs}ms; back-to-back overlap risk.`;
+
+        typeof output.warn === 'function' ? output.warn(warning) : output.log(warning);
+    }
+
+    const exitCode = await recordRemCycleOutcome(result, {output});
     return exit(exitCode);
 }
 

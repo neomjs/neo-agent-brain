@@ -186,7 +186,7 @@ function createTestOrchestrator(config = {}) {
     orchestrator.tenantRepoSyncService    = config.tenantRepoSyncService    || {runTask: () => null};
     orchestrator.tenantRepoSyncGetDueTask = config.tenantRepoSyncGetDueTask || (() => null);
     orchestrator.dreamGetDueTask          = config.dreamGetDueTask          || orchestrator.dreamGetDueTask;
-    orchestrator.dreamService             = config.dreamService             || {processUndigestedSessions: () => Promise.resolve()};
+    orchestrator.remDigestion             = config.remDigestion             || {processUndigestedSessions: () => Promise.resolve()};
     orchestrator.goldenPathSynthesizer    = config.goldenPathSynthesizer    || {synthesizeGoldenPath: () => Promise.resolve({
         status      : 'completed',
         wroteHandoff: true
@@ -2363,7 +2363,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
                     outcomes.push({taskName, status, details});
                 }
             },
-            dreamService: {
+            remDigestion: {
                 processUndigestedSessions() {
                     dreamCalls.push('dream');
                     return Promise.resolve();
@@ -2408,7 +2408,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
                     outcomes.push({taskName, status, details});
                 }
             },
-            dreamService: {
+            remDigestion: {
                 executeRemCycle: async options => {
                     cycleCalls.push(options);
                     return {
@@ -2635,7 +2635,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         });
     });
 
-    test('dream — delegates to dreamService.executeRemCycle + maps typed failed outcome to recordTaskOutcome with diagnostic', async () => {
+    test('dream — delegates to remDigestion.executeRemCycle + maps typed failed outcome to recordTaskOutcome with diagnostic', async () => {
         const outcomes   = [];
         const cycleCalls = [];
         const diagnostic = {
@@ -2662,7 +2662,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
                     outcomes.push({taskName, status, details});
                 }
             },
-            dreamService: {
+            remDigestion: {
                 executeRemCycle: async options => {
                     cycleCalls.push(options);
                     return {

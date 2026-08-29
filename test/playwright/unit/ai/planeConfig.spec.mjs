@@ -149,7 +149,8 @@ test.describe('plane-member derivation witnesses — #15791 seat-variance ground
         expect(data.engines.chroma.dataDirProd.default).toBe(path.resolve(anchor, 'chroma/unified'));
         expect(data.orchestrator.deploymentStateBridge.snapshotPath.default).toBe(path.resolve(anchor, 'deployment-state/snapshot.json'));
         expect(data.orchestrator.recoveryActuator.healAttemptsPath.default).toBe(path.resolve(anchor, 'orchestrator-daemon/heal-attempts.json'));
-        expect(data.orchestrator.recoveryActuator.recoveryRunStateDir.default).toBe(path.resolve(anchor, 'orchestrator-daemon/recovery-runs'))
+        expect(data.orchestrator.recoveryActuator.recoveryRunStateDir.default).toBe(path.resolve(anchor, 'orchestrator-daemon/recovery-runs'));
+        expect(data.remRunStateDir.default).toBe(path.resolve(anchor, 'rem-runs'))
     });
 
     // The inverse witness of the test above, and deliberately an INVARIANT rather than a pinned
@@ -198,7 +199,6 @@ test.describe('plane-member derivation witnesses — #15791 seat-variance ground
         expect(data.messageWal.daemonDataDir.default).toBe(path.resolve(anchor, 'message-daemon'));
         expect(data.wakeDaemon.dataDir.default).toBe(path.resolve(anchor, 'wake-daemon'));
         expect(data.hookProjectionRoot.default).toBe(path.resolve(anchor, 'hook-projections'));
-        expect(data.remRunStateDir.default).toBe(path.resolve(anchor, 'rem-runs'));
         expect(data.datasets.rlaif.trajectories.default).toBe(path.resolve(anchor, 'datasets/rlaif/trajectories.jsonl'));
         expect(data.goldenPathRouteAttributionLedgerDirProd.default).toBe(path.resolve(anchor, 'orchestrator-daemon/route-attribution'));
         expect(data.logPath.default).toBe(path.resolve(anchor, 'logs'));
@@ -496,7 +496,7 @@ test.describe('healthcheck contract — the observed plane is a DECLARED schema 
 //   fully masked in deployment and bit only where nothing sets it — host CLI, daemons, local seats.
 //
 // There it did real damage: `KBRecorderService` / the NL `RecorderService` write telemetry tables into
-// their leaf's path, while the READERS (`GapInferenceEngine`, `DreamService`) resolve Memory Core's
+// their leaf's path, while the READERS (`GapInferenceEngine`, `RemDigestion`) resolve Memory Core's
 // `storagePaths.graph`. So the recorders wrote to a file the consumers never open, and
 // `GapInferenceEngine`'s `sqlite_master` probe degraded silently — gap inference produced no
 // NL_ACTION_SEQUENCE edges and nothing reported a fault.

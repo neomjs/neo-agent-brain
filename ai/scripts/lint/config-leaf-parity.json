@@ -512,6 +512,7 @@
         "providerLaneDeclaration.embedding.contextTokensPerSlot",
         "providerLaneDeclaration.embedding.parallelSlots",
         "publicUrl",
+        "remRunStateDir",
         "stopHook",
         "stopHook.deferenceMirror",
         "stopHook.laneContinuation",
@@ -734,7 +735,6 @@
         "loggerRetention.maxTotalBytes",
         "mailbox",
         "mailbox.defaultReplyPolicy",
-        "maxDigestAttempts",
         "maxSessionsPerSummarySweep",
         "mcpHttpPort",
         "memorySharing",
@@ -770,9 +770,6 @@
         "publicUrl",
         "remConsolidationStallThresholdMs",
         "remRunRecentLimit",
-        "remRunRetentionLimit",
-        "remRunStateDir",
-        "remSleepBatchLimit",
         "sessionSummaryTimeoutMs",
         "storagePaths",
         "storagePaths.graphProd",
@@ -793,7 +790,6 @@
         "turnPresence.hookWriteTimeoutMs",
         "turnPresence.noteMaxChars",
         "turnPresence.ttlMs",
-        "undigestedSessionFreshReserve",
         "wakeDaemon",
         "wakeDaemon.bridgeLastSyncIdPathOverride",
         "wakeDaemon.dataDir",
@@ -821,5 +817,12 @@
         "neoRootDir",
         "port",
         "rpcTimeout"
+    ],
+    "src/evolution/config.template.mjs": [
+        "maxDigestAttempts",
+        "remRunRetentionLimit",
+        "remSleepBatchLimit",
+        "sessionScanPageLimit",
+        "undigestedSessionFreshReserve"
     ]
 }

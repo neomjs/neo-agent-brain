@@ -28,7 +28,7 @@ flowchart TD
     subgraph AgentOS["Deployed Agent OS (per-tenant scoped)"]
         KB["Knowledge Base (semantic RAG)"]:::svc
         MC["Memory Core (episodic + Native Edge Graph)"]:::svc
-        Orch["Orchestrator + DreamService / Golden Path"]:::brain
+        Orch["Orchestrator + RemDigestion + GoldenPathSynthesizer"]:::brain
         A2A["A2A coordination"]:::svc
     end
 
@@ -45,7 +45,7 @@ flowchart TD
 
 - **[Knowledge Base](../KnowledgeBase.md)** — semantic understanding of your code (the ingestion contracts dominate the guide surface, but they serve this).
 - **[Memory Core](../MemoryCore.md) + Native Edge Graph** — persistent, cross-session memory and Active Hybrid GraphRAG over your system.
-- **Orchestrator + [DreamService / Golden Path](../DreamPipeline.md)** — scheduling plus self-improvement forecasting and the [self-healing immune system](../SelfHealing.md) that lets the deployment run unattended.
+- **Orchestrator + [RemDigestion + GoldenPathSynthesizer](../DreamPipeline.md)** — scheduling, consolidation, and self-improvement forecasting plus the [self-healing immune system](../SelfHealing.md) that lets the deployment run unattended.
 - **A2A coordination** — the substrate that makes reviewed, multi-model work possible.
 
 Tenant isolation is enforced by identity + write-stamping + read-filtering, not physical separation (see [Security](./Security.md) and [Tenant Ingestion Model](./TenantIngestionModel.md)).

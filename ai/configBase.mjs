@@ -266,6 +266,12 @@ class ConfigBase extends ConfigProvider {
              */
             wakeDaemonHeartbeatAlivePath: leaf(path.resolve(planeDataRootDefault, 'wake-daemon/heartbeat.alive'), 'NEO_HEARTBEAT_ALIVE_PATH', 'string', {planeMember: true}),
             /**
+             * Shared directory for REM run-state artifacts. Evolution writes the cycle receipts;
+             * Orchestrator liveness and Memory Core health read the same plane coordinate.
+             * @type {String}
+             */
+            remRunStateDir: leaf(path.resolve(planeDataRootDefault, 'rem-runs'), 'NEO_REM_RUN_STATE_DIR', 'string', {planeMember: true}),
+            /**
              * Path to the heartbeat CONCURRENCY lock — the mutex `withHeartbeatLock` creates while
              * expensive Agent OS work runs, and the absolute skip barrier the swarm-heartbeat lane
              * honours until the stale-lock TTL expires. Distinct from the liveness sentinel above:
@@ -2651,6 +2657,7 @@ class ConfigBase extends ConfigProvider {
 export const PLANE_MEMBER_PATHS = Object.freeze([
     'auth.seatTokenRegistryPath',
     'wakeDaemonHeartbeatAlivePath',
+    'remRunStateDir',
     'heartbeatConcurrencyLockPath',
     'fleet.dataDir',
     'fleet.instanceRoot',

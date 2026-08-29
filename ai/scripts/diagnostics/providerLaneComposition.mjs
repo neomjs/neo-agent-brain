@@ -145,7 +145,7 @@ export const PROVIDER_LANE_CONSUMER_CENSUS = Object.freeze([
     {id: 'semantic-graph', role: 'graph', source: 'ai/services/graph/SemanticGraphExtractor.mjs', anchor: 'const graphProvider = resolveGraphModelProvider(AiConfig);'},
     {id: 'topology-inference', role: 'graph', source: 'ai/services/graph/TopologyInferenceEngine.mjs', anchor: 'resolveGraphModelProvider(AiConfig)'},
     {id: 'golden-path-brief', role: 'graph', source: 'ai/services/graph/GoldenPathSynthesizer.mjs', anchor: 'const graphProvider = resolveGraphModelProvider(aiConfig);'},
-    {id: 'dream-readiness', role: 'graph', source: 'ai/daemons/orchestrator/services/DreamService.mjs', anchor: "if (aiConfig.graphProvider === 'openAiCompatible')"},
+    {id: 'dream-readiness', role: 'graph', source: 'src/evolution/RemDigestion.mjs', anchor: "if (AiConfig.graphProvider === 'openAiCompatible')"},
     {id: 'inference-lifecycle-readiness', role: 'graph', source: 'ai/services/memory-core/lifecycle/InferenceLifecycleService.mjs', anchor: 'getGraphProviderReadinessTarget(aiConfig)'},
     {id: 'knowledge-base-ask', role: 'kbAskSynthesis', source: 'ai/services/knowledge-base/SearchService.mjs', anchor: 'buildAskChatModelOptions(aiConfig'},
     {id: 'kb-query', role: 'embedding', source: 'ai/services/knowledge-base/QueryService.mjs', anchor: 'TextEmbeddingService.embedText(query, mcConfig.embeddingProvider'},
