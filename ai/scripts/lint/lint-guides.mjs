@@ -478,7 +478,7 @@ function isGuideSeriesFile(file) {
 function loadScriptKeys() {
     const keys = new Set();
 
-    for (const relative of ['package.json', 'deploy/cloud/package.json']) {
+    for (const relative of ['package.json', 'cloud/package.json']) {
         const file = path.join(ROOT_DIR, relative);
 
         if (!existsSync(file)) continue;

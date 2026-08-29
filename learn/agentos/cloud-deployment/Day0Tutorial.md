@@ -43,8 +43,8 @@ repo-push client:
 git clone https://github.com/neomjs/neo-agent-brain.git
 cd neo-agent-brain
 npm install
-npm --prefix deploy/cloud ci
-npm --prefix deploy/cloud run prepare:runtime
+npm --prefix cloud ci
+npm --prefix cloud run prepare:runtime
 ```
 
 > **Deploy images source neo independently.** The `deploy/cloud` images build by

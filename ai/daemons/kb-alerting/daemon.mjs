@@ -11,7 +11,7 @@
  * core/_export + InstanceManager bootstrap chain.
  *
  * Persistent-process invocation: launchd / systemd should target this script
- * (`node ai/daemons/kb-alerting/daemon.mjs`), or `npm run ai:kb-alerting`. The daemon
+ * (`node ai/daemons/kb-alerting/daemon.mjs`). The daemon
  * is opt-in — it exits early unless `aiConfig.knowledgeBase.alertingEnabled` is true.
  *
  * @see ai/daemons/kb-alerting/KbAlertingService.mjs

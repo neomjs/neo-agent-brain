@@ -530,7 +530,7 @@ function parseDateOption(value) {
  */
 function createArgParser({silent = false} = {}) {
     const program = new Command()
-        .name('ai:audit-discussion-lifecycle')
+        .name('node ai/scripts/diagnostics/audit-discussion-lifecycle.mjs')
         .description('Audit synced Ideation Sandbox Discussions for lifecycle-close compliance.')
         .exitOverride()
         .allowExcessArguments(false)

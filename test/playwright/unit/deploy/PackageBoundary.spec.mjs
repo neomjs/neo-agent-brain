@@ -13,14 +13,16 @@ import {load as loadYaml} from 'js-yaml';
  */
 
 const
-    repoRoot = path.resolve(process.cwd()),
-    hostDir  = path.join(repoRoot, 'deploy/host'),
-    cloudDir = path.join(repoRoot, 'deploy/cloud'),
+    repoRoot          = path.resolve(process.cwd()),
+    hostDir           = path.join(repoRoot, 'deploy/host'),
+    cloudDir          = path.join(repoRoot, 'deploy/cloud'),
+    cloudPackageDir   = path.join(repoRoot, 'cloud'),
+    installedBrainDir = path.join(cloudPackageDir, 'node_modules/neo-agent-brain'),
+    testServersDir    = path.join(repoRoot, 'test/playwright/integration/fixtures/servers'),
 
     HOST_DEFINITIONS = [
         'com.neomjs.agent-os-host-edge.plist',
-        'com.neomjs.agent-os-wake.plist',
-        'hostEdgeProfile.mjs'
+        'com.neomjs.agent-os-wake.plist'
     ],
 
     CLOUD_DEFINITIONS = [
@@ -36,48 +38,40 @@ const
         'docker-compose.provider-lanes.yml',
         'docker-compose.test.yml',
         'docker-compose.yml',
-        'kb-config.yaml',
-        'mock-oidc-server.mjs',
-        'mock-openai-embedding-server.mjs'
+        'kb-config.yaml'
     ],
 
     CLOUD_PACKAGE_FILES = ['.npmrc', 'package-lock.json', 'package.json'],
 
+    TEST_SERVER_FIXTURES = [
+        'mock-oidc-server.mjs',
+        'mock-openai-embedding-server.mjs'
+    ],
+
     CLOUD_SCRIPT_KEYS = [
-        'ai:audit-integrity',
         'ai:backup',
-        'ai:build-kb-faqs',
         'ai:check-backup-integrity',
         'ai:check-chroma-integrity',
         'ai:community-source-operator',
         'ai:compact-graphlog',
         'ai:defrag-kb',
-        'ai:defrag-memory',
-        'ai:defrag-sqlite',
         'ai:download-kb',
+        'ai:fleet-healthcheck',
         'ai:fleet-server',
         'ai:graph-lifecycle-report',
         'ai:ingest-tenant',
-        'ai:kb-alerting',
-        'ai:kb-gc',
-        'ai:kb-reconciliation',
         'ai:mcp-server-knowledge-base',
         'ai:mcp-server-memory-core',
         'ai:migration-census-report',
         'ai:orchestrator',
-        'ai:purge-no-content-graph-memories',
-        'ai:purge-test-collections',
-        'ai:reconcile-raw-memory-identities',
+        'ai:provider-lane-composition',
+        'ai:provider-lane-election',
         'ai:reseed',
         'ai:restore',
         'ai:run-sandman',
         'ai:server',
-        'ai:stale-embedding-census',
-        'ai:stale-embedding-repair',
         'ai:summarize-sessions',
         'ai:sync-kb',
-        'compose:config',
-        'compose:down',
         'compose:up',
         'prepare:runtime'
     ];
@@ -100,18 +94,27 @@ function resolvesInside(root, candidate) {
 
 test('deployment definitions have one exact plane-owned home', () => {
     expect(fs.readdirSync(hostDir).sort()).toEqual(HOST_DEFINITIONS.sort());
-    expect(fs.readdirSync(cloudDir).filter(name => name !== 'node_modules').sort())
-        .toEqual([...CLOUD_DEFINITIONS, ...CLOUD_PACKAGE_FILES].sort());
+    expect(fs.readdirSync(cloudDir).sort()).toEqual(CLOUD_DEFINITIONS.sort());
+    expect(fs.readdirSync(cloudPackageDir).filter(name => !['node_modules', 'neo-agent-brain-head.tgz'].includes(name)).sort())
+        .toEqual(CLOUD_PACKAGE_FILES.sort());
+    for (const fixture of TEST_SERVER_FIXTURES) {
+        expect(fs.existsSync(path.join(testServersDir, fixture)), fixture).toBe(true)
+    }
+    expect(fs.existsSync(path.join(repoRoot, 'src/composition/orchestrator/hostEdgeProfile.mjs'))).toBe(true);
 
     const legacyDeployPath = ['ai', 'deploy'].join('/');
 
     expect(fs.existsSync(path.join(repoRoot, ...legacyDeployPath.split('/')))).toBe(false);
 
-    const trackedFiles = execFileSync('git', ['-C', repoRoot, 'ls-files', '-z'])
-        .toString('utf8').split('\0').filter(Boolean);
-    const legacyReference = new RegExp(`${legacyDeployPath}(?:/|\\b)`);
+    const trackedFiles = execFileSync('git', [
+        '-C', repoRoot, 'ls-files', '--cached', '--others', '--exclude-standard', '-z'
+    ]).toString('utf8').split('\0').filter(file => file && fs.existsSync(path.join(repoRoot, file)));
+    const legacyReference         = new RegExp(`${legacyDeployPath}(?:/|\\b)`);
+    const forbiddenDeployArtifact = /^deploy\/.*(?:\.mjs|\/package(?:-lock)?\.json|\/\.npmrc)$/;
 
     for (const file of trackedFiles) {
+        expect(file, 'deployment is declarative-only').not.toMatch(forbiddenDeployArtifact);
+
         const contents = fs.readFileSync(path.join(repoRoot, file));
 
         if (contents.includes(0)) continue;
@@ -123,8 +126,8 @@ test('deployment definitions have one exact plane-owned home', () => {
 test('the Cloud package owns its manifest, lock, dependencies, and commands independently', () => {
     const
         rootManifest  = readJson(path.join(repoRoot, 'package.json')),
-        cloudManifest = readJson(path.join(cloudDir, 'package.json')),
-        cloudLock     = readJson(path.join(cloudDir, 'package-lock.json')),
+        cloudManifest = readJson(path.join(cloudPackageDir, 'package.json')),
+        cloudLock     = readJson(path.join(cloudPackageDir, 'package-lock.json')),
         cloudRootLock = cloudLock.packages[''];
 
     expect(rootManifest).not.toHaveProperty('workspaces');
@@ -154,6 +157,8 @@ test('the Cloud package owns its manifest, lock, dependencies, and commands inde
         if (entrypoint) expect(fs.existsSync(path.join(repoRoot, entrypoint)), key).toBe(true)
     }
 
+    expect(cloudManifest.scripts['compose:up']).toContain('../deploy/cloud/docker-compose.yml');
+
     const overlap = Object.keys(rootManifest.scripts).filter(key => key in cloudManifest.scripts);
 
     expect(overlap).toEqual([]);
@@ -165,8 +170,11 @@ test('the Cloud package owns its manifest, lock, dependencies, and commands inde
     }
 });
 
-test('every Compose build and non-dev bind resolves inside the Cloud package', () => {
-    const liveDevBinds = [];
+test('every Compose build and non-dev bind resolves inside its owning deployment or test fixture', () => {
+    const
+        liveDevBinds        = [],
+        installedBrainBinds = new Set(),
+        testFixtureBinds    = new Set();
 
     for (const file of CLOUD_DEFINITIONS.filter(name => name.endsWith('.yml'))) {
         const
@@ -180,9 +188,15 @@ test('every Compose build and non-dev bind resolves inside the Cloud package', (
                     contextDir = path.resolve(cloudDir, context),
                     dockerfile = service.build.dockerfile || 'Dockerfile';
 
-                expect(resolvesInside(cloudDir, context), `${file}:${serviceName}:context`).toBe(true);
-                expect(resolvesInside(cloudDir, path.relative(cloudDir, path.resolve(contextDir, dockerfile))),
-                    `${file}:${serviceName}:dockerfile`).toBe(true)
+                if (context === '.') {
+                    expect(contextDir, `${file}:${serviceName}:context`).toBe(cloudDir);
+                    expect(path.resolve(contextDir, dockerfile), `${file}:${serviceName}:dockerfile`)
+                        .toBe(path.join(cloudDir, 'Dockerfile'))
+                } else {
+                    expect(contextDir, `${file}:${serviceName}:installed-context`).toBe(installedBrainDir);
+                    expect(path.resolve(contextDir, dockerfile), `${file}:${serviceName}:dockerfile`)
+                        .toBe(path.join(cloudDir, 'Dockerfile'))
+                }
             }
 
             for (const volume of service.volumes || []) {
@@ -197,13 +211,32 @@ test('every Compose build and non-dev bind resolves inside the Cloud package', (
                     continue
                 }
 
+                if (sourcePath.startsWith('../../test/playwright/integration/fixtures/servers/')) {
+                    expect(resolvesInside(testServersDir, path.relative(testServersDir, path.resolve(cloudDir, sourcePath))),
+                        `${file}:${serviceName}:test-fixture:${sourcePath}`).toBe(true);
+                    testFixtureBinds.add(path.basename(sourcePath));
+                    continue
+                }
+
+                if (sourcePath.startsWith('../../cloud/node_modules/neo-agent-brain/')) {
+                    expect(resolvesInside(installedBrainDir, path.relative(installedBrainDir, path.resolve(cloudDir, sourcePath))),
+                        `${file}:${serviceName}:installed-brain:${sourcePath}`).toBe(true);
+                    installedBrainBinds.add(path.relative(installedBrainDir, path.resolve(cloudDir, sourcePath)));
+                    continue
+                }
+
                 expect(resolvesInside(cloudDir, sourcePath), `${file}:${serviceName}:volume:${sourcePath}`)
                     .toBe(true)
             }
         }
     }
 
-    expect(liveDevBinds.sort()).toEqual(['kb-server', 'mc-server', 'orchestrator'])
+    expect(liveDevBinds.sort()).toEqual(['kb-server', 'mc-server', 'orchestrator']);
+    expect([...installedBrainBinds].sort()).toEqual([
+        'ai/mcp/deploy/proxy/Caddyfile',
+        'test/playwright/integration/ai/kb-ingestion/fixtures/external-workspaces'
+    ]);
+    expect([...testFixtureBinds].sort()).toEqual(TEST_SERVER_FIXTURES.sort())
 });
 
 test('integration installs the independent package and then tests the exact checkout', () => {
@@ -216,17 +249,17 @@ test('integration installs the independent package and then tests the exact chec
         }));
 
     expect(setup.with['cache-dependency-path']).toContain('package-lock.json');
-    expect(setup.with['cache-dependency-path']).toContain('deploy/cloud/package-lock.json');
+    expect(setup.with['cache-dependency-path']).toContain('cloud/package-lock.json');
     expect(commands).toContainEqual({
-        cwd: 'deploy/cloud',
+        cwd: 'cloud',
         run: 'npm ci --ignore-scripts --no-audit --no-fund'
     });
     expect(commands).toContainEqual({
         cwd: '.',
-        run: 'git archive --format=tar.gz --prefix=package/ --output=deploy/cloud/neo-agent-brain-head.tgz HEAD'
+        run: 'git archive --format=tar.gz --prefix=package/ --output=cloud/neo-agent-brain-head.tgz HEAD'
     });
     expect(commands).toContainEqual({
-        cwd: 'deploy/cloud',
+        cwd: 'cloud',
         run: 'npm install --ignore-scripts --no-save --package-lock=false ./neo-agent-brain-head.tgz'
     })
 });

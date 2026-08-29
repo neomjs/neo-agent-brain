@@ -146,7 +146,7 @@ function rate(numerator, denominator, status='measured', zeroReason='zero-denomi
  */
 function createProgram() {
     return new Command()
-        .name('ai:probe-community-activity-shadow')
+        .name('node ai/scripts/maintenance/probeCommunityActivityShadow.mjs')
         .description('Read-only GitHub community-activity shadow measurement; emits evidence, never authority.')
         .helpOption('-h, --help', 'Display help.')
         .allowExcessArguments(false)

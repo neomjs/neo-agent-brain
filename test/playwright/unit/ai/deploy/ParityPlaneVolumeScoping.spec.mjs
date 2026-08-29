@@ -3,7 +3,7 @@ import fs                 from 'node:fs';
 import path               from 'node:path';
 import process            from 'node:process';
 import {load as yamlLoad} from 'js-yaml';
-import {buildHostEdgeEnv} from '../../../../../deploy/host/hostEdgeProfile.mjs';
+import {buildHostEdgeEnv} from '../../../../../src/composition/orchestrator/hostEdgeProfile.mjs';
 
 /**
  * Guards the parity profile's volume-scoping invariant.
@@ -504,7 +504,7 @@ test.describe('data-plane profile election — base and integration-fixture disp
         expect(plistSource).toMatch(/<key>KeepAlive<\/key>\s*<true\/>/);
 
         // The host-edge POSTURE moved out of this macOS artifact and into
-        // `deploy/host/hostEdgeProfile.mjs`, so the plist supervises the portable entrypoint instead
+        // `src/composition/orchestrator/hostEdgeProfile.mjs`, so the plist supervises the portable entrypoint instead
         // of carrying the configuration. The hard-cut guarantee this test names — the host edge is
         // graphless — is unchanged; it is asserted at the posture's new address. What stays below
         // is what the plist still legitimately owns: THIS machine's state root and local provider

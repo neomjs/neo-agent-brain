@@ -10,7 +10,7 @@
  *
  * Usage:
  *   node ai/scripts/diagnostics/bootstrapCodexSandbox.mjs
- *   npm run ai:bootstrap-codex-sandbox
+ *   node ai/scripts/diagnostics/bootstrapCodexSandbox.mjs
  *
  * Diagnostic only: the script does not auto-escalate sandbox permissions and
  * does not rewrite the `.neo-ai-data/sqlite` topology. Operators decide whether
@@ -156,9 +156,9 @@ export function runCodexSandboxProbe({
     fsImpl        = fs,
     env           = process.env
 } = {}) {
-    const paths           = buildProbePaths({projectRoot, probeId, fsImpl});
+    const paths            = buildProbePaths({projectRoot, probeId, fsImpl});
     const dirExistedBefore = fsImpl.existsSync(paths.logicalDir);
-    const sandboxMode     = detectSandboxMode(env);
+    const sandboxMode      = detectSandboxMode(env);
 
     let db = null;
 
@@ -190,7 +190,7 @@ export function runCodexSandboxProbe({
         });
 
         return {
-            ok: false,
+            ok   : false,
             paths,
             sandboxMode,
             cleanup,

@@ -4,7 +4,7 @@ import fs                                                                       
 import os                                                                            from 'os';
 import path                                                                          from 'path';
 import * as yaml                                                                     from 'js-yaml';
-import {buildHostEdgeEnv, HOST_EDGE_STATE_DIR_ENV}                                   from '../../../../../../deploy/host/hostEdgeProfile.mjs';
+import {buildHostEdgeEnv, HOST_EDGE_STATE_DIR_ENV}                                   from '../../../../../../src/composition/orchestrator/hostEdgeProfile.mjs';
 import {buildBrainProfile, buildPackagedBrainEnv}                                    from '../../../../../../harness/brain.mjs';
 import {ORCHESTRATOR_AUTHORITY_PROFILE, getTaskAuthorityClass, isTaskOwnedByProfile} from '../../../../../../ai/daemons/orchestrator/taskAuthority.mjs';
 
@@ -52,7 +52,7 @@ const DECLARED_LAUNCHERS = Object.freeze([
     'deploy/host/com.neomjs.agent-os-host-edge.plist',
     'deploy/cloud/docker-compose.dev.yml',
     'deploy/cloud/docker-compose.yml',
-    'deploy/cloud/package.json',
+    'cloud/package.json',
     'package.json'
 ]);
 
@@ -69,7 +69,7 @@ const NON_LAUNCHER_REFERENCES = Object.freeze([
     'ai/daemons/orchestrator/daemon.mjs',
     'ai/daemons/wake/daemon.mjs',
     'deploy/cloud/Dockerfile',
-    'deploy/host/hostEdgeProfile.mjs',
+    'src/composition/orchestrator/hostEdgeProfile.mjs',
     'ai/scripts/lint/lint-config-template-ssot.mjs',
     // Cites the four fail-closed daemons in prose to explain WHY a cohort can be inadmissible.
     // Reads only; it spawns nothing and resolves no entrypoint.

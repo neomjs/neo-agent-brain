@@ -12,7 +12,7 @@
  * core/_export + InstanceManager bootstrap chain.
  *
  * Persistent-process invocation: launchd / systemd should target this script
- * (`node ai/daemons/kb-gc/daemon.mjs`), or `npm run ai:kb-gc`. The daemon is opt-in — it
+ * (`node ai/daemons/kb-gc/daemon.mjs`). The daemon is opt-in — it
  * exits early unless `aiConfig.knowledgeBase.gcEnabled` is true; the destructive delete is a
  * second opt-in (`gcAutoDelete`).
  *

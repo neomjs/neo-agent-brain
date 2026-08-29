@@ -357,7 +357,7 @@ export function renderReport(seats, {ablation = false} = {}) {
     return `${lines.join('\n')}\n`
 }
 
-const USAGE = `Usage: npm run ai:seat-cost-report -- [flags]
+const USAGE = `Usage: node ai/scripts/diagnostics/seatCostReport.mjs [flags]
 
 Per-seat per-day session-cost table from the two harness-local token ledgers
 (kimi-code wire.jsonl usage records; opencode message token rows, assistant-only).
@@ -486,7 +486,7 @@ function main() {
         }
     } catch (error) {
         console.error(`Error: ${error.message}`);
-        console.error('Usage: npm run ai:seat-cost-report -- [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--ablation] [--json] [--help]');
+        console.error('Usage: node ai/scripts/diagnostics/seatCostReport.mjs [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--ablation] [--json] [--help]');
         console.error('  defaults read the live harness ledgers; --fixtures <dir> reads fixture files (kimi-wire.jsonl + opencode-rows.json)');
         process.exit(1);
     }

@@ -180,8 +180,8 @@ services:
 
   kb-server:
     build:
-      context: ./node_modules/neo-agent-brain
-      dockerfile: ../../Dockerfile
+      context: ../../cloud/node_modules/neo-agent-brain
+      dockerfile: ../../../deploy/cloud/Dockerfile
       args:
         NEO_SOURCE: local  # build the installed Brain dependency for dev iteration
         TARGET_SERVER: knowledge-base
@@ -269,8 +269,8 @@ services:
 
   mc-server:
     build:
-      context: ./node_modules/neo-agent-brain
-      dockerfile: ../../Dockerfile
+      context: ../../cloud/node_modules/neo-agent-brain
+      dockerfile: ../../../deploy/cloud/Dockerfile
       args:
         NEO_SOURCE: local  # build the installed Brain dependency for dev iteration
         TARGET_SERVER: memory-core
@@ -353,8 +353,8 @@ services:
   # notices; a scheduler on the wrong plane mutates the wrong durable store on a timer.
   orchestrator:
     build:
-      context: ./node_modules/neo-agent-brain
-      dockerfile: ../../Dockerfile
+      context: ../../cloud/node_modules/neo-agent-brain
+      dockerfile: ../../../deploy/cloud/Dockerfile
       args:
         NEO_SOURCE: local
         SERVICE_ENTRYPOINT: ai/daemons/orchestrator/daemon.mjs

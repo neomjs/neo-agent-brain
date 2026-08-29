@@ -315,7 +315,7 @@ checkout did not disappear — it moved: the container is built from the repo an
 read.
 
 **Measured consequence of leaving them unmoved.** The container plane declined both lanes to
-`host-edge`; `deploy/host/hostEdgeProfile.mjs` declined the same lanes as *"lanes this topology does
+`host-edge`; `src/composition/orchestrator/hostEdgeProfile.mjs` declined the same lanes as *"lanes this topology does
 not elect for the host edge"*. Five lanes ended up with no owner and `lastRunAt = NEVER`, and the
 Knowledge Base ran to **0 documents** with no producer. `auditAuthorityTopology` passed throughout,
 correctly: it audits **class ownership**, and enablement is a different axis.

@@ -30,7 +30,7 @@ const REPORT_DIR   = path.join(PROJECT_ROOT, '.neo-ai-data', 'community-activity
  * It never imports a syncer, Memory Core, Task, checkpoint, wake, policy, or graph-write surface.
  *
  * Usage:
- *   `npm run ai:probe-community-activity-shadow -- --owner neomjs --repo neo \
+ *   `node ai/scripts/maintenance/probeCommunityActivityShadow.mjs --owner neomjs --repo neo \
  *       --window-start 2026-06-18T00:00:00Z --window-end 2026-07-18T00:00:00Z \
  *       --page-size 100 --runs 2`
  */

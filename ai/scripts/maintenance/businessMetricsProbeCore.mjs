@@ -125,7 +125,7 @@ function createArgParser(env = process.env) {
     const program = new Command();
 
     program
-        .name('ai:probe-business-metrics')
+        .name('node ai/scripts/maintenance/probeBusinessMetrics.mjs')
         .description('Read-only business-metric ingestion probe (schema-validated METRIC nodes) + sync-survival verify mode.')
         .exitOverride()
         .configureOutput({writeErr: () => {}, writeOut: () => {}})

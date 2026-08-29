@@ -19,15 +19,17 @@ on:
     branches: [dev]
     paths:
       - 'package.json'
-      - 'deploy/cloud/package.json'
+      - 'cloud/package.json'
       - 'ai/**'
+      - 'src/**'
       - '.github/workflows/script-plane-lint.yml'
   push:
     branches: [dev]
     paths:
       - 'package.json'
-      - 'deploy/cloud/package.json'
+      - 'cloud/package.json'
       - 'ai/**'
+      - 'src/**'
       - '.github/workflows/script-plane-lint.yml'
 
 concurrency:

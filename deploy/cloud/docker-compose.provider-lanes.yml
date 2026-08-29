@@ -4,10 +4,10 @@
 # embedding lane (llama.cpp's OpenAI-compatible endpoint). Every resource value is required because
 # #17024 elects the fixed-envelope allocation; this profile consumes that result and never guesses it.
 #
-# Render + validate without starting containers:
-#   docker compose -f docker-compose.yml \
-#     -f docker-compose.provider-lanes.yml --profile cloud config --format json \
-#   | node ./node_modules/neo-agent-brain/ai/scripts/diagnostics/providerLaneComposition.mjs
+# From `cloud/`, render + validate without starting containers:
+#   docker compose -f ../deploy/cloud/docker-compose.yml \
+#     -f ../deploy/cloud/docker-compose.provider-lanes.yml --profile cloud config --format json \
+#   | npm run ai:provider-lane-composition
 
 x-provider-lane-contract:
   schemaVersion: provider-lane-composition.v2

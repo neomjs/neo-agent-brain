@@ -12,7 +12,7 @@
  * core/_export + InstanceManager bootstrap chain.
  *
  * Persistent-process invocation: launchd / systemd should target this script
- * (`node ai/daemons/kb-reconciliation/daemon.mjs`), or `npm run ai:kb-reconciliation`. The
+ * (`node ai/daemons/kb-reconciliation/daemon.mjs`). The
  * daemon is opt-in — it exits early unless `aiConfig.knowledgeBase.reconciliationEnabled` is
  * true; the destructive auto-tombstone is a second opt-in (`reconciliationAutoTombstone`).
  *

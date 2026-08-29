@@ -72,7 +72,7 @@ self-model pressing back into engineering priority.
 
 The loop is strongest when something goes wrong.
 
-An agent hallucinates a command in a guide, so `ai:lint-guides` grows a rule. A
+An agent hallucinates a command in a guide, so the guide lint grows a rule. A
 review misses an audience-frame bug, so the guide-authoring bar hardens. A
 memory store looks alive while vectors are missing, so self-healing stops
 treating liveness as integrity. A stop hook accidentally rewards low-value

@@ -12,7 +12,7 @@ import {
     partitionRegistryByAuthority,
     resolveAuthorityClassOwner
 } from '../../../../../../ai/daemons/orchestrator/taskAuthority.mjs';
-import {buildHostEdgeEnv} from '../../../../../../deploy/host/hostEdgeProfile.mjs';
+import {buildHostEdgeEnv} from '../../../../../../src/composition/orchestrator/hostEdgeProfile.mjs';
 
 /**
  * Lane enablement is a DERIVATION, not seven per-lane flags — authored falsifier-first.

@@ -156,6 +156,14 @@ that shared understanding into coordinated, publicly reviewable engineering work
 - **Agent OS operations** — daemons, diagnostics, maintenance, deployment definitions, tests,
   guides, and Agent-OS-owned decision records.
 
+The source and packaging boundaries are explicit:
+
+- `src/**` is the canonical domain and executable-composition authority;
+- `cloud/**` is the independently installed Container-Cloud package;
+- `deploy/host/**` and `deploy/cloud/**` contain declarative deployment artifacts and static
+  configuration only;
+- `test/**` owns every Host-executed unit, integration, and deployment fixture.
+
 Together these mechanisms form the **MX (Model Experience) loop**: real agent friction becomes a
 ticket, a reviewed change, a skill, a memory, or new graph topology; the next maintainer begins with
 better primitives than the last one had. The artifact is valuable, but the compounding loop is the
@@ -200,7 +208,7 @@ npm run ai:host-edge
 The Container-Cloud package installs and runs independently:
 
 ```bash
-cd deploy/cloud
+cd cloud
 npm ci
 npm run compose:up
 ```
@@ -209,7 +217,7 @@ Both planes require the relevant config overlays and credentials; the deployment
 details. Cloud commands are intentionally absent from the Host root.
 
 > **Package topology:** [ADR 0040](learn/agentos/decisions/0040-agentos-extraction-topology.md)
-> defines the repository root as the Host-Edge package and `deploy/cloud/` as the independent
+> defines the repository root as the Host-Edge package and `cloud/` as the independent
 > Container-Cloud package. They do not use npm workspaces or dependency hoisting. The remaining
 > source/import migration does not reopen this package boundary.
 

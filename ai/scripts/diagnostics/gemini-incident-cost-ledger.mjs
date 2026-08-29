@@ -24,11 +24,11 @@ import {Command}       from 'commander';
  */
 
 const DEFAULTS = {
-    charsPerToken         : 4,
-    fixedPromptChars      : 0,
-    inputPricePerMillion  : 0.50,
-    outputPricePerMillion : 3.00,
-    outputTokens          : 100
+    charsPerToken        : 4,
+    fixedPromptChars     : 0,
+    inputPricePerMillion : 0.50,
+    outputPricePerMillion: 3.00,
+    outputTokens         : 100
 };
 
 /**
@@ -71,16 +71,16 @@ export function isInsideWindow(timestamp, {windowStart = null, windowEnd = null}
 function createLogLedger(source) {
     return {
         source,
-        starts                       : 0,
-        completions                  : 0,
-        pendingStartSum              : 0,
-        pendingStartMax              : 0,
-        pendingDeferrals             : 0,
-        pendingDeferralSum           : 0,
-        activeTaskDeferrals          : 0,
-        maxRepresentedCallAttempts   : 0,
-        firstStartAt                 : null,
-        lastStartAt                  : null
+        starts                    : 0,
+        completions               : 0,
+        pendingStartSum           : 0,
+        pendingStartMax           : 0,
+        pendingDeferrals          : 0,
+        pendingDeferralSum        : 0,
+        activeTaskDeferrals       : 0,
+        maxRepresentedCallAttempts: 0,
+        firstStartAt              : null,
+        lastStartAt               : null
     };
 }
 
@@ -210,7 +210,7 @@ export function estimateCostBands({
             return {
                 label,
                 calls,
-                inputCharsPerCall: chars,
+                inputCharsPerCall  : chars,
                 inputTokensPerCall,
                 outputTokensPerCall: outputTokens,
                 inputCost,
@@ -383,8 +383,8 @@ export function buildLedger(options) {
     });
 
     const
-        totals = aggregateLedgers(perLog),
-        calls  = options.callsOverride ?? totals.maxRepresentedCallAttempts,
+        totals    = aggregateLedgers(perLog),
+        calls     = options.callsOverride ?? totals.maxRepresentedCallAttempts,
         estimates = estimateCostBands({
             calls,
             inputCharStats       : options.inputCharStats,
@@ -499,7 +499,7 @@ function main() {
         }
     } catch (error) {
         console.error(`Error: ${error.message}`);
-        console.error('Usage: npm run ai:gemini-incident-cost-ledger -- --log <orchestrator.log> [--window-start ISO] [--window-end ISO] [--input-chars-mean N] [--input-chars-p99 N] [--billing-cost N] [--json]');
+        console.error('Usage: node ai/scripts/diagnostics/gemini-incident-cost-ledger.mjs --log <orchestrator.log> [--window-start ISO] [--window-end ISO] [--input-chars-mean N] [--input-chars-p99 N] [--billing-cost N] [--json]');
         process.exit(1);
     }
 }
