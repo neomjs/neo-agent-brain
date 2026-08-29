@@ -303,12 +303,19 @@ export function describeBackupRetryState({
  * editor knows the one-directional wording was tried and superseded rather than simply forgotten.
  *
  * **The third state is UNOBSERVABLE, and it is not a shade of either.** The contract above bounds a
- * verdict that has evidence; a receipt the observer cannot reach supplies none, in either direction.
- * `receiptEvidence` carries it explicitly because the boolean it replaced could not: "no success
- * receipt" and "no access to receipts" scored identically, and the guard written to prevent the
- * false negative consults precisely the falsifier the blind observer lacks — so it could never fire
- * in the one deployment that needed it. The honest answer there is `backup-receipt-unreachable`,
- * which degrades without asserting, and no history claim at all.
+ * verdict that has evidence; a receipt the observer cannot reach — or cannot trust — supplies none,
+ * in either direction. `receiptEvidence` carries it explicitly because the boolean it replaced could
+ * not: "no success receipt" and "no readable receipt" scored identically, and the guard written to
+ * prevent the false negative consults precisely the falsifier the blind observer lacks — so it could
+ * never fire in the one deployment that needed it. The honest answer is `backup-receipt-unreachable`
+ * or `backup-receipt-unreadable`, which degrade without asserting, and no history claim at all.
+ *
+ * **TWO reader outcomes are unobservable, and they diverge on ONE downstream code.** Neither may
+ * reach a whole-history claim. But `unreadable` means a receipt FILE EXISTS and could not be parsed,
+ * which is still proof the lane has RUN — so it keeps licensing `backup-retry-state-unobserved`
+ * below, while `unreachable` (nothing was seen at all) does not. Collapsing the two completely is as
+ * wrong as separating them completely; they share the history question and differ on the ran-at-all
+ * one.
  *
  * `observationStatus` carries that difference. It is deliberately NOT the field of the same name one
  * level up in the healthcheck payload: `maintenance.observationStatus` reports whether the
@@ -342,12 +349,19 @@ export function describeBackupMaintenanceHealth({
         // about whether this lane EVER succeeded. Deliberately not a recency test: the receipt's age
         // decides nothing here, because the claim being guarded is about the lane's whole history.
         //
-        // THREE-VALUED BY CONSTRUCTION, and that is the correction. This was a boolean, which gave
-        // "I could not see the receipt" nowhere to go: it fell into the same arm as "I looked and
-        // found no success", and the arm below turns that into a definite negative about the lane's
-        // entire history. A two-way branch cannot carry a three-valued input, so the third state is
-        // named here rather than discovered at the branch.
-        receiptEvidence = lastBackup?.status === 'unreachable'
+        // EVIDENCE-VALUED, not merely unreachable-aware. This was a boolean, which gave "I could not
+        // read the receipt" nowhere to go: it fell into the same arm as "I looked and found no
+        // success", and the arm below turns that into a definite negative about the lane's history.
+        //
+        // BOTH unobservable states map here, and grouping them is the point. `unreachable` means the
+        // backup root could not be seen; `unreadable` means a receipt WAS found and cannot be
+        // trusted — corrupt, oversize, or written at a schema version this build does not know.
+        // **A receipt we cannot parse may well be a SUCCESS receipt**, so it falsifies nothing and
+        // proves nothing, exactly like one we cannot reach. An earlier revision named only
+        // `unreachable` here, and the sibling read-failure kept reaching the definite negative — the
+        // same fabrication, one state over. ticket-ref-ok: #233 RA-1 is where that asymmetry was
+        // caught; naming it stops the narrower test being restored as a simplification.
+        receiptEvidence = lastBackup?.status === 'unreachable' || lastBackup?.status === 'unreadable'
             ? 'unobservable'
             : lastBackup?.backup?.status === 'success' ? 'proves-success' : 'no-success';
 
@@ -425,6 +439,12 @@ export function describeBackupMaintenanceHealth({
     // An UNREACHABLE receipt is not proof of anything, so it is excluded: it is a `lastBackup`
     // object only so the verdict can name the blindness, and reading it as "the lane has run" would
     // reintroduce, one code over, exactly the unfounded inference this function just stopped making.
+    //
+    // `unreadable` is deliberately NOT excluded, and this is the one place the two unobservable
+    // states part company. A corrupt or oversize receipt is a FILE THAT EXISTS — something wrote it,
+    // so the lane demonstrably ran and its retry posture genuinely went unread. Widening this guard
+    // to `!== 'unreachable' && !== 'unreadable'` would look like symmetry and would silently drop a
+    // true observation.
     if (!retryRead && lastBackup && lastBackup.status !== 'unreachable') {
         reasonCodes.push('backup-retry-state-unobserved')
     }

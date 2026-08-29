@@ -778,6 +778,18 @@ test.describe('wrapper + projection behavioral witnesses', () => {
             const unreadable = await collect({receiptPath});
             expect(unreadable.lastBackup).toEqual({finishedAt: null, kind: 'corrupt', status: 'unreadable'});
             expect(unreadable.health.reasonCodes).toContain('backup-receipt-unreadable');
+
+            // #233 RA-1 (@neo-gpt): bind the BRIDGE seam, not just the reader and the scorer. Those
+            // two were covered independently, so deleting the projection's `unreachable` branch left
+            // every other spec green while the snapshot silently reverted to `lastBackup: undefined`
+            // — which the scorer reads as OBSERVED-ABSENT and turns back into a definite negative.
+            // Asserted end-to-end through `collectMaintenanceSnapshot` for exactly that reason.
+            const unmountedRoot = await collect({receiptPath: path.join(root, 'never-mounted', 'last-backup-receipt.json')});
+
+            expect(unmountedRoot.lastBackup).toEqual({finishedAt: null, kind: 'root-absent', status: 'unreachable'});
+            expect(unmountedRoot.health.reasonCodes).toContain('backup-receipt-unreachable');
+            // The projection must not go quiet: silence here MEANS observed-absent downstream.
+            expect(unmountedRoot.lastBackup).not.toBeUndefined();
         } finally {
             rmSync(root, {force: true, recursive: true})
         }

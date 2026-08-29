@@ -540,6 +540,59 @@ test.describe('orchestrator/scheduling/backup — receipt/retry reconciliation (
         expect(unreachable().reasonCodes).not.toContain('backup-never-succeeded');
     });
 
+    // #233 RA-1 (@neo-gpt). The SIBLING unobservable state, and the arm whose absence let the first
+    // revision of this fix keep fabricating history one state over. `unreachable` was handled and
+    // `unreadable` was not, so an exhausted lane with a corrupt receipt emitted
+    // `backup-receipt-unreadable` AND `backup-never-succeeded` in the same array — the second
+    // asserting a whole-lane history the first says it could not read.
+    //
+    // The justification is identical to the unreachable one and worth stating so nobody narrows it
+    // back: **a receipt we cannot PARSE may well be a SUCCESS receipt.** Corrupt, oversize and
+    // unsupported-version all reach here, and none of them falsifies a success that happened.
+    const unreadable = (overrides = {}) => conflicted({
+        lastBackup: {finishedAt: null, kind: 'corrupt', status: 'unreadable'},
+        ...overrides
+    });
+
+    test('an UNREADABLE receipt reports the read failure and makes no history claim either', () => {
+        expect(unreadable().reasonCodes).toEqual([
+            'backup-retry-exhausted',
+            'backup-receipt-unreadable'
+        ]);
+    });
+
+    test('both unobservable states are bound, and the observed ones still speak', () => {
+        // The two that cannot know: neither direction, from either state.
+        for (const codes of [unreachable().reasonCodes, unreadable().reasonCodes]) {
+            expect(codes).not.toContain('backup-never-succeeded');
+            expect(codes).not.toContain('backup-state-conflict')
+        }
+
+        // The two that CAN know still do — this is what stops the fix from being "suppress the
+        // negative whenever the receipt is not a proven success", which passes every arm above.
+        expect(conflicted({lastBackup: null}).reasonCodes).toContain('backup-never-succeeded');
+        expect(conflicted().reasonCodes).toContain('backup-state-conflict')
+    });
+
+    // Where the two unobservable states PART COMPANY, and the reason a blanket exclusion is wrong.
+    // A corrupt receipt is a file that EXISTS — something wrote it, so the lane demonstrably ran and
+    // its unread retry posture is a true observation. Nothing was seen at all in the unreachable
+    // case. Reddens if a future edit "simplifies" the guard to exclude both.
+    test('unreadable still licenses backup-retry-state-unobserved; unreachable does not', () => {
+        const unread = lastBackup => describeBackupMaintenanceHealth({
+            backupIntervalMs: DAY_MS,
+            durability      : {posture: 'configured'},
+            lastBackup,
+            retryState      : null,
+            retryWindowMs   : WINDOW_MS
+        }).reasonCodes;
+
+        expect(unread({finishedAt: null, kind: 'corrupt', status: 'unreadable'}))
+            .toContain('backup-retry-state-unobserved');
+        expect(unread({finishedAt: null, kind: 'root-absent', status: 'unreachable'}))
+            .not.toContain('backup-retry-state-unobserved')
+    });
+
     // Mounting the volume must flip the code the FIX emits, never the code the DEFECT emitted. If a
     // reviewer can make this pass by adding a mount rather than by teaching the reader to see, the
     // class is still live in every subsystem the observer cannot reach.
