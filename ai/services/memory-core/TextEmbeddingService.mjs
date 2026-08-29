@@ -21,6 +21,7 @@ import {
     createProviderActivityLifecycle,
     observeUnqueuedProviderActivity
 }                           from '../shared/providerActivityLedger.mjs';
+import EmbeddingAdmission                                              from './helpers/EmbeddingAdmission.mjs';
 import MemoryCoreRecorderService                                       from './MemoryCoreRecorderService.mjs';
 import {
     OPENAI_COMPATIBLE_REQUEST_TIMEOUT_CODE,
@@ -717,16 +718,27 @@ class TextEmbeddingService extends Base {
     // width is the only authority.
     #openAiCompatiblePostQueueWorkers = 0;
     // Provider TASKS in flight, not posts. One multi-input POST is one task per input, and the budget
-    // is written in tasks, so admission has to count the same unit.
-    #openAiCompatibleInFlightTasks    = 0;
+    // is written in tasks, so admission counts the same unit. The gate owns that count and the
+    // interactive-headroom ceiling; this queue keeps only its ORDERING — selection among waiting posts
+    // is a concern the native path never had, so it is not the duplication #200 set out to remove.
+    #openAiAdmission = new EmbeddingAdmission({
+        resolveBudget   : () => resolveEmbeddingTaskBudget(aiConfig.localModels.embedding.parallel),
+        createAbortError: getEmbeddingAbortError
+    });
 
-    // Native Ollama admission control. The openAiCompatible path has been serialized since
-    // `#openAiCompatiblePostQueue` existed; this path reached the provider through
+    // Native Ollama admission control. This path reached the provider through
     // `observeUnqueuedProviderActivity` — which observes and does NOT admit — so its concurrency was
     // emergent from caller count. Four callers meant four resident-model requests, which is the
     // observed shape on a real plane rather than a hypothetical one.
-    #ollamaInFlightEmbeddings = 0;
-    #ollamaEmbeddingWaiters   = [];
+    //
+    // The cap is resolved by a FUNCTION, not captured as a number: an operator override then takes
+    // effect on the next admission rather than at the next process start. The gate throws on a value
+    // it cannot honour — a fractional cap would report one number while admitting its ceiling, and a
+    // non-finite cap turns the lane into either an unbounded path or a permanent stall.
+    #ollamaAdmission = new EmbeddingAdmission({
+        resolveBudget: () => aiConfig.ollama.maxInFlightEmbeddings,
+        createAbortError: getEmbeddingAbortError
+    });
 
     /**
      * @param {Object} config The configuration object.
@@ -882,7 +894,7 @@ class TextEmbeddingService extends Base {
             if (index === -1) break;
 
             // A slot withheld here returns the moment a settling worker re-drains.
-            if (!this.#mayAdmitOpenAiCompatiblePost(this.#openAiCompatiblePostQueue[index])) {
+            if (!this.#openAiAdmission.canAdmit(this.#openAiCompatibleAdmissionShape(this.#openAiCompatiblePostQueue[index]))) {
                 break
             }
 
@@ -892,41 +904,28 @@ class TextEmbeddingService extends Base {
     }
 
     /**
-     * @summary The number of provider tasks one queued post represents.
+     * @summary The admission shape one queued post presents to the gate.
+     *
+     * One multi-input POST is one provider task PER INPUT, so weight is the input count rather than
+     * one-post-one-slot. Both the batch ceiling and the idle bypass now live in the gate, which is
+     * what makes the native and queued paths share a single admission rule instead of two that agreed
+     * only by coincidence.
+     *
+     * `Array.isArray` is load-bearing, NOT defensive. `inputData` is a plain string for a scalar
+     * embed, and a string has a `.length` — so reading it unconditionally charges the caller one
+     * admission unit per CHARACTER. A 400-character scalar would weigh 400 against a budget of 4 and
+     * take the entire lane. Only an array's length is an input count; every other shape is one task.
      * @param {Object} task Queued post.
-     * @returns {Number} One per input, minimum one.
+     * @returns {{weight: Number, priority: String}}
      * @private
      */
-    #openAiCompatibleTaskWeight(task) {
-        return Array.isArray(task?.inputData) ? Math.max(task.inputData.length, 1) : 1
-    }
-
-    /**
-     * @summary Whether one queued post may be dispatched against the declared task budget.
-     *
-     * BATCH work is admitted only up to `budget - 1`, which is the interactive-headroom contract
-     * expressed where it can actually hold. Reserving per `embedTexts` call cannot hold it: two batch
-     * callers each satisfy their own reservation and jointly fill the budget, leaving an interactive
-     * post no slot — the falsifier a reviewer supplied against an earlier version of this guard, where
-     * admission ran to the full budget for every lane.
-     *
-     * INTERACTIVE work may use the whole budget, because the reserved slot exists FOR it.
-     *
-     * `inFlightTasks === 0` always admits, so a post wider than the budget still makes forward
-     * progress rather than livelocking, and a single-slot deployment is untouched.
-     * @param {Object} task Queued post.
-     * @returns {Boolean}
-     * @private
-     */
-    #mayAdmitOpenAiCompatiblePost(task) {
-        if (this.#openAiCompatibleInFlightTasks === 0) {
-            return true
+    #openAiCompatibleAdmissionShape(task) {
+        return {
+            weight  : Array.isArray(task?.inputData)
+                ? EmbeddingAdmission.normaliseWeight(task.inputData.length)
+                : 1,
+            priority: task?.priority
         }
-
-        const budget  = resolveEmbeddingTaskBudget(aiConfig.localModels.embedding.parallel),
-              ceiling = task?.priority === 'interactive' ? budget : Math.max(budget - 1, 1);
-
-        return this.#openAiCompatibleInFlightTasks + this.#openAiCompatibleTaskWeight(task) <= ceiling
     }
 
     /**
@@ -941,12 +940,17 @@ class TextEmbeddingService extends Base {
 
                 if (taskIndex === -1) break;
 
-                const weight = this.#openAiCompatibleTaskWeight(this.#openAiCompatiblePostQueue[taskIndex]);
+                const shape  = this.#openAiCompatibleAdmissionShape(this.#openAiCompatiblePostQueue[taskIndex]),
+                      weight = shape.weight;
 
                 // The drain admitted this worker once. A worker looping to a SECOND task re-checks,
                 // because capacity may have been taken since. Exiting is safe and cannot spin: this
                 // worker has already awaited, so its count is live when the drain next runs.
-                if (!this.#mayAdmitOpenAiCompatiblePost(this.#openAiCompatiblePostQueue[taskIndex])) {
+                //
+                // `canAdmit` rather than `tryAcquire` because this is a genuine check-then-act: the
+                // post stays QUEUED when the answer is no, so taking the weight here and handing it
+                // back would be a slot this worker briefly owned on behalf of a task it never ran.
+                if (!this.#openAiAdmission.canAdmit(shape)) {
                     break
                 }
 
@@ -955,7 +959,7 @@ class TextEmbeddingService extends Base {
                 const task = this.#openAiCompatiblePostQueue.splice(taskIndex, 1)[0];
 
                 task.markDispatched();
-                this.#openAiCompatibleInFlightTasks += weight;
+                this.#openAiAdmission.admit({weight});
 
                 const startedAt = Date.now();
 
@@ -964,11 +968,11 @@ class TextEmbeddingService extends Base {
                 try {
                     const result = await this.#postOpenAiCompatible(task.inputData, task.options);
 
-                    this.#openAiCompatibleInFlightTasks -= weight;
+                    this.#openAiAdmission.release({weight});
                     task.lifecycle.onSettled({completedAt: Date.now(), success: true});
                     task.resolve(result);
                 } catch (err) {
-                    this.#openAiCompatibleInFlightTasks -= weight;
+                    this.#openAiAdmission.release({weight});
                     task.lifecycle.onSettled({completedAt: Date.now(), success: false});
 
                     // The queue task — not each transport attempt — owns final failure, so by the
@@ -1740,148 +1744,6 @@ class TextEmbeddingService extends Base {
     }
 
     /**
-     * @summary Attempts to admit one native Ollama embedding request without yielding.
-     *
-     * The cap is read from the SSOT at the use site on every admission, not captured once, so an
-     * operator override takes effect on the next request rather than at the next process start.
-     *
-     * The ConfigProvider leaf rejects invalid persisted/env values. This use-site backstop also covers
-     * direct runtime mutation: a fractional cap would report one number while admitting its ceiling,
-     * and a non-finite cap can turn the queue into either an unbounded path or a permanent stall.
-     * @returns {Boolean} True when the caller acquired a slot.
-     * @private
-     */
-    #tryAcquireOllamaEmbeddingSlot() {
-        const cap = aiConfig.ollama.maxInFlightEmbeddings;
-
-        if (!Number.isInteger(cap) || cap < 1) {
-            throw new Error(`TextEmbeddingService: ollama.maxInFlightEmbeddings must be a positive integer, got ${cap}`);
-        }
-
-        if (this.#ollamaInFlightEmbeddings < cap) {
-            this.#ollamaInFlightEmbeddings++;
-            return true
-        }
-
-        return false
-    }
-
-    /**
-     * @summary Wakes the longest-waiting native Ollama embedding caller, if any.
-     * @returns {void}
-     * @private
-     */
-    #wakeNextOllamaEmbeddingWaiter() {
-        const waiter = this.#ollamaEmbeddingWaiters.shift();
-
-        if (!waiter) return;
-
-        waiter.cleanup();
-        waiter.resolve()
-    }
-
-    /**
-     * @summary Waits for the next admission retry while keeping caller cancellation live.
-     * @param {AbortSignal|undefined} signal Caller-owned cancellation signal.
-     * @param {String} operationLabel Bounded diagnostic label.
-     * @param {Object} operation Mutable local-phase observability record.
-     * @returns {Promise<void>}
-     * @private
-     */
-    #waitForOllamaEmbeddingWake(signal, operationLabel, operation) {
-        return new Promise((resolve, reject) => {
-            let settled = false;
-
-            const waiter  = {};
-            const cleanup = () => signal?.removeEventListener('abort', onAbort);
-            const settle  = (fn, value) => {
-                if (settled) return;
-
-                settled = true;
-                cleanup();
-                fn(value)
-            };
-            const onAbort = () => {
-                const index = this.#ollamaEmbeddingWaiters.indexOf(waiter);
-
-                if (index !== -1) {
-                    this.#ollamaEmbeddingWaiters.splice(index, 1)
-                }
-
-                const error = getEmbeddingAbortError(signal, operationLabel);
-
-                operation.callerAbortError = error;
-                operation.phase            = 'caller-aborted-awaiting-admission';
-                settle(reject, error)
-            };
-
-            waiter.cleanup = cleanup;
-            waiter.resolve = () => settle(resolve);
-
-            this.#ollamaEmbeddingWaiters.push(waiter);
-            signal?.addEventListener('abort', onAbort, {once: true});
-
-            if (signal?.aborted) onAbort()
-        })
-    }
-
-    /**
-     * @summary Waits for a slot. Only reached when the cap actually binds.
-     *
-     * Split from the synchronous attempt above deliberately. An `await` before dispatch — even one
-     * that resolves immediately — hands control back to the caller, and a caller that aborts on the
-     * next line then cancels the request BEFORE the provider is reached. The provider-neutral cancellation
-     * contract asserts that an uncontended call reaches dispatch before that next-line abort; an
-     * unconditional await broke it by preventing dispatch entirely. Admission must be FREE when there
-     * is room, or it silently re-times every caller's cancellation.
-     * @param {AbortSignal|undefined} signal Caller-owned cancellation signal.
-     * @param {String} operationLabel Bounded diagnostic label.
-     * @param {Object} operation Mutable local-phase observability record.
-     * @returns {Promise<void>}
-     * @private
-     */
-    async #awaitOllamaEmbeddingSlot(signal, operationLabel, operation) {
-        // Re-check per iteration rather than trusting the value that queued us. A raised cap does
-        // NOT proactively wake anyone — nothing watches the config — but the next admission
-        // attempt, whether a fresh caller or a woken waiter, reads the current number.
-        let consumedWake = false;
-
-        while (true) {
-            let admitted;
-
-            try {
-                throwIfEmbeddingAborted(signal, operationLabel, operation);
-                admitted = this.#tryAcquireOllamaEmbeddingSlot();
-            } catch (error) {
-                // A caller can abort after a release selected it but before its retry microtask runs.
-                // It consumed a wake without acquiring the slot, so hand that wake to the next waiter.
-                // The same rule covers a queued caller that wakes into a newly-invalid cap.
-                if (consumedWake) this.#wakeNextOllamaEmbeddingWaiter();
-                throw error;
-            }
-
-            if (admitted) return;
-
-            consumedWake = false;
-            await this.#waitForOllamaEmbeddingWake(signal, operationLabel, operation);
-            consumedWake = true;
-        }
-    }
-
-    /**
-     * @summary Releases one native Ollama embedding slot and wakes the longest-waiting caller.
-     *
-     * Wired to both provider-settlement arms, so an aborted or thrown provider request returns its slot.
-     * A release that only ran on success would leak the cap down to zero after N failures and stall the
-     * path completely — turning an admission control into an outage, silently.
-     * @private
-     */
-    #releaseOllamaEmbeddingSlot() {
-        this.#ollamaInFlightEmbeddings--;
-        this.#wakeNextOllamaEmbeddingWaiter()
-    }
-
-    /**
      * @summary Runs native Ollama embedding while separating caller abort from provider settlement.
      * @param {String|String[]} inputData Text input to embed.
      * @param {String} operationLabel Safe diagnostic label for timeout errors.
@@ -1924,14 +1786,29 @@ class TextEmbeddingService extends Base {
         lifecycle.onEnqueued({enqueuedAt: Date.now()});
 
         // Admission before the provider call. The uncontended path takes the synchronous branch and
-        // does NOT await — see `#awaitOllamaEmbeddingSlot` for why an unconditional await silently
-        // re-times every caller's cancellation.
+        // does NOT await — an await here, even one that resolves immediately, hands control back to
+        // the caller, so a caller that aborts on the next line cancels BEFORE the provider is reached.
+        // Admission must be FREE when there is room, or it silently re-times every caller's
+        // cancellation. That is why `tryAcquire` is synchronous and `acquire` is only ever reached
+        // once the cap actually binds.
         try {
-            if (!this.#tryAcquireOllamaEmbeddingSlot()) {
+            if (!this.#ollamaAdmission.tryAcquire()) {
                 operation.phase = 'awaiting-admission';
-                await this.#awaitOllamaEmbeddingSlot(signal, operationLabel, operation);
+                await this.#ollamaAdmission.acquire({
+                    signal,
+                    label  : operationLabel,
+                    onPhase: phase => { operation.phase = phase }
+                })
             }
         } catch (error) {
+            // Causal abort identity is stamped HERE because the gate is provider-neutral and holds no
+            // observability record of its own. Guarded rather than unconditional: `tryAcquire` also
+            // throws on a cap it cannot honour, and labelling a configuration defect as a caller abort
+            // would hide it behind the one explanation nobody investigates.
+            if (isCallerAbortError(error, signal)) {
+                operation.callerAbortError = error;
+            }
+
             // `queue`, NOT an invented `admission`. The shared ledger admits only
             // `provider | queue | unknown` and normalizes anything else to `unknown` — so a bespoke
             // stage does not fail, it silently degrades to the least informative value. The
@@ -1953,7 +1830,7 @@ class TextEmbeddingService extends Base {
         } catch (error) {
             // Already-aborted callers must return the slot they just took, or an abort storm walks
             // the cap down to zero and stalls the path.
-            this.#releaseOllamaEmbeddingSlot();
+            this.#ollamaAdmission.release();
             lifecycle.onSettled({completedAt: Date.now(), failureStage: 'queue', success: false});
             throw error;
         }
@@ -2008,7 +1885,7 @@ class TextEmbeddingService extends Base {
         // N concurrent requests through a cap of 1. Both handlers attached, so this derived promise
         // cannot reject unhandled.
         providerPromise.then(
-            () => this.#releaseOllamaEmbeddingSlot(),
+            () => this.#ollamaAdmission.release(),
             error => {
                 try {
                     // Open a caller-owned sweep circuit BEFORE releasing the provider slot. Abort
@@ -2024,7 +1901,7 @@ class TextEmbeddingService extends Base {
                     // native path that this ticket fixes in the queued one.
                     notifyProviderTimeout({error, onProviderTimeout, providerLabel: 'Native Ollama'});
                 } finally {
-                    this.#releaseOllamaEmbeddingSlot();
+                    this.#ollamaAdmission.release();
                 }
             }
         );

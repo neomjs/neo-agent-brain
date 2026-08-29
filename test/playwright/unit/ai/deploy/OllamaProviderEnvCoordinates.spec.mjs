@@ -177,7 +177,7 @@ const REQUIRED = [{
     service : 'kb-server',
     env     : 'NEO_OLLAMA_MAX_INFLIGHT_EMBEDDINGS',
     consumer: TES,
-    anchors : ['const cap = aiConfig.ollama.maxInFlightEmbeddings;', 'if (this.#ollamaInFlightEmbeddings < cap) {'],
+    anchors : ['resolveBudget: () => aiConfig.ollama.maxInFlightEmbeddings,', 'if (!this.#ollamaAdmission.tryAcquire()) {'],
     why     : 'ingest embeds through TextEmbeddingService in this process, and the KB sweep is the ' +
               'heaviest embedding producer we run — an unshipped cap here admits a whole corpus ' +
               'without limit against one resident model'
@@ -185,7 +185,7 @@ const REQUIRED = [{
     service : 'mc-server',
     env     : 'NEO_OLLAMA_MAX_INFLIGHT_EMBEDDINGS',
     consumer: TES,
-    anchors : ['const cap = aiConfig.ollama.maxInFlightEmbeddings;', 'if (this.#ollamaInFlightEmbeddings < cap) {'],
+    anchors : ['resolveBudget: () => aiConfig.ollama.maxInFlightEmbeddings,', 'if (!this.#ollamaAdmission.tryAcquire()) {'],
     why     : 'memory embeddings are written from this process through the same admission gate, and ' +
               'the WAL drain issues them continuously rather than in one sweep, so the cap is what ' +
               'keeps drain work from competing with interactive embedding'
@@ -193,7 +193,7 @@ const REQUIRED = [{
     service : 'orchestrator',
     env     : 'NEO_OLLAMA_MAX_INFLIGHT_EMBEDDINGS',
     consumer: TES,
-    anchors : ['const cap = aiConfig.ollama.maxInFlightEmbeddings;', 'if (this.#ollamaInFlightEmbeddings < cap) {'],
+    anchors : ['resolveBudget: () => aiConfig.ollama.maxInFlightEmbeddings,', 'if (!this.#ollamaAdmission.tryAcquire()) {'],
     why     : 'Orchestrator.mjs calls TextEmbeddingService.embedTexts directly for Dream and ' +
               'TenantRepoSyncService calls embedText, so the re-embed sweeps that hold the ' +
               'heavy-maintenance lease run through this gate — the worst place for it to be absent'
