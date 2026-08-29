@@ -1,8 +1,8 @@
 name: Script Plane Lint
 
 # Fails a PR when an `ai/scripts` entrypoint's DECLARED execution authority disagrees with the
-# capabilities its code actually reaches, and ratchets the population of import edges the closure
-# cannot follow.
+# capabilities its code actually reaches, ratchets unresolved import edges, or a production module
+# silently derives a direct graph-store path from its checkout/cwd.
 #
 # On what this job does and does not gate: like every other lint here, it is NOT a required status
 # context on `dev` — see #17171. A red result is loud and visible on the PR; it does not by itself
@@ -53,5 +53,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Derive each entrypoint's plane and compare it to its declared authority
+      - name: Derive entrypoint planes and enforce explicit graph-store ownership
         run: node ./ai/scripts/lint/lint-script-plane.mjs

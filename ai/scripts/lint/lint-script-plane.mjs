@@ -11,6 +11,7 @@ import {
     resolveEntrypointPlane,
     walkCapabilityClosure
 }                              from './scriptPlaneClosure.mjs';
+import {runExplicitGraphStoreOwnershipLint} from './explicitGraphStoreOwnership.mjs';
 
 /**
  * Fails a build when an `ai/scripts` entrypoint's declared execution authority disagrees with what
@@ -54,6 +55,7 @@ export const SCAN_SURFACE = Object.freeze([
     'package.json',
     'deploy/cloud/package.json',
     'ai/**',
+    'ai/scripts/lint/explicitGraphStoreOwnership.mjs',
     'ai/scripts/lint/lint-script-plane.mjs',
     'ai/scripts/lint/scriptPlaneClosure.mjs',
     '.github/workflows/script-plane-lint.yml'
@@ -560,5 +562,9 @@ export function runLint({
 // spec imports SCAN_SURFACE from this module, and a bare `process.exit()` at module scope would
 // terminate the test process on import.
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
-    process.exit(runLint().exitCode)
+    const
+        planeResult = runLint(),
+        storeResult = runExplicitGraphStoreOwnershipLint();
+
+    process.exit(Math.max(planeResult.exitCode, storeResult.exitCode))
 }
