@@ -116,7 +116,8 @@ export function normalizeTenantRepoCheckpointState(value) {
             contentPoisonChunks: null,
             // A bare SHA predates the operator-clear marker too, so no intervention was recorded.
             backoffClearedAt          : null,
-            backoffClearedFromFailures: null
+            backoffClearedFromFailures: null,
+            terminalStop              : null
         };
     }
 
@@ -163,7 +164,50 @@ export function normalizeTenantRepoCheckpointState(value) {
         backoffClearedAt          : typeof value.backoffClearedAt === 'string' && value.backoffClearedAt
             ? value.backoffClearedAt
             : null,
-        backoffClearedFromFailures: normalizeFailureCount(value.backoffClearedFromFailures) || null
+        backoffClearedFromFailures: normalizeFailureCount(value.backoffClearedFromFailures) || null,
+        // The terminal-stop fingerprint, and it is here because the allowlist above is exactly the
+        // trap it would otherwise fall into: written to disk by the failure path, silently dropped on
+        // read, so a stop would survive one process and never cross a reload. The lane would then
+        // re-attempt every cadence and rediscover the same terminal cause forever — the defect this
+        // field exists to end, reintroduced by the persistence boundary rather than by the logic.
+        // ticket-ref-ok: #238 round 2 is where that was measured; naming it stops the field being
+        // "tidied" back out of an allowlist whose omissions are invisible by construction.
+        //
+        // Validated WHOLE or dropped: a fingerprint missing either half cannot answer "is this the
+        // same input?", and a half-answer must not suppress a repo. Fails toward running.
+        terminalStop              : normalizeTerminalStop(value.terminalStop)
+    };
+}
+
+/**
+ * @summary Normalizes one persisted terminal-stop fingerprint, or `null` when it cannot suppress.
+ *
+ * Degrades WHOLE rather than partially: the gate compares the recorded ref against the repo's current
+ * one, so a record missing its ref or its cause cannot answer the question and must not be trusted to
+ * stop a lane. The asymmetry is deliberate — a dropped fingerprint costs one wasted sweep, while a
+ * malformed one honoured would strand a repo permanently while reporting a reason it cannot support.
+ *
+ * `at` is informational (operator reporting only) and never participates in the comparison, so an
+ * absent or malformed timestamp degrades to `null` without invalidating the fingerprint.
+ *
+ * @param {*} value Candidate persisted fingerprint.
+ * @returns {{at: Number|null, ref: String, sourceErrorCode: String}|null}
+ */
+function normalizeTerminalStop(value) {
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+
+    const {at, ref, sourceErrorCode} = value;
+
+    if (typeof ref !== 'string' || !ref || typeof sourceErrorCode !== 'string' || !sourceErrorCode) {
+        return null;
+    }
+
+    return {
+        at: Number.isFinite(at) && at >= 0 ? at : null,
+        ref,
+        sourceErrorCode
     };
 }
 
