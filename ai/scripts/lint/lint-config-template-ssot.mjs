@@ -148,7 +148,7 @@ export const AI_CONFIG_MODULE_SCOPE_BASELINE = Object.freeze([
     {
         file  : 'ai/scripts/diagnostics/analyzeNlTelemetry.mjs',
         kind  : 'module-scope-leaf-capture',
-        text  : 'const DB_PATH = aiConfig.storagePaths.graph;',
+        text  : 'const DB_PATH    = aiConfig.storagePaths.graph;',
         ticket: '#14239',
         reason: 'Frozen primitive path leaf; existing P1 burndown debt.'
     },
