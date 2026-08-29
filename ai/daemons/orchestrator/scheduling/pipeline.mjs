@@ -809,7 +809,17 @@ async function runHeavyMaintenanceStarvationWatchdogTask({taskName, reason, serv
             waiterCount    : evaluation.waiterCount,
             unreadableCount: evaluation.unreadableCount,
             leaseHolder    : evaluation.leaseHolder,
-            breaches       : evaluation.breaches
+            // `leaseHolder` alone cannot diagnose a starvation, because it is null for FOUR different
+            // readings: `missing` (no lease file), `stale` (a holder died or expired without
+            // releasing), `unreadable`, and `malformed`. Three of those mean a lease file exists in a
+            // bad state, and `stale` in particular is the one that explains waiters queued behind
+            // nobody — but the discriminator was computed on the line above and thrown away.
+            //
+            // Measured 2026-08-28: `posture: degraded`, `leaseHolder: null`, two waiters starved 75
+            // and 114 minutes past the bound. Unactionable as reported; one of four named conditions
+            // once this field travels with it.
+            leaseStatus: inspection.status,
+            breaches   : evaluation.breaches
         };
 
         // Persist the verdict on the lane's durable task-state envelope BEFORE the terminal mark
