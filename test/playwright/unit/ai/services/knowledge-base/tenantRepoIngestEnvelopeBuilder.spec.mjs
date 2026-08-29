@@ -309,4 +309,36 @@ exec ${JSON.stringify(realGitPath)} "$@"
             newHead: 'missing-ref'
         })).rejects.toMatchObject({code: 'KB_INGEST_ENVELOPE_REF_NOT_FOUND'});
     });
+
+    // #237/#238. The asymmetry the terminal-stop classifier depends on, witnessed at the layer that
+    // creates it rather than asserted from a caller.
+    //
+    // The two refs are resolved differently ON PURPOSE: the CHECKPOINT ref carries `fallbackToFull`,
+    // so a `lastIngestedRev` that no longer exists — force-push, branch GC, history rewrite — returns
+    // null and this builder rebuilds a FULL envelope. The HEAD ref has no fallback, because if the
+    // configured branch does not resolve there is nothing to sync to.
+    //
+    // `TenantRepoSyncService` classifies a `KB_INGEST_ENVELOPE_REF_NOT_FOUND` as TERMINAL and stops
+    // the lane on it. That is only sound while this asymmetry holds: the moment the checkpoint case
+    // could also raise this code, a recoverable state would be permanently stopped. **This test is
+    // what makes that classifier safe**, and it reddens if `fallbackToFull` is ever dropped from the
+    // base-revision call.
+    test('a vanished CHECKPOINT ref recovers to a full envelope — only the HEAD ref is terminal', async () => {
+        const source   = await createSourceRepo();
+        const options  = await createMirror(source);
+        const newHead  = await resolveHead({...options, ref: 'main'});
+        const envelope = await buildIngestEnvelope({
+            ...options,
+            newHead,
+            // A checkpoint pointing at a revision the mirror no longer has.
+            lastIngestedRev: 'missing-ref',
+            rootKind       : 'bare-repo'
+        });
+
+        // Recovered, not rejected: a full envelope with no base to diff against.
+        expect(envelope.headRevision).toBe(newHead);
+        expect(envelope.baseRevision ?? null).toBe(null);
+        expect(Array.isArray(envelope.files)).toBe(true);
+        expect(envelope.files.length).toBeGreaterThan(0);
+    });
 });
