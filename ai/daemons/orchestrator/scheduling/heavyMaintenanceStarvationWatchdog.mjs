@@ -60,7 +60,8 @@
  * @returns {{posture: String, degraded: Boolean, breaches: Object[], waiterCount: Number,
  *   unreadableCount: Number, degradeAfterMs: Number, leaseHolder: (String|null)}} `breaches` entries
  *   carry `{taskName, priorityZero, bootstrapCritical, deferredSince, starvedForMs, leaseHolder,
- *   reasonCode, blockingTaskName, leaseStatus}` — the last three are the waiter's OWN cause, without
+ *   reasonCode, blockingTaskName, leaseOwner, leaseStatus}` — the last four are the waiter's OWN
+ *   cause, without
  *   which `leaseHolder` discriminates one of the three registering reason classes and leaves two —
  *   the receipt the consumed health projection publishes.
  */
@@ -88,6 +89,13 @@ export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, le
                     // the waiter's own cause, carried from the emitter that knew it.
                     reasonCode      : entry.reasonCode ?? null,
                     blockingTaskName: entry.blockingTaskName ?? null,
+                    // The lease class's blocker, a DIFFERENT field from the intra-process one on
+                    // purpose: a backpressure conflict names a TASK, a lease hold names an OWNER. One
+                    // field carrying both would have to lie about one. Round 1 persisted this at
+                    // registration and never copied it here, so the ledger round trip proved the WRITE
+                    // while the consumed breach dropped it — a witness on the producer says nothing
+                    // about the projection. ticket-ref-ok: #242 RA-1.
+                    leaseOwner      : entry.leaseOwner ?? null,
                     // The holder-side discriminator (#224/#222) qualified a null `leaseHolder` on the
                     // maintenance block but never reached the breach, so the two halves of one
                     // question lived on different objects.

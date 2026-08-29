@@ -55,7 +55,12 @@ export const TASK_STALENESS_CADENCE_KEY = Object.freeze({
 export const RECOGNIZED_DEFERRAL_REASON_CODES = Object.freeze([
     'heavy-maintenance-shed-window',
     'heavy-maintenance-backpressure',
-    'heavy-maintenance-lease-acquire-error',
+    // `heavy-maintenance-lease-acquire-error` was listed here and is NOT a deferral: it is emitted by
+    // `recordTaskOutcome(taskName, 'failed', …)`, so it can never appear on the `skipped` outcome this
+    // list is consulted against (:1118). A failure code in a deferral allowlist is a category error
+    // that widens the allowlist without widening what can legitimately reach it.
+    // ticket-ref-ok: #242 RA-2 measured the emitter set from `recordDeferral(...)` call expressions
+    // across all three production callers; this list is now exactly that set.
     'heavy-maintenance-lease-held',
     'golden-path-dependency-backpressure',
     // Restored 2026-08-30: absent while `MaintenanceBackpressureService` had emitted it, which broke

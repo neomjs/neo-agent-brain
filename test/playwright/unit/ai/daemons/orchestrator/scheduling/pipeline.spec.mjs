@@ -1468,43 +1468,107 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
     });
 });
 
-// #239. `RECOGNIZED_DEFERRAL_REASON_CODES` exists so an UNRECOGNIZED skip can never mask a genuine
-// stall, and its docblock asks an editor to "keep in lockstep with the recordDeferral emitters in
-// MaintenanceBackpressureService". A comment cannot enforce that, and it did not: the list was
-// missing `heavy-maintenance-yield-to-waiter` — the FAIRNESS class, the one that exists to protect a
-// starving peer — so the mechanism that yields to a starved waiter produced a skip the stall
-// detector could not classify.
+// #239 / #242 RA-2. `RECOGNIZED_DEFERRAL_REASON_CODES` decides whether a `skipped` outcome counts as
+// a DESIGNED deferral (pipeline.mjs:1118); an unrecognized skip "can never mask a genuine stall".
+// Its docblock asks an editor to keep it in lockstep with the `recordDeferral` emitters, and a
+// comment cannot enforce that — the list had drifted, missing the fairness class.
 //
-// This spec is the guard the docblock was standing in for. It reads the emitters out of the source
-// rather than restating them, so a NEW emitter fails here instead of silently going unrecognized.
+// ⚠️ The first version of this guard regexed every `reasonCode:` literal in ONE file. That is not the
+// emitter set: it counted `heavy-maintenance-lease-acquire-error`, which is emitted by
+// `recordTaskOutcome(…, 'failed')` and can never appear on a `skipped` outcome, and it missed the
+// three `recordDeferral` call sites in `Orchestrator.mjs` and `pipeline.mjs`. A guard that measures
+// string presence rather than call structure is a guard for a different property than the one named.
 test.describe('recognized deferral codes stay in lockstep with their emitters (#239)', () => {
-    test('every reasonCode passed to recordDeferral is recognized by the pipeline', async () => {
-        const fs     = (await import('node:fs')).default,
-              url    = (await import('node:url')),
-              here   = url.fileURLToPath(import.meta.url),
-              root   = here.slice(0, here.indexOf('/test/playwright/')),
-              source = fs.readFileSync(`${root}/ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs`, 'utf8'),
-              // Every literal handed to a `reasonCode:` property in the emitting service.
-              emitted = [...source.matchAll(/reasonCode\s*:\s*'([a-z-]+)'/g)].map(match => match[1]),
-              unique  = [...new Set(emitted)].sort();
+    // Every production module that calls `recordDeferral`. Listed rather than globbed so a NEW caller
+    // is a deliberate addition here — a glob would silently absorb one and re-open the drift.
+    const CALLERS = [
+        'ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs',
+        'ai/daemons/orchestrator/Orchestrator.mjs',
+        'ai/daemons/orchestrator/scheduling/pipeline.mjs'
+    ];
 
-        // Positive control: the extractor must actually find emitters, or an empty set would pass
-        // vacuously and this guard would be decorative.
-        expect(unique.length).toBeGreaterThanOrEqual(5);
+    /**
+     * Extracts `reasonCode` literals that appear INSIDE a `recordDeferral(...)` call expression, by
+     * balancing parentheses from the call site. A `reasonCode:` elsewhere in the file — a
+     * `recordTaskOutcome` failure payload, a docblock, a comparison — is outside every span and is
+     * therefore not an emitter, which is exactly the distinction the string-match version lost.
+     */
+    function emittedDeferralCodes(source) {
+        const codes = [];
 
-        const unrecognized = unique.filter(code => !RECOGNIZED_DEFERRAL_REASON_CODES.includes(code));
+        for (const match of source.matchAll(/recordDeferral\s*\(/g)) {
+            let i = match.index + match[0].length, depth = 1;
+
+            while (i < source.length && depth > 0) {
+                if (source[i] === '(') depth++;
+                else if (source[i] === ')') depth--;
+                i++;
+            }
+
+            codes.push(...[...source.slice(match.index, i).matchAll(/reasonCode\s*:\s*'([a-z-]+)'/g)].map(m => m[1]));
+        }
+
+        return codes;
+    }
+
+    async function readCallers() {
+        const fs   = (await import('node:fs')).default,
+              url  = await import('node:url'),
+              here = url.fileURLToPath(import.meta.url),
+              root = here.slice(0, here.indexOf('/test/playwright/'));
+
+        return CALLERS.map(rel => ({rel, source: fs.readFileSync(`${root}/${rel}`, 'utf8')}));
+    }
+
+    test('every code emitted through a recordDeferral CALL is recognized', async () => {
+        const files   = await readCallers(),
+              emitted = [...new Set(files.flatMap(file => emittedDeferralCodes(file.source)))].sort();
+
+        // Positive control: the extractor must find emitters in more than one file, or a parser that
+        // silently matched nothing would pass vacuously and this guard would be decorative.
+        expect(emitted.length).toBeGreaterThanOrEqual(5);
+        expect(files.filter(file => emittedDeferralCodes(file.source).length > 0).length).toBeGreaterThanOrEqual(2);
+
+        const unrecognized = emitted.filter(code => !RECOGNIZED_DEFERRAL_REASON_CODES.includes(code));
 
         expect(unrecognized, `emitted but not recognized: ${unrecognized.join(', ')}`).toEqual([]);
     });
 
-    test('the list carries no code nothing emits — it enumerates a real set, not an aspirational one', async () => {
-        const fs     = (await import('node:fs')).default,
-              url    = (await import('node:url')),
-              here   = url.fileURLToPath(import.meta.url),
-              root   = here.slice(0, here.indexOf('/test/playwright/')),
-              source = fs.readFileSync(`${root}/ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs`, 'utf8'),
-              stale  = RECOGNIZED_DEFERRAL_REASON_CODES.filter(code => !source.includes(`'${code}'`));
+    test('the list carries no code that no recordDeferral call emits', async () => {
+        const files   = await readCallers(),
+              emitted = new Set(files.flatMap(file => emittedDeferralCodes(file.source))),
+              stale   = RECOGNIZED_DEFERRAL_REASON_CODES.filter(code => !emitted.has(code));
 
-        expect(stale, `recognized but never emitted: ${stale.join(', ')}`).toEqual([]);
+        expect(stale, `recognized but never emitted by a recordDeferral call: ${stale.join(', ')}`).toEqual([]);
+    });
+
+    // 🔴 NEGATIVE CONTROL. `heavy-maintenance-lease-acquire-error` is a FAILED outcome, not a
+    // deferral — it reaches `recordTaskOutcome(…, 'failed')` and can never appear on the `skipped`
+    // status this list is consulted against. The string-match guard counted it; the call-expression
+    // parser must not, and the list must not carry it.
+    test('a failed-outcome code is neither extracted nor recognized', async () => {
+        const files   = await readCallers(),
+              emitted = new Set(files.flatMap(file => emittedDeferralCodes(file.source)));
+
+        expect(emitted.has('heavy-maintenance-lease-acquire-error')).toBe(false);
+        expect(RECOGNIZED_DEFERRAL_REASON_CODES).not.toContain('heavy-maintenance-lease-acquire-error');
+
+        // …and the code genuinely exists in that source, so this is a discrimination rather than an
+        // absence. Without this line the assertion above would also pass if the string had been deleted.
+        const service = files.find(file => file.rel.endsWith('MaintenanceBackpressureService.mjs'));
+
+        expect(service.source).toContain('heavy-maintenance-lease-acquire-error');
+    });
+
+    // Cross-file emitters were invisible to the single-file version. `Orchestrator.mjs` and
+    // `pipeline.mjs` both emit, and both were unchecked.
+    test('emitters outside MaintenanceBackpressureService are covered', async () => {
+        const files = await readCallers();
+
+        for (const rel of ['ai/daemons/orchestrator/Orchestrator.mjs', 'ai/daemons/orchestrator/scheduling/pipeline.mjs']) {
+            const file = files.find(candidate => candidate.rel === rel);
+
+            expect(emittedDeferralCodes(file.source).length, `${rel} emits no recognized deferral`).toBeGreaterThan(0);
+        }
     });
 });
