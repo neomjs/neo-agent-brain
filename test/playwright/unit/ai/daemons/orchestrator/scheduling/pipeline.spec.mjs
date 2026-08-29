@@ -38,7 +38,10 @@ function makeCandidateDescriptor({
 
 function makeServices(overrides = {}) {
     return {
-        dreamService: {
+        conceptDiscoveryService: {
+            runMessageConceptHarvest: () => Promise.resolve({})
+        },
+        remDigestion: {
             executeRemCycle: () => Promise.resolve({status: 'completed'})
         },
         goldenPathSynthesizer: {
@@ -90,6 +93,9 @@ function makeRuntime(overrides = {}) {
         primaryDevSyncRootsConfig      : null,
         tenantRepoSyncGlobalCadenceMs  : 10_000,
         tenantRepoSyncJitterRatio      : 0.1,
+        remCycleBudgetMs               : 120_000,
+        remConfiguredCadenceMs         : 3_600_000,
+        remOverflowThreshold           : 0.8,
         writeLog                       : () => {},
         ...overrides
     };
@@ -111,7 +117,8 @@ function makeOrchestratorAdapterFixture(overrides = {}) {
         goldenPathGetDueTask                   : () => null,
         swarmHeartbeatGetDueTask               : () => null,
         embedDrainLivenessWatchdogGetDueTask   : () => null,
-        dreamService                           : {},
+        conceptDiscoveryService                : {},
+        remDigestion                           : {},
         goldenPathSynthesizer                  : {},
         healthService                          : {},
         maintenanceBackpressureService         : {},
@@ -148,6 +155,7 @@ function makeAdapterConfig({dreamMs = 3_600_000, remBacklogCatchupCooldownMs = 3
                 primaryDevSyncMs                 : 1,
                 tenantRepoSyncMs                 : 1,
                 dreamMs,
+                dreamCycleBudgetMs               : 120_000,
                 messageConceptHarvestMs          : 1,
                 dreamOverflowThreshold           : 0.8,
                 remBacklogCatchupCooldownMs,
@@ -545,6 +553,7 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
     test('records completed Dream outcomes as successful runs (#13767)', async () => {
         const calls    = [];
         const outcomes = [];
+        let   executionOptions;
 
         const result = runSchedulingPipeline({
             registry: [
@@ -556,16 +565,19 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
             ],
             context : makeContext(),
             services: makeServices({
-                dreamService: {
-                    executeRemCycle: () => Promise.resolve({
-                        status           : 'completed',
-                        completedAt      : '2026-06-21T12:00:00.000Z',
-                        durationMs       : 42,
-                        sessionsProcessed: 3,
-                        remBatchLimit    : 3,
-                        remBatchSaturated: true,
-                        runId            : 'run-completed'
-                    })
+                remDigestion: {
+                    executeRemCycle: options => {
+                        executionOptions = options;
+                        return Promise.resolve({
+                            status           : 'completed',
+                            completedAt      : '2026-06-21T12:00:00.000Z',
+                            durationMs       : 42,
+                            sessionsProcessed: 3,
+                            remBatchLimit    : 3,
+                            remBatchSaturated: true,
+                            runId            : 'run-completed'
+                        })
+                    }
                 },
                 healthService: {
                     recordTaskOutcome(taskName, status, details) {
@@ -584,6 +596,12 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
         });
 
         await result.executed;
+
+        expect(executionOptions).toMatchObject({
+            cycleBudgetMs      : 120_000,
+            configuredCadenceMs: 3_600_000,
+            overflowThreshold  : 0.8
+        });
 
         expect(calls).toEqual([
             ['markStarted', 'dream', 'dream-reason'],
@@ -620,6 +638,45 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
         ]);
     });
 
+    test('Orchestrator owns the REM overflow warning', async () => {
+        const logs   = [];
+        const result = runSchedulingPipeline({
+            registry: [
+                makeCandidateDescriptor({
+                    taskName        : 'dream',
+                    executionKind   : 'in-process-async',
+                    maintenanceClass: 'heavy'
+                })
+            ],
+            context : makeContext(),
+            services: makeServices({
+                remDigestion: {
+                    executeRemCycle: () => Promise.resolve({
+                        status             : 'completed',
+                        completedAt        : '2026-06-21T12:00:00.000Z',
+                        durationMs         : 900,
+                        sessionsProcessed  : 0,
+                        runId              : 'run-overflow',
+                        cycleOverflowSignal: true,
+                        wallClockMs        : 900,
+                        configuredCadenceMs: 1000,
+                        overflowThreshold  : 0.8
+                    })
+                }
+            }),
+            runtime: makeRuntime({
+                writeLog: (level, message) => logs.push({level, message})
+            })
+        });
+
+        await result.executed;
+
+        expect(logs).toEqual([{
+            level  : 'WARN',
+            message: '[Orchestrator] REM cycle wall-clock 900ms exceeded 80% of configured cadence 1000ms; back-to-back overlap risk'
+        }]);
+    });
+
     test('records completed message-concept-harvest outcomes as successful runs (#13840)', async () => {
         const calls    = [];
         const outcomes = [];
@@ -634,7 +691,7 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
             ],
             context : makeContext(),
             services: makeServices({
-                dreamService: {
+                conceptDiscoveryService: {
                     runMessageConceptHarvest: () => Promise.resolve({
                         candidatesAdded  : 2,
                         messagesProcessed: 7,
@@ -827,7 +884,7 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
             ],
             context : makeContext(),
             services: makeServices({
-                dreamService: {
+                remDigestion: {
                     executeRemCycle: () => Promise.resolve({
                         status           : 'skipped',
                         completedAt      : '2026-06-21T12:01:00.000Z',
@@ -898,7 +955,7 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
             ],
             context : makeContext(),
             services: makeServices({
-                dreamService: {
+                remDigestion: {
                     executeRemCycle: () => Promise.resolve({
                         status           : 'failed',
                         completedAt      : '2026-06-21T12:02:00.000Z',

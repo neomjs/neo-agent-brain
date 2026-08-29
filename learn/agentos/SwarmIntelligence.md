@@ -292,13 +292,13 @@ not a universal work source.)
 | **low** | `telemetry`, `log` | Background observation |
 
 The Orchestrator populates the scheduler by parsing `sandman_handoff.md` — the
-strategic dashboard produced by the DreamService. Each Golden Path directive
+strategic dashboard produced by the `GoldenPathSynthesizer`. Each Golden Path directive
 becomes a `system:golden-path` event with `high` priority.
 
 ## The Orchestration Pipeline
 
 The `Orchestrator` is the **unattended autonomous-runner** path — one advisory consumer of the
-handoff (peer maintainers self-select interactively). It reads the DreamService's prioritized
+handoff (peer maintainers self-select interactively). It reads the Golden Path synthesizer's prioritized
 roadmap and feeds it into the autonomous agent loop:
 
 ```mermaid

@@ -34,9 +34,10 @@ process.env.NEO_KB_EMBEDDING_BACKOFF_BASE_MS = '1';
 // Brain specs retain the Chroma capability by default. Body-focused runs do not select this
 // project, so Playwright omits its setup dependency entirely instead of booting Chroma before it
 // knows what the command selected. The structural boundary is deliberately conservative: a Brain
-// test may freely exercise Memory Core / KB transitively without maintaining a fragile filename
-// allow-list, while every non-Brain spec remains a genuinely pure Node.js unit run.
-export const brainTestMatch = /[\\/]ai[\\/].*\.spec\.mjs$/;
+// test under either the legacy `ai/**` tree or canonical `src/evolution/**` may freely exercise
+// Memory Core / KB transitively without maintaining a fragile filename allow-list, while every
+// non-Brain spec remains a genuinely pure Node.js unit run.
+export const brainTestMatch = /[\\/](?:ai|src[\\/]evolution)[\\/].*\.spec\.mjs$/;
 
 // The daemon imports the eager Tier-1 + Memory Core config graph. Config-template unit specs
 // intentionally unregister those singleton namespaces during their fixtures, so worker reuse can

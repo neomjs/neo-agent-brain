@@ -164,7 +164,8 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             }
         }),
         services: {
-            dreamService                           : orchestrator.dreamService,
+            conceptDiscoveryService                : orchestrator.conceptDiscoveryService,
+            remDigestion                           : orchestrator.remDigestion,
             goldenPathSynthesizer                  : orchestrator.goldenPathSynthesizer,
             healthService                          : orchestrator.healthService,
             maintenanceBackpressureService         : orchestrator.maintenanceBackpressureService,
@@ -188,6 +189,9 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             remConsolidationWatchdogRunStateDir     : orchestrator.remConsolidationWatchdogRunStateDir,
             remConsolidationWatchdogThresholdMs     : orchestrator.remConsolidationWatchdogThresholdMs,
             remConsolidationWatchdogAlarmEnabled    : config.orchestrator.intervals.dreamMs > 0,
+            remCycleBudgetMs                        : config.orchestrator.intervals.dreamCycleBudgetMs,
+            remConfiguredCadenceMs                  : config.orchestrator.intervals.dreamMs,
+            remOverflowThreshold                    : config.orchestrator.intervals.dreamOverflowThreshold,
             heavyMaintenanceStarvationDegradeAfterMs: orchestrator.heavyMaintenanceStarvationDegradeAfterMs,
             writeLog                                : orchestrator.writeLog.bind(orchestrator)
         }
@@ -488,7 +492,7 @@ function executeServiceRunnerCandidate({candidate, activeHeavyTask, services, ru
 
 function executeInProcessCandidate({candidate, activeHeavyTask, services, runtime}) {
     const runners = {
-        dream                    : (taskName, reason) => runDreamTask({taskName, reason, services}),
+        dream                    : (taskName, reason) => runDreamTask({taskName, reason, services, runtime}),
         'message-concept-harvest': (taskName, reason) => runMessageConceptHarvestTask({taskName, reason, services}),
         'golden-path'            : (taskName, reason) => runGoldenPathTask({
             taskName,
@@ -546,15 +550,27 @@ function executeWithMaintenance({
     });
 }
 
-async function runDreamTask({taskName, reason, services}) {
+async function runDreamTask({taskName, reason, services, runtime}) {
     services.taskStateService.markStarted(taskName, reason);
     services.healthService?.recordTaskOutcome?.(taskName, 'running', { reason, startedAt: new Date().toISOString() });
 
-    const outcome = await services.dreamService.executeRemCycle({
+    const outcome = await services.remDigestion.executeRemCycle({
         reason,
-        mode        : 'periodic',
-        includeDecay: true
+        mode               : 'periodic',
+        includeDecay       : true,
+        cycleBudgetMs      : runtime.remCycleBudgetMs,
+        configuredCadenceMs: runtime.remConfiguredCadenceMs,
+        overflowThreshold  : runtime.remOverflowThreshold
     });
+
+    if (outcome.cycleOverflowSignal) {
+        runtime.writeLog?.(
+            'WARN',
+            `[Orchestrator] REM cycle wall-clock ${outcome.wallClockMs}ms exceeded ` +
+            `${Math.round(outcome.overflowThreshold * 100)}% of configured cadence ` +
+            `${outcome.configuredCadenceMs}ms; back-to-back overlap risk`
+        );
+    }
 
     const recordPayload = {
         reason,
@@ -617,7 +633,7 @@ async function runMessageConceptHarvestTask({taskName, reason, services}) {
     services.healthService?.recordTaskOutcome?.(taskName, 'running', { reason, startedAt: new Date().toISOString() });
 
     try {
-        const outcome = await services.dreamService.runMessageConceptHarvest();
+        const outcome = await services.conceptDiscoveryService.runMessageConceptHarvest();
         services.taskStateService.markCompleted(taskName);
         services.healthService?.recordTaskOutcome?.(taskName, 'completed', {
             reason,
@@ -1009,7 +1025,7 @@ async function runRemConsolidationLivenessWatchdogTask({taskName, reason, servic
         let undigestedCount  = 0;
         let backlogReadFault = false;
         try {
-            const undigested = await services.dreamService?.findUndigestedSessions?.();
+            const undigested = await services.remDigestion?.findUndigestedSessions?.();
             undigestedCount  = Array.isArray(undigested) ? undigested.length : 0;
         } catch {
             backlogReadFault = true;

@@ -70,7 +70,6 @@ import Memory_Config                     from './mcp/server/memory-core/config.m
 // duplicated. That file's note explains why the write survives and what retires it.
 
 // --- Daemons ---
-import DreamService                 from './daemons/orchestrator/services/DreamService.mjs';
 import HeavyMaintenanceLeaseService from './daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
 import SemanticGraphExtractor       from './services/graph/SemanticGraphExtractor.mjs';
 import TopologyInferenceEngine      from './services/graph/TopologyInferenceEngine.mjs';
@@ -211,7 +210,6 @@ export {
     NeuralLink_RuntimeService,
 
     // Daemons
-    DreamService,
     HeavyMaintenanceLeaseService,
     SemanticGraphExtractor,
     TopologyInferenceEngine,

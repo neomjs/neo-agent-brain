@@ -499,7 +499,7 @@ export function buildTaskDefinitions({
         dream: {
             label          : 'REM sleep graph extraction',
             pidFileName    : 'dream.pid',
-            expectedCommand: 'DreamService',
+            expectedCommand: 'RemDigestion',
             serviceTask    : true
         },
         'message-concept-harvest': {

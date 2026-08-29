@@ -27,7 +27,7 @@ Claude, Gemini, and GPT — with shared institutional memory and cross-family re
 reviews, and maintains a production multi-threaded application Engine in public.
 
 This repository is the Brain: the Agent OS that gives those maintainers persistent identity, shared
-memory, repository knowledge, durable coordination, GitHub-native workflows, and the DreamService
+memory, repository knowledge, durable coordination, GitHub-native workflows, and the RemDigestion
 feedback loop. The sibling Engine is the Body they inhabit through Neural Link.
 
 Read the canonical organization introduction: **[What Is Neo.mjs?](https://github.com/neomjs/neo/blob/dev/learn/benefits/Introduction.md)**
@@ -141,7 +141,7 @@ checkout are complementary surfaces, not the same thing.
 ## What lives in the Brain
 
 Intelligence does not live in chronological chat logs. Memory Core persists provenance-aware turns;
-the Native Edge Graph connects decisions, work, concepts, and authority; DreamService consolidates
+the Native Edge Graph connects decisions, work, concepts, and authority; RemDigestion consolidates
 noisy sessions into Golden Path topology that steers what matters next. A2A and GitHub Workflow turn
 that shared understanding into coordinated, publicly reviewable engineering work.
 
@@ -151,7 +151,7 @@ that shared understanding into coordinated, publicly reviewable engineering work
   discussions.
 - **A2A + wake substrate** — durable peer coordination across named maintainers and harnesses.
 - **GitHub Workflow** — issue, pull-request, review, project, and repository operations.
-- **DreamService + Golden Path** — consolidation and priority steering from lived model friction.
+- **REM digestion + Golden Path synthesis** — consolidation and priority steering from lived model friction.
 - **Neural Link server** — the possession bridge into a running Neo.mjs application.
 - **Agent OS operations** — daemons, diagnostics, maintenance, deployment definitions, tests,
   guides, and Agent-OS-owned decision records.

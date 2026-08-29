@@ -20,7 +20,7 @@
  * ## What this catches
  *
  * Any single-line `leaf( ... process.env ... )` default across every `config.template.mjs`
- * under `ai/`. Env access must flow through the leaf env-var-name argument; a test
+ * under `ai/` and canonical `src/`. Env access must flow through the leaf env-var-name argument; a test
  * override belongs in the test layer (the `test-unit` npm script shell env), not an
  * inline branch. Test modules may import committed templates for direct reads, but may not
  * synchronously materialize and export a second authority from the reactive Provider.
@@ -60,6 +60,8 @@ const COMPOSE_DEFAULT_PARITY_KEY      = '$composeDefaultParity';
 const BEHAVIOR_BINDING_PROJECTION_KEY = '$behaviorBindingProjection';
 const CONFIG_OVERLAY_BASENAME         = 'config.mjs';
 const SCAN_ROOT_REL                   = 'ai';
+const DOMAIN_SOURCE_ROOT_REL          = 'src';
+const IMPLEMENTATION_SCAN_ROOT_RELS   = Object.freeze([SCAN_ROOT_REL, DOMAIN_SOURCE_ROOT_REL]);
 const TEST_SCAN_ROOT_REL              = 'test';
 const DEPLOY_SCAN_ROOT_REL            = 'deploy/cloud';
 const SELF_REL_FILE                   = 'ai/scripts/lint/lint-config-template-ssot.mjs';
@@ -73,6 +75,7 @@ const TEST_MUTATION_GUARD_REL_FILE    = 'buildScripts/util/check-aiconfig-test-m
 // so a new root cannot silently widen the scan without widening this surface.
 export const SCAN_SURFACE = Object.freeze([
     `${SCAN_ROOT_REL}/**/*.mjs`,
+    `${DOMAIN_SOURCE_ROOT_REL}/**/*.mjs`,
     `${TEST_SCAN_ROOT_REL}/**/*.mjs`,
     // The Compose/default parity and behavior-binding projection rules both read deploy templates,
     // so this lint's scan is wider than its `.mjs` roots. Declaring it here is what makes the
@@ -233,7 +236,19 @@ function walkMjsFiles(dir) {
 }
 
 /**
- * @summary Filters files to the `ai/` implementation scope for ADR-19 implementation linting.
+ * @summary Collects implementation files across the legacy `ai/` tree and canonical `src/`.
+ * @param {String} rootDir Repository root.
+ * @param {Function} walker Directory walker.
+ * @returns {String[]}
+ */
+function walkImplementationRoots(rootDir, walker = walkMjsFiles) {
+    return IMPLEMENTATION_SCAN_ROOT_RELS
+        .flatMap(root => walker(path.join(rootDir, root)))
+        .sort()
+}
+
+/**
+ * @summary Filters files to the Brain implementation scope for ADR-19 implementation linting.
  * @param {String} file Repo-relative path.
  * @returns {Boolean}
  */
@@ -241,7 +256,7 @@ function shouldScanAiConfigImplementation(file) {
     const normalized = normalizeFile(file),
           basename   = path.basename(normalized);
 
-    return normalized.startsWith(`${SCAN_ROOT_REL}/`) &&
+    return IMPLEMENTATION_SCAN_ROOT_RELS.some(root => normalized.startsWith(`${root}/`)) &&
         normalized.endsWith('.mjs') &&
         normalized !== SELF_REL_FILE &&
         basename !== CONFIG_TEMPLATE_BASENAME &&
@@ -1278,7 +1293,7 @@ export function collectDeclaredConfigPaths(templatePath) {
 export async function buildConfigLeafParitySnapshot({rootDir = ROOT_DIR} = {}) {
     const out = {};
 
-    for (const file of walkConfigTemplates(path.join(rootDir, SCAN_ROOT_REL))) {
+    for (const file of walkImplementationRoots(rootDir, walkConfigTemplates)) {
         // The base is read THROUGH its template, never as a surface of its own: it declares no runtime
         // namespace, and listing it separately would double-count every path it contributes.
         if (path.basename(file) !== CONFIG_TEMPLATE_BASENAME) continue;
@@ -2163,7 +2178,7 @@ export function collectConfigEnvNamesFromSource(source) {
 export function collectDeclaredAiConfigEnvNames(rootDir = ROOT_DIR) {
     const names = new Set();
 
-    walkMjsFiles(path.join(rootDir, SCAN_ROOT_REL))
+    walkImplementationRoots(rootDir)
         .filter(file => [CONFIG_BASE_BASENAME, CONFIG_TEMPLATE_BASENAME].includes(path.basename(file)))
         .forEach(file => {
             collectConfigEnvNamesFromSource(fs.readFileSync(file, 'utf8')).forEach(name => names.add(name))
@@ -2548,7 +2563,7 @@ export function lintAdr0019GuardOwnership({
  * @returns {{violations: Object[], newViolations: Object[], staleBaseline: Object[]}}
  */
 export function lintConfigTemplateSsot({rootDir = ROOT_DIR, files, baseline = BASELINE} = {}) {
-    const records = files || walkConfigTemplates(path.join(rootDir, SCAN_ROOT_REL)).map(abs => ({
+    const records = files || walkImplementationRoots(rootDir, walkConfigTemplates).map(abs => ({
         file  : path.relative(rootDir, abs).split(path.sep).join('/'),
         source: fs.readFileSync(abs, 'utf8')
     }));
@@ -2573,7 +2588,7 @@ export function lintConfigTemplateSsot({rootDir = ROOT_DIR, files, baseline = BA
 }
 
 /**
- * @summary Scans `ai/` implementation files for mechanical ADR-19 AiConfig SSOT hits.
+ * @summary Scans Brain implementation files for mechanical ADR-19 AiConfig SSOT hits.
  * @param {Object} [options]
  * @param {String} [options.rootDir] Repo root.
  * @param {Array<{file: String, source: String}>} [options.files] Injected file records (test seam).
@@ -2585,7 +2600,7 @@ export function lintAiConfigImplementationSsot({
     files,
     baseline = AI_CONFIG_IMPLEMENTATION_BASELINE
 } = {}) {
-    const records = files || walkMjsFiles(path.join(rootDir, SCAN_ROOT_REL))
+    const records = files || walkImplementationRoots(rootDir)
         .map(abs => ({
             file  : normalizeFile(path.relative(rootDir, abs)),
             source: fs.readFileSync(abs, 'utf8')
@@ -2614,7 +2629,7 @@ export function lintAiConfigImplementationSsot({
 }
 
 /**
- * @summary Scans `ai/` implementation files for module-scope AiConfig leaf captures.
+ * @summary Scans Brain implementation files for module-scope AiConfig leaf captures.
  * @param {Object} [options]
  * @param {String} [options.rootDir] Repo root.
  * @param {Array<{file: String, source: String}>} [options.files] Injected file records (test seam).
@@ -2626,7 +2641,7 @@ export async function lintAiConfigModuleScopeCaptures({
     files,
     baseline = AI_CONFIG_MODULE_SCOPE_BASELINE
 } = {}) {
-    const records = files || walkMjsFiles(path.join(rootDir, SCAN_ROOT_REL))
+    const records = files || walkImplementationRoots(rootDir)
         .map(abs => ({
             file  : normalizeFile(path.relative(rootDir, abs)),
             source: fs.readFileSync(abs, 'utf8')
@@ -2669,7 +2684,7 @@ export function lintNonEntrypointConfigResolvers({
     files,
     configEnvNames = collectDeclaredAiConfigEnvNames(rootDir)
 } = {}) {
-    const records = files || walkMjsFiles(path.join(rootDir, SCAN_ROOT_REL))
+    const records = files || walkImplementationRoots(rootDir)
         .map(abs => ({
             file  : normalizeFile(path.relative(rootDir, abs)),
             source: fs.readFileSync(abs, 'utf8')
@@ -2936,8 +2951,8 @@ async function main() {
         console.log('');
         console.log('Fails when a config.template.mjs leaf default reads process.env inline');
         console.log('(outside the BASELINE), when a BASELINE row no longer matches a violation,');
-        console.log('when ai/ implementation code adds mechanical ADR-19 AiConfig SSOT violations,');
-        console.log('when ai/ implementation code adds module-scope AiConfig leaf captures,');
+        console.log('when ai/ or src/ implementation code adds mechanical ADR-19 AiConfig SSOT violations,');
+        console.log('when ai/ or src/ implementation code adds module-scope AiConfig leaf captures,');
         console.log('when a non-entrypoint exports a competing resolver for an AiConfig-owned env,');
         console.log('when ADR-0019 catalog tags disagree with executable guard rule objects,');
         console.log('when test code imports an ignored overlay / exports a config-template-derived authority,');

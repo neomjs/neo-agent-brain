@@ -69,7 +69,8 @@ import {
 import {buildDataIntegrityCoverageDiagnosis}          from './services/dataIntegrityCoverageDiagnosis.mjs';
 import {assembleDataIntegrityEvidence}                from './services/dataIntegrityEvidenceAssembler.mjs';
 import {createLiveDimensionConsistencyGatherer}       from './services/dimensionConsistencyGatherer.mjs';
-import DreamService                                   from './services/DreamService.mjs';
+import {createRemDigestion}                           from '../../../src/evolution/createRemDigestion.mjs';
+import ConceptDiscoveryService                        from '../../services/ingestion/ConceptDiscoveryService.mjs';
 import SwarmHeartbeatService                          from './services/SwarmHeartbeatService.mjs';
 import GoldenPathSynthesizer                          from '../../services/graph/GoldenPathSynthesizer.mjs';
 import {getDueTask as tenantRepoSyncGetDueTaskImport} from './scheduling/tenantRepoSync.mjs';
@@ -265,7 +266,8 @@ export class Orchestrator extends Base {
 
     primaryRepoSyncService   = PrimaryRepoSyncService
     tenantRepoSyncService    = TenantRepoSyncService
-    dreamService             = DreamService
+    remDigestion             = createRemDigestion()
+    conceptDiscoveryService  = ConceptDiscoveryService
     swarmHeartbeatService    = SwarmHeartbeatService
     goldenPathSynthesizer    = GoldenPathSynthesizer
     initializeDatabaseFn     = initializeDatabaseSelfBootstrap

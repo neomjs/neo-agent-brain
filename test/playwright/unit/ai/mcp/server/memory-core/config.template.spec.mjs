@@ -379,22 +379,6 @@ test.describe('Memory Core Config (#10010)', () => {
         expect(config.collections.temporalSummary).toBe(config.collections.temporalSummaryTest);
     });
 
-    test('remRunRetentionLimit defaults to 200 and parses NEO_REM_RUN_RETENTION_LIMIT as a number (#12123)', () => {
-        expect(config.remRunRetentionLimit).toBe(200);
-
-        process.env.NEO_REM_RUN_RETENTION_LIMIT = '50';
-
-        // Fresh isolated instance picks up the env via #applyEnvLayer at construction —
-        // never mutate the shared singleton.
-        const freshCfg = createConfigProxy(Neo.create(ConfigProvider, {data: config._data}));
-
-        try {
-            expect(freshCfg.remRunRetentionLimit).toBe(50);
-        } finally {
-            freshCfg.destroy();
-        }
-    });
-
     test('maxSessionsPerSummarySweep defaults to 5 and parses NEO_MC_MAX_SESSIONS_PER_SUMMARY_SWEEP as a number (#13592)', () => {
         expect(config.maxSessionsPerSummarySweep).toBe(5);
 

@@ -1,16 +1,24 @@
 import {test, expect}                   from '@playwright/test';
 import Neo                              from 'neo.mjs/src/Neo.mjs';
 import * as core                        from 'neo.mjs/src/core/_export.mjs';
-import DreamService                     from '../../../../../../../ai/daemons/orchestrator/services/DreamService.mjs';
-import AiConfig                         from '../../../../../../../ai/config.template.mjs';
-import {Memory_Config as MemoryConfig}  from '../../../../../../../ai/services.mjs';
-import logger                           from '../../../../../../../ai/mcp/server/memory-core/logger.mjs';
+import {createRemDigestion}             from '../../../../../src/evolution/createRemDigestion.mjs';
+import EvolutionConfig                  from '../../../../../src/evolution/config.template.mjs';
 import {mkdtemp, readdir, readFile, rm} from 'fs/promises';
 import os                               from 'os';
 import path                             from 'path';
 
+const RemDigestion     = createRemDigestion();
+const EXECUTION_POLICY = {
+    configuredCadenceMs: 1000,
+    overflowThreshold  : 0.8
+};
+
+function executeRemCycle(options = {}) {
+    return RemDigestion.executeRemCycle({...EXECUTION_POLICY, ...options});
+}
+
 /**
- * @summary Focused coverage for the typed-outcome contract of `DreamService.executeRemCycle()`.
+ * @summary Focused coverage for the typed-outcome contract of `RemDigestion.executeRemCycle()`.
  *
  * The keystone insight: the periodic dream path used to map every non-throwing return
  * from `processUndigestedSessions()` to `completed`, hiding silent no-ops (zero
@@ -19,11 +27,11 @@ import path                             from 'path';
  * surface as distinct stage outcomes when consumers map the outcome to their
  * task-state / health-telemetry surfaces.
  *
- * Tests live with the service per the service-decomposition pattern — `DreamService`
- * owns the REM pipeline; orchestrator delegates and maps the typed outcome.
+ * Tests live with the Evolution use case. `RemDigestion` owns the REM pipeline;
+ * the Orchestrator delegates and maps the typed outcome.
  *
- * DreamService is a `Neo.setupClass`-wrapped singleton, so tests stub methods on the
- * shared instance + restore originals in afterEach for cross-test isolation.
+ * The default composition is one process-scoped instance; tests stub that composition and
+ * restore originals in `afterEach` for cross-test isolation.
  */
 
 const ORIGINAL_KEYS = [
@@ -47,42 +55,36 @@ async function readOnlyRunStateEntry() {
 }
 
 test.beforeEach(async () => {
-    originals = Object.fromEntries(ORIGINAL_KEYS.map(key => [key, DreamService[key]]));
+    originals = Object.fromEntries(ORIGINAL_KEYS.map(key => [key, RemDigestion[key]]));
     configOriginals = {
-        dreamMs               : AiConfig.orchestrator.intervals.dreamMs,
-        dreamOverflowThreshold: AiConfig.orchestrator.intervals.dreamOverflowThreshold,
-        remRunStateDir        : MemoryConfig.remRunStateDir,
-        remRunRecentLimit     : MemoryConfig.remRunRecentLimit
+        remRunStateDir      : EvolutionConfig.remRunStateDir,
+        remRunRetentionLimit: EvolutionConfig.remRunRetentionLimit
     };
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'neo-dream-cycle-state-'));
 
-    AiConfig.orchestrator.intervals.dreamMs                = 1000;
-    AiConfig.orchestrator.intervals.dreamOverflowThreshold = 0.8;
-    MemoryConfig.remRunStateDir                            = tmpDir;
-    MemoryConfig.remRunRecentLimit                         = 3;
+    EvolutionConfig.remRunStateDir       = tmpDir;
+    EvolutionConfig.remRunRetentionLimit = 3;
 
-    DreamService.isProcessing              = false;
-    DreamService.findUndigestedSessions    = async () => [];
-    DreamService.processUndigestedSessions = async () => {};
-    DreamService.checkProviderReadiness    = async () => ({ready: true});
+    RemDigestion.isProcessing              = false;
+    RemDigestion.findUndigestedSessions    = async () => [];
+    RemDigestion.processUndigestedSessions = async () => {};
+    RemDigestion.checkProviderReadiness    = async () => ({ready: true});
 });
 
 test.afterEach(async () => {
     for (const key of ORIGINAL_KEYS) {
-        DreamService[key] = originals[key];
+        RemDigestion[key] = originals[key];
     }
 
-    AiConfig.orchestrator.intervals.dreamMs                = configOriginals.dreamMs;
-    AiConfig.orchestrator.intervals.dreamOverflowThreshold = configOriginals.dreamOverflowThreshold;
-    MemoryConfig.remRunStateDir                            = configOriginals.remRunStateDir;
-    MemoryConfig.remRunRecentLimit                         = configOriginals.remRunRecentLimit;
+    EvolutionConfig.remRunStateDir       = configOriginals.remRunStateDir;
+    EvolutionConfig.remRunRetentionLimit = configOriginals.remRunRetentionLimit;
 
     await rm(tmpDir, {recursive: true, force: true});
 });
 
-test.describe('DreamService.executeRemCycle typed outcome contract', () => {
+test.describe('RemDigestion.executeRemCycle typed outcome contract', () => {
     test('Sub 9 hypotheses 2, 6, 8: provider readiness failure writes failed providerReady state (#12617)', async () => {
-        DreamService.checkProviderReadiness = async () => ({
+        RemDigestion.checkProviderReadiness = async () => ({
             ready     : false,
             diagnostic: {
                 reason       : 'PROVIDER_READINESS_TIMEOUT',
@@ -92,7 +94,7 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
             }
         });
 
-        const outcome = await DreamService.executeRemCycle({reason: 'unit-test'});
+        const outcome = await executeRemCycle({reason: 'unit-test'});
 
         expect(outcome.status).toBe('failed');
         expect(outcome.diagnostic).toEqual({
@@ -126,11 +128,11 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
     });
 
     test('returns failed status when provider-readiness config validation throws', async () => {
-        DreamService.checkProviderReadiness = async () => {
+        RemDigestion.checkProviderReadiness = async () => {
             throw new TypeError('AiConfig.orchestrator.providerReadiness is required');
         };
 
-        const outcome = await DreamService.executeRemCycle({reason: 'missing-config-test'});
+        const outcome = await executeRemCycle({reason: 'missing-config-test'});
 
         expect(outcome.status).toBe('failed');
         expect(outcome.error?.message).toContain('checkProviderReadiness threw');
@@ -140,7 +142,7 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
     });
 
     test('returns skipped status when dryRun=true after gate passes', async () => {
-        const outcome = await DreamService.executeRemCycle({reason: 'dry-run-test', dryRun: true});
+        const outcome = await executeRemCycle({reason: 'dry-run-test', dryRun: true});
 
         expect(outcome.status).toBe('skipped');
         expect(outcome.skipReason).toBe('dry-run requested');
@@ -149,18 +151,18 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
     });
 
     test('returns skipped with concurrent-invocation reason when isProcessing is true', async () => {
-        DreamService.isProcessing = true;
+        RemDigestion.isProcessing = true;
 
-        const outcome = await DreamService.executeRemCycle({reason: 'concurrent-test'});
+        const outcome = await executeRemCycle({reason: 'concurrent-test'});
 
         expect(outcome.status).toBe('skipped');
-        expect(outcome.skipReason).toContain('dreamService.isProcessing already true');
+        expect(outcome.skipReason).toContain('remDigestion.isProcessing already true');
     });
 
     test('Sub 9 hypotheses 1 and 3: already-processing skip is durable typed cycle state (#12617)', async () => {
-        DreamService.isProcessing = true;
+        RemDigestion.isProcessing = true;
 
-        const outcome = await DreamService.executeRemCycle({reason: 'already-processing-state-test'});
+        const outcome = await executeRemCycle({reason: 'already-processing-state-test'});
 
         expect(outcome.status).toBe('skipped');
         expect(outcome.skipReason).toContain('already true');
@@ -180,14 +182,14 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
     });
 
     test('returns skipped with sessionsProcessed=0 when no undigested sessions exist', async () => {
-        DreamService.findUndigestedSessions = async () => [];
+        RemDigestion.findUndigestedSessions = async () => [];
 
         let processCalled = false;
-        DreamService.processUndigestedSessions = async () => {
+        RemDigestion.processUndigestedSessions = async () => {
             processCalled = true;
         };
 
-        const outcome = await DreamService.executeRemCycle({reason: 'no-sessions-test', includeDecay: false});
+        const outcome = await executeRemCycle({reason: 'no-sessions-test', includeDecay: false});
 
         expect(outcome.status).toBe('skipped');
         expect(outcome.sessionsProcessed).toBe(0);
@@ -196,30 +198,30 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
     });
 
     test('returns completed with sessionsProcessed=N when sessions exist + processing succeeds', async () => {
-        DreamService.findUndigestedSessions    = async () => [{id: 'session-a'}, {id: 'session-b'}];
-        DreamService.processUndigestedSessions = async () => {};
+        RemDigestion.findUndigestedSessions    = async () => [{id: 'session-a'}, {id: 'session-b'}];
+        RemDigestion.processUndigestedSessions = async () => {};
 
-        const outcome = await DreamService.executeRemCycle({reason: 'completed-test', includeDecay: false});
+        const outcome = await executeRemCycle({reason: 'completed-test', includeDecay: false});
 
         expect(outcome.status).toBe('completed');
         expect(outcome.sessionsProcessed).toBe(2);
-        expect(outcome.remBatchLimit).toBe(MemoryConfig.remSleepBatchLimit);
+        expect(outcome.remBatchLimit).toBe(EvolutionConfig.remSleepBatchLimit);
         expect(outcome.remBatchSaturated).toBe(false);
         expect(outcome.error).toBeNull();
         expect(outcome.skipReason).toBeNull();
     });
 
     test('marks REM outcome as saturated when the processed count reaches the batch limit (#13971)', async () => {
-        const sessions = Array.from({length: MemoryConfig.remSleepBatchLimit}, (_, index) => ({id: `session-${index}`}));
+        const sessions = Array.from({length: EvolutionConfig.remSleepBatchLimit}, (_, index) => ({id: `session-${index}`}));
 
-        DreamService.findUndigestedSessions    = async () => sessions;
-        DreamService.processUndigestedSessions = async () => {};
+        RemDigestion.findUndigestedSessions    = async () => sessions;
+        RemDigestion.processUndigestedSessions = async () => {};
 
-        const outcome = await DreamService.executeRemCycle({reason: 'saturated-test', includeDecay: false});
+        const outcome = await executeRemCycle({reason: 'saturated-test', includeDecay: false});
 
         expect(outcome.status).toBe('completed');
-        expect(outcome.sessionsProcessed).toBe(MemoryConfig.remSleepBatchLimit);
-        expect(outcome.remBatchLimit).toBe(MemoryConfig.remSleepBatchLimit);
+        expect(outcome.sessionsProcessed).toBe(EvolutionConfig.remSleepBatchLimit);
+        expect(outcome.remBatchLimit).toBe(EvolutionConfig.remSleepBatchLimit);
         expect(outcome.remBatchSaturated).toBe(true);
     });
 
@@ -250,12 +252,12 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
             perSessionStates: [failedSessionState]
         };
 
-        DreamService.findUndigestedSessions = async () => [{id: 'session-a'}];
-        DreamService.processUndigestedSessions = async () => {
+        RemDigestion.findUndigestedSessions = async () => [{id: 'session-a'}];
+        RemDigestion.processUndigestedSessions = async () => {
             throw error;
         };
 
-        const outcome = await DreamService.executeRemCycle({
+        const outcome = await executeRemCycle({
             reason      : 'topology-failure-state-test',
             includeDecay: false
         });
@@ -284,8 +286,8 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
             failureReasons     : ['tri-vector extraction returned null']
         };
 
-        DreamService.findUndigestedSessions = async () => [{id: 'session-a'}];
-        DreamService.processUndigestedSessions = async () => ({
+        RemDigestion.findUndigestedSessions = async () => [{id: 'session-a'}];
+        RemDigestion.processUndigestedSessions = async () => ({
             perPhaseStates: [{
                 phase      : 'triVector',
                 startedAt  : 200,
@@ -297,7 +299,7 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
             perSessionStates: [failedSessionState]
         });
 
-        const outcome = await DreamService.executeRemCycle({
+        const outcome = await executeRemCycle({
             reason      : 'null-result-session-state-test',
             includeDecay: false
         });
@@ -315,12 +317,12 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
     });
 
     test('returns failed status when processUndigestedSessions throws', async () => {
-        DreamService.findUndigestedSessions    = async () => [{id: 'session-a'}];
-        DreamService.processUndigestedSessions = async () => {
+        RemDigestion.findUndigestedSessions    = async () => [{id: 'session-a'}];
+        RemDigestion.processUndigestedSessions = async () => {
             throw new Error('synthetic processing failure');
         };
 
-        const outcome = await DreamService.executeRemCycle({reason: 'failure-test', includeDecay: false});
+        const outcome = await executeRemCycle({reason: 'failure-test', includeDecay: false});
 
         expect(outcome.status).toBe('failed');
         expect(outcome.sessionsProcessed).toBe(1);
@@ -330,11 +332,11 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
     });
 
     test('returns failed status when findUndigestedSessions throws', async () => {
-        DreamService.findUndigestedSessions = async () => {
+        RemDigestion.findUndigestedSessions = async () => {
             throw new Error('synthetic find failure');
         };
 
-        const outcome = await DreamService.executeRemCycle({reason: 'find-failure-test'});
+        const outcome = await executeRemCycle({reason: 'find-failure-test'});
 
         expect(outcome.status).toBe('failed');
         expect(outcome.error?.message).toContain('findUndigestedSessions threw');
@@ -344,9 +346,9 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
 
     test('runId is unique per call', async () => {
         const outcomes = await Promise.all([
-            DreamService.executeRemCycle({reason: 'unique-1', dryRun: true}),
-            DreamService.executeRemCycle({reason: 'unique-2', dryRun: true}),
-            DreamService.executeRemCycle({reason: 'unique-3', dryRun: true})
+            executeRemCycle({reason: 'unique-1', dryRun: true}),
+            executeRemCycle({reason: 'unique-2', dryRun: true}),
+            executeRemCycle({reason: 'unique-3', dryRun: true})
         ]);
 
         const runIds = outcomes.map(o => o.runId);
@@ -356,7 +358,7 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
     });
 
     test('preserves reason + mode in outcome envelope', async () => {
-        const outcome = await DreamService.executeRemCycle({
+        const outcome = await executeRemCycle({
             reason: 'periodic-dream:3600000',
             mode  : 'periodic',
             dryRun: true
@@ -367,7 +369,7 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
     });
 
     test('writes durable REM run-state JSONL with phase telemetry', async () => {
-        const outcome = await DreamService.executeRemCycle({
+        const outcome = await executeRemCycle({
             reason: 'state-write-test',
             dryRun: true
         });
@@ -386,41 +388,39 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
         expect(entry.perSessionStates).toEqual([]);
     });
 
-    test('logs a warning when cycle wall-clock exceeds the cadence threshold', async () => {
-        const originalNow  = Date.now;
-        const originalWarn = logger.warn;
-        const warnings     = [];
-        const ticks        = [1000, 1000, 1100, 1700, 1800, 2100];
+    test('surfaces overflow evidence without owning Orchestrator logging', async () => {
+        const originalNow = RemDigestion.nowFn;
+        const ticks       = [1000, 1000, 1100, 1700, 1800, 2100];
+        let   outcome;
 
-        Date.now = () => ticks.length > 0 ? ticks.shift() : 2100;
-        logger.warn = (...args) => warnings.push(args.join(' '));
+        RemDigestion.nowFn = () => ticks.length > 0 ? ticks.shift() : 2100;
 
         try {
-            await DreamService.executeRemCycle({
+            outcome = await executeRemCycle({
                 reason: 'overflow-warning-test',
                 dryRun: true
             });
         } finally {
-            Date.now    = originalNow;
-            logger.warn = originalWarn;
+            RemDigestion.nowFn = originalNow;
         }
 
-        expect(warnings.some(message => message.includes('back-to-back overlap risk'))).toBe(true);
+        expect(outcome.cycleOverflowSignal).toBe(true);
+        expect(outcome.configuredCadenceMs).toBe(EXECUTION_POLICY.configuredCadenceMs);
+        expect(outcome.overflowThreshold).toBe(EXECUTION_POLICY.overflowThreshold);
+        expect(outcome.wallClockMs).toBeGreaterThan(
+            EXECUTION_POLICY.configuredCadenceMs * EXECUTION_POLICY.overflowThreshold
+        );
     });
 
-    test('surfaces stale config overlay errors without hiding the typed outcome', async () => {
-        // Simulate a stale / malformed config overlay that leaves dreamOverflowThreshold
-        // present-but-invalid. The reactive config tree (ConfigProvider extends Neo.state.Provider)
-        // routes leaf writes through core.Config#set, which intentionally treats `undefined`
-        // as a no-op (preserves the prior value) — so a defined-but-invalid sentinel like `null`
-        // is the faithful stale-overlay simulant. It propagates to `finalize()`, where
+    test('surfaces malformed caller policy without hiding the typed outcome', async () => {
+        // The Orchestrator owns cadence policy and passes it into the use case. A malformed
+        // overflow threshold propagates to `finalize()`, where
         // `createRemRunStateEntry` rejects any non-positive-number threshold; the throw is
         // caught into `stateWriteError` while the typed `skipped` outcome still surfaces.
-        AiConfig.orchestrator.intervals.dreamOverflowThreshold = null;
-
-        const outcome = await DreamService.executeRemCycle({
-            reason: 'stale-config-test',
-            dryRun: true
+        const outcome = await executeRemCycle({
+            reason           : 'stale-config-test',
+            dryRun           : true,
+            overflowThreshold: null
         });
 
         expect(outcome.status).toBe('skipped');
@@ -432,12 +432,12 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
         // is this mapping — proven-remaining work MUST surface as `remBatchSaturated` so the scheduler's
         // existing catch-up cooldown re-queues the deferred sessions instead of losing them until the
         // next periodic interval.
-        const originalBatchLimit = MemoryConfig.remSleepBatchLimit;
-        MemoryConfig.remSleepBatchLimit = 10; // count-saturation cannot fire with 3 sessions — saturation must come from the clip alone
+        const originalBatchLimit = EvolutionConfig.remSleepBatchLimit;
+        EvolutionConfig.remSleepBatchLimit = 10; // count-saturation cannot fire with 3 sessions — saturation must come from the clip alone
 
         try {
-            DreamService.findUndigestedSessions    = async () => [{}, {}, {}];
-            DreamService.processUndigestedSessions = async options => {
+            RemDigestion.findUndigestedSessions    = async () => [{}, {}, {}];
+            RemDigestion.processUndigestedSessions = async options => {
                 expect(options.cycleBudgetMs).toBe(250);
                 return {
                     perPhaseStates: [{
@@ -451,7 +451,7 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
                 };
             };
 
-            const outcome = await DreamService.executeRemCycle({
+            const outcome = await executeRemCycle({
                 reason       : 'unit-test-budget',
                 includeDecay : false,
                 cycleBudgetMs: 250
@@ -468,24 +468,24 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
             expect(entry.reasonCode).toBe('budget-clipped');
             expect(entry.perPhaseStates.map(phase => phase.phase)).toContain('cycleBudget');
         } finally {
-            MemoryConfig.remSleepBatchLimit = originalBatchLimit;
+            EvolutionConfig.remSleepBatchLimit = originalBatchLimit;
         }
     });
 
     test('an unclipped completed cycle keeps reasonCode ok and honest actual counts (#17046)', async () => {
-        const originalBatchLimit = MemoryConfig.remSleepBatchLimit;
-        MemoryConfig.remSleepBatchLimit = 10;
+        const originalBatchLimit = EvolutionConfig.remSleepBatchLimit;
+        EvolutionConfig.remSleepBatchLimit = 10;
 
         try {
-            DreamService.findUndigestedSessions    = async () => [{}, {}];
-            DreamService.processUndigestedSessions = async () => ({
+            RemDigestion.findUndigestedSessions    = async () => [{}, {}];
+            RemDigestion.processUndigestedSessions = async () => ({
                 perPhaseStates   : [],
                 perSessionStates : [],
                 sessionsProcessed: 2,
                 sessionsDeferred : 0
             });
 
-            const outcome = await DreamService.executeRemCycle({reason: 'unit-test-unclipped', includeDecay: false});
+            const outcome = await executeRemCycle({reason: 'unit-test-unclipped', includeDecay: false});
 
             expect(outcome.status).toBe('completed');
             expect(outcome.reasonCode).toBe('ok');
@@ -493,7 +493,7 @@ test.describe('DreamService.executeRemCycle typed outcome contract', () => {
             expect(outcome.sessionsDeferred).toBe(0);
             expect(outcome.remBatchSaturated).toBe(false);
         } finally {
-            MemoryConfig.remSleepBatchLimit = originalBatchLimit;
+            EvolutionConfig.remSleepBatchLimit = originalBatchLimit;
         }
     });
 });

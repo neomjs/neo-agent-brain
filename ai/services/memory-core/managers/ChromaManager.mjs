@@ -379,12 +379,11 @@ class ChromaManager extends AbstractVectorManager {
      * produced but graph extraction has not yet digested into the Semantic Graph.
      *
      * Uses the same in-memory filtering pattern as
-     * {@link Neo.ai.daemons.services.DreamService#findUndigestedSessions} because
+     * {@link Neo.brain.evolution.RemDigestion#findUndigestedSessions} because
      * ChromaDB filtering on missing/false attributes is unreliable across
-     * versions. The count is bounded by the same `summarizationBatchLimit` (default
-     * 2000) as the production digest path, so the number is "undigested-among-recent"
-     * not a strict global count — the count is operator-facing diagnostic, not a
-     * scheduling input.
+     * versions. This Memory Core health approximation remains bounded by
+     * `summarizationBatchLimit`; Evolution owns its independent `sessionScanPageLimit`,
+     * so the number is "undigested-among-recent" rather than an exact all-time backlog.
      *
      * Counterpart helper: {@link #getGraphDigestedCount}. Together they bracket the
      * digestion-progress axis; the divergence between this count and

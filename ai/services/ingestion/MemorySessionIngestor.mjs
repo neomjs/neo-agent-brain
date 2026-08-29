@@ -88,7 +88,7 @@ function readGraphNodeForIdentityGuard(id) {
  * @class Neo.ai.daemons.services.MemorySessionIngestor
  * @extends Neo.core.Base
  * @see Neo.ai.daemons.services.ConceptIngestor
- * @see Neo.ai.daemons.DreamService
+ * @see Neo.brain.evolution.RemDigestion
  * @singleton
  */
 class MemorySessionIngestor extends Base {

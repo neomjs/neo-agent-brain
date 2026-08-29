@@ -164,26 +164,6 @@ class ConfigBase extends ConfigProvider {
              */
             maxSessionsPerSummarySweep: leaf(5, 'NEO_MC_MAX_SESSIONS_PER_SUMMARY_SWEEP', 'number'),
             /**
-             * Maximum number of undigested sessions the REM pipeline processes per cycle.
-             * Keeps each sleep pass bounded even when the query batch is larger.
-             * @type {number}
-             */
-            remSleepBatchLimit: leaf(10, 'NEO_REM_SLEEP_BATCH_LIMIT', 'number'),
-            /**
-             * Maximum failed graph-digest attempts before the REM pipeline bounds a retry-exhausted
-             * terminal schema failure out of the steady cadence. Provider-size parser failures bypass
-             * this threshold and are excluded immediately; transient ingestion failures remain retryable.
-             * @type {number}
-             */
-            maxDigestAttempts: leaf(3, 'NEO_REM_MAX_DIGEST_ATTEMPTS', 'number'),
-            /**
-             * Per-cycle reserve of the freshest (most-recent) undigested sessions the REM picker keeps
-             * for first-pass digestion, so a backlog of retry-eligible aged sessions never fully starves
-             * new work. The remainder of the per-cycle budget goes to the oldest aged sessions.
-             * @type {number}
-             */
-            undigestedSessionFreshReserve: leaf(2, 'NEO_REM_UNDIGESTED_FRESH_RESERVE', 'number'),
-            /**
              * Maximum number of concurrent session summarization requests.
              * Prevents hitting LLM/Embedding API rate limits during bulk operations.
              * @type {number}
@@ -340,11 +320,6 @@ class ConfigBase extends ConfigProvider {
                 }
             },
             /**
-             * Directory for per-cycle REM run/stage JSONL state artifacts.
-             * @type {string}
-             */
-            remRunStateDir: leaf(path.resolve(planeDataRoot, 'rem-runs'), 'NEO_REM_RUN_STATE_DIR', 'string', {planeMember: true}),
-            /**
              * Stall threshold for the REM consolidation-liveness watchdog: max age (ms) since the last
              * successful REM cycle before the watchdog records/raises a consolidation stall. Default 6h
              * (generous vs the hourly/off-peak dream cadence to avoid false alarms).
@@ -356,13 +331,6 @@ class ConfigBase extends ConfigProvider {
              * @type {number}
              */
             remRunRecentLimit: leaf(5, 'NEO_REM_RUN_RECENT_LIMIT', 'number'),
-            /**
-             * Maximum per-cycle REM run/stage JSONL artifacts retained on disk. On each append the
-             * store prunes older artifacts beyond this bound, capping both the directory file count
-             * and the read-path stat fan-out so neither grows with deployment age.
-             * @type {number}
-             */
-            remRunRetentionLimit: leaf(200, 'NEO_REM_RUN_RETENTION_LIMIT', 'number'),
             /**
              * Healthcheck probe budgets. These bound dependency probes so a stalled
              * Chroma client, embedding provider, or REM axis returns unhealthy/degraded
@@ -593,7 +561,7 @@ class ConfigBase extends ConfigProvider {
              * Production handoff markdown file — autonomous agent-to-user reporting (offline jobs).
              * The active `handoffFilePath` consumers read is a formula (below) resolving Prod/Test by
              * construction from `UNIT_TEST_MODE`, so test runs that WRITE the handoff (runSandman /
-             * DreamService / TopologyInferenceEngine) never clobber the tracked production file.
+             * RemDigestion / TopologyInferenceEngine) never clobber the tracked production file.
              * @type {string}
              */
             handoffFilePathProd: leaf(path.resolve(cwd, 'resources/content/sandman_handoff.md'), 'NEO_HANDOFF_FILE_PATH', 'string'),
@@ -969,7 +937,6 @@ class ConfigBase extends ConfigProvider {
  */
 export const PLANE_MEMBER_PATHS = Object.freeze([
     'datasets.rlaif.trajectories',
-    'remRunStateDir',
     // The plane's core durable artifact. Its default was previously cwd-anchored while every other member
     // derived from the plane anchor, so a different-cwd process (daemon, host CLI) resolved a path outside
     // the plane its siblings agreed on — and boot member-coherence never covered it.
