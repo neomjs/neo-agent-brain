@@ -20,15 +20,20 @@
  * session, or an ambiguous prefix match all return typed failures rather than a quiet
  * best-effort guess.
  *
- * **Routing keys, and why the obvious one is wrong.** Claude Code derives each session's `name`
- * from its working directory's folder name, and every seat clone ends in the same folder name —
- * derived names collide by construction across the fleet, so names are never a routing key. The
- * identity→cwd binding is therefore an explicit table, deliberately refusing to parse a path
- * convention: the fleet's historical layout breaks the tempting rule on its most active seat,
- * and a convention-parser would misroute silently. Session matching against the table is
- * prefix-based, because a live worktree session runs with a cwd inside the seat's clone.
+ * **Routing keys, and why the obvious one is wrong.** A session's `name` is derived per session
+ * and is **not stable across restarts**: the same seat, at the same cwd, answers to a different
+ * name in a later session (measured — one seat read `neo-b4` and later `neo-81`, another `neo-9b`
+ * and later `neo-9e`). A key that changes when a seat restarts is unusable even while it is
+ * unique, and a cached one can come to name a *different* seat, which turns non-delivery into
+ * misdelivery. Names are therefore never a routing key, and never persisted: the courier reads
+ * one from the live registry at send time and discards it. The identity→cwd binding is an
+ * explicit table, deliberately refusing to parse a path convention — the fleet's historical
+ * layout breaks the tempting rule on its most active seat, and a convention-parser would misroute
+ * silently. Session matching against the table is prefix-based, because a live worktree session
+ * runs with a cwd inside the seat's clone.
  *
  * @see ai/daemons/wake/localWakeAdapters.mjs — the dispatch seam this transport plugs into
+ * @see ai/daemons/wake/courierDrain.mjs — the courier half that drains this spool and records receipts
  */
 
 import crypto from 'crypto';
@@ -281,6 +286,10 @@ export async function deliverClaudeCourier({digest, effects, meta, record}) {
     const dirs    = deps.courierDirs || defaultCourierDirs(deps.homedir);
     const eventId = record?.eventId || record?.recordKey || `unkeyed-${Date.now()}`;
 
+    // `targetCwd` is the route-owned binding the courier re-resolves against at send time.
+    // `targetPid` and `targetSocket` are a snapshot of how the seat looked when this was spooled:
+    // both go stale across a restart, and a pid can be reused by an unrelated process, so neither
+    // is an address the courier may deliver to — they are staleness telemetry, nothing more.
     enqueueCourierEntry({
         outboxDir: dirs.outboxDir,
         eventId,
@@ -290,6 +299,7 @@ export async function deliverClaudeCourier({digest, effects, meta, record}) {
             eventId,
             subscriptionId: record?.subscriptionId || null,
             targetIdentity: identity,
+            targetCwd     : resolution.mappedCwd,
             targetPid     : resolution.session.pid,
             targetSocket  : resolution.session.socketPath,
             subject       : record?.envelope?.payload?.latestMessage?.subject || '',
@@ -391,8 +401,8 @@ export function writeCourierReceipt({receiptsDir, eventId, outcome, detail = '',
         schemaVersion: '1.0',
         eventId,
         outcome,
-        detail: String(detail).slice(0, 2000),
-        at    : new Date().toISOString()
+        detail       : String(detail).slice(0, 2000),
+        at           : new Date().toISOString()
     }, null, 4), {
         encoding: 'utf8',
         fsModule: userFs
