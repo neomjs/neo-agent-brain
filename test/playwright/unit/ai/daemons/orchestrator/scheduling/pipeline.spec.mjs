@@ -1678,7 +1678,11 @@ test.describe('recognized deferral codes stay in lockstep with their emitters (#
     });
 
     // 🔴 THE RED CONTROLS. Each is a mutant that defeated an earlier round of this guard, fed to the
-    // extractor as source so the falsifier runs in CI forever rather than living in a review comment.
+    // extractor as source so the falsifier lives in the committed canonical spec rather than in a
+    // review comment. ⚠️ Committed is not the same as executed: `brain-unit.yml` COLLECTS the suite
+    // (`--list`) and then runs a named handful, so a spec absent from that list is green by not
+    // having run. This file is named there under #239 — check it is still named before reading a
+    // green Brain Unit job as evidence about anything in here.
     test.describe('mutants that defeated the text-scanning guards', () => {
         async function extract(source) {
             return extractDeferralEmitters(source, await import('acorn'))
