@@ -2299,7 +2299,12 @@ class TenantRepoSyncService extends Base {
                 repoStates.push({
                     tenantId           : repo.tenantId,
                     repoSlug           : repo.repoSlug,
-                    lastIngestedRev    : priorState.lastIngestedRev.slice(0, 8),
+                    // Guarded like every sibling row. It was previously safe unguarded ONLY because
+                    // the checkpoint classifier returned `uninitialized` for an absent rev before it
+                    // could return `failed` — so `revalidationRequired` implied a non-null rev. That
+                    // invariant held because of the defect this change fixes; a never-succeeded repo
+                    // now reaches this deferral path and would throw on `.slice` of null.
+                    lastIngestedRev    : priorState?.lastIngestedRev ? priorState.lastIngestedRev.slice(0, 8) : null,
                     lastSyncAt         : priorState.lastRunAttemptAt ? new Date(priorState.lastRunAttemptAt).toISOString() : null,
                     status             : 'revalidation-deferred',
                     checkpointStatus,
