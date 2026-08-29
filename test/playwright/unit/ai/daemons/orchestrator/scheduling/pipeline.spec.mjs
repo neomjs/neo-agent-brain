@@ -1251,6 +1251,11 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
                 leaseHolder : null
             });
 
+            // `leaseHolder: null` above is FOUR readings collapsed into one word, so on its own it
+            // names no cause. `leaseStatus` is the discriminator: here there is genuinely no lease
+            // file, which is a different diagnosis from a holder that died without releasing.
+            expect(persisted['heavy-maintenance-starvation-watchdog'].starvation.leaseStatus).toBe('missing');
+
             // Expiry clears on the ADMISSION clock: the same starved waiter whose heartbeat is
             // older than WAITER_ENTRY_STALE_AFTER_MS (10min) is expired for admission, so it must
             // clear health on the very next check — never held red for the 6h lease TTL.
@@ -1267,6 +1272,28 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
 
             expect(outcomes.map(outcome => outcome.status)).toEqual(['completed', 'failed', 'completed']);
             expect(outcomes.map(outcome => outcome.posture)).toEqual(['healthy', 'degraded', 'healthy']);
+
+            // Appended AFTER the healthy → degraded → cleared sequence above rather than spliced into
+            // it: this drives one more cycle, and the two `outcomes` assertions are order-exact by
+            // design. Perturbing a sequence assertion to make room for a new case would weaken the
+            // thing it exists to pin.
+            //
+            // The case `leaseStatus` exists for: a lease written by a DIFFERENT boot is stale by
+            // construction (container recreate, machine restart), so `active` is false and
+            // `leaseHolder` reports null — while a holder is named right there in the file. Without
+            // the status, that starvation and a no-lease-at-all starvation are the same reading, and
+            // only one of them means something died holding the lease.
+            fs.writeFileSync(leasePath, JSON.stringify({
+                owner     : 'kbSync',
+                acquiredAt: new Date().toISOString(),
+                bootId    : 'a-boot-that-is-not-this-one'
+            }));
+            await drive();
+
+            const afterStale = JSON.parse(fs.readFileSync(stateFile, 'utf8'))['heavy-maintenance-starvation-watchdog'].starvation;
+
+            expect(afterStale.leaseStatus, 'a stale lease must be distinguishable from an absent one').toBe('stale');
+            expect(afterStale.leaseHolder, 'and it still reports no holder — which is exactly why the status is needed').toBe(null);
         } finally {
             TaskStateService.stateFile       = originals.stateFile;
             TaskStateService.taskDefinitions = originals.taskDefinitions;

@@ -485,6 +485,11 @@ export class DeploymentStateBridgeService extends Base {
      * carries the receipt (waiter, class, `deferredSince`, lease holder), and an `unknown` posture is
      * explicitly NOT a degradation — it marks a reading that could not assert green.
      *
+     * `leaseStatus` is the discriminator a null `leaseHolder` needs: `missing`, `stale`, `unreadable`
+     * and `malformed` all report no holder, and only `stale` explains waiters queued behind a holder
+     * that died without releasing. Without it, "starved under holder none" is a true statement that
+     * names no cause — which is what a live 114-minute breach reported before this field existed.
+     *
      * @param {Object} options
      * @param {Object|null} options.watchdogTaskState Persisted task-state envelope for the watchdog lane.
      * @returns {Object|null} The snapshot block, or `null` before the first verdict.
