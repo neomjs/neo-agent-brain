@@ -22,8 +22,8 @@ import {SSEClientTransport}            from '@modelcontextprotocol/sdk/client/ss
 import {StdioClientTransport}          from '@modelcontextprotocol/sdk/client/stdio.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
-import Neo                             from '../../../../../../src/Neo.mjs';
-import * as core                       from '../../../../../../src/core/_export.mjs';
+import Neo                             from 'neo.mjs/src/Neo.mjs';
+import * as core                       from 'neo.mjs/src/core/_export.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from '../../../../../../ai/services/fleet/mcpServers.mjs';
 import Client                          from '../../../../../../ai/mcp/client/Client.mjs';
 import ClientConfig                    from '../../../../../../ai/mcp/client/config.mjs';
@@ -144,8 +144,8 @@ test.describe('Neo.ai.mcp.client.Client transport config', () => {
     test('Neural Link derives both cwd inputs from the client module, never the invoking directory', () => {
         const
             foreignCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-mcp-client-cwd-')),
-            neoUrl     = new URL('../../../../../../src/Neo.mjs', import.meta.url).href,
-            coreUrl    = new URL('../../../../../../src/core/_export.mjs', import.meta.url).href,
+            neoUrl     = import.meta.resolve('neo.mjs/src/Neo.mjs'),
+            coreUrl    = import.meta.resolve('neo.mjs/src/core/_export.mjs'),
             configUrl  = new URL('../../../../../../ai/mcp/client/config.mjs', import.meta.url).href,
             probe      = `
                 await import(${JSON.stringify(neoUrl)});

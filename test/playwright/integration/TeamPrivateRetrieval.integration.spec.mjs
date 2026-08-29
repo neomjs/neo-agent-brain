@@ -17,8 +17,8 @@ const projectName = process.env.NEO_INTEGRATION_COMPOSE_PROJECT || 'neo-integrat
 const MC_URL      = process.env.NEO_INTEGRATION_MC_URL || 'http://127.0.0.1:13001';
 
 const NEO_BOOTSTRAP = `
-    await import('./src/Neo.mjs');
-    await import('./src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 `;
 
 /**
@@ -372,13 +372,13 @@ test.describe('Dockerized MC team/private retrieval integration (#10951)', () =>
         const sharedSummarySentinel = `shared-summary-${runId}`;
         const directSeedPayload     = {
             ownerIdentity,
-            ownerSummaryId: `summary-owner-${runId}`,
+            ownerSummaryId : `summary-owner-${runId}`,
             ownerSummarySentinel,
             peerIdentity,
-            peerSummaryId: `summary-peer-${runId}`,
+            peerSummaryId  : `summary-peer-${runId}`,
             peerSummarySentinel,
             sessionId,
-            sharedMemoryId: `memory-shared-${runId}`,
+            sharedMemoryId : `memory-shared-${runId}`,
             sharedMemorySentinel,
             sharedSummaryId: `summary-shared-${runId}`,
             sharedSummarySentinel
@@ -530,19 +530,19 @@ test.describe('Dockerized MC team/private retrieval integration (#10951)', () =>
 
         expect(readiness.servicesReady, readiness.reason).toBe(true);
 
-        const runId                 = `${Date.now()}-${randomUUID()}`;
-        const ownerIdentity         = 'alice';
-        const peerIdentity          = 'bob';
-        const unrelatedIdentity     = 'charlie';
-        const privateGraphSentinel  = `private-graph-${runId}`;
-        const teamGraphSentinel     = `team-graph-${runId}`;
-        const graphPayload          = {
+        const runId                = `${Date.now()}-${randomUUID()}`;
+        const ownerIdentity        = 'alice';
+        const peerIdentity         = 'bob';
+        const unrelatedIdentity    = 'charlie';
+        const privateGraphSentinel = `private-graph-${runId}`;
+        const teamGraphSentinel    = `team-graph-${runId}`;
+        const graphPayload         = {
             ownerIdentity,
             peerIdentity,
             privateGraphSentinel,
             privateNodeId: `graph-private-${runId}`,
             teamGraphSentinel,
-            teamNodeId: `graph-team-${runId}`,
+            teamNodeId   : `graph-team-${runId}`,
             unrelatedIdentity
         };
         const owner = await createIdentityClient({

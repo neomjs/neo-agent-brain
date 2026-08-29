@@ -14,8 +14,8 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * The source composition: injected reads → admitted items → one honest envelope. These pin the two
@@ -33,12 +33,12 @@ test.describe('produceLifecycleFrontier — injected source reads into one hones
 
     // A PR whose CURRENT head carries CHANGES_REQUESTED — stage 1, own-PR repair.
     const repairPr = {
-        id                          : 'pr-15264',
-        authorId                    : agent,
-        state                       : 'OPEN',
-        isDraft                     : false,
-        headSha                     : 'abc123',
-        mergeable                   : true,
+        id       : 'pr-15264',
+        authorId : agent,
+        state    : 'OPEN',
+        isDraft  : false,
+        headSha  : 'abc123',
+        mergeable: true,
         // Source-shaped: the review names the commit it reviewed AND when it was submitted. The clock
         // owner derives repairActionableSince from exactly this, so no caller supplies it.
         reviews  : [{state: 'CHANGES_REQUESTED', commitSha: 'abc123', submittedAt: '2026-07-16T11:00:00.000Z'}],

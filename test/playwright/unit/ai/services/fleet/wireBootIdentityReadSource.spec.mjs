@@ -1,6 +1,6 @@
 import {test, expect}               from '@playwright/test';
-import Neo                          from '../../../../../../src/Neo.mjs';
-import * as core                    from '../../../../../../src/core/_export.mjs';
+import Neo                          from 'neo.mjs/src/Neo.mjs';
+import * as core                    from 'neo.mjs/src/core/_export.mjs';
 import {wireBootIdentityReadSource} from '../../../../../../ai/services/fleet/wireBootIdentityReadSource.mjs';
 
 test.describe('wireBootIdentityReadSource — the fleet-server boot injection of the boot-identity reader', () => {

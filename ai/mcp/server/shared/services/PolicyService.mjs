@@ -1,6 +1,6 @@
 import fs   from 'fs';
 import path from 'path';
-import Base from '../../../../../src/core/Base.mjs';
+import Base from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * @summary Error thrown when an MCP policy guard refuses a tool call.

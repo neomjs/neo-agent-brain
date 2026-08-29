@@ -1,14 +1,14 @@
 import Database from 'better-sqlite3';
 
 const sessionId = process.argv[2];
-const workerId = process.argv[3];
-const dbPath = process.argv[4];
+const workerId  = process.argv[3];
+const dbPath    = process.argv[4];
 
 (async () => {
     try {
         // Setup Neo global
-        await import('../../../../../../../src/Neo.mjs');
-        await import('../../../../../../../src/core/_export.mjs');
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
 
         const db = new Database(dbPath, { timeout: 5000 });
         

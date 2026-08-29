@@ -2,7 +2,7 @@
 // InstanceManager) lives in `ai/daemons/kb-reconciliation/daemon.mjs`, following the
 // canonical Orchestrator class+wrapper pattern. `Neo.setupClass(KbReconciliationService)`
 // at file bottom uses `globalThis.Neo`, populated by the entry-point bootstrap chain.
-import Base              from '../../../src/core/Base.mjs';
+import Base              from 'neo.mjs/src/core/Base.mjs';
 import aiConfig          from '../../mcp/server/memory-core/config.mjs';
 import ChromaManager     from '../../services/knowledge-base/ChromaManager.mjs';
 import KBRecorderService from '../../services/knowledge-base/KBRecorderService.mjs';

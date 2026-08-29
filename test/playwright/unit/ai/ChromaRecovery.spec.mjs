@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
-import '../../../../src/Neo.mjs';
-import '../../../../src/core/_export.mjs';
-import '../../../../src/manager/Instance.mjs';
+import 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
+import 'neo.mjs/src/manager/Instance.mjs';
 import MC_Config     from '../../../../ai/mcp/server/memory-core/config.template.mjs';
 import ChromaManager from '../../../../ai/services/memory-core/managers/ChromaManager.mjs';
 

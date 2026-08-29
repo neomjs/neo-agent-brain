@@ -1,8 +1,8 @@
-import Base                                          from '../../../../../src/core/Base.mjs';
-import {createHash}                                  from 'crypto';
-import {readFileSync, statSync}                      from 'fs';
-import {isLocalBearerToken, matchesLocalBearerToken} from '../helpers/localBearer.mjs';
-import {readSeatTokenRegistry, verifySeatToken}      from '../helpers/seatToken.mjs';
+import Base                                              from 'neo.mjs/src/core/Base.mjs';
+import {createHash}                                      from 'crypto';
+import {readFileSync, statSync}                          from 'fs';
+import {isLocalBearerToken, matchesLocalBearerToken}     from '../helpers/localBearer.mjs';
+import {readSeatTokenRegistry, verifySeatToken}          from '../helpers/seatToken.mjs';
 import {readPatValidationCache, writePatValidationCache} from '../helpers/patValidationCache.mjs';
 
 /**

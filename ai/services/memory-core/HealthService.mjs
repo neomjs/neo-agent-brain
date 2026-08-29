@@ -3,7 +3,7 @@ import fsExtra                  from 'fs-extra';
 import path                     from 'path';
 import {fileURLToPath}          from 'url';
 import aiConfig                 from '../../mcp/server/memory-core/config.mjs';
-import Base                     from '../../../src/core/Base.mjs';
+import Base                     from 'neo.mjs/src/core/Base.mjs';
 import {isBundleRestorable}     from './helpers/bundleIntegrity.mjs';
 import {readDeployedRevision}   from '../shared/deployedRevision.mjs';
 import RuntimeFreshnessService  from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
@@ -756,7 +756,7 @@ export async function buildBackupStateBlock(backupPath, fs, path) {
             observationStatus: 'observed',
             lastSuccessful,
             lastCompleted,
-            count        : backupDirs.length,
+            count            : backupDirs.length,
             unusableCount,
             unverifiedCount
         };

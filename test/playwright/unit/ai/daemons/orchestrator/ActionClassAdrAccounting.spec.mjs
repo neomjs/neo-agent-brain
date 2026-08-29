@@ -12,8 +12,8 @@ import {test, expect} from '@playwright/test';
 import fs             from 'node:fs';
 import path           from 'node:path';
 import process        from 'node:process';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 const
     repoRoot = path.resolve(process.cwd()),

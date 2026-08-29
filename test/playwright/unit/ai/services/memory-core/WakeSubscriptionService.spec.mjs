@@ -17,8 +17,8 @@ import {test, expect} from '@playwright/test';
 import crypto         from 'crypto';
 import fs             from 'fs-extra';
 import path           from 'path';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 // Stub Neo.get to keep data-record boot behavior from masking wake-subscription coverage.
 // The setup regression is outside this spec's delivery contract.

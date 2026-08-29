@@ -18,8 +18,8 @@ import fs              from 'fs';
 import path            from 'path';
 import {fileURLToPath} from 'url';
 import * as yaml       from 'js-yaml';
-import Neo             from '../../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../../src/core/_export.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * A correction to a ticket or PR belongs in its BODY. Appending it as a comment leaves the stale

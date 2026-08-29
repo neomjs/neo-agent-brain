@@ -1,7 +1,7 @@
 import {test, expect} from '@playwright/test';
 import {readFileSync} from 'node:fs';
-import Neo            from '../../../../../../src/Neo.mjs';
-import '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import {Orchestrator}             from '../../../../../../ai/daemons/orchestrator/Orchestrator.mjs';
 import {ProcessSupervisorService} from '../../../../../../ai/daemons/orchestrator/services/ProcessSupervisorService.mjs';
 import {TASK_REGISTRY}            from '../../../../../../ai/daemons/orchestrator/scheduling/registry.mjs';

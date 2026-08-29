@@ -1,9 +1,9 @@
-import {test, expect} from '@playwright/test';
-import fs             from 'fs-extra';
-import os             from 'os';
-import path           from 'path';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import {test, expect}                             from '@playwright/test';
+import fs                                         from 'fs-extra';
+import os                                         from 'os';
+import path                                       from 'path';
+import Neo                                        from 'neo.mjs/src/Neo.mjs';
+import * as core                                  from 'neo.mjs/src/core/_export.mjs';
 import {pruneOldDailyLogs, rotateLogFileIfNewDay} from '../../../../../../ai/daemons/orchestrator/Orchestrator.mjs';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -19,7 +19,7 @@ test.describe('Neo.ai.daemons.Orchestrator log rotation', () => {
         const dir = tmpDir();
 
         // Prior-day file → rotated to `<file>.<prior-day>` (use 2 days to stay clear of midnight boundaries).
-        const oldLog  = path.join(dir, 'orchestrator.log');
+        const oldLog = path.join(dir, 'orchestrator.log');
         fs.writeFileSync(oldLog, 'prior-day line\n');
         const priorMs  = Date.now() - 2 * DAY_MS;
         const priorDay = new Date(priorMs).toISOString().split('T')[0];

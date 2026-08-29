@@ -6,9 +6,9 @@ import {fileURLToPath} from 'url';
 
 // Neo namespace bootstrap (entry-point invariant) — this is an operator-runnable driver, and the
 // restorability probe it consumes reaches config-backed services.
-import Neo             from '../../../src/Neo.mjs';
-import * as core       from '../../../src/core/_export.mjs';
-import InstanceManager from '../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import AiConfig        from '../../config.mjs';
 
 import {verifyLatestBackupRestorable} from './restore.mjs';

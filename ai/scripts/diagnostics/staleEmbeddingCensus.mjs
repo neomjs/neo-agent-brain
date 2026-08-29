@@ -46,8 +46,8 @@
 // `ai/Env.mjs` gatekeeps at module scope, so a service import before this line throws
 // `ReferenceError: Neo is not defined`. Two lines, and they are the convention every
 // service-touching script under `ai/scripts/**` already follows.
-import Neo                           from '../../../src/Neo.mjs';
-import                                    '../../../src/core/_export.mjs';
+import Neo                           from 'neo.mjs/src/Neo.mjs';
+import                                    'neo.mjs/src/core/_export.mjs';
 
 import {EMBEDDING_INPUT_FORMAT_ID}   from '../../services/knowledge-base/helpers/embeddingInputFormat.mjs';
 import {

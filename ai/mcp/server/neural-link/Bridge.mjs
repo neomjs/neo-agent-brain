@@ -1,9 +1,9 @@
-import {WebSocketServer}  from 'ws';
-import crypto             from 'crypto';
-import Base               from '../../../../src/core/Base.mjs';
-import logger             from './logger.mjs';
+import {WebSocketServer}         from 'ws';
+import crypto                    from 'crypto';
+import Base                      from 'neo.mjs/src/core/Base.mjs';
+import logger                    from './logger.mjs';
 import {createBridgeInfoPayload} from './BridgeProtocol.mjs';
-import {verifyBridgeToken} from './verifyBridgeToken.mjs';
+import {verifyBridgeToken}       from './verifyBridgeToken.mjs';
 
 /**
  * @summary The central WebSocket Hub (Bridge) for Neural Link.
@@ -170,7 +170,7 @@ class Bridge extends Base {
      */
     handleConnection(ws, req) {
         try {
-            const url  = new URL(req.url, `http://${req.headers.host}`);
+            const url     = new URL(req.url, `http://${req.headers.host}`);
             const role    = url.searchParams.get('role'); // 'app' or 'agent'
             const id      = url.searchParams.get('id') || url.searchParams.get('appWorkerId'); // Support legacy param
             const appName = url.searchParams.get('appName');
@@ -255,9 +255,9 @@ class Bridge extends Base {
         for (const [appWorkerId, appWs] of this.apps.entries()) {
             if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
-                    type       : 'app_connected',
+                    type   : 'app_connected',
                     appWorkerId,
-                    appName    : appWs.appName || 'Unknown'
+                    appName: appWs.appName || 'Unknown'
                 }));
             }
         }
@@ -295,7 +295,7 @@ class Bridge extends Base {
             logger.info(`Bridge: App disconnected [${id}] (${appName})`);
             this.apps.delete(id);
             this.broadcastToAgents({
-                type: 'app_disconnected',
+                type       : 'app_disconnected',
                 appWorkerId: id
             });
         });
@@ -371,9 +371,9 @@ class Bridge extends Base {
             const message = JSON.parse(data.toString());
 
             this.broadcastToAgents({
-                type: 'app_message',
+                type       : 'app_message',
                 appWorkerId: appId,
-                message: message
+                message    : message
             });
 
         } catch (err) {

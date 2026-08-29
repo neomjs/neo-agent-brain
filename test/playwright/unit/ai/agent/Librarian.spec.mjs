@@ -16,8 +16,8 @@ setup({
 });
 
 import {test, expect}  from '@playwright/test';
-import Neo             from '../../../../../src/Neo.mjs';
-import * as core       from '../../../../../src/core/_export.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
 import Agent           from '../../../../../ai/Agent.mjs';
 import path            from 'path';
 import {fileURLToPath} from 'url';
@@ -67,9 +67,9 @@ test.describe('Librarian Sub-Agent Orchestration', () => {
         // Since delegate_task is now injected natively into the Loop's tools array,
         // we can simply instruct the model to use the tool, and it will trigger it natively.
         const event = {
-            type: 'user:input',
+            type    : 'user:input',
             priority: 'high',
-            data: 'You must research the exact architectural purpose of Neo.component.Base. You do not have the context. Delegate this to the "librarian" sub-agent using the delegate_task tool. Once you get the result, formulate your final answer. Please include specific details retrieved from the architectural context.'
+            data    : 'You must research the exact architectural purpose of Neo.component.Base. You do not have the context. Delegate this to the "librarian" sub-agent using the delegate_task tool. Once you get the result, formulate your final answer. Please include specific details retrieved from the architectural context.'
         };
 
         try {

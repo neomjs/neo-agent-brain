@@ -1,6 +1,6 @@
 import Assembler             from '../context/Assembler.mjs';
-import Base                  from '../../src/core/Base.mjs';
-import ClassSystemUtil       from '../../src/util/ClassSystem.mjs';
+import Base                  from 'neo.mjs/src/core/Base.mjs';
+import ClassSystemUtil       from 'neo.mjs/src/util/ClassSystem.mjs';
 import Provider              from '../provider/Base.mjs';
 import * as SDK              from '../services.mjs';
 import {resolveAllowedTools} from './resolveAllowedTools.mjs';
@@ -223,17 +223,17 @@ class Loop extends Base {
 
         // 2. Inject Native Tools
         this.tools.push({
-            name: "delegate_task",
+            name       : "delegate_task",
             description: "Delegates a complex task or query to a specialized sub-agent expert. Use this when you lack the context or tools to fulfill the user's request. Wait for the sub-agent's response to formulate your final answer.",
             inputSchema: {
-                type: "object",
+                type      : "object",
                 properties: {
                     agent: {
-                        type: "string",
+                        type       : "string",
                         description: "The name of the specialized sub-agent profile (e.g. 'librarian', 'browser')."
                     },
                     query: {
-                        type: "string",
+                        type       : "string",
                         description: "The specific task, objective, or question to delegate to the sub-agent."
                     }
                 },
@@ -345,7 +345,7 @@ class Loop extends Base {
                 ragQuery     = this.extractKeywords(userQuery);
             } else if (event.type.startsWith('system:error')) {
                 systemPrompt = 'You are an expert debugger. Analyze the error and propose a fix.';
-                const err    = event.data || {};
+                const err = event.data || {};
                 userQuery    = `[ERROR] ${err.message || JSON.stringify(err)}\nStack: ${err.stack || 'N/A'}`;
                 ragQuery     = `error handling ${err.componentType || ''} ${this.extractKeywords(err.message || '')}`;
             } else if (event.type === 'neo:component:mount') {
@@ -467,11 +467,11 @@ class Loop extends Base {
                     const sessionId = this.agent?.sessionId || 'default-session';
 
                     await SDK.Memory_Service.addMemory({
-                        prompt: event.data,
-                        thought: decision.thought || 'Internal reflection',
-                        response: decision.content || 'Action executed successfully.',
-                        agent: agentName.toLowerCase(),
-                        model: modelName,
+                        prompt   : event.data,
+                        thought  : decision.thought || 'Internal reflection',
+                        response : decision.content || 'Action executed successfully.',
+                        agent    : agentName.toLowerCase(),
+                        model    : modelName,
                         sessionId: sessionId
                     });
                 }

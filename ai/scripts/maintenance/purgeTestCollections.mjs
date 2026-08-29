@@ -1,9 +1,9 @@
-import {program}                       from 'commander';
-import {ChromaClient}                  from 'chromadb';
-import fs                              from 'fs-extra';
-import path                            from 'path';
-import {fileURLToPath, pathToFileURL}  from 'url';
-import Neo                             from '../../../src/Neo.mjs'; // side-effect: defines globalThis.Neo so the memory-core config module evaluates
+import {program}                      from 'commander';
+import {ChromaClient}                 from 'chromadb';
+import fs                             from 'fs-extra';
+import path                           from 'path';
+import {fileURLToPath, pathToFileURL} from 'url';
+import Neo                            from 'neo.mjs/src/Neo.mjs'; // side-effect: defines globalThis.Neo so the memory-core config module evaluates
 import {
     CHROMA_TEST_DATABASE,
     dropChromaTestDatabase
@@ -128,7 +128,7 @@ export async function listAllCollectionNames({client, limit = 1000}) {
         origWarn(...args)
     };
 
-    const names = [];
+    const names  = [];
     let   offset = 0;
 
     try {
@@ -285,7 +285,7 @@ async function purgeTestCollections() {
     }
 
     // Verify: re-list and report what remains.
-    const after            = await listAllCollectionNames({client});
+    const after             = await listAllCollectionNames({client});
     const {purge: leftover} = partitionCollections(after);
 
     console.log(`\n🎉 Purge complete: deleted ${deleted} collections (${failed} failed); ${after.length} remain (${leftover.length} test orphans left).`);

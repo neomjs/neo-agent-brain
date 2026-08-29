@@ -1,8 +1,8 @@
 // Neo namespace bootstrap (entry-point invariant) — co-located community source control plane.
 import 'dotenv/config';
 import {Command}             from 'commander';
-import Neo                   from '../../../src/Neo.mjs';
-import * as core             from '../../../src/core/_export.mjs';
+import Neo                   from 'neo.mjs/src/Neo.mjs';
+import * as core             from 'neo.mjs/src/core/_export.mjs';
 import fs                    from 'fs';
 import os                    from 'os';
 import {pathToFileURL}       from 'url';

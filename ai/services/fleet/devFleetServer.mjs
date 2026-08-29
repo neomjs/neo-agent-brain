@@ -43,9 +43,9 @@
 
 // Neo namespace bootstrap (entry-point invariant): `Neo` + `core/_export` populate globalThis.Neo so
 // the fleet singletons' `Neo.setupClass` succeeds at module-load; `InstanceManager` binds the aliases.
-import Neo                                                             from '../../../src/Neo.mjs';
-import * as core                                                       from '../../../src/core/_export.mjs';
-import InstanceManager                                                 from '../../../src/manager/Instance.mjs';
+import Neo                                                             from 'neo.mjs/src/Neo.mjs';
+import * as core                                                       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                                                 from 'neo.mjs/src/manager/Instance.mjs';
 import AiConfig                                                        from '../../config.mjs';
 import memoryCoreConfig                                                from '../../mcp/server/memory-core/config.mjs';
 import RequestContextService                                           from '../../mcp/server/shared/services/RequestContextService.mjs';

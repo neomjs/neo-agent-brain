@@ -22,9 +22,9 @@ import 'dotenv/config';
 // `InstanceManager` binds `Neo.find` / `Neo.findFirst` / `Neo.get` aliases, sets
 // `Base.instanceManagerAvailable=true`, and consumes the pre-singleton `Neo.idMap`.
 // All 3 MUST run before any class import that uses `Neo.setupClass()`.
-import Neo             from '../../../src/Neo.mjs';
-import * as core       from '../../../src/core/_export.mjs';
-import InstanceManager from '../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 import {fileURLToPath, pathToFileURL}                                    from 'url';
 import fs                                                                from 'fs-extra';

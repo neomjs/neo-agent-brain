@@ -14,7 +14,7 @@ setup({
 });
 
 import {test, expect}        from '@playwright/test';
-import Neo                   from '../../../../../../src/Neo.mjs';
+import Neo                   from 'neo.mjs/src/Neo.mjs';
 import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 
 /**

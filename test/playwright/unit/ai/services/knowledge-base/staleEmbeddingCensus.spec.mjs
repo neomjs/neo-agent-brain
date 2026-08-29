@@ -1,7 +1,7 @@
 import {test, expect} from '@playwright/test';
 
-import '../../../../../../src/Neo.mjs';
-import '../../../../../../src/core/Base.mjs';
+import 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/Base.mjs';
 
 import {
     EMBEDDING_INPUT_FORMAT_ID,

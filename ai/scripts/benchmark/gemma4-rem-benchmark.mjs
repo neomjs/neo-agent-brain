@@ -1,12 +1,12 @@
-import {Command} from 'commander';
+import {Command}          from 'commander';
 import {mkdir, writeFile} from 'fs/promises';
-import path from 'path';
-import {fileURLToPath} from 'url';
-import Neo from '../../../src/Neo.mjs';
-import '../../../src/core/_export.mjs';
-import aiConfig from '../../mcp/server/memory-core/config.mjs';
+import path               from 'path';
+import {fileURLToPath}    from 'url';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
+import aiConfig                                        from '../../mcp/server/memory-core/config.mjs';
 import {buildGraphProvider, resolveGraphModelProvider} from '../../services/graph/providerDispatch.mjs';
-import {summarize} from './helpers/stats.mjs';
+import {summarize}                                     from './helpers/stats.mjs';
 
 /**
  * @module ai/scripts/benchmark/gemma4-rem-benchmark
@@ -45,8 +45,8 @@ import {summarize} from './helpers/stats.mjs';
  * @see learn/agentos/measurements/gemma4-rem-benchmark.md — measurement protocol + baseline table
  */
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __filename  = fileURLToPath(import.meta.url);
+const __dirname   = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '../../..');
 
 /**
@@ -100,10 +100,10 @@ async function measureOneCall(provider, prompt, options = {}) {
         {role: 'user', content: prompt}
     ];
 
-    const t0 = performance.now();
-    let t1 = null;
-    let outputChars = 0;
-    let outputChunks = 0;
+    const t0           = performance.now();
+    let   t1           = null;
+    let   outputChars  = 0;
+    let   outputChunks = 0;
 
     for await (const chunk of provider.stream(messages, options)) {
         if (t1 === null) t1 = performance.now();
@@ -111,21 +111,21 @@ async function measureOneCall(provider, prompt, options = {}) {
         outputChunks++;
     }
 
-    const t2 = performance.now();
+    const t2     = performance.now();
     const ttftMs = t1 === null ? (t2 - t0) : (t1 - t0);
     const ttltMs = t2 - t0;
     // tps: pure generation rate (excluding context-prefill window)
-    const genWindowMs = Math.max(ttltMs - ttftMs, 1);
+    const genWindowMs        = Math.max(ttltMs - ttftMs, 1);
     const approxOutputTokens = outputChars / 4;
-    const tps = (approxOutputTokens / genWindowMs) * 1000;
+    const tps                = (approxOutputTokens / genWindowMs) * 1000;
 
     return {
-        ttftMs       : Math.round(ttftMs),
-        ttltMs       : Math.round(ttltMs),
-        promptChars  : prompt.length,
+        ttftMs     : Math.round(ttftMs),
+        ttltMs     : Math.round(ttltMs),
+        promptChars: prompt.length,
         outputChars,
         outputChunks,
-        tps          : Math.round(tps * 100) / 100
+        tps        : Math.round(tps * 100) / 100
     };
 }
 
@@ -144,8 +144,8 @@ async function main() {
     const opts = program.opts();
 
     const iterations = Number(opts.iterations);
-    const warmup = Number(opts.warmup);
-    const buckets = opts.size === 'all'
+    const warmup     = Number(opts.warmup);
+    const buckets    = opts.size === 'all'
         ? Object.keys(SIZE_BUCKETS)
         : [opts.size];
 
@@ -157,7 +157,7 @@ async function main() {
 
     const graphProvider = resolveGraphModelProvider(aiConfig);
 
-    const providerHost = graphProvider === 'ollama' ? aiConfig.ollama.host : aiConfig.openAiCompatible.host;
+    const providerHost  = graphProvider === 'ollama' ? aiConfig.ollama.host : aiConfig.openAiCompatible.host;
     const providerModel = graphProvider === 'ollama' ? aiConfig.ollama.model : aiConfig.openAiCompatible.model;
 
     console.log(`[gemma4-rem-benchmark] Graph provider: ${graphProvider} (chat modelProvider: ${aiConfig.modelProvider})`);
@@ -180,11 +180,11 @@ async function main() {
 
     const results = {
         meta: {
-            timestamp    : new Date().toISOString(),
+            timestamp        : new Date().toISOString(),
             graphProvider,
             chatModelProvider: aiConfig.modelProvider,
-            model        : providerModel,
-            host         : providerHost,
+            model            : providerModel,
+            host             : providerHost,
             iterations,
             warmup,
             providerOptions
@@ -194,7 +194,7 @@ async function main() {
 
     for (const bucket of buckets) {
         const charCount = SIZE_BUCKETS[bucket];
-        const prompt = buildSyntheticPrompt(charCount);
+        const prompt    = buildSyntheticPrompt(charCount);
         console.log(`[${bucket}] promptChars=${charCount} (≈${Math.round(charCount / 4)} tokens)`);
 
         // Warmup

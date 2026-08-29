@@ -13,8 +13,8 @@
  * (verifiedAt set) + N auto (verifiedAt null) drawn live.
  */
 
-import Neo             from '../../../src/Neo.mjs';
-import * as core       from '../../../src/core/_export.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
 import Database        from 'better-sqlite3';
 import fs              from 'fs';
 import path            from 'path';

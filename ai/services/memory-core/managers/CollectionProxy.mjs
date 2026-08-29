@@ -1,4 +1,4 @@
-import Base                      from '../../../../src/core/Base.mjs';
+import Base                      from 'neo.mjs/src/core/Base.mjs';
 import aiConfig                  from '../../../mcp/server/memory-core/config.mjs';
 import DestructiveOperationGuard from '../../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 

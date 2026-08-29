@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-import Neo from '../../src/Neo.mjs';
-import * as core from '../../src/core/_export.mjs';
-import ContextAssembler from './Assembler.mjs';
-import path from 'path';
+import Neo               from 'neo.mjs/src/Neo.mjs';
+import * as core         from 'neo.mjs/src/core/_export.mjs';
+import ContextAssembler  from './Assembler.mjs';
+import path              from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
+import dotenv            from 'dotenv';
 
 // We need to mock the Services since we are not running inside the full server environment
 // or rather, we want to verify the Assembler logic, not the DB connection.
@@ -33,9 +33,9 @@ async function run() {
     // Test Assembly
     const context = await assembler.assemble({
         systemPrompt: 'You are a helpful agent.',
-        userQuery: 'How do I fix the button?',
-        ragQuery: 'button component',
-        sessionId: 'test-session-123' // Likely empty in DB, but tests the flow
+        userQuery   : 'How do I fix the button?',
+        ragQuery    : 'button component',
+        sessionId   : 'test-session-123' // Likely empty in DB, but tests the flow
     });
 
     console.log('\n📦 Assembled Context:');

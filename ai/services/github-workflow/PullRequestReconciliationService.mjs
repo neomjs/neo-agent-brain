@@ -1,4 +1,4 @@
-import Base                           from '../../../src/core/Base.mjs';
+import Base                           from 'neo.mjs/src/core/Base.mjs';
 import CommunityBatchAdmissionService from '../memory-core/CommunityBatchAdmissionService.mjs';
 import GraphqlService                 from './GraphqlService.mjs';
 import SourceRegistryService          from '../memory-core/SourceRegistryService.mjs';

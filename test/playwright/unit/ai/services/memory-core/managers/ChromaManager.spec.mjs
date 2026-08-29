@@ -14,9 +14,9 @@ setup({
 });
 
 import {test, expect}                                     from '@playwright/test';
-import Neo                                                from '../../../../../../../src/Neo.mjs';
-import * as core                                          from '../../../../../../../src/core/_export.mjs';
-import InstanceManager                                    from '../../../../../../../src/manager/Instance.mjs';
+import Neo                                                from 'neo.mjs/src/Neo.mjs';
+import * as core                                          from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                                    from 'neo.mjs/src/manager/Instance.mjs';
 import aiConfig                                           from '../../../../../../../ai/mcp/server/memory-core/config.template.mjs';
 import ChromaManager                                      from '../../../../../../../ai/services/memory-core/managers/ChromaManager.mjs';
 import {CHROMA_PRODUCTION_DATABASE, CHROMA_TEST_DATABASE} from '../../../../../../../ai/services/shared/vector/chromaTestIsolation.mjs';

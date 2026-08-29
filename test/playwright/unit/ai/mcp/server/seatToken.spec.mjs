@@ -2,8 +2,8 @@ import {test, expect} from '@playwright/test';
 import fs             from 'node:fs';
 import os             from 'node:os';
 import path           from 'node:path';
-import '../../../../../../src/Neo.mjs';
-import '../../../../../../src/core/_export.mjs';
+import 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import AuthService from '../../../../../../ai/mcp/server/shared/services/AuthService.mjs';
 import {
     buildSeatTokenRegistry,

@@ -1,5 +1,5 @@
 import aiConfig                                      from '../../mcp/server/memory-core/config.mjs';
-import Base                                          from '../../../src/core/Base.mjs';
+import Base                                          from 'neo.mjs/src/core/Base.mjs';
 import {buildChatModel}                              from '../../provider/buildChatModel.mjs';
 import {invokeWithGuardrail}                         from './helpers/consumerFrictionHelper.mjs';
 import {withTimeout}                                 from './helpers/withTimeout.mjs';
@@ -21,7 +21,7 @@ import {capSessionsForSweep}                       from './capSessionsForSweep.m
 import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../graph/identityRoots.mjs';
 
 import StorageRouter from './managers/StorageRouter.mjs';
-import Json          from '../../../src/util/Json.mjs';
+import Json          from 'neo.mjs/src/util/Json.mjs';
 import fs            from 'fs';
 import path          from 'path';
 import os            from 'os';

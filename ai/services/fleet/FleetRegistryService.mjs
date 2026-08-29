@@ -2,7 +2,7 @@ import crypto                from 'crypto';
 import fs                    from 'fs';
 import path                  from 'path';
 import aiConfig              from '../../config.mjs';
-import Base                  from '../../../src/core/Base.mjs';
+import Base                  from 'neo.mjs/src/core/Base.mjs';
 import {HARNESS_TYPES}       from './harnessTypes.mjs';
 import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
 import {

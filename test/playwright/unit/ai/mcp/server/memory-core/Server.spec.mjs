@@ -19,9 +19,9 @@ import {spawnSync}             from 'node:child_process';
 import os                      from 'node:os';
 import path                    from 'path';
 import fs                      from 'fs-extra';
-import Neo                     from '../../../../../../../src/Neo.mjs';
-import * as core               from '../../../../../../../src/core/_export.mjs';
-import '../../../../../../../src/manager/Instance.mjs';
+import Neo                     from 'neo.mjs/src/Neo.mjs';
+import * as core               from 'neo.mjs/src/core/_export.mjs';
+import 'neo.mjs/src/manager/Instance.mjs';
 
 
 test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
@@ -697,9 +697,9 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
         const tmpDir     = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-server-14388-'));
         const testDbPath = path.join(tmpDir, 'memory-core-graph.sqlite');
         const script     = String.raw`
-            const Neo = (await import('./src/Neo.mjs')).default;
-            await import('./src/core/_export.mjs');
-            await import('./src/manager/Instance.mjs');
+            const Neo = (await import('neo.mjs/src/Neo.mjs')).default;
+            await import('neo.mjs/src/core/_export.mjs');
+            await import('neo.mjs/src/manager/Instance.mjs');
             await import('./ai/mcp/server/memory-core/config.template.mjs');
 
             const Server       = (await import('./ai/mcp/server/memory-core/Server.mjs')).default;

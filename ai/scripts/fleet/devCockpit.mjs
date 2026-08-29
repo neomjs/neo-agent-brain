@@ -86,11 +86,11 @@
  * observable through `/fleet/probe`, so reuse could silently point the cockpit at the wrong
  * plane — an occupied endpoint refuses with the remediation named.
  */
-import {spawn}        from 'node:child_process';
+import {spawn}                               from 'node:child_process';
 import {accessSync, constants, readFileSync} from 'node:fs';
-import http           from 'node:http';
-import os             from 'node:os';
-import path           from 'node:path';
+import http                                  from 'node:http';
+import os                                    from 'node:os';
+import path                                  from 'node:path';
 
 const FLEET_PORT_DEFAULT = 8083;
 
@@ -596,9 +596,9 @@ async function main() {
                 // The identity claim rides the shared stdio resolver, whose chain needs the Neo
                 // namespace — bootstrap it here, on this rare branch only, exactly like the fleet
                 // entrypoints do (the happy paths stay import-light).
-                await import('../../../src/Neo.mjs');
-                await import('../../../src/core/_export.mjs');
-                await import('../../../src/manager/Instance.mjs');
+                await import('neo.mjs/src/Neo.mjs');
+                await import('neo.mjs/src/core/_export.mjs');
+                await import('neo.mjs/src/manager/Instance.mjs');
 
                 const {probeExistingFleetServer, resolveFleetViewerClaim} = await import('../../services/fleet/fleetLaunchContract.mjs'),
                       viewer                                              = await resolveFleetViewerClaim();

@@ -454,8 +454,8 @@ export async function migrateConfigOverlay({
 
     // Import order matters: the Neo bootstrap chain first, then (for servers) the parent realm,
     // then the base, then the snapshot overlay that registers the class being projected.
-    const Neo = (await import(pathToFileURL(path.join(neoRootDir, 'src/Neo.mjs')).href)).default;
-    await import(pathToFileURL(path.join(neoRootDir, 'src/core/_export.mjs')).href);
+    const Neo = (await import('neo.mjs/src/Neo.mjs')).default;
+    await import('neo.mjs/src/core/_export.mjs');
 
     if (parentConfigImport) {
         // Register the operator's Tier-1 realm before ConfigBase evaluates defaults that derive

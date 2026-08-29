@@ -1,4 +1,4 @@
-import NeoBase from '../../../src/core/Base.mjs';
+import NeoBase from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * The abstract blueprint defining the core interaction envelope for Native Edge Persistor paradigms.

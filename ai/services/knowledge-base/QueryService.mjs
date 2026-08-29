@@ -2,7 +2,7 @@ import fs                                       from 'fs-extra';
 import TextEmbeddingService                     from '../memory-core/TextEmbeddingService.mjs';
 import mcConfig                                 from '../../mcp/server/memory-core/config.mjs';
 import aiConfig                                 from '../../mcp/server/knowledge-base/config.mjs';
-import Base                                     from '../../../src/core/Base.mjs';
+import Base                                     from 'neo.mjs/src/core/Base.mjs';
 import ChromaManager                            from './ChromaManager.mjs';
 import {describeRetrievalProvenance}            from './retrievalProvenance.mjs';
 import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';

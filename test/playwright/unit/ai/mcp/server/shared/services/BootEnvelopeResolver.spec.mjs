@@ -13,9 +13,9 @@ setup({
     }
 });
 
-import {test, expect}    from '@playwright/test';
-import Neo               from '../../../../../../../../src/Neo.mjs';
-import * as core         from '../../../../../../../../src/core/_export.mjs';
+import {test, expect}       from '@playwright/test';
+import Neo                  from 'neo.mjs/src/Neo.mjs';
+import * as core            from 'neo.mjs/src/core/_export.mjs';
 import BootEnvelopeResolver from '../../../../../../../../ai/mcp/server/shared/services/BootEnvelopeResolver.mjs';
 
 /**
@@ -30,8 +30,8 @@ import BootEnvelopeResolver from '../../../../../../../../ai/mcp/server/shared/s
  */
 
 test.describe('Neo.ai.mcp.server.shared.services.BootEnvelopeResolver (#12418)', () => {
-    const NEO_DIR     = '/Users/example/.claude-instances/Neo';
-    const DEFAULT_DIR = '/Users/example/Library/Application Support/Claude';
+    const NEO_DIR                  = '/Users/example/.claude-instances/Neo';
+    const DEFAULT_DIR              = '/Users/example/Library/Application Support/Claude';
     const PS_ELECTRON_PARENT_CHAIN = [
         `90001 20005 /Users/example/.nvm/versions/node/v22/bin/node /Users/example/neo/ai/mcp/server/memory-core/main.mjs`,
         `20005 20001 /Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer) --type=renderer --user-data-dir=${NEO_DIR} --app-path=/x`,

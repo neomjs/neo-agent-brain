@@ -4,8 +4,8 @@ import {test, expect}              from '@playwright/test';
 import fs                          from 'fs';
 import os                          from 'os';
 import path                        from 'path';
-import Neo                         from '../../../../../../../src/Neo.mjs';
-import * as core                   from '../../../../../../../src/core/_export.mjs';
+import Neo                         from 'neo.mjs/src/Neo.mjs';
+import * as core                   from 'neo.mjs/src/core/_export.mjs';
 import AiConfig                    from '../../../../../../../ai/config.template.mjs';
 import {
     classifyDirectProbeOutcome,
@@ -4666,8 +4666,8 @@ test.describe('direct-probe bearer credential — evidence that cannot authentic
     });
 
     test('a configured token file is threaded into the probe and NEVER disclosed to any log sink', async () => {
-        const dir  = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-token-'));
-        const file = path.join(dir, 'token');
+        const dir   = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-token-'));
+        const file  = path.join(dir, 'token');
         const TOKEN = 'secret-token-value-high-entropy-material';
         fs.writeFileSync(file, `  ${TOKEN}\n`);
 

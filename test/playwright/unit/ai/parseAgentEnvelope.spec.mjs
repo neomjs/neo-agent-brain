@@ -1,5 +1,5 @@
 import {test, expect}       from '@playwright/test';
-import {parseAgentEnvelope} from '../../../../src/ai/parseAgentEnvelope.mjs';
+import {parseAgentEnvelope} from 'neo.mjs/src/ai/parseAgentEnvelope.mjs';
 
 // Pure frame-parsing — imported directly (Neo.ai.Client is a connect-on-init singleton), so the suite
 // has no socket / Client side effects. Mirrors deriveSubtreePath.spec / resolveCallTarget.spec.

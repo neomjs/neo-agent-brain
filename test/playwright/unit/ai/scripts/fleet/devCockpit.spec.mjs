@@ -8,15 +8,15 @@ import {fileURLToPath} from 'node:url';
 
 // Neo namespace bootstrap (entry-point invariant): the fleet transport's module chain reaches the
 // fleet singletons' `Neo.setupClass` at load — mirror devFleetServer's bootstrap order.
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 import http from 'node:http';
 
 import {CANONICAL_ADMISSION_TOKEN_FILE, COCKPIT_OPEN_TARGET, FLEET_PROBE_METHOD, buildFleetChildEnv, planCockpitBoot, probeFleetEndpoint, probePlaneIdentity, resolveAdmissionTokenFileBinding, resolveLivePlaneConfig} from '../../../../../../ai/scripts/fleet/devCockpit.mjs';
-import {startFleetBridgeServer}                                                                                                                       from '../../../../../../ai/services/fleet/fleetBridgeServer.mjs';
-import {generateLocalBearerToken}                                                                                                                     from '../../../../../../ai/mcp/server/shared/helpers/localBearer.mjs';
+import {startFleetBridgeServer}                                                                                                                                                                                         from '../../../../../../ai/services/fleet/fleetBridgeServer.mjs';
+import {generateLocalBearerToken}                                                                                                                                                                                       from '../../../../../../ai/mcp/server/shared/helpers/localBearer.mjs';
 
 const authenticatedOptions = overrides => ({
     port         : 0,

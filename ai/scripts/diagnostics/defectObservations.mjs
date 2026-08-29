@@ -1,5 +1,5 @@
-import Neo                        from '../../../src/Neo.mjs';
-import * as core                  from '../../../src/core/_export.mjs';
+import Neo                        from 'neo.mjs/src/Neo.mjs';
+import * as core                  from 'neo.mjs/src/core/_export.mjs';
 import {createPlaneMailboxClient} from '../../services/fleet/planeMailboxClient.mjs';
 import {foldDefectObservations}   from '../../services/memory-core/helpers/defectObservationFold.mjs';
 import {

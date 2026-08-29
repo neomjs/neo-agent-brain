@@ -77,7 +77,7 @@ test.describe.serial('check-examples-body-only CI guard', () => {
         // createStartingPoint reads index.html unconditionally too, so a build target with
         // neo-config.json but no index.html is still a build-all breakage class.
         const {exitCode, output} = runWithFixture({
-            'noIndexApp/app.mjs'        : "import Viewport from '../../../src/container/Viewport.mjs';\nexport default Viewport;\n",
+            'noIndexApp/app.mjs'        : "import Viewport from 'neo.mjs/src/container/Viewport.mjs';\nexport default Viewport;\n",
             'noIndexApp/neo-config.json': '{}\n'
         });
 
@@ -100,7 +100,7 @@ test.describe.serial('check-examples-body-only CI guard', () => {
 
     test('exits 0 (PASS) for a conforming Body example fixture — no false positive', () => {
         const {exitCode, output} = runWithFixture({
-            'goodBodyExample/app.mjs'        : "import Viewport from '../../../src/container/Viewport.mjs';\nexport default Viewport;\n",
+            'goodBodyExample/app.mjs'        : "import Viewport from 'neo.mjs/src/container/Viewport.mjs';\nexport default Viewport;\n",
             'goodBodyExample/neo-config.json': '{}\n',
             'goodBodyExample/index.html'     : '<!doctype html>\n'
         });

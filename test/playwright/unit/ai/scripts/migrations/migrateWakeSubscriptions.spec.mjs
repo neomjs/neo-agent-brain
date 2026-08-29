@@ -13,10 +13,10 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Database       from 'better-sqlite3';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import {test, expect}                  from '@playwright/test';
+import Database                        from 'better-sqlite3';
+import Neo                             from 'neo.mjs/src/Neo.mjs';
+import * as core                       from 'neo.mjs/src/core/_export.mjs';
 import {auditWakeRoutes, runMigration} from '../../../../../../ai/scripts/migrations/migrateWakeSubscriptions.mjs';
 
 /**
@@ -121,19 +121,19 @@ test.describe('ai/scripts/migrations/migrateWakeSubscriptions', () => {
             id                   : 'WAKE_SUB:codex-legacy',
             agentIdentity        : '@neo-gpt',
             harnessTargetMetadata: {
-                appName: 'Codex',
+                appName     : 'Codex',
                 focusSeedKey: 'r'
             }
         });
 
-        const stats = runMigration(db, {apply: true, cleanupGenericNamedPeer: false});
+        const stats    = runMigration(db, {apply: true, cleanupGenericNamedPeer: false});
         const migrated = getNode(db, 'WAKE_SUB:codex-legacy');
 
         expect(stats.subscriptionsPatched).toBe(1);
         expect(migrated.properties.harnessTargetMetadata).toMatchObject({
-            adapter: 'osascript',
-            appName: 'Codex',
-            tabShortcut: null,
+            adapter     : 'osascript',
+            appName     : 'Codex',
+            tabShortcut : null,
             focusSeedKey: 'r'
         });
     });
@@ -143,8 +143,8 @@ test.describe('ai/scripts/migrations/migrateWakeSubscriptions', () => {
         createGraphSchema(db);
 
         insertAgentIdentity(db, '@neo-gpt', {
-            adapter: 'codex-app-server',
-            appName: 'Codex',
+            adapter    : 'codex-app-server',
+            appName    : 'Codex',
             tabShortcut: null
         });
         insertSubscription(db, {
@@ -155,7 +155,7 @@ test.describe('ai/scripts/migrations/migrateWakeSubscriptions', () => {
             }
         });
 
-        const stats = runMigration(db, {apply: false, cleanupGenericNamedPeer: false});
+        const stats     = runMigration(db, {apply: false, cleanupGenericNamedPeer: false});
         const unchanged = getNode(db, 'WAKE_SUB:codex-dry-run');
 
         expect(stats.subscriptionsPatched).toBe(1);

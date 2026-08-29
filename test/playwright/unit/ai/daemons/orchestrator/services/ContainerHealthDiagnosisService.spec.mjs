@@ -3,8 +3,8 @@ import fs                 from 'node:fs';
 import path               from 'node:path';
 import process            from 'node:process';
 import {load as loadYaml} from 'js-yaml';
-import Neo                from '../../../../../../../src/Neo.mjs';
-import * as core          from '../../../../../../../src/core/_export.mjs';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
 // The COMMITTED declarative config, imported statically. Tests resolve committed config templates
 // rather than the overlay-resolving entrypoint: reading the roster through that entrypoint would let
 // a repo-local ignored file decide whether this totality guard passes, so a green here would describe

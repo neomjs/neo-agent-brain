@@ -1,9 +1,9 @@
-import {Command} from 'commander';
+import {Command}          from 'commander';
 import {mkdir, writeFile} from 'fs/promises';
-import path from 'path';
-import {fileURLToPath} from 'url';
-import Neo from '../../../src/Neo.mjs';
-import '../../../src/core/_export.mjs';
+import path               from 'path';
+import {fileURLToPath}    from 'url';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import {median, percentile} from './helpers/stats.mjs';
 
 /**
@@ -27,8 +27,8 @@ import {median, percentile} from './helpers/stats.mjs';
  * @see learn/agentos/measurements/setupClass-cold-start.md - baseline protocol
  */
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
+const __filename  = fileURLToPath(import.meta.url);
+const __dirname   = path.dirname(__filename);
 const projectRoot = path.resolve(__dirname, '../../..');
 
 /**
@@ -113,7 +113,7 @@ function runBenchmark({classCount, reactiveConfigs, prototypeConfigs, runId}) {
     }
 
     const beforeHeap = process.memoryUsage().heapUsed;
-    const t0 = performance.now();
+    const t0         = performance.now();
 
     for (let i = 0; i < classCount; i++) {
         const
@@ -135,10 +135,10 @@ function runBenchmark({classCount, reactiveConfigs, prototypeConfigs, runId}) {
         classCount,
         reactiveConfigs,
         prototypeConfigs,
-        elapsedMs              : Math.round(elapsedMs * 100) / 100,
-        msPerClass             : Math.round((elapsedMs / classCount) * 1000) / 1000,
+        elapsedMs             : Math.round(elapsedMs * 100) / 100,
+        msPerClass            : Math.round((elapsedMs / classCount) * 1000) / 1000,
         heapDeltaBytes,
-        heapDeltaPerClassBytes : Math.round(heapDeltaBytes / classCount)
+        heapDeltaPerClassBytes: Math.round(heapDeltaBytes / classCount)
     };
 }
 
@@ -150,18 +150,18 @@ function runBenchmark({classCount, reactiveConfigs, prototypeConfigs, runId}) {
  */
 function summarizeRuns(runs) {
     const
-        elapsed = runs.map(run => run.elapsedMs),
-        perClass = runs.map(run => run.msPerClass),
-        heapDelta = runs.map(run => run.heapDeltaBytes),
+        elapsed      = runs.map(run => run.elapsedMs),
+        perClass     = runs.map(run => run.msPerClass),
+        heapDelta    = runs.map(run => run.heapDeltaBytes),
         heapPerClass = runs.map(run => run.heapDeltaPerClassBytes);
 
     return {
-        n                          : runs.length,
-        elapsedMs_median           : roundMetric(median(elapsed), 2),
-        elapsedMs_p95              : runs.length >= 5 ? roundMetric(percentile(elapsed, 0.95), 2) : undefined,
-        msPerClass_median          : roundMetric(median(perClass), 3),
-        heapDeltaBytes_median         : roundMetric(median(heapDelta), 0),
-        heapDeltaPerClassBytes_median : roundMetric(median(heapPerClass), 0)
+        n                            : runs.length,
+        elapsedMs_median             : roundMetric(median(elapsed), 2),
+        elapsedMs_p95                : runs.length >= 5 ? roundMetric(percentile(elapsed, 0.95), 2) : undefined,
+        msPerClass_median            : roundMetric(median(perClass), 3),
+        heapDeltaBytes_median        : roundMetric(median(heapDelta), 0),
+        heapDeltaPerClassBytes_median: roundMetric(median(heapPerClass), 0)
     };
 }
 
@@ -179,7 +179,7 @@ async function main() {
 
     program.parse();
 
-    const opts = program.opts();
+    const opts   = program.opts();
     const config = {
         classCount      : parsePositiveInt(opts.classes, 500),
         runs            : parsePositiveInt(opts.runs, 5),
@@ -188,7 +188,7 @@ async function main() {
         prototypeConfigs: parseNonNegativeInt(opts.prototypeConfigs, 3)
     };
 
-    const timestamp = new Date().toISOString();
+    const timestamp     = new Date().toISOString();
     const namespaceSeed = timestamp.replace(/[^0-9]/g, '');
 
     console.log('[setupClass-cold-start] Benchmarking Neo.setupClass()');

@@ -1,5 +1,5 @@
 import {createHash} from 'crypto';
-import {setup} from '../../../../../setup.mjs';
+import {setup}      from '../../../../../setup.mjs';
 
 const appName = 'AuthServicePatTest';
 
@@ -19,8 +19,8 @@ import fs              from 'node:fs';
 import os              from 'node:os';
 import path            from 'node:path';
 import {fileURLToPath} from 'node:url';
-import Neo             from '../../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../../src/core/_export.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * Unit coverage for the GitLab-PAT verifier in `AuthService`. Exercises the verifier

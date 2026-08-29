@@ -44,7 +44,7 @@
  */
 
 import {pathToFileURL} from 'url';
-import Neo             from '../../../src/Neo.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
 import AiConfig        from '../../config.template.mjs';
 
 import {evaluateDetectionRetentionSla}   from './detectionRetentionSla.mjs';

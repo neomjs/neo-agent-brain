@@ -414,8 +414,8 @@ function formatCodeList(values = [], limit = 20) {
 }
 
 async function getDefaultGraphDbPath() {
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
     const config = (await import('../../mcp/server/memory-core/config.mjs')).default;
     return config.storagePaths.graph;
 }

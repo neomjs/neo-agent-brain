@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import fs           from 'fs-extra';
 import path         from 'path';
 
-import Base                             from '../../../../src/core/Base.mjs';
+import Base                             from 'neo.mjs/src/core/Base.mjs';
 import AiConfig                         from '../../../config.mjs';
 import {repairProviderRoleSetResidency} from '../../../services/graph/providerReadinessHelper.mjs';
 import {
@@ -34,7 +34,7 @@ import {
 } from '../../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
 import {isStoreBackedService} from './ContainerHealthDiagnosisService.mjs';
 
-const DEFAULT_ACTIONS         = Object.freeze(['reconfigure', 'restart', 'redeploy', 'warm-provider', 'raise-ceiling']);
+const DEFAULT_ACTIONS = Object.freeze(['reconfigure', 'restart', 'redeploy', 'warm-provider', 'raise-ceiling']);
 
 /**
  * @summary Fingerprints the OBSERVED STATE behind one diagnosis, for the futility breaker's run-breaker.

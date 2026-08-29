@@ -20,9 +20,9 @@ import {spawnSync}     from 'node:child_process';
 import fs              from 'node:fs';
 import os              from 'node:os';
 import path            from 'node:path';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 // `markRead` writes `readAt` to graph storage (the WAL carries send-time null by design). A destructive
 // `graph.import.replace` from a LAGGED snapshot restores that null and silently reverts committed read receipts.
@@ -33,9 +33,9 @@ test.describe('Memory_DatabaseService — graph.import.replace preserves committ
         const tmpDir    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-readat-reseed-'));
         const graphPath = path.join(tmpDir, 'memory-core-graph.sqlite');
         const script    = String.raw`
-            await import('./src/Neo.mjs');
-            await import('./src/core/_export.mjs');
-            await import('./src/manager/Instance.mjs');
+            await import('neo.mjs/src/Neo.mjs');
+            await import('neo.mjs/src/core/_export.mjs');
+            await import('neo.mjs/src/manager/Instance.mjs');
             await import('./ai/mcp/server/memory-core/config.template.mjs');
 
             const GraphService          = (await import('./ai/services/memory-core/GraphService.mjs')).default;

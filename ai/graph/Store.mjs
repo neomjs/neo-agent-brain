@@ -1,4 +1,4 @@
-import DataStore                 from '../../src/data/Store.mjs';
+import DataStore                 from 'neo.mjs/src/data/Store.mjs';
 import DestructiveOperationGuard from '../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 
 /**

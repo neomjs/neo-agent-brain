@@ -2,8 +2,8 @@ import {test, expect} from '@playwright/test';
 import fs             from 'fs-extra';
 import os             from 'node:os';
 import path           from 'path';
-import Neo            from '../../../../../../src/Neo.mjs';
-import '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import {Orchestrator}           from '../../../../../../ai/daemons/orchestrator/Orchestrator.mjs';
 import {
     acquireAuthorityLease,

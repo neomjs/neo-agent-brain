@@ -14,8 +14,8 @@ setup({
 });
 
 import {test, expect}                                                     from '@playwright/test';
-import Neo                                                                from '../../../../../../src/Neo.mjs';
-import * as core                                                          from '../../../../../../src/core/_export.mjs';
+import Neo                                                                from 'neo.mjs/src/Neo.mjs';
+import * as core                                                          from 'neo.mjs/src/core/_export.mjs';
 import {isLocalBearerToken, generateLocalBearerToken}                     from '../../../../../../ai/mcp/server/shared/helpers/localBearer.mjs';
 import {probeExistingFleetServer, resolveFleetBearer, resolveFleetViewer} from '../../../../../../ai/services/fleet/fleetLaunchContract.mjs';
 import {startFleetBridgeServer}                                           from '../../../../../../ai/services/fleet/fleetBridgeServer.mjs';

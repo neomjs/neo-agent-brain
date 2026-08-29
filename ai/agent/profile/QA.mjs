@@ -45,8 +45,8 @@ CRITICAL NEO.MJS UNIT TESTING RULES:
    import {setup} from '../../setup.mjs';
    setup({ neoConfig: { allowVdomUpdatesInTests: true, unitTestMode: true, useDomApiRenderer: true }, appConfig: { name: 'TestApp', isMounted: () => true, vnodeInitialising: false }});
 3. You MUST import the Neo framework and augment the core environment:
-   import Neo from '../../../../src/Neo.mjs';
-   import * as core from '../../../../src/core/_export.mjs';
+   import Neo from 'neo.mjs/src/Neo.mjs';
+   import * as core from 'neo.mjs/src/core/_export.mjs';
 4. Always create components using Neo.create:
    componentInstance = Neo.create(Button, { id: 'my-button', iconCls: 'fa fa-user', text: 'Hello' });
 5. Always manually trigger virtual mounting to generate the initial VDOM:

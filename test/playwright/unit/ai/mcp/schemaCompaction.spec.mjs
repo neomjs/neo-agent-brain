@@ -20,7 +20,7 @@ import fs              from 'node:fs';
 import os              from 'node:os';
 import path            from 'path';
 import {fileURLToPath} from 'url';
-import Neo             from '../../../../../src/Neo.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
 
 /**
  * The `tools/list` schema-prose projection (`compactToolSchemas`).

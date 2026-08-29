@@ -4,8 +4,8 @@ import fs               from 'fs/promises';
 import path             from 'path';
 import {promisify}      from 'util';
 import {fileURLToPath}  from 'url';
-import Neo              from '../../../../../../src/Neo.mjs';
-import * as core        from '../../../../../../src/core/_export.mjs';
+import Neo              from 'neo.mjs/src/Neo.mjs';
+import * as core        from 'neo.mjs/src/core/_export.mjs';
 import AiConfig         from '../../../../../../ai/config.template.mjs';
 import memoryCoreConfig from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
 import {
@@ -323,7 +323,7 @@ test.describe('Orchestrator config getters delegate to AiConfig (data env/parse 
 
     test('the production LMS postSpawn owner applies the embedding safe band without a recurring canary', async () => {
         const script = `
-            import './src/Neo.mjs';
+            import 'neo.mjs/src/Neo.mjs';
             const {buildConfiguredTaskDefinitions} = await import('./ai/daemons/orchestrator/services/ConfiguredTaskDefinitionsService.mjs');
 
             let observedContextLength = 8192;
@@ -527,8 +527,8 @@ test.describe('Orchestrator parent-prop propagation (#11834 AC3)', () => {
             const fs = await import('node:fs/promises');
             const os = await import('node:os');
             const path = await import('node:path');
-            const {default: Neo} = await import('./src/Neo.mjs');
-            await import('./src/core/_export.mjs');
+            const {default: Neo} = await import('neo.mjs/src/Neo.mjs');
+            await import('neo.mjs/src/core/_export.mjs');
             const {default: AiConfig} = await import('./ai/config.template.mjs');
             const {Orchestrator} = await import('./ai/daemons/orchestrator/Orchestrator.mjs');
             const {buildTaskDefinitions} = await import('./ai/daemons/orchestrator/taskDefinitions.mjs');

@@ -15,9 +15,9 @@ setup({
 
 import {test, expect}          from '@playwright/test';
 import {CallToolRequestSchema} from '@modelcontextprotocol/sdk/types.js';
-import Neo                     from '../../../../../../../src/Neo.mjs';
-import * as core               from '../../../../../../../src/core/_export.mjs';
-import '../../../../../../../src/manager/Instance.mjs';
+import Neo                     from 'neo.mjs/src/Neo.mjs';
+import * as core               from 'neo.mjs/src/core/_export.mjs';
+import 'neo.mjs/src/manager/Instance.mjs';
 
 test.describe('Neo.ai.mcp.server.knowledge-base.Server', () => {
     let Server, HealthService;

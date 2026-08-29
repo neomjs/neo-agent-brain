@@ -16,8 +16,8 @@ setup({
 });
 
 import {test, expect}        from '@playwright/test';
-import Neo                   from '../../../../../../src/Neo.mjs';
-import * as core             from '../../../../../../src/core/_export.mjs';
+import Neo                   from 'neo.mjs/src/Neo.mjs';
+import * as core             from 'neo.mjs/src/core/_export.mjs';
 import StorageRouter         from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
 import SummaryService        from '../../../../../../ai/services/memory-core/SummaryService.mjs';
 import MemoryService         from '../../../../../../ai/services/memory-core/MemoryService.mjs';
@@ -85,7 +85,7 @@ test.describe('StorageRouter degraded-query observability', () => {
 test.describe('memory-core degraded-query tool envelopes', () => {
     const degradedCollection = collectionType => ({
         query: async () => ({
-            ids: [[]], distances: [[]], metadatas: [[]], documents: undefined,
+            ids                : [[]], distances: [[]], metadatas: [[]], documents: undefined,
             _degraded          : true,
             _degradedReason    : 'Error executing plan: Internal error: Error finding id',
             _degradedCollection: collectionType,
@@ -147,7 +147,7 @@ test.describe('memory-core degraded-query tool envelopes', () => {
         StorageRouter.getSummaryCollection = async () => ({
             count: async () => 20,
             query: async () => ({
-                ids: [[]], distances: [[]], metadatas: [[]], documents: undefined,
+                ids                : [[]], distances: [[]], metadatas: [[]], documents: undefined,
                 _degraded          : true,
                 _degradedReason    : 'Error executing plan: Internal error: Error finding id',
                 _degradedCollection: 'summary',

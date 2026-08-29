@@ -1,8 +1,8 @@
 import 'dotenv/config';
 import {Command}           from 'commander';
-import Neo                 from '../../../../src/Neo.mjs';
-import * as core           from '../../../../src/core/_export.mjs';
-import InstanceManager     from '../../../../src/manager/Instance.mjs';
+import Neo                 from 'neo.mjs/src/Neo.mjs';
+import * as core           from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager     from 'neo.mjs/src/manager/Instance.mjs';
 import aiConfig            from './config.mjs';
 import logger              from './logger.mjs';
 import Server              from './Server.mjs';

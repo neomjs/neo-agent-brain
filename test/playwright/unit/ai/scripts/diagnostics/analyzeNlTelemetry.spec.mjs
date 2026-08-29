@@ -13,19 +13,19 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import {test, expect}   from '@playwright/test';
+import Neo              from 'neo.mjs/src/Neo.mjs';
+import * as core        from 'neo.mjs/src/core/_export.mjs';
 import { execFileSync } from 'child_process';
-import path           from 'path';
-import fs             from 'fs';
-import Database       from 'better-sqlite3';
+import path             from 'path';
+import fs               from 'fs';
+import Database         from 'better-sqlite3';
 
 test.describe('Neo.ai.scripts.analyzeNlTelemetry', () => {
-    const testDbPath   = path.resolve(process.cwd(), `tmp/memory-core-test-${process.pid}.sqlite`);
-    const testRlaifDir = path.resolve(process.cwd(), `tmp/rlaif-test-${process.pid}`);
-    const testRlaifPath= path.join(testRlaifDir, 'trajectories.jsonl');
-    const scriptPath   = path.resolve(process.cwd(), 'ai/scripts/diagnostics/analyzeNlTelemetry.mjs');
+    const testDbPath    = path.resolve(process.cwd(), `tmp/memory-core-test-${process.pid}.sqlite`);
+    const testRlaifDir  = path.resolve(process.cwd(), `tmp/rlaif-test-${process.pid}`);
+    const testRlaifPath = path.join(testRlaifDir, 'trajectories.jsonl');
+    const scriptPath    = path.resolve(process.cwd(), 'ai/scripts/diagnostics/analyzeNlTelemetry.mjs');
 
     test.beforeAll(() => {
         const tmpDir = path.dirname(testDbPath);
@@ -53,9 +53,9 @@ test.describe('Neo.ai.scripts.analyzeNlTelemetry', () => {
         stmt.run('mem-1', JSON.stringify({
             sessionId: 'test-session-1',
             timestamp: 1000,
-            prompt: 'Navigate to user profile',
-            thought: 'I will use neural-link to click the profile button',
-            response: 'Navigated.',
+            prompt   : 'Navigate to user profile',
+            thought  : 'I will use neural-link to click the profile button',
+            response : 'Navigated.',
             toolsUsed: ['neural-link_simulate_event']
         }));
 
@@ -63,9 +63,9 @@ test.describe('Neo.ai.scripts.analyzeNlTelemetry', () => {
         stmt.run('mem-2', JSON.stringify({
             sessionId: 'test-session-1',
             timestamp: 2000,
-            prompt: 'What time is it?',
-            thought: 'I think it is 5:00',
-            response: 'It is 5:00',
+            prompt   : 'What time is it?',
+            thought  : 'I think it is 5:00',
+            response : 'It is 5:00',
             toolsUsed: [] // Notice: no NL tool used. However, due to logic, it breaks trajectory!
         }));
 
@@ -73,9 +73,9 @@ test.describe('Neo.ai.scripts.analyzeNlTelemetry', () => {
         stmt.run('mem-3', JSON.stringify({
             sessionId: 'test-session-2',
             timestamp: 1000,
-            prompt: 'Say hello',
-            thought: '...',
-            response: 'Hello',
+            prompt   : 'Say hello',
+            thought  : '...',
+            response : 'Hello',
             toolsUsed: ['run_shell_command']
         }));
 
@@ -92,7 +92,7 @@ test.describe('Neo.ai.scripts.analyzeNlTelemetry', () => {
         const env = {
             ...process.env,
             NEO_MEMORY_DB_PATH_TEST: testDbPath,
-            NEO_RLAIF_PATH: testRlaifPath
+            NEO_RLAIF_PATH         : testRlaifPath
         };
 
         const output = execFileSync('node', [scriptPath, 'test-session-1'], { env, encoding: 'utf-8' });
@@ -105,7 +105,7 @@ test.describe('Neo.ai.scripts.analyzeNlTelemetry', () => {
         const env = {
             ...process.env,
             NEO_MEMORY_DB_PATH_TEST: testDbPath,
-            NEO_RLAIF_PATH: testRlaifPath
+            NEO_RLAIF_PATH         : testRlaifPath
         };
 
         const output = execFileSync('node', [scriptPath, 'test-session-2'], { env, encoding: 'utf-8' });
@@ -116,7 +116,7 @@ test.describe('Neo.ai.scripts.analyzeNlTelemetry', () => {
         const env = {
             ...process.env,
             NEO_MEMORY_DB_PATH_TEST: testDbPath,
-            NEO_RLAIF_PATH: testRlaifPath
+            NEO_RLAIF_PATH         : testRlaifPath
         };
 
         const output = execFileSync('node', [scriptPath, 'test-session-1', '--save'], { env, encoding: 'utf-8' });

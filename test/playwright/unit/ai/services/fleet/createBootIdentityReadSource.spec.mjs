@@ -1,6 +1,6 @@
 import {test, expect}                 from '@playwright/test';
-import Neo                            from '../../../../../../src/Neo.mjs';
-import * as core                      from '../../../../../../src/core/_export.mjs';
+import Neo                            from 'neo.mjs/src/Neo.mjs';
+import * as core                      from 'neo.mjs/src/core/_export.mjs';
 import {createBootIdentityReadSource} from '../../../../../../ai/services/fleet/createBootIdentityReadSource.mjs';
 
 test.describe('createBootIdentityReadSource — the fleet-server reader over the shared boot-identity fact-file (#15079)', () => {

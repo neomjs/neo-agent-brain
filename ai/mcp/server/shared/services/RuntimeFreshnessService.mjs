@@ -2,7 +2,7 @@ import {execFile, execFileSync} from 'child_process';
 import {createHash}             from 'crypto';
 import {readFileSync}           from 'fs';
 import {promisify}              from 'util';
-import Base                     from '../../../../../src/core/Base.mjs';
+import Base                     from 'neo.mjs/src/core/Base.mjs';
 
 const execFileAsync = promisify(execFile);
 

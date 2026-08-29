@@ -19,7 +19,7 @@ import {test, expect} from '@playwright/test';
 // it touches `Neo.ns` while wiring the main-thread mock, so a spec that imports no framework leaves
 // `Neo` unpopulated and setup throws before any assertion runs. Import hoisting is what makes this
 // work despite sitting below the `setup()` call.
-import Neo from '../../../../../../../../src/Neo.mjs';
+import Neo from 'neo.mjs/src/Neo.mjs';
 
 /**
  * Disclosure-boundary coverage: which resolved config values a service may publish about itself.

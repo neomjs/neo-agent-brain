@@ -14,15 +14,15 @@ setup({
 });
 
 import {test, expect}     from '@playwright/test';
-import Neo                from '../../../../src/Neo.mjs';
-import * as core          from '../../../../src/core/_export.mjs';
-import Component          from '../../../../src/component/Base.mjs';
-import Container          from '../../../../src/container/Base.mjs';
-import ComponentManager   from '../../../../src/manager/Component.mjs'; // binds Neo.getComponent + registers components
-import InstanceManager    from '../../../../src/manager/Instance.mjs';  // binds Neo.get + registers instances
-import InstanceService    from '../../../../src/ai/client/InstanceService.mjs';
-import TransactionService from '../../../../src/ai/TransactionService.mjs';
-import WriteGuard         from '../../../../src/ai/WriteGuard.mjs';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
+import Component          from 'neo.mjs/src/component/Base.mjs';
+import Container          from 'neo.mjs/src/container/Base.mjs';
+import ComponentManager   from 'neo.mjs/src/manager/Component.mjs'; // binds Neo.getComponent + registers components
+import InstanceManager    from 'neo.mjs/src/manager/Instance.mjs';  // binds Neo.get + registers instances
+import InstanceService    from 'neo.mjs/src/ai/client/InstanceService.mjs';
+import TransactionService from 'neo.mjs/src/ai/TransactionService.mjs';
+import WriteGuard         from 'neo.mjs/src/ai/WriteGuard.mjs';
 
 // `remove_component` forwards server-side as a server-stamped `call_method` `destroy(true)`; the app-side
 // InstanceService.callMethod captures the reverse (`insert(index, config)` on the parent) BEFORE destroy runs — the
@@ -31,8 +31,8 @@ import WriteGuard         from '../../../../src/ai/WriteGuard.mjs';
 // position-preserving reverse, the round-trip re-dispatch, the generic-call_method non-capture (gpt guardrail 1),
 // and the `buildRemoveReverse` fail-closed branches.
 
-const ID = {agentId: 'agent-a', sessionId: 'sess-a'};
-let seq = 0; // unique ids per test (Date/random are unavailable; a stubbed destroy won't unregister)
+const ID  = {agentId: 'agent-a', sessionId: 'sess-a'};
+let   seq = 0; // unique ids per test (Date/random are unavailable; a stubbed destroy won't unregister)
 
 test.describe('Neo.ai.client.InstanceService — remove_component undo capture', () => {
     let parent, child, parentId, childId, service, transactionService, dispatched;

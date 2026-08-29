@@ -16,9 +16,9 @@ setup({
 });
 
 import {test, expect}  from '@playwright/test';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs';
 import fsExtra         from 'fs-extra';
 import path            from 'path';
@@ -29,6 +29,7 @@ test.describe('initServerConfigs — template drift detection (#10815)', () => {
     let initConfigs, projectSourceShape, projectShape, projectConfigDefaultsShape, detectDrift,
         detectServerOverlayDrift, materializeServerConfigTemplate, listServersWithTemplates,
         hasConfigTemplate, collectStaleOverlayFindings, formatStaleOverlayDriftItems,
+        materializeEngineDependency,
         createConfigInitializationOutcome;
     let workRoot;
 
@@ -77,6 +78,7 @@ test.describe('initServerConfigs — template drift detection (#10815)', () => {
             hasConfigTemplate,
             collectStaleOverlayFindings,
             formatStaleOverlayDriftItems,
+            materializeEngineDependency,
             createConfigInitializationOutcome
         } = await import('../../../../../../ai/scripts/setup/initServerConfigs.mjs'));
 
@@ -88,6 +90,22 @@ test.describe('initServerConfigs — template drift detection (#10815)', () => {
         if (workRoot && fs.existsSync(workRoot)) {
             fs.rmSync(workRoot, {recursive: true, force: true});
         }
+    });
+
+    test('Engine dependency materialization never owns the canonical Brain source root', () => {
+        const
+            root       = path.join(workRoot, 'engine-projection-boundary'),
+            engineRoot = path.join(workRoot, 'engine-package');
+
+        fs.mkdirSync(root, {recursive: true});
+        ['apps', 'examples', 'harness', 'resources'].forEach(name => {
+            fs.mkdirSync(path.join(engineRoot, name), {recursive: true});
+        });
+
+        const created = materializeEngineDependency({root, engineRoot, copyProjections: []});
+
+        expect(created.sort()).toEqual(['apps', 'examples', 'harness', 'resources']);
+        expect(fs.existsSync(path.join(root, 'src'))).toBe(false);
     });
 
     test('AC1: missing config.mjs is cloned from template', async () => {

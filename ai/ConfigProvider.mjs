@@ -1,7 +1,7 @@
 import fs       from 'fs/promises';
 import path     from 'path';
 import Env      from './Env.mjs';
-import Provider from '../src/state/Provider.mjs';
+import Provider from 'neo.mjs/src/state/Provider.mjs';
 
 /**
  * Maps a {@link leaf} `type` token to the name-based `Neo.ai.Env` parser that decodes its env

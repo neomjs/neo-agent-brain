@@ -14,7 +14,7 @@ setup({
 });
 
 import {test, expect}   from '@playwright/test';
-import Neo              from '../../../../../src/Neo.mjs';
+import Neo              from 'neo.mjs/src/Neo.mjs';
 import ContextAssembler from '../../../../../ai/context/Assembler.mjs';
 import fs               from 'fs';
 import path             from 'path';
@@ -34,7 +34,7 @@ test.describe('Neo.ai.context.Assembler', () => {
     });
 
     test('loadSkillsSync should extract YAML frontmatter for progressive disclosure', async () => {
-        const skillsDir = path.resolve(process.cwd(), '.agent/skills');
+        const skillsDir    = path.resolve(process.cwd(), '.agent/skills');
         const ideationPath = path.join(skillsDir, 'ideation-sandbox', 'SKILL.md');
         
         let hasIdeationSandbox = false;
@@ -58,7 +58,7 @@ test.describe('Neo.ai.context.Assembler', () => {
 
     test('augmentSystemPrompt strictly appends loaded skills to base prompt', async () => {
         const base = 'You are a mock agent.';
-        const rag = '\n[RAG Context]';
+        const rag  = '\n[RAG Context]';
         
         // Setup mock skills context
         assembler.skillsContext = '\n<agent_skills>MockSkill</agent_skills>\n';

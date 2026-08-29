@@ -2,11 +2,11 @@ import fs                                                      from 'fs';
 import path                                                    from 'path';
 import {fileURLToPath}                                         from 'url';
 import { Memory_Config as aiConfig }                           from '../../services.mjs';
-import Base                                                    from '../../../src/core/Base.mjs';
+import Base                                                    from 'neo.mjs/src/core/Base.mjs';
 import { Memory_StorageRouter as StorageRouter }               from '../../services.mjs';
 import { Memory_TextEmbeddingService as TextEmbeddingService } from '../../services.mjs';
 import { Memory_GraphService as GraphService }                 from '../../services.mjs';
-import Json                                                    from '../../../src/util/Json.mjs';
+import Json                                                    from 'neo.mjs/src/util/Json.mjs';
 import logger                                                  from '../../mcp/server/memory-core/logger.mjs';
 import {buildGraphProvider, resolveGraphModelProvider}         from './providerDispatch.mjs';
 import {

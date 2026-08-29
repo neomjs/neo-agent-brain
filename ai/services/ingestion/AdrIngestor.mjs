@@ -1,7 +1,7 @@
 import crypto                                                                       from 'crypto';
 import fs                                                                           from 'fs';
 import path                                                                         from 'path';
-import Base                                                                         from '../../../src/core/Base.mjs';
+import Base                                                                         from 'neo.mjs/src/core/Base.mjs';
 import {Memory_GraphService as GraphService, Memory_StorageRouter as StorageRouter} from '../../services.mjs';
 import logger                                                                       from '../../mcp/server/memory-core/logger.mjs';
 import {canonicalizeConceptId}                                                      from '../graph/conceptSpineCanonicalization.mjs';

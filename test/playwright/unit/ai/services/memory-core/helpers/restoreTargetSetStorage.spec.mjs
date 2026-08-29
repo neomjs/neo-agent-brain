@@ -6,7 +6,7 @@ import {setup}        from '../../../../../setup.mjs';
 import {test, expect} from '@playwright/test';
 import Database       from 'better-sqlite3';
 
-import '../../../../../../../src/Neo.mjs';
+import 'neo.mjs/src/Neo.mjs';
 
 import {
     createGraphBootSeedEdgeRecord,

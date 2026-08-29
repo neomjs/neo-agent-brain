@@ -1,8 +1,8 @@
-import fs     from 'fs';
-import Base   from '../../../src/core/Base.mjs';
+import fs                                    from 'fs';
+import Base                                  from 'neo.mjs/src/core/Base.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
-import aiConfig from '../../mcp/server/memory-core/config.mjs';
-import logger  from '../../mcp/server/memory-core/logger.mjs';
+import aiConfig                              from '../../mcp/server/memory-core/config.mjs';
+import logger                                from '../../mcp/server/memory-core/logger.mjs';
 
 /**
  * @summary Drains the lazy-edges JSONL queue into the Native Edge Graph.

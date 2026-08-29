@@ -6,8 +6,8 @@ setup({
 });
 
 import {test, expect}       from '@playwright/test';
-import Neo                  from '../../../../../../src/Neo.mjs';
-import * as core            from '../../../../../../src/core/_export.mjs';
+import Neo                  from 'neo.mjs/src/Neo.mjs';
+import * as core            from 'neo.mjs/src/core/_export.mjs';
 import {validateMergeReady} from '../../../../../../ai/scripts/lifecycle/validateMergeReady.mjs';
 
 test.describe('validateMergeReady — strict merge-readiness contract', () => {

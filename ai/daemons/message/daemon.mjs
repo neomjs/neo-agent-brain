@@ -6,9 +6,9 @@
  * host the same loop inside Memory Core via `messageWal.inProcessDrain`. The graph replay
  * processor is intentionally injectable so topology can land before projection semantics.
  */
-import Neo              from '../../../src/Neo.mjs';
-import * as core        from '../../../src/core/_export.mjs';
-import InstanceManager  from '../../../src/manager/Instance.mjs';
+import Neo              from 'neo.mjs/src/Neo.mjs';
+import * as core        from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager  from 'neo.mjs/src/manager/Instance.mjs';
 import memoryCoreConfig from '../../mcp/server/memory-core/config.mjs';
 
 import fs         from 'fs-extra';

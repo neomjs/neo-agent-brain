@@ -16,8 +16,8 @@ setup({
 });
 
 import {test, expect}  from '@playwright/test';
-import Neo             from '../../../../../src/Neo.mjs';
-import * as core       from '../../../../../src/core/_export.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
 import Agent           from '../../../../../ai/Agent.mjs';
 import Assembler       from '../../../../../ai/context/Assembler.mjs';
 import path            from 'path';
@@ -38,7 +38,7 @@ test.describe('QA Sub-Agent Swarm Node', () => {
         // offline Test nodes from trying to query the live MCP Vector Databases.
         Assembler.prototype.assemble = async function({systemPrompt, userQuery}) {
             return {
-                system: systemPrompt,
+                system  : systemPrompt,
                 messages: [{ role: 'user', content: userQuery }]
             };
         };

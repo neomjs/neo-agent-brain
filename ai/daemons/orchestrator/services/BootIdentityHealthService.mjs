@@ -1,4 +1,4 @@
-import Base                                            from '../../../../src/core/Base.mjs';
+import Base                                            from 'neo.mjs/src/core/Base.mjs';
 import {classifyBootFreshness, SCHEDULER_RESUME_STATE} from './bootIdentityFreshness.mjs';
 
 /**

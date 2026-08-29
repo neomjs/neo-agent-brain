@@ -1,5 +1,5 @@
 import http             from 'http';
-import Base             from '../../../../src/core/Base.mjs';
+import Base             from 'neo.mjs/src/core/Base.mjs';
 import {RECOVERY_KNOBS} from '../../../services/memory-core/helpers/recoveryKnobRegistry.mjs';
 
 export const DEPLOYMENT_RUNTIME_MECHANISMS = Object.freeze([

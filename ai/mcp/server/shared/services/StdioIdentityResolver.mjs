@@ -1,5 +1,5 @@
 import {execSync} from 'child_process';
-import Base       from '../../../../../src/core/Base.mjs';
+import Base       from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * @summary Resolves the active agent identity for stdio MCP transport sessions.

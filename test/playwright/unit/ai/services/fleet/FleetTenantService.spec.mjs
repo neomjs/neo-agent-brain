@@ -19,8 +19,8 @@ import crypto         from 'node:crypto'
 import fs             from 'node:fs'
 import os             from 'node:os'
 import path           from 'node:path'
-import Neo            from '../../../../../../src/Neo.mjs'
-import * as core      from '../../../../../../src/core/_export.mjs'
+import Neo            from 'neo.mjs/src/Neo.mjs'
+import * as core      from 'neo.mjs/src/core/_export.mjs'
 
 import FleetTenantService, {
     probeTenantEndpoint
@@ -65,8 +65,8 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
         const
             configuredRoot = path.join(tmpDir, 'configured-fleet-root'),
             resolverPath   = path.resolve('test/playwright/configTemplateResolver.mjs'),
-            neoPath        = path.resolve('src/Neo.mjs'),
-            corePath       = path.resolve('src/core/_export.mjs'),
+            neoPath        = import.meta.resolve('neo.mjs/src/Neo.mjs'),
+            corePath       = import.meta.resolve('neo.mjs/src/core/_export.mjs'),
             registryPath   = path.resolve('ai/services/fleet/FleetRegistryService.mjs'),
             tenantPath     = path.resolve('ai/services/fleet/FleetTenantService.mjs'),
             script         = [

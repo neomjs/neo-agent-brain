@@ -7,13 +7,13 @@ setup({
     appConfig: {name: appName, isMounted: () => true, vnodeInitialising: false}
 });
 
-import {test, expect}    from '@playwright/test';
-import Ajv2020           from 'ajv/dist/2020.js';
-import fs                from 'fs-extra';
-import path              from 'path';
-import {fileURLToPath}   from 'url';
-import Neo               from '../../../../../../../src/Neo.mjs';
-import * as core         from '../../../../../../../src/core/_export.mjs';
+import {test, expect}  from '@playwright/test';
+import Ajv2020         from 'ajv/dist/2020.js';
+import fs              from 'fs-extra';
+import path            from 'path';
+import {fileURLToPath} from 'url';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -139,7 +139,7 @@ test.describe('parsed-chunk-v1 schema (Phase 0/1A #11629)', () => {
     });
 
     test('round-trips through JSON.stringify + JSON.parse without losing validity', () => {
-        const record = validParsedChunk();
+        const record       = validParsedChunk();
         const roundTripped = JSON.parse(JSON.stringify(record));
         expect(validateParsedChunk(roundTripped)).toBe(true);
     });
@@ -186,7 +186,7 @@ test.describe('backup-record-v1 schema (Phase 0/1A #11629)', () => {
     });
 
     test('round-trips through JSON.stringify + JSON.parse without losing validity', () => {
-        const record = validBackupRecord();
+        const record       = validBackupRecord();
         const roundTripped = JSON.parse(JSON.stringify(record));
         expect(validateBackupRecord(roundTripped)).toBe(true);
     });

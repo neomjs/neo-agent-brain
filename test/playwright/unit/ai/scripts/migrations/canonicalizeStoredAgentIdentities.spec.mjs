@@ -17,8 +17,8 @@ import {test, expect} from '@playwright/test';
 import Database       from 'better-sqlite3';
 import {spawnSync}    from 'node:child_process';
 import path           from 'node:path';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {
     auditCanonicalStorage,
     getCanonicalDirectIdentityCandidate,
@@ -148,7 +148,7 @@ function snapshotGraph(db) {
 test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
     test('CLI help stays bootstrap-free and malformed --db overrides fail closed (#15038)', () => {
         const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../../..'),
-            result   = spawnSync(process.execPath, ['ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs', '--help'], {
+            result     = spawnSync(process.execPath, ['ai/scripts/migrations/canonicalizeStoredAgentIdentities.mjs', '--help'], {
                 cwd     : repoRoot,
                 encoding: 'utf-8',
                 timeout : 30_000
@@ -195,9 +195,9 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         });
 
         insertNode(db, {
-            id     : 'MESSAGE:direct',
-            user_id: 'legacy-user-id',
-            label  : 'MESSAGE',
+            id        : 'MESSAGE:direct',
+            user_id   : 'legacy-user-id',
+            label     : 'MESSAGE',
             properties: {
                 bodyText: 'historical prose keeps alice and @@bob exactly',
                 from    : 'alice',
@@ -220,8 +220,8 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
             type   : 'SENT_TO'
         });
         insertNode(db, {
-            id   : 'MESSAGE:mirror-only',
-            label: 'MESSAGE',
+            id        : 'MESSAGE:mirror-only',
+            label     : 'MESSAGE',
             properties: {
                 bodyText: 'damaged routing edges stay absent while safe mirrors converge',
                 from    : 'alice',
@@ -230,8 +230,8 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         });
 
         insertNode(db, {
-            id   : 'MESSAGE:broadcast',
-            label: 'MESSAGE',
+            id        : 'MESSAGE:broadcast',
+            label     : 'MESSAGE',
             properties: {
                 bodyText: 'broadcast prose keeps AGENT:@charlie',
                 from    : 'alice',
@@ -270,11 +270,11 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         expect(getCanonicalDirectIdentityCandidate('role:librarian')).toBe('role:librarian');
         expect(getCanonicalDirectIdentityCandidate('human:tobiu')).toBe('human:tobiu');
 
-        const before        = snapshotGraph(db),
-            beforeCensus  = auditCanonicalStorage(db),
-            firstPlan     = planCanonicalStorageMigration(db),
-            repeatedPlan  = planCanonicalStorageMigration(db),
-            dryRun        = runCanonicalStorageMigration(db, false);
+        const before     = snapshotGraph(db),
+            beforeCensus = auditCanonicalStorage(db),
+            firstPlan    = planCanonicalStorageMigration(db),
+            repeatedPlan = planCanonicalStorageMigration(db),
+            dryRun       = runCanonicalStorageMigration(db, false);
 
         expect(beforeCensus).toEqual({aliasNodes: 5, identityEdgeEndpoints: 16, messageProperties: 5});
         expect(repeatedPlan).toEqual(firstPlan);
@@ -386,7 +386,7 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
             target    : '@bob',
             type      : 'DELIVERED_TO',
             properties: {
-                archivedAt : '2026-07-11T12:00:00.000Z',
+                archivedAt  : '2026-07-11T12:00:00.000Z',
                 canonicalKey: 'keep-canonical',
                 deliveredAt : '2026-07-11T10:00:00.000Z',
                 readAt      : null,
@@ -451,11 +451,11 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         const delivery = getEdge(db, 'delivery-canonical');
         expect(delivery).toMatchObject({source: 'MESSAGE:collision', target: '@bob', type: 'DELIVERED_TO'});
         expect(delivery.data.properties).toMatchObject({
-            archivedAt : '2026-07-11T12:00:00.000Z',
+            archivedAt  : '2026-07-11T12:00:00.000Z',
             canonicalKey: 'keep-canonical',
-            legacyKey  : 'preserve-legacy-state',
-            readAt     : '2026-07-11T11:00:00.000Z',
-            weight     : 4.5
+            legacyKey   : 'preserve-legacy-state',
+            readAt      : '2026-07-11T11:00:00.000Z',
+            weight      : 4.5
         });
 
         const permission = getEdge(db, 'permission-canonical');
@@ -490,7 +490,7 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         insertEdge(db, {id: 'disagreement-sent-to', source: 'MESSAGE:disagreement', target: '@alice', type: 'SENT_TO'});
 
         const before = snapshotGraph(db),
-            plan   = planCanonicalStorageMigration(db);
+            plan     = planCanonicalStorageMigration(db);
 
         expect(plan.blockers).toEqual([
             'message-from-edge-disagreement:MESSAGE:disagreement:@bob!=@alice'
@@ -524,7 +524,7 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         });
 
         const before = snapshotGraph(db),
-            plan   = planCanonicalStorageMigration(db);
+            plan     = planCanonicalStorageMigration(db);
 
         expect(plan.blockers).toEqual([
             'edge-user-id-disagreement:@alice->@bob:CAN_REPLY_TO'
@@ -551,7 +551,7 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         });
 
         const before = snapshotGraph(db),
-            plan   = planCanonicalStorageMigration(db);
+            plan     = planCanonicalStorageMigration(db);
 
         expect(plan.blockers).toEqual([
             'node-user-id-disagreement:alice->@alice'
@@ -575,7 +575,7 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         insertEdge(db, {id: 'edge-01', source: 'MESSAGE:rollback', target: 'alice', type: 'SENT_BY'});
         insertEdge(db, {id: 'edge-02', source: 'MESSAGE:rollback', target: 'bob', type: 'SENT_TO'});
 
-        const before       = snapshotGraph(db),
+        const before    = snapshotGraph(db),
             beforeAudit = auditCanonicalStorage(db);
 
         db.exec(`
@@ -614,16 +614,16 @@ test.describe('ai/scripts/migrations/canonicalizeStoredAgentIdentities', () => {
         expect(first.after).toEqual({aliasNodes: 0, identityEdgeEndpoints: 0, messageProperties: 0});
 
         const converged = snapshotGraph(db),
-            plan      = planCanonicalStorageMigration(db),
-            second    = runCanonicalStorageMigration(db, true);
+            plan        = planCanonicalStorageMigration(db),
+            second      = runCanonicalStorageMigration(db, true);
 
         expect(plan).toEqual({
-            aliasNodes       : [],
-            blockers         : [],
-            edgeDeletes      : [],
-            edgeUpdates      : [],
+            aliasNodes        : [],
+            blockers          : [],
+            edgeDeletes       : [],
+            edgeUpdates       : [],
             messageNodeUpdates: [],
-            skipped          : []
+            skipped           : []
         });
         expect(second).toMatchObject({
             applied            : true,

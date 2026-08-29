@@ -4,8 +4,8 @@ import os                 from 'node:os';
 import path               from 'node:path';
 import {fileURLToPath}    from 'node:url';
 import {load as yamlLoad} from 'js-yaml';
-import Neo                from '../../../../src/Neo.mjs';
-import '../../../../src/core/_export.mjs';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import ConfigProvider, {createConfigProxy} from '../../../../ai/ConfigProvider.mjs';
 import {
     CANONICAL_PLANE_ID,

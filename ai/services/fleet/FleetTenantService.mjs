@@ -6,7 +6,7 @@ import {
     InitializeResultSchema,
     SUPPORTED_PROTOCOL_VERSIONS
 } from '@modelcontextprotocol/sdk/types.js';
-import Base                        from '../../../src/core/Base.mjs';
+import Base                        from 'neo.mjs/src/core/Base.mjs';
 import AiConfig                    from '../../config.mjs';
 import {resolveFleetCredentialKey} from './FleetRegistryService.mjs';
 import {

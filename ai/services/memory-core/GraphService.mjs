@@ -1,7 +1,7 @@
 import path                            from 'path';
 import aiConfig                        from '../../mcp/server/memory-core/config.mjs';
 import logger                          from '../../mcp/server/memory-core/logger.mjs';
-import Base                            from '../../../src/core/Base.mjs';
+import Base                            from 'neo.mjs/src/core/Base.mjs';
 import CoreDatabase                    from '../../../ai/graph/Database.mjs';
 import SQLite                          from '../../../ai/graph/storage/SQLite.mjs';
 import { IDENTITIES }                  from '../../../ai/graph/identityRoots.mjs';

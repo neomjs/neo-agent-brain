@@ -3,8 +3,8 @@ import fs              from 'fs-extra';
 import {spawn}         from 'child_process';
 import net             from 'net';
 import path            from 'path';
-import Base            from '../../../src/core/Base.mjs';
-import ClassSystemUtil from '../../../src/util/ClassSystem.mjs';
+import Base            from 'neo.mjs/src/core/Base.mjs';
+import ClassSystemUtil from 'neo.mjs/src/util/ClassSystem.mjs';
 import AiConfig        from '../../config.mjs';
 import HealthService, {
     createEmbeddingProbeTimeoutError

@@ -13,9 +13,9 @@ setup({
     }
 });
 
-import {test, expect}         from '@playwright/test';
-import Neo                    from '../../../../../../../../src/Neo.mjs';
-import * as core              from '../../../../../../../../src/core/_export.mjs';
+import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import RequestContextService, {
     CORE_SWARM_AGENT_IDS,
     CORE_SWARM_USER_IDS,
@@ -231,27 +231,27 @@ test.describe('Module-scope exports: SHARED_USER_ID + normalizeUserId (#10556, #
 
     test('resolveSummaryVisibilityUserId promotes core-swarm summaries to shared', () => {
         expect(resolveSummaryVisibilityUserId({
-            userId: 'neo-gemini-pro',
+            userId             : 'neo-gemini-pro',
             participatingAgents: '@neo-gpt'
         })).toBe(SHARED_USER_ID);
 
         expect(resolveSummaryVisibilityUserId({
-            userId: undefined,
+            userId             : undefined,
             participatingAgents: '@neo-opus-ada'
         })).toBe(SHARED_USER_ID);
 
         expect(resolveSummaryVisibilityUserId({
-            userId: 'neo-opus-vega',
+            userId             : 'neo-opus-vega',
             participatingAgents: '@neo-opus-vega'
         })).toBe(SHARED_USER_ID);
 
         expect(resolveSummaryVisibilityUserId({
-            userId: '@alice',
+            userId             : '@alice',
             participatingAgents: '@alice'
         })).toBe('alice');
 
         expect(resolveSummaryVisibilityUserId({
-            userId: undefined,
+            userId             : undefined,
             participatingAgents: ''
         })).toBeUndefined();
     });

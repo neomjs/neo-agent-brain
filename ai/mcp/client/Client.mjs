@@ -2,7 +2,7 @@ import {Client as McpSdkClient}        from '@modelcontextprotocol/sdk/client/in
 import {SSEClientTransport}            from '@modelcontextprotocol/sdk/client/sse.js';
 import {StdioClientTransport}          from '@modelcontextprotocol/sdk/client/stdio.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import Base                            from '../../../src/core/Base.mjs';
+import Base                            from 'neo.mjs/src/core/Base.mjs';
 import ClientConfig                    from './config.mjs';
 import ToolService                     from '../ToolService.mjs';
 

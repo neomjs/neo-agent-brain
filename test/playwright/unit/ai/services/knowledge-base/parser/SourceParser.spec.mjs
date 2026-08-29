@@ -14,8 +14,8 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * @summary Verifies SourceParser handles modern ES syntax that acorn's older
@@ -80,7 +80,7 @@ export default Tool;
 
     test('returns empty array (warn-not-throw) for truly malformed source', () => {
         const fixture = `import x from 'y'; this is not valid javascript {{{`;
-        const chunks = SourceParser.parse(fixture, 'fixture/malformed.mjs');
+        const chunks  = SourceParser.parse(fixture, 'fixture/malformed.mjs');
 
         // Parse failure path: chunks=[] (warning logged, caller continues
         // with empty result rather than crashing the KB sync). The

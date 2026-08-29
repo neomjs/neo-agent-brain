@@ -20,8 +20,8 @@
  * retire only after the applied migration reports a clean census.
  */
 
-import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import path                           from 'node:path';
+import {fileURLToPath}                from 'node:url';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -174,10 +174,10 @@ function mergeEdgeData(rows, keeper) {
 
     return {
         ...keeper.data,
-        id        : keeper.id,
-        source    : keeper.nextSource,
-        target    : keeper.nextTarget,
-        type      : keeper.type,
+        id    : keeper.id,
+        source: keeper.nextSource,
+        target: keeper.nextTarget,
+        type  : keeper.type,
         properties
     };
 }
@@ -206,12 +206,12 @@ function addSkip(skipped, reason) {
  * @returns {Object} Deterministic migration plan.
  */
 export function planCanonicalStorageMigration(db) {
-    const nodeRows  = db.prepare('SELECT id, user_id, data FROM Nodes ORDER BY id').all(),
-        edgeRows    = db.prepare('SELECT id, user_id, source, target, type, data FROM Edges ORDER BY id').all(),
-        nodesById   = indexNodes(nodeRows),
-        aliasMap    = new Map(),
-        skipped     = new Set(),
-        blockers    = [];
+    const nodeRows = db.prepare('SELECT id, user_id, data FROM Nodes ORDER BY id').all(),
+        edgeRows   = db.prepare('SELECT id, user_id, source, target, type, data FROM Edges ORDER BY id').all(),
+        nodesById  = indexNodes(nodeRows),
+        aliasMap   = new Map(),
+        skipped    = new Set(),
+        blockers   = [];
 
     // A node may be globally merged only when BOTH rows are proven AgentIdentity
     // nodes. Wrong-type lookalikes remain intact; identity-semantic edges around
@@ -231,8 +231,8 @@ export function planCanonicalStorageMigration(db) {
     }
 
     const plannedEdges = edgeRows.map(row => {
-        const data = parseGraphData(row.data, row.id);
-        let nextSource = aliasMap.get(row.source) || row.source,
+        const data       = parseGraphData(row.data, row.id);
+        let   nextSource = aliasMap.get(row.source) || row.source,
             nextTarget = aliasMap.get(row.target) || row.target;
 
         if (MAILBOX_IDENTITY_EDGE_TYPES.has(row.type)) {
@@ -274,11 +274,11 @@ export function planCanonicalStorageMigration(db) {
         }
 
         const ordered = [...rows].sort((left, right) => {
-            const leftCanonical  = left.source === left.nextSource && left.target === left.nextTarget ? 0 : 1,
-                rightCanonical = right.source === right.nextSource && right.target === right.nextTarget ? 0 : 1;
+            const leftCanonical = left.source === left.nextSource && left.target === left.nextTarget ? 0 : 1,
+                rightCanonical  = right.source === right.nextSource && right.target === right.nextTarget ? 0 : 1;
             return leftCanonical - rightCanonical || left.id.localeCompare(right.id);
         });
-        const keeper     = ordered[0],
+        const keeper   = ordered[0],
             mergedData = mergeEdgeData(rows, keeper),
             nextRow    = {...keeper, source: keeper.nextSource, target: keeper.nextTarget, data: mergedData};
 
@@ -304,11 +304,11 @@ export function planCanonicalStorageMigration(db) {
         }
 
         const properties = {...(row.data.properties || {})};
-        let changed = false;
+        let   changed    = false;
 
         for (const [property, targets] of [['from', sentByTargets], ['to', sentToTargets]]) {
-            const current  = properties[property],
-                resolved = resolveStoredDirectIdentity(current, nodesById);
+            const current = properties[property],
+                resolved  = resolveStoredDirectIdentity(current, nodesById);
 
             addSkip(skipped, resolved.reason);
             if (targets.length === 0) {
@@ -320,7 +320,7 @@ export function planCanonicalStorageMigration(db) {
             }
 
             const edgeTarget = targets[0],
-                comparable = resolved.changed ? resolved.value : current;
+                comparable   = resolved.changed ? resolved.value : current;
 
             if (current != null && comparable !== edgeTarget) {
                 blockers.push(`message-${property}-edge-disagreement:${row.id}:${String(current)}!=${edgeTarget}`);
@@ -338,12 +338,12 @@ export function planCanonicalStorageMigration(db) {
     }
 
     return {
-        aliasNodes: [...aliasMap].sort(([left], [right]) => left.localeCompare(right)),
-        blockers   : [...new Set(blockers)].sort(),
-        edgeDeletes: edgeDeletes.sort((left, right) => left.id.localeCompare(right.id)),
-        edgeUpdates: edgeUpdates.sort((left, right) => left.id.localeCompare(right.id)),
+        aliasNodes        : [...aliasMap].sort(([left], [right]) => left.localeCompare(right)),
+        blockers          : [...new Set(blockers)].sort(),
+        edgeDeletes       : edgeDeletes.sort((left, right) => left.id.localeCompare(right.id)),
+        edgeUpdates       : edgeUpdates.sort((left, right) => left.id.localeCompare(right.id)),
         messageNodeUpdates: messageNodeUpdates.sort((left, right) => left.id.localeCompare(right.id)),
-        skipped: [...skipped].sort()
+        skipped           : [...skipped].sort()
     };
 }
 
@@ -391,7 +391,7 @@ export function auditCanonicalStorage(db) {
  */
 export function runCanonicalStorageMigration(db, apply = false) {
     const before = auditCanonicalStorage(db),
-        plan   = planCanonicalStorageMigration(db);
+        plan     = planCanonicalStorageMigration(db);
 
     if (apply && plan.blockers.length) {
         throw new Error(`Canonical identity migration blocked: ${plan.blockers.join(', ')}`);
@@ -416,7 +416,7 @@ export function runCanonicalStorageMigration(db, apply = false) {
     }
 
     const after = apply ? auditCanonicalStorage(db) : before,
-        clean = Object.values(after).every(count => count === 0) &&
+        clean   = Object.values(after).every(count => count === 0) &&
             plan.blockers.length === 0 && plan.skipped.length === 0;
 
     return {
@@ -471,14 +471,14 @@ async function main() {
     if (!dbPath) {
         // Genuine CLI entrypoint: consume the reactive AiConfig SSOT lazily at the use site.
         // Keeping this behind --help preserves bootstrap-free imports and flag discovery.
-        await import('../../../src/Neo.mjs');
-        await import('../../../src/core/_export.mjs');
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
         const {default: aiConfig} = await import('../../mcp/server/memory-core/config.mjs');
         dbPath = aiConfig.storagePaths.graph;
     }
 
     const {default: Database} = await import('better-sqlite3'),
-        db = new Database(dbPath, {verbose: null});
+        db                    = new Database(dbPath, {verbose: null});
 
     try {
         const result = runCanonicalStorageMigration(db, args.apply);

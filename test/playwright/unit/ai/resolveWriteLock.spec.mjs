@@ -1,5 +1,5 @@
-import {test, expect}      from '@playwright/test';
-import {resolveWriteLock} from '../../../../src/ai/resolveWriteLock.mjs';
+import {test, expect}     from '@playwright/test';
+import {resolveWriteLock} from 'neo.mjs/src/ai/resolveWriteLock.mjs';
 
 // Pure decision core — imported directly (no live heap, no WriteGuard, no socket), so the four enforcement
 // outcomes are provable in isolation. Mirrors deriveSubtreePath.spec / parseAgentEnvelope.spec.

@@ -9,7 +9,7 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../src/Neo.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
 
 test.describe('Neo.ai.Client Dispatcher', () => {
     let client;
@@ -18,7 +18,7 @@ test.describe('Neo.ai.Client Dispatcher', () => {
         // Mock Neo.currentWorker which is required by Window.mjs and Client.mjs
         if (!Neo.currentWorker) {
             Neo.currentWorker = {
-                on: () => {},
+                on            : () => {},
                 isSharedWorker: false
             };
         }
@@ -31,7 +31,7 @@ test.describe('Neo.ai.Client Dispatcher', () => {
 
     test.beforeEach(async () => {
         // We need to import the class to ensure it's loaded, even if it's a singleton
-        const { default: Client } = await import('../../../../src/ai/Client.mjs');
+        const { default: Client } = await import('neo.mjs/src/ai/Client.mjs');
         
         client = Neo.ai.Client;
         if (!client) {
@@ -40,7 +40,7 @@ test.describe('Neo.ai.Client Dispatcher', () => {
     });
 
     test('should route check_namespace to RuntimeService.checkNamespace', async () => {
-        let called = false;
+        let   called     = false;
         const originalFn = client.services.runtime.checkNamespace;
         
         client.services.runtime.checkNamespace = (params) => {
@@ -57,7 +57,7 @@ test.describe('Neo.ai.Client Dispatcher', () => {
     });
 
     test('should route get_namespace_tree to RuntimeService.getNamespaceTree', async () => {
-        let called = false;
+        let   called     = false;
         const originalFn = client.services.runtime.getNamespaceTree;
         
         client.services.runtime.getNamespaceTree = (params) => {
@@ -73,7 +73,7 @@ test.describe('Neo.ai.Client Dispatcher', () => {
     });
 
     test('should route get_neo_config to RuntimeService.getNeoConfig', async () => {
-        let called = false;
+        let   called     = false;
         const originalFn = client.services.runtime.getNeoConfig;
         
         client.services.runtime.getNeoConfig = (params) => {

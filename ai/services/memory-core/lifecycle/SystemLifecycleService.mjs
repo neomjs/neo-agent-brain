@@ -1,4 +1,4 @@
-import Base                      from '../../../../src/core/Base.mjs';
+import Base                      from 'neo.mjs/src/core/Base.mjs';
 import ChromaLifecycleService    from './ChromaLifecycleService.mjs';
 import InferenceLifecycleService from './InferenceLifecycleService.mjs';
 import logger                    from '../../../mcp/server/memory-core/logger.mjs';

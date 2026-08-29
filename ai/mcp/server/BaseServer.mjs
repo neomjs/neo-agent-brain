@@ -2,7 +2,7 @@ import {McpServer}                                     from '@modelcontextprotoc
 import {CallToolRequestSchema, ListToolsRequestSchema} from '@modelcontextprotocol/sdk/types.js';
 import path                                            from 'node:path';
 import {fileURLToPath}                                 from 'node:url';
-import Base                                            from '../../../src/core/Base.mjs';
+import Base                                            from 'neo.mjs/src/core/Base.mjs';
 import {
     assertPlaneCoherence,
     assertPlaneMemberCoherence,

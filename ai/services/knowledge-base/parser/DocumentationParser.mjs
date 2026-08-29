@@ -1,4 +1,4 @@
-import Base from '../../../../src/core/Base.mjs';
+import Base from 'neo.mjs/src/core/Base.mjs';
 
 const sectionsRegex = /(?=^#+\s)/m;
 
@@ -47,7 +47,7 @@ class DocumentationParser extends Base {
             sections.forEach(section => {
                 if (section.trim() === '') return;
                 const headingMatch = section.match(/^#+\s(.*)/);
-                const chunk = {
+                const chunk        = {
                     type,
                     kind   : 'guide',
                     name   : `${item.name} - ${headingMatch ? headingMatch[1] : item.name}`,

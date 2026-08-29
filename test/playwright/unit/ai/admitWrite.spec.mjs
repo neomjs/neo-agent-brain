@@ -12,11 +12,11 @@ setup({
 });
 
 import {test, expect}  from '@playwright/test';
-import Neo             from '../../../../src/Neo.mjs';
-import * as core       from '../../../../src/core/_export.mjs';
-import InstanceService from '../../../../src/ai/client/InstanceService.mjs';
-import WriteGuard      from '../../../../src/ai/WriteGuard.mjs';
-import {admitWrite}    from '../../../../src/ai/admitWrite.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceService from 'neo.mjs/src/ai/client/InstanceService.mjs';
+import WriteGuard      from 'neo.mjs/src/ai/WriteGuard.mjs';
+import {admitWrite}    from 'neo.mjs/src/ai/admitWrite.mjs';
 
 // admitWrite is the pure seam joining resolveWriteLock (the decision) to a WriteGuard (the held-lock authority).
 // The decision branches are isolated with a STUB guard — so we can assert *whether* the authority is consulted and

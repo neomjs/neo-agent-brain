@@ -12,8 +12,8 @@ setup({
 });
 
 import {test, expect}                       from '@playwright/test';
-import Neo                                  from '../../../../../../../src/Neo.mjs';
-import * as core                            from '../../../../../../../src/core/_export.mjs';
+import Neo                                  from 'neo.mjs/src/Neo.mjs';
+import * as core                            from 'neo.mjs/src/core/_export.mjs';
 import {createDynamicTextEmbeddingFunction} from '../../../../../../../ai/services/shared/vector/chromaClientPrimitives.mjs';
 import TextEmbeddingService                 from '../../../../../../../ai/services/memory-core/TextEmbeddingService.mjs';
 import {runWithProviderActivityContext}     from '../../../../../../../ai/services/shared/providerActivityLedger.mjs';

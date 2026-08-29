@@ -665,8 +665,8 @@ async function main() {
     // Fact gathering (the side-effect half; every Fleet read hits the ONE long-lived HTTP owner).
     // The Neo bootstrap + graph/config imports stay LAZY so `--help` and the module import remain
     // runnable in a bare fresh process.
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
     const
         // the graph db path is OWNED by the memory-core server config (its useTestDatabase-derived

@@ -16,8 +16,8 @@ setup({
 import {test, expect} from '@playwright/test';
 import fs             from 'fs-extra';
 import path           from 'path';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * @summary Unit coverage for the heartbeat concurrency mutex helper.
@@ -87,7 +87,7 @@ test.describe('ai/scripts/heartbeatLock', () => {
         const fresh = await lockModule.inspectHeartbeatLock({
             lockPath,
             staleAfterMs: 1000,
-            now: new Date()
+            now         : new Date()
         });
 
         expect(fresh.active).toBe(true);
@@ -100,7 +100,7 @@ test.describe('ai/scripts/heartbeatLock', () => {
         const stale = await lockModule.inspectHeartbeatLock({
             lockPath,
             staleAfterMs: 1000,
-            now: new Date()
+            now         : new Date()
         });
 
         expect(stale.active).toBe(false);
@@ -151,8 +151,8 @@ test.describe('ai/scripts/heartbeatLock', () => {
                   os             = (await import('os')).default,
                   repoRoot       = process.cwd(),
                   bootstrap      = [
-                      `await import('file://${path.resolve(repoRoot, 'src/Neo.mjs')}');`,
-                      `await import('file://${path.resolve(repoRoot, 'src/core/_export.mjs')}');`,
+                      `await import(${JSON.stringify(import.meta.resolve('neo.mjs/src/Neo.mjs'))});`,
+                      `await import(${JSON.stringify(import.meta.resolve('neo.mjs/src/core/_export.mjs'))});`,
                       `const {default: AiConfig} = await import('file://${path.resolve(repoRoot, 'ai/config.mjs')}');`,
                       "const p = (await import('node:path')).default;",
                       'const raw = AiConfig.heartbeatConcurrencyLockPath;',

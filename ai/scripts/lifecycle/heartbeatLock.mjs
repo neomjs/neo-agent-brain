@@ -31,9 +31,9 @@
  * @see ai/daemons/SwarmHeartbeatService.mjs
  * @see ai/configBase.mjs `heartbeatConcurrencyLockPath`
  */
-import {spawn} from 'child_process';
-import fs      from 'fs-extra';
-import path    from 'path';
+import {spawn}         from 'child_process';
+import fs              from 'fs-extra';
+import path            from 'path';
 import {fileURLToPath} from 'url';
 
 export const DEFAULT_STALE_LOCK_MS = 10 * 60 * 1000;
@@ -212,8 +212,8 @@ function printUsage() {
  * @private
  */
 async function resolveConfiguredLockPath() {
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
     const {default: AiConfig} = await import('../../config.mjs');
 
@@ -223,8 +223,8 @@ async function resolveConfiguredLockPath() {
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 
 if (isMain) {
-    const separatorIndex = process.argv.indexOf('--');
-    const commandArgs    = separatorIndex === -1 ? process.argv.slice(2) : process.argv.slice(separatorIndex + 1);
+    const separatorIndex     = process.argv.indexOf('--');
+    const commandArgs        = separatorIndex === -1 ? process.argv.slice(2) : process.argv.slice(separatorIndex + 1);
     const [command, ...args] = commandArgs;
 
     if (!command) {

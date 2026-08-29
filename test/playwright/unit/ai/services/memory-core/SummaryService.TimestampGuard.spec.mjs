@@ -13,11 +13,11 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
-import SummaryService from '../../../../../../ai/services/memory-core/SummaryService.mjs';
-import StorageRouter  from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
+import {test, expect}        from '@playwright/test';
+import Neo                   from 'neo.mjs/src/Neo.mjs';
+import * as core             from 'neo.mjs/src/core/_export.mjs';
+import SummaryService        from '../../../../../../ai/services/memory-core/SummaryService.mjs';
+import StorageRouter         from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
 import {resolveRowTimestamp} from '../../../../../../ai/services/memory-core/helpers/resolveRowTimestamp.mjs';
 
 /**

@@ -3,7 +3,7 @@ import {createHash}                       from 'crypto';
 import {readFileSync}                     from 'fs';
 import path                               from 'path';
 import {promisify}                        from 'util';
-import Base                               from '../../../src/core/Base.mjs';
+import Base                               from 'neo.mjs/src/core/Base.mjs';
 import GraphqlService                     from './GraphqlService.mjs';
 import aiConfig                           from '../../mcp/server/github-workflow/config.mjs';
 import logger                             from '../../mcp/server/github-workflow/logger.mjs';
@@ -1043,7 +1043,7 @@ async function buildMergeReadinessProjection({
         checksEvidenceCommitOid: null,
         checksEvidenceStatus   : 'not-observable-from-review-source'
     };
-    const requiredSet         = {
+    const requiredSet = {
         source  : `GET ${rulesPath}`,
         digest  : digestValue(requiredContexts),
         contexts: requiredContexts

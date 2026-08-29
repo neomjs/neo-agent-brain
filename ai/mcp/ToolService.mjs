@@ -5,7 +5,7 @@ import {buildZodSchema,
         buildOutputZodSchema,
         resolveRef,
         toOpenApiJsonSchema}                              from './validation/openApiValidator.mjs';
-import Base                                               from '../../src/core/Base.mjs';
+import Base                                               from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * Label prefixing the advertised-surface digest inside the carrier tool's description.

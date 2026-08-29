@@ -4,7 +4,7 @@ import crypto    from 'crypto';
 import fs        from 'fs';
 import path      from 'path';
 import WebSocket from 'ws';
-import Base      from '../../../src/core/Base.mjs';
+import Base      from 'neo.mjs/src/core/Base.mjs';
 import logger    from '../../mcp/server/neural-link/logger.mjs';
 
 /**

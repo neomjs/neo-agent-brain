@@ -1,5 +1,5 @@
-import Neo                 from '../../../src/Neo.mjs';
-import * as core           from '../../../src/core/_export.mjs';
+import Neo                 from 'neo.mjs/src/Neo.mjs';
+import * as core           from 'neo.mjs/src/core/_export.mjs';
 import MC_Config           from '../../mcp/server/memory-core/config.mjs';
 import MC_DatabaseService  from '../../services/memory-core/DatabaseService.mjs';
 import MC_ChromaManager    from '../../services/memory-core/managers/ChromaManager.mjs';

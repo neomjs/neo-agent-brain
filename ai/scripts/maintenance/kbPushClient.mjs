@@ -3,9 +3,9 @@
 // wrapper from a tenant checkout or CI job.
 import 'dotenv/config';
 import {Command}       from 'commander';
-import Neo             from '../../../src/Neo.mjs';
-import * as core       from '../../../src/core/_export.mjs';
-import InstanceManager from '../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs';
 import {pathToFileURL} from 'url';
 import Client          from '../../mcp/client/Client.mjs';

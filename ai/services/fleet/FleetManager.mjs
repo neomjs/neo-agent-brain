@@ -1,4 +1,4 @@
-import Base                             from '../../../src/core/Base.mjs';
+import Base                             from 'neo.mjs/src/core/Base.mjs';
 import FleetLifecycleService            from './FleetLifecycleService.mjs';
 import {inspectFleetRepos}              from './inspectFleetRepos.mjs';
 import {readFleetPresenceSnapshot}      from './fleetPresenceStateAdapter.mjs';

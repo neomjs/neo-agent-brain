@@ -17,7 +17,7 @@ import {test, expect} from '@playwright/test';
 import fs             from 'fs-extra';
 import os             from 'node:os';
 import path           from 'node:path';
-import Neo            from '../../../../../../../../src/Neo.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
 
 /**
  * Reporter coverage for the self-report side of the resolved-config channel.

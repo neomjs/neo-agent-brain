@@ -1,4 +1,4 @@
-import Model from '../../src/data/Model.mjs';
+import Model from 'neo.mjs/src/data/Model.mjs';
 
 /**
  * Represents a single Node within the Native Edge Graph Database engine. 

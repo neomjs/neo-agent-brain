@@ -3,7 +3,7 @@ import {classifyExportCompleteness, EXPORT_COMPLETENESS}                        
 import {partitionRowsByVectorValidity}                                                                                     from '../memory-core/helpers/vectorWriteInvariant.mjs';
 import {validateJsonlSourceFile}                                                                                           from '../memory-core/helpers/vectorJsonlSourceValidation.mjs';
 import {assertNoNaturalKeyDivergence, classifyIncomingRow, DIVERGENCE_SCAN, KB_MERGE_NATURAL_KEY_DIVERGENCE, naturalKeyOf} from './helpers/mergeIdentityContract.mjs';
-import Base                                                                                                                from '../../../src/core/Base.mjs';
+import Base                                                                                                                from 'neo.mjs/src/core/Base.mjs';
 import ChromaManager                                                                                                       from './ChromaManager.mjs';
 import DestructiveOperationGuard                                                                                           from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import VectorService                                                                                                       from './VectorService.mjs';

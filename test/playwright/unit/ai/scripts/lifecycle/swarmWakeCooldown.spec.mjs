@@ -18,8 +18,8 @@ import {execFileSync, spawnSync} from 'child_process';
 import path                      from 'path';
 import fs                        from 'fs-extra';
 import os                        from 'os';
-import Neo                       from '../../../../../../src/Neo.mjs';
-import * as core                 from '../../../../../../src/core/_export.mjs';
+import Neo                       from 'neo.mjs/src/Neo.mjs';
+import * as core                 from 'neo.mjs/src/core/_export.mjs';
 
 test.describe('ai/scripts/swarmWakeCooldown', () => {
     // Shared cooldown state path; focused runs must not race the file state.

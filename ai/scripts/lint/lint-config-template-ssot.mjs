@@ -447,7 +447,7 @@ async function withTier1ConfigForLint(rootDir, callback) {
     globalThis.Neo ??= {};
     globalThis.Neo.config ??= {environment: 'development'};
 
-    await import(pathToFileURL(path.join(rootDir, 'src/Neo.mjs')).href);
+    await import('neo.mjs/src/Neo.mjs');
 
     let transientRoot;
 

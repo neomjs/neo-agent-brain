@@ -14,17 +14,17 @@ setup({
 });
 
 import {test, expect}     from '@playwright/test';
-import Neo                from '../../../../src/Neo.mjs';
-import * as core          from '../../../../src/core/_export.mjs';
-import Component          from '../../../../src/component/Base.mjs';
-import Container          from '../../../../src/container/Base.mjs';
-import Store              from '../../../../src/data/Store.mjs';
-import ComponentManager   from '../../../../src/manager/Component.mjs';
-import InstanceManager    from '../../../../src/manager/Instance.mjs';
-import StoreManager       from '../../../../src/manager/Store.mjs';
-import InstanceService    from '../../../../src/ai/client/InstanceService.mjs';
-import TransactionService from '../../../../src/ai/TransactionService.mjs';
-import WriteGuard         from '../../../../src/ai/WriteGuard.mjs';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
+import Component          from 'neo.mjs/src/component/Base.mjs';
+import Container          from 'neo.mjs/src/container/Base.mjs';
+import Store              from 'neo.mjs/src/data/Store.mjs';
+import ComponentManager   from 'neo.mjs/src/manager/Component.mjs';
+import InstanceManager    from 'neo.mjs/src/manager/Instance.mjs';
+import StoreManager       from 'neo.mjs/src/manager/Store.mjs';
+import InstanceService    from 'neo.mjs/src/ai/client/InstanceService.mjs';
+import TransactionService from 'neo.mjs/src/ai/TransactionService.mjs';
+import WriteGuard         from 'neo.mjs/src/ai/WriteGuard.mjs';
 
 const ID  = {agentId: 'agent-a', sessionId: 'sess-a'};
 const ID2 = {agentId: 'agent-b', sessionId: 'sess-b'};

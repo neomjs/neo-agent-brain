@@ -3,7 +3,7 @@
 // at file bottom) before this module loads. This lane has NO standalone daemon — the orchestrator owns
 // its cadence, dispatch, and heavy-maintenance lease.
 import AiConfig                                                                     from '../../config.mjs';
-import Base                                                                         from '../../../src/core/Base.mjs';
+import Base                                                                         from 'neo.mjs/src/core/Base.mjs';
 import {getTemporalSummaryLevel, UNIFIED_PARTITION}                                 from '../../graph/temporalSummarySchema.mjs';
 import {Memory_GraphService as GraphService, Memory_StorageRouter as StorageRouter} from '../../services.mjs';
 import {

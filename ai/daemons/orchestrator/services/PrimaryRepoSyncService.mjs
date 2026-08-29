@@ -1,7 +1,7 @@
 // Neo + core/_export bootstrap belongs to the orchestrator-daemon entry point.
 import {execFileSync} from 'child_process';
 import path           from 'path';
-import Base           from '../../../../src/core/Base.mjs';
+import Base           from 'neo.mjs/src/core/Base.mjs';
 const DEV_BRANCH     = 'dev';
 const REMOTE_NAME    = 'origin';
 const REMOTE_REF     = `${REMOTE_NAME}/${DEV_BRANCH}`;

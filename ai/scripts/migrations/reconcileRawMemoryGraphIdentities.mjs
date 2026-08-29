@@ -548,8 +548,8 @@ async function main() {
 
     assertApplyPosture(options);
 
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
     const
         {default: aiConfig} = await import('../../mcp/server/memory-core/config.mjs'),

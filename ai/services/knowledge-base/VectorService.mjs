@@ -5,7 +5,7 @@ import TextEmbeddingService, {
 }                             from '../memory-core/TextEmbeddingService.mjs';
 import mcConfig                from '../../mcp/server/memory-core/config.mjs';
 import {isProviderTimeoutCode} from '../../provider/createTimeoutError.mjs';
-import Base                    from '../../../src/core/Base.mjs';
+import Base                    from 'neo.mjs/src/core/Base.mjs';
 import {IMPLEMENTED_EMBEDDING_PROVIDERS, resolveEmbeddingProviderModel}
                               from '../../embeddingProviders.mjs';
 import {resolveEmbeddingAdmissionBand}

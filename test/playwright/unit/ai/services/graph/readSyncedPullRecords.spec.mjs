@@ -1,7 +1,7 @@
 import {setup}                 from '../../../../setup.mjs';
 import {test, expect}          from '@playwright/test';
-import Neo                     from '../../../../../../src/Neo.mjs';
-import * as core               from '../../../../../../src/core/_export.mjs';
+import Neo                     from 'neo.mjs/src/Neo.mjs';
+import * as core               from 'neo.mjs/src/core/_export.mjs';
 import {readSyncedPullRecords} from '../../../../../../ai/services/graph/issueFocusSections.mjs';
 import fs                      from 'node:fs';
 import os                      from 'node:os';

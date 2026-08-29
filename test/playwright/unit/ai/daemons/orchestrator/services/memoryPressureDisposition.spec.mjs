@@ -1,6 +1,6 @@
 import {test, expect}                    from '@playwright/test';
-import Neo                               from '../../../../../../../src/Neo.mjs';
-import * as core                         from '../../../../../../../src/core/_export.mjs';
+import Neo                               from 'neo.mjs/src/Neo.mjs';
+import * as core                         from 'neo.mjs/src/core/_export.mjs';
 import {ContainerHealthDiagnosisService} from '../../../../../../../ai/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs';
 import {
     MEMORY_PRESSURE_UNKNOWN_REASONS,

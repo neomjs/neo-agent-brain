@@ -1,9 +1,9 @@
-import path                     from 'path';
-import {fileURLToPath}          from 'url';
-import Base                     from '../../../src/core/Base.mjs';
-import ConnectionService        from './ConnectionService.mjs';
-import logger                   from '../../mcp/server/neural-link/logger.mjs';
-import RuntimeFreshnessService  from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
+import path                    from 'path';
+import {fileURLToPath}         from 'url';
+import Base                    from 'neo.mjs/src/core/Base.mjs';
+import ConnectionService       from './ConnectionService.mjs';
+import logger                  from '../../mcp/server/neural-link/logger.mjs';
+import RuntimeFreshnessService from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
 
 const
     serviceDir              = path.dirname(fileURLToPath(import.meta.url)),
@@ -142,11 +142,11 @@ class HealthService extends Base {
                     // leaving the operator to guess whether the Bridge is down, slow, or unspawnable.
                     ...(status.lastSpawnFailure ? {spawnFailure: status.lastSpawnFailure} : {})
                 },
-                sessions : status.sessions,
-                windows  : status.windows,
-                agents   : status.agents,
-                version  : process.env.npm_package_version || '1.0.0',
-                uptime   : process.uptime(),
+                sessions        : status.sessions,
+                windows         : status.windows,
+                agents          : status.agents,
+                version         : process.env.npm_package_version || '1.0.0',
+                uptime          : process.uptime(),
                 runtimeFreshness: await this.resolveRuntimeFreshness()
             };
         } catch (error) {

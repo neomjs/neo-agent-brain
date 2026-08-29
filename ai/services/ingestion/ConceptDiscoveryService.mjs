@@ -2,13 +2,13 @@ import fs              from 'fs';
 import path            from 'path';
 import * as yaml       from 'js-yaml';
 import {fileURLToPath} from 'url';
-import Base            from '../../../src/core/Base.mjs';
+import Base            from 'neo.mjs/src/core/Base.mjs';
 import ConceptService  from '../../services/ConceptService.mjs';
 import {
     Memory_Config as aiConfig,
     Memory_GraphService as GraphService
 } from '../../services.mjs';
-import Json                                            from '../../../src/util/Json.mjs';
+import Json                                            from 'neo.mjs/src/util/Json.mjs';
 import logger                                          from '../../mcp/server/memory-core/logger.mjs';
 import {buildGraphProvider, resolveGraphModelProvider} from '../graph/providerDispatch.mjs';
 import {assertTestWriteIsolated}                       from '../shared/storeWriteGuard.mjs';

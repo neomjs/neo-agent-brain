@@ -18,8 +18,8 @@ import fs              from 'fs';
 import path            from 'path';
 import {fileURLToPath} from 'url';
 import * as yaml       from 'js-yaml';
-import Neo             from '../../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../../src/core/_export.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * `get_class_hierarchy` answers for Neo.mjs code EXCLUSIVELY, and a deployment whose Knowledge Base

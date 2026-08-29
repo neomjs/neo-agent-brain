@@ -1,4 +1,4 @@
-import Base from '../../../../src/core/Base.mjs';
+import Base from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * @summary Defines the rigid interface contract for all vector database engines in the Memory Core.

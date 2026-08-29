@@ -1,10 +1,10 @@
 // Neo namespace bootstrap (entry-point invariant) — business-metric ingestion probe CLI.
 // `InstanceManager` binds Neo.find/findFirst/get aliases + consumes pre-singleton
 // `Neo.idMap`; required for any consumer of the Neo singleton API.
-import Neo             from '../../../src/Neo.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
 import AiConfig        from '../../config.mjs';
-import * as core       from '../../../src/core/_export.mjs';
-import InstanceManager from '../../../src/manager/Instance.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 import 'dotenv/config';
 import {execFileSync}  from 'child_process';
