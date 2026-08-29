@@ -1,6 +1,6 @@
-import {test, expect}   from '@playwright/test';
-import Neo              from '../../../../../../../src/Neo.mjs';
-import * as core        from '../../../../../../../src/core/_export.mjs';
+import {test, expect}     from '@playwright/test';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
 import EmbeddingAdmission from '../../../../../../../ai/services/memory-core/helpers/EmbeddingAdmission.mjs';
 
 // The embedding lane's single admission gate. Pure (no I/O, no config import): the budget arrives as a
@@ -119,7 +119,7 @@ test.describe('EmbeddingAdmission — weighted, live-budget, abort-aware admissi
     });
 
     test('a queued caller that aborts rejects and leaves no waiter behind', async () => {
-        const admission = gate(1),
+        const admission  = gate(1),
               controller = new AbortController();
 
         expect(admission.tryAcquire({weight: 1})).toBe(true);
