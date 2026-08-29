@@ -910,13 +910,20 @@ class TextEmbeddingService extends Base {
      * one-post-one-slot. Both the batch ceiling and the idle bypass now live in the gate, which is
      * what makes the native and queued paths share a single admission rule instead of two that agreed
      * only by coincidence.
+     *
+     * `Array.isArray` is load-bearing, NOT defensive. `inputData` is a plain string for a scalar
+     * embed, and a string has a `.length` — so reading it unconditionally charges the caller one
+     * admission unit per CHARACTER. A 400-character scalar would weigh 400 against a budget of 4 and
+     * take the entire lane. Only an array's length is an input count; every other shape is one task.
      * @param {Object} task Queued post.
      * @returns {{weight: Number, priority: String}}
      * @private
      */
     #openAiCompatibleAdmissionShape(task) {
         return {
-            weight  : EmbeddingAdmission.normaliseWeight(task?.inputData?.length),
+            weight  : Array.isArray(task?.inputData)
+                ? EmbeddingAdmission.normaliseWeight(task.inputData.length)
+                : 1,
             priority: task?.priority
         }
     }
