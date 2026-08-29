@@ -15,14 +15,14 @@ setup({
 
 import {test, expect} from '@playwright/test';
 
-import Neo            from '../../../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../../../src/core/_export.mjs';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
 
 /**
- * @summary Coverage for #10808 MCP HTTP port resolver (`resolveMcpHttpPort`).
+ * @summary Coverage for the MCP HTTP port resolver (`resolveMcpHttpPort`).
  *
  * Pins the canonical-only contract: `MCP_HTTP_PORT` is the operator-facing env var.
- * Pattern mirrors the #10810 `resolveEmbeddingProvider` testable-pure-helper extraction
+ * Pattern mirrors the `resolveEmbeddingProvider` testable-pure-helper extraction
  * (`ai/services/memory-core/helpers/embeddingProviderConfig.mjs`).
  *
  * @see Neo.ai.mcp.server.shared.helpers.DeploymentConfig#resolveMcpHttpPort
@@ -104,9 +104,9 @@ test.describe('DeploymentConfig #10808 — resolveMcpHttpPort', () => {
 });
 
 /**
- * @summary Coverage for #10808 `resolveChromaHost` / `resolveChromaPort` helpers.
+ * @summary Coverage for the `resolveChromaHost` / `resolveChromaPort` helpers.
  *
- * Pins the AC2 Chroma host/port resolution contract from the #10808 Contract Ledger.
+ * Pins the Chroma host/port resolution contract.
  * Pure-function tests; no config-template dynamic import (would trigger
  * `Namespace collision in unitTestMode` due to `Neo.setupClass` global registration
  * from re-imports). Same testable-pure-helper pattern as `resolveMcpHttpPort` above.
@@ -223,9 +223,9 @@ test.describe('DeploymentConfig.resolvePublicUrl', () => {
 
 
     test('warns and returns null for invalid URL', () => {
-        let warning = null;
-        const result = resolvePublicUrl({
-            env: { NEO_PUBLIC_URL: 'not-a-url' },
+        let   warning = null;
+        const result  = resolvePublicUrl({
+            env : { NEO_PUBLIC_URL: 'not-a-url' },
             warn: msg => { warning = msg; }
         });
         expect(result).toBeNull();

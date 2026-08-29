@@ -2,7 +2,7 @@ import crypto   from 'crypto';
 import fs       from 'fs';
 import path     from 'path';
 import AiConfig from '../../mcp/server/memory-core/config.mjs';
-import Base     from '../../../src/core/Base.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
 import {
     bytesToTokens,
     emitConsumerFriction,
@@ -13,7 +13,7 @@ import {
     clearActiveRemCallState,
     writeActiveRemCallState
 } from '../../services/memory-core/helpers/remRunStateStore.mjs';
-import Json   from '../../../src/util/Json.mjs';
+import Json   from 'neo.mjs/src/util/Json.mjs';
 import logger from '../../mcp/server/memory-core/logger.mjs';
 import {
     canonicalizeSemanticGraphNodeId,

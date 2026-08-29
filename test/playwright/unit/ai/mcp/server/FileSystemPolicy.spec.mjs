@@ -13,12 +13,12 @@ setup({
     }
 });
 
-import {test, expect}                                  from '@playwright/test';
-import {CallToolRequestSchema}                         from '@modelcontextprotocol/sdk/types.js';
-import Neo                                             from '../../../../../../src/Neo.mjs';
-import * as core                                       from '../../../../../../src/core/_export.mjs';
-import path                                            from 'path';
-import FileSystemServer                                from '../../../../../../ai/mcp/server/file-system/Server.mjs';
+import {test, expect}          from '@playwright/test';
+import {CallToolRequestSchema} from '@modelcontextprotocol/sdk/types.js';
+import Neo                     from 'neo.mjs/src/Neo.mjs';
+import * as core               from 'neo.mjs/src/core/_export.mjs';
+import path                    from 'path';
+import FileSystemServer        from '../../../../../../ai/mcp/server/file-system/Server.mjs';
 
 function makeMockMcpServer() {
     const handlers = new Map();

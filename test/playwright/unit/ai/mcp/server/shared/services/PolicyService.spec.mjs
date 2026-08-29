@@ -14,8 +14,8 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import fs             from 'fs';
 import os             from 'os';
 import path           from 'path';
@@ -28,12 +28,12 @@ test.describe('Neo.ai.mcp.server.shared.services.PolicyService (#10294)', () => 
         const protectedPath = path.join(process.cwd(), 'AGENTS_TENETS.md');
 
         expect(() => PolicyService.assertProtectedRepoRootWrite({
-            toolName              : 'write_file',
-            args                  : {absolutePath: protectedPath},
-            protectedRelativePath : 'AGENTS_TENETS.md',
-            policyId              : 'test.policy',
-            reason                : 'tenets protected',
-            tenet                 : '#10293'
+            toolName             : 'write_file',
+            args                 : {absolutePath: protectedPath},
+            protectedRelativePath: 'AGENTS_TENETS.md',
+            policyId             : 'test.policy',
+            reason               : 'tenets protected',
+            tenet                : '#10293'
         })).toThrow(PolicyRefusedError);
 
         try {

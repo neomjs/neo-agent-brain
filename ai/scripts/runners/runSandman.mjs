@@ -1,6 +1,6 @@
-import Neo           from '../../../src/Neo.mjs';
+import Neo           from 'neo.mjs/src/Neo.mjs';
 import AiConfig      from '../../config.mjs';
-import * as core     from '../../../src/core/_export.mjs';
+import * as core     from 'neo.mjs/src/core/_export.mjs';
 import Memory_Config from '../../mcp/server/memory-core/config.mjs';
 import DreamService  from '../../daemons/orchestrator/services/DreamService.mjs';
 import {

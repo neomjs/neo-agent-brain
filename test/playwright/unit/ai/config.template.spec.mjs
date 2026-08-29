@@ -3,8 +3,8 @@ import {execFileSync}   from 'node:child_process';
 import fs               from 'fs/promises';
 import os               from 'os';
 import path             from 'path';
-import Neo              from '../../../../src/Neo.mjs';
-import '../../../../src/core/_export.mjs';
+import Neo              from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import ConfigProvider, {createConfigProxy, leaf} from '../../../../ai/ConfigProvider.mjs';
 import RootConfigBase                            from '../../../../ai/configBase.mjs';
 import {CHROMA_TEST_DATABASE}                    from '../../../../ai/services/shared/vector/chromaTestIsolation.mjs';
@@ -375,7 +375,7 @@ test.describe('Tier 1 Config Immutability', () => {
 
     test('invalid embedding safe-band env values fall back before reaching consumers', () => {
         const script = `
-            import './src/Neo.mjs';
+            import 'neo.mjs/src/Neo.mjs';
             const {default: AiConfig} = await import('./ai/config.mjs');
             console.log('SAFE_BAND=' + AiConfig.localModels.embedding.safeProcessingLimitTokens);
         `;

@@ -1,4 +1,4 @@
-import Base            from '../../../../src/core/Base.mjs';
+import Base            from 'neo.mjs/src/core/Base.mjs';
 import CollectionProxy from './CollectionProxy.mjs';
 import GraphService    from '../GraphService.mjs';
 import logger          from '../../../mcp/server/memory-core/logger.mjs';

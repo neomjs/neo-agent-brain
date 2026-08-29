@@ -1,4 +1,4 @@
-import Base from '../../../../../src/core/Base.mjs';
+import Base from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * Set of argument keys that an MCP tool caller MUST NOT supply — the server always derives

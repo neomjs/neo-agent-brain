@@ -1,9 +1,9 @@
-import Button        from '../../../../src/button/Base.mjs';
-import MarkdownVdom   from '../../../../src/component/markdown/Component.mjs';
-import TextField      from '../../../../src/form/field/Text.mjs';
-import Toolbar        from '../../../../src/toolbar/Base.mjs';
-import Viewport       from '../../../../src/container/Viewport.mjs';
-import {LoadProfile}  from '../shared/LoadProfile.mjs';
+import Button        from 'neo.mjs/src/button/Base.mjs';
+import MarkdownVdom  from 'neo.mjs/src/component/markdown/Component.mjs';
+import TextField     from 'neo.mjs/src/form/field/Text.mjs';
+import Toolbar       from 'neo.mjs/src/toolbar/Base.mjs';
+import Viewport      from 'neo.mjs/src/container/Viewport.mjs';
+import {LoadProfile} from '../shared/LoadProfile.mjs';
 
 /**
  * @summary Subject A — the Neo.mjs transcript surface for the Harness Endurance Benchmark.

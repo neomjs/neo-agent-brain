@@ -1,7 +1,7 @@
 import {Command} from 'commander';
-import Neo from '../../../src/Neo.mjs';
-import '../../../src/core/_export.mjs';
-import aiConfig from '../../mcp/server/memory-core/config.mjs';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
+import aiConfig                                        from '../../mcp/server/memory-core/config.mjs';
 import {buildGraphProvider, resolveGraphModelProvider} from '../../services/graph/providerDispatch.mjs';
 
 /**
@@ -58,9 +58,9 @@ async function measureTtft(provider, prompt, options = {}) {
         {role: 'user', content: prompt}
     ];
 
-    const t0 = performance.now();
-    let t1 = null;
-    let outputChars = 0;
+    const t0          = performance.now();
+    let   t1          = null;
+    let   outputChars = 0;
 
     try {
         for await (const chunk of provider.stream(messages, options)) {
@@ -73,8 +73,8 @@ async function measureTtft(provider, prompt, options = {}) {
 
     const t2 = performance.now();
     return {
-        ttftMs     : Math.round((t1 ?? t2) - t0),
-        ttltMs     : Math.round(t2 - t0),
+        ttftMs: Math.round((t1 ?? t2) - t0),
+        ttltMs: Math.round(t2 - t0),
         outputChars
     };
 }
@@ -133,7 +133,7 @@ async function main() {
 
     const graphProvider = resolveGraphModelProvider(aiConfig);
 
-    const providerHost = graphProvider === 'ollama' ? aiConfig.ollama.host : aiConfig.openAiCompatible.host;
+    const providerHost  = graphProvider === 'ollama' ? aiConfig.ollama.host : aiConfig.openAiCompatible.host;
     const providerModel = graphProvider === 'ollama' ? aiConfig.ollama.model : aiConfig.openAiCompatible.model;
 
     console.log(`[keep-alive-probe] Graph provider: ${graphProvider} (chat modelProvider: ${aiConfig.modelProvider})`);

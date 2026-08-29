@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-import Neo from '../../src/Neo.mjs';
-import * as core from '../../src/core/_export.mjs';
-import GeminiProvider from './Gemini.mjs';
-import path from 'path';
+import Neo               from 'neo.mjs/src/Neo.mjs';
+import * as core         from 'neo.mjs/src/core/_export.mjs';
+import GeminiProvider    from './Gemini.mjs';
+import path              from 'path';
 import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
+import dotenv            from 'dotenv';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({path: path.resolve(__dirname, '../../.env'), quiet: true});

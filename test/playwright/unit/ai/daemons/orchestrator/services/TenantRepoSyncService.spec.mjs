@@ -16,14 +16,14 @@ setup({
 });
 
 import {buildEmbeddingProbeInput} from '../../../../../../../ai/services/shared/embeddingProbe.mjs';
-import {test, expect}  from '@playwright/test';
-import Neo             from '../../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../../src/manager/Instance.mjs';
-import fs              from 'fs-extra';
-import os              from 'os';
-import path            from 'path';
-import {fileURLToPath} from 'url';
+import {test, expect}             from '@playwright/test';
+import Neo                        from 'neo.mjs/src/Neo.mjs';
+import * as core                  from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager            from 'neo.mjs/src/manager/Instance.mjs';
+import fs                         from 'fs-extra';
+import os                         from 'os';
+import path                       from 'path';
+import {fileURLToPath}            from 'url';
 
 import TenantRepoSyncService from '../../../../../../../ai/daemons/orchestrator/services/TenantRepoSyncService.mjs';
 import {classifyEmbeddingRecoveryState, isRepoDue, resolveUnknownRepoSelectorFailure, YIELD_CAUSE_LEASE}
@@ -8172,7 +8172,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason          : 'periodic-sweep:60000',
             concurrencyLimit: 2,
             taskStateService,
-            healthService: {
+            healthService   : {
                 recordTaskOutcome(taskName, status, details) {
                     if (status === 'completed' && details?.repo === 't1/org/active-sibling') {
                         signalSiblingReturned()
@@ -8282,7 +8282,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             concurrencyGateTimeoutMs: 500,
             taskStateService        : createInMemoryTaskStateService(),
             leaseGuard              : async () => {},
-            tenantReposConfig: {tenantRepos: repoSlugs.map(repoSlug => ({
+            tenantReposConfig       : {tenantRepos: repoSlugs.map(repoSlug => ({
                 tenantId: 't1', repoSlug, mirrorRoot,
                 cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`
             }))},

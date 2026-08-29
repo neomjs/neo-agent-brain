@@ -13,14 +13,14 @@ setup({
     }
 });
 
-import {test, expect}        from '@playwright/test';
-import Neo                   from '../../../../../../src/Neo.mjs';
-import * as core             from '../../../../../../src/core/_export.mjs';
-import MemoryService         from '../../../../../../ai/services/memory-core/MemoryService.mjs';
-import StorageRouter         from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
-import {mkdtemp, rm}         from 'node:fs/promises';
-import os                    from 'node:os';
-import path                  from 'node:path';
+import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
+import MemoryService  from '../../../../../../ai/services/memory-core/MemoryService.mjs';
+import StorageRouter  from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
+import {mkdtemp, rm}  from 'node:fs/promises';
+import os             from 'node:os';
+import path           from 'node:path';
 import {
     drainMemoryWal,
     resetMemoryCoreLifecycle
@@ -144,9 +144,9 @@ test.describe('MemoryService — archiveMemoriesByAgentIdentity tombstone + reca
     // Seed one memory stamped to a distinct agent identity, drained into the spy collection.
     async function seedMemory({sessionId, agent}) {
         const r = await MemoryService.addMemory({
-            prompt   : `${agent} prompt`,
-            response : `${agent} response`,
-            thought  : `${agent} thought`,
+            prompt  : `${agent} prompt`,
+            response: `${agent} response`,
+            thought : `${agent} thought`,
             sessionId,
             agent
         });
@@ -217,8 +217,8 @@ test.describe('MemoryService — archiveMemoriesByAgentIdentity tombstone + reca
     });
 
     test('identity-scoped: a different identity\'s memory is NOT swept', async () => {
-        const ghostId = await seedMemory({sessionId: 'session-ghost2', agent: 'ghost-agent-2'});
-        const keepId  = await seedMemory({sessionId: 'session-keep',   agent: 'live-agent'});
+        const ghostId       = await seedMemory({sessionId: 'session-ghost2', agent: 'ghost-agent-2'});
+        const keepId        = await seedMemory({sessionId: 'session-keep',   agent: 'live-agent'});
         const ghostIdentity = await stampedIdentity(ghostId);
 
         await MemoryService.archiveMemoriesByAgentIdentity({agentIdentity: ghostIdentity});

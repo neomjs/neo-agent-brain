@@ -1,6 +1,6 @@
-import fs   from 'node:fs';
-import os   from 'node:os';
-import path from 'node:path';
+import fs         from 'node:fs';
+import os         from 'node:os';
+import path       from 'node:path';
 import {gzipSync} from 'node:zlib';
 
 import {knownEmbeddingFunctions, registerEmbeddingFunction, ChromaClient} from 'chromadb';
@@ -8,8 +8,8 @@ import Database                                                           from '
 import {setup}                                                            from '../../../../../setup.mjs';
 import {test, expect}                                                     from '@playwright/test';
 
-import '../../../../../../../src/Neo.mjs';
-import '../../../../../../../src/core/_export.mjs';
+import 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 
 import {
     acknowledgeSessionSummaryReceipt,
@@ -576,9 +576,9 @@ test.describe('sessionSummaryReceiptStore (#16105, #16114, #16115)', () => {
     });
 
     test('recovers a shape-drifted historical envelope without weakening current issuance', async () => {
-        const db         = createReceiptDb();
-        const collection = createFakeCollection();
-        const receipt    = createReceipt('historical-shape');
+        const db                      = createReceiptDb();
+        const collection              = createFakeCollection();
+        const receipt                 = createReceipt('historical-shape');
         const newerDreamInputRevision = `sha256:${'b'.repeat(64)}`;
 
         delete receipt.metadata.rawCanonical;

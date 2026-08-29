@@ -21,8 +21,8 @@ import path           from 'path';
 import {fileURLToPath,
         pathToFileURL}   from 'url';
 import * as yaml   from 'js-yaml';
-import Neo         from '../../../../../../src/Neo.mjs';
-import * as core   from '../../../../../../src/core/_export.mjs';
+import Neo         from 'neo.mjs/src/Neo.mjs';
+import * as core   from 'neo.mjs/src/core/_export.mjs';
 import AiConfig    from '../../../../../../ai/config.template.mjs';
 import ToolService from '../../../../../../ai/mcp/ToolService.mjs';
 import {

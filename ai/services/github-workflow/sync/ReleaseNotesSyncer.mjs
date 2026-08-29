@@ -1,12 +1,12 @@
-import aiConfig                               from '../../../mcp/server/github-workflow/config.mjs';
-import Base                                   from '../../../../src/core/Base.mjs';
-import crypto                                 from 'crypto';
-import fs                                     from 'fs/promises';
-import logger                                 from '../../../mcp/server/github-workflow/logger.mjs';
-import matter                                 from 'gray-matter';
-import path                                   from 'path';
-import GraphqlService                         from '../GraphqlService.mjs';
-import {FETCH_RELEASES, FETCH_LATEST_RELEASE} from '../queries/releaseQueries.mjs';
+import aiConfig                                        from '../../../mcp/server/github-workflow/config.mjs';
+import Base                                            from 'neo.mjs/src/core/Base.mjs';
+import crypto                                          from 'crypto';
+import fs                                              from 'fs/promises';
+import logger                                          from '../../../mcp/server/github-workflow/logger.mjs';
+import matter                                          from 'gray-matter';
+import path                                            from 'path';
+import GraphqlService                                  from '../GraphqlService.mjs';
+import {FETCH_RELEASES, FETCH_LATEST_RELEASE}          from '../queries/releaseQueries.mjs';
 import contentPath, {contentBucketDir, chunkNumberFor} from '../shared/contentPath.mjs';
 
 const issueSyncConfig = aiConfig.issueSync;
@@ -76,7 +76,7 @@ class ReleaseNotesSyncer extends Base {
     async fetchAndCacheReleases(metadata) {
         logger.info('Checking for new releases...');
 
-        const cachedReleases     = metadata.releases || {};
+        const cachedReleases = metadata.releases || {};
         // Persisted metadata keeps release tags as object keys and prunes body fields.
         const cachedReleaseArray = Object.entries(cachedReleases).map(([tagName, release]) => ({
             ...release,
@@ -95,7 +95,7 @@ class ReleaseNotesSyncer extends Base {
                 const latestRelease = latestData.repository.latestRelease;
                 // Sort by date to find the latest cached release.
                 cachedReleaseArray.sort((a, b) => new Date(a.publishedAt) - new Date(b.publishedAt));
-                const cachedLatest  = cachedReleaseArray[cachedReleaseArray.length - 1];
+                const cachedLatest = cachedReleaseArray[cachedReleaseArray.length - 1];
 
                 if (latestRelease && cachedLatest &&
                     latestRelease.tagName === cachedLatest.tagName &&
@@ -121,9 +121,9 @@ class ReleaseNotesSyncer extends Base {
         // into it (a catch-all bucket). Release-NOTES are floored separately in syncNotes.
         logger.info('Fetching the full release history from GitHub via GraphQL...');
 
-        let allReleases   = [];
-        let hasNextPage   = true;
-        let cursor        = null;
+        let   allReleases = [];
+        let   hasNextPage = true;
+        let   cursor      = null;
         const maxReleases = issueSyncConfig.maxReleases;
 
         while (hasNextPage && allReleases.length < maxReleases) {
@@ -186,19 +186,19 @@ class ReleaseNotesSyncer extends Base {
      */
     async syncNotes(metadata) {
         logger.info('📄 Syncing release notes...');
-        const baseDir = issueSyncConfig.contentRoot;
+        const baseDir    = issueSyncConfig.contentRoot;
         const releaseDir = contentBucketDir({
             contentRoot: baseDir,
-            type: 'release-notes'
+            type       : 'release-notes'
         });
 
         await fs.mkdir(releaseDir, { recursive: true });
 
         const indexMap = {
             metadata: {
-                shardType: 'release-notes',
+                shardType     : 'release-notes',
                 chunkThreshold: 100,
-                updatedAt: new Date().toISOString()
+                updatedAt     : new Date().toISOString()
             },
             items: {}
         };
@@ -220,7 +220,7 @@ class ReleaseNotesSyncer extends Base {
         for (const release of Object.values(this.releases)) {
             if (new Date(release.publishedAt) < startDate) continue;
             try {
-                const itemIndex = notesReleases.findIndex(r => r.tagName === release.tagName);
+                const itemIndex   = notesReleases.findIndex(r => r.tagName === release.tagName);
                 const chunkNumber = chunkNumberFor(itemIndex);
 
                 const filename = release.tagName.startsWith(issueSyncConfig.releaseFilenamePrefix)
@@ -229,14 +229,14 @@ class ReleaseNotesSyncer extends Base {
 
                 const filePath = contentPath({
                     contentRoot: baseDir,
-                    type: 'release-notes',
-                    filename: `${filename}.md`,
+                    type       : 'release-notes',
+                    filename   : `${filename}.md`,
                     itemIndex
                 });
 
                 indexMap.items[release.tagName] = {
                     itemIndex,
-                    chunk: chunkNumber,
+                    chunk   : chunkNumber,
                     chunkDir: `chunk-${chunkNumber}`
                 };
 

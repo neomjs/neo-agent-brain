@@ -1,6 +1,6 @@
 import fs   from 'fs-extra';
 import path from 'path';
-import Base from '../../../../src/core/Base.mjs';
+import Base from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * Default activity window (3h) within which any sent-or-received A2A keeps the

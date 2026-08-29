@@ -39,8 +39,8 @@ test.describe('Neural Link action logging default', () => {
      */
     function bootRecorder({extraEnv = null, exerciseArchive = false, exerciseTelemetry = false, injectTransport = true} = {}) {
         const
-            dir         = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-nl-gate-')),
-            dbPath      = path.join(dir, 'graph.sqlite'),
+            dir           = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-nl-gate-')),
+            dbPath        = path.join(dir, 'graph.sqlite'),
             logsDir       = path.join(dir, 'logs'),
             telemetryStep = exerciseTelemetry ? `
                 RecorderService.log({session_id: 's', sequence_id: 'a_1', timestamp: 1,
@@ -80,8 +80,8 @@ test.describe('Neural Link action logging default', () => {
                 let unhandledRejections = 0;
                 process.on('unhandledRejection', () => { unhandledRejections++ });
 
-                import Neo       from ${JSON.stringify(path.join(rootDir, 'src/Neo.mjs'))};
-                import * as core from ${JSON.stringify(path.join(rootDir, 'src/core/_export.mjs'))};
+                import Neo       from ${JSON.stringify(import.meta.resolve('neo.mjs/src/Neo.mjs'))};
+                import * as core from ${JSON.stringify(import.meta.resolve('neo.mjs/src/core/_export.mjs'))};
                 const config          = (await import(${JSON.stringify(path.join(rootDir, 'ai/mcp/server/neural-link/config.mjs'))})).default;
                 const client          = await import(${JSON.stringify(path.join(rootDir, 'ai/services/neural-link/memoryCoreArchiveClient.mjs'))});
                 const RecorderService = (await import(${JSON.stringify(path.join(rootDir, 'ai/services/neural-link/RecorderService.mjs'))})).default;

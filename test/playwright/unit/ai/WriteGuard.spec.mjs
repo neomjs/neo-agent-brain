@@ -12,9 +12,9 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../src/Neo.mjs';
-import * as core      from '../../../../src/core/_export.mjs';
-import WriteGuard     from '../../../../src/ai/WriteGuard.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
+import WriteGuard     from 'neo.mjs/src/ai/WriteGuard.mjs';
 
 /**
  * A terse lock factory.

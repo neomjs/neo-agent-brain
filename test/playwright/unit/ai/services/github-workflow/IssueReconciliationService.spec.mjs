@@ -14,8 +14,8 @@ setup({
 });
 
 import {test, expect}                        from '@playwright/test';
-import Neo                                   from '../../../../../../src/Neo.mjs';
-import * as core                             from '../../../../../../src/core/_export.mjs';
+import Neo                                   from 'neo.mjs/src/Neo.mjs';
+import * as core                             from 'neo.mjs/src/core/_export.mjs';
 import IssueReconciliationService            from '../../../../../../ai/services/github-workflow/IssueReconciliationService.mjs';
 import {canonicalBatchDigest, validateBatch} from '../../../../../../ai/services/memory-core/communityBatchContract.mjs';
 

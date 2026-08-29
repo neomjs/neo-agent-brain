@@ -14,14 +14,14 @@ setup({
 });
 
 import {test, expect}     from '@playwright/test';
-import Neo                from '../../../../src/Neo.mjs';
-import * as core          from '../../../../src/core/_export.mjs';
-import Component          from '../../../../src/component/Base.mjs';
-import ComponentManager   from '../../../../src/manager/Component.mjs'; // binds Neo.getComponent + registers components
-import InstanceManager    from '../../../../src/manager/Instance.mjs';  // binds Neo.get + registers instances
-import InstanceService    from '../../../../src/ai/client/InstanceService.mjs';
-import TransactionService from '../../../../src/ai/TransactionService.mjs';
-import WriteGuard         from '../../../../src/ai/WriteGuard.mjs';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
+import Component          from 'neo.mjs/src/component/Base.mjs';
+import ComponentManager   from 'neo.mjs/src/manager/Component.mjs'; // binds Neo.getComponent + registers components
+import InstanceManager    from 'neo.mjs/src/manager/Instance.mjs';  // binds Neo.get + registers instances
+import InstanceService    from 'neo.mjs/src/ai/client/InstanceService.mjs';
+import TransactionService from 'neo.mjs/src/ai/TransactionService.mjs';
+import WriteGuard         from 'neo.mjs/src/ai/WriteGuard.mjs';
 
 // Neo.ai.client.InstanceService.undo is the app-side `undo` Neural Link tool. It peeks the requester's last committed
 // transaction (non-consuming), re-dispatches each captured reverse through the enforced dispatch path (re-entering

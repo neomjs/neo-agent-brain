@@ -1,5 +1,5 @@
 import aiConfig from '../../mcp/server/github-workflow/config.mjs';
-import Base     from '../../../src/core/Base.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
 import fs       from 'fs-extra';
 import logger   from '../../mcp/server/github-workflow/logger.mjs';
 import {

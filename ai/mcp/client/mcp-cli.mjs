@@ -10,13 +10,13 @@
  * npm run ai:mcp-client -- -c ./my-client-config.mjs --server <serverName> --list-tools
  */
 
-import { Command }       from 'commander';
-import Neo               from '../../../src/Neo.mjs';
-import * as core         from '../../../src/core/_export.mjs'; // For Neo.core.Base setup
-import InstanceManager   from '../../../src/manager/Instance.mjs'; // For Neo.core.Base setup
-import Client            from './Client.mjs';
-import aiConfig          from './config.mjs';
-import {sanitizeInput}   from '../../../buildScripts/util/sanitizer.mjs';
+import { Command }     from 'commander';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs'; // For Neo.core.Base setup
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs'; // For Neo.core.Base setup
+import Client          from './Client.mjs';
+import aiConfig        from './config.mjs';
+import {sanitizeInput} from '../../../buildScripts/util/sanitizer.mjs';
 
 const program = new Command();
 
@@ -54,7 +54,7 @@ async function run() {
             clientName: 'Neo.ai.MCP.CLI',
             configFile: options.config,
             serverName: options.server,
-            env: process.env // Pass environment variables
+            env       : process.env // Pass environment variables
         });
         await mcpClient.ready();
 
@@ -67,7 +67,7 @@ async function run() {
             console.log(`\nFound ${tools.length} tools.`);
         } else if (options.callTool) {
             console.log(`\nCalling tool: ${options.callTool} with args: ${options.args}`);
-            const args = JSON.parse(options.args);
+            const args       = JSON.parse(options.args);
             const toolMethod = mcpClient.tools[Neo.snakeToCamel(options.callTool)]; // Use dynamic proxy
 
             if (!toolMethod) {

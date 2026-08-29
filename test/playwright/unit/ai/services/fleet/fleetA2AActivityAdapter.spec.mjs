@@ -14,8 +14,8 @@ setup({
 })
 
 import {test, expect} from '@playwright/test'
-import Neo            from '../../../../../../src/Neo.mjs'
-import * as core      from '../../../../../../src/core/_export.mjs'
+import Neo            from 'neo.mjs/src/Neo.mjs'
+import * as core      from 'neo.mjs/src/core/_export.mjs'
 
 import {
     createA2AActivityCounts,
@@ -50,9 +50,9 @@ test.describe('fleetA2AActivityAdapter - Memory Core A2A activity mapping', () =
             confidence: 'observed',
             occurredAt: '2026-07-04T06:00:00.000Z',
             payload   : {
-                kind               : 'a2a-message',
-                messageId          : 'MESSAGE:123',
-                from               : 'neo-opus-ada',
+                kind     : 'a2a-message',
+                messageId: 'MESSAGE:123',
+                from     : 'neo-opus-ada',
                 // the recipient id is a DELIBERATE disclosure: the adapter runs under the
                 // viewer's own mailbox read, which already returns it — class-only was the old
                 // bound, relaxed for the sender→recipient row (operator-directed)
@@ -286,7 +286,7 @@ test.describe('fleetA2AActivityAdapter - Memory Core A2A activity mapping', () =
                     offset    : 0,
                     totalCount: 1,
                     truncated : false,
-                    messages: [{
+                    messages  : [{
                         messageId: 'MESSAGE:reader',
                         subject  : 'reader path',
                         from     : '@neo-opus-vega',

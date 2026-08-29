@@ -1,7 +1,7 @@
-import Base          from '../../../src/core/Base.mjs';
-import GitLabClient  from './GitLabClient.mjs';
-import aiConfig      from '../../mcp/server/gitlab-workflow/config.mjs';
-import logger        from '../../mcp/server/gitlab-workflow/logger.mjs';
+import Base                                                            from 'neo.mjs/src/core/Base.mjs';
+import GitLabClient                                                    from './GitLabClient.mjs';
+import aiConfig                                                        from '../../mcp/server/gitlab-workflow/config.mjs';
+import logger                                                          from '../../mcp/server/gitlab-workflow/logger.mjs';
 import {GET_PROJECT_LABEL_IDS}                                         from './queries/issueQueries.mjs';
 import {CREATE_NOTE, UPDATE_NOTE}                                      from './queries/mutations.mjs';
 import {LIST_MERGE_REQUESTS, GET_MERGE_REQUEST, GET_MERGE_REQUEST_GID} from './queries/mrQueries.mjs';
@@ -154,7 +154,7 @@ class MergeRequestService extends Base {
      */
     async #setAssignees(iid, assignees, operationMode) {
         try {
-            const data    = await GitLabClient.query(MR_SET_ASSIGNEES, {
+            const data = await GitLabClient.query(MR_SET_ASSIGNEES, {
                 projectPath      : aiConfig.gitlab.projectPath,
                 iid              : String(iid),
                 assigneeUsernames: assignees,
@@ -185,7 +185,7 @@ class MergeRequestService extends Base {
      */
     async #setReviewers(iid, reviewers, operationMode) {
         try {
-            const data    = await GitLabClient.query(MR_SET_REVIEWERS, {
+            const data = await GitLabClient.query(MR_SET_REVIEWERS, {
                 projectPath      : aiConfig.gitlab.projectPath,
                 iid              : String(iid),
                 reviewerUsernames: reviewers,
@@ -332,7 +332,7 @@ class MergeRequestService extends Base {
                 return {error: 'Not Found', message: `One or more labels not found in project '${aiConfig.gitlab.projectPath}': ${labels.join(', ')}`, code: 'LABEL_NOT_FOUND'};
             }
 
-            const data    = await GitLabClient.query(MR_SET_LABELS, {
+            const data = await GitLabClient.query(MR_SET_LABELS, {
                 projectPath  : aiConfig.gitlab.projectPath,
                 iid          : String(merge_request_iid),
                 labelIds,

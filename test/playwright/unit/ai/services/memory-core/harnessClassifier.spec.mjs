@@ -14,8 +14,8 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * @summary Coverage for Memory Core harness-classified sibling diagnostics.
@@ -147,8 +147,8 @@ test.describe('Memory Core HarnessClassifier #10206', () => {
     });
 
     test('builds grouped SQLite holder diagnostics and excludes the current process', () => {
-        const dbPath     = '/tmp/memory-core-graph.sqlite';
-        const existing   = new Set([dbPath, `${dbPath}-wal`, `${dbPath}-shm`]);
+        const dbPath      = '/tmp/memory-core-graph.sqlite';
+        const existing    = new Set([dbPath, `${dbPath}-wal`, `${dbPath}-shm`]);
         const diagnostics = buildSqliteHolderDiagnostics({
             dbPath,
             currentPid: 999,

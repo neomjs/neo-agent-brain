@@ -1,10 +1,10 @@
-import CoreBase from '../../../../src/core/Base.mjs';
+import CoreBase from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * @summary Abstract base class for Knowledge Base data sources.
  *
  * A Source is responsible for locating, reading, and yielding knowledge chunks from a specific part of the repository
- * OR (in the cross-tenant cloud-ingestion shape introduced by Epic #11624) from an external workspace pushed via the
+ * OR, in the cross-tenant cloud-ingestion shape, from an external workspace pushed via the
  * Phase 2 `ingestSourceFiles` ingestion endpoint.
  *
  * ### Chunk shape contracts
@@ -27,7 +27,7 @@ import CoreBase from '../../../../src/core/Base.mjs';
  *
  * ### Topology anchor
  *
- * Per ADR 0003 (Chroma Topology Unified Only): one ChromaDB daemon, three collections
+ * The unified Chroma topology uses one daemon and three collections
  * (`knowledge-base`, `neo-agent-memory`, `neo-agent-sessions`). Sources in this directory tree write to the
  * `knowledge-base` collection only.
  *

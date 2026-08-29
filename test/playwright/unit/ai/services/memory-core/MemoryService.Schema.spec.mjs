@@ -14,8 +14,8 @@ setup({
 });
 
 import {test, expect}                              from '@playwright/test';
-import Neo                                         from '../../../../../../src/Neo.mjs';
-import * as core                                   from '../../../../../../src/core/_export.mjs';
+import Neo                                         from 'neo.mjs/src/Neo.mjs';
+import * as core                                   from 'neo.mjs/src/core/_export.mjs';
 import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER} from '../../../../../../ai/graph/identityRoots.mjs';
 import MemoryService                               from '../../../../../../ai/services/memory-core/MemoryService.mjs';
 import StorageRouter                               from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
@@ -32,8 +32,8 @@ test.describe('MemoryService — AGENT_MEMORY Schema (#10620)', () => {
     let originalUpsertNode;
     let originalLinkNodes;
     let collectionAddCalls = [];
-    let linkNodesCalls = [];
-    let upsertNodeCalls = [];
+    let linkNodesCalls     = [];
+    let upsertNodeCalls    = [];
 
     let GraphService;
 

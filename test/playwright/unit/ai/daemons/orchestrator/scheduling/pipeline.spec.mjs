@@ -1163,9 +1163,9 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
         // Real production classes — the first review cycle stubbed an invented collaborator method
         // (resolveLeasePath) that exists only as a module-import alias in production; this arm
         // crosses the REAL API surface so a symbol drift fails here, not on a deployed plane.
-        await import('../../../../../../../src/Neo.mjs');
-        await import('../../../../../../../src/core/_export.mjs');
-        const Neo                            = (await import('../../../../../../../src/Neo.mjs')).default;
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
+        const Neo                            = (await import('neo.mjs/src/Neo.mjs')).default;
         const MaintenanceBackpressureService = (await import('../../../../../../../ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs')).default;
         const TaskStateService               = (await import('../../../../../../../ai/daemons/orchestrator/services/TaskStateService.mjs')).default;
 

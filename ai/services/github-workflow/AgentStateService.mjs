@@ -1,4 +1,4 @@
-import Base         from '../../../src/core/Base.mjs';
+import Base         from 'neo.mjs/src/core/Base.mjs';
 import IssueService from './IssueService.mjs';
 import logger       from '../../mcp/server/github-workflow/logger.mjs';
 
@@ -39,9 +39,9 @@ class AgentStateService extends Base {
 
         if (!validStates.includes(state)) {
             return {
-                error: 'Invalid state',
+                error  : 'Invalid state',
                 message: `State must be one of: ${validStates.join(', ')}`,
-                code: 'INVALID_STATE'
+                code   : 'INVALID_STATE'
             };
         }
 
@@ -52,8 +52,8 @@ class AgentStateService extends Base {
                 logger.info(`Agent reported BLOCKED state. Attempting to add 'agent-task:blocked' label to issue #${target_id}`);
                 const result = await IssueService.manageIssueLabels({
                     issue_number: target_id,
-                    labels: ['agent-task:blocked'],
-                    action: 'add'
+                    labels      : ['agent-task:blocked'],
+                    action      : 'add'
                 });
 
                 if (result.error) {

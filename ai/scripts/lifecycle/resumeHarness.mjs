@@ -11,8 +11,8 @@
  * @see ai/daemons/SwarmHeartbeatService.mjs
  * @see .agents/skills/session-sunset/references/session-sunset-workflow.md §1
  */
-import Neo                                                from '../../../src/Neo.mjs';
-import * as core                                          from '../../../src/core/_export.mjs';
+import Neo                                                from 'neo.mjs/src/Neo.mjs';
+import * as core                                          from 'neo.mjs/src/core/_export.mjs';
 import AiConfig                                           from '../../config.mjs';
 import memoryCoreConfig                                   from '../../mcp/server/memory-core/config.mjs';
 import { spawn }                                          from 'child_process';

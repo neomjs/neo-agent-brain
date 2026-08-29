@@ -1,5 +1,5 @@
 import { AsyncLocalStorage }          from 'async_hooks';
-import Base                           from '../../../../../src/core/Base.mjs';
+import Base                           from 'neo.mjs/src/core/Base.mjs';
 import {normalizeAgentIdentityNodeId} from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
 
 /**

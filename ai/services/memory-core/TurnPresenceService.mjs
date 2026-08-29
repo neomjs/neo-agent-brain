@@ -1,5 +1,5 @@
 import crypto                                   from 'crypto';
-import Base                                     from '../../../src/core/Base.mjs';
+import Base                                     from 'neo.mjs/src/core/Base.mjs';
 import GraphService                             from './GraphService.mjs';
 import aiConfig                                 from '../../mcp/server/memory-core/config.mjs';
 import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
@@ -135,9 +135,9 @@ class TurnPresenceService extends Base {
             };
         }
 
-        const nodeId = this._buildTurnPresenceId(agentIdentity, targetTurnId),
-              current = this._getTurnPresenceProperties(nodeId) || {},
-              startedAt = current.startedAt || nowIso,
+        const nodeId     = this._buildTurnPresenceId(agentIdentity, targetTurnId),
+              current    = this._getTurnPresenceProperties(nodeId) || {},
+              startedAt  = current.startedAt || nowIso,
               properties = {
                   ...current,
                   agentIdentity,
@@ -159,8 +159,8 @@ class TurnPresenceService extends Base {
               };
 
         GraphService.upsertNode({
-            id  : nodeId,
-            type: 'AGENT_TURN_PRESENCE',
+            id         : nodeId,
+            type       : 'AGENT_TURN_PRESENCE',
             name       : `TurnPresence ${agentIdentity}`,
             description: 'Bounded active-turn liveness interval emitted by a trusted harness hook.',
             properties

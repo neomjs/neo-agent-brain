@@ -1,4 +1,4 @@
-import Base from '../../src/core/Base.mjs';
+import Base from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * Set-compatible lazy-vicinity marker keyed by both node id and the active requester

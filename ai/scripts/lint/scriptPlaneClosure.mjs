@@ -1,6 +1,7 @@
-import {parse} from 'acorn';
-import fs      from 'node:fs';
-import path    from 'node:path';
+import {parse}         from 'acorn';
+import fs              from 'node:fs';
+import {createRequire} from 'node:module';
+import path            from 'node:path';
 
 /**
  * Derives an `ai/scripts` entrypoint's execution plane from what it REACHES, never from what it is
@@ -31,8 +32,9 @@ import path    from 'node:path';
 const
     // Both spellings are live in this tree (37 files reach child_process, split across `x` and
     // `node:x`), so every specifier is normalised before it is compared to anything.
-    NODE_PREFIX = 'node:',
-    SOURCE_EXTS = ['.mjs', '.js', '.json'];
+    NODE_PREFIX               = 'node:',
+    FIRST_PARTY_SOURCE_PREFIX = 'neo.mjs/src/',
+    SOURCE_EXTS               = ['.mjs', '.js', '.json'];
 
 /**
  * @summary Capabilities whose REQUIRED use pins an entrypoint to the host edge.
@@ -652,6 +654,44 @@ export function resolveRelative(specifier, fromFile) {
 }
 
 /**
+ * @summary Resolves the import edges whose implementation belongs to this two-repository product.
+ *
+ * Arbitrary bare packages remain leaves: their internals are not part of Brain plane analysis.
+ * `neo.mjs/src/**` is different. It is the pinned first-party Engine dependency whose Base classes
+ * define inherited lifecycle members such as `ready()`. Treating that boundary as opaque turns
+ * otherwise-static calls into unresolved dispatches the moment a consumer stops using a root-level
+ * projection symlink.
+ *
+ * @param {String} specifier Module specifier.
+ * @param {String} fromFile Absolute path of the importing module.
+ * @returns {String|null}
+ */
+export function resolveModuleSpecifier(specifier, fromFile) {
+    if (specifier.startsWith('.')) {
+        return resolveRelative(specifier, fromFile)
+    }
+
+    if (!specifier.startsWith(FIRST_PARTY_SOURCE_PREFIX)) {
+        return null
+    }
+
+    try {
+        return createRequire(fromFile).resolve(specifier)
+    } catch {
+        return null
+    }
+}
+
+/**
+ * @summary Whether the closure owns the implementation behind one static module specifier.
+ * @param {String} specifier Module specifier.
+ * @returns {Boolean}
+ */
+function isFollowableSpecifier(specifier) {
+    return specifier.startsWith('.') || specifier.startsWith(FIRST_PARTY_SOURCE_PREFIX)
+}
+
+/**
  * @summary Depth guard for the `extends` walk. Deeper than any hierarchy in this tree, and finite so a
  * cyclic `extends` — which cannot execute, but can be written — cannot hang the lint.
  * @type {Number}
@@ -705,7 +745,7 @@ const MAX_SUPERCLASS_DEPTH = 12,
 export function walkCapabilityClosure({
     entrypoint,
     readFile = absPath => (fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf8') : null),
-    resolve  = resolveRelative
+    resolve  = resolveModuleSpecifier
 }) {
     const
         seen       = new Set(),
@@ -741,9 +781,9 @@ export function walkCapabilityClosure({
         const targets = new Set();
 
         facts.imports.forEach(specifier => {
-            if (!specifier.startsWith('.')) {
-                // A bare package is a leaf: its own graph is not ours to police, and the capability
-                // taxonomy already names the ones that matter.
+            if (!isFollowableSpecifier(specifier)) {
+                // An unrelated bare package is a leaf: its graph is not ours to police, and the
+                // capability taxonomy already names the ones that matter.
                 return
             }
 
@@ -777,7 +817,7 @@ export function walkCapabilityClosure({
         resolveOrigin = (fromModule, binding, depth = 0) => {
             const record = factsBy.get(fromModule)?.bindings?.[binding];
 
-            if (!record || depth > MAX_SUPERCLASS_DEPTH || !record.specifier.startsWith('.')) {
+            if (!record || depth > MAX_SUPERCLASS_DEPTH || !isFollowableSpecifier(record.specifier)) {
                 return null
             }
 
@@ -960,8 +1000,8 @@ export function walkCapabilityClosure({
                 return
             }
 
-            if (!record.specifier.startsWith('.')) {
-                // A bare package. The import walk already treats these as leaves and the capability
+            if (!isFollowableSpecifier(record.specifier)) {
+                // An unrelated bare package. The import walk treats it as a leaf and the capability
                 // taxonomy names the ones that matter, so `path.join()` is answered, not unknown.
                 return
             }

@@ -14,15 +14,15 @@ setup({
 });
 
 import {test, expect}     from '@playwright/test';
-import Neo                from '../../../../src/Neo.mjs';
-import * as core          from '../../../../src/core/_export.mjs';
-import Component          from '../../../../src/component/Base.mjs';
-import Container          from '../../../../src/container/Base.mjs';
-import ComponentManager   from '../../../../src/manager/Component.mjs'; // binds Neo.getComponent + registers components
-import InstanceManager    from '../../../../src/manager/Instance.mjs';  // binds Neo.get + registers instances
-import InstanceService    from '../../../../src/ai/client/InstanceService.mjs';
-import TransactionService from '../../../../src/ai/TransactionService.mjs';
-import WriteGuard         from '../../../../src/ai/WriteGuard.mjs';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
+import Component          from 'neo.mjs/src/component/Base.mjs';
+import Container          from 'neo.mjs/src/container/Base.mjs';
+import ComponentManager   from 'neo.mjs/src/manager/Component.mjs'; // binds Neo.getComponent + registers components
+import InstanceManager    from 'neo.mjs/src/manager/Instance.mjs';  // binds Neo.get + registers instances
+import InstanceService    from 'neo.mjs/src/ai/client/InstanceService.mjs';
+import TransactionService from 'neo.mjs/src/ai/TransactionService.mjs';
+import WriteGuard         from 'neo.mjs/src/ai/WriteGuard.mjs';
 
 // `create_component` is forwarded server-side as a server-stamped `call_method` `parent.add(config)`; the
 // app-side Neo.ai.client.InstanceService.callMethod records its inverse (destroy the new child) onto the writer's undo
@@ -76,7 +76,7 @@ test.describe('Neo.ai.client.InstanceService — create_component undo capture',
         container.add = () => child;
 
         await service.callMethod({
-            id: 'undo-create-container', method: 'add', args: [{ntype: 'component', id: 'rt-child'}],
+            id      : 'undo-create-container', method: 'add', args: [{ntype: 'component', id: 'rt-child'}],
             undoKind: 'create_component'
         }, ID);
         expect(transactionService.stackOf({id: ID}).committed).toHaveLength(1);
@@ -100,7 +100,7 @@ test.describe('Neo.ai.client.InstanceService — create_component undo capture',
 
     test('buildCreateReverse is fail-closed — only a marked, canonical, attributed, non-replay create captures', () => {
         const base = {
-            context: ID, id: 'undo-create-container', method: 'add', args: [{ntype: 'component'}],
+            context : ID, id: 'undo-create-container', method: 'add', args: [{ntype: 'component'}],
             undoKind: 'create_component', result: {id: 'new-x'}
         };
 

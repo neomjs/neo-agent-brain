@@ -1,4 +1,4 @@
-import Base from '../../../../src/core/Base.mjs';
+import Base from 'neo.mjs/src/core/Base.mjs';
 
 import {CONTAINER_HEALTH_ACTION_CLASSES, CONTAINER_HEALTH_FACT_TYPES} from './containerHealthFactTypes.mjs';
 

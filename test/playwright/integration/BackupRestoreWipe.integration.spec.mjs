@@ -17,10 +17,10 @@ const composeFile = path.join(repoRoot, 'deploy/cloud/docker-compose.test.yml');
 const projectName = process.env.NEO_INTEGRATION_COMPOSE_PROJECT || 'neo-integration-test';
 const MC_URL      = process.env.NEO_INTEGRATION_MC_URL || 'http://127.0.0.1:13001';
 
-const CONFIRMATION = 'CONFIRM_PRODUCTION_DESTRUCTIVE_AI_SUBSTRATE';
+const CONFIRMATION  = 'CONFIRM_PRODUCTION_DESTRUCTIVE_AI_SUBSTRATE';
 const NEO_BOOTSTRAP = `
-    await import('./src/Neo.mjs');
-    await import('./src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 `;
 
 /**
@@ -138,7 +138,7 @@ function truncateGraph() {
         console.log(JSON.stringify(result));
     `, {
         NEO_ALLOW_PRODUCTION_DESTRUCTIVE_AI_SUBSTRATE: 'true',
-        NEO_DESTRUCTIVE_CONFIRMATION                : CONFIRMATION
+        NEO_DESTRUCTIVE_CONFIRMATION                 : CONFIRMATION
     });
 }
 

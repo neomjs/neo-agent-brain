@@ -9,7 +9,7 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../src/Neo.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
 
 /**
  * @summary Non-SharedWorker apps never fire the App-worker `connect` event that populates
@@ -36,7 +36,7 @@ test.describe('Neo.ai.Client — non-SharedWorker window registration', () => {
     });
 
     test.beforeEach(async () => {
-        const {default: Client} = await import('../../../../src/ai/Client.mjs');
+        const {default: Client} = await import('neo.mjs/src/ai/Client.mjs');
         client = Neo.ai.Client || Neo.create(Client, {appName})
     });
 

@@ -1,6 +1,6 @@
 import {test, expect}                                                from '@playwright/test';
-import Neo                                                           from '../../../../../../../src/Neo.mjs';
-import * as core                                                     from '../../../../../../../src/core/_export.mjs';
+import Neo                                                           from 'neo.mjs/src/Neo.mjs';
+import * as core                                                     from 'neo.mjs/src/core/_export.mjs';
 import {createReEmbedMissingHeal, createReEmbedMissingHealOperation} from '../../../../../../../ai/services/memory-core/helpers/reEmbedMissingHeal.mjs';
 
 // The autonomous re-embed-missing data-heal: audit the coverage gap → re-embed the orphaned rows from their

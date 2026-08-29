@@ -1,7 +1,7 @@
 import fs                        from 'fs-extra';
 import {createHmac, randomBytes} from 'node:crypto';
 import path                      from 'node:path';
-import Base                      from '../../../../src/core/Base.mjs';
+import Base                      from 'neo.mjs/src/core/Base.mjs';
 import AiConfig                  from '../../../config.mjs';
 import GitMirror                 from '../../../services/knowledge-base/helpers/gitMirror.mjs';
 import TextEmbeddingService      from '../../../services/memory-core/TextEmbeddingService.mjs';
@@ -11,10 +11,10 @@ import {
     describeCorpusOutstanding,
     normalizeSettlementCounts
 }                                from '../../../services/knowledge-base/helpers/corpusOutstanding.mjs';
-import {createBoundedRetryGate}   from '../../../services/shared/boundedRetryGate.mjs';
-import {writeFileAtomic}          from '../../../services/shared/atomicFileWrite.mjs';
+import {createBoundedRetryGate}                                                                                  from '../../../services/shared/boundedRetryGate.mjs';
+import {writeFileAtomic}                                                                                         from '../../../services/shared/atomicFileWrite.mjs';
 import {buildEmbeddingProbeBlock, buildEmbeddingProbeInput, EMBEDDING_PROBE_BAND_FRACTION, projectProbeCoverage} from '../../../services/shared/embeddingProbe.mjs';
-import {resolveEmbeddingAdmissionBand}                     from '../../../embeddingSafeBand.mjs';
+import {resolveEmbeddingAdmissionBand}                                                                           from '../../../embeddingSafeBand.mjs';
 // The filter below and the codes it admits are one contract. Importing the pattern from the module
 // that PRODUCES bounded codes keeps a re-declared copy from drifting into a pair that separately
 // look right — the producer widening a code the filter still rejects is exactly this ticket's defect.

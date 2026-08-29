@@ -3,7 +3,7 @@ import path                                      from 'path';
 import * as yaml                                 from 'js-yaml';
 import {fileURLToPath}                           from 'url';
 import crypto                                    from 'crypto';
-import Base                                      from '../../../src/core/Base.mjs';
+import Base                                      from 'neo.mjs/src/core/Base.mjs';
 import { Memory_StorageRouter as StorageRouter } from '../../services.mjs';
 import { Memory_GraphService as GraphService }   from '../../services.mjs';
 import logger                                    from '../../mcp/server/memory-core/logger.mjs';

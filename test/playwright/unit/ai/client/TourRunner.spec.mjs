@@ -1,13 +1,13 @@
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../src/Neo.mjs';
-import * as core      from '../../../../../src/core/_export.mjs';
-import DockService    from '../../../../../src/ai/client/DockService.mjs';
-import DockZoneModel  from '../../../../../src/dashboard/DockZoneModel.mjs';
-import TourRunner     from '../../../../../src/ai/client/TourRunner.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
+import DockService    from 'neo.mjs/src/ai/client/DockService.mjs';
+import DockZoneModel  from 'neo.mjs/src/dashboard/DockZoneModel.mjs';
+import TourRunner     from 'neo.mjs/src/ai/client/TourRunner.mjs';
 
 import {
     RESERVED_STEP_TYPES, STEP_TYPES, TOUR_SCRIPT_SCHEMA, evaluateExpectations, validateTourScript
-} from '../../../../../src/ai/client/tourScript.mjs';
+} from 'neo.mjs/src/ai/client/tourScript.mjs';
 
 /**
  * @summary Creates a valid dockZone.v1 fixture the real reducers accept.

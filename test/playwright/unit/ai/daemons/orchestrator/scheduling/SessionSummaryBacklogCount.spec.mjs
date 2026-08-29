@@ -14,7 +14,7 @@ setup({
 });
 
 import {test, expect}                  from '@playwright/test';
-import Neo                             from '../../../../../../../src/Neo.mjs';
+import Neo                             from 'neo.mjs/src/Neo.mjs';
 import {getPendingSessionSummaryCount} from '../../../../../../../ai/daemons/orchestrator/scheduling/summary.mjs';
 
 /**

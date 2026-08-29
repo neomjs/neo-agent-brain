@@ -13,9 +13,9 @@ setup({
     }
 });
 
-import {test, expect}        from '@playwright/test';
-import Neo                   from '../../../../../../src/Neo.mjs';
-import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import {test, expect}          from '@playwright/test';
+import Neo                     from 'neo.mjs/src/Neo.mjs';
+import RequestContextService   from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 import {PROVIDER_TIMEOUT_CODE} from '../../../../../../ai/provider/createTimeoutError.mjs';
 
 /**
@@ -43,7 +43,7 @@ test.describe('Neo.ai.services.memory-core.SessionService — degraded session-s
         title       : 'Test Session',
         category    : 'analysis',
         quality     : 50,
-        productivity : 50,
+        productivity: 50,
         impact      : 50,
         complexity  : 50,
         technologies: ['neo.mjs']
@@ -99,7 +99,7 @@ test.describe('Neo.ai.services.memory-core.SessionService — degraded session-s
         ]);
         // A null-miniSummary turn must be excluded.
         GraphService.upsertNode({
-            id: 'sess-mini-mem-null', type: 'AGENT_MEMORY', name: 'null turn',
+            id        : 'sess-mini-mem-null', type: 'AGENT_MEMORY', name: 'null turn',
             properties: {sessionId: 'sess-mini', timestamp: 400, miniSummary: null}
         });
 

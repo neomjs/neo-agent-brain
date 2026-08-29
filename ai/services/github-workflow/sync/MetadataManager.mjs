@@ -1,5 +1,5 @@
 import aiConfig from '../../../mcp/server/github-workflow/config.mjs';
-import Base     from '../../../../src/core/Base.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
 import fs       from 'fs/promises';
 import path     from 'path';
 
@@ -72,10 +72,10 @@ class MetadataManager extends Base {
         } catch (error) {
             if (error.code === 'ENOENT') {
                 return {
-                    lastSync: null,
-                    issues  : {},
-                    releases: {},
-                    pulls   : {},
+                    lastSync   : null,
+                    issues     : {},
+                    releases   : {},
+                    pulls      : {},
                     discussions: {}
                 };
             } else {
@@ -105,11 +105,11 @@ class MetadataManager extends Base {
         // Prune issues
         for (const [key, value] of Object.entries(metadata.issues)) {
             prunedMetadata.issues[key] = {
-                state        : value.state,
-                path         : value.path,
-                closedAt     : value.closedAt,
-                updatedAt    : value.updatedAt,
-                contentHash  : value.contentHash,
+                state      : value.state,
+                path       : value.path,
+                closedAt   : value.closedAt,
+                updatedAt  : value.updatedAt,
+                contentHash: value.contentHash,
                 // Persist milestone as a string-title, symmetric with IssueSyncer hydration into
                 // `{title}` form. Without this, planBuckets falls through to closedAt-based release-date
                 // inference and re-classifies unchanged closed issues every sync, emitting persistent

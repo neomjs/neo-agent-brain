@@ -1,6 +1,6 @@
 import {test, expect}             from '@playwright/test';
-import Neo                        from '../../../../../../../src/Neo.mjs';
-import * as core                  from '../../../../../../../src/core/_export.mjs';
+import Neo                        from 'neo.mjs/src/Neo.mjs';
+import * as core                  from 'neo.mjs/src/core/_export.mjs';
 import {buildStoreBloatDiagnosis} from '../../../../../../../ai/daemons/orchestrator/services/storeBloatDiagnosis.mjs';
 
 // Pure detect-producer (no I/O). Turns a store-size measurement + thresholds into a data-integrity

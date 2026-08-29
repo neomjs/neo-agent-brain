@@ -12,9 +12,9 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../src/Neo.mjs';
-import * as core      from '../../../../../src/core/_export.mjs';
-import RuntimeService from '../../../../../src/ai/client/RuntimeService.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
+import RuntimeService from 'neo.mjs/src/ai/client/RuntimeService.mjs';
 
 test.describe('Neo.ai.client.RuntimeService window ops (#13446)', () => {
     let originalGetComponent, originalMain, originalWindowManager, service;

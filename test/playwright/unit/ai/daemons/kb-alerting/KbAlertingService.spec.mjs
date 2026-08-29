@@ -16,8 +16,8 @@ setup({
 // Test-side entry-point bootstrap: Neo + core/_export populate `globalThis.Neo` before
 // the dynamic KbAlertingService import below. Required because the class file no longer
 // imports Neo itself (class+wrapper split). Mirrors SwarmHeartbeatService.spec.
-import Neo       from '../../../../../../src/Neo.mjs';
-import * as core from '../../../../../../src/core/_export.mjs';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
 
 import {test, expect} from '@playwright/test';
 
@@ -71,13 +71,13 @@ test.describe('Neo.ai.daemons.KbAlertingService (#11642)', () => {
         const KBRecorderService = (await import('../../../../../../ai/services/knowledge-base/KBRecorderService.mjs')).default;
 
         originals = {
-            addMessage      : MailboxService.addMessage,
+            addMessage       : MailboxService.addMessage,
             isReachableTarget: MailboxService.isReachableTarget,
-            run             : RequestContextService.run,
-            warn            : logger.warn,
-            error           : logger.error,
-            recorderReady   : KBRecorderService.ready,
-            neoAgentIdentity: process.env.NEO_AGENT_IDENTITY
+            run              : RequestContextService.run,
+            warn             : logger.warn,
+            error            : logger.error,
+            recorderReady    : KBRecorderService.ready,
+            neoAgentIdentity : process.env.NEO_AGENT_IDENTITY
         };
 
         // `start()` awaits KBRecorderService.ready() — stub it to resolve immediately.
@@ -295,7 +295,7 @@ test.describe('Neo.ai.daemons.KbAlertingService (#11642)', () => {
             const {sent} = captureA2A();
 
             await KbAlertingService.dispatchA2A({
-                tenantId: 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.3,
+                tenantId : 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.3,
                 threshold: 0.1, severity: 'warning', channel: 'a2a:@neo-gpt', deliveryMode: 'wake'
             });
 
@@ -309,7 +309,7 @@ test.describe('Neo.ai.daemons.KbAlertingService (#11642)', () => {
             const {sent} = captureA2A();
 
             await KbAlertingService.dispatchA2A({
-                tenantId: 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.3,
+                tenantId : 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.3,
                 threshold: 0.1, severity: 'warning', channel: 'a2a:AGENT:*', deliveryMode: 'wake'
             });
 
@@ -320,7 +320,7 @@ test.describe('Neo.ai.daemons.KbAlertingService (#11642)', () => {
             const {sent} = captureA2A();
 
             await KbAlertingService.dispatchA2A({
-                tenantId: 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.9,
+                tenantId : 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.9,
                 threshold: 0.1, severity: 'critical', channel: 'a2a:@neo-gpt', deliveryMode: 'audit'
             });
 
@@ -333,7 +333,7 @@ test.describe('Neo.ai.daemons.KbAlertingService (#11642)', () => {
             process.env.NEO_AGENT_IDENTITY = 'neo-opus-4-7';
 
             await KbAlertingService.dispatchA2A({
-                tenantId: 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.3,
+                tenantId : 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.3,
                 threshold: 0.1, severity: 'warning', channel: 'a2a:@neo-gpt', deliveryMode: 'wake'
             });
 
@@ -349,7 +349,7 @@ test.describe('Neo.ai.daemons.KbAlertingService (#11642)', () => {
             logger.warn = (msg) => { warns.push(msg) };
 
             await KbAlertingService.dispatchA2A({
-                tenantId: 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.3,
+                tenantId : 'tenant-x', repoSlug: 'repo-x', metric: 'errorRate', value: 0.3,
                 threshold: 0.1, severity: 'warning', channel: 'a2a:@not-a-real-agent', deliveryMode: 'wake'
             });
 

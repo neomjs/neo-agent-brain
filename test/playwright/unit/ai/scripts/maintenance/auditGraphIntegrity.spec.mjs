@@ -1,7 +1,7 @@
-import {setup} from '../../../../setup.mjs';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import {setup}         from '../../../../setup.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 const appName = 'AuditGraphIntegrityTest';
 
@@ -126,7 +126,7 @@ test.describe('auditGraphIntegrity.mjs (#10462)', () => {
     test('countGraphOriginatesInEdges filters by target session and ORIGINATES_IN edge type', () => {
         const graphService = {
             normalizeGraphNodeId: id => id.toLowerCase(),
-            db: {
+            db                  : {
                 storage: {
                     db: {
                         prepare: sql => {

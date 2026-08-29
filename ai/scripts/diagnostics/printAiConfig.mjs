@@ -105,7 +105,7 @@ export async function main(argv = process.argv.slice(2)) {
         process.env.UNIT_TEST_MODE = 'true'
     }
 
-    await import(pathToFileURL(path.join(neoRootDir, 'src/Neo.mjs')).href);
+    await import('neo.mjs/src/Neo.mjs');
 
     const aiConfig = (await import(pathToFileURL(path.join(neoRootDir, templateRel)).href)).default,
           wanted   = paths.length > 0 ? paths : DEFAULT_PATHS,

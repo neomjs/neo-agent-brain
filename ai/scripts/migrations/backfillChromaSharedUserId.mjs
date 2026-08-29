@@ -324,8 +324,8 @@ async function main() {
     // runtime global first, so the bootstrap + config import are LAZY and sequenced here: the
     // module import and the `--help` path above stay runnable in a bare fresh process.
     if (args.host == null || args.port == null) {
-        await import('../../../src/Neo.mjs');
-        await import('../../../src/core/_export.mjs');
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
         const {default: kbConfig} = await import('../../mcp/server/knowledge-base/config.mjs');
         args.host ??= kbConfig.host;
         args.port ??= kbConfig.port;

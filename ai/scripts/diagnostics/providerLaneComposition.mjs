@@ -768,7 +768,7 @@ export async function main(argv = process.argv.slice(2)) {
     const options     = parseArgs(argv);
     const source      = options.input ? fs.readFileSync(options.input, 'utf8') : fs.readFileSync(0, 'utf8');
     const composition = JSON.parse(source);
-    await import('../../../src/Neo.mjs');
+    await import('neo.mjs/src/Neo.mjs');
     const {default: AiConfig} = await import('../../config.mjs');
     const receipt             = analyzeProviderLaneComposition(composition, {
         verifySources                     : options.verifySources,

@@ -12,9 +12,9 @@ setup({
 });
 
 import {test, expect}  from '@playwright/test';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import StateProvider   from '../../../../../../src/state/Provider.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import StateProvider   from 'neo.mjs/src/state/Provider.mjs';
 import fs              from 'fs-extra';
 import path            from 'path';
 import {fileURLToPath} from 'url';

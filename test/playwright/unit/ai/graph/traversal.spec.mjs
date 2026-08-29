@@ -13,9 +13,9 @@ setup({
     }
 });
 
-import {test, expect}   from '@playwright/test';
-import Neo              from '../../../../../src/Neo.mjs';
-import Database         from '../../../../../ai/graph/Database.mjs';
+import {test, expect}               from '@playwright/test';
+import Neo                          from 'neo.mjs/src/Neo.mjs';
+import Database                     from '../../../../../ai/graph/Database.mjs';
 import {getPaths, findShortestPath} from '../../../../../ai/graph/queries/traversal.mjs';
 
 test.describe('Neo.ai.graph.queries.Traversal', () => {
@@ -72,7 +72,7 @@ test.describe('Neo.ai.graph.queries.Traversal', () => {
     test('getPaths should correctly handle matchPredicate lambda filtering', async () => {
         // Find only nodes marked as Microservice
         let results = getPaths(db, 'A', {
-            maxDepth: 3,
+            maxDepth      : 3,
             matchPredicate: (node) => node.properties.type === 'Microservice'
         });
 
@@ -84,7 +84,7 @@ test.describe('Neo.ai.graph.queries.Traversal', () => {
         // If we stop traversing when hitting E, we shouldn't reach C via the A->E->C route.
         // Wait, C is also reachable via B. But let's stop at B as well.
         let results = getPaths(db, 'A', {
-            maxDepth: 3,
+            maxDepth     : 3,
             stopPredicate: (node) => node.id === 'B' || node.id === 'E'
         });
 

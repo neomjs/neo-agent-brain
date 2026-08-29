@@ -14,9 +14,9 @@ setup({
 });
 
 import {test, expect}  from '@playwright/test';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs-extra';
 import os              from 'os';
 import path            from 'path';
@@ -595,7 +595,7 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
             const result = await symlinkDataDir({
                 mainCheckout: fakeMainCheckout,
                 projectRoot : fakeWorktree,
-                dryRun     : true,
+                dryRun      : true,
                 log         : () => {}
             });
 

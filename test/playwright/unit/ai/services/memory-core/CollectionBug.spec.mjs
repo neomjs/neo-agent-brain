@@ -16,17 +16,17 @@ setup({
 });
 
 import { test, expect } from '@playwright/test';
-import Neo              from '../../../../../../src/Neo.mjs';
-import * as core        from '../../../../../../src/core/_export.mjs';
-import InstanceManager  from '../../../../../../src/manager/Instance.mjs';
+import Neo              from 'neo.mjs/src/Neo.mjs';
+import * as core        from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager  from 'neo.mjs/src/manager/Instance.mjs';
 
-import Store from '../../../../../../ai/graph/Store.mjs';
+import Store    from '../../../../../../ai/graph/Store.mjs';
 import Database from '../../../../../../ai/graph/Database.mjs';
 
 test.describe('Neo.collection.Base Store Bug', () => {
     test('store clear and add interaction', () => {
         let store = Neo.create({
-            module: Store,
+            module     : Store,
             keyProperty: 'id'
         });
 

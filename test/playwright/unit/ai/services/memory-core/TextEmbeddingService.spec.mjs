@@ -17,8 +17,8 @@ import {test, expect}      from '@playwright/test';
 import {execFile}          from 'child_process';
 import {getEventListeners} from 'node:events';
 import {promisify}         from 'util';
-import Neo                 from '../../../../../../src/Neo.mjs';
-import * as core           from '../../../../../../src/core/_export.mjs';
+import Neo                 from 'neo.mjs/src/Neo.mjs';
+import * as core           from 'neo.mjs/src/core/_export.mjs';
 import {
     clearAggregatedFrictions,
     getAggregatedFrictions
@@ -54,8 +54,8 @@ async function waitForCondition(condition, message, timeoutMs = 500) {
 async function runIsolatedEmbeddingProbe(probe, env = {}) {
     const source = `
         const {setup} = await import('./test/playwright/setup.mjs');
-        await import('./src/Neo.mjs');
-        await import('./src/core/_export.mjs');
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
         setup({
             neoConfig: {unitTestMode: true},
             appConfig: {name: 'TextEmbeddingIsolatedProbe', isMounted: () => true, vnodeInitialising: false}
@@ -1456,9 +1456,9 @@ test.describe.serial('TextEmbeddingService #15694 — provider-neutral cancellat
         // sequential loop makes the same number of calls, and a peak of "more than one" would pass on a
         // lane that manages two when it declared room for four.
         const probe = async () => {
-            const http                 = await import('node:http');
-            const requestInputs        = [];
-            const held                 = [];
+            const http          = await import('node:http');
+            const requestInputs = [];
+            const held          = [];
             const targetPeak    = Number(process.env.PROBE_TARGET_PEAK);
             const expectedSpans = Number(process.env.PROBE_EXPECTED_SPANS);
 

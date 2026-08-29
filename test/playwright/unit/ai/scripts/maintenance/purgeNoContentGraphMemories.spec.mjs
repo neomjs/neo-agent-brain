@@ -7,8 +7,8 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import Database       from 'better-sqlite3';
 
 import {
@@ -110,7 +110,7 @@ test.describe('purgeNoContentGraphMemories.mjs', () => {
     });
 
     test('collectExistingMemoryIds chunks collection probes', async () => {
-        const calls = [];
+        const calls      = [];
         const collection = {
             get: async ({ids}) => {
                 calls.push(ids);
@@ -135,7 +135,7 @@ test.describe('purgeNoContentGraphMemories.mjs', () => {
         insertMemory('memory-delete');
 
         const removed = [];
-        const result = await runNoContentGraphMemoryCleanup({
+        const result  = await runNoContentGraphMemoryCleanup({
             lifecycle   : {ready: async () => {}},
             graphService: {
                 ready      : async () => {},
@@ -172,7 +172,7 @@ test.describe('purgeNoContentGraphMemories.mjs', () => {
         );
 
         const removed = [];
-        const result = await runNoContentGraphMemoryCleanup({
+        const result  = await runNoContentGraphMemoryCleanup({
             apply       : true,
             confirmation: APPLY_CONFIRMATION_TOKEN,
             lifecycle   : {ready: async () => {}},

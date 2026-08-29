@@ -1,5 +1,5 @@
 import logger from '../../../mcp/server/memory-core/logger.mjs';
-import Base   from '../../../../src/core/Base.mjs';
+import Base   from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * @summary Readiness gate for the shared ChromaDB backend, as seen by Memory Core.

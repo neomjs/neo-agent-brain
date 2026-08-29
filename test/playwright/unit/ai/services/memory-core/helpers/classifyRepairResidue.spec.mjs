@@ -1,6 +1,6 @@
 import {test, expect}                                                       from '@playwright/test';
-import Neo                                                                  from '../../../../../../../src/Neo.mjs';
-import * as core                                                            from '../../../../../../../src/core/_export.mjs';
+import Neo                                                                  from 'neo.mjs/src/Neo.mjs';
+import * as core                                                            from 'neo.mjs/src/core/_export.mjs';
 import {classifyRepairResidue, computeResidueFingerprint, TERMINAL_REASONS} from '../../../../../../../ai/services/memory-core/helpers/classifyRepairResidue.mjs';
 
 // Pure decider (no I/O). Given a repair's unrecoverable residue + a durable ack, classifies it

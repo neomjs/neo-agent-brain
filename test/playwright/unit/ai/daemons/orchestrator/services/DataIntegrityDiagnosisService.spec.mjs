@@ -1,6 +1,6 @@
 import {test, expect}                  from '@playwright/test';
-import Neo                             from '../../../../../../../src/Neo.mjs';
-import * as core                       from '../../../../../../../src/core/_export.mjs';
+import Neo                             from 'neo.mjs/src/Neo.mjs';
+import * as core                       from 'neo.mjs/src/core/_export.mjs';
 import {DataIntegrityDiagnosisService} from '../../../../../../../ai/daemons/orchestrator/services/DataIntegrityDiagnosisService.mjs';
 
 const OBSERVED_AT = 1710000000000;

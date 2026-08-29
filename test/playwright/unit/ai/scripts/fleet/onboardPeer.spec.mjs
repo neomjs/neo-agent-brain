@@ -5,8 +5,8 @@ import fs                         from 'node:fs';
 import os                         from 'node:os';
 import path                       from 'node:path';
 import {promisify}                from 'node:util';
-import Neo                        from '../../../../../../src/Neo.mjs';
-import * as core                  from '../../../../../../src/core/_export.mjs';
+import Neo                        from 'neo.mjs/src/Neo.mjs';
+import * as core                  from 'neo.mjs/src/core/_export.mjs';
 import FleetControlBridge         from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
 import FleetLifecycleService      from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
 import FleetManager               from '../../../../../../ai/services/fleet/FleetManager.mjs';
@@ -595,7 +595,7 @@ test.describe('onboardPeer — long-lived Fleet owner transport', () => {
 
     test('an unreachable long-lived owner fails closed with the operator recovery command', async () => {
         const endpointSecret = 'credential-shaped-endpoint-secret';
-        const bridge = createOnboardingFleetBridge({
+        const bridge         = createOnboardingFleetBridge({
             bearerToken: generateLocalBearerToken(),
             fetchImpl  : async () => { throw new Error('raw-upstream-transport-secret') },
             url        : `http://127.0.0.1:8083/fleet?token=${endpointSecret}`

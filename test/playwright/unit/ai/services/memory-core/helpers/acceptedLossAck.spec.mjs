@@ -1,7 +1,7 @@
-import {test, expect}                                     from '@playwright/test';
-import Neo                                                from '../../../../../../../src/Neo.mjs';
-import * as core                                          from '../../../../../../../src/core/_export.mjs';
-import {createAcceptedLossAckEntry}                       from '../../../../../../../ai/services/memory-core/helpers/acceptedLossAck.mjs';
+import {test, expect}                                                       from '@playwright/test';
+import Neo                                                                  from 'neo.mjs/src/Neo.mjs';
+import * as core                                                            from 'neo.mjs/src/core/_export.mjs';
+import {createAcceptedLossAckEntry}                                         from '../../../../../../../ai/services/memory-core/helpers/acceptedLossAck.mjs';
 import {classifyRepairResidue, computeResidueFingerprint, TERMINAL_REASONS} from '../../../../../../../ai/services/memory-core/helpers/classifyRepairResidue.mjs';
 
 // Pure ack constructor. Packages the shared residue fingerprint + operator metadata into a durable

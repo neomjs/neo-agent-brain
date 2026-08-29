@@ -10,8 +10,8 @@ const composeFile = path.join(repoRoot, 'deploy/cloud/docker-compose.test.yml');
 const projectName = process.env.NEO_INTEGRATION_COMPOSE_PROJECT || 'neo-integration-test';
 
 const NEO_BOOTSTRAP = `
-    await import('./src/Neo.mjs');
-    await import('./src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 `;
 
 /**

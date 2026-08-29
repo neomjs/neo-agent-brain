@@ -3,8 +3,8 @@ import {setup} from '../../../../setup.mjs';
 setup();
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {
     createRuntime,
     createSessionGraphId,

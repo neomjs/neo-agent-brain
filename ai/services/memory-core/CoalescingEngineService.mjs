@@ -1,5 +1,5 @@
 import crypto                 from 'crypto';
-import Base                   from '../../../src/core/Base.mjs';
+import Base                   from 'neo.mjs/src/core/Base.mjs';
 import WebhookDeliveryService from './WebhookDeliveryService.mjs';
 import logger                 from '../../mcp/server/memory-core/logger.mjs';
 import {

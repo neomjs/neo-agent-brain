@@ -19,8 +19,8 @@ import {existsSync}   from 'fs';
 import path           from 'path';
 import {randomUUID}   from 'crypto';
 import os             from 'os';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 test.describe('ai/scripts/inflightLock', () => {
     // Shared identity-derived lock and gate paths; focused runs must not race the file state.

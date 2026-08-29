@@ -1,4 +1,4 @@
-import Base                                                             from '../../../src/core/Base.mjs';
+import Base                                                             from 'neo.mjs/src/core/Base.mjs';
 import {Memory_Config as aiConfig, Memory_GraphService as GraphService} from '../../services.mjs';
 import KBRecorderService                                                from '../../services/knowledge-base/KBRecorderService.mjs';
 import logger                                                           from '../../mcp/server/memory-core/logger.mjs';

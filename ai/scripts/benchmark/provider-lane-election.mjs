@@ -1145,8 +1145,8 @@ export async function runProviderLanePreparationWorker({receipt, resident, timeo
  * @private
  */
 async function runEmbeddingWorker({contract, payloads, receipt, recorder, source}) {
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
     const [{default: aiConfig}, {default: TextEmbeddingService}] = await Promise.all([
         source === 'knowledge-base'
@@ -1206,8 +1206,8 @@ export function invokeProviderLaneEmbeddingSource({embeddingService, options, pa
  * @private
  */
 async function runChatWorker({contract, payloads, receipt, recorder}) {
-    await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
     const [
         {default: aiConfig},
@@ -2100,8 +2100,8 @@ async function runComposeWorker({args, candidateInput, runDocker, service, timeo
  * @private
  */
 async function createRuntimeObserver({dockerAuthority, projectName}) {
-    const {default: Neo} = await import('../../../src/Neo.mjs');
-    await import('../../../src/core/_export.mjs');
+    const {default: Neo} = await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
     const [
         {default: DeploymentRuntimeAccessService},
         {dockerSocketRequest},

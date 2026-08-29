@@ -14,7 +14,7 @@ setup({
 });
 
 import {test, expect}                                from '@playwright/test';
-import Neo                                           from '../../../../../../src/Neo.mjs';
+import Neo                                           from 'neo.mjs/src/Neo.mjs';
 import logger                                        from '../../../../../../ai/mcp/server/memory-core/logger.mjs';
 import RequestContextService                         from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 import {appendWalEmbedMarker, readPendingWalRecords} from '../../../../../../ai/services/memory-core/helpers/memoryWalStore.mjs';
@@ -64,7 +64,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         // it at module load. Without it the graph write path throws `Neo.get is not a function`,
         // which is a harness gap rather than a defect: the suite was booting services along a path
         // production never uses. Surfaced by @neo-gpt's RA-3 effect arm.
-        await import('../../../../../../src/manager/Instance.mjs');
+        await import('neo.mjs/src/manager/Instance.mjs');
 
         GraphService         = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
         ({default: MemoryService, MEMORY_ACCEPTED_MESSAGE} =
@@ -314,11 +314,11 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
     });
 
     test('AC4: hung post-WAL disclosures return within one budget and never execute the synchronous mailbox CTE', async () => {
-        const originalPresence   = TurnPresenceService.recordTurnPresence;
-        const originalVisibility = MemoryService.describeWriteVisibility;
-        const sqlite             = GraphService.db.storage.db;
-        const originalPrepare    = sqlite.prepare;
-        let mailboxQueryAttempts = 0;
+        const originalPresence     = TurnPresenceService.recordTurnPresence;
+        const originalVisibility   = MemoryService.describeWriteVisibility;
+        const sqlite               = GraphService.db.storage.db;
+        const originalPrepare      = sqlite.prepare;
+        let   mailboxQueryAttempts = 0;
 
         // This is a production-path tripwire, not a source-string assertion. Restoring
         // `buildMailboxDelta()` to addMemory reaches this exact better-sqlite3 producer and makes
@@ -337,7 +337,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         const startedAt = Date.now();
 
         try {
-            const result  = await asTenant(() => MemoryService.addMemory({
+            const result = await asTenant(() => MemoryService.addMemory({
                 prompt  : 'bounded response prompt',
                 thought : 'bounded response thought',
                 response: 'bounded response result'

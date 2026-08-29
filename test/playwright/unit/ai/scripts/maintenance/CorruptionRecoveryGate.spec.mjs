@@ -5,8 +5,8 @@ import path           from 'path';
 import {promisify}    from 'util';
 import {test, expect} from '@playwright/test';
 
-import Neo                                                                from '../../../../../../src/Neo.mjs';
-import * as core                                                          from '../../../../../../src/core/_export.mjs';
+import Neo                                                                from 'neo.mjs/src/Neo.mjs';
+import * as core                                                          from 'neo.mjs/src/core/_export.mjs';
 import {auditChromaVectorCoverage}                                        from '../../../../../../ai/scripts/maintenance/checkChromaIntegrity.mjs';
 import {isCollectionQuarantined, quarantineCollection, storeFenceTargets} from '../../../../../../ai/services/memory-core/helpers/quarantineStore.mjs';
 import {classifyDataIntegrityMode}                                        from '../../../../../../ai/daemons/orchestrator/services/dataIntegrityModeClassifier.mjs';

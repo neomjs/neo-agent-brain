@@ -1222,9 +1222,9 @@ import os              from 'node:os';
 import path            from 'path';
 import vm              from 'vm';
 import * as yaml       from 'js-yaml';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 test.describe('Neo.ai.services.github-workflow.PullRequestService — checkoutPullRequest (#13052)', () => {
     let buildCheckoutPullRequest;
@@ -2749,8 +2749,8 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
 
     test('#14688: PullRequestService import stays total when template files are absent at projectRoot', () => {
         const tmpDir      = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-pr-review-missing-template-')),
-              neoPath     = path.resolve('src/Neo.mjs'),
-              corePath    = path.resolve('src/core/_export.mjs'),
+              neoPath     = import.meta.resolve('neo.mjs/src/Neo.mjs'),
+              corePath    = import.meta.resolve('neo.mjs/src/core/_export.mjs'),
               servicePath = path.resolve('ai/services/github-workflow/PullRequestService.mjs'),
               script      = [
                   `import ${JSON.stringify(neoPath)};`,

@@ -16,8 +16,8 @@ setup({
 // Test-side entry-point bootstrap: Neo + core/_export populate `globalThis.Neo` before the
 // dynamic KbGarbageCollectionService import below. Required because the class file no longer
 // imports Neo itself (class+wrapper split). Mirrors KbReconciliationService.spec.
-import Neo       from '../../../../../../src/Neo.mjs';
-import * as core from '../../../../../../src/core/_export.mjs';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
 
 import {test, expect} from '@playwright/test';
 
@@ -345,8 +345,8 @@ test.describe('Neo.ai.daemons.KbGarbageCollectionService (#11641)', () => {
         });
 
         test('is a no-op for an empty / non-array id set', async () => {
-            let deleteCalled = 0;
-            const collection = {delete: async () => { deleteCalled++ }};
+            let   deleteCalled = 0;
+            const collection   = {delete: async () => { deleteCalled++ }};
 
             expect(await KbGarbageCollectionService.deleteChunks(collection, [])).toBe(0);
             expect(await KbGarbageCollectionService.deleteChunks(collection, null)).toBe(0);
@@ -360,12 +360,12 @@ test.describe('Neo.ai.daemons.KbGarbageCollectionService (#11641)', () => {
             KBRecorderService.recordIngestionMetric = (e) => { events.push(e) };
 
             KbGarbageCollectionService.recordGcMetric({
-                tenantId        : 'tenant-x',
-                repoSlug        : 'repo-x',
-                diff            : {expiredCount: 6, evaluatedCount: 40},
-                deletedCount    : 6,
-                retention       : {maxAgeMs: 5000},
-                autoDelete      : true,
+                tenantId         : 'tenant-x',
+                repoSlug         : 'repo-x',
+                diff             : {expiredCount: 6, evaluatedCount: 40},
+                deletedCount     : 6,
+                retention        : {maxAgeMs: 5000},
+                autoDelete       : true,
                 defragRecommended: true
             });
 

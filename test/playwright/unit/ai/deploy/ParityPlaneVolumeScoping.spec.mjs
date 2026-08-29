@@ -337,8 +337,8 @@ test.describe('parity profile — volume scoping is the isolation mechanism', ()
     });
 
     test('the relocated parity anchor places every declared Tier-1 plane member', async () => {
-        await import('../../../../../src/Neo.mjs');
-        await import('../../../../../src/core/_export.mjs');
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
 
         const {default: ConfigBase, PLANE_MEMBER_PATHS} = await import('../../../../../ai/configBase.mjs');
         const

@@ -1,7 +1,7 @@
-import {setup} from '../../../../setup.mjs';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import {setup}         from '../../../../setup.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 const appName = 'GraphLifecycleReportTest';
 
@@ -57,7 +57,7 @@ test.describe('graphLifecycleReport.mjs (#10158)', () => {
         const calls  = [],
               lines  = [],
               census = {
-                  available: true, memoryNodes: 1, sessionNodes: 1,
+                  available  : true, memoryNodes: 1, sessionNodes: 1,
                   sqliteBytes: 0, sqliteWalBytes: 0, sqliteShmBytes: 0, measuredAt: 'x'
               };
 

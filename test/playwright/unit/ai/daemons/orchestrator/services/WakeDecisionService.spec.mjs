@@ -1,8 +1,8 @@
 import {test, expect} from '@playwright/test';
 import fs             from 'fs-extra';
 import path           from 'path';
-import Neo            from '../../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {
     WakeDecisionService,
     DEFAULT_ACTIVE_WINDOW_MS,
@@ -229,11 +229,11 @@ test.describe('Neo.ai.daemons.services.WakeDecisionService (#11995, Sub-ii of Ep
 
         test('parseActiveReadinessSentinels: multiple blocking sentinels → returns LATEST expiresAt (longest block wins)', () => {
             const earlierBlock = {
-                id: 'm1',
+                id        : 'm1',
                 properties: {task: {type: 'wake-readiness', ready: false, reason: 'first', expiresAt: new Date(NOW + 30 * 60 * 1000).toISOString()}}
             };
             const laterBlock = {
-                id: 'm2',
+                id        : 'm2',
                 properties: {task: {type: 'wake-readiness', ready: false, reason: 'longer', expiresAt: new Date(NOW + 2 * 60 * 60 * 1000).toISOString()}}
             };
 
@@ -246,11 +246,11 @@ test.describe('Neo.ai.daemons.services.WakeDecisionService (#11995, Sub-ii of Ep
 
         test('parseActiveReadinessSentinels: ready:false + ready:true mix → blocking (ready:false) wins regardless of expiresAt', () => {
             const blockingNear = {
-                id: 'm1',
+                id        : 'm1',
                 properties: {task: {type: 'wake-readiness', ready: false, reason: 'block', expiresAt: new Date(NOW + 5 * 60 * 1000).toISOString()}}
             };
             const readyFar = {
-                id: 'm2',
+                id        : 'm2',
                 properties: {task: {type: 'wake-readiness', ready: true, reason: 'override-ready', expiresAt: new Date(NOW + 2 * 60 * 60 * 1000).toISOString()}}
             };
 
@@ -262,11 +262,11 @@ test.describe('Neo.ai.daemons.services.WakeDecisionService (#11995, Sub-ii of Ep
 
         test('parseActiveReadinessSentinels: all ready:true sentinels → returns EARLIEST expiresAt (most-restrictive)', () => {
             const earlyReady = {
-                id: 'm1',
+                id        : 'm1',
                 properties: {task: {type: 'wake-readiness', ready: true, reason: 'short', expiresAt: new Date(NOW + 5 * 60 * 1000).toISOString()}}
             };
             const lateReady = {
-                id: 'm2',
+                id        : 'm2',
                 properties: {task: {type: 'wake-readiness', ready: true, reason: 'long', expiresAt: new Date(NOW + 60 * 60 * 1000).toISOString()}}
             };
 

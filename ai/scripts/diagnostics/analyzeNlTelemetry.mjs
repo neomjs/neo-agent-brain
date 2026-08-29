@@ -6,26 +6,26 @@
  *
  * Usage: node ai/scripts/diagnostics/analyzeNlTelemetry.mjs <sessionId> [--save]
  */
-import Neo from '../../../src/Neo.mjs';
-import * as core from '../../../src/core/_export.mjs';
-import Database from 'better-sqlite3';
-import fs from 'fs';
-import path from 'path';
+import Neo               from 'neo.mjs/src/Neo.mjs';
+import * as core         from 'neo.mjs/src/core/_export.mjs';
+import Database          from 'better-sqlite3';
+import fs                from 'fs';
+import path              from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 
 // Resolve upward from neo/ai/scripts to neo root
 const ROOT_DIR = path.resolve(__dirname, '../../../');
 import aiConfig from '../../mcp/server/memory-core/config.mjs';
 
 // The Memory Core config leaf owns the NEO_MEMORY_DB_PATH env override.
-const DB_PATH = aiConfig.storagePaths.graph;
+const DB_PATH    = aiConfig.storagePaths.graph;
 const RLAIF_PATH = aiConfig.datasets.rlaif.trajectories;
 
 const sessionId = process.argv[2];
-const save = process.argv.includes('--save');
+const save      = process.argv.includes('--save');
 
 if (!sessionId) {
     console.error('Usage: node ai/scripts/diagnostics/analyzeNlTelemetry.mjs <sessionId> [--save]');
@@ -62,8 +62,8 @@ try {
     // Sort chronologically (assuming timestamp exists on standard memory logs)
     sessionLogs.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
 
-    const trajectories = [];
-    let currentTrajectory = [];
+    const trajectories      = [];
+    let   currentTrajectory = [];
 
     sessionLogs.forEach((log) => {
         // Simple heuristic: A step belongs to a trajectory if it invoked Neural Link
@@ -75,9 +75,9 @@ try {
 
         if (isNlTurn) {
             currentTrajectory.push({
-                prompt: log.prompt,
-                thought: log.thought,
-                response: log.response,
+                prompt   : log.prompt,
+                thought  : log.thought,
+                response : log.response,
                 toolsUsed: toolsUsed
             });
         } else if (currentTrajectory.length > 0) {
@@ -103,7 +103,7 @@ try {
             metadata: {
                 sessionId,
                 extractionDate: new Date().toISOString(),
-                type: 'whitebox_e2e_introspection'
+                type          : 'whitebox_e2e_introspection'
             },
             messages: traj.flatMap(turn => [
                 { role: 'user', content: turn.prompt },

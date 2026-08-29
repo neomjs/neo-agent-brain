@@ -18,8 +18,8 @@ import Database                               from 'better-sqlite3';
 import {spawnSync}                            from 'node:child_process';
 import {lstatSync, readdirSync, readFileSync} from 'node:fs';
 import path                                   from 'node:path';
-import Neo                                    from '../../../../../../src/Neo.mjs';
-import * as core                              from '../../../../../../src/core/_export.mjs';
+import Neo                                    from 'neo.mjs/src/Neo.mjs';
+import * as core                              from 'neo.mjs/src/core/_export.mjs';
 import {
     findChromaMetadataUpdates,
     rewriteIdentityFields,

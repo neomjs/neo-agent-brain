@@ -14,8 +14,8 @@ const projectName = process.env.NEO_INTEGRATION_COMPOSE_PROJECT || 'neo-integrat
 const fixtureRoot = path.join(__dirname, 'fixtures/external-workspaces');
 
 const NEO_BOOTSTRAP = `
-    await import('./src/Neo.mjs');
-    await import('./src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 `;
 
 const fixtureSpecs = [
@@ -33,13 +33,13 @@ const fixtureSpecs = [
         name      : 'mini-cpp-workspace',
         sampleGlob: ['src/main.cpp', 'src/worker.cpp', 'src/worker.hpp'],
         configBits: ['transportContract: parsed-chunk-v1', 'useDefaultSources: false'],
-        extraFiles : ['parsed-chunks.jsonl']
+        extraFiles: ['parsed-chunks.jsonl']
     },
     {
         name      : 'mini-custom-source',
         sampleGlob: ['schemas/agent.proto', 'schemas/task.proto', 'schemas/result.proto'],
         configBits: ['sourceName: ProtoSource', 'proto-fixture-parser'],
-        extraFiles : ['sources/ProtoSource.mjs']
+        extraFiles: ['sources/ProtoSource.mjs']
     }
 ];
 

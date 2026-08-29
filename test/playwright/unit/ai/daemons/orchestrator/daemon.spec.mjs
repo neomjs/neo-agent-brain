@@ -4,8 +4,8 @@ import fs             from 'fs';
 import os             from 'os';
 import path           from 'path';
 import * as yaml      from 'js-yaml';
-import '../../../../../../src/Neo.mjs';
-import '../../../../../../src/core/_export.mjs';
+import 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import {
     acquireAuthorityLeaseSurvivingSelfSuccession,
     assertStarvationReceiptReadable,

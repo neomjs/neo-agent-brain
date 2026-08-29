@@ -27,9 +27,9 @@
 // at module-load. `InstanceManager` binds `Neo.find` / `Neo.findFirst` / `Neo.get`
 // aliases + sets `Base.instanceManagerAvailable=true` + consumes pre-singleton
 // `Neo.idMap`. All 3 MUST run before consumed class imports.
-import Neo                                       from '../../../src/Neo.mjs';
-import * as core                                 from '../../../src/core/_export.mjs';
-import InstanceManager                           from '../../../src/manager/Instance.mjs';
+import Neo                                       from 'neo.mjs/src/Neo.mjs';
+import * as core                                 from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                           from 'neo.mjs/src/manager/Instance.mjs';
 import AiConfig                                  from '../../config.mjs';
 import {writeFileAtomicSync}                     from '../../services/shared/atomicFileWrite.mjs';
 import memoryCoreConfig                          from '../../mcp/server/memory-core/config.mjs';
@@ -103,15 +103,15 @@ let DELIVERY_FAILURE_STATE_FILE;
 let   terminalDeliveryFailures           = {};
 let   terminalDeliveryFailuresNeedRepair = false;
 const LOG_RETENTION_DAYS                 = 30;
-const CODEX_APP_SERVER_ADAPTER          = 'codex-app-server';
-const OPENCODE_SERVER_ADAPTER           = 'opencode-server';
-const OPENCODE_REBIND_SETTLE_MS         = 50;
-const KIMI_SERVER_ADAPTER               = 'kimi-server';
-const KIMI_PULL_BRIDGE_ADAPTER          = 'kimi-pull-bridge';
-const CODEX_TURN_START_PROOF_TIMEOUT_MS = Number(process.env.WAKE_CODEX_TURN_START_PROOF_TIMEOUT_MS) || 45000;
-const CODEX_TURN_START_PROOF_POLL_MS    = Number(process.env.WAKE_CODEX_TURN_START_PROOF_POLL_MS) || 1000;
-const CODEX_WAKE_SUBMIT_NONCE_PREFIX    = 'NEO_WAKE_SUBMIT_NONCE:';
-const WOKEN_MESSAGE_IDS_STATE_KEY       = '__messageIdsByIdentity';
+const CODEX_APP_SERVER_ADAPTER           = 'codex-app-server';
+const OPENCODE_SERVER_ADAPTER            = 'opencode-server';
+const OPENCODE_REBIND_SETTLE_MS          = 50;
+const KIMI_SERVER_ADAPTER                = 'kimi-server';
+const KIMI_PULL_BRIDGE_ADAPTER           = 'kimi-pull-bridge';
+const CODEX_TURN_START_PROOF_TIMEOUT_MS  = Number(process.env.WAKE_CODEX_TURN_START_PROOF_TIMEOUT_MS) || 45000;
+const CODEX_TURN_START_PROOF_POLL_MS     = Number(process.env.WAKE_CODEX_TURN_START_PROOF_POLL_MS) || 1000;
+const CODEX_WAKE_SUBMIT_NONCE_PREFIX     = 'NEO_WAKE_SUBMIT_NONCE:';
+const WOKEN_MESSAGE_IDS_STATE_KEY        = '__messageIdsByIdentity';
 
 /**
  * @summary Loads durable GraphLog watermarks plus stable per-identity message wake claims.

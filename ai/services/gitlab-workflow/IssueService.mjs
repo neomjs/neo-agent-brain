@@ -1,8 +1,8 @@
-import Base          from '../../../src/core/Base.mjs';
-import GitLabClient  from './GitLabClient.mjs';
-import aiConfig      from '../../mcp/server/gitlab-workflow/config.mjs';
-import logger        from '../../mcp/server/gitlab-workflow/logger.mjs';
-import {LIST_ISSUES, GET_ISSUE_GID, GET_PROJECT_LABEL_IDS}                          from './queries/issueQueries.mjs';
+import Base                                                                               from 'neo.mjs/src/core/Base.mjs';
+import GitLabClient                                                                       from './GitLabClient.mjs';
+import aiConfig                                                                           from '../../mcp/server/gitlab-workflow/config.mjs';
+import logger                                                                             from '../../mcp/server/gitlab-workflow/logger.mjs';
+import {LIST_ISSUES, GET_ISSUE_GID, GET_PROJECT_LABEL_IDS}                                from './queries/issueQueries.mjs';
 import {CREATE_ISSUE, CREATE_NOTE, UPDATE_NOTE, UPDATE_ISSUE_LABELS, ISSUE_SET_ASSIGNEES} from './queries/mutations.mjs';
 
 /**
@@ -120,7 +120,7 @@ class IssueService extends Base {
      */
     async #setAssignees(iid, assignees, operationMode) {
         try {
-            const data    = await GitLabClient.query(ISSUE_SET_ASSIGNEES, {
+            const data = await GitLabClient.query(ISSUE_SET_ASSIGNEES, {
                 projectPath      : aiConfig.gitlab.projectPath,
                 iid              : String(iid),
                 assigneeUsernames: assignees,
@@ -191,7 +191,7 @@ class IssueService extends Base {
      */
     async createIssue({title, body='', labels=[], assignees=[]}) {
         try {
-            const data    = await GitLabClient.query(CREATE_ISSUE, {
+            const data = await GitLabClient.query(CREATE_ISSUE, {
                 projectPath: aiConfig.gitlab.projectPath,
                 title,
                 description: body,
@@ -298,7 +298,7 @@ class IssueService extends Base {
                 return {error: 'Not Found', message: `One or more labels not found in project '${aiConfig.gitlab.projectPath}': ${labels.join(', ')}`, code: 'LABEL_NOT_FOUND'};
             }
 
-            const data    = await GitLabClient.query(UPDATE_ISSUE_LABELS, {
+            const data = await GitLabClient.query(UPDATE_ISSUE_LABELS, {
                 projectPath   : aiConfig.gitlab.projectPath,
                 iid           : String(issue_number),
                 addLabelIds   : action === 'add'    ? labelIds : null,

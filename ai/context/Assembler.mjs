@@ -1,7 +1,7 @@
-import fs               from 'fs';
-import path             from 'path';
-import {fileURLToPath}  from 'url';
-import Base             from '../../src/core/Base.mjs';
+import fs              from 'fs';
+import path            from 'path';
+import {fileURLToPath} from 'url';
+import Base            from 'neo.mjs/src/core/Base.mjs';
 import {
     Memory_Service,
     Memory_SessionService,
@@ -87,7 +87,7 @@ class ContextAssembler extends Base {
             try {
                 // A. Query Past Session Summaries
                 const summaryResult = await Memory_SummaryService.querySummaries({
-                    query: ragQuery,
+                    query   : ragQuery,
                     nResults: 3
                 });
 
@@ -99,7 +99,7 @@ class ContextAssembler extends Base {
                 const kbResult = await KB_QueryService.queryDocuments({
                     query: ragQuery,
                     limit: 3,
-                    type: 'guide' // focus on concepts
+                    type : 'guide' // focus on concepts
                 });
 
                 if (kbResult.results) {
@@ -138,7 +138,7 @@ class ContextAssembler extends Base {
         ];
 
         return {
-            system: augmentedSystemPrompt,
+            system  : augmentedSystemPrompt,
             messages: messages
         };
     }
@@ -239,8 +239,8 @@ class ContextAssembler extends Base {
             const skillsDir = path.resolve(__dirname, '../../.agents/skills');
             if (!fs.existsSync(skillsDir)) return '';
 
-            const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
-            let skillsText = '';
+            const entries    = fs.readdirSync(skillsDir, { withFileTypes: true });
+            let   skillsText = '';
 
             for (const entry of entries) {
                 if (entry.isDirectory()) {

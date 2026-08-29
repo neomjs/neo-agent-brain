@@ -1,7 +1,7 @@
 import {execFileSync as defaultExecFileSync} from 'child_process';
 
 import {resolveInstancePid} from '../../../../daemons/wake/instanceResolver.mjs';
-import Base from '../../../../../src/core/Base.mjs';
+import Base                 from 'neo.mjs/src/core/Base.mjs';
 
 const USER_DATA_DIR_PATTERN = /(?:^|\s)--user-data-dir=(?:"([^"]+)"|'([^']+)'|(.+?))(?=\s--|$)/;
 
@@ -107,7 +107,7 @@ class BootEnvelopeResolver extends Base {
         psOutput
     } = {}) {
         const instanceAddress = env.NEO_HARNESS_INSTANCE_ADDRESS?.trim(),
-              addressType      = env.NEO_HARNESS_INSTANCE_ADDRESS_TYPE?.trim();
+              addressType     = env.NEO_HARNESS_INSTANCE_ADDRESS_TYPE?.trim();
 
         // No explicit address configured: try the narrow macOS Electron fallback. If it cannot
         // prove an instance address, keep the existing default-instance behavior (null).
@@ -225,8 +225,8 @@ class BootEnvelopeResolver extends Base {
             return null;
         }
 
-        const byPid  = this.parseProcessSnapshot(psOutput),
-              seen   = new Set();
+        const byPid = this.parseProcessSnapshot(psOutput),
+              seen  = new Set();
         let   cursor = Number(bootPid);
 
         for (let depth = 0; depth < maxDepth; depth++) {

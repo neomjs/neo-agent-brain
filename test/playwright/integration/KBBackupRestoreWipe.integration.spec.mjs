@@ -16,8 +16,8 @@ const projectName = process.env.NEO_INTEGRATION_COMPOSE_PROJECT || 'neo-integrat
 const KB_URL      = process.env.NEO_INTEGRATION_KB_URL || 'http://127.0.0.1:13000';
 
 const NEO_BOOTSTRAP = `
-    await import('./src/Neo.mjs');
-    await import('./src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 `;
 
 /**

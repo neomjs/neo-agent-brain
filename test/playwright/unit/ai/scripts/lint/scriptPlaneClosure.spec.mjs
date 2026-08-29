@@ -258,6 +258,19 @@ test.describe('scriptPlaneClosure', () => {
             expect(closure.unresolved).toHaveLength(0);
         });
 
+        test('the pinned Engine source package remains a followable first-party boundary', () => {
+            const files = {
+                '/e.mjs'                   : `import Service from './service.mjs';\nawait Service.ready();`,
+                '/service.mjs'             : `import Base from 'neo.mjs/src/core/Base.mjs';\nexport default class Service extends Base {}`,
+                'neo.mjs/src/core/Base.mjs': `export default class Base { static ready() {} }`
+            };
+
+            const closure = walkCapabilityClosure({entrypoint: '/e.mjs', ...graphOf(files)});
+
+            expect(closure.reached).toContain('neo.mjs/src/core/Base.mjs');
+            expect(closure.unresolved).toHaveLength(0);
+        });
+
         test('an unreadable module is an unresolved edge, not a silent skip', () => {
             const closure = walkCapabilityClosure({entrypoint: '/missing.mjs', ...graphOf({})});
 

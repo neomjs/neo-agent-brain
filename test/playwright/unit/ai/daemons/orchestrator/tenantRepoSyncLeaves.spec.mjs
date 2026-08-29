@@ -1,5 +1,5 @@
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
 import RootConfigBase from '../../../../../../ai/configBase.mjs';
 
 // The canonical defaults' RELATIONSHIP is the guard: the starved duration floor

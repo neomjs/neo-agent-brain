@@ -1,5 +1,5 @@
 import aiConfig                from '../../mcp/server/github-workflow/config.mjs';
-import Base                    from '../../../src/core/Base.mjs';
+import Base                    from 'neo.mjs/src/core/Base.mjs';
 import logger                  from '../../mcp/server/github-workflow/logger.mjs';
 import IssueSyncer             from './sync/IssueSyncer.mjs';
 import MetadataManager         from './sync/MetadataManager.mjs';

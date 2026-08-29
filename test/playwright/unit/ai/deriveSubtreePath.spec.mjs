@@ -1,5 +1,5 @@
 import {test, expect}      from '@playwright/test';
-import {deriveSubtreePath} from '../../../../src/ai/deriveSubtreePath.mjs';
+import {deriveSubtreePath} from 'neo.mjs/src/ai/deriveSubtreePath.mjs';
 
 // Pure function — imported directly; no Neo globals, no setup, no host side-effects.
 test.describe('deriveSubtreePath (absolute root→node id path for NL lock enforcement)', () => {

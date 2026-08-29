@@ -1,7 +1,7 @@
-import Base from '../../../src/core/Base.mjs';
+import Base                                      from 'neo.mjs/src/core/Base.mjs';
 import { Memory_StorageRouter as StorageRouter } from '../../services.mjs';
-import { Memory_GraphService as GraphService } from '../../services.mjs';
-import logger from '../../mcp/server/memory-core/logger.mjs';
+import { Memory_GraphService as GraphService }   from '../../services.mjs';
+import logger                                    from '../../mcp/server/memory-core/logger.mjs';
 
 /**
  * @class Neo.ai.daemons.services.GraphMaintenanceService
@@ -29,8 +29,8 @@ class GraphMaintenanceService extends Base {
     async runGarbageCollection() {
         logger.info('[GraphMaintenanceService] Initiating Graph Garbage Collection (Apoptosis)...');
 
-        const edges = GraphService.db.edges.items.slice();
-        let cullCount = 0;
+        const edges     = GraphService.db.edges.items.slice();
+        let   cullCount = 0;
 
         edges.forEach(e => {
             if (e.type === 'SYSTEM_TENET') return; // Protect structural system edges from fading
@@ -56,7 +56,7 @@ class GraphMaintenanceService extends Base {
                 // Cross-layer purge from semantic embeddings
                 logger.info(`[GraphMaintenanceService] Purging semantic vectors for ${orphaned.length} deleted nodes.`);
 
-                const graphColl = await StorageRouter.getGraphCollection();
+                const graphColl   = await StorageRouter.getGraphCollection();
                 const summaryColl = await StorageRouter.getSummaryCollection();
 
                 if (graphColl) {

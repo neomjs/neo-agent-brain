@@ -4,8 +4,8 @@ import fs   from 'fs-extra';
 import os   from 'os';
 import path from 'path';
 
-import '../../../../../../src/Neo.mjs';
-import '../../../../../../src/core/Base.mjs';
+import 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/Base.mjs';
 
 /**
  * @summary An export that captured nothing must not report the same shape as one that captured

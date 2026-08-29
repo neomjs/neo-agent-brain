@@ -3,7 +3,7 @@ import fs                                                                    fro
 import logger                                                                from '../../mcp/server/memory-core/logger.mjs';
 import path                                                                  from 'path';
 import readline                                                              from 'readline';
-import Base                                                                  from '../../../src/core/Base.mjs';
+import Base                                                                  from 'neo.mjs/src/core/Base.mjs';
 import StorageRouter                                                         from './managers/StorageRouter.mjs';
 import DestructiveOperationGuard                                             from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import {classifyExportCompleteness, EXPORT_COMPLETENESS, recordExportGrowth} from './helpers/exportCompleteness.mjs';

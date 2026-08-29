@@ -1,9 +1,9 @@
-import {test, expect}                          from '@playwright/test';
-import Neo                                     from '../../../../../../../src/Neo.mjs';
-import * as core                               from '../../../../../../../src/core/_export.mjs';
+import {test, expect}                             from '@playwright/test';
+import Neo                                        from 'neo.mjs/src/Neo.mjs';
+import * as core                                  from 'neo.mjs/src/core/_export.mjs';
 import {mkdtemp, rm, readFile, writeFile, access} from 'fs/promises';
-import os                                      from 'os';
-import path                                    from 'path';
+import os                                         from 'os';
+import path                                       from 'path';
 
 import {withAppendLock, APPEND_LOCK_SUFFIX} from '../../../../../../../ai/services/memory-core/helpers/walAppendLock.mjs';
 
@@ -54,11 +54,11 @@ test.describe('Neo.ai.services.memory-core.helpers.walAppendLock', () => {
         // Pre-existing lock owned by a different, "alive" pid that never releases.
         await writeFile(lockPath(), JSON.stringify({pid: 9999, startedAt: 1000}), 'utf8');
 
-        let clock   = 1000;
+        let   clock = 1000;
         const now   = () => clock;
         const sleep = async ms => { clock += ms; }; // each retry advances the clock past the deadline
 
-        let ran = false;
+        let   ran              = false;
         const {result, locked} = await withAppendLock(walPath, async () => { ran = true; return 'fallthrough-write'; }, {
             pid: 4242, now, sleep, isAlive: () => true, ttlMs: 1_000_000, acquireTimeoutMs: 50, retryIntervalMs: 15
         });
@@ -148,9 +148,9 @@ test.describe('Neo.ai.services.memory-core.helpers.walAppendLock', () => {
         };
 
         const {locked} = await withAppendLock(walPath, async () => 'wrote-unlocked', {
-            pid: 4242, now: () => clock, sleep: async ms => { clock += ms; },
+            pid    : 4242, now: () => clock, sleep: async ms => { clock += ms; },
             isAlive: pid => pid === 7777,   // the successor (7777) is ALIVE; the observed 9999 is dead
-            fs: fakeFs, ttlMs: 1_000_000, acquireTimeoutMs: 40, retryIntervalMs: 15
+            fs     : fakeFs, ttlMs: 1_000_000, acquireTimeoutMs: 40, retryIntervalMs: 15
         });
 
         expect(unlinkedSuccessor).toBe(false); // the RA: the fence must NOT remove the successor's lock

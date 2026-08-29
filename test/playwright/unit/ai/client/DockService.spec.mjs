@@ -1,9 +1,9 @@
 import {test, expect}       from '@playwright/test';
-import Neo                  from '../../../../../src/Neo.mjs';
-import * as core            from '../../../../../src/core/_export.mjs';
-import DockService          from '../../../../../src/ai/client/DockService.mjs';
-import DockPerspectiveStore from '../../../../../src/dashboard/DockPerspectiveStore.mjs';
-import DockZoneModel        from '../../../../../src/dashboard/DockZoneModel.mjs';
+import Neo                  from 'neo.mjs/src/Neo.mjs';
+import * as core            from 'neo.mjs/src/core/_export.mjs';
+import DockService          from 'neo.mjs/src/ai/client/DockService.mjs';
+import DockPerspectiveStore from 'neo.mjs/src/dashboard/DockPerspectiveStore.mjs';
+import DockZoneModel        from 'neo.mjs/src/dashboard/DockZoneModel.mjs';
 
 /**
  * @summary Creates a valid dockZone.v1 fixture for diff-tool assertions.

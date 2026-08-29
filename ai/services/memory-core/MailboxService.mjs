@@ -1,4 +1,4 @@
-import Base                                     from '../../../src/core/Base.mjs';
+import Base                                     from 'neo.mjs/src/core/Base.mjs';
 import aiConfig                                 from '../../mcp/server/memory-core/config.mjs';
 import logger                                   from '../../mcp/server/memory-core/logger.mjs';
 import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';

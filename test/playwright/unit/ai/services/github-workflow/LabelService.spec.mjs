@@ -14,14 +14,14 @@ setup({
 });
 
 import {test, expect}  from '@playwright/test';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 /**
- * @summary Contract coverage for `LabelService.listLabels` error propagation (#10112).
+ * @summary Contract coverage for `LabelService.listLabels` error propagation.
  *
- * Prior to #10112, `listLabels` caught GraphQL failures internally and returned an
+ * Previously, `listLabels` caught GraphQL failures internally and returned an
  * `{error, message, code}` wrapper object alongside the happy-path `{count, labels}` —
  * a union-typed return that hid the real HTTP status + GraphQL error body from callers
  * (build scripts, CLI, the data-sync-pipeline CI workflow). Non-MCP callers lost diagnostics;
@@ -101,7 +101,7 @@ test.describe('Neo.ai.services.github-workflow.LabelService', () => {
         };
 
         // Assert the exception propagates verbatim — not caught and returned as
-        // {error, message, code}, which was the pre-#10112 anti-pattern that hid
+        // {error, message, code}, which was the wrapped-error anti-pattern that hid
         // the real HTTP status from CI logs.
         await expect(LabelService.listLabels()).rejects.toBe(underlyingError);
     });

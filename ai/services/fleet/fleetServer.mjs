@@ -1,8 +1,8 @@
 // Neo namespace bootstrap (entry-point invariant): FleetControlBridge and its Neo classes are
 // evaluated only after the namespace/core/instance aliases have been installed.
-import Neo                                             from '../../../src/Neo.mjs';
-import * as core                                       from '../../../src/core/_export.mjs';
-import InstanceManager                                 from '../../../src/manager/Instance.mjs';
+import Neo                                             from 'neo.mjs/src/Neo.mjs';
+import * as core                                       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                                 from 'neo.mjs/src/manager/Instance.mjs';
 import express                                         from 'express';
 import {rateLimit}                                     from 'express-rate-limit';
 import cors                                            from 'cors';

@@ -2,7 +2,7 @@ import aiConfig                                                 from '../../mcp/
 import {isCollectionQuarantined}                                from './helpers/quarantineStore.mjs';
 import {resolveRowTimestamp}                                    from './helpers/resolveRowTimestamp.mjs';
 import {resolveSharingPolicy}                                   from './helpers/resolveSharingPolicy.mjs';
-import Base                                                     from '../../../src/core/Base.mjs';
+import Base                                                     from 'neo.mjs/src/core/Base.mjs';
 import StorageRouter                                            from './managers/StorageRouter.mjs';
 import logger                                                   from '../../mcp/server/memory-core/logger.mjs';
 import RequestContextService, {SHARED_USER_ID, normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';

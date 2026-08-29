@@ -1,7 +1,7 @@
 import {test, expect} from '@playwright/test';
-import Neo from '../../../../../../../src/Neo.mjs';
-import * as core from '../../../../../../../src/core/_export.mjs';
-import {getDueTask} from '../../../../../../../ai/daemons/orchestrator/scheduling/graphLogCompaction.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {getDueTask}   from '../../../../../../../ai/daemons/orchestrator/scheduling/graphLogCompaction.mjs';
 
 test.describe('orchestrator/scheduling/graphLogCompaction (#12394)', () => {
     test('getDueTask fires when the interval has elapsed', () => {
@@ -14,16 +14,16 @@ test.describe('orchestrator/scheduling/graphLogCompaction (#12394)', () => {
 
     test('getDueTask returns null when the interval has not elapsed', () => {
         expect(getDueTask({
-            state: {'graphlog-compaction': {lastRunAt: 0}},
-            now  : 86399999,
+            state                       : {'graphlog-compaction': {lastRunAt: 0}},
+            now                         : 86399999,
             graphLogCompactionIntervalMs: 86400000
         })).toBeNull();
     });
 
     test('getDueTask treats disabled lanes and intervalMs <= 0 as disabled', () => {
         expect(getDueTask({
-            state: {},
-            now  : 999999999,
+            state                       : {},
+            now                         : 999999999,
             graphLogCompactionIntervalMs: 86400000,
             enabled                     : false
         })).toBeNull();

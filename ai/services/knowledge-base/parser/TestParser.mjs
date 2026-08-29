@@ -1,5 +1,5 @@
 import * as acorn from 'acorn';
-import Base       from '../../../../src/core/Base.mjs';
+import Base       from 'neo.mjs/src/core/Base.mjs';
 import logger     from '../../../mcp/server/knowledge-base/logger.mjs';
 
 /**

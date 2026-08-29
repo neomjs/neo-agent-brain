@@ -6,7 +6,7 @@ import {spawn}         from 'child_process';
 import fs              from 'fs/promises';
 import path            from 'path';
 import {fileURLToPath} from 'url';
-import Base            from '../../../../src/core/Base.mjs';
+import Base            from 'neo.mjs/src/core/Base.mjs';
 import AiConfig        from '../../../config.mjs';
 import {
     Memory_GraphService     as GraphService,

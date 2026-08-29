@@ -1,9 +1,9 @@
 // Neo namespace bootstrap (entry-point invariant) — community-activity shadow probe CLI.
 // `InstanceManager` binds Neo.find/findFirst/get aliases + consumes pre-singleton
 // `Neo.idMap`; required before loading a Neo singleton service.
-import Neo             from '../../../src/Neo.mjs';
-import * as core       from '../../../src/core/_export.mjs';
-import InstanceManager from '../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 import fsExtra         from 'fs-extra';
 import path            from 'path';

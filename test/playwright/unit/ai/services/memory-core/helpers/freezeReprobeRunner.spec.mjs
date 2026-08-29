@@ -1,9 +1,9 @@
-import {test, expect}                                                               from '@playwright/test';
-import Neo                                                                          from '../../../../../../../src/Neo.mjs';
-import * as core                                                                    from '../../../../../../../src/core/_export.mjs';
-import fs                                                                           from 'fs/promises';
-import os                                                                           from 'os';
-import path                                                                         from 'path';
+import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
+import fs             from 'fs/promises';
+import os             from 'os';
+import path           from 'path';
 import {
     createFreezeHealOperation,
     createStoreFenceOperations,

@@ -1,10 +1,10 @@
-import {exec}                  from 'child_process';
-import {promisify}             from 'util';
-import aiConfig                from '../../mcp/server/github-workflow/config.mjs';
-import RuntimeFreshnessService from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
-import Base                    from '../../../src/core/Base.mjs';
-import logger                  from '../../mcp/server/github-workflow/logger.mjs';
-import semver                  from 'semver';
+import {exec}                   from 'child_process';
+import {promisify}              from 'util';
+import aiConfig                 from '../../mcp/server/github-workflow/config.mjs';
+import RuntimeFreshnessService  from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
+import Base                     from 'neo.mjs/src/core/Base.mjs';
+import logger                   from '../../mcp/server/github-workflow/logger.mjs';
+import semver                   from 'semver';
 import {assertExpectedIdentity} from '../../graph/assertExpectedIdentity.mjs';
 
 const
@@ -235,7 +235,7 @@ class HealthService extends Base {
     async #checkGhAuth() {
         try {
             const { stdout, stderr } = await execAsync('gh auth status');
-            const out = this.#combineOutput(stdout, stderr);
+            const out                = this.#combineOutput(stdout, stderr);
             return this.#parseAuthOutput(out);
         } catch (e) {
             if (this.#interpretExecError(e)) {
@@ -268,7 +268,7 @@ class HealthService extends Base {
     async #checkGhVersion() {
         try {
             const { stdout, stderr } = await execAsync('gh --version');
-            const out = this.#combineOutput(stdout, stderr);
+            const out                = this.#combineOutput(stdout, stderr);
             return this.#parseVersionOutput(out, aiConfig.minGhVersion);
         } catch (e) {
             if (this.#interpretExecError(e)) {
@@ -595,7 +595,7 @@ class HealthService extends Base {
 
             // Step 4: Enrich with Notifications (Passive Inbox) if authenticated
             try {
-                const { stdout } = await execAsync("gh api 'notifications?participating=true'");
+                const { stdout }    = await execAsync("gh api 'notifications?participating=true'");
                 const notifications = JSON.parse(stdout);
                 payload.notificationPreview = buildNotificationPreview(notifications);
             } catch (e) {

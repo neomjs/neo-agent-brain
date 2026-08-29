@@ -17,8 +17,8 @@ import {test, expect} from '@playwright/test';
 import fs             from 'fs-extra';
 import os             from 'os';
 import path           from 'path';
-import Neo            from '../../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {
     createLogger,
     pruneLoggerRetention,
@@ -177,7 +177,7 @@ test.describe('Neo.ai.mcp.server.shared.Logger', () => {
 
             expect(typeof logger.flush).toBe('function');
 
-            const today = new Date().toISOString().slice(0, 10);
+            const today    = new Date().toISOString().slice(0, 10);
             const expected = path.join(tmpLogDir, `shared-test-${today}.log`);
             const err      = new Error('shared logger failure');
             const circular = {};
@@ -232,9 +232,9 @@ test.describe('Neo.ai.mcp.server.shared.Logger', () => {
             logger.fileDebug('file-only-diagnostic');
             await logger.flush();
 
-            const today = new Date().toISOString().slice(0, 10);
+            const today    = new Date().toISOString().slice(0, 10);
             const expected = path.join(tmpLogDir, `shared-test-${today}.log`);
-            const content = fs.readFileSync(expected, 'utf8');
+            const content  = fs.readFileSync(expected, 'utf8');
 
             expect(content).toContain('[DEBUG] file-only-diagnostic');
             expect(stderrCalls).toHaveLength(0);
@@ -249,10 +249,10 @@ test.describe('Neo.ai.mcp.server.shared.Logger', () => {
 
     test('prunes old matching file logs while preserving active and unrelated files', async () => {
         const tmpLogDir = path.resolve(os.tmpdir(), `shared-logger-retention-${process.pid}-${Date.now()}`);
-        const today    = dayStamp(0);
-        const keepDay  = dayStamp(1);
-        const oldDay   = dayStamp(2);
-        const olderDay = dayStamp(3);
+        const today     = dayStamp(0);
+        const keepDay   = dayStamp(1);
+        const oldDay    = dayStamp(2);
+        const olderDay  = dayStamp(3);
 
         try {
             fs.ensureDirSync(tmpLogDir);

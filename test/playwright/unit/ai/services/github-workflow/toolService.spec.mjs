@@ -19,9 +19,9 @@ setup({
 // pattern (e.g. IssueService.spec.mjs).
 import {test, expect}  from '@playwright/test';
 import {readFileSync}  from 'node:fs';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 /**
  * `get_conversation` dispatch router. The tool now serves BOTH pull requests and

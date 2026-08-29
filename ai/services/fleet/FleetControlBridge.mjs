@@ -1,4 +1,4 @@
-import Base                     from '../../../src/core/Base.mjs';
+import Base                     from 'neo.mjs/src/core/Base.mjs';
 import FleetManager             from './FleetManager.mjs';
 import FleetRegistryService     from './FleetRegistryService.mjs';
 import FleetTenantService       from './FleetTenantService.mjs';

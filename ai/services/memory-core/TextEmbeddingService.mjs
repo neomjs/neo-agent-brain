@@ -2,8 +2,8 @@ import {
     GoogleGenerativeAI,
     GoogleGenerativeAIAbortError
 }                           from '@google/generative-ai';
-import aiConfig       from '../../mcp/server/memory-core/config.mjs';
-import Base           from '../../../src/core/Base.mjs';
+import aiConfig from '../../mcp/server/memory-core/config.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
 import {
     resolveCompletedPrefix,
     resolveDispatchPlan,
@@ -235,7 +235,7 @@ function createEmbeddingBatchYieldError({completedChunkCount, totalChunkCount, c
     // Still an independent expectation rather than a restatement of what came back: the count is
     // measured from the spans that were SENT and completed, never from `data.length`.
     const embeddings = toOrderedEmbeddings(data, completedTextCount),
-          error              = new Error(`openAiCompatible batch embedding yielded the heavy-maintenance lease after ${completedChunkCount}/${totalChunkCount} provider chunk(s), ${completedTextCount} embedding(s) carried`);
+          error      = new Error(`openAiCompatible batch embedding yielded the heavy-maintenance lease after ${completedChunkCount}/${totalChunkCount} provider chunk(s), ${completedTextCount} embedding(s) carried`);
 
     error.code                = EMBEDDING_BATCH_YIELDED_CODE;
     error.completedChunkCount = completedChunkCount;

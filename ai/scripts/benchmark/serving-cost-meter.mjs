@@ -4,8 +4,8 @@ import {mkdir, writeFile} from 'node:fs/promises';
 import os                 from 'node:os';
 import path               from 'node:path';
 import {promisify}        from 'node:util';
-import Neo                from '../../../src/Neo.mjs';
-import '../../../src/core/_export.mjs';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import aiConfig                           from '../../mcp/server/memory-core/config.mjs';
 import {aggregateWindow, buildMetricBags} from './helpers/servingCostCore.mjs';
 

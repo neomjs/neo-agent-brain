@@ -1,9 +1,9 @@
-import Base             from '../src/core/Base.mjs';
-import Client           from './mcp/client/Client.mjs';
-import ContextAssembler from './context/Assembler.mjs';
-import GeminiProvider   from './provider/Gemini.mjs';
-import Loop             from './agent/Loop.mjs';
-import Scheduler        from './agent/Scheduler.mjs';
+import Base                   from 'neo.mjs/src/core/Base.mjs';
+import Client                 from './mcp/client/Client.mjs';
+import ContextAssembler       from './context/Assembler.mjs';
+import GeminiProvider         from './provider/Gemini.mjs';
+import Loop                   from './agent/Loop.mjs';
+import Scheduler              from './agent/Scheduler.mjs';
 import {resolveProviderClass} from './provider/resolveProviderClass.mjs';
 
 /**

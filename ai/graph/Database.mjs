@@ -1,5 +1,5 @@
-import Base                     from '../../src/core/Base.mjs';
-import ClassSystemUtil          from '../../src/util/ClassSystem.mjs';
+import Base                     from 'neo.mjs/src/core/Base.mjs';
+import ClassSystemUtil          from 'neo.mjs/src/util/ClassSystem.mjs';
 import Store                    from './Store.mjs';
 import EdgeModel                from './EdgeModel.mjs';
 import NodeModel                from './NodeModel.mjs';

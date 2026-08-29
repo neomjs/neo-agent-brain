@@ -20,8 +20,8 @@ import {existsSync}   from 'fs';
 import path           from 'path';
 import os             from 'os';
 import {randomUUID}   from 'crypto';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 test.describe('ai/scripts/harnessLifecycle', () => {
     // Shared harness-state identity writes one state file; keep this spec serial under default-worker runs.

@@ -14,10 +14,10 @@ setup({
 });
 
 import {test, expect}     from '@playwright/test';
-import Neo                from '../../../../src/Neo.mjs';
-import * as core          from '../../../../src/core/_export.mjs';
-import InstanceService    from '../../../../src/ai/client/InstanceService.mjs';
-import TransactionService from '../../../../src/ai/TransactionService.mjs';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
+import InstanceService    from 'neo.mjs/src/ai/client/InstanceService.mjs';
+import TransactionService from 'neo.mjs/src/ai/TransactionService.mjs';
 
 // Neo.ai.client.InstanceService.listTransactions is the read-only `list_transactions` tool: a non-consuming
 // projection of the writer's undo state (TransactionService.stackOf) into a {committed, redo} audit summary

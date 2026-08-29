@@ -14,8 +14,8 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * @summary Unit coverage for the Brain-Pillar Consumer-Friction Helper (#11447 V1). ticket-ref-ok: names the contract this file exists to verify
@@ -155,7 +155,7 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
 
     test('emitConsumerFriction aggregates probabilistic symptoms and surfaces at threshold', () => {
         const {emitConsumerFriction, getAggregatedFrictions, _testConstants} = helper;
-        const threshold = _testConstants.PROBABILISTIC_EMIT_THRESHOLD;
+        const threshold                                                      = _testConstants.PROBABILISTIC_EMIT_THRESHOLD;
 
         const baseFriction = {
             assetRef          : 'session:ghi',
@@ -184,7 +184,7 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
 
     test('emitConsumerFriction aggregates by (assetRef, consumer, symptom) tuple — different assetRefs do not collide', () => {
         const {emitConsumerFriction, getAggregatedFrictions, _testConstants} = helper;
-        const threshold = _testConstants.PROBABILISTIC_EMIT_THRESHOLD;
+        const threshold                                                      = _testConstants.PROBABILISTIC_EMIT_THRESHOLD;
 
         const base = {
             consumer          : 'SemanticGraphExtractor',
@@ -208,7 +208,7 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
 
     test('getAggregatedFrictions prunes entries past AGGREGATOR_TTL_MS', () => {
         const {emitConsumerFriction, getAggregatedFrictions, _testConstants} = helper;
-        const ttl = _testConstants.AGGREGATOR_TTL_MS;
+        const ttl                                                            = _testConstants.AGGREGATOR_TTL_MS;
 
         emitConsumerFriction({
             assetRef          : 'session:ttl',
@@ -354,7 +354,7 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
 
     test('invokeWithGuardrail Angle 1 — parse-failure aggregates and surfaces at threshold', async () => {
         const {invokeWithGuardrail, getAggregatedFrictions, _testConstants} = helper;
-        const threshold = _testConstants.PROBABILISTIC_EMIT_THRESHOLD;
+        const threshold                                                     = _testConstants.PROBABILISTIC_EMIT_THRESHOLD;
 
         for (let i = 0; i < threshold; i++) {
             const result = await invokeWithGuardrail({
@@ -514,7 +514,7 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
 
     test('renderConsumerFrictionSection groups multiple symptoms', () => {
         const {emitConsumerFriction, renderConsumerFrictionSection, _testConstants} = helper;
-        const threshold = _testConstants.PROBABILISTIC_EMIT_THRESHOLD;
+        const threshold                                                             = _testConstants.PROBABILISTIC_EMIT_THRESHOLD;
 
         emitConsumerFriction({
             assetRef          : 'session:overflow-1',

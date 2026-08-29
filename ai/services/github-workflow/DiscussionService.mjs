@@ -1,7 +1,7 @@
-import aiConfig          from '../../mcp/server/github-workflow/config.mjs';
-import Base              from '../../../src/core/Base.mjs';
-import GraphqlService    from './GraphqlService.mjs';
-import logger            from '../../mcp/server/github-workflow/logger.mjs';
+import aiConfig       from '../../mcp/server/github-workflow/config.mjs';
+import Base           from 'neo.mjs/src/core/Base.mjs';
+import GraphqlService from './GraphqlService.mjs';
+import logger         from '../../mcp/server/github-workflow/logger.mjs';
 import {commentMatches, isSelectorPresent, malformedCommentIdError, omitScopedBody, parseCommentId}
                                  from './shared/commentSelector.mjs';
 import {projectConversationTrust} from './shared/conversationTrust.mjs';

@@ -1204,8 +1204,8 @@ export async function runProbe(options, baseEnv = process.env, {signal} = {}) {
             })
         }
 
-        await runPhase(() => import('../../../src/Neo.mjs'), 'Neo bootstrap');
-        await runPhase(() => import('../../../src/core/_export.mjs'), 'Neo core bootstrap');
+        await runPhase(() => import('neo.mjs/src/Neo.mjs'), 'Neo bootstrap');
+        await runPhase(() => import('neo.mjs/src/core/_export.mjs'), 'Neo core bootstrap');
 
         activePhase = 'isolation-setup';
 

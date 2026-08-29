@@ -1,6 +1,6 @@
 import fs       from 'fs-extra';
 import path     from 'node:path';
-import Base     from '../../../../../src/core/Base.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
 import AiConfig from '../../../../config.mjs';
 
 import {collectProcessHeapObservation} from '../../../../services/shared/processHeapObservation.mjs';

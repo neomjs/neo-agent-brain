@@ -9,8 +9,8 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * `Config.Cmd` values COPIED FROM THE LIVE PLANE on 2026-08-08, not invented. An invented fixture

@@ -4,8 +4,8 @@ const appName = 'GitLabMergeRequestServiceTest';
 setup({neoConfig: {unitTestMode: true}, appConfig: {name: appName, isMounted: () => true, vnodeInitialising: false}});
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 /**
  * Unit coverage for the GitLab MergeRequestService real behavior. Mocks `GitLabClient.query` (the
@@ -43,9 +43,9 @@ test.describe('Neo.ai.services.gitlab-workflow.MergeRequestService', () => {
 
         expect(result.count).toBe(2);
         expect(result.items[0]).toEqual({
-            iid      : '1', title: 'First', state: 'opened', webUrl: 'https://gitlab/1',
+            iid         : '1', title: 'First', state: 'opened', webUrl: 'https://gitlab/1',
             sourceBranch: 'feat/a', targetBranch: 'main', createdAt: 't1', updatedAt: 't2',
-            labels: ['bug', 'p1'], assignees: ['alice'], reviewers: ['bob']
+            labels      : ['bug', 'p1'], assignees: ['alice'], reviewers: ['bob']
         });
         expect(result.items[1].labels).toEqual([]);
         expect(result.items[1].assignees).toEqual([]);

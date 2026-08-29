@@ -1,5 +1,5 @@
 import aiConfig                                                                      from '../../mcp/server/knowledge-base/config.mjs';
-import Base                                                                          from '../../../src/core/Base.mjs';
+import Base                                                                          from 'neo.mjs/src/core/Base.mjs';
 import {buildChatModel}                                                              from '../../provider/buildChatModel.mjs';
 import {PROVIDER_TIMEOUT_CODE}                                                       from '../../provider/createTimeoutError.mjs';
 import ChromaManager                                                                 from './ChromaManager.mjs';

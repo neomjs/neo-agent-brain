@@ -20,8 +20,8 @@ setup({
 // the dynamic SwarmHeartbeatService import below. Required because the class file no
 // longer imports Neo itself (the class+wrapper split pattern). Mirrors the test-spec
 // bootstrap pattern in TaskStateService.spec / ProcessSupervisorService.spec.
-import Neo       from '../../../../../../../src/Neo.mjs';
-import * as core from '../../../../../../../src/core/_export.mjs';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
 import AiConfig  from '../../../../../../../ai/config.template.mjs';
 
 import {test, expect} from '@playwright/test';

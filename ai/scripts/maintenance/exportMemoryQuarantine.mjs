@@ -4,9 +4,9 @@ import path            from 'path';
 import {fileURLToPath} from 'url';
 
 // Neo namespace bootstrap for SDK singletons consumed by operator-run maintenance scripts.
-import Neo             from '../../../src/Neo.mjs';
-import * as core       from '../../../src/core/_export.mjs';
-import InstanceManager from '../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 
 import mcConfig        from '../../mcp/server/memory-core/config.mjs';
 
@@ -201,11 +201,11 @@ export async function runExport({
     await writeJsonl(graphFile, graphResult.records);
 
     const manifest = buildManifest({
-        ids          : targetIds,
+        ids      : targetIds,
         memoryResult,
         graphResult,
         generatedAt,
-        outputDir    : resolvedRoot,
+        outputDir: resolvedRoot,
         memoryFile,
         graphFile
     });
@@ -285,7 +285,7 @@ export async function collectSelectedGraphRecords({dbPath, ids, DatabaseClass = 
 
         for (const chunk of chunkArray(ids, 200)) {
             const placeholders = chunk.map(() => '?').join(', ');
-            const nodeRows = db.prepare(`SELECT id, data FROM Nodes WHERE id IN (${placeholders})`).all(...chunk);
+            const nodeRows     = db.prepare(`SELECT id, data FROM Nodes WHERE id IN (${placeholders})`).all(...chunk);
             for (const row of nodeRows) {
                 nodes.set(row.id, safeParseJson(row.data, {id: row.id}));
             }
@@ -332,8 +332,8 @@ export async function collectSelectedGraphRecords({dbPath, ids, DatabaseClass = 
  */
 export function buildManifest({ids, memoryResult, graphResult, generatedAt, outputDir, memoryFile, graphFile}) {
     const
-        recordsById = new Map(memoryResult.records.map(record => [record.id, record])),
-        graphNodeIds = new Set(graphResult.nodeIds),
+        recordsById         = new Map(memoryResult.records.map(record => [record.id, record])),
+        graphNodeIds        = new Set(graphResult.nodeIds),
         authoredByMemoryIds = new Set();
 
     for (const edge of graphResult.edges) {
@@ -344,22 +344,22 @@ export function buildManifest({ids, memoryResult, graphResult, generatedAt, outp
 
     const entries = ids.map(id => {
         const
-            record          = recordsById.get(id),
-            metadata        = record?.metadata || {},
-            classification  = classifyMemoryPayload(metadata),
-            timestamp       = normalizeMetadataTimestamp(metadata.timestamp) || extractTimestampFromId(id),
-            provenance      = classifyProvenance({metadata, id, authoredByMemoryIds});
+            record         = recordsById.get(id),
+            metadata       = record?.metadata || {},
+            classification = classifyMemoryPayload(metadata),
+            timestamp      = normalizeMetadataTimestamp(metadata.timestamp) || extractTimestampFromId(id),
+            provenance     = classifyProvenance({metadata, id, authoredByMemoryIds});
 
         return {
             id,
-            exported        : Boolean(record),
-            candidateClass  : record ? classification.candidateClass : 'missing-from-memory-collection',
-            invalidFields   : record ? classification.invalidFields : [],
+            exported         : Boolean(record),
+            candidateClass   : record ? classification.candidateClass : 'missing-from-memory-collection',
+            invalidFields    : record ? classification.invalidFields : [],
             timestamp,
-            month           : timestamp ? timestamp.slice(0, 7) : null,
-            sessionId       : metadata.sessionId || null,
-            graphMatch      : graphNodeIds.has(id),
-            provenanceStatus: provenance.status,
+            month            : timestamp ? timestamp.slice(0, 7) : null,
+            sessionId        : metadata.sessionId || null,
+            graphMatch       : graphNodeIds.has(id),
+            provenanceStatus : provenance.status,
             provenanceSources: provenance.sources
         }
     });
@@ -377,17 +377,17 @@ export function buildManifest({ids, memoryResult, graphResult, generatedAt, outp
         manifestVersion: 1,
         generatedAt,
         outputDir,
-        files: {
+        files          : {
             memory: memoryFile,
             graph : graphFile
         },
         safety: {
-            mutationPerformed: false,
-            destructiveAction: 'not-supported-by-this-script',
+            mutationPerformed  : false,
+            destructiveAction  : 'not-supported-by-this-script',
             publicPayloadPolicy: 'manifest omits raw prompt/thought/response; full payload exists only in local backup JSONL for rollback'
         },
         rollback: {
-            mode: 'merge',
+            mode            : 'merge',
             memoryCoreImport: `Memory_DatabaseService.manageDatabaseBackup({ action: 'import', file: '${path.dirname(memoryFile)}', mode: 'merge' })`,
             graphImport     : `Memory_DatabaseService.manageDatabaseBackup({ action: 'import', file: '${path.dirname(graphFile)}', mode: 'merge' })`
         },

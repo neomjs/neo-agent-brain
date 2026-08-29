@@ -6,13 +6,13 @@ setup({
     }
 });
 
-import {test, expect}     from '@playwright/test';
-import {parse}            from 'acorn';
-import fs                 from 'node:fs/promises';
-import path               from 'node:path';
-import {fileURLToPath}    from 'node:url';
-import Neo                from '../../../../src/Neo.mjs';
-import * as core          from '../../../../src/core/_export.mjs';
+import {test, expect}  from '@playwright/test';
+import {parse}         from 'acorn';
+import fs              from 'node:fs/promises';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
 
 const
     __filename = fileURLToPath(import.meta.url),
@@ -103,7 +103,7 @@ function findFsExtraDynamicImportViolations(source, filePath) {
 }
 
 /**
- * @summary Regression coverage for #11204 dynamic ESM import shape boundaries.
+ * @summary Regression coverage for dynamic ESM import shape boundaries.
  *
  * Node's `await import('fs-extra')` returns a module namespace wrapper. Some helpers are mirrored
  * as named exports while inherited/native fs methods, e.g. `createWriteStream`, only live on
@@ -122,7 +122,7 @@ test.describe('AI dynamic ESM import shape (#11204)', () => {
     });
 
     test('AI-side fs-extra dynamic imports unwrap the default boundary', async () => {
-        const files = await listMjsFiles(path.join(repoRoot, 'ai'));
+        const files      = await listMjsFiles(path.join(repoRoot, 'ai'));
         const violations = [];
 
         for (const filePath of files) {

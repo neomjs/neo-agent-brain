@@ -1,6 +1,6 @@
 import fs       from 'fs-extra';
-import Neo      from '../../../../src/Neo.mjs';
-import Base     from '../../../../src/core/Base.mjs';
+import Neo      from 'neo.mjs/src/Neo.mjs';
+import Base     from 'neo.mjs/src/core/Base.mjs';
 import AiConfig from '../../../config.mjs';
 
 import {

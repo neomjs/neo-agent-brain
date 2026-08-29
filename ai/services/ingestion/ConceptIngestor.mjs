@@ -1,5 +1,5 @@
 import crypto                                from 'crypto';
-import Base                                  from '../../../src/core/Base.mjs';
+import Base                                  from 'neo.mjs/src/core/Base.mjs';
 import ConceptService                        from '../../services/ConceptService.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
 import FileSystemIngestor                    from '../memory-core/FileSystemIngestor.mjs';

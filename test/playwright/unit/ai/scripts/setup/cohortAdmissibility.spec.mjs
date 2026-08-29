@@ -1,7 +1,7 @@
 import {test, expect} from '@playwright/test';
 import {readFileSync} from 'fs';
-import Neo            from '../../../../../../src/Neo.mjs';
-import '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import ConfigBase      from '../../../../../../ai/configBase.mjs';
 import {
     assessCohortSource,

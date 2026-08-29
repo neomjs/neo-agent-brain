@@ -1,5 +1,5 @@
-import Neo          from '../../src/Neo.mjs';
-import * as core    from '../../src/core/_export.mjs';
+import Neo          from 'neo.mjs/src/Neo.mjs';
+import * as core    from 'neo.mjs/src/core/_export.mjs';
 import Loop         from '../agent/Loop.mjs';
 import Scheduler    from '../agent/Scheduler.mjs';
 import Assembler    from '../context/Assembler.mjs';
@@ -38,8 +38,8 @@ async function runTests() {
     const assembler = Neo.create(Assembler);
     // Create 30 memories
     const memories = Array.from({length: 30}, (_, i) => ({
-        prompt: `Msg ${i}`,
-        thought: '...',
+        prompt  : `Msg ${i}`,
+        thought : '...',
         response: `Resp ${i}`
     }));
 
@@ -72,12 +72,12 @@ async function runTests() {
     // 2. Test Error Recovery
     console.log('\n[Test 2] Error Recovery (Retry)');
     const scheduler = Neo.create(Scheduler);
-    const provider = Neo.create(MockProvider);
-    const loop = Neo.create(Loop, {
+    const provider  = Neo.create(MockProvider);
+    const loop      = Neo.create(Loop, {
         scheduler,
         provider,
         assembler: Neo.create(MockAssembler),
-        interval: 50 // fast tick
+        interval : 50 // fast tick
     });
 
     loop.start();

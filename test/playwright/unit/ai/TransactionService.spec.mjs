@@ -12,9 +12,9 @@ setup({
 });
 
 import {test, expect}     from '@playwright/test';
-import Neo                from '../../../../src/Neo.mjs';
-import * as core          from '../../../../src/core/_export.mjs';
-import TransactionService from '../../../../src/ai/TransactionService.mjs';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
+import TransactionService from 'neo.mjs/src/ai/TransactionService.mjs';
 
 // Neo.ai.TransactionService is the in-heap per-session undo stack. It is pure over its inputs (reverse-capture,
 // the enforcement grant, and the live tree all live in the caller) — so these tests drive event sequences against

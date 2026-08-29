@@ -1,4 +1,4 @@
-import Base                           from '../../../src/core/Base.mjs';
+import Base                           from 'neo.mjs/src/core/Base.mjs';
 import GraphService                   from './GraphService.mjs';
 import RequestContextService          from '../../mcp/server/shared/services/RequestContextService.mjs';
 import WakeSubscriptionService        from './WakeSubscriptionService.mjs';

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import Neo              from '../../src/Neo.mjs';
-import * as core        from '../../src/core/_export.mjs';
+import Neo              from 'neo.mjs/src/Neo.mjs';
+import * as core        from 'neo.mjs/src/core/_export.mjs';
 import GeminiProvider   from '../provider/Gemini.mjs';
 import ContextAssembler from '../context/Assembler.mjs';
 import Scheduler        from '../agent/Scheduler.mjs';
@@ -37,8 +37,8 @@ async function run() {
     // 2. Feed an Event
     console.log('📥 Injecting Event: user:input');
     scheduler.add({
-        type: 'user:input',
-        data: 'What is the capital of France?',
+        type    : 'user:input',
+        data    : 'What is the capital of France?',
         priority: 'high'
     });
 

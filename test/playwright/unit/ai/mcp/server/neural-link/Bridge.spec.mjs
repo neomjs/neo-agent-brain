@@ -14,8 +14,8 @@ setup({
 import {test, expect} from '@playwright/test';
 import crypto         from 'crypto';
 
-import Neo       from '../../../../../../../src/Neo.mjs';
-import * as core from '../../../../../../../src/core/_export.mjs';
+import Neo       from 'neo.mjs/src/Neo.mjs';
+import * as core from 'neo.mjs/src/core/_export.mjs';
 import Bridge    from '../../../../../../../ai/mcp/server/neural-link/Bridge.mjs';
 import {
     BRIDGE_INFO_TYPE,

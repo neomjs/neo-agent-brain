@@ -1,4 +1,4 @@
-import Base                          from '../../src/core/Base.mjs';
+import Base                          from 'neo.mjs/src/core/Base.mjs';
 import Agent                         from '../Agent.mjs';
 import crypto                        from 'crypto';
 import fs                            from 'fs';
