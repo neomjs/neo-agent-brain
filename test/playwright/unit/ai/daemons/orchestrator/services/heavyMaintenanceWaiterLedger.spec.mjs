@@ -587,3 +587,69 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
         })
     })
 });
+
+// #239. The ROUND TRIP, and it is the witness the watchdog specs cannot provide: they feed
+// hand-built entries straight to the evaluator, so removing the write at registration is invisible
+// to them. The cause is known only at registration — a cause not written there is unrecoverable by
+// any later consumer, not merely unexposed.
+test.describe('the waiter ledger carries the cause from writer to reader (#239)', () => {
+    let leasePath, dir;
+
+    test.beforeEach(async () => {
+        dir       = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-waiter-cause-'));
+        leasePath = path.join(dir, 'heavy-maintenance-lease.json');
+    });
+
+    test.afterEach(async () => {
+        await fs.remove(dir);
+    });
+
+    test('reasonCode, blockingTaskName and leaseOwner survive the write/read round trip', () => {
+        registerWaiterSync({
+            leasePath,
+            taskName        : 'dream',
+            deferredSince   : new Date(Date.now() - 60_000).toISOString(),
+            reasonCode      : 'heavy-maintenance-backpressure',
+            blockingTaskName: 'summary',
+            leaseOwner      : null
+        });
+
+        const {waiters} = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS});
+
+        expect(waiters).toHaveLength(1);
+        expect(waiters[0].reasonCode).toBe('heavy-maintenance-backpressure');
+        expect(waiters[0].blockingTaskName).toBe('summary');
+    });
+
+    test('the lease owner travels for the lease-held class, where blockingTaskName is not the blocker', () => {
+        registerWaiterSync({
+            leasePath,
+            taskName     : 'kbSync',
+            deferredSince: new Date(Date.now() - 60_000).toISOString(),
+            reasonCode   : 'heavy-maintenance-lease-held',
+            leaseOwner   : 'tenant-repo-sync'
+        });
+
+        const {waiters} = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS});
+
+        // Two reason classes, two different blocker fields: an intra-process conflict names a TASK,
+        // a lease hold names an OWNER. One field could not carry both without lying about one.
+        expect(waiters[0].reasonCode).toBe('heavy-maintenance-lease-held');
+        expect(waiters[0].leaseOwner).toBe('tenant-repo-sync');
+        expect(waiters[0].blockingTaskName).toBe(null);
+    });
+
+    test('an omitted cause reads null — an unknown reason is never a guessed one', () => {
+        registerWaiterSync({
+            leasePath,
+            taskName     : 'summary',
+            deferredSince: new Date(Date.now() - 60_000).toISOString()
+        });
+
+        const {waiters} = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS});
+
+        expect(waiters[0].reasonCode).toBe(null);
+        expect(waiters[0].blockingTaskName).toBe(null);
+        expect(waiters[0].leaseOwner).toBe(null);
+    });
+});
