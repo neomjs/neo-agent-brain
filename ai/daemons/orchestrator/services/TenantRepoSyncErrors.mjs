@@ -165,3 +165,51 @@ export class TenantRepoSyncError extends Error {
 export function isTenantRepoSyncErrorCode(code) {
     return typeof code === 'string' && TENANT_REPO_SYNC_ERROR_CODE_SET.has(code);
 }
+
+/**
+ * The envelope builder's code for a ref that does not resolve inside the mirror. It carries the
+ * sibling `KB_INGEST_` prefix because it is raised one layer down, in
+ * `tenantRepoIngestEnvelopeBuilder`, and reaches this lane as a SOURCE code rather than as a member
+ * of the taxonomy above — which is why it is named here rather than added to it.
+ * @type {String}
+ */
+export const KB_INGEST_ENVELOPE_REF_NOT_FOUND = 'KB_INGEST_ENVELOPE_REF_NOT_FOUND';
+
+/**
+ * @summary Whether a failed sync attempt cannot succeed on a later attempt, so the lane must stop
+ * rather than back off.
+ *
+ * ## Why exactly one code qualifies, and why access readiness is the other half
+ *
+ * `tenantRepoIngestEnvelopeBuilder` resolves two refs and treats them asymmetrically, deliberately.
+ * The CHECKPOINT ref (`lastIngestedRev`) resolves with `fallbackToFull: true`, so a vanished
+ * checkpoint returns `null` and the lane rebuilds a full envelope — force-push, branch GC and
+ * history rewrite are already recovered from and never reach a caller. The HEAD ref
+ * (`repo.branchRef || 'HEAD'`) resolves with no fallback, because if the configured branch does not
+ * resolve there is nothing to sync TO. **So a `REF_NOT_FOUND` arriving here is the head case by
+ * construction** — the checkpoint case cannot produce one.
+ *
+ * That verdict is correct and the lane already reaches it. What it lacked was a way to SAY it: an
+ * unrecoverable outcome expressed as a throw becomes an exponential retry. The specimen this was
+ * written for reached `consecutiveFailures: 36` with a `backoffMultiplier` of 2^36 — a number only
+ * reachable by classifying one terminal cause as transient thirty-six separate times.
+ *
+ * **`accessConfirmed` is the other half, and dropping it re-breaks the transport case.** An
+ * unresolvable ref against a mirror we could not reach is a fetch that has not happened yet, and a
+ * later attempt genuinely may succeed. The same ref against a mirror that IS reachable and fetching
+ * is a branch that is not there — and `gitMirror.fetch` runs `fetch --all --prune`, which keeps not
+ * finding it and prunes it if it ever existed, so retrying makes recovery strictly less likely
+ * rather than more. **Keying on the code alone would stop both**, silencing a real transient
+ * failure; that pair is what the two-arm spec pins, and a mutation dropping this conjunct fails it.
+ *
+ * Both origins of this code are terminal in effect: a configured branch that does not exist, and the
+ * builder's own contract refusal when no head revision is supplied. Neither is repaired by waiting.
+ *
+ * @param {Object} options
+ * @param {String|null|undefined} options.sourceErrorCode Bounded cause code from the failed attempt.
+ * @param {Boolean} options.accessConfirmed Whether this attempt proved the mirror reachable.
+ * @returns {Boolean} `true` only when a later identical attempt cannot change the outcome.
+ */
+export function isTerminalSyncFailure({sourceErrorCode, accessConfirmed} = {}) {
+    return accessConfirmed === true && sourceErrorCode === KB_INGEST_ENVELOPE_REF_NOT_FOUND;
+}

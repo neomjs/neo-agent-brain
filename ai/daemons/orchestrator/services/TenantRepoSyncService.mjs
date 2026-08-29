@@ -68,7 +68,8 @@ import {
     KB_TENANT_REPO_SYNC_INVALID_SLICE_BUDGET,
     KB_TENANT_REPO_SYNC_STARVED,
     TenantRepoSyncError,
-    isTenantRepoSyncErrorCode
+    isTenantRepoSyncErrorCode,
+    isTerminalSyncFailure
 } from './TenantRepoSyncErrors.mjs';
 import {
     appendHealEvent,
@@ -2297,8 +2298,8 @@ class TenantRepoSyncService extends Base {
                 revalidationDeferredCount++;
                 writeLog?.('INFO', `[TenantRepoSync] ${repoLabel} legacy checkpoint replay deferred by the per-sweep admission cap.`);
                 repoStates.push({
-                    tenantId           : repo.tenantId,
-                    repoSlug           : repo.repoSlug,
+                    tenantId: repo.tenantId,
+                    repoSlug: repo.repoSlug,
                     // Guarded like every sibling row. It was previously safe unguarded ONLY because
                     // the checkpoint classifier returned `uninitialized` for an absent rev before it
                     // could return `failed` — so `revalidationRequired` implied a non-null rev. That
@@ -2954,6 +2955,50 @@ class TenantRepoSyncService extends Base {
 
                 if (slotAcquired && !accessConfirmed) {
                     this.recordTenantRepoAccessOutcome({repo, ready: false, error: e, globalCadenceMs});
+                }
+
+                // A cause a later identical attempt cannot change. The streak is HELD rather than
+                // advanced, mirroring the `aborted-lease-lost` arm above: a counter that keeps
+                // climbing against an unrepeatable cause is what produced this specimen's 2^36
+                // backoff multiplier, and the multiplier is the only visible symptom of the
+                // misclassification. `stopped-*` is a distinct status precisely so an operator
+                // reading the snapshot can tell a lane that is WAITING from one that has GIVEN UP —
+                // `backoff-suppressed` cannot express the difference, and reported both.
+                //
+                // Deliberately NOT a new persisted flag: the stop is re-derived from the same two
+                // inputs on every sweep, so an operator who fixes `branchRef` (or a fetch that
+                // finally produces the ref) clears it with no reset command and no state to migrate.
+                // A persisted `stopped: true` would need its own clearing path, which is the shape
+                // that strands lanes.
+                if (isTerminalSyncFailure({sourceErrorCode, accessConfirmed})) {
+                    writeLog?.('ERROR', `[TenantRepoSync] ${repoLabel} STOPPED: ${sourceErrorCode} with the mirror reachable — ` +
+                        `the configured ref does not resolve, so retrying cannot change the outcome. ` +
+                        `Streak held at ${priorState?.consecutiveFailures ?? 0}. Fix the repo's branchRef, or push the ref.`);
+
+                    persistedRevisions[repoLabel] = {
+                        ...priorState,
+                        lastIngestedRev                   : priorState?.lastIngestedRev ?? null,
+                        lastRunAttemptAt                  : startedMs,
+                        consecutiveFailures               : priorState?.consecutiveFailures ?? 0,
+                        lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION,
+                        lastErrorCode                     : code,
+                        lastSourceErrorCode               : sourceErrorCode,
+                        lastErrorAt                       : startedMs
+                    };
+
+                    repoStates.push({
+                        tenantId           : repo.tenantId,
+                        repoSlug           : repo.repoSlug,
+                        lastIngestedRev    : priorState?.lastIngestedRev ?? null,
+                        lastSyncAt         : new Date().toISOString(),
+                        status             : 'stopped-unresolvable-ref',
+                        checkpointStatus,
+                        lastErrorCode      : code,
+                        lastSourceErrorCode: sourceErrorCode,
+                        consecutiveFailures: priorState?.consecutiveFailures ?? 0
+                    });
+
+                    return;
                 }
 
                 // Increment consecutiveFailures on failure; preserve last good
