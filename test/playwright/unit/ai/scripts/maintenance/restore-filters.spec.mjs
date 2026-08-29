@@ -15,21 +15,21 @@ setup({
     }
 });
 
-// Bootstrap parity with existing restore.spec.mjs (#11143/RA-2):
+// Bootstrap parity with the existing restore spec:
 // Importing `restore.mjs` chains to `ai/services.mjs` which loads core classes that
 // require `Neo.gatekeep` (Compare.mjs:166) to be registered. The setup() call only
 // configures Neo; the core augmentation happens via these imports.
 import {test, expect}  from '@playwright/test';
-import Neo             from '../../../../../../src/Neo.mjs';
-import * as core       from '../../../../../../src/core/_export.mjs';
-import InstanceManager from '../../../../../../src/manager/Instance.mjs';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs';
 import fsExtra         from 'fs-extra';
 import os              from 'os';
 import path            from 'path';
 
 /**
- * #11141 — focused unit tests for the new restore.mjs surfaces:
+ * Focused unit tests for the restore.mjs filter and hook surfaces:
  *
  * 1. `parseArgs` — new CLI flags (--filter-labels, --filter-edge-types,
  *    --only-substrate, --post-restore-hook) in both `=`-suffix and
@@ -48,8 +48,8 @@ import path            from 'path';
  * NOT in this spec (deferred):
  *   - Full `runRestore` end-to-end flow against live MC services (covered in
  *     restore.spec.mjs orchestrator-shape tests; live-substrate runs require
- *     test isolation now that #11140/#11142 wipe-path fix is merged).
- *   - Chroma-side `#importMemories` preserve-live parity (#11144 follow-up).
+ *     test isolation after the wipe-path fixes).
+ *   - Chroma-side `#importMemories` preserve-live parity remains a follow-up.
  */
 test.describe.configure({mode: 'serial'});
 
@@ -130,9 +130,9 @@ test.describe('restore.mjs filters + hooks (#11141)', () => {
      * Returns the directory path containing the file.
      */
     async function buildSyntheticGraphBundle(testName, nodes, edges) {
-        const dir  = path.join(workRoot, testName);
+        const dir = path.join(workRoot, testName);
         await fsExtra.ensureDir(dir);
-        const file = path.join(dir, 'graph-backup-test.jsonl');
+        const file  = path.join(dir, 'graph-backup-test.jsonl');
         const lines = [
             ...nodes.map(n => JSON.stringify({type: 'node', data: n})),
             ...edges.map(e => JSON.stringify({type: 'edge', data: e}))
@@ -142,7 +142,7 @@ test.describe('restore.mjs filters + hooks (#11141)', () => {
     }
 
     async function readJsonlRecords(dir) {
-        const files = (await fsExtra.readdir(dir)).filter(f => f.endsWith('.jsonl'));
+        const files   = (await fsExtra.readdir(dir)).filter(f => f.endsWith('.jsonl'));
         const records = [];
         for (const f of files) {
             const content = await fsExtra.readFile(path.join(dir, f), 'utf8');
@@ -327,7 +327,7 @@ test.describe('restore.mjs filters + hooks (#11141)', () => {
 
                 // Backup-style import (merge mode = OR IGNORE) for a conflicting node.
                 const insertNodeMerge = db.prepare("INSERT OR IGNORE INTO Nodes (id, user_id, data) VALUES (?, ?, ?)");
-                const result = insertNodeMerge.run('n1', null, 'BACKUP-VERSION-WOULD-OVERWRITE');
+                const result          = insertNodeMerge.run('n1', null, 'BACKUP-VERSION-WOULD-OVERWRITE');
 
                 // OR IGNORE must report 0 changes (skipped) for the conflict.
                 expect(result.changes).toBe(0);
@@ -358,7 +358,7 @@ test.describe('restore.mjs filters + hooks (#11141)', () => {
 
                 // Replace mode (OR REPLACE).
                 const insertNodeReplace = db.prepare("INSERT OR REPLACE INTO Nodes (id, user_id, data) VALUES (?, ?, ?)");
-                const result = insertNodeReplace.run('n1', null, 'BACKUP-VERSION');
+                const result            = insertNodeReplace.run('n1', null, 'BACKUP-VERSION');
 
                 // OR REPLACE reports 1 changes (replaced).
                 expect(result.changes).toBe(1);
@@ -386,7 +386,7 @@ test.describe('restore.mjs filters + hooks (#11141)', () => {
                 db.prepare("INSERT INTO Edges (id, source, target, type, data) VALUES ('e1', 'n1', 'n2', 'LIVE_TYPE', 'LIVE-EDGE-DATA')").run();
 
                 const insertEdgeMerge = db.prepare(`INSERT OR IGNORE INTO Edges (id, user_id, source, target, type, data) VALUES (?, ?, ?, ?, ?, ?)`);
-                const result = insertEdgeMerge.run('e1', null, 'n1', 'n2', 'BACKUP_TYPE', 'BACKUP-EDGE-DATA-WOULD-OVERWRITE');
+                const result          = insertEdgeMerge.run('e1', null, 'n1', 'n2', 'BACKUP_TYPE', 'BACKUP-EDGE-DATA-WOULD-OVERWRITE');
 
                 expect(result.changes).toBe(0);
 
@@ -405,7 +405,7 @@ test.describe('restore.mjs filters + hooks (#11141)', () => {
                 db.prepare("INSERT INTO Nodes (id, data) VALUES ('live-only', 'live')").run();
 
                 const insertNodeMerge = db.prepare("INSERT OR IGNORE INTO Nodes (id, user_id, data) VALUES (?, ?, ?)");
-                const result = insertNodeMerge.run('backup-only', null, 'BACKUP');
+                const result          = insertNodeMerge.run('backup-only', null, 'BACKUP');
 
                 expect(result.changes).toBe(1);
 

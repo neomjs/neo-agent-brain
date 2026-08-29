@@ -1,6 +1,6 @@
-import aiConfig      from '../../mcp/server/knowledge-base/config.mjs';
-import Base          from '../../../src/core/Base.mjs';
-import ChromaManager from './ChromaManager.mjs';
+import aiConfig                                 from '../../mcp/server/knowledge-base/config.mjs';
+import Base                                     from 'neo.mjs/src/core/Base.mjs';
+import ChromaManager                            from './ChromaManager.mjs';
 import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
 
 /**
@@ -31,8 +31,8 @@ class DocumentService extends Base {
      * Retrieves a paginated, tenant-scoped list of documents from the knowledge base collection.
      *
      * When a request context is active, results are filtered to the requester's own tenant plus
-     * Neo's curated `neo-shared` corpus (#11632). Without a context (stdio single-tenant / offline
-     * daemon) every document is returned, byte-equivalent with pre-#11632 behavior.
+     * Neo's curated `neo-shared` corpus. Without a context (stdio single-tenant / offline
+     * daemon) every document is returned, preserving the legacy unscoped behavior.
      * @param {Object} params             The parameters for listing documents.
      * @param {Number} [params.limit=100] The maximum number of documents to return.
      * @param {Number} [params.offset=0]  The number of documents to skip for pagination.
@@ -47,10 +47,10 @@ class DocumentService extends Base {
             include: ["metadatas", "documents"]
         };
 
-        // #11632 read-side tenant filter: a requester lists its own tenant's documents plus
+        // A requester lists its own tenant's documents plus
         // Neo's curated `neo-shared` corpus. The requester is derived server-side from the
         // request context — never a client parameter. No context (stdio single-tenant /
-        // offline daemon) → no filter, byte-equivalent with pre-#11632 behavior. Mirrors the
+        // offline daemon) → no filter, preserving the unscoped behavior. Mirrors the
         // QueryService.queryDocuments clause (inline per the memory-core MemoryService pattern).
         const requesterTenantId = normalizeUserId(RequestContextService.getUserId());
         if (requesterTenantId) {
@@ -74,7 +74,7 @@ class DocumentService extends Base {
     /**
      * Retrieves a single document from the collection by its unique ID.
      *
-     * When a request context is active, the lookup is tenant-scoped (#11632): an ID owned by
+     * When a request context is active, the lookup is tenant-scoped: an ID owned by
      * another tenant resolves to a "not found" error, indistinguishable from a genuinely absent
      * ID so no cross-tenant existence signal leaks.
      * @param {String} id The unique ID of the document to retrieve.
@@ -89,7 +89,7 @@ class DocumentService extends Base {
             include: ["metadatas", "documents"]
         };
 
-        // #11632 read-side tenant filter: a document owned by another tenant resolves to
+        // A document owned by another tenant resolves to
         // "not found" — fail-closed, indistinguishable from a genuinely absent id, so the
         // error leaks no cross-tenant existence signal. Mirrors QueryService.queryDocuments.
         const requesterTenantId = normalizeUserId(RequestContextService.getUserId());

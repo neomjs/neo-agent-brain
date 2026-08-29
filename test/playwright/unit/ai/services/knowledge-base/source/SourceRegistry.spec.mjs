@@ -16,8 +16,8 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 test.describe('Neo.ai.services.knowledge-base.source.SourceRegistry (#11658)', () => {
     let SourceRegistry, DEFAULT_SOURCES, RawRepoSource;
@@ -48,7 +48,7 @@ test.describe('Neo.ai.services.knowledge-base.source.SourceRegistry (#11658)', (
             'PullRequestSource',
             'ReleaseNotesSource',
             'SkillSource',
-            'TicketSource',  // TicketSource BEFORE TestSource (matches pre-#11658 hardcoded order)
+            'TicketSource',  // TicketSource BEFORE TestSource (matches the legacy hardcoded order)
             'TestSource'
         ]);
         expect(DEFAULT_SOURCES).not.toContain(RawRepoSource);
@@ -131,7 +131,7 @@ test.describe('SourceRegistry auto-registration via _export.mjs (#11658)', () =>
     test('default Neo sources are present after import when useDefaultSources is true', async () => {
         // Importing the export module triggers auto-registration if `aiConfig.useDefaultSources !== false`.
         // Default config has `useDefaultSources: true`, so all 10 sources should be present.
-        const exportModule = await import('../../../../../../../ai/services/knowledge-base/source/_export.mjs');
+        const exportModule   = await import('../../../../../../../ai/services/knowledge-base/source/_export.mjs');
         const SourceRegistry = exportModule.default;
 
         // Re-import is a no-op (modules cached); re-register defaults idempotently to
@@ -148,7 +148,7 @@ test.describe('SourceRegistry auto-registration via _export.mjs (#11658)', () =>
     });
 
     test('order matches pre-#11658 hardcoded array (byte-equivalence anchor)', async () => {
-        const exportModule = await import('../../../../../../../ai/services/knowledge-base/source/_export.mjs');
+        const exportModule   = await import('../../../../../../../ai/services/knowledge-base/source/_export.mjs');
         const SourceRegistry = exportModule.default;
 
         SourceRegistry.clear();
@@ -157,7 +157,7 @@ test.describe('SourceRegistry auto-registration via _export.mjs (#11658)', () =>
         }
 
         const names = SourceRegistry.getSourceNames();
-        // Pre-#11658 hardcoded order in DatabaseService.mjs:454-465 — byte-equivalence requires this exact sequence.
+        // The legacy hardcoded order in DatabaseService requires this exact byte-equivalent sequence.
         expect(names).toEqual([
             'AdrSource',
             'ApiSource',
@@ -173,9 +173,8 @@ test.describe('SourceRegistry auto-registration via _export.mjs (#11658)', () =>
     });
 });
 
-// Direct coverage for the config-driven registration path introduced in Phase 0/1B (#11658),
-// closing @neo-gpt's Cycle 1 review Required Action 2 (commentId PRR_kwDODSospM8AAAABAY3bSg):
-// "Add direct coverage for the new config-driven surfaces" — programmatic `registerSource()`
+// Direct coverage for the config-driven registration path introduced in Phase 0/1B.
+// Programmatic `registerSource()`
 // alone doesn't prove the `useDefaultSources` toggle + declarative `customSources`/`customParsers`
 // arrays work as documented. The `applyConfigToRegistry` exported function exposes the
 // import-time side-effect logic for direct invocation against a fresh registry + mock config.
@@ -183,7 +182,7 @@ test.describe('applyConfigToRegistry — config-driven registration path (#11658
     let SourceRegistry, applyConfigToRegistry, DEFAULT_SOURCES;
 
     test.beforeAll(async () => {
-        const exportModule    = await import('../../../../../../../ai/services/knowledge-base/source/_export.mjs');
+        const exportModule = await import('../../../../../../../ai/services/knowledge-base/source/_export.mjs');
         SourceRegistry        = exportModule.default;
         applyConfigToRegistry = exportModule.applyConfigToRegistry;
         DEFAULT_SOURCES       = exportModule.DEFAULT_SOURCES;
@@ -304,7 +303,7 @@ test.describe('applyConfigToRegistry — config-driven registration path (#11658
 
         expect(stats).toEqual({
             defaultSourcesRegistered: 0,
-            rawRepoSourceRegistered: 0,
+            rawRepoSourceRegistered : 0,
             customSourcesRegistered : 2,
             customParsersRegistered : 1
         });

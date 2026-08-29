@@ -1,6 +1,6 @@
-import {test, expect}                        from '@playwright/test';
-import Neo                                   from '../../../../../../../src/Neo.mjs';
-import * as core                             from '../../../../../../../src/core/_export.mjs';
+import {test, expect}                                                                from '@playwright/test';
+import Neo                                                                           from 'neo.mjs/src/Neo.mjs';
+import * as core                                                                     from 'neo.mjs/src/core/_export.mjs';
 import {createLiveDimensionConsistencyGatherer, gatherDimensionConsistencyDiagnosis} from '../../../../../../../ai/daemons/orchestrator/services/dimensionConsistencyGatherer.mjs';
 
 // The live-Chroma audit+scheduling half of the dimension-consistency detect signal: it samples each
@@ -40,8 +40,8 @@ test.describe('dimensionConsistencyGatherer', () => {
     })
 });
 
-// The live-binding factory: owns the Memory Core collection resolution + config binding (moved out of the
-// Orchestrator getter per #14226's placement RC), so the orchestrator just reads the AiConfig leaf at its
+// The live-binding factory owns the Memory Core collection resolution + config binding, so the
+// orchestrator just reads the AiConfig leaf at its
 // use-site and injects the resolved deps. Injected storageRouter + auditFn keep it testable without live Chroma.
 test.describe('createLiveDimensionConsistencyGatherer', () => {
     const makeRouter = () => {

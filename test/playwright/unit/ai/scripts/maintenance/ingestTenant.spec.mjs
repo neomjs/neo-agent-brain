@@ -14,12 +14,12 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {Readable}     from 'stream';
 
 /**
- * Unit coverage for the `ai:ingest-tenant` Phase 2C bulk-facade CLI (#11635).
+ * Unit coverage for the `ai:ingest-tenant` Phase 2C bulk-facade CLI.
  *
  * Tests the three exported pure units — `parseArgs`, `readJsonlRecords`, `runIngest` —
  * substrate-free: `runIngest` takes an injected `ingestFn`, so batching / error-handling /

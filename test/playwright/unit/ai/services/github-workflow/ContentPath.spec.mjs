@@ -11,8 +11,8 @@ setup({
 
 import {test, expect} from '@playwright/test';
 import fs             from 'fs-extra';
-import Neo            from '../../../../../../src/Neo.mjs';
-import * as core      from '../../../../../../src/core/_export.mjs';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import os             from 'os';
 import path           from 'path';
 
@@ -295,7 +295,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
         });
     });
 
-    // Presence-aware validation suite (per #11381 GPT review RA1): supplying `version: ''` or
+    // Presence-aware validation suite: supplying `version: ''` or
     // `bucket: ''` must fail-loud as non-empty-string violations rather than silently routing to
     // active-tier. Distinguishes key-not-supplied (`undefined`/`null`) from key-supplied-as-empty.
     test.describe('presence-aware archive-selector validation (RA1)', () => {

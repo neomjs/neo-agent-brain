@@ -1,10 +1,10 @@
-import Base from '../../../src/core/Base.mjs';
+import Base from 'neo.mjs/src/core/Base.mjs';
 
 /**
  * @summary Scaffold local-file service for GitLab issue markdown.
  *
- * The initial #11768 lane registers `get_local_issue_by_id` so clients can learn
- * the future local-cache contract. The syncer subtask owns real
+ * This scaffold registers `get_local_issue_by_id` so clients can learn the future
+ * local-cache contract. The syncer subtask owns real
  * `resources/content/gitlab/...` file IO.
  *
  * @class Neo.ai.services.gitlab-workflow.LocalFileService
@@ -32,9 +32,9 @@ class LocalFileService extends Base {
      */
     async getIssueById(options) {
         return {
-            status : 'scaffolded',
-            tool   : 'get_local_issue_by_id',
-            message: 'GitLab local issue cache is registered; real file IO lands with the syncer subtask.',
+            status  : 'scaffolded',
+            tool    : 'get_local_issue_by_id',
+            message : 'GitLab local issue cache is registered; real file IO lands with the syncer subtask.',
             received: options
         };
     }

@@ -13,9 +13,9 @@ setup({
     }
 });
 
-import {test, expect}      from '@playwright/test';
-import Neo                 from '../../../../../../../src/Neo.mjs';
-import * as core           from '../../../../../../../src/core/_export.mjs';
+import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {
     assertCanonicalCollectionDeleteAllowed,
     CanonicalCollectionGuardError,
@@ -33,8 +33,7 @@ test.describe('Neo.ai.mcp.server.shared.services.DestructiveOperationGuard — c
     });
 
     test('Refuses non-canonical (test-prefixed) name without UNIT_TEST_MODE — uniform-gate (#11656 RA1)', () => {
-        // Per #11656 Cycle 1 review (commentId PRR_kwDODSospM8AAAABAYwPjg, Required Action 1):
-        // the guard fires for EVERY destructive collection-delete regardless of name. Non-canonical
+        // The guard fires for EVERY destructive collection-delete regardless of name. Non-canonical
         // names are not a free bypass — a production caller invoking
         // `deleteCollection({name: 'arbitrary'})` without UNIT_TEST_MODE or a confirmation token
         // is a fail-closed scenario, not a quiet pass-through. Test-prefixed names ARE the
@@ -179,7 +178,7 @@ test.describe('Neo.ai.services.memory-core.managers.ChromaManager#deleteCollecti
         const ChromaManager = (await import('../../../../../../../ai/services/memory-core/managers/ChromaManager.mjs')).default;
 
         const originalClient = ChromaManager.client;
-        let clientCalled     = false;
+        let   clientCalled   = false;
         ChromaManager.client = {
             deleteCollection: async () => { clientCalled = true; }
         };
@@ -201,7 +200,7 @@ test.describe('Neo.ai.services.memory-core.managers.ChromaManager#deleteCollecti
         const ChromaManager = (await import('../../../../../../../ai/services/memory-core/managers/ChromaManager.mjs')).default;
 
         const originalClient = ChromaManager.client;
-        let receivedArgs     = null;
+        let   receivedArgs   = null;
         ChromaManager.client = {
             deleteCollection: async (args) => { receivedArgs = args; return 'ok'; }
         };
@@ -223,7 +222,7 @@ test.describe('Neo.ai.services.memory-core.managers.ChromaManager#deleteCollecti
         const ChromaManager = (await import('../../../../../../../ai/services/memory-core/managers/ChromaManager.mjs')).default;
 
         const originalClient = ChromaManager.client;
-        let receivedArgs     = null;
+        let   receivedArgs   = null;
         ChromaManager.client = {
             deleteCollection: async (args) => { receivedArgs = args; return 'ok'; }
         };
@@ -246,8 +245,7 @@ test.describe('Neo.ai.services.memory-core.managers.ChromaManager#deleteCollecti
     });
 });
 
-// Symmetric coverage on the Knowledge Base side per #11656 review Required Action 3
-// (commentId PRR_kwDODSospM8AAAABAYwPjg). The MC wrapper and KB wrapper are independent
+// Symmetric coverage on the Knowledge Base side. The MC wrapper and KB wrapper are independent
 // classes that share the underlying `assertCanonicalCollectionDeleteAllowed` helper but
 // differ in subsystem label, canonical name targeted, and surrounding service surface.
 // Direct integration tests on the KB wrapper close the parity gap from Cycle 1.
@@ -257,7 +255,7 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager#deleteCollection —
         const KBChromaManager = (await import('../../../../../../../ai/services/knowledge-base/ChromaManager.mjs')).default;
 
         const originalClient = KBChromaManager.client;
-        let clientCalled     = false;
+        let   clientCalled   = false;
         KBChromaManager.client = {
             deleteCollection: async () => { clientCalled = true; }
         };
@@ -279,7 +277,7 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager#deleteCollection —
         const KBChromaManager = (await import('../../../../../../../ai/services/knowledge-base/ChromaManager.mjs')).default;
 
         const originalClient = KBChromaManager.client;
-        let receivedArgs     = null;
+        let   receivedArgs   = null;
         KBChromaManager.client = {
             deleteCollection: async (args) => { receivedArgs = args; return 'ok'; }
         };
@@ -301,7 +299,7 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager#deleteCollection —
         const KBChromaManager = (await import('../../../../../../../ai/services/knowledge-base/ChromaManager.mjs')).default;
 
         const originalClient = KBChromaManager.client;
-        let receivedArgs     = null;
+        let   receivedArgs   = null;
         KBChromaManager.client = {
             deleteCollection: async (args) => { receivedArgs = args; return 'ok'; }
         };
