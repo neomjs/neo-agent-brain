@@ -1,5 +1,5 @@
 /**
- * @module deploy/cloud/hostEdgeProfile
+ * @module src/composition/orchestrator/hostEdgeProfile
  * @summary THE host-edge posture contract — the one place the graphless machine-local
  * Orchestrator's deployment inputs are declared, consumed identically by the portable
  * `ai:host-edge` entrypoint and the macOS LaunchAgent that supervises it.

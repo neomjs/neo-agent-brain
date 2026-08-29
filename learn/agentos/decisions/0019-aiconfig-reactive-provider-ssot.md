@@ -244,7 +244,7 @@ Consequences of the empty default, all mechanical:
 
 A host Orchestrator opts into `deploymentMode=local` and `authorityProfile=host-edge` together with
 its state root and lane closure — the role alone is not the posture, and that full posture lives in
-`deploy/host/hostEdgeProfile.mjs` rather than inside a macOS LaunchAgent, so supervision stays
+`src/composition/orchestrator/hostEdgeProfile.mjs` rather than inside a macOS LaunchAgent, so supervision stays
 optional and platform-specific while the runtime stays portable. Secrets, provider/tenant choices,
 network placement, and privileged runtime capabilities remain deployment inputs rather than config
 policy.

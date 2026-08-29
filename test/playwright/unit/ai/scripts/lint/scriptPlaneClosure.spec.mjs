@@ -890,10 +890,11 @@ test.describe('the census is the union of every invocation surface', () => {
         expect(rels).toContain('ai/scripts/maintenance/aggregate-temporal-summary.mjs');
         // Positive control: a root the npm channel already supplies must still be present exactly
         // once, so a passing assertion above cannot be read as "the union returned everything".
-        // `backup` and `purgeTestCollections` now come from the independent Cloud manifest, while
-        // retired `printAiConfig` must stay out of the executable population.
+        // `backup` comes from the independent Cloud manifest. The unowned
+        // `purgeTestCollections` alias and retired `printAiConfig` must stay out of the
+        // executable population.
         expect(rels.filter(rel => rel === 'ai/scripts/maintenance/backup.mjs')).toHaveLength(1);
-        expect(rels.filter(rel => rel === 'ai/scripts/maintenance/purgeTestCollections.mjs')).toHaveLength(1);
+        expect(rels).not.toContain('ai/scripts/maintenance/purgeTestCollections.mjs');
         expect(rels).not.toContain('ai/scripts/diagnostics/printAiConfig.mjs');
     });
 });

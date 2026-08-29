@@ -134,7 +134,7 @@ if (process.argv[1] === __filename) {
     if (!result.ok) {
         console.error('[check-front-door-fingerprint] FAILED — the front door\'s self-declaration drifted from reality:');
         result.mismatches.forEach(m => console.error(`- ${m}`));
-        console.error('Run `npm run ai:front-door-fingerprint -- --fix` after editing the guide.');
+        console.error('Run `node ai/scripts/lint/check-front-door-fingerprint.mjs --fix` after editing the guide.');
         process.exit(1)
     }
 

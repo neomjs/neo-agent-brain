@@ -69,7 +69,7 @@ Windows-appropriate manifest-permission contract in `receiver.mjs`, which is a
 runtime change and not something this guide can assert on its behalf.
 
 `npm run ai:host-edge` resolves the complete **host-edge** posture from
-`deploy/host/hostEdgeProfile.mjs`: the `host-edge` role, `deploymentMode=local`,
+`src/composition/orchestrator/hostEdgeProfile.mjs`: the `host-edge` role, `deploymentMode=local`,
 a state root outside every checkout, and the lane closure. No installer, no
 plist, no shell-specific syntax. Complete for that role — it does **not** start
 the wake receiver, which is a separate final-mile boundary with its own

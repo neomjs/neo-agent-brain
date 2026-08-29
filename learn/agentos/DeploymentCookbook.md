@@ -52,7 +52,7 @@ lane back in. The explicit env overrides are:
 | Env var | Cloud default intent |
 |---|---|
 | `NEO_ORCHESTRATOR_PRIMARY_DEV_SYNC_ENABLED=false` | Prevents `git fetch` / `git pull`, worktree discovery, `.sync-metadata.json` resets, and local KB-sync cascades. |
-| `NEO_ORCHESTRATOR_KB_SYNC_ENABLED=false` | Prevents the local Neo checkout full-corpus `npm --prefix deploy/cloud run ai:sync-kb` loop. Tenant KB content arrives through push/bulk ingestion instead. |
+| `NEO_ORCHESTRATOR_KB_SYNC_ENABLED=false` | Prevents the local Neo checkout full-corpus `npm --prefix cloud run ai:sync-kb` loop. Tenant KB content arrives through push/bulk ingestion instead. |
 | `NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED=false` | Prevents desktop wake delivery through `osascript` / `tmux`. A2A message storage remains Memory Core behavior. |
 | `NEO_ORCHESTRATOR_GOLDEN_PATH_REPO_ENRICHMENT_ENABLED=false` | Keeps tenant deployments from emitting Neo-maintainer repo backlog/PR enrichment sections. |
 | `NEO_ORCHESTRATOR_MLX_ENABLED=false` | Keeps Apple-Silicon local inference out of the cloud profile; the `local-model` profile is a separate provider service, not an orchestrator child process. |
@@ -341,8 +341,8 @@ template (drops local edits — re-apply them afterward).
 Note that `npm install` deliberately does NOT populate the Knowledge Base:
 the release artifact carries pre-computed embedding vectors and weighs
 hundreds of MB, so fetching it is an explicit opt-in. Run
-`npm --prefix deploy/cloud run ai:download-kb` once (release artifact, no re-embedding) or
-`npm --prefix deploy/cloud run ai:sync-kb` (build the corpus locally) before relying on
+`npm --prefix cloud run ai:download-kb` once (release artifact, no re-embedding) or
+`npm --prefix cloud run ai:sync-kb` (build the corpus locally) before relying on
 `ask_knowledge_base`-class tools — an empty collection answers with exactly
 this pointer.
 
@@ -353,12 +353,12 @@ npm run ai:host-edge
 ```
 
 This resolves the complete host-edge posture — the `host-edge` role, `deploymentMode=local`, a
-state root outside every checkout, and the lane closure — from `deploy/host/hostEdgeProfile.mjs`. It
+state root outside every checkout, and the lane closure — from `src/composition/orchestrator/hostEdgeProfile.mjs`. It
 needs no installer and runs anywhere Node runs; the macOS LaunchAgent is optional supervision over
 the same command, and the platform matrix lives in
 [`ai/scripts/lifecycle/local-agent-os/README.md`](../../ai/scripts/lifecycle/local-agent-os/README.md).
 
-> **`npm --prefix deploy/cloud run ai:orchestrator` is a different thing and will refuse outside
+> **`npm --prefix cloud run ai:orchestrator` is a different thing and will refuse outside
 > its deployment profile.** It starts the same daemon with
 > no role declared, and since #16229 a role is declared, never inherited. Before the Docker cutover
 > that command was correct; afterwards it resolved `container-plane` — the role the container

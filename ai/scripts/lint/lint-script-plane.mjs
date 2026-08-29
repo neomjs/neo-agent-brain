@@ -53,8 +53,9 @@ const
  */
 export const SCAN_SURFACE = Object.freeze([
     'package.json',
-    'deploy/cloud/package.json',
+    'cloud/package.json',
     'ai/**',
+    'src/**',
     'ai/scripts/lint/explicitGraphStoreOwnership.mjs',
     'ai/scripts/lint/lint-script-plane.mjs',
     'ai/scripts/lint/scriptPlaneClosure.mjs',
@@ -121,13 +122,7 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::buildConfigEnvDefaultsForTemplate',
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::collectConfigPathKindsFromTemplate',
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::withTier1ConfigForLint',
-    'ai/scripts/maintenance/defragChromaDB.mjs::dynamic-import::loadConfig',
-    'ai/scripts/maintenance/purgeTestCollections.mjs::dynamic-import::resolveChromaEndpoint',
-
-    // Dispatch through a value the closure cannot name, with a capability behind the edge. The
-    // callee is part of the identity, so the reader knows WHAT could not be followed.
-    'ai/agent/AgentOrchestrator.mjs::unresolved-dispatch::createAgent->agentFactory',
-    'ai/agent/AgentOrchestrator.mjs::unresolved-dispatch::emitHandoff->handoffEmitter'
+    'ai/scripts/maintenance/defragChromaDB.mjs::dynamic-import::loadConfig'
 ]);
 
 /**
@@ -226,7 +221,7 @@ export function readEntrypoints(
 export function readPackageScripts(projectRoot = PROJECT_ROOT) {
     const scripts = {};
 
-    for (const relative of ['package.json', 'deploy/cloud/package.json']) {
+    for (const relative of ['package.json', 'cloud/package.json']) {
         const file = path.join(projectRoot, relative);
 
         if (!fs.existsSync(file)) continue;

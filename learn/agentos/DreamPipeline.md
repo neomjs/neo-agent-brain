@@ -105,7 +105,7 @@ misleading priorities.
 
 ## REM Digest Cycle
 
-The scheduled `dream` task and the manual `npm --prefix deploy/cloud run ai:run-sandman` command both
+The scheduled `dream` task and the manual `npm --prefix cloud run ai:run-sandman` command both
 enter `RemDigestion.executeRemCycle()`. That method owns the typed REM outcome:
 `completed`, `skipped`, or `failed`. It records per-phase state so the operator
 can tell the difference between "no sessions", "provider unreachable", "already
@@ -298,7 +298,7 @@ Use the manual Sandman runner when you need to digest pending sessions outside
 the normal orchestrator cadence:
 
 ```bash
-npm --prefix deploy/cloud run ai:run-sandman
+npm --prefix cloud run ai:run-sandman
 ```
 
 This runs `ai/scripts/runners/runSandman.mjs`. It:

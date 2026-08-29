@@ -16,7 +16,7 @@
  * shadow default, or mutates `AiConfig` (ticket-ref-ok: ADR 0019 §3/§5 is the mandated read-gate for
  * any AiConfig-adjacent authoring, and the sanctioned-pattern list a reviewer checks this against).
  *
- * @see deploy/host/hostEdgeProfile.mjs
+ * @see src/composition/orchestrator/hostEdgeProfile.mjs
  * @see ai/daemons/orchestrator/daemon.mjs
  */
 // dotenv BEFORE the posture is applied, not after: an operator's `.env` must be visible to the
@@ -24,7 +24,7 @@
 // again at the daemon entrypoint is idempotent.
 import 'dotenv/config';
 
-import {buildHostEdgeEnv} from '../../../deploy/host/hostEdgeProfile.mjs';
+import {buildHostEdgeEnv} from '../../../src/composition/orchestrator/hostEdgeProfile.mjs';
 
 /**
  * @summary Env key whose value IS the declaration this entrypoint makes.

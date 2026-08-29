@@ -41,7 +41,7 @@ services:
       - NEO_TEST_EMBEDDING_DIMENSIONS=4096
       - NEO_TEST_EMBEDDING_MODEL=text-embedding-qwen3-embedding-8b
     volumes:
-      - ./mock-openai-embedding-server.mjs:/app/mock-openai-embedding-server.mjs:ro
+      - ../../test/playwright/integration/fixtures/servers/mock-openai-embedding-server.mjs:/app/mock-openai-embedding-server.mjs:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:11434/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s
@@ -52,8 +52,8 @@ services:
 
   kb-server:
     build:
-      context: ./node_modules/neo-agent-brain
-      dockerfile: ../../Dockerfile
+      context: ../../cloud/node_modules/neo-agent-brain
+      dockerfile: ../../../deploy/cloud/Dockerfile
       args:
         NEO_SOURCE: local  # build the installed Brain dependency under test, not a remote clone
         TARGET_SERVER: knowledge-base
@@ -78,7 +78,7 @@ services:
       # Production deploy images keep the broad `test` tree out of the build
       # context; this test-only mount preserves the KB ingestion golden fixtures
       # that the integration matrix executes from inside the kb-server container.
-      - ./node_modules/neo-agent-brain/test/playwright/integration/ai/kb-ingestion/fixtures/external-workspaces:/app/test/playwright/integration/ai/kb-ingestion/fixtures/external-workspaces:ro
+      - ../../cloud/node_modules/neo-agent-brain/test/playwright/integration/ai/kb-ingestion/fixtures/external-workspaces:/app/test/playwright/integration/ai/kb-ingestion/fixtures/external-workspaces:ro
     depends_on:
       chroma:
         condition: service_healthy
@@ -91,8 +91,8 @@ services:
 
   kb-server-oidc:
     build:
-      context: ./node_modules/neo-agent-brain
-      dockerfile: ../../Dockerfile
+      context: ../../cloud/node_modules/neo-agent-brain
+      dockerfile: ../../../deploy/cloud/Dockerfile
       args:
         NEO_SOURCE: local  # build the installed Brain dependency under test, not a remote clone
         TARGET_SERVER: knowledge-base
@@ -130,8 +130,8 @@ services:
 
   mc-server:
     build:
-      context: ./node_modules/neo-agent-brain
-      dockerfile: ../../Dockerfile
+      context: ../../cloud/node_modules/neo-agent-brain
+      dockerfile: ../../../deploy/cloud/Dockerfile
       args:
         NEO_SOURCE: local  # build the installed Brain dependency under test, not a remote clone
         TARGET_SERVER: memory-core
@@ -183,7 +183,7 @@ services:
     working_dir: /app
     command: ["node", "./mock-oidc-server.mjs"]
     volumes:
-      - ./mock-oidc-server.mjs:/app/mock-oidc-server.mjs:ro
+      - ../../test/playwright/integration/fixtures/servers/mock-oidc-server.mjs:/app/mock-oidc-server.mjs:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 5s
@@ -194,8 +194,8 @@ services:
 
   mc-server-oidc:
     build:
-      context: ./node_modules/neo-agent-brain
-      dockerfile: ../../Dockerfile
+      context: ../../cloud/node_modules/neo-agent-brain
+      dockerfile: ../../../deploy/cloud/Dockerfile
       args:
         NEO_SOURCE: local  # build the installed Brain dependency under test, not a remote clone
         TARGET_SERVER: memory-core
@@ -255,7 +255,7 @@ services:
       - NEO_MCP_PROXY_KB_UPSTREAM=kb-server:3000
       - NEO_MCP_PROXY_MC_UPSTREAM=mc-server:3001
     volumes:
-      - ./node_modules/neo-agent-brain/ai/mcp/deploy/proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../../cloud/node_modules/neo-agent-brain/ai/mcp/deploy/proxy/Caddyfile:/etc/caddy/Caddyfile:ro
     depends_on:
       kb-server:
         condition: service_started

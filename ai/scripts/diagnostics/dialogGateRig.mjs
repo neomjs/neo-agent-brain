@@ -36,8 +36,7 @@
  * unavailable (named cause printed): non-darwin, missing Accessibility/Automation consent, or no
  * unambiguous target instance.
  *
- * Usage: `npm run ai:probe-dialog-gate [-- --probe-only]` — declared on the npm entrypoint
- * channel so the census sees this host-edge executable; the raw path works identically.
+ * Usage: `node ai/scripts/diagnostics/dialogGateRig.mjs [--probe-only]`.
  *
  * @see ai/daemons/wake/localWakeAdapters.mjs — buildDialogGateArgs, the gate this rig exercises
  * @see test/playwright/unit/ai/daemons/wake/localWakeAdaptersDialogGate.spec.mjs — hermetic half
