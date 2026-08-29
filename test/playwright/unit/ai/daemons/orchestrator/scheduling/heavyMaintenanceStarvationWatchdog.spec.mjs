@@ -33,7 +33,7 @@ test.describe('orchestrator/scheduling/heavyMaintenanceStarvationWatchdog (#1704
         expect(evaluation.waiterCount).toBe(2);
         expect(evaluation.breaches).toHaveLength(1);
         // Exact-shape on purpose: this is the receipt contract, so a field arriving or leaving is a
-        // deliberate change rather than a silent one. #239 added the three causal fields below — the
+        // deliberate change rather than a silent one. #239 added the four causal fields below — the
         // fixture supplies no cause, so they read `null`, which is the honest value for a waiter
         // whose reason was never recorded.
         expect(evaluation.breaches[0]).toEqual({
@@ -45,6 +45,7 @@ test.describe('orchestrator/scheduling/heavyMaintenanceStarvationWatchdog (#1704
             leaseHolder      : 'dream',
             reasonCode       : null,
             blockingTaskName : null,
+            leaseOwner       : null,
             leaseStatus      : null
         });
     });
@@ -311,4 +312,60 @@ test.describe('the waiter\'s OWN cause reaches the breach (#239)', () => {
         expect(causal).toEqual([]);
         expect(breaches[0].leaseHolder).toBe(null);
     });
+});
+
+// #242 RA-3. The OpenAPI block is the contract a plane consumer reads instead of this source, and it
+// had advertised six breach fields while the shipped breach carried ten — a consumer building
+// against the published schema could not know `reasonCode` existed. A doc that describes a
+// superseded shape is worse than no doc: it is a confident wrong answer. Same drift class as the
+// recognized-codes list, so it gets the same treatment — a comparison, not a comment.
+test.describe('the published breach schema equals the shipped breach (#242 RA-3)', () => {
+    test('every field the evaluator emits is advertised, and nothing is advertised that it does not emit', async () => {
+        const {parse} = await import('yaml'),
+              fs      = (await import('node:fs')).default,
+              url     = await import('node:url'),
+              here    = url.fileURLToPath(import.meta.url),
+              root    = here.slice(0, here.indexOf('/test/playwright/')),
+              doc     = parse(fs.readFileSync(`${root}/ai/mcp/server/memory-core/openapi.yaml`, 'utf8'));
+
+        function findBreachSchema(node) {
+            if (node && typeof node === 'object') {
+                if (typeof node.description === 'string' && node.description.startsWith('Starved-waiter receipt')) return node;
+
+                for (const key of Object.keys(node)) {
+                    const found = findBreachSchema(node[key]);
+                    if (found) return found
+                }
+            }
+
+            return null
+        }
+
+        const schema = findBreachSchema(doc);
+
+        // Positive control: a walk that found nothing would make both comparisons below vacuous.
+        expect(schema, 'breach schema not found in openapi.yaml').toBeTruthy();
+
+        const now        = Date.parse('2026-08-30T12:00:00.000Z'),
+              evaluation = evaluateWaiterStarvation({
+                  ledgerReading : {waiters: [{
+                      taskName        : 'tenant-repo-sync',
+                      priorityZero    : true,
+                      deferredSince   : new Date(now - 4 * 60 * 60 * 1000).toISOString(),
+                      updatedAt       : new Date(now).toISOString(),
+                      reasonCode      : 'heavy-maintenance-lease-held',
+                      blockingTaskName: null,
+                      leaseOwner      : 'dream'
+                  }], unreadable: []},
+                  now,
+                  degradeAfterMs: 30 * 60 * 1000,
+                  leaseHolder   : 'dream',
+                  leaseStatus   : 'active'
+              });
+
+        const emitted    = Object.keys(evaluation.breaches[0]).sort(),
+              advertised = Object.keys(schema.items.properties).sort();
+
+        expect(advertised).toEqual(emitted)
+    })
 });

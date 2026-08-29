@@ -57,6 +57,15 @@ function waiterFilePath(dir, taskName) {
  * uncheckpointed repos). Evaluated fresh on every registration so the class evaporates the
  * moment the underlying state completes.
  * @param {String} options.deferredSince Durable streak start (ISO) from the task envelope.
+ * @param {String|null} [options.reasonCode=null] Why this waiter registered — one of
+ * `heavy-maintenance-lease-held`, `heavy-maintenance-backpressure`, `heavy-maintenance-yield-to-waiter`.
+ * Known HERE and nowhere downstream: the starvation surface reads this ledger, so a cause not written
+ * at registration is unrecoverable by any later consumer rather than merely unexposed.
+ * @param {String|null} [options.blockingTaskName=null] The in-process task this waiter stood behind
+ * (backpressure and fairness-yield classes). Null for a lease hold, whose blocker is an owner, not a task.
+ * @param {String|null} [options.leaseOwner=null] The lease owner this waiter deferred behind, captured
+ * at ITS deferral. A separate field from `blockingTaskName` on purpose — one field carrying both would
+ * have to lie about one of the two classes.
  * @param {Object} [options.fsModule=fs] Injected fs for fixtures.
  * @param {Date|Number} [options.now=new Date()] Clock seam.
  * @param {Number} [options.pid=process.pid] Recorded for forensics, not liveness.

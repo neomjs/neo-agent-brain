@@ -44,7 +44,9 @@ const CURRENT_PRODUCER_METADATA = Object.freeze({
  * @param {Object|null} [options.tenantRepoSync=null] Bounded tenant-repo-sync scheduler/task/config snapshot.
  * @param {Object|null} [options.heavyMaintenanceStarvation=null] Bounded heavy-maintenance starvation verdict
  * (four-posture receipt from the starvation watchdog: `posture`, `checkedAt`, `degradeAfterMs`, `waiterCount`,
- * `unreadableCount`, `leaseHolder`, `breaches[]`); additive/tolerated-absent, consumed by the Memory Core
+ * `unreadableCount`, `leaseHolder`, `leaseStatus`, `breaches[]` — each breach carrying its own
+ * `reasonCode` / `blockingTaskName` / `leaseOwner`, since the check-time holder is identical across
+ * every breach and cannot name any one waiter's cause); additive/tolerated-absent, consumed by the Memory Core
  * aggregate-health fold, which degrades only on a FRESH `degraded` posture.
  * @param {Object} [options.producer=CURRENT_PRODUCER_METADATA] Bounded snapshot producer metadata.
  * @returns {Object}

@@ -57,13 +57,22 @@
  * @param {Number} options.now Current epoch milliseconds (injected clock).
  * @param {Number} options.degradeAfterMs Starvation bound; `<= 0` (or non-finite) disables — never degraded.
  * @param {String|null} [options.leaseHolder=null] Owner of the currently ACTIVE lease, or null when none.
+ * @param {String|null} [options.leaseStatus=null] Lease-file reading at check time (`active`, `missing`,
+ * `stale`, `unreadable`, `malformed`). Four of those five report a null holder, so this is the
+ * discriminator a holderless breach needs.
  * @returns {{posture: String, degraded: Boolean, breaches: Object[], waiterCount: Number,
- *   unreadableCount: Number, degradeAfterMs: Number, leaseHolder: (String|null)}} `breaches` entries
- *   carry `{taskName, priorityZero, bootstrapCritical, deferredSince, starvedForMs, leaseHolder,
- *   reasonCode, blockingTaskName, leaseOwner, leaseStatus}` — the last four are the waiter's OWN
- *   cause, without
- *   which `leaseHolder` discriminates one of the three registering reason classes and leaves two —
- *   the receipt the consumed health projection publishes.
+ *   unreadableCount: Number, degradeAfterMs: Number, leaseHolder: (String|null), leaseStatus: (String|null)}}
+ *   `breaches` entries carry `{taskName, priorityZero, bootstrapCritical, deferredSince, starvedForMs,
+ *   leaseHolder, reasonCode, blockingTaskName, leaseOwner, leaseStatus}` — the receipt the consumed
+ *   health projection publishes.
+ *
+ *   Two clocks live in that shape and confusing them is the whole reason it exists. `leaseHolder` and
+ *   `leaseStatus` are CHECK-time facts: identical on every breach in one receipt, and therefore unable
+ *   to say why any individual waiter is queued. `reasonCode`, `blockingTaskName` and `leaseOwner` are
+ *   copied from the waiter's OWN registration, so they stay true after the holder changed or the lease
+ *   went stale — exactly when the check-time pair stops explaining the queue. Three mechanisms can
+ *   register a waiter and they take different remedies; `reasonCode` is the only field that separates
+ *   them, and it reads `null` rather than guessing when a waiter's cause was never recorded.
  */
 export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, leaseHolder = null, leaseStatus = null} = {}) {
     const waiters    = Array.isArray(ledgerReading?.waiters)    ? ledgerReading.waiters    : [];
