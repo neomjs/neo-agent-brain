@@ -1651,6 +1651,155 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(persisted.revisions['t1/org/repo-b']).toBeTruthy();
     });
 
+
+    // #238 round 2 — the SERVICE-level witnesses. The pure predicates prove classification and
+    // suppression as functions; these prove the wiring, which is what round 1 shipped without.
+    // Round 1 froze the failure counter and left `isRepoDue` admitting the repo every cadence, so the
+    // clone/fetch/envelope work ran forever and merely rediscovered the same cause.
+    test.describe('terminal stop: no attempt, exact ref, honest sweep status (#238)', () => {
+        const REF = 'refs/heads/gone';
+
+        // A REACHABLE mirror — `fetch` succeeds, so `accessConfirmed` becomes true — whose configured
+        // head ref does not resolve. That pair is precisely the terminal case, and both halves matter:
+        // the same unresolvable ref against an unreachable mirror must keep backing off.
+        const makeReachableMirror = counters => ({
+            async cloneIfMissing() {},
+            async fetch()         { counters.fetches++; },
+            async resolveHead({ref}) { return `sha-${ref}`; },
+            async isAncestor()    { return true; },
+            async diffRevisions() { return {addedOrChanged: [], deleted: []}; }
+        });
+
+        // Production raises this code from the ENVELOPE BUILDER, which wraps GitMirror's
+        // `KB_GITMIRROR_REF_NOT_FOUND` for the head ref (the checkpoint ref has `fallbackToFull` and
+        // never throws). The fake mirrors that boundary rather than the transport beneath it.
+        const makeRefNotFoundBuilder = counters => async function buildIngestEnvelope(args) {
+            counters.builds++;
+            if (args.newHead === REF) {
+                throw Object.assign(new Error(`ref not found: ${REF}`), {code: 'KB_INGEST_ENVELOPE_REF_NOT_FOUND'});
+            }
+
+            return {
+                tenantId    : args.tenantId,
+                repoSlug    : args.repoSlug,
+                files       : [{sourcePath: 'fake.txt', repoSlug: args.repoSlug, content: 'x'}],
+                deleted     : [],
+                headRevision: `sha-head-${args.repoSlug}`
+            };
+        };
+
+        const runSweep = async ({branchRef, counters, taskStateService}) => TenantRepoSyncService.runTask({
+            reason           : 'periodic',
+            taskStateService,
+            tenantReposConfig: {tenantRepos: [
+                {tenantId: 't1', repoSlug: 'org/stopped', mirrorRoot, branchRef, cloneUrl: 'https://github.com/neomjs/stopped.git'}
+            ]},
+            gitMirror                    : makeReachableMirror(counters),
+            envelopeBuilder              : makeRefNotFoundBuilder(counters),
+            knowledgeBaseIngestionService: makeFakeIngestionService(),
+            revisionsFilePath            : revisionsFile,
+            seedBootstrap                : false
+        });
+
+        test('a second sweep performs ZERO work — elapsed time does not retry a terminal input', async () => {
+            const taskStateService = createInMemoryTaskStateService();
+
+            await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/stopped'});
+
+            const first  = {fetches: 0, builds: 0},
+                  result = await runSweep({branchRef: REF, counters: first, taskStateService});
+
+            // Sweep one attempts, discovers the terminal cause, and records it.
+            expect(first.fetches).toBeGreaterThan(0);
+            expect(result.details.repos[0].status).toBe('stopped-unresolvable-ref');
+
+            const persisted = (await fs.readJson(revisionsFile)).revisions,
+                  entry     = persisted['t1/org/stopped'];
+
+            expect(entry.terminalStop.ref).toBe(REF);
+            expect(entry.terminalStop.sourceErrorCode).toBe('KB_INGEST_ENVELOPE_REF_NOT_FOUND');
+            // The streak is HELD, so the backoff multiplier cannot climb toward the 2^36 this fixes.
+            expect(entry.consecutiveFailures).toBe(0);
+
+            // 🔴 THE CLOCK CONTROL, and it has to make the repo GENUINELY DUE or it proves nothing.
+            // Two sweeps milliseconds apart are suppressed by cadence, so `fetches: 0` alone would be
+            // a false green — it would pass with the terminal gate deleted. Backdating
+            // `lastRunAttemptAt` past any cadence is what forces `isRepoDue` to admit the repo, so the
+            // only thing that can stop it is the input-keyed gate under test.
+            const store = await fs.readJson(revisionsFile);
+
+            store.revisions['t1/org/stopped'].lastRunAttemptAt = 1;
+            await fs.writeJson(revisionsFile, store);
+
+            const second = {fetches: 0, builds: 0},
+                  again  = await runSweep({branchRef: REF, counters: second, taskStateService});
+
+            // Due by cadence, and still not attempted.
+            expect(second.fetches).toBe(0);
+            expect(second.builds).toBe(0);
+            expect(again.details.repos[0].status).toBe('stopped-unresolvable-ref');
+            expect(again.details.repos[0].unresolvedRef).toBe(REF);
+        });
+
+        test('the stopped repo names the UNRESOLVED REF, not just a bounded code', async () => {
+            const taskStateService = createInMemoryTaskStateService();
+
+            await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/stopped'});
+
+            const result = await runSweep({branchRef: REF, counters: {fetches: 0, builds: 0}, taskStateService}),
+                  repo   = result.details.repos[0];
+
+            // An operator reading a bounded error code still had to open the config to learn WHICH ref
+            // is wrong. The actionable field is the ref.
+            expect(repo.unresolvedRef).toBe(REF);
+            expect(repo.lastSourceErrorCode).toBe('KB_INGEST_ENVELOPE_REF_NOT_FOUND');
+        });
+
+        // 🔴 AN ALL-STOPPED SWEEP MUST NOT READ CLEAN. Without its own term the cohort reaches the
+        // `attemptedCount === 0` branch written for "every repo was not-due" and inherits that clean
+        // verdict — reporting success while every repo it owns is permanently not syncing.
+        test('a sweep of nothing but stopped repos reports `stopped`, never `completed`', async () => {
+            const taskStateService = createInMemoryTaskStateService();
+
+            await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/stopped'});
+            await runSweep({branchRef: REF, counters: {fetches: 0, builds: 0}, taskStateService});
+
+            // Same reason as the clock control: without backdating, cadence would suppress and the
+            // sweep would report `completed` for "nobody was due" — passing for the wrong reason.
+            const store = await fs.readJson(revisionsFile);
+
+            store.revisions['t1/org/stopped'].lastRunAttemptAt = 1;
+            await fs.writeJson(revisionsFile, store);
+
+            const again = await runSweep({branchRef: REF, counters: {fetches: 0, builds: 0}, taskStateService});
+
+            expect(again.status).toBe('stopped');
+            expect(again.details.stoppedCount).toBe(1);
+            expect(again.details.completedCount).toBe(0);
+        });
+
+        // 🔴 THE RESUMPTION CONTROL, and the reason the fingerprint is a comparison rather than a flag.
+        // Repointing the repo clears the stop with no reset command, no TTL and no revalidation pass.
+        test('repointing branchRef resumes the repo — the fingerprint no longer matches', async () => {
+            const taskStateService = createInMemoryTaskStateService();
+
+            await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/stopped'});
+            await runSweep({branchRef: REF, counters: {fetches: 0, builds: 0}, taskStateService});
+
+            const store = await fs.readJson(revisionsFile);
+
+            store.revisions['t1/org/stopped'].lastRunAttemptAt = 1;
+            await fs.writeJson(revisionsFile, store);
+
+            const resumed = {fetches: 0, builds: 0},
+                  result  = await runSweep({branchRef: 'refs/heads/main', counters: resumed, taskStateService});
+
+            // It attempted again, unprompted, because the INPUT changed.
+            expect(resumed.fetches).toBeGreaterThan(0);
+            expect(result.details.repos[0].status).not.toBe('stopped-unresolvable-ref');
+        });
+    });
+
     test('per-repo failure isolation: one failed repo does not halt remaining', async () => {
         const taskStateService = createInMemoryTaskStateService();
         let   fetchCount       = 0;

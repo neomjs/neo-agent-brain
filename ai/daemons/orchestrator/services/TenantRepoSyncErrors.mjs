@@ -213,3 +213,56 @@ export const KB_INGEST_ENVELOPE_REF_NOT_FOUND = 'KB_INGEST_ENVELOPE_REF_NOT_FOUN
 export function isTerminalSyncFailure({sourceErrorCode, accessConfirmed} = {}) {
     return accessConfirmed === true && sourceErrorCode === KB_INGEST_ENVELOPE_REF_NOT_FOUND;
 }
+
+/**
+ * @summary The bounded fingerprint of the input that made an attempt terminal.
+ *
+ * **Why a fingerprint rather than a `stopped: true` flag, and why the distinction is the whole
+ * mechanism.** A boolean records that a stop happened and nothing about what it was about, so
+ * clearing it needs a separate decision — an operator command, a TTL, a revalidation pass — and
+ * every one of those is a way to strand a lane whose input was fixed hours ago. A fingerprint
+ * carries the input's identity, so "has this changed?" is a comparison rather than a policy:
+ * a repo pointed at a new `branchRef` no longer matches and resumes on the next sweep with no
+ * intervention, while the same ref stays suppressed regardless of elapsed time.
+ *
+ * An earlier revision of this change persisted nothing at all and re-derived the verdict each sweep.
+ * That reasoning had the right goal — no clearing path to strand on — and the wrong mechanism:
+ * re-deriving requires performing the clone/fetch/envelope work first, which is precisely the retry
+ * being eliminated. ticket-ref-ok: #238 round 1 is where that was caught; naming it stops the
+ * no-state form being restored as a simplification.
+ *
+ * @param {Object} options
+ * @param {String} options.ref The configured ref that failed to resolve (`branchRef || 'HEAD'`).
+ * @param {String} options.sourceErrorCode The terminal cause.
+ * @param {Number} options.at Epoch ms of the terminal attempt, for operator reporting only.
+ * @returns {{ref: String, sourceErrorCode: String, at: Number}}
+ */
+export function buildTerminalStop({ref, sourceErrorCode, at}) {
+    return {at, ref, sourceErrorCode};
+}
+
+/**
+ * @summary Whether a persisted terminal stop still describes the repo's CURRENT input, so the sweep
+ * must suppress it before doing any clone/fetch/envelope work.
+ *
+ * This is the half that makes "stop" mechanically real. Freezing the failure counter bounds the
+ * backoff multiplier but leaves `isRepoDue` admitting the repo every cadence, so the same work runs
+ * forever and merely rediscovers the same cause — the counter stops climbing while the retry does
+ * not. Suppression has to happen BEFORE admission, and it has to be keyed on the input rather than
+ * on time, or it is a slower retry rather than a stop.
+ *
+ * Fails OPEN on a malformed or absent record: an unrecognisable fingerprint must let the repo run,
+ * never wedge it. The cost of a wrong `false` is one wasted attempt; the cost of a wrong `true` is a
+ * repo that never syncs again and reports a reason that is not true.
+ *
+ * @param {Object} options
+ * @param {Object|null|undefined} options.terminalStop Persisted fingerprint, if any.
+ * @param {String} options.currentRef The ref this sweep would use (`branchRef || 'HEAD'`).
+ * @returns {Boolean} `true` only when the recorded input is byte-identical to the current one.
+ */
+export function isStoppedForCurrentInput({terminalStop, currentRef} = {}) {
+    return typeof terminalStop?.ref === 'string'
+        && typeof terminalStop?.sourceErrorCode === 'string'
+        && typeof currentRef === 'string'
+        && terminalStop.ref === currentRef;
+}
