@@ -6,10 +6,9 @@ import {Command}       from 'commander';
 
 /**
  * Pre-Flight (structural fast-path): authoring
- * `ai/scripts/diagnostics/gemini-incident-cost-ledger.mjs` matches sibling pattern of
- * `ai/scripts/diagnostics/check-retired-primitives.mjs` and
- * `ai/scripts/diagnostics/review-cost-meter.mjs`; all are local diagnostics scripts for
- * Agent OS operational forensics; sibling-file-lift applies; no novel directory choice.
+ * `ai/scripts/diagnostics/gemini-incident-cost-ledger.mjs` matches the local diagnostic pattern of
+ * `ai/scripts/diagnostics/check-retired-primitives.mjs`; sibling-file-lift applies and no novel
+ * directory choice is introduced.
  *
  * @summary Private-content-safe Gemini incident cost ledger helper.
  *
@@ -24,11 +23,11 @@ import {Command}       from 'commander';
  */
 
 const DEFAULTS = {
-    charsPerToken         : 4,
-    fixedPromptChars      : 0,
-    inputPricePerMillion  : 0.50,
-    outputPricePerMillion : 3.00,
-    outputTokens          : 100
+    charsPerToken        : 4,
+    fixedPromptChars     : 0,
+    inputPricePerMillion : 0.50,
+    outputPricePerMillion: 3.00,
+    outputTokens         : 100
 };
 
 /**
@@ -71,16 +70,16 @@ export function isInsideWindow(timestamp, {windowStart = null, windowEnd = null}
 function createLogLedger(source) {
     return {
         source,
-        starts                       : 0,
-        completions                  : 0,
-        pendingStartSum              : 0,
-        pendingStartMax              : 0,
-        pendingDeferrals             : 0,
-        pendingDeferralSum           : 0,
-        activeTaskDeferrals          : 0,
-        maxRepresentedCallAttempts   : 0,
-        firstStartAt                 : null,
-        lastStartAt                  : null
+        starts                    : 0,
+        completions               : 0,
+        pendingStartSum           : 0,
+        pendingStartMax           : 0,
+        pendingDeferrals          : 0,
+        pendingDeferralSum        : 0,
+        activeTaskDeferrals       : 0,
+        maxRepresentedCallAttempts: 0,
+        firstStartAt              : null,
+        lastStartAt               : null
     };
 }
 
@@ -210,7 +209,7 @@ export function estimateCostBands({
             return {
                 label,
                 calls,
-                inputCharsPerCall: chars,
+                inputCharsPerCall  : chars,
                 inputTokensPerCall,
                 outputTokensPerCall: outputTokens,
                 inputCost,
@@ -383,8 +382,8 @@ export function buildLedger(options) {
     });
 
     const
-        totals = aggregateLedgers(perLog),
-        calls  = options.callsOverride ?? totals.maxRepresentedCallAttempts,
+        totals    = aggregateLedgers(perLog),
+        calls     = options.callsOverride ?? totals.maxRepresentedCallAttempts,
         estimates = estimateCostBands({
             calls,
             inputCharStats       : options.inputCharStats,
