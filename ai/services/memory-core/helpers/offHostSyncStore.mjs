@@ -286,11 +286,79 @@ async function readOpenedFile(handle, size) {
 }
 
 /**
+ * @summary Classifies a failed receipt open, separating "there is no backup" from "I cannot see
+ * where backups live".
+ *
+ * `ENOENT` from `open()` is TOTAL over two different worlds: a mounted backup root that has not
+ * produced a receipt yet, and a root that is not mounted at all. Both raise the identical error,
+ * so the open call alone cannot tell a fresh deployment from a blind observer — and `missing`
+ * flows on to a consumer that reads it as a definite statement about the lane's history.
+ *
+ * The root is what discriminates them, and it answers for the other unreachability modes too: a
+ * root path that is a plain file raises `ENOTDIR`, and one without traverse permission raises
+ * `EACCES` — both currently indistinguishable from a damaged receipt.
+ *
+ * **The fallback direction is deliberate.** When the root inspection itself fails in an
+ * unanticipated way we return `unreachable`, never `missing`. Asserting absence is a positive
+ * claim about history; refusing to assert it costs a degraded block, and that asymmetry is the
+ * whole point of the ticket this was written for.
+ *
+ * @param {Object} options
+ * @param {Error} options.error The error `open()` raised.
+ * @param {String} options.filePath The receipt path that failed to open.
+ * @returns {Promise<{status: 'missing'} | {status: 'unreachable', kind: String, finishedAt: null} | {status: 'unreadable', kind: String, finishedAt: null}>}
+ */
+async function classifyReceiptOpenFailure({error, filePath}) {
+    const code = error?.code;
+
+    // Anything outside the reachability family is a genuine read defect on a receipt we CAN see.
+    if (code !== 'ENOENT' && code !== 'ENOTDIR' && code !== 'EACCES' && code !== 'EPERM') {
+        return {finishedAt: null, kind: 'corrupt', status: 'unreadable'}
+    }
+
+    const root = path.dirname(filePath);
+
+    let rootStat;
+
+    try {
+        rootStat = await fs.promises.stat(root)
+    } catch (rootError) {
+        return {
+            finishedAt: null,
+            kind      : rootError?.code === 'ENOENT' || rootError?.code === 'ENOTDIR' ? 'root-absent' : 'root-unreadable',
+            status    : 'unreachable'
+        }
+    }
+
+    if (!rootStat.isDirectory()) {
+        return {finishedAt: null, kind: 'root-not-a-directory', status: 'unreachable'}
+    }
+
+    // The root exists as a directory but cannot be traversed, so the receipt's very existence is
+    // unobservable — distinct from a receipt we can see and cannot parse.
+    try {
+        await fs.promises.access(root, fs.constants.R_OK | fs.constants.X_OK)
+    } catch {
+        return {finishedAt: null, kind: 'root-unreadable', status: 'unreachable'}
+    }
+
+    // The root is readable, so absence here is OBSERVED absence — the one case that earns `missing`.
+    if (code === 'ENOENT') return {status: 'missing'};
+
+    // A reachable root and an unopenable receipt: the file exists and we cannot read it.
+    return {finishedAt: null, kind: 'receipt-unreadable', status: 'unreadable'}
+}
+
+/**
  * Reads + validates the receipt store for snapshot projection. Never throws: every failure mode
  * resolves to a stable machine-consumable outcome.
+ *
+ * `missing` is a POSITIVE claim — "the root was readable and held no receipt" — and consumers
+ * treat it as such. Everything that merely failed to observe the root resolves to `unreachable`
+ * instead; see {@link classifyReceiptOpenFailure}.
  * @param {Object} options
  * @param {String} options.filePath
- * @returns {Promise<{status: 'ok', receipt: Object} | {status: 'missing'} | {status: 'unreadable', kind: String, finishedAt: String|null}>}
+ * @returns {Promise<{status: 'ok', receipt: Object} | {status: 'missing'} | {status: 'unreachable', kind: String, finishedAt: null} | {status: 'unreadable', kind: String, finishedAt: String|null}>}
  */
 export async function readBackupReceipt({filePath}) {
     let raw;
@@ -310,8 +378,7 @@ export async function readBackupReceipt({filePath}) {
             await handle.close()
         }
     } catch (error) {
-        if (error.code === 'ENOENT') return {status: 'missing'};
-        return {finishedAt: null, kind: 'corrupt', status: 'unreadable'}
+        return classifyReceiptOpenFailure({error, filePath})
     }
 
     let parsed;

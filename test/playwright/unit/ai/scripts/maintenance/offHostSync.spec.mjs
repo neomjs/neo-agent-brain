@@ -11,14 +11,14 @@ setup({
     }
 });
 
-import Neo                                                                        from 'neo.mjs/src/Neo.mjs';
-import * as core                                                                  from 'neo.mjs/src/core/_export.mjs';
-import {test, expect}                                                             from '@playwright/test';
-import {mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync} from 'node:fs';
-import {open, rename}                                                             from 'node:fs/promises';
-import {spawn}                                                                    from 'node:child_process';
-import {tmpdir}                                                                   from 'node:os';
-import path                                                                       from 'node:path';
+import Neo                                                                                   from 'neo.mjs/src/Neo.mjs';
+import * as core                                                                             from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}                                                                        from '@playwright/test';
+import {chmodSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync} from 'node:fs';
+import {open, rename}                                                                        from 'node:fs/promises';
+import {spawn}                                                                               from 'node:child_process';
+import {tmpdir}                                                                              from 'node:os';
+import path                                                                                  from 'node:path';
 
 import {
     buildBackupReceipt,
@@ -371,6 +371,70 @@ test.describe('backup receipt store', () => {
         }
     });
 
+    // #233. `missing` is consumed as a POSITIVE claim — "the root was readable and held no receipt".
+    // An unmounted backup root raises the identical `ENOENT` as an empty one, so the two were
+    // indistinguishable here, and the verdict layer published `backup-never-succeeded` against a
+    // plane holding 31 restorable bundles. These arms bind the discrimination at its only seam.
+    test('an unreachable root never reads as an absent receipt', async () => {
+        const root = makeTmp();
+        try {
+            const R          = 'last-backup-receipt.json',
+                  mounted    = path.join(root, 'mounted'),
+                  notMounted = path.join(root, 'never-mounted'),
+                  rootAsFile = path.join(root, 'root-is-a-file');
+
+            mkdirSync(mounted);
+            writeFileSync(rootAsFile, 'x');
+
+            // The one case that EARNS `missing`: the root was read, and it is empty.
+            expect(await readBackupReceipt({filePath: path.join(mounted, R)})).toEqual({status: 'missing'});
+
+            // Same errno, opposite meaning. This is the live mc-server shape.
+            expect(await readBackupReceipt({filePath: path.join(notMounted, R)}))
+                .toEqual({finishedAt: null, kind: 'root-absent', status: 'unreachable'});
+
+            // `ENOTDIR`, which used to land on `corrupt` — a STRONGER false claim than `missing`,
+            // because it asserts the receipt exists and is damaged.
+            expect(await readBackupReceipt({filePath: path.join(rootAsFile, R)}))
+                .toEqual({finishedAt: null, kind: 'root-not-a-directory', status: 'unreachable'});
+        } finally {
+            rmSync(root, {force: true, recursive: true})
+        }
+    });
+
+    // Split from the arms above because it is the only one permissions can defeat: root bypasses
+    // mode bits entirely, so in a root-running container this would assert the opposite of what it
+    // measures. Skipped rather than weakened — an arm that cannot fail is not evidence.
+    test('a root that cannot be traversed is unreachable, and an unreadable receipt is not', async ({}, testInfo) => {
+        testInfo.skip(process.getuid?.() === 0, 'root bypasses mode bits, so neither arm can fail');
+
+        const root = makeTmp();
+        try {
+            const R        = 'last-backup-receipt.json',
+                  noPerm   = path.join(root, 'no-traverse'),
+                  readable = path.join(root, 'readable-root');
+
+            mkdirSync(noPerm, {mode: 0o000});
+            mkdirSync(readable);
+            writeFileSync(path.join(readable, R), '{}', {mode: 0o000});
+
+            // Cannot see WHERE backups live.
+            expect(await readBackupReceipt({filePath: path.join(noPerm, R)}))
+                .toEqual({finishedAt: null, kind: 'root-unreadable', status: 'unreachable'});
+
+            // Can see where they live and cannot read this one — a genuine read defect, and the
+            // distinction that stops `unreachable` from swallowing every failure it touches.
+            expect(await readBackupReceipt({filePath: path.join(readable, R)}))
+                .toEqual({finishedAt: null, kind: 'receipt-unreadable', status: 'unreadable'});
+        } finally {
+            // The fixtures are deliberately unreadable, and `rm -r` needs to traverse what it
+            // deletes — restore the bits first or the teardown leaks a tmp dir per run.
+            chmodSync(path.join(root, 'no-traverse'), 0o755);
+            chmodSync(path.join(root, 'readable-root', 'last-backup-receipt.json'), 0o644);
+            rmSync(root, {force: true, recursive: true})
+        }
+    });
+
     test('same-millisecond sequential writes use distinct temp names', async () => {
         const root = makeTmp();
         try {
@@ -714,6 +778,18 @@ test.describe('wrapper + projection behavioral witnesses', () => {
             const unreadable = await collect({receiptPath});
             expect(unreadable.lastBackup).toEqual({finishedAt: null, kind: 'corrupt', status: 'unreadable'});
             expect(unreadable.health.reasonCodes).toContain('backup-receipt-unreadable');
+
+            // #233 RA-1 (@neo-gpt): bind the BRIDGE seam, not just the reader and the scorer. Those
+            // two were covered independently, so deleting the projection's `unreachable` branch left
+            // every other spec green while the snapshot silently reverted to `lastBackup: undefined`
+            // — which the scorer reads as OBSERVED-ABSENT and turns back into a definite negative.
+            // Asserted end-to-end through `collectMaintenanceSnapshot` for exactly that reason.
+            const unmountedRoot = await collect({receiptPath: path.join(root, 'never-mounted', 'last-backup-receipt.json')});
+
+            expect(unmountedRoot.lastBackup).toEqual({finishedAt: null, kind: 'root-absent', status: 'unreachable'});
+            expect(unmountedRoot.health.reasonCodes).toContain('backup-receipt-unreachable');
+            // The projection must not go quiet: silence here MEANS observed-absent downstream.
+            expect(unmountedRoot.lastBackup).not.toBeUndefined();
         } finally {
             rmSync(root, {force: true, recursive: true})
         }
