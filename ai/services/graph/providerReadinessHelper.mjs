@@ -347,6 +347,29 @@ function createLmsCliError(operation, cause, stderr = '') {
 }
 
 /**
+ * @summary Recognizes LM Studio's identifier-collision refusal.
+ *
+ * `lms load` refuses with `A model with identifier <id> already exists.` when an instance under
+ * that identifier is already resident. `loadLmsModel()` rejects every CLI failure uniformly, so
+ * without this predicate the collision is indistinguishable from a real load failure — the ensure
+ * verify stays unsatisfied and the supervisor retries forever (#29: twelve cycles in six minutes).
+ *
+ * **A collision is not a failure.** It reports that the desired end state may already hold, which
+ * is a question about the resident instance's *shape*, not about the load. Callers answer it by
+ * re-probing and classifying rather than by retrying the load.
+ *
+ * Matched case-insensitively against the composed message because `createLmsCliError()` folds
+ * stderr into it; matching the identifier is deliberately avoided, since the id is caller-supplied
+ * and a substring match on it would admit unrelated failures that happen to quote the model name.
+ *
+ * @param {Error|Object} error Rejection from `loadLmsModel()` or an injected loader.
+ * @returns {Boolean}
+ */
+export function isLmsIdentifierCollision(error) {
+    return /model with identifier .* already exists/i.test(String(error?.message || ''));
+}
+
+/**
  * @summary Reads the first finite numeric value from a row using tolerant field aliases.
  * @param {Object} row Parsed LM Studio `lms ps --json` row.
  * @param {String[]} keys Candidate field names.
@@ -1590,6 +1613,11 @@ async function ensureLmsModelsLoadedOnce({
     let   activeLoadedModels = [];
     const attemptedModels    = [],
           loadedModels    = [],
+          // #29: instances that were already resident and already sufficient, adopted rather than
+          // replaced. Kept separate from `loadedModels` on purpose — a supervisor that cannot tell
+          // "I loaded it" from "someone else already had it" loses the only signal that would show
+          // this collision race recurring.
+          adoptedModels   = [],
           failedModels    = [];
     const buildResult = ({
         ready,
@@ -1606,6 +1634,7 @@ async function ensureLmsModelsLoadedOnce({
         degraded: !ready,
         ...(observationStatus ? {observationStatus} : {}),
         loadedModels,
+        adoptedModels,
         attemptedModels,
         failedModels,
         cleanupFailedModels: [],
@@ -1791,6 +1820,51 @@ async function ensureLmsModelsLoadedOnce({
         } catch (error) {
             if (error?.reason?.startsWith('runtime-authority-') || error?.reason?.startsWith('runtime-effect-')) {
                 throw error;
+            }
+
+            // #29 fix point 1 — a collision is a question, not a failure.
+            //
+            // LM Studio refuses the load because an instance under this identifier is already
+            // resident, which is exactly the state the ensure wanted. Treating it as a failure
+            // leaves the verify unsatisfied, so the next round decides to replace again and
+            // collides again — the retry loop the ticket measured. Re-probe and let the same
+            // classifier that gates every other decision answer whether the resident instance
+            // is sufficient.
+            //
+            // Deliberately placed here rather than inside `loadLmsModel()`: that function is a
+            // thin `lms` CLI shim, and adopting needs residency state plus readiness semantics.
+            // Teaching the shim to classify would put the decision a layer below the one that
+            // owns it.
+            if (isLmsIdentifierCollision(error)) {
+                const collisionRows = await fetchResidency({
+                    timeoutMs,
+                    freshness: PROVIDER_DISCOVERY_FORCE,
+                    unshared : true
+                });
+
+                // A refusal (non-array) means residency is unknowable right now. Absence of a
+                // sufficiency answer is NOT sufficiency: fall through to the failure path rather
+                // than adopting on an unread probe.
+                if (Array.isArray(collisionRows)) {
+                    const observation = classifyLmsLoadedModelObservation({
+                        loadedModels: collisionRows,
+                        model,
+                        contextLengths,
+                        parallels
+                    });
+
+                    if (observation.status === 'sufficient') {
+                        adoptedModels.push({model, contextLength, parallel, observed: observation.observed});
+                        log.info?.(`[ProviderReadinessHelper] LM Studio model '${model}' already resident and sufficient; adopted instead of replaced.`);
+                        activeLoadedModels = collisionRows;
+                        continue;
+                    }
+
+                    // Resident but wrong shape, or unreadable metadata. The collision is real and
+                    // the instance does not satisfy the gate, so this stays a failure — adopting
+                    // here would green a verify the instance cannot honour.
+                    error.lmsCollisionObservation = observation.status;
+                }
             }
 
             failedModels.push({model, contextLength, parallel, error: error.message});
