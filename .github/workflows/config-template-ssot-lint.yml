@@ -14,12 +14,10 @@ on:
       # removal can be blessed by updating the record of what exists, with nothing re-reading reality.
       - 'ai/scripts/lint/config-leaf-parity.json'
       - 'ai/scripts/lint/lint-config-template-ssot.mjs'
-      # ADR-0019's catalog and the installed Engine guard revision are inputs to the two-way
-      # ownership verdict. Package coordinates below cover dependency changes.
+      # ADR-0019's catalog is an input to the two-way ownership verdict. The two executable
+      # Brain-local guards are covered by the ai/**/*.mjs surface below.
       - 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'
       - '.github/workflows/config-template-ssot-lint.yml'
-      - 'package.json'
-      - 'package-lock.json'
       # Compose templates are SCANNED by two rules — the Compose/default parity check and the
       # behavior-binding clock projection check (#17115) — so by the scanned ⊆ watched invariant
       # stated below they must be watched. Without this, deleting a projected clock from a deploy
@@ -49,12 +47,10 @@ on:
       # removal can be blessed by updating the record of what exists, with nothing re-reading reality.
       - 'ai/scripts/lint/config-leaf-parity.json'
       - 'ai/scripts/lint/lint-config-template-ssot.mjs'
-      # ADR-0019's catalog and the installed Engine guard revision are inputs to the two-way
-      # ownership verdict. Package coordinates below cover dependency changes.
+      # ADR-0019's catalog is an input to the two-way ownership verdict. The two executable
+      # Brain-local guards are covered by the ai/**/*.mjs surface below.
       - 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'
       - '.github/workflows/config-template-ssot-lint.yml'
-      - 'package.json'
-      - 'package-lock.json'
       # Compose templates are SCANNED by two rules — the Compose/default parity check and the
       # behavior-binding clock projection check (#17115) — so by the scanned ⊆ watched invariant
       # stated below they must be watched. Without this, deleting a projected clock from a deploy
@@ -92,8 +88,14 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Materialize Engine dependency projections
+      - name: Materialize Brain config and skill state
         run: npm run prepare
+
+      - name: Ban Class-A DB-path AiConfig mutations in tests
+        run: node ai/scripts/lint/check-aiconfig-test-mutation.mjs
+
+      - name: Ban ADR-0019 implementation antipatterns
+        run: node ai/scripts/lint/check-aiconfig-antipatterns.mjs
 
       - name: Lint config.template.mjs leaves for inline process.env reads
         run: node ai/scripts/lint/lint-config-template-ssot.mjs

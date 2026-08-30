@@ -2,7 +2,7 @@ import {test, expect}        from '@playwright/test';
 import {execFileSync}        from 'node:child_process';
 import fs                    from 'node:fs';
 import path                  from 'node:path';
-import {findDbPathMutations} from 'neo.mjs/buildScripts/util/check-aiconfig-test-mutation.mjs';
+import {findDbPathMutations} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 // The Playwright unit runner executes with cwd = repo root, so resolve against it rather than
 // __dirname arithmetic — the latter is brittle across nesting depth and git-worktree layouts.
