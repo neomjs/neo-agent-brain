@@ -23,7 +23,7 @@ test.describe('ApiSource repository port (#261)', () => {
     let root;
 
     test.beforeAll(async () => {
-        aiConfig  = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.mjs')).default;
+        aiConfig  = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
         ApiSource = (await import('../../../../../../../ai/services/knowledge-base/source/ApiSource.mjs')).default;
         root      = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-api-source-port-'));
 
