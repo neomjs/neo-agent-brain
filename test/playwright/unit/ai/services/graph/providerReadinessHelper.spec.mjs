@@ -955,20 +955,53 @@ test.describe('embedding serving canary — safe-band floor (#17070)', () => {
 });
 
 test.describe('#29 — an identifier collision is adopted, not retried forever', () => {
-    let ensureLmsModelsLoaded, isLmsIdentifierCollision;
+    let ensureLmsModelsLoaded, isLmsIdentifierCollision, loadLmsModel;
 
-    const COLLISION = 'lms load embedding-model failed: Error: A model with identifier embedding-model already exists.';
+    // LM Studio's refusal arrives on **stderr**, not as the thrown error's own message —
+    // `createLmsCliError()` folds it in as `; stderr=<text>`. Composing the message by hand would
+    // test a string this spec authored rather than the one production produces, so every collision
+    // below is built by driving the real `loadLmsModel()` with a stubbed `execFileFn`.
+    const LMS_REFUSAL_STDERR = 'A model with identifier embedding-model already exists.\n';
+
+    /**
+     * Produces the rejection the real conduit produces: `execFileFn` error + stderr →
+     * `createLmsCliError()` → the message `isLmsIdentifierCollision()` must recognize.
+     */
+    const viaRealConduit = (stderr, message = 'Command failed: lms load embedding-model') =>
+        loadLmsModel('embedding-model', {
+            identifier: 'embedding-model',
+            timeoutMs : 10,
+            execFileFn: (cmd, args, opts, cb) => {
+                const error = new Error(message);
+
+                error.code = 1;
+                cb(error, '', stderr);
+            }
+        });
 
     test.beforeAll(async () => {
-        ({ensureLmsModelsLoaded, isLmsIdentifierCollision} =
+        ({ensureLmsModelsLoaded, isLmsIdentifierCollision, loadLmsModel} =
             await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
+    });
+
+    test('the real conduit composes a message the predicate recognizes (execFileFn → createLmsCliError → predicate)', async () => {
+        // Binds the whole chain rather than asserting against a hand-written string. If
+        // `createLmsCliError()` ever stops folding stderr in, or `describeLmsCliFailure()` reshapes
+        // the message, this reds — which a pre-composed fixture could never do.
+        const composed = await viaRealConduit(LMS_REFUSAL_STDERR).catch(error => error);
+
+        expect(composed.message).toContain('stderr=');
+        expect(isLmsIdentifierCollision(composed)).toBe(true);
+
+        const unrelated = await viaRealConduit('', 'Command failed: lms load embedding-model: ETIMEDOUT').catch(error => error);
+
+        expect(isLmsIdentifierCollision(unrelated)).toBe(false);
     });
 
     // The collision string is the whole discriminator, so it gets a truth table rather than one
     // happy case. The third row is the one that matters: a genuine failure that merely QUOTES the
     // model id must not be mistaken for a collision, or a real load failure becomes a silent adopt.
     test('isLmsIdentifierCollision matches the refusal and nothing adjacent', () => {
-        expect(isLmsIdentifierCollision({message: COLLISION})).toBe(true);
         expect(isLmsIdentifierCollision({message: 'A MODEL WITH IDENTIFIER x ALREADY EXISTS'})).toBe(true);
         expect(isLmsIdentifierCollision({message: 'lms load failed: no such model embedding-model'})).toBe(false);
         expect(isLmsIdentifierCollision({message: 'lms load embedding-model failed: ETIMEDOUT'})).toBe(false);
@@ -987,7 +1020,7 @@ test.describe('#29 — an identifier collision is adopted, not retried forever',
     // and skip the load entirely — which is how two earlier drafts of these specs passed while
     // never once exercising a collision. Raising it to 4 leaves the collision re-probe empty, which
     // is the absence case rather than a broken fixture.
-    const runCollision = ({residentRows, requiredContext = 8192, loadError = COLLISION, preLoadProbes = 3}) => {
+    const runCollision = ({residentRows, requiredContext = 8192, loadError = LMS_REFUSAL_STDERR, preLoadProbes = 3}) => {
         let probes = 0;
 
         return ensureLmsModelsLoaded({
@@ -1000,7 +1033,9 @@ test.describe('#29 — an identifier collision is adopted, not retried forever',
             contextLengths: {'embedding-model': requiredContext},
             fetchModelIds    : async () => ['embedding-model'],
             fetchLoadedModels: async () => (probes++ < preLoadProbes ? [] : residentRows),
-            loadModel        : async () => { throw new Error(loadError); },
+            // Real conduit, not a pre-composed Error: the ensure sees exactly the rejection
+            // `loadLmsModel()` produces from a CLI failure plus stderr.
+            loadModel        : () => viaRealConduit(loadError),
             log              : {info() {}, warn() {}}
         });
     };
@@ -1045,7 +1080,7 @@ test.describe('#29 — an identifier collision is adopted, not retried forever',
         // collision, this ETIMEDOUT would be silently adopted.
         const result = await runCollision({
             residentRows: [{id: 'embedding-model', contextLength: 32768}],
-            loadError   : 'lms load embedding-model failed: ETIMEDOUT'
+            loadError   : 'connect ECONNREFUSED 127.0.0.1:1234'
         });
 
         expect(result.adoptedModels).toEqual([]);
