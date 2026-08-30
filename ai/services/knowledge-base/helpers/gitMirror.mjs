@@ -1200,9 +1200,10 @@ const PREFETCH_OID_CHUNK_SIZE = 1000;
 /**
  * @summary Fetches every blob a revision's paths need in a few negotiations instead of one per file.
  *
- * On a `--filter=blob:none` mirror each `readRevisionFile` is a lazy promisor fetch — one round trip
- * per file, measured cold at 0.52 s/file (0.42 on the plane), so a revision's 23,187 blobs cost ~3.3
- * hours. The same blobs asked for together: 28 seconds. Only the round-trip count changes.
+ * On a `--filter=blob:none` mirror the ingest path acquires blobs in TWO tiers: this authenticated
+ * bulk prefetch first, and `readRevisionFile`'s lazy per-file promisor fetch as the fallback when it
+ * is unavailable. Per-file costs one round trip each — 0.52 s/file cold (0.42 on the plane), so a
+ * revision's 23,187 blobs cost ~3.3 hours against 28 seconds for the same blobs asked for together.
  *
  * **Never rejects, by contract.** This is an accelerator in front of a path that already works, so a
  * throw would turn a slow ingest into a failed one. Every failure leaves `readRevisionFile` exactly as
@@ -1220,7 +1221,8 @@ const PREFETCH_OID_CHUNK_SIZE = 1000;
  * @param {String[]} options.sourcePaths Repo-relative paths whose blobs are about to be read.
  * @param {String|Object|null} [options.credentialRef] Durable credential reference. Required for a
  *     private remote, for the same reason `readRevisionFile` needs one: this reaches the network.
- * @param {Number} [options.chunkSize=PREFETCH_OID_CHUNK_SIZE] OIDs per `git fetch` invocation.
+ * @param {Number} [options.chunkSize=PREFETCH_OID_CHUNK_SIZE] OIDs per `git fetch` invocation; a
+ *     non-positive or non-integer value falls back to the default rather than stalling the loop.
  * @returns {Promise<{status: String, requested: Number, missing: Number, chunks: Number, reason: (String|null)}>}
  *     Never rejects. `status` is `prefetched` (a fetch ran), `already-local` (nothing was missing) or
  *     `unavailable` (something refused; the caller reads per-file as before).
@@ -1295,8 +1297,13 @@ export async function prefetchRevisionBlobs({mirrorRoot, tenantId, repoSlug, rev
             return result
         }
 
-        for (let index = 0; index < toFetch.length; index += chunkSize) {
-            await runGit(['fetch', '--no-write-fetch-head', '--quiet', 'origin', ...toFetch.slice(index, index + chunkSize)], {
+        // A non-positive or fractional size makes `index += size` non-advancing or unbounded, so the
+        // domain is enforced here rather than trusted: an out-of-domain argument falls back to the
+        // default instead of hanging the ingest it exists to accelerate.
+        const size = Number.isInteger(chunkSize) && chunkSize > 0 ? chunkSize : PREFETCH_OID_CHUNK_SIZE;
+
+        for (let index = 0; index < toFetch.length; index += size) {
+            await runGit(['fetch', '--no-write-fetch-head', '--quiet', 'origin', ...toFetch.slice(index, index + size)], {
                 credentialRef,
                 cwd           : mirrorPath,
                 failureCode   : 'KB_GITMIRROR_PREFETCH_FETCH_FAILED',
