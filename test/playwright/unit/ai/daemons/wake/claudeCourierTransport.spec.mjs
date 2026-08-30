@@ -307,7 +307,7 @@ test.describe('claude courier transport — courier-side protocol', () => {
         fs.rmSync(outboxDir, {recursive: true, force: true})
     });
 
-    test('a corrupt entry is skipped for the pass rather than blocking the queue', () => {
+    test('a corrupt entry is REPORTED, never filtered away, and never deleted', () => {
         const outboxDir = fs.mkdtempSync(path.join(os.tmpdir(), 'courier-corrupt-'));
 
         seedOutbox(outboxDir);
@@ -315,7 +315,16 @@ test.describe('claude courier transport — courier-side protocol', () => {
 
         const listed = listOutboxEntries({outboxDir});
 
-        expect(listed.map(item => item.entry.eventId)).toEqual(['evt-a', 'evt-b']);
+        // This previously dropped the row, which read as "nothing to disposition" while the file
+        // stayed queued for good: undeliverable AND invisible, the exact silent loss this transport
+        // exists to remove. Listing surfaces work; it never hides it.
+        expect(listed.map(item => item.entry?.eventId)).toEqual([undefined, 'evt-a', 'evt-b']);
+        expect(listed[0].file.endsWith('0000-broken.json')).toBe(true);
+        expect(listed[0].error, 'the reason travels with the row').toBeTruthy();
+
+        // Readable siblings are unaffected: one bad file does not stall the pass.
+        expect(listed.filter(item => item.entry).map(item => item.entry.eventId)).toEqual(['evt-a', 'evt-b']);
+        expect(fs.existsSync(path.join(outboxDir, '0000-broken.json')), 'reporting is not disposal').toBe(true);
 
         fs.rmSync(outboxDir, {recursive: true, force: true})
     });

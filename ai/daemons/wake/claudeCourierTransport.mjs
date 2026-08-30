@@ -336,13 +336,18 @@ export function listOutboxEntries({outboxDir, fs: userFs = fs}) {
         .filter(name => name.endsWith('.json'))
         .sort()
         .map(name => {
+            const file = path.join(outboxDir, name);
+
             try {
-                return {file: path.join(outboxDir, name), entry: JSON.parse(userFs.readFileSync(path.join(outboxDir, name), 'utf8'))}
-            } catch {
-                return null
+                return {file, entry: JSON.parse(userFs.readFileSync(file, 'utf8'))}
+            } catch (error) {
+                // An unreadable entry is REPORTED, never filtered away. Dropping the row left the
+                // file queued forever while the pass reported nothing to disposition — undeliverable
+                // and invisible at once, which is precisely the silent loss this transport exists to
+                // remove. The caller decides what to do; listing never hides work.
+                return {file, entry: null, error: error.message}
             }
         })
-        .filter(Boolean)
 }
 
 /**
