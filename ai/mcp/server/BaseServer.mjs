@@ -511,7 +511,8 @@ class BaseServer extends Base {
     /**
      * @summary Formats a successful tool-call result into the MCP `{content, isError, structuredContent?}`
      * envelope. Object results become both text + structured; primitive results become text-only.
-     * Object results with an `error` key are routed to error-style envelopes.
+     * Object results with an `error` key are routed to error-style envelopes while retaining the
+     * complete object for callers that need typed failure details.
      * @param {*} result
      * @returns {Object}
      * @protected
@@ -522,7 +523,8 @@ class BaseServer extends Base {
         let structuredContent = null;
 
         if (Neo.isObject(result)) {
-            isError = 'error' in result;
+            isError           = 'error' in result;
+            structuredContent = result;
 
             if (isError) {
                 contentBlock = {
@@ -534,7 +536,6 @@ class BaseServer extends Base {
                     type: 'text',
                     text: JSON.stringify(result, null, 2)
                 };
-                structuredContent = result;
             }
         } else {
             contentBlock = {

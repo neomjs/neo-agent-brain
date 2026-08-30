@@ -58,7 +58,8 @@ function normalizeOpenApiJsonSchema(node) {
  * @returns {z.ZodObject} A Zod object schema representing the tool's input.
  */
 function buildZodSchema(openApiDocument, operation) {
-    const shape = {};
+    const shape      = {};
+    let   strictRoot = false;
 
     // Process parameters defined in the OpenAPI operation (path, query, header, etc.).
     if (operation.parameters) {
@@ -84,6 +85,8 @@ function buildZodSchema(openApiDocument, operation) {
             requestBodySchema = resolveRef(openApiDocument, requestBodySchema.$ref);
         }
 
+        strictRoot = requestBodySchema.additionalProperties === false;
+
         if (requestBodySchema.properties) {
             const { properties, required = [] } = requestBodySchema;
             for (const [propName, propSchema] of Object.entries(properties)) {
@@ -96,7 +99,9 @@ function buildZodSchema(openApiDocument, operation) {
             }
         }
     }
-    return z.object(shape);
+    const rootSchema = z.object(shape);
+
+    return strictRoot ? rootSchema.strict() : rootSchema;
 }
 
 /**
@@ -162,6 +167,14 @@ function buildZodSchemaFromNode(doc, schema, opts = {}) {
             }
         }
         zodSchema = z.object(shape);
+
+        // `additionalProperties: false` is part of the runtime input contract, not only
+        // emitted JSON-Schema metadata. Without `.strict()`, Zod silently strips unknown
+        // keys. That turns an exclusive `oneOf` object into the first matching branch and
+        // can make an ambiguous request look valid after parsing.
+        if (schema.additionalProperties === false && !lenient) {
+            zodSchema = zodSchema.strict()
+        }
 
         if (schema.additionalProperties) {
             let additionalSchema;

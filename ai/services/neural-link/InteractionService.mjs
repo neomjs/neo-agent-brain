@@ -44,6 +44,50 @@ class InteractionService extends Base {
     }
 
     /**
+     * @summary Requests one Engine-owned physical drag and preserves its typed receipt.
+     *
+     * Descriptor validation belongs to the MCP schema; browser geometry, sensor thresholds,
+     * event construction, and cleanup remain Engine responsibilities. This service only
+     * enforces the one cross-field duration bound that OpenAPI cannot express, forwards the
+     * object, and turns an Engine refusal into a machine-readable MCP object error.
+     * @param {Object}   opts
+     * @param {Object}   opts.destination
+     * @param {Number}   [opts.durationMs]
+     * @param {String}   [opts.sessionId]
+     * @param {Object}   opts.source
+     * @param {Number}   opts.steps
+     * @param {Object[]} [opts.waypoints]
+     * @returns {Promise<Object>}
+     */
+    async driveDrag({destination, durationMs, sessionId, source, steps, waypoints}) {
+        if (durationMs !== undefined && durationMs < steps * 16) {
+            throw new Error('durationMs must be at least steps * 16')
+        }
+
+        const request = {destination, source, steps};
+
+        if (durationMs !== undefined) request.durationMs = durationMs;
+        if (waypoints  !== undefined) request.waypoints  = waypoints;
+
+        const result = await ConnectionService.call(sessionId, 'drive_drag', request);
+
+        if (typeof result?.success !== 'boolean') {
+            throw new Error('Engine drive_drag returned no typed outcome')
+        }
+
+        if (!result.success) {
+            return {
+                error  : 'Drag gesture failed',
+                message: result.error?.message || 'The Engine rejected the drag gesture.',
+                phase  : result.phase,
+                receipt: result
+            }
+        }
+
+        return result
+    }
+
+    /**
      * Retrieves the recent drag-lifecycle traces (SortZone ring buffer).
      * @param {Object}  opts
      * @param {Boolean} [opts.clear]
