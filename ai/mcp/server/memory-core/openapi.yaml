@@ -4471,6 +4471,13 @@ components:
         response:
           type: string
           example: "To create a new Neo.mjs component..."
+        miniSummary:
+          type: string
+          nullable: true
+          description: Stored per-turn mini-summary, or a bounded raw fallback when backfill has not reached the row.
+        summaryFallback:
+          type: boolean
+          description: True only when miniSummary was derived from truncated raw prompt/response content rather than the stored graph summary.
         type:
           type: string
           example: "agent-interaction"
