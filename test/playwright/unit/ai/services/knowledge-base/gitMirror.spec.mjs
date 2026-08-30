@@ -13,6 +13,7 @@ import GitMirror, {
     fetch,
     inspectCredentialReadiness,
     isAncestor,
+    prefetchRevisionBlobs,
     probeRemoteAccess,
     readRevisionFile,
     TenantRepoAccessCode,
@@ -804,4 +805,168 @@ exit 1
             expect(error.stderr || '').not.toContain('super-secret-token');
         }
     });
+
+
+// Each `readRevisionFile` on a blobless mirror is a promisor round trip: 0.468 s/file cold over 500
+// files, so a 23,187-blob first ingest costs ~3.0 hours against 28 seconds for the same blobs asked
+// for together.
+//
+// ⚠️ Setup hazard: these use `file://` with `uploadpack.allowFilter`, because git ignores `--filter`
+// for local PATH clones and, silently, for a remote that does not advertise filter support. Over the
+// file transport blobs are genuinely omitted, so the cold path below is real rather than simulated.
+test.describe('prefetchRevisionBlobs — one negotiation instead of one per file (#65)', () => {
+    /**
+     * A source whose blobs are large enough to be worth omitting, served over a transport that
+     * honours the filter.
+     */
+    async function createPrefetchSource() {
+        const source = path.join(root, 'prefetch-source');
+
+        await fs.ensureDir(path.join(source, 'docs'));
+        await git(['init', '--initial-branch=main'], source);
+
+        for (let index = 0; index < 6; index++) {
+            await fs.writeFile(path.join(source, `file-${index}.txt`), `payload ${index} `.repeat(4000));
+        }
+
+        await fs.writeFile(path.join(source, 'docs', 'guide.md'), '# Guide\n'.repeat(4000));
+        await git(['add', '.'], source);
+        await git(['-c', 'user.name=Neo Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'initial'], source);
+        await git(['config', 'uploadpack.allowFilter', 'true'], source);
+        await git(['config', 'uploadpack.allowAnySHA1InWant', 'true'], source);
+
+        return source;
+    }
+
+    async function bloblessMirror() {
+        const source  = await createPrefetchSource(),
+              options = {...mirrorOptions(source), cloneUrl: `file://${source}`};
+
+        await cloneIfMissing(options);
+
+        const revision   = await resolveHead(options),
+              mirrorPath = path.join(root, 'mirrors', 'tenant-repos', 'tenant-a', 'local', 'source');
+
+        return {mirrorPath, options, revision, source};
+    }
+
+    async function oidFor(mirrorPath, revision, sourcePath) {
+        const {stdout} = await execFileAsync('git', ['ls-tree', '-r', revision, '--', sourcePath], {cwd: mirrorPath});
+
+        return stdout.trim().split(/\s+/)[2];
+    }
+
+    test('a cold mirror is genuinely cold, and one prefetch makes exactly the requested blobs local', async () => {
+        const {mirrorPath, options, revision} = await bloblessMirror(),
+              paths                           = ['file-0.txt', 'file-1.txt', 'docs/guide.md'],
+              oids                            = [];
+
+        for (const sourcePath of paths) oids.push(await oidFor(mirrorPath, revision, sourcePath));
+
+        // 🔴 Falsifier: if the blobs are already local, everything below passes while proving nothing.
+        // Coldness is asserted first, with the fetch-free probe.
+        for (const oid of oids) {
+            expect(await localObjectExists(mirrorPath, oid), `${oid} should be missing on a cold mirror`).toBe(false);
+        }
+
+        const result = await prefetchRevisionBlobs({...options, revision, sourcePaths: paths});
+
+        expect(result.status).toBe('prefetched');
+        expect(result.missing).toBe(3);
+        expect(result.chunks).toBe(1);
+        expect(result.reason).toBeNull();
+
+        for (const oid of oids) {
+            expect(await localObjectExists(mirrorPath, oid), `${oid} should be local after the prefetch`).toBe(true);
+        }
+    });
+
+    test('it is SCOPED — an unrequested path stays missing, so incremental sync keeps its cost', async () => {
+        // A prefetch pulling the whole revision would hand every steady-state poll the first-ingest
+        // bill, and no test of the requested paths alone would notice.
+        const {mirrorPath, options, revision} = await bloblessMirror(),
+              requested                       = await oidFor(mirrorPath, revision, 'file-0.txt'),
+              untouched                       = await oidFor(mirrorPath, revision, 'file-5.txt');
+
+        expect(await localObjectExists(mirrorPath, untouched)).toBe(false);
+
+        await prefetchRevisionBlobs({...options, revision, sourcePaths: ['file-0.txt']});
+
+        expect(await localObjectExists(mirrorPath, requested)).toBe(true);
+        expect(await localObjectExists(mirrorPath, untouched), 'an unrequested blob must not be fetched').toBe(false);
+    });
+
+    test('a warm mirror reports already-local rather than a silent no-op', async () => {
+        const {options, revision} = await bloblessMirror(),
+              paths               = ['file-0.txt', 'file-1.txt'];
+
+        await prefetchRevisionBlobs({...options, revision, sourcePaths: paths});
+
+        const second = await prefetchRevisionBlobs({...options, revision, sourcePaths: paths});
+
+        // The distinction is the whole point of returning a status: "nothing to do" and "I could not
+        // do anything" are different answers, and a boolean would have collapsed them.
+        expect(second).toMatchObject({chunks: 0, missing: 0, requested: 2, status: 'already-local'});
+    });
+
+    test('no paths is already-local with nothing requested, not an error', async () => {
+        const {options, revision} = await bloblessMirror();
+
+        expect(await prefetchRevisionBlobs({...options, revision, sourcePaths: []}))
+            .toMatchObject({chunks: 0, requested: 0, status: 'already-local'});
+    });
+
+    test('🔴 it DEGRADES rather than throwing — a failed prefetch must never fail an ingest', async () => {
+        // A throw here turns a slow ingest into a failed one — worse than the cost being removed.
+        const {mirrorPath, options, revision} = await bloblessMirror();
+
+        await execFileAsync('git', ['remote', 'set-url', 'origin', `${root}/does-not-exist.git`], {cwd: mirrorPath});
+
+        const result = await prefetchRevisionBlobs({...options, revision, sourcePaths: ['file-0.txt']});
+
+        expect(result.status).toBe('unavailable');
+        expect(result.reason).toBeTruthy();
+
+        // …and the shipped read path is still exactly as capable as before this function existed.
+        expect(await readRevisionFile({...options, revision, sourcePath: 'file-0.txt'}).catch(error => error))
+            .toBeDefined();
+    });
+
+    test('an unresolvable revision degrades too, without a rejection reaching the caller', async () => {
+        const {options} = await bloblessMirror();
+
+        expect(await prefetchRevisionBlobs({...options, revision: 'no-such-revision', sourcePaths: ['file-0.txt']}))
+            .toMatchObject({status: 'unavailable'});
+    });
+
+    test('a path that is not in the revision is skipped, not treated as a failure', async () => {
+        const {options, revision} = await bloblessMirror();
+
+        expect(await prefetchRevisionBlobs({...options, revision, sourcePaths: ['not-in-this-tree.txt']}))
+            .toMatchObject({missing: 0, requested: 1, status: 'already-local'});
+    });
+
+    test('chunking issues more than one fetch and still lands every blob', async () => {
+        // ~23k OIDs at 41 bytes is ~950 KB of argv, past ARG_MAX on macOS. A tiny chunk proves the
+        // loop, which no unit test would otherwise reach at the production default.
+        const {mirrorPath, options, revision} = await bloblessMirror(),
+              paths                           = ['file-0.txt', 'file-1.txt', 'file-2.txt', 'file-3.txt'],
+              oids                            = [];
+
+        for (const sourcePath of paths) oids.push(await oidFor(mirrorPath, revision, sourcePath));
+
+        const result = await prefetchRevisionBlobs({...options, chunkSize: 2, revision, sourcePaths: paths});
+
+        expect(result).toMatchObject({chunks: 2, missing: 4, status: 'prefetched'});
+
+        for (const oid of oids) expect(await localObjectExists(mirrorPath, oid)).toBe(true);
+    });
+
+    test('the GitMirror contract exposes it, so a caller\'s optional call cannot hide a removal', async () => {
+        // The builder calls this optionally, so partial doubles stay simple — and so an accidental
+        // deletion from the real primitive would go unnoticed. This is what refuses that.
+        expect(typeof GitMirror.prefetchRevisionBlobs).toBe('function');
+    });
+});
+
 });
