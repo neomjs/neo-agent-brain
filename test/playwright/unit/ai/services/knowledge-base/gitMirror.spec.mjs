@@ -807,12 +807,12 @@ exit 1
     });
 
 
-// #65. The mirror is blobless, so every `readRevisionFile` is a lazy promisor fetch — one network
-// round trip per file. Measured against a cold `--filter=blob:none` mirror of `neomjs/neo`:
-// **0.468 s/file** over 500 files, which the container plane independently measured at 0.42 s/file.
-// A first ingest reads the whole tree, so 23,187 blobs cost **~3.0 hours of pure latency** — paid by
-// every new tenant, and again on every re-clone. Asking for the same blobs together took **28
-// seconds**, after which `rev-list --missing=print` reported zero missing.
+// The mirror is blobless, so every `readRevisionFile` is a lazy promisor fetch — one network round
+// trip per file. Measured against a cold `--filter=blob:none` mirror of `neomjs/neo`: **0.468 s/file**
+// over 500 files, which the container plane independently measured at 0.42 s/file. A first ingest
+// reads the whole tree, so 23,187 blobs cost **~3.0 hours of pure latency** — paid by every new
+// tenant, and again on every re-clone. Asking for the same blobs together took **28 seconds**, after
+// which `rev-list --missing=print` reported zero missing.
 //
 // These tests use `file://` sources with `uploadpack.allowFilter`, because git ignores `--filter`
 // for local PATH clones — and, silently, for a remote that does not advertise filter support. A
