@@ -1431,6 +1431,20 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         expect(written.hooks.PreToolUse[0].hooks[0].command).toContain('rgReplaceGuardHook.mjs');
     });
 
+    test('initClaudeSettings: missing .claude parent → create it before cloning settings', async () => {
+        const
+            sourceDir    = buildClaudeDir('parent-source', {template: TEMPLATE}),
+            templatePath = path.join(sourceDir, 'settings.template.json'),
+            targetDir    = path.join(claudeRoot, 'missing-parent');
+
+        expect(fs.existsSync(targetDir)).toBe(false);
+
+        const r = await initClaudeSettings({claudeDir: targetDir, logger: recordingLogger(), templatePath});
+
+        expect(r.action).toBe('clone');
+        expect(fs.existsSync(path.join(targetDir, 'settings.json'))).toBe(true)
+    });
+
     test('initClaudeSettings: re-run is idempotent → silent', async () => {
         const dir          = buildClaudeDir('silent', {template: TEMPLATE});
         const templatePath = path.join(dir, 'settings.template.json');

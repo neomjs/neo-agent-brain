@@ -1167,7 +1167,10 @@ export function retargetClaudeHookCommands(templateSettings = {}) {
  * enforcement) without per-repo manual management — the Claude analog of {@link initConfigs} /
  * {@link initTier1Config}. A missing active file is cloned whole from the template; an existing one
  * gets only its `hooks` block ensured ({@link mergeClaudeHooks}), preserving operator-local keys.
- * Idempotent: an already-wired settings file is a silent no-op. Runs at `npm prepare`. The tracked
+ * The target directory is created here because `npm prepare` also runs after `npm ci --ignore-scripts`,
+ * where the Skills postinstall has not yet created `.claude/skills`; config materialization cannot
+ * depend on that unrelated lifecycle side effect. Idempotent: an already-wired settings file is a
+ * silent no-op. Runs at `npm prepare`. The tracked
  * template carries `NEO_LANE_STATE_ENFORCE=1` in the Stop-hook command — the operator-directed enforce
  * default (the forcing-function rollout: the hook blocks + injects the no-hold directive at an
  * invalid idle-out turn-terminal, rather than only audit-logging it). Enforce is opted OUT locally by
@@ -1193,6 +1196,8 @@ export async function initClaudeSettings({
         logger.warn(`[Neo AI] Claude settings template not found at ${templatePath}; skipping initialization.`);
         return {action: 'skip-no-template'};
     }
+
+    await fs.mkdir(claudeDir, {recursive: true});
 
     const templateSettings = retargetClaudeHookCommands(JSON.parse(await fs.readFile(templatePath, 'utf-8')));
 
