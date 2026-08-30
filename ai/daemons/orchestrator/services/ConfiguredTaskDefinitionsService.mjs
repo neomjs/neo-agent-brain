@@ -38,12 +38,10 @@ export function buildConfiguredTaskDefinitions({
     const tasks = buildTaskDefinitions({
         scriptDir,
         nodeBin,
-        chromaDataDir             : AiConfig.engines.chroma.dataDir,
-        chromaHost                : AiConfig.engines.chroma.host,
-        chromaPort                : AiConfig.engines.chroma.port,
-        devServerPort             : AiConfig.orchestrator.devServer.port,
-        devServerLivenessTimeoutMs: AiConfig.orchestrator.devServer.livenessProbeTimeoutMs,
-        neuralLinkBridgePort      : neuralLinkConfig.port,
+        chromaDataDir       : AiConfig.engines.chroma.dataDir,
+        chromaHost          : AiConfig.engines.chroma.host,
+        chromaPort          : AiConfig.engines.chroma.port,
+        neuralLinkBridgePort: neuralLinkConfig.port,
         neuralLinkBridgeLivenessTimeoutMs
     });
 

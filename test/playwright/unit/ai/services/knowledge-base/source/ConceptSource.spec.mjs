@@ -27,14 +27,14 @@ const repoRoot   = path.resolve(__dirname, '../../../../../../..');
 test.describe('Neo.ai.services.knowledge-base.source.ConceptSource', () => {
     let ConceptSource;
     let aiConfig;
-    let originalRoot;
+    let originalProjectRoot;
     let mockRoot;
 
     test.beforeAll(async () => {
         aiConfig    = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
         ConceptSource = (await import('../../../../../../../ai/services/knowledge-base/source/ConceptSource.mjs')).default;
 
-        originalRoot = aiConfig.neoRootDir;
+        originalProjectRoot = aiConfig.projectRoot;
 
         const tmpDir = path.resolve(process.cwd(), 'tmp');
         fs.ensureDirSync(tmpDir);
@@ -51,11 +51,11 @@ tier: 1
 
 Neo.mjs distributes application logic across dedicated Web Workers.`);
 
-        aiConfig.neoRootDir = mockRoot;
+        aiConfig.projectRoot = mockRoot;
     });
 
     test.afterAll(() => {
-        aiConfig.neoRootDir = originalRoot;
+        aiConfig.projectRoot = originalProjectRoot;
         if (mockRoot && fs.existsSync(mockRoot)) fs.removeSync(mockRoot);
     });
 

@@ -302,8 +302,8 @@ export function readWorkflowEntrypoints({
 /**
  * @summary Placeholder config that makes the task census MAXIMAL rather than default-shaped.
  *
- * `buildTaskDefinitions({})` is the descriptor layer's default, and two production roots exist only
- * when a port is configured — `neuralLinkBridge` (host-edge) and `devServer`. Censusing the default
+ * `buildTaskDefinitions({})` is the descriptor layer's default, and one production root exists only
+ * when a port is configured — `neuralLinkBridge` (host-edge). Censusing the default
  * therefore asks "what runs in an unconfigured process" when the question is **"which modules can be
  * spawned as a production root at all"**, and a root that appears only under configuration is still a
  * root whose declared authority nobody was checking.
@@ -318,8 +318,6 @@ export const CENSUS_TASK_CONFIG = Object.freeze({
     chromaDataDir                    : '/census',
     chromaHost                       : 'census',
     chromaPort                       : 1,
-    devServerLivenessTimeoutMs       : 1,
-    devServerPort                    : 1,
     neuralLinkBridgeLivenessTimeoutMs: 1,
     neuralLinkBridgePort             : 1
 });
@@ -333,9 +331,7 @@ export function buildAuthorityByScript({
 
     Object.entries(definitions).forEach(([taskName, definition]) => {
         // The executed module is `node`'s FIRST argument, never "the first arg ending in .mjs".
-        // `devServer` runs `node …/webpack.js serve -c ./buildScripts/…/webpack.server.config.mjs`,
-        // where the `.mjs` is a `-c` VALUE — so the extension heuristic joined a webpack config as
-        // if it were the entrypoint and then reported its plane. A config file has no plane.
+        // A later `.mjs` argument may be config or data; only argv[0] identifies the executable root.
         const [script] = definition?.args ?? [];
 
         if (typeof script !== 'string' || !/\.(mjs|js)$/.test(script) || !(taskName in authorityByName)) {

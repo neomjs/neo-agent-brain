@@ -82,7 +82,10 @@ this rule exists to block.
 The extracted repository consumes the Engine as a **published package**. The Engine never imports
 from the extracted repository, and `src/ai/**` (the Body-side AI surfaces) stays Engine-owned. The
 release seam already exists as the two-command protocol: `publish.mjs` owns the Engine half;
-`ai:post-release-sync` owns the Brain half with a fail-closed preflight (#17239).
+`ai:post-release-sync -- --target-repo-root <Engine checkout>` owns the Brain half with a
+fail-closed preflight. The explicit target binding keeps the command inside §2.5: source and
+executables resolve from `agentosRuntimeRoot`, while corpus/git operations run against the
+validated `targetRepoRoot`; ambient cwd is never promoted to either authority.
 
 The covenant is **absolute across both dependency fields**: the Engine carries no `dependencies`
 and no `devDependencies` edge on the extracted repository. The measured out-of-`ai/` consumer

@@ -9,7 +9,7 @@ import GraphService from '../GraphService.mjs';
  * **Write-only is the contract, not an oversight.** There is no read operation here on purpose. The
  * archive needs a read because replay is a host-initiated round trip; telemetry does not, because its only
  * production consumers read it through the container-owned graph already (`GapInferenceEngine`'s
- * `inferNlActionDigest`) or from a disposable local aggregate (`genesisProbe`). Adding a remote
+ * `inferNlActionDigest`). Adding a remote
  * telemetry-read operation would contradict the direction invariant this relocation establishes, so its
  * absence is an asserted property rather than a gap someone should helpfully close.
  *

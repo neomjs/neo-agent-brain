@@ -30,155 +30,20 @@ import {fileURLToPath} from 'url';
  * if structural drift starts hiding inside conditional / dynamic imports.
  */
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-const cwd        = path.resolve(__dirname, '../../../');
-const serversDir = path.join(cwd, 'ai', 'mcp', 'server');
-const aiDir      = path.join(cwd, 'ai');
+const __filename                    = fileURLToPath(import.meta.url);
+const __dirname                     = path.dirname(__filename);
+const cwd                           = path.resolve(__dirname, '../../../');
+const serversDir                    = path.join(cwd, 'ai', 'mcp', 'server');
+const aiDir                         = path.join(cwd, 'ai');
+const require                       = createRequire(import.meta.url);
+const engineRoot                    = path.dirname(require.resolve('neo.mjs/package.json'));
+const defaultClaudeSettingsTemplate = path.join(engineRoot, '.claude/settings.template.json');
 
 const MIGRATE_FLAG                = '--migrate-config';
 const MATERIALIZED_SERVER_IMPORTS = new Set([
     '../../../config.mjs',
     '../../../config.mjs:default'
 ]);
-const ENGINE_LINK_PROJECTIONS = Object.freeze(['apps', 'examples', 'harness', 'resources']);
-const ENGINE_COPY_PROJECTIONS = Object.freeze(['buildScripts']);
-
-/**
- * @summary Resolves the installed Engine package using Node's package-resolution algorithm.
- * @param {String} [root=cwd]
- * @returns {String}
- */
-export function resolveEngineRoot(root = cwd) {
-    const require = createRequire(path.join(root, 'package.json'));
-
-    return path.dirname(require.resolve('neo.mjs/package.json'))
-}
-
-/**
- * @summary Reads the immutable Engine dependency URL recorded by the Brain lockfile.
- * @param {String} [root=cwd]
- * @returns {String}
- */
-function resolveEngineRevision(root = cwd) {
-    const lock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
-
-    return lock.packages?.['node_modules/neo.mjs']?.resolved
-}
-
-/**
- * @summary Materializes the temporary move-first binding to Engine-owned trees. Links preserve the
- * exact package bytes for ordinary modules. `buildScripts` is a guarded untracked copy because Node
- * realpaths a symlinked CLI entrypoint before its `isMain` check, turning those guards into silent
- * no-ops. Existing real paths without this lifecycle's marker always fail closed.
- * @param {Object} [options]
- * @param {String} [options.root=cwd]
- * @param {String} [options.engineRoot=resolveEngineRoot(root)]
- * @param {String[]} [options.linkProjections=ENGINE_LINK_PROJECTIONS]
- * @param {String[]} [options.copyProjections=ENGINE_COPY_PROJECTIONS]
- * @returns {String[]} Projection names created during this invocation.
- */
-export function materializeEngineDependency({
-    root            = cwd,
-    engineRoot      = resolveEngineRoot(root),
-    linkProjections = ENGINE_LINK_PROJECTIONS,
-    copyProjections = ENGINE_COPY_PROJECTIONS
-} = {}) {
-    const created = [];
-
-    for (const projection of linkProjections) {
-        const
-            linkPath   = path.join(root, projection),
-            targetPath = path.join(engineRoot, projection);
-
-        if (!fs.existsSync(targetPath)) {
-            throw new Error(`Engine dependency is missing projected tree '${projection}' at ${targetPath}`)
-        }
-
-        let status;
-
-        try {
-            status = fs.lstatSync(linkPath)
-        } catch (error) {
-            if (error.code !== 'ENOENT') throw error
-        }
-
-        if (status) {
-            if (!status.isSymbolicLink()) {
-                throw new Error(`Refusing to replace existing non-link Engine projection: ${linkPath}`)
-            }
-
-            const existingTarget = path.resolve(path.dirname(linkPath), fs.readlinkSync(linkPath));
-
-            if (existingTarget !== targetPath) {
-                throw new Error(`Refusing to replace foreign Engine projection '${linkPath}' -> '${existingTarget}'`)
-            }
-
-            continue
-        }
-
-        const target = process.platform === 'win32'
-            ? targetPath
-            : path.relative(path.dirname(linkPath), targetPath);
-
-        fs.symlinkSync(target, linkPath, process.platform === 'win32' ? 'junction' : 'dir');
-        created.push(projection)
-    }
-
-    for (const projection of copyProjections) {
-        const
-            projectionPath = path.join(root, projection),
-            targetPath     = path.join(engineRoot, projection),
-            markerPath     = path.join(projectionPath, '.neo-engine-projection.json'),
-            revision       = resolveEngineRevision(root);
-
-        if (!fs.existsSync(targetPath)) {
-            throw new Error(`Engine dependency is missing projected tree '${projection}' at ${targetPath}`)
-        }
-
-        let status;
-
-        try {
-            status = fs.lstatSync(projectionPath)
-        } catch (error) {
-            if (error.code !== 'ENOENT') throw error
-        }
-
-        if (status?.isSymbolicLink()) {
-            const existingTarget = path.resolve(path.dirname(projectionPath), fs.readlinkSync(projectionPath));
-
-            if (existingTarget !== targetPath) {
-                throw new Error(`Refusing to replace foreign Engine projection '${projectionPath}' -> '${existingTarget}'`)
-            }
-
-            fs.unlinkSync(projectionPath);
-            status = null
-        }
-
-        if (status) {
-            if (!status.isDirectory() || !fs.existsSync(markerPath)) {
-                throw new Error(`Refusing to replace existing non-projection Engine path: ${projectionPath}`)
-            }
-
-            const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
-
-            if (marker.revision !== revision) {
-                throw new Error(
-                    `Engine projection '${projection}' is pinned to '${marker.revision}', expected '${revision}'. ` +
-                    'Remove this ignored projection and rerun prepare.'
-                )
-            }
-
-            continue
-        }
-
-        fs.cpSync(targetPath, projectionPath, {recursive: true});
-        fs.writeFileSync(markerPath, JSON.stringify({revision}, null, 4) + '\n');
-        created.push(projection)
-    }
-
-    return created
-}
 
 /**
  * @summary True when an `ai/mcp/server/<name>/` directory ships a `config.template.mjs`.
@@ -1268,7 +1133,36 @@ export function mergeClaudeHooks(activeSettings = {}, templateSettings = {}) {
 }
 
 /**
- * @summary Materializes the tracked `.claude/settings.template.json` into the gitignored
+ * @summary Retargets Engine-authored Claude hook commands for an installed-package consumer.
+ *
+ * The canonical template runs hooks from the repository root that owns it. Brain consumes that
+ * template as an immutable dependency, so its generated settings must reach the same hooks through
+ * `node_modules/neo.mjs` rather than a copied `.claude/hooks` tree.
+ *
+ * @param {Object} [templateSettings={}] Parsed Engine settings template.
+ * @returns {Object} A detached settings object with package-qualified hook commands.
+ */
+export function retargetClaudeHookCommands(templateSettings = {}) {
+    const settings = structuredClone(templateSettings);
+
+    Object.values(settings.hooks || {}).forEach(eventEntries => {
+        eventEntries?.forEach(entry => {
+            entry.hooks?.forEach(hook => {
+                if (typeof hook.command === 'string') {
+                    hook.command = hook.command.replaceAll(
+                        '$(git rev-parse --show-toplevel)/.claude/hooks/',
+                        '$(git rev-parse --show-toplevel)/node_modules/neo.mjs/.claude/hooks/'
+                    )
+                }
+            })
+        })
+    });
+
+    return settings
+}
+
+/**
+ * @summary Materializes the installed Engine `.claude/settings.template.json` into the gitignored
  * `.claude/settings.json` so every clone self-wires the Claude Stop hook (no-hold lane-state
  * enforcement) without per-repo manual management — the Claude analog of {@link initConfigs} /
  * {@link initTier1Config}. A missing active file is cloned whole from the template; an existing one
@@ -1284,19 +1178,23 @@ export function mergeClaudeHooks(activeSettings = {}, templateSettings = {}) {
  *
  * @param {Object} [options]
  * @param {String} [options.claudeDir] `.claude/` dir; defaults to `<repo>/.claude`. Override for tests.
+ * @param {String} [options.templatePath] Installed Engine template; override for tests.
  * @param {Object} [options.logger=console] Log sink; injectable for tests.
  * @returns {Promise<{action: String}>} `action` is one of `clone` / `wired` / `silent` / `skip-no-template`.
  */
-export async function initClaudeSettings({claudeDir = path.join(cwd, '.claude'), logger = console} = {}) {
-    const templatePath = path.join(claudeDir, 'settings.template.json');
-    const activePath   = path.join(claudeDir, 'settings.json');
+export async function initClaudeSettings({
+    claudeDir   = path.join(cwd, '.claude'),
+    templatePath = defaultClaudeSettingsTemplate,
+    logger      = console
+} = {}) {
+    const activePath = path.join(claudeDir, 'settings.json');
 
     if (!fs.existsSync(templatePath)) {
-        logger.warn('[Neo AI] .claude/settings.template.json not found; skipping Claude settings initialization.');
+        logger.warn(`[Neo AI] Claude settings template not found at ${templatePath}; skipping initialization.`);
         return {action: 'skip-no-template'};
     }
 
-    const templateSettings = JSON.parse(await fs.readFile(templatePath, 'utf-8'));
+    const templateSettings = retargetClaudeHookCommands(JSON.parse(await fs.readFile(templatePath, 'utf-8')));
 
     if (!fs.existsSync(activePath)) {
         await fs.writeFile(activePath, JSON.stringify(templateSettings, null, 2) + '\n', 'utf-8');
@@ -1342,11 +1240,6 @@ export function createConfigInitializationOutcome(migrationRequired = []) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
     (async () => {
-        const created = materializeEngineDependency();
-
-        console.log(created.length > 0
-            ? `[Neo AI] Materialized Engine dependency projections: ${created.join(', ')}`
-            : '[Neo AI] Engine dependency projections already materialized');
         await initTier1Config();
         const {migrationRequired} = await initConfigs();
         await initClaudeSettings();

@@ -208,7 +208,6 @@ test.describe('host-plane import reach — a store handle must be unreachable by
         // a module joins this guard by the same act that makes it a host entrypoint.
         const
             aiDir       = path.join(repoRoot, 'ai'),
-            buildDir    = path.join(repoRoot, 'buildScripts'),
             cloudBarrel = path.join(repoRoot, 'ai/services.mjs'),
             adopters    = [];
 
@@ -236,7 +235,6 @@ test.describe('host-plane import reach — a store handle must be unreachable by
         }
 
         collectAdopters(aiDir);
-        collectAdopters(buildDir);
 
         expect(adopters.length, 'the guard must have a population to guard').toBeGreaterThan(0);
 

@@ -81,8 +81,6 @@
         "ai:server-neural-link": "node ./ai/mcp/server/neural-link/run-bridge.mjs",
         "ai:structure-map": "node ./ai/scripts/diagnostics/structureMap.mjs",
         "ai:sync-github-workflow": "node ./ai/scripts/maintenance/syncGithubWorkflow.mjs",
-        "cockpit": "node ./ai/scripts/fleet/devCockpit.mjs",
-        "cockpit:live": "node ./ai/scripts/fleet/devCockpit.mjs --live",
         "test-integration-unified": "playwright test -c test/playwright/playwright.config.integration.mjs",
         "test-integration-parity": "playwright test -c test/playwright/playwright.config.integration-parity.mjs",
         "test-unit": "playwright test -c test/playwright/playwright.config.unit.mjs"

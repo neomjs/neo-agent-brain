@@ -90,7 +90,6 @@ export const AUTHORITY_CLASSES_BY_PROFILE = Object.freeze({
 export const TASK_AUTHORITY_BY_NAME = Object.freeze({
     chroma                                 : ORCHESTRATOR_AUTHORITY_CLASS.sharedPrimitive,
     bridgeDaemon                           : ORCHESTRATOR_AUTHORITY_CLASS.hostEdge,
-    devServer                              : ORCHESTRATOR_AUTHORITY_CLASS.hostEdge,
     neuralLinkBridge                       : ORCHESTRATOR_AUTHORITY_CLASS.hostEdge,
     embedDaemon                            : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     messageDaemon                          : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
@@ -133,7 +132,6 @@ export const TASK_AUTHORITY_BY_NAME = Object.freeze({
 export const CONTINUOUS_TASK_REGISTRY = Object.freeze([
     {taskName: 'chroma',           enabledBy: 'chromaDaemonEnabled'},
     {taskName: 'bridgeDaemon',     enabledBy: 'bridgeDaemonEnabled'},
-    {taskName: 'devServer',        enabledBy: 'devServerEnabled'},
     {taskName: 'neuralLinkBridge', enabledBy: 'neuralLinkBridgeEnabled'},
     {taskName: 'embedDaemon',      enabledBy: 'embedDaemonEnabled'},
     {taskName: 'messageDaemon',    enabledBy: 'messageDaemonEnabled'},

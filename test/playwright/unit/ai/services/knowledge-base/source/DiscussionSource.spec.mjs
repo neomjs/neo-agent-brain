@@ -21,14 +21,14 @@ const repoRoot   = path.resolve(__dirname, '../../../../../../..');
 test.describe('Neo.ai.services.knowledge-base.source.DiscussionSource', () => {
     let DiscussionSource;
     let aiConfig;
-    let originalRoot;
+    let originalProjectRoot;
     let mockRoot;
 
     test.beforeAll(async () => {
         aiConfig = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
         DiscussionSource = (await import('../../../../../../../ai/services/knowledge-base/source/DiscussionSource.mjs')).default;
 
-        originalRoot = aiConfig.neoRootDir;
+        originalProjectRoot = aiConfig.projectRoot;
 
         const tmpDir = path.resolve(process.cwd(), 'tmp');
         fs.ensureDirSync(tmpDir);
@@ -71,11 +71,11 @@ test.describe('Neo.ai.services.knowledge-base.source.DiscussionSource', () => {
 
         fs.writeFileSync(path.join(mockRoot, 'resources/content/discussions/_index.json'), JSON.stringify(indexMap));
 
-        aiConfig.neoRootDir = mockRoot;
+        aiConfig.projectRoot = mockRoot;
     });
 
     test.afterAll(() => {
-        aiConfig.neoRootDir = originalRoot;
+        aiConfig.projectRoot = originalProjectRoot;
         if (mockRoot && fs.existsSync(mockRoot)) fs.removeSync(mockRoot);
     });
 

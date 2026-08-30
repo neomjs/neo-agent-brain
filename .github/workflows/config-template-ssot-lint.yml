@@ -14,11 +14,9 @@ on:
       # removal can be blessed by updating the record of what exists, with nothing re-reading reality.
       - 'ai/scripts/lint/config-leaf-parity.json'
       - 'ai/scripts/lint/lint-config-template-ssot.mjs'
-      # ADR-0019's catalog and its sibling executable rule objects are inputs to the two-way
-      # ownership verdict. A change to any one must run the checker on that same PR.
+      # ADR-0019's catalog and the installed Engine guard revision are inputs to the two-way
+      # ownership verdict. Package coordinates below cover dependency changes.
       - 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'
-      - 'buildScripts/util/check-aiconfig-antipatterns.mjs'
-      - 'buildScripts/util/check-aiconfig-test-mutation.mjs'
       - '.github/workflows/config-template-ssot-lint.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -51,11 +49,9 @@ on:
       # removal can be blessed by updating the record of what exists, with nothing re-reading reality.
       - 'ai/scripts/lint/config-leaf-parity.json'
       - 'ai/scripts/lint/lint-config-template-ssot.mjs'
-      # ADR-0019's catalog and its sibling executable rule objects are inputs to the two-way
-      # ownership verdict. A change to any one must run the checker on that same push.
+      # ADR-0019's catalog and the installed Engine guard revision are inputs to the two-way
+      # ownership verdict. Package coordinates below cover dependency changes.
       - 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'
-      - 'buildScripts/util/check-aiconfig-antipatterns.mjs'
-      - 'buildScripts/util/check-aiconfig-test-mutation.mjs'
       - '.github/workflows/config-template-ssot-lint.yml'
       - 'package.json'
       - 'package-lock.json'

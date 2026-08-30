@@ -20,7 +20,7 @@ import dotenv                           from 'dotenv';
 import {exec}                           from 'child_process';
 import {promisify}                      from 'util';
 import {GoogleGenerativeAI, SchemaType} from '@google/generative-ai';
-import {sanitizeInput}                  from '../../buildScripts/util/sanitizer.mjs';
+import {sanitizeInput}                  from 'neo.mjs/buildScripts/util/sanitizer.mjs';
 
 import {
     GH_LocalFileService,
@@ -34,18 +34,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
 // --- Configuration ---
-const MODEL_NAME = 'gemini-3.5-flash'; // Consistent with Memory Core config
+const MODEL_NAME        = 'gemini-3.5-flash'; // Consistent with Memory Core config
 const GENERATION_CONFIG = {
-    temperature: 0.2, // Low temperature for code precision
+    temperature     : 0.2, // Low temperature for code precision
     responseMimeType: "application/json",
-    responseSchema: {
-        type: SchemaType.ARRAY,
+    responseSchema  : {
+        type : SchemaType.ARRAY,
         items: {
-            type: SchemaType.OBJECT,
+            type      : SchemaType.OBJECT,
             properties: {
                 filePath: { type: SchemaType.STRING },
-                content: { type: SchemaType.STRING },
-                summary: { type: SchemaType.STRING }
+                content : { type: SchemaType.STRING },
+                summary : { type: SchemaType.STRING }
             },
             required: ["filePath", "content"]
         }
@@ -79,9 +79,9 @@ function parseIssueContent(rawContent) {
     if (parts.length < 3) return { title: 'Unknown', body: rawContent };
 
     const frontmatter = parts[1];
-    const body = parts.slice(2).join('---').trim();
+    const body        = parts.slice(2).join('---').trim();
 
-    let title = 'Unknown';
+    let   title      = 'Unknown';
     const titleMatch = frontmatter.match(/^title:\s*(.*)$/m);
     if (titleMatch) title = titleMatch[1].trim().replace(/^['"](.*)['"]$/, '$1');
 
@@ -111,7 +111,7 @@ async function generateCode(rawIssueContent, task, contextFiles, kbContext) {
 
     const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
     const model = genAI.getGenerativeModel({
-        model: MODEL_NAME,
+        model           : MODEL_NAME,
         generationConfig: GENERATION_CONFIG
     });
 
@@ -175,7 +175,7 @@ async function run() {
         if (issueFile.error) throw new Error(`Issue #${issueId} not found locally.`);
 
         const { title, body } = parseIssueContent(issueFile.content);
-        const task = await parseYamlBody(body);
+        const task            = await parseYamlBody(body);
 
         console.log(`   -> Found: "${title}"`);
         console.log(`   -> Role: ${task.role}, Type: ${task.type}`);

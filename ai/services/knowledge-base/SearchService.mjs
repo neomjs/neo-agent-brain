@@ -17,6 +17,10 @@ import {CONCEPT_EXPANSION_EDGE_TYPES, KB_TERMINAL_EDGE_TYPES, enrichWithConceptW
 import {buildKbFileResolveCandidate}                                                 from './conceptWalkKbFileGate.mjs';
 import KBRecorderService                                                             from './KBRecorderService.mjs';
 
+const primaryRepoHydrationTypes = new Set([
+    'blog', 'concept', 'discussion', 'pull', 'raw', 'release', 'ticket'
+]);
+
 /**
  * @summary Builds the ask path's provider configs, pairing each host with its OWN credential.
  *
@@ -304,6 +308,27 @@ class SearchService extends Base {
     }
 
     /**
+     * @summary Selects the owning local root for one curated Neo reference.
+     *
+     * Brain implementation, guides, skills, and tests live under `neoRootDir`; the synchronized
+     * primary-repository corpus and raw-repository source live under `projectRoot`. Type is the
+     * primary discriminator, with stable path prefixes preserving older chunks that predate type
+     * normalization.
+     *
+     * @param {Object} ref Query reference.
+     * @returns {String} Absolute local root that owns the relative source path.
+     */
+    resolveLocalReferenceRoot(ref = {}) {
+        const source = String(ref.source || '').replaceAll('\\', '/'),
+              type   = ref.metadata?.type;
+
+        return primaryRepoHydrationTypes.has(type) ||
+            source.startsWith('resources/content/') || source.startsWith('.github/RELEASE_NOTES/')
+            ? aiConfig.projectRoot
+            : aiConfig.neoRootDir
+    }
+
+    /**
      * Returns the operator-facing answer for a healthy but empty KB collection.
      *
      * Local stdio deployments need the curated Neo corpus download/sync hint. Remote Streamable HTTP deployments
@@ -320,9 +345,9 @@ class SearchService extends Base {
     /**
      * Resolves the best available source content for RAG synthesis.
      *
-     * Local Neo references keep using neoRootDir filesystem hydration so agents see the
-     * current checkout. Tenant-ingested references use Chroma metadata content instead,
-     * preventing same-relative-path collisions from reading files out of the host repo.
+     * Curated local references hydrate from their owning Brain or primary-repository root. Tenant-
+     * ingested references use Chroma metadata content instead, preventing same-relative-path
+     * collisions from reading files out of the host repo.
      *
      * @param {Object} ref Query reference.
      * @returns {Promise<String>} Hydrated content or the standard placeholder.
@@ -338,14 +363,16 @@ class SearchService extends Base {
                 return embeddedContent;
             }
 
-            logger.warn(`[SearchService] Missing metadata.content for non-local tenant ref.source="${ref.source}" (tenantId="${metadata.tenantId}", repoSlug="${metadata.repoSlug || ''}") — refusing neoRootDir fallback.`);
+            logger.warn(`[SearchService] Missing metadata.content for non-local tenant ref.source="${ref.source}" (tenantId="${metadata.tenantId}", repoSlug="${metadata.repoSlug || ''}") — refusing local filesystem fallback.`);
 
             return 'No Content (File missing or empty)';
         }
 
+        const localRoot = this.resolveLocalReferenceRoot(ref);
+
         absoluteSource = ref.source && path.isAbsolute(ref.source)
             ? ref.source
-            : path.resolve(aiConfig.neoRootDir, ref.source || '');
+            : path.resolve(localRoot, ref.source || '');
 
         if (absoluteSource && await fs.pathExists(absoluteSource)) {
             try {
@@ -548,10 +575,9 @@ class SearchService extends Base {
 
         // 2. Read source contents for context.
         //
-        // All source loaders store `metadata.source` as a path relative to `neoRootDir`
-        // so the Chroma collection shipped with each neo release remains portable across
-        // recipients' filesystems. We resolve against the consumer's own `neoRootDir`
-        // at read time. Before the relative-source fix, this branch did a bare `fs.pathExists(ref.source)`
+        // Source loaders store `metadata.source` as a portable relative path. Brain-owned paths
+        // resolve against `neoRootDir`; synchronized primary-repository corpus paths resolve against
+        // `projectRoot`. Before the relative-source fix, this branch did a bare `fs.pathExists(ref.source)`
         // which silently succeeded for legacy absolute-path chunks but failed for the
         // relative-path chunks emitted by ApiSource / TestSource — producing phantom
         // `No Content (File missing or empty)` context. The synthesis LLM then saw

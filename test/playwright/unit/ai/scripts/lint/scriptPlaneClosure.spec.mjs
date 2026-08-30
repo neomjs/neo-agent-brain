@@ -870,11 +870,19 @@ test.describe('the census is the union of every invocation surface', () => {
     });
 
     test('the executed module is `node`\'s first ARGUMENT, never the first `.mjs`', () => {
-        // `devServer` runs `node …/webpack.js serve -c ./buildScripts/…/webpack.server.config.mjs`.
-        // The extension heuristic skipped the `.js` binary and joined the `-c` VALUE, then reported
-        // a webpack CONFIG's execution plane — and produced a conflict finding about it. A config
-        // file has no plane, and a third-party binary's plane is not ours to derive.
-        const byScript = buildAuthorityByScript();
+        const byScript = buildAuthorityByScript({
+            definitions: {
+                vendor: {
+                    args: [
+                        '/repo/node_modules/webpack/bin/webpack.js',
+                        'serve',
+                        '-c',
+                        './buildScripts/webpack/webpack.server.config.mjs'
+                    ]
+                }
+            },
+            authorityByName: {vendor: 'host-edge'}
+        });
 
         expect(Object.keys(byScript)).not.toContain('buildScripts/webpack/webpack.server.config.mjs');
         expect(Object.keys(byScript).some(rel => rel.includes('node_modules/')), 'no vendor roots')

@@ -23,9 +23,8 @@
  * model selection: the local overlay's LM Studio host/model pinning is THIS machine's choice and
  * stays in the LaunchAgent, where a change to it stays a reviewed change.
  *
- * The shape deliberately mirrors `harness/brain.mjs`'s `buildPackagedBrainEnv` — the reviewed
- * precedent for "one env-fragment function is the product profile, consumed identically by the
- * real boot and by the proof".
+ * One env-fragment function is the product profile, consumed identically by the real boot and by
+ * its proof. Product harness launch behavior belongs to Agent Institution.
  *
  * @see ai/daemons/orchestrator/hostEdge.mjs
  * @see deploy/host/com.neomjs.agent-os-host-edge.plist

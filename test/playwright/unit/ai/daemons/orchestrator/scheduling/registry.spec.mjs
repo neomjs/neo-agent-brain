@@ -115,7 +115,6 @@ test.describe('orchestrator/scheduling/registry (#11862 Sub 18)', () => {
         });
         expect(containerTasks.get('bridgeDaemon').active).toBe(false);
         expect(containerTasks.get('primary-dev-sync').active).toBe(false);
-        expect(containerTasks.get('devServer').active).toBe(false);
         expect(containerTasks.get('chroma')).toMatchObject({
             authorityClass: 'shared-primitive',
             effectiveOwner: 'container-plane',

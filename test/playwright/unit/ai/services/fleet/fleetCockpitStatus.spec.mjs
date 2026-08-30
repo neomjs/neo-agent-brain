@@ -35,7 +35,6 @@ import {WAKE_SOURCE_LABEL}     from '../../../../../../ai/services/fleet/fleetWa
 // chain. The never-launched-reads-benched defect was invisible to every single-layer test because each
 // layer was correct on its own terms — the producer reported what it was asked, the assembler wired
 // what it was handed, the display rendered its input faithfully. Only the composition was a lie.
-import SourceHealth from '../../../../../../apps/agentos/util/SourceHealth.mjs';
 
 test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
     test('passes identity display facts through from assembler-enriched agents — nulls when un-enriched (never guessed)', () => {
@@ -166,54 +165,6 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows[0].sources.runtime.reason).toBe('no fleet process record: this agent runs outside fleet supervision')
 
         expect(snapshot.rows[0].lifecycle).toMatchObject({state: 'not-wired', confidence: 'none'})
-    })
-
-    test('END TO END: an unmanaged row renders `external`, never `benched / offline` (#17305)', () => {
-        const snapshot = createFleetCockpitStatus({
-            agents       : [{id: 'grace'}],
-            runtimeStatus: [{
-                agentId   : 'grace',
-                state     : 'unmanaged',
-                running   : false,
-                confidence: 'none',
-                reason    : 'no fleet process record: this agent runs outside fleet supervision'
-            }]
-        })
-
-        const row     = snapshot.rows[0],
-              session = SourceHealth.mapFleetSessionHealth(row.lifecycle, row.sources),
-              display = SourceHealth.resolveFleetDisplayState({state: session.state, sources: session.sources})
-
-        // The operator's witnessed defect, as one assertion: `off` is the state that renders the
-        // "benched / offline" card text, and it is a participation verdict the fleet has no standing
-        // to make about a seat it never launched.
-        expect(display).toBe('external')
-        expect(display).not.toBe('off')
-
-        // And it must arrive there HONESTLY. Routing an unrecognized state through the mapper's
-        // downgrade path also yields `external`, but only by rewriting the runtime source to
-        // `invalid` / "lifecycle and runtime facts contradict" — a fabricated conflict, made
-        // operator-visible by design. A right answer via an invented reason is the same defect class
-        // this ticket closes, relocated to a field nobody checks.
-        expect(session.sources.runtime.state).toBe('not-wired')
-        expect(session.sources.runtime.state).not.toBe('invalid')
-        expect(session.sources.runtime.reason).toBe('no fleet process record: this agent runs outside fleet supervision')
-    })
-
-    test('END TO END control: a real stopped record still renders `off` — the benched verdict Fleet IS entitled to (#17305)', () => {
-        const snapshot = createFleetCockpitStatus({
-            agents       : [{id: 'alice'}],
-            runtimeStatus: [{agentId: 'alice', state: 'stopped', running: false, confidence: 'observed'}]
-        })
-
-        const row     = snapshot.rows[0],
-              session = SourceHealth.mapFleetSessionHealth(row.lifecycle, row.sources),
-              display = SourceHealth.resolveFleetDisplayState({state: session.state, sources: session.sources})
-
-        // Without this control the fix could pass by making EVERY row external — which would delete
-        // the one honest benched/offline signal instead of correcting its scope.
-        expect(display).toBe('off')
-        expect(session.sources.runtime.state).toBe('wired')
     })
 
     test('a REAL stopped record stays wired and keeps stopped — the operator-benched fact remains observable (#17305)', () => {

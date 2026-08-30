@@ -19,8 +19,8 @@ import fs from 'fs-extra';
  * member that the map covers. A stale-deletion pass then reads the previously-ingested corpus as
  * orphaned, because none of its ids are reproducible from current inputs.
  *
- * That is a recorded incident rather than a hypothetical: `docs/output/class-hierarchy.json`
- * was a gitignored build output, so it was absent on the container plane after kbSync moved there.
+ * That is a recorded incident rather than a hypothetical: the Engine hierarchy artifact was
+ * absent on the container plane after kbSync moved there.
  * The load degraded to `{}` behind a `console.warn` that nothing consumed, and `extends` ingested
  * empty for **0 of 5,255** `src` chunks against **4,741 of 4,917** in the last good corpus — while
  * the ingest reported success. The file is tracked in git now, which is what makes absence a
@@ -46,9 +46,9 @@ export async function loadClassHierarchy({hierarchyPath, sourcePathCount}) {
         const error = new Error(
             `Class hierarchy unreadable at ${hierarchyPath} — refusing to ingest. 'extends' is hashed ` +
             `into every chunk id, so ingesting without it silently re-identifies every class member ` +
-            `and marks the existing corpus stale. The file is tracked in git; if it is missing, the ` +
-            `checkout or the container plane is at fault. Regenerate with ` +
-            `\`npm run generate-docs-json\`. Cause: ${cause.message}`
+            `and marks the existing corpus stale. The file belongs to the immutable Engine package; ` +
+            `if it is missing, the installed revision is incomplete. Reinstall or advance the pin. ` +
+            `Cause: ${cause.message}`
         );
 
         error.code = 'CLASS_HIERARCHY_UNREADABLE';
@@ -65,8 +65,8 @@ export async function loadClassHierarchy({hierarchyPath, sourcePathCount}) {
         const error = new Error(
             `Class hierarchy at ${hierarchyPath} yielded zero usable entries while ${sourcePathCount} ` +
             `source path(s) are configured for indexing — refusing to ingest. Every chunk would carry ` +
-            `an empty 'extends' and take a different id than the corpus it replaces. Regenerate with ` +
-            `\`npm run generate-docs-json\`.`
+            `an empty 'extends' and take a different id than the corpus it replaces. Advance to a ` +
+            `complete Engine package revision.`
         );
 
         error.code = 'CLASS_HIERARCHY_EMPTY';
@@ -89,18 +89,22 @@ export async function loadClassHierarchy({hierarchyPath, sourcePathCount}) {
  * different totals before it was pinned down.** Universe = a runtime filesystem walk of the roots in
  * `aiConfig.sourcePaths.ApiSource`, with class extraction taken from `SourceParser` itself (acorn's
  * `ClassDeclaration.superClass` for the denominator, `static config`-derived `className` for the
- * lookup). Measured 2026-08-06 on that universe:
+ * lookup). Engine package roots were measured 2026-08-06; the extracted Brain roots were measured
+ * 2026-08-30 with the same parser-canonical walk:
  *
  * ```
- * src        404/405   99.8%      apps     336/358   93.9%
- * examples     0/259    0.0%      docs/app   4/17    23.5%
- * ai         127/171   74.3%
+ * node_modules/neo.mjs/src        404/405   99.8%
+ * node_modules/neo.mjs/apps       336/358   93.9%
+ * node_modules/neo.mjs/examples     0/259    0.0%
+ * node_modules/neo.mjs/docs/app     4/17    23.5%
+ * src                                0/4      0.0%
+ * ai                               130/173   75.1%
  * ```
  *
- * Two independent implementations agree on all five roots at those numbers. A **tracked-files-only**
- * universe is a different question and gives a different answer (`ai` becomes 127/165), which is why
- * the scope is named rather than assumed — whether authority covers tracked source, generated
- * overlays, or the exact runtime filesystem is an open fork for the consumer-derived successor.
+ * Two independent implementations agree on the four Engine roots. The Brain roots were measured by
+ * the same `SourceParser` runtime walk after the extraction: `src` is named uncovered debt, while
+ * `ai` retains the pre-split regression floor. A **tracked-files-only** universe is a different
+ * question and gives a different answer, which is why the scope is named rather than assumed.
  *
  * **Why floors rather than counts:** classes are added continuously, so an absolute count would fail
  * on growth. A ratio fails only when resolution genuinely degrades. Each floor sits just below its
@@ -115,11 +119,12 @@ export async function loadClassHierarchy({hierarchyPath, sourcePathCount}) {
  * @type {Object}
  */
 export const INTERIM_COVERAGE_BASELINE = Object.freeze({
-    'src'     : 0.99,
-    'apps'    : 0.93,
-    'examples': 0,
-    'docs/app': 0.23,
-    'ai'      : 0.74
+    'node_modules/neo.mjs/src'     : 0.99,
+    'node_modules/neo.mjs/apps'    : 0.93,
+    'node_modules/neo.mjs/examples': 0,
+    'node_modules/neo.mjs/docs/app': 0.23,
+    'src'                          : 0,
+    'ai'                           : 0.74
 });
 
 /**
@@ -171,8 +176,8 @@ export function assertCoverageBaseline({coverage, baseline = INTERIM_COVERAGE_BA
         const error = new Error(
             `Class hierarchy coverage regressed below its interim floor: ${regressed.join('; ')}. ` +
             `'extends' is hashed into every chunk id, so ingesting now would re-identify the affected ` +
-            `classes and mark the existing corpus stale. Regenerate with \`npm run generate-docs-json\`; ` +
-            `if the drop is intended, the floor must be lowered deliberately and reviewed.`
+            `classes and mark the existing corpus stale. Advance to an Engine revision built from a ` +
+            `fresh hierarchy; if the drop is intended, lower the floor deliberately and review it.`
         );
 
         error.code = 'CLASS_HIERARCHY_COVERAGE_REGRESSION';

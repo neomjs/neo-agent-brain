@@ -460,12 +460,6 @@ test.describe('Tier 1 Config Immutability', () => {
             ),
             freshnessSlaMs             : 4 * 60 * 60 * 1000
         });
-        expect(Config.orchestrator.devServer).toEqual({
-            enabled               : null,
-            port                  : 8080,
-            livenessProbeTimeoutMs: 1000
-        });
-
         // The swarm-heartbeat candidate-discovery default is the activity-derived source
         // ("activity-derived signals" framing).
         // Per-MC-instance derived; no team-registry coupling; tenant-safe for external

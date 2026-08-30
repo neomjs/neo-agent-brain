@@ -119,19 +119,14 @@ test.describe('agent-preflight utility', () => {
         expect(validatePrBody(validBody).valid).toBe(true)
     });
 
-    test('keeps stacked-ticket parsing on one owning implementation, delegated end-to-end', () => {
-        const hostedWorkflow = readFileSync(
-            path.join(process.cwd(), '.github/workflows/agent-pr-body-lint.yml'),
-            'utf8'
-        );
+    test('keeps stacked-ticket parsing on one owning implementation', () => {
         const guardModule = readFileSync(
             path.join(process.cwd(), 'ai/scripts/lint/prStackingGuard.mjs'),
             'utf8'
         );
 
-        // Hosted lint no longer parses declared tickets itself — it delegates to the committed
-        // CLI, whose module re-exports the shared patterns this file enforces author-side.
-        expect(hostedWorkflow).toContain('ai/scripts/lint/lint-pr-stacking.mjs');
+        // Both local CLI paths import this module's shared patterns. Repository CI is distributed
+        // independently and is not a Brain-root artifact this unit suite can claim to inspect.
         expect(guardModule).toContain("export const DECLARED_TICKET_LINE_PATTERN");
     });
 
@@ -252,7 +247,7 @@ test.describe('agent-preflight utility', () => {
         expect(result.missingInvisible.length).toBe(2)
     });
 
-    test('uses staged files by default and runs archaeology plus block-alignment gates in order', () => {
+    test('uses staged files by default and runs in-process archaeology before block-alignment', () => {
         const calls = [];
 
         const execFileSyncImpl = (cmd, args) => {
@@ -285,12 +280,12 @@ test.describe('agent-preflight utility', () => {
             args: ['diff', '--cached', '--name-only', '--diff-filter=ACMR']
         });
         expect(calls.slice(1).map(call => path.basename(call.args[0]))).toEqual([
-            'check-ticket-archaeology.mjs',
             'check-block-alignment.mjs',
             'check-block-alignment.mjs'
         ]);
-        expect(calls[2].args).toContain('--fix');
-        expect(calls[3].args).toContain('--staged');
+        expect(calls[1].args).toContain('--fix');
+        expect(calls[2].args).toContain('--staged');
+        expect(stdout).toContain('check-ticket-archaeology: 2 file(s) read, 0 violations');
         expect(stdout).toContain('agent-preflight: repair mode enabled; running check-block-alignment --fix');
         expect(stdout).toContain('agent-preflight: no --pr-body provided; skipped PR-body lint.');
         expect(stdout).toContain('agent-preflight: all requested gates passed.')
@@ -321,14 +316,53 @@ test.describe('agent-preflight utility', () => {
 
         expect(status).toBe(0);
         expect(stderr).toBe('');
-        expect(calls.map(call => path.basename(call.args[0]))).toEqual([
-            'check-ticket-archaeology.mjs',
-            'check-block-alignment.mjs'
-        ]);
+        expect(calls.map(call => path.basename(call.args[0]))).toEqual(['check-block-alignment.mjs']);
         expect(calls.some(call => call.args.includes('--fix'))).toBe(false);
-        expect(calls[1].args).toContain('--staged');
+        expect(calls[0].args).toContain('--staged');
+        expect(stdout).toContain('check-ticket-archaeology: 1 file(s) read, 0 violations');
         expect(stdout).toContain('agent-preflight: check-only mode; skipped check-block-alignment --fix.');
         expect(stdout).toContain('agent-preflight: all requested gates passed.')
+    });
+
+    test('default alignment gate resolves from the installed Engine package', () => {
+        const calls = [];
+
+        const status = runAgentPreflight({
+            argv            : ['--no-fix', 'src/a.mjs'],
+            cwd             : '/repo',
+            execFileSyncImpl: (cmd, args) => {
+                calls.push({cmd, args});
+                return 'alignment ok\n'
+            },
+            existsSyncImpl  : () => false,
+            readFileSyncImpl: () => '',
+            stderr          : {write: () => {}},
+            stdout          : {write: () => {}}
+        });
+
+        expect(status).toBe(0);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].args[0]).toContain('/node_modules/neo.mjs/buildScripts/util/check-block-alignment.mjs');
+        expect(calls[0].args).toContain('--staged')
+    });
+
+    test('in-process archaeology keeps Engine detection authority and fails closed', () => {
+        let stderr = '';
+
+        const status = runAgentPreflight({
+            argv            : ['--no-fix', 'src/a.mjs'],
+            cwd             : '/repo',
+            execFileSyncImpl: () => 'alignment ok\n',
+            existsSyncImpl  : () => false,
+            readFileSyncImpl: () => '// stale issue #17800',
+            stderr          : {write: value => { stderr += value }},
+            stdout          : {write: () => {}}
+        });
+
+        expect(status).toBe(1);
+        expect(stderr).toContain('check-ticket-archaeology: 1 decay-prone ref(s)');
+        expect(stderr).toContain('src/a.mjs:1');
+        expect(stderr).toContain('1 gate(s) failed: check-ticket-archaeology')
     });
 
     test('runs the PR body gate when requested', () => {

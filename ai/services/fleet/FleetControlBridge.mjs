@@ -25,7 +25,7 @@ import {
  * @summary
  * The single Body-reachable control surface of the Fleet Manager — the capability **allowlist** a
  * transport (the dev-server app↔fleet server, or the Electron shell's in-process object inject)
- * exposes to the `apps/agentos` settings pane. It composes the two Brain-side singletons into ONE
+ * exposes to Agent Institution's settings surface. It composes the two Brain-side singletons into ONE
  * contract: the `define / list / get` half from {@link Neo.ai.services.fleet.FleetRegistryService}
  * and the `start / stop / restart / remove / status` lifecycle half from
  * {@link Neo.ai.services.fleet.FleetManager}. This is the middle of the operator loop

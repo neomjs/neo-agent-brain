@@ -24,14 +24,14 @@ const QUARANTINED_URL  = '[QUARANTINED_URL: arkforge.tech]';
 test.describe('Neo.ai.services.knowledge-base.source.TicketSource', () => {
     let TicketSource;
     let aiConfig;
-    let originalRoot;
+    let originalProjectRoot;
     let mockRoot;
 
     test.beforeAll(async () => {
         aiConfig = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
         TicketSource = (await import('../../../../../../../ai/services/knowledge-base/source/TicketSource.mjs')).default;
 
-        originalRoot = aiConfig.neoRootDir;
+        originalProjectRoot = aiConfig.projectRoot;
 
         const tmpDir = path.resolve(process.cwd(), 'tmp');
         fs.ensureDirSync(tmpDir);
@@ -87,11 +87,11 @@ test.describe('Neo.ai.services.knowledge-base.source.TicketSource', () => {
 
         fs.writeFileSync(path.join(mockRoot, 'resources/content/issues/_index.json'), JSON.stringify(indexMap));
 
-        aiConfig.neoRootDir = mockRoot;
+        aiConfig.projectRoot = mockRoot;
     });
 
     test.afterAll(() => {
-        aiConfig.neoRootDir = originalRoot;
+        aiConfig.projectRoot = originalProjectRoot;
         if (mockRoot && fs.existsSync(mockRoot)) fs.removeSync(mockRoot);
     });
 

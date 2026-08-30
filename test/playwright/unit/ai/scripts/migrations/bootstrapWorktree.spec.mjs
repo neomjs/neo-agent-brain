@@ -35,7 +35,6 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
     let hydrateCurrentWorktree;
     let symlinkDataDir;
     let symlinkCanonicalDataReadAliases;
-    let symlinkGitignoredFiles;
     let installDependencies;
     let runBuildAll;
     let resolveMainCheckout;
@@ -45,7 +44,6 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
     let BOOTSTRAP_CONFIGS;
     let DATA_SUBDIRS_BLOCKLIST;
     let CANONICAL_DATA_READ_ALIASES;
-    let GITIGNORED_FILES_TO_LINK;
     let fakeMainCheckout;
     let fakeWorktree;
 
@@ -63,7 +61,6 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
         hydrateCurrentWorktree            = mod.hydrateCurrentWorktree;
         symlinkDataDir                    = mod.symlinkDataDir;
         symlinkCanonicalDataReadAliases   = mod.symlinkCanonicalDataReadAliases;
-        symlinkGitignoredFiles            = mod.symlinkGitignoredFiles;
         installDependencies               = mod.installDependencies;
         runBuildAll                       = mod.runBuildAll;
         resolveMainCheckout               = mod.resolveMainCheckout;
@@ -73,7 +70,6 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
         BOOTSTRAP_CONFIGS                 = mod.BOOTSTRAP_CONFIGS;
         DATA_SUBDIRS_BLOCKLIST            = mod.DATA_SUBDIRS_BLOCKLIST;
         CANONICAL_DATA_READ_ALIASES       = mod.CANONICAL_DATA_READ_ALIASES;
-        GITIGNORED_FILES_TO_LINK          = mod.GITIGNORED_FILES_TO_LINK;
     });
 
     test.beforeEach(async () => {
@@ -1090,182 +1086,6 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
                 expect(lstat.isDirectory()).toBe(true);
                 expect(lstat.isSymbolicLink()).toBe(false);
             }
-        });
-    });
-
-    // --------------------------------------------------------------------------------
-    // symlinkGitignoredFiles — granular per-file symlinking of gitignored single
-    // files (initially: resources/content/sandman_handoff.md) outside .neo-ai-data/.
-    //
-    // Distinct from symlinkDataDir's directory-shaped substrate: each entry is a single
-    // artifact, parent dir is heavily git-tracked (e.g. resources/content/), no `--force`
-    // semantic for files (skip-with-warning if a real file is present preserves potentially
-    // intentional local state).
-    //
-    // These tests use a fixture file PER ENTRY in the main-checkout to prove the per-file
-    // states: linked / already-linked / skipped-no-source / skipped-real-file. The
-    // mainCheckout no-op closes the safety check that primary-working-tree invocations
-    // are inert.
-    // --------------------------------------------------------------------------------
-    test.describe('#10591 symlinkGitignoredFiles (granular per-file)', () => {
-        const fixtureFile  = 'resources/content/sandman_handoff.md';
-        const fixtureFiles = [fixtureFile];
-
-        async function seedMainHandoff(content = '# fixture handoff\n') {
-            const src = path.join(fakeMainCheckout, fixtureFile);
-            await fs.ensureDir(path.dirname(src));
-            await fs.writeFile(src, content, 'utf-8');
-        }
-
-        test('exports the canonical GITIGNORED_FILES_TO_LINK list', () => {
-            // Load-bearing invariants rather than precise sequence (which may evolve).
-            expect(Array.isArray(GITIGNORED_FILES_TO_LINK)).toBe(true);
-            expect(GITIGNORED_FILES_TO_LINK).toContain('resources/content/sandman_handoff.md');
-
-            // Sanity: every entry MUST be a relative path (canonical-only-write semantic
-            // would break with absolute paths).
-            for (const rel of GITIGNORED_FILES_TO_LINK) {
-                expect(path.isAbsolute(rel)).toBe(false);
-            }
-        });
-
-        test('symlinks every allowlisted file from canonical when none exist in worktree', async () => {
-            await seedMainHandoff('main-handoff-canary\n');
-
-            const result = await symlinkGitignoredFiles({
-                mainCheckout: fakeMainCheckout,
-                projectRoot : fakeWorktree,
-                files       : fixtureFiles,
-                log         : () => {}
-            });
-
-            expect(result.linked).toEqual(fixtureFiles);
-            expect(result.alreadyLinked).toHaveLength(0);
-            expect(result.skippedNoSource).toHaveLength(0);
-            expect(result.skippedRealFile).toHaveLength(0);
-            expect(result.mainCheckout).toBe(false);
-
-            // Symlink lands at the worktree path; canary content reachable via the link.
-            const dst   = path.join(fakeWorktree, fixtureFile);
-            const lstat = await fs.lstat(dst);
-            expect(lstat.isSymbolicLink()).toBe(true);
-
-            const canary = await fs.readFile(dst, 'utf-8');
-            expect(canary).toBe('main-handoff-canary\n');
-        });
-
-        test('is idempotent per-file — re-running surfaces alreadyLinked on second pass', async () => {
-            await seedMainHandoff();
-
-            // First call: link.
-            await symlinkGitignoredFiles({
-                mainCheckout: fakeMainCheckout,
-                projectRoot : fakeWorktree,
-                files       : fixtureFiles,
-                log         : () => {}
-            });
-
-            // Second call: alreadyLinked.
-            const result = await symlinkGitignoredFiles({
-                mainCheckout: fakeMainCheckout,
-                projectRoot : fakeWorktree,
-                files       : fixtureFiles,
-                log         : () => {}
-            });
-
-            expect(result.linked).toHaveLength(0);
-            expect(result.alreadyLinked).toEqual(fixtureFiles);
-            expect(result.skippedNoSource).toHaveLength(0);
-            expect(result.skippedRealFile).toHaveLength(0);
-        });
-
-        test('refuses an existing file symlink into another checkout instead of reporting alreadyLinked', async () => {
-            await seedMainHandoff();
-
-            const
-                foreign = path.join(path.dirname(fakeMainCheckout), 'foreign-checkout', fixtureFile),
-                dst     = path.join(fakeWorktree, fixtureFile);
-
-            await fs.ensureDir(path.dirname(foreign));
-            await fs.writeFile(foreign, '# foreign\n', 'utf8');
-            await fs.ensureDir(path.dirname(dst));
-            await fs.symlink(foreign, dst, 'file');
-
-            await expect(symlinkGitignoredFiles({
-                mainCheckout: fakeMainCheckout,
-                projectRoot : fakeWorktree,
-                files       : fixtureFiles,
-                log         : () => {}
-            })).rejects.toThrow(/unexpected symlink target/);
-            expect(path.resolve(path.dirname(dst), await fs.readlink(dst))).toBe(foreign);
-        });
-
-        test('gracefully skips files missing in the main checkout (pre-Sandman state)', async () => {
-            // Do NOT seed the handoff in main — simulates fresh repo where Sandman
-            // hasn't run yet. The script must not error in this state.
-            const result = await symlinkGitignoredFiles({
-                mainCheckout: fakeMainCheckout,
-                projectRoot : fakeWorktree,
-                files       : fixtureFiles,
-                log         : () => {}
-            });
-
-            expect(result.linked).toHaveLength(0);
-            expect(result.skippedNoSource).toEqual(fixtureFiles);
-            expect(result.alreadyLinked).toHaveLength(0);
-            expect(result.skippedRealFile).toHaveLength(0);
-
-            // No symlink was created.
-            const dst    = path.join(fakeWorktree, fixtureFile);
-            const exists = await fs.pathExists(dst);
-            expect(exists).toBe(false);
-        });
-
-        test('skips real files in the worktree without clobbering (preserve-local-state)', async () => {
-            await seedMainHandoff('canonical-content\n');
-
-            // Pre-create a real file in the worktree at the target path with unique
-            // content — simulates an operator-saved prior handoff worth preserving.
-            const dst = path.join(fakeWorktree, fixtureFile);
-            await fs.ensureDir(path.dirname(dst));
-            await fs.writeFile(dst, 'worktree-local-handoff\n', 'utf-8');
-
-            const result = await symlinkGitignoredFiles({
-                mainCheckout: fakeMainCheckout,
-                projectRoot : fakeWorktree,
-                files       : fixtureFiles,
-                log         : () => {}
-            });
-
-            expect(result.linked).toHaveLength(0);
-            expect(result.skippedRealFile).toEqual(fixtureFiles);
-            expect(result.alreadyLinked).toHaveLength(0);
-            expect(result.skippedNoSource).toHaveLength(0);
-
-            // Local file preserved — guard did its job.
-            const lstat = await fs.lstat(dst);
-            expect(lstat.isSymbolicLink()).toBe(false);
-            expect(lstat.isFile()).toBe(true);
-
-            const preserved = await fs.readFile(dst, 'utf-8');
-            expect(preserved).toBe('worktree-local-handoff\n');
-        });
-
-        test('returns mainCheckout: true when run from the primary working tree', async () => {
-            await seedMainHandoff();
-
-            const result = await symlinkGitignoredFiles({
-                mainCheckout: fakeMainCheckout,
-                projectRoot : fakeMainCheckout, // same path = primary working tree
-                files       : fixtureFiles,
-                log         : () => {}
-            });
-
-            expect(result.mainCheckout).toBe(true);
-            expect(result.linked).toHaveLength(0);
-            expect(result.alreadyLinked).toHaveLength(0);
-            expect(result.skippedNoSource).toHaveLength(0);
-            expect(result.skippedRealFile).toHaveLength(0);
         });
     });
 

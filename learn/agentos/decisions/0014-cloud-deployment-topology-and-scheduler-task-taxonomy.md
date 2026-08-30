@@ -230,7 +230,7 @@ the target two-role topology:
 
 | Runtime authority class | Continuous children | Scheduled tasks | Target owner |
 |---|---|---|---|
-| `host-edge` (the operational form of `local-only`) | `bridgeDaemon`, `devServer`, `neuralLinkBridge`, `mlx`, `ollama`, `lms` | `kbSync`, `githubWorkflowSync`, `primary-dev-sync`, `temporal-summary`, `swarm-heartbeat` | host-edge orchestrator |
+| `host-edge` (the operational form of `local-only`) | `bridgeDaemon`, `neuralLinkBridge`, `mlx`, `ollama`, `lms` | `kbSync`, `githubWorkflowSync`, `primary-dev-sync`, `temporal-summary`, `swarm-heartbeat` | host-edge orchestrator |
 | `container-plane` (cloud-capable Agent OS work) | `embedDaemon`, `messageDaemon` | `summary`, `memory-summary-backfill`, `backup`, `graphlog-compaction`, `tenant-repo-sync`, `dream`, `message-concept-harvest`, `golden-path`, `embed-drain-liveness-watchdog`, `rem-consolidation-liveness-watchdog`, `data-integrity-sweep` | container plane |
 | `shared-primitive` | `chroma` | — | container plane in the split topology; Compose owns its lifecycle |
 
@@ -257,7 +257,7 @@ Two constraints are now mechanical:
 
 Per-lane toggles still decide whether owned work is enabled; they cannot move work across the
 authority boundary. In particular, a container-plane profile cannot opt into desktop wake,
-maintainer-worktree mutation, dev-server/Neural-Link process ownership, or local model launchers.
+maintainer-worktree mutation, Neural-Link process ownership, or local model launchers.
 The shared Chroma row remains a capability taxonomy statement: in the target topology its effective
 owner is the container plane while the Compose service, not the orchestrator child supervisor,
 executes that lifecycle.
@@ -274,7 +274,7 @@ envelope and executes the addressed local adapter. No `host-edge` Orchestrator r
 This is a deployment election, not a fourth authority class. The standalone receiver owns only
 durable webhook acceptance plus host-local delivery state; matching, coalescing, and retry remain
 inside container Memory Core. It cannot dispatch the other host-edge scheduler lanes. Local
-dev-server, Neural Link, model-provider, and checkout-sync capabilities therefore need an explicit
+Neural Link, model-provider, and checkout-sync capabilities therefore need an explicit
 surviving consumer or are retired in #16167's immediate cleanup series. The
 `{host-edge, container-plane}` audit remains valid while both Orchestrator profiles exist, and its
 `legacy-mixed` compatibility row plus the Shape-C graph worker sunset after the accepted receipt.
@@ -293,7 +293,7 @@ The canonical local topology now runs two invocations of the same scheduler engi
    summary, mini-summary, Dream, backup, and other plane maintenance.
 2. launchd runs `authorityProfile=host-edge` with a distinct host-only state root. It does not
    assert or open the Docker plane. The initial deployment explicitly enables only LM Studio
-   lifecycle and disables checkout/corpus, graph, dev-server, Neural Link, heartbeat, and legacy
+   lifecycle and disables checkout/corpus, graph, Neural Link, heartbeat, and legacy
    Shape-C wake lanes.
 
 The signed graphless Shape-B receiver remains a separate final-mile security boundary; reinstating

@@ -4,8 +4,8 @@
  * transport may carry between the agentos pane and {@link Neo.ai.services.fleet.FleetControlBridge}.
  * The Node side binds it directly: `dispatchFleetRequest` rejects anything off this list, and
  * `createFleetRegistryBridge` (the Node-side client factory) generates exactly these methods. The
- * browser binds the operable-cold twin (`apps/agentos/config/fleetWireMethods.mjs`) instead of
- * importing across the realm boundary — `ai/scripts/lint/lint-fleet-vocabulary-parity.mjs`
+ * browser binds its product-side transport instead of importing across the realm boundary; Agent
+ * Institution's explicit Brain contract
  * compares every constant and pure helper outcome, so the ends of the wire cannot drift.
  *
  * Deliberately **narrower than FleetControlBridge's class surface**: it excludes the `getRegistry` /

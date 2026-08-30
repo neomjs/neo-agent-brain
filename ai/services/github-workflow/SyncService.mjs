@@ -15,7 +15,7 @@ import {promisify}             from 'util';
 // Pure predicate shared with the `lint-staged` guard, so the invariant has ONE definition and the two
 // enforcement points cannot drift. Same direction as the `buildScripts/util/sanitizer.mjs` import in
 // every `ai/mcp/server/*/mcp-server.mjs`.
-import {findLogicalIdentityCollisions} from '../../../buildScripts/util/check-content-logical-identity.mjs';
+import {findLogicalIdentityCollisions} from 'neo.mjs/buildScripts/util/check-content-logical-identity.mjs';
 
 const execAsync = promisify(exec);
 
@@ -72,7 +72,7 @@ class SyncService extends Base {
      * @returns {Promise<Object>} Generated artifact paths.
      */
     async rebuildContentIndexesAndSeo() {
-        const {rebuildContentIndexesAndSeo} = await import('../../../buildScripts/docs/rebuildContentIndexesAndSeo.mjs');
+        const {rebuildContentIndexesAndSeo} = await import('neo.mjs/buildScripts/docs/rebuildContentIndexesAndSeo.mjs');
 
         return rebuildContentIndexesAndSeo({root: aiConfig.projectRoot});
     }

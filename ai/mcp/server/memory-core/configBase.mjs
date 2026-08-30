@@ -50,10 +50,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 const neoRootDir = path.resolve(__dirname, '../../../../');
-const cwd        = neoRootDir;
 // The single plane-member anchor (env-free twin resolution — the leaf machinery owns all env
 // binding): every durable data-plane default below derives from it, replacing the per-leaf
-// `path.resolve(cwd, '.neo-ai-data/…')` re-derivations and the prior module-scope
+// repository-relative re-derivations and the prior module-scope
 // `process.env.NEO_AI_DAEMON_DIR` inline read.
 const planeDataRoot = resolvePlaneDataRoot({rootDir: neoRootDir});
 const DAY_MS        = 24 * 60 * 60 * 1000;
@@ -73,7 +72,7 @@ const testMemoryWalDir = path.join(os.tmpdir(), `neo-memory-wal-test-${Date.now(
 
 // Per-worker-unique handoff test file under the OS temp root (same isolation rationale as the WAL
 // test dir): fullyParallel workers never share the handoff write target, and unit runs never touch
-// the tracked resources/content/sandman_handoff.md production file. The formula resolves this by
+// the plane-local production handoff. The formula resolves this by
 // construction under UNIT_TEST_MODE — specs must NOT mutate aiConfig.handoffFilePath (the B4
 // singleton-mutation anti-pattern this isolation removes).
 const testHandoffFile = path.join(os.tmpdir(), `neo-sandman-handoff-test-${Date.now()}-${Math.random().toString(36).substring(7)}.md`);
@@ -564,7 +563,7 @@ class ConfigBase extends ConfigProvider {
              * RemDigestion / TopologyInferenceEngine) never clobber the tracked production file.
              * @type {string}
              */
-            handoffFilePathProd: leaf(path.resolve(cwd, 'resources/content/sandman_handoff.md'), 'NEO_HANDOFF_FILE_PATH', 'string'),
+            handoffFilePathProd: leaf(path.resolve(planeDataRoot, 'handoff/sandman_handoff.md'), 'NEO_HANDOFF_FILE_PATH', 'string'),
             /**
              * Unit-test handoff path — a per-worker-unique file under the OS temp root (see
              * `testHandoffFile`), so fullyParallel workers never share a write target and test-mode

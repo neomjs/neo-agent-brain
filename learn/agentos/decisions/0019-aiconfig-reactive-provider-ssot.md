@@ -232,8 +232,7 @@ what §10.8 exists to prevent, and a default is what made it silent.
 Consequences of the empty default, all mechanical:
 
 - **Every launcher declares.** Both Compose profiles set `container-plane`; the machine-local
-  Orchestrator starts through `npm run ai:host-edge`, whose posture module declares `host-edge`;
-  the harness Brain profiles (checkout smoke and packaged product) declare `container-plane`. A new
+  Orchestrator starts through `npm run ai:host-edge`, whose posture module declares `host-edge`. A new
   launcher that declares nothing does not start, and a census spec asserts the launcher set.
 - **Requiredness is armed by the emptiness.** `requiredFor` is evaluated on the RESOLVED value, so
   any non-empty default would leave the requirement permanently unfireable — the default and the

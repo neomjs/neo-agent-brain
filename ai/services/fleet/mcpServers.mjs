@@ -4,8 +4,8 @@
  * SPARSE override object: `null` means every current catalog default applies.
  *
  * **The Body never imports this module.** The cockpit's operable-cold render/form twin is
- * `apps/agentos/config/mcpServers.mjs` — same vocabulary and shared pure helpers, bound to this
- * authority by `ai/scripts/lint/lint-fleet-vocabulary-parity.mjs` (drift = red CI). The
+ * Agent Institution's consumer contract — same vocabulary and shared pure helpers, bound to this
+ * authority by cross-repository CI. The
  * engine tree (`src/`) carries no FM vocabulary; the wire (FleetControlBridge) carries the live
  * catalog at runtime. Dependency-free by design — pure data + pure functions only.
  * @summary The FM MCP catalog authority plus sparse override projection and validation.

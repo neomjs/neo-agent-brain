@@ -1,10 +1,14 @@
-import test              from '@playwright/test';
+import {test, expect}    from '@playwright/test';
 import fs                from 'fs';
 import os                from 'os';
 import path              from 'path';
 import Neo               from 'neo.mjs/src/Neo.mjs';
 import * as core         from 'neo.mjs/src/core/_export.mjs';
 import AgentOrchestrator from '../../../../ai/agent/AgentOrchestrator.mjs';
+import {
+    resolveAgentOrchestratorPaths,
+    startOrchestrator
+} from '../../../../ai/scripts/runners/runAgent.mjs';
 
 /**
  * @summary Creates a private outcome directory for one fully-parallel test so another test's
@@ -85,6 +89,42 @@ const createOutcomePath = filename => path.join(
       };
 
 test.describe('Neo.ai.agent.AgentOrchestrator', () => {
+    test('the default handoff is plane-local, never an Engine resource projection', () => {
+        const orchestrator = Neo.create(AgentOrchestrator, {});
+
+        expect(orchestrator.handoffPath).toContain(`${path.sep}.neo-ai-data${path.sep}handoff${path.sep}sandman_handoff.md`);
+        expect(orchestrator.handoffPath).not.toContain(`${path.sep}resources${path.sep}`);
+        expect(orchestrator.handoffPath).not.toContain(`${path.sep}node_modules${path.sep}`);
+
+        orchestrator.destroy()
+    });
+
+    test('the runner injects both durable paths from the resolved relocated plane', async () => {
+        const dataRoot = path.join(os.tmpdir(), 'brain-plane-relocated');
+        let   captured;
+
+        expect(resolveAgentOrchestratorPaths({plane: {dataRoot}})).toEqual({
+            handoffPath: path.join(dataRoot, 'handoff/sandman_handoff.md'),
+            outcomePath: path.join(dataRoot, 'agent-orchestrator/golden-path-outcomes.jsonl')
+        });
+
+        await startOrchestrator({
+            config: {plane: {dataRoot}},
+            create: (Class, classConfig) => {
+                captured = {Class, classConfig};
+                return {execute: async () => {}}
+            }
+        });
+
+        expect(captured).toEqual({
+            Class      : AgentOrchestrator,
+            classConfig: {
+                handoffPath: path.join(dataRoot, 'handoff/sandman_handoff.md'),
+                outcomePath: path.join(dataRoot, 'agent-orchestrator/golden-path-outcomes.jsonl')
+            }
+        })
+    });
+
     test('readComputedRoute maps the typed computed-ranked route to issue directives', () => {
         const handoffPath = writeComputedRoute([
             {id: 'issue-9900', title: 'docs: restructure CodebaseOverview "Query Entry Points"'},

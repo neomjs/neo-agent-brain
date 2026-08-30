@@ -34,14 +34,11 @@ import {
 } from '../../../../../../ai/services/shared/providerActivityLedger.mjs';
 
 let   testOrchestratorSeq            = 0;
-const TEST_DEV_SERVER_PORT           = 18080;
 const TEST_NEURAL_LINK_BRIDGE_PORT   = 18081;
 let   savedIntervals                 = null;
 let   savedLocalOnly                 = null;
 let   savedCloudOnly                 = null;
 let   savedCorpusProjectionEnabled   = null;
-let   savedDevServer                 = null;
-let   savedDevServerMissing          = false;
 let   savedGraphLogCompaction        = null;
 let   savedGraphLogCompactionMissing = false;
 let   savedNeuralLinkBridge          = null;
@@ -62,8 +59,6 @@ function createTestOrchestrator(config = {}) {
     const taskDefinitions = config.taskDefinitions || buildTaskDefinitions({
         scriptDir                        : '/repo/ai/scripts',
         nodeBin                          : '/node',
-        devServerPort                    : config.devServerPort ?? TEST_DEV_SERVER_PORT,
-        devServerLivenessTimeoutMs       : config.devServerLivenessTimeoutMs ?? 50,
         neuralLinkBridgePort             : config.neuralLinkBridgePort ?? TEST_NEURAL_LINK_BRIDGE_PORT,
         neuralLinkBridgeLivenessTimeoutMs: config.neuralLinkBridgeLivenessTimeoutMs ?? 50
     });
@@ -83,7 +78,7 @@ function createTestOrchestrator(config = {}) {
         writeLogFn: () => {}
     });
     TaskStateService.taskState = createInitialTaskState(taskDefinitions);
-    ['chroma', 'bridgeDaemon', 'devServer', 'neuralLinkBridge', 'mlx', 'ollama', 'lms'].forEach(name => {
+    ['chroma', 'bridgeDaemon', 'neuralLinkBridge', 'mlx', 'ollama', 'lms'].forEach(name => {
         if (TaskStateService.taskState[name]) {
             TaskStateService.taskState[name].running = true;
         }
@@ -99,10 +94,6 @@ function createTestOrchestrator(config = {}) {
     savedIntervals = savedIntervals || {...AiConfig.orchestrator.intervals};
     savedLocalOnly = savedLocalOnly || {...AiConfig.orchestrator.localOnly};
     savedCloudOnly = savedCloudOnly || {...AiConfig.orchestrator.cloudOnly};
-    if (savedDevServer === null) {
-        savedDevServerMissing = AiConfig.orchestrator.devServer === undefined;
-        savedDevServer = {...(AiConfig.orchestrator.devServer || {})};
-    }
     if (savedGraphLogCompaction === null) {
         savedGraphLogCompactionMissing = AiConfig.orchestrator.graphLogCompaction === undefined;
         savedGraphLogCompaction = {...(AiConfig.orchestrator.graphLogCompaction || {})};
@@ -150,11 +141,6 @@ function createTestOrchestrator(config = {}) {
     AiConfig.orchestrator.localOnly.goldenPathRepoEnrichmentEnabled = config.goldenPathRepoEnrichmentEnabled ?? true;
 
     AiConfig.orchestrator.cloudOnly.tenantRepoSyncEnabled = config.tenantRepoSyncEnabled ?? false;
-    AiConfig.setData('orchestrator.devServer', {
-        enabled               : Object.hasOwn(config, 'devServerEnabled') ? config.devServerEnabled : null,
-        port                  : config.devServerPort ?? TEST_DEV_SERVER_PORT,
-        livenessProbeTimeoutMs: config.devServerLivenessTimeoutMs ?? 50
-    });
     AiConfig.setData('orchestrator.graphLogCompaction', {
         enabled: config.graphLogCompactionEnabled ?? true,
         vacuum : config.graphLogCompactionVacuum ?? false
@@ -217,15 +203,6 @@ test.afterEach(() => {
         AiConfig.orchestrator.corpusProjection.enabled = savedCorpusProjectionEnabled;
         savedCorpusProjectionEnabled = null;
     }
-    if (savedDevServer) {
-        if (savedDevServerMissing) {
-            AiConfig.setData('orchestrator.devServer', undefined);
-        } else {
-            AiConfig.setData('orchestrator.devServer', {...savedDevServer});
-        }
-        savedDevServer = null;
-        savedDevServerMissing = false;
-    }
     if (savedGraphLogCompaction) {
         if (savedGraphLogCompactionMissing) {
             AiConfig.setData('orchestrator.graphLogCompaction', undefined);
@@ -266,7 +243,6 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
             authorityProfile     : ORCHESTRATOR_AUTHORITY_PROFILE.hostEdge,
             deploymentMode       : 'local',
             bridgeDaemonEnabled  : true,
-            devServerEnabled     : true,
             embedDaemonEnabled   : true,
             messageDaemonEnabled : true,
             primaryDevSyncEnabled: true,
@@ -279,7 +255,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         const hostState = hostEdge.getAuthorityTaskState();
 
         expect(hostContinuous).toEqual(expect.arrayContaining([
-            'bridgeDaemon', 'devServer', 'neuralLinkBridge'
+            'bridgeDaemon', 'neuralLinkBridge'
         ]));
         for (const taskName of ['chroma', 'embedDaemon', 'messageDaemon']) {
             expect(hostContinuous).not.toContain(taskName);
@@ -309,7 +285,6 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
             authorityProfile     : ORCHESTRATOR_AUTHORITY_PROFILE.containerPlane,
             deploymentMode       : 'local',
             bridgeDaemonEnabled  : true,
-            devServerEnabled     : true,
             embedDaemonEnabled   : true,
             messageDaemonEnabled : true,
             primaryDevSyncEnabled: true,
@@ -320,7 +295,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         const containerRecovery   = Object.keys(containerPlane.getAuthorityScopedTaskDefinitions());
 
         expect(containerContinuous).toEqual(expect.arrayContaining(['embedDaemon', 'messageDaemon']));
-        for (const taskName of ['bridgeDaemon', 'devServer', 'neuralLinkBridge']) {
+        for (const taskName of ['bridgeDaemon', 'neuralLinkBridge']) {
             expect(containerContinuous).not.toContain(taskName);
         }
         // `kbSync` and `temporal-summary` are in this list, and their arrival is the other half of
@@ -1307,103 +1282,6 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         await expect(taskDefinitions.chroma.healthProbe()).resolves.toBe(true);
         await expect(taskDefinitions.chroma.healthProbe()).resolves.toBe(true);
         await expect(taskDefinitions.chroma.healthProbe()).resolves.toBe(false);
-    });
-
-    test('defines the local dev-server task without browser auto-open (#13482)', () => {
-        const taskDefinitions = buildTaskDefinitions({
-            scriptDir                 : '/repo/ai/scripts',
-            nodeBin                   : '/node',
-            devServerPort             : 4242,
-            devServerLivenessTimeoutMs: 50
-        });
-
-        expect(taskDefinitions.devServer).toMatchObject({
-            label                  : 'local dev-server',
-            command                : '/node',
-            pidFileName            : 'dev-server.pid',
-            expectedCommand        : 'node_modules/webpack/bin/webpack.js',
-            singletonPort          : 4242,
-            duplicateListenerPolicy: 'defer'
-        });
-        expect(taskDefinitions.devServer.args).toEqual([
-            '/repo/node_modules/webpack/bin/webpack.js',
-            'serve',
-            '-c',
-            './buildScripts/webpack/webpack.server.config.mjs',
-            '--port',
-            '4242'
-        ]);
-        expect(taskDefinitions.devServer.args).not.toContain('--open');
-        expect(typeof taskDefinitions.devServer.livenessProbe).toBe('function');
-    });
-
-    test('supervises the local dev-server in local mode and skips it in cloud mode (#13482)', async () => {
-        const flushProbe        = () => new Promise(resolve => setTimeout(resolve, 0));
-        const cloudStarted      = [];
-        const cloudOrchestrator = createTestOrchestrator({
-            deploymentMode  : 'cloud',
-            kbSyncEnabled   : false,
-            devServerEnabled: null
-        });
-
-        TaskStateService.taskState.devServer.running   = false;
-        TaskStateService.taskState.devServer.lastRunAt = 0;
-        cloudOrchestrator.taskDefinitions.devServer.livenessProbe = async () => false;
-        cloudOrchestrator.processSupervisorService.runTask = (taskName, reason) => {
-            cloudStarted.push({taskName, reason});
-            return true;
-        };
-
-        cloudOrchestrator.poll();
-        await flushProbe();
-
-        expect(cloudStarted.find(entry => entry.taskName === 'devServer')).toBeUndefined();
-
-        const localStarted      = [];
-        const localOrchestrator = createTestOrchestrator({
-            deploymentMode  : 'local',
-            kbSyncEnabled   : false,
-            devServerEnabled: null
-        });
-
-        TaskStateService.taskState.devServer.running   = false;
-        TaskStateService.taskState.devServer.lastRunAt = 0;
-        localOrchestrator.taskDefinitions.devServer.livenessProbe = async () => false;
-        localOrchestrator.processSupervisorService.taskDefinitions.devServer.livenessProbe = async () => false;
-        localOrchestrator.processSupervisorService.runTask = (taskName, reason) => {
-            localStarted.push({taskName, reason});
-            return true;
-        };
-
-        localOrchestrator.poll();
-        await flushProbe();
-
-        expect(localStarted).toContainEqual({
-            taskName: 'devServer',
-            reason  : 'supervisor-restart'
-        });
-    });
-
-    test('does not spawn over a healthy manually started dev-server (#13482)', async () => {
-        const started      = [];
-        const orchestrator = createTestOrchestrator({
-            deploymentMode: 'local',
-            kbSyncEnabled : false
-        });
-
-        TaskStateService.taskState.devServer.running   = false;
-        TaskStateService.taskState.devServer.lastRunAt = 0;
-        orchestrator.taskDefinitions.devServer.livenessProbe = async () => true;
-        orchestrator.processSupervisorService.taskDefinitions.devServer.livenessProbe = async () => true;
-        orchestrator.processSupervisorService.runTask = (taskName, reason) => {
-            started.push({taskName, reason});
-            return true;
-        };
-
-        orchestrator.poll();
-        await new Promise(resolve => setTimeout(resolve, 0));
-
-        expect(started.find(entry => entry.taskName === 'devServer')).toBeUndefined();
     });
 
     test('defines Neural Link Bridge as a defer-safe local shared-infra task (#13483)', () => {

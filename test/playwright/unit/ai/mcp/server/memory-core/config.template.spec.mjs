@@ -300,13 +300,13 @@ test.describe('Memory Core Config (#10010)', () => {
     test('handoffFilePath resolves by construction to the test path under the toggle — never the tracked prod file (#13663)', () => {
         // Mirrors storagePaths.graph: under the unit suite (UNIT_TEST_MODE=true) the formula resolves
         // handoffFilePathTest, so a test run writing the handoff cannot clobber the tracked production
-        // resources/content/sandman_handoff.md — test-mode resolved by construction (the AiConfig SSOT
+        // plane-local handoff state — test-mode resolved by construction (the AiConfig SSOT
         // sanctioned form: declarative Prod/Test leaves + a formula, never an inline-env leaf ternary).
         expect(config.storagePaths.useTestDatabase).toBe(true);
-        expect(config.handoffFilePathProd).toContain('resources/content/sandman_handoff.md');
+        expect(config.handoffFilePathProd).toContain('.neo-ai-data/handoff/sandman_handoff.md');
         expect(config.handoffFilePathTest).toContain('neo-sandman-handoff-test-'); // per-worker-unique OS-temp file (fullyParallel race-safe)
         expect(config.handoffFilePath).toBe(config.handoffFilePathTest);
-        expect(config.handoffFilePath).not.toContain('resources/content/sandman_handoff.md');
+        expect(config.handoffFilePath).not.toContain('.neo-ai-data/handoff/sandman_handoff.md');
     });
 
     test('messageWal.dir resolves by construction from memoryWal.dir unless explicitly overridden (#13890)', () => {

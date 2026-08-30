@@ -1,9 +1,8 @@
-import fs              from 'fs';
-import path            from 'path';
-import * as yaml       from 'js-yaml';
-import {fileURLToPath} from 'url';
-import Base            from 'neo.mjs/src/core/Base.mjs';
-import ConceptService  from '../../services/ConceptService.mjs';
+import fs             from 'fs';
+import path           from 'path';
+import * as yaml      from 'js-yaml';
+import Base           from 'neo.mjs/src/core/Base.mjs';
+import ConceptService from '../../services/ConceptService.mjs';
 import {
     Memory_Config as aiConfig,
     Memory_GraphService as GraphService
@@ -12,9 +11,6 @@ import Json                                            from 'neo.mjs/src/util/Js
 import logger                                          from '../../mcp/server/memory-core/logger.mjs';
 import {buildGraphProvider, resolveGraphModelProvider} from '../graph/providerDispatch.mjs';
 import {assertTestWriteIsolated}                       from '../shared/storeWriteGuard.mjs';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
 
 /**
  * System prompt establishing the Teaching Test + anti-patterns for the concept extraction
@@ -450,7 +446,10 @@ class ConceptDiscoveryService extends Base {
      * @protected
      */
     async loadEpicSources() {
-        const issuesDir = this.issuesDir || path.resolve(__dirname, '../../../resources/content/issues');
+        const corpusRoot = aiConfig.orchestrator.corpusProjection.enabled
+            ? aiConfig.orchestrator.corpusProjection.materializedRoot
+            : path.resolve(aiConfig.projectRoot, 'resources/content');
+        const issuesDir = this.issuesDir || path.resolve(corpusRoot, 'issues');
 
         try {
             await fs.promises.access(issuesDir);
@@ -502,7 +501,10 @@ class ConceptDiscoveryService extends Base {
      * @protected
      */
     async loadPullRequestSources() {
-        const pullsDir = this.pullsDir || path.resolve(__dirname, '../../../resources/content/pulls');
+        const corpusRoot = aiConfig.orchestrator.corpusProjection.enabled
+            ? aiConfig.orchestrator.corpusProjection.materializedRoot
+            : path.resolve(aiConfig.projectRoot, 'resources/content');
+        const pullsDir = this.pullsDir || path.resolve(corpusRoot, 'pulls');
 
         try {
             await fs.promises.access(pullsDir);

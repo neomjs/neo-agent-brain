@@ -410,11 +410,10 @@ class ConfigBase extends ConfigProvider {
                 /**
                  * Arms the transport's browser bearer-handshake redemption (`GET /fleet/handshake`):
                  * while armed, an exact-allowlisted cockpit ORIGIN may fetch the process bearer once
-                 * per page boot, which is how the one-command flow (`npm run cockpit`) hands the
-                 * secret to a plain browser page with no agent in the loop. Default OFF — a
-                 * standalone `npm run ai:fleet-server` exposes zero new surface; the cockpit
-                 * launcher arms it in the fleet child's env because arming is a custody decision
-                 * and custody lives with the launcher (`ai/scripts/fleet/devCockpit.mjs`). While armed,
+                 * per page boot, which is how the Agent Institution launcher hands the secret to a
+                 * plain browser page with no agent in the loop. Default OFF — a standalone Fleet
+                 * server exposes zero new surface; the product launcher arms it because arming is
+                 * a custody decision. While armed,
                  * browser-caller authentication deliberately collapses to the exact-Origin policy —
                  * the documented Option-B dev-mode widening, never the packaged product path.
                  * @type {boolean}
@@ -1830,18 +1829,6 @@ class ConfigBase extends ConfigProvider {
                  */
                 chroma: {
                     maxRuntimeMs: leaf(DAY_MS, 'NEO_CHROMA_MAX_RUNTIME_MS', 'number')
-                },
-                /**
-                 * Local webpack dev-server supervision policy. `enabled: null` means the
-                 * deployment profile decides (local enables, cloud disables); explicit true/false
-                 * lets operators opt in/out without changing the manual `server-start --open`
-                 * command. The orchestrator-owned task never passes `--open`.
-                 * @type {Object}
-                 */
-                devServer: {
-                    enabled               : leaf(null, 'NEO_ORCHESTRATOR_DEV_SERVER_ENABLED', 'boolean'),
-                    port                  : leaf(8080, 'NEO_ORCHESTRATOR_DEV_SERVER_PORT', 'port'),
-                    livenessProbeTimeoutMs: leaf(1000, 'NEO_ORCHESTRATOR_DEV_SERVER_LIVENESS_TIMEOUT_MS', 'number')
                 },
                 /**
                  * GraphLog compaction policy. The scheduled lane invokes the existing

@@ -66,6 +66,20 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
         if (tmpFilePath) await fs.remove(path.dirname(tmpFilePath)).catch(() => {});
     });
 
+    test('local hydration keeps Brain source and primary-repository corpus roots distinct', () => {
+        expect(SearchService.resolveLocalReferenceRoot({
+            source  : 'ai/services/knowledge-base/SearchService.mjs',
+            metadata: {type: 'ai-infrastructure'}
+        })).toBe(aiConfig.neoRootDir);
+        expect(SearchService.resolveLocalReferenceRoot({
+            source  : 'resources/content/issues/issue-1.md',
+            metadata: {type: 'ticket'}
+        })).toBe(aiConfig.projectRoot);
+        expect(SearchService.resolveLocalReferenceRoot({
+            source: '.github/RELEASE_NOTES/v13.2.0.md'
+        })).toBe(aiConfig.projectRoot)
+    });
+
     test('ask resolves RELATIVE ref.source against neoRootDir and feeds real content to synthesis', async () => {
         let capturedPrompt = null;
 

@@ -50,11 +50,11 @@ class AgentOrchestrator extends Base {
          */
         className: 'Neo.ai.agent.AgentOrchestrator',
         /**
-         * Repo-anchored, not cwd-anchored: this is checkout content, so it resolves against the
-         * discovered `neoRootDir` and stays the same file no matter where the process was launched.
-         * @member {String} handoffPath=path.resolve(neoRootDir, 'resources/content/sandman_handoff.md')
+         * Plane-local strategic handoff state. It must never resolve into an installed dependency
+         * or a repository content tree.
+         * @member {String} handoffPath=path.resolve(planeDataRootAnchor, 'handoff/sandman_handoff.md')
          */
-        handoffPath: path.resolve(neoRootDir, 'resources/content/sandman_handoff.md'),
+        handoffPath: path.resolve(planeDataRootAnchor, 'handoff/sandman_handoff.md'),
         /**
          * Wait interval before checking if the scheduler is exhausted natively.
          * @member {Number} monitorIntervalMs=5000

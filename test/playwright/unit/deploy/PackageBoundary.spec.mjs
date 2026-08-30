@@ -92,6 +92,34 @@ function resolvesInside(root, candidate) {
     return resolved === root || resolved.startsWith(`${root}${path.sep}`)
 }
 
+test('the Brain root contains no Engine compatibility projection', () => {
+    const projectionRoots = ['apps', 'examples', 'harness', 'resources', 'buildScripts'];
+
+    for (const root of projectionRoots) {
+        expect(fs.existsSync(path.join(repoRoot, root)), root).toBe(false)
+    }
+
+    const trackedFiles = execFileSync('git', [
+        '-C', repoRoot, 'ls-files', '--cached', '--others', '--exclude-standard', '-z'
+    ]).toString('utf8').split('\0').filter(file => file.endsWith('.mjs') && fs.existsSync(path.join(repoRoot, file)));
+    const relativeProjectionImport = /(?:from\s+|import\()['"](?:\.\.\/)+(?:apps|examples|harness|resources|buildScripts)\//;
+
+    for (const file of trackedFiles) {
+        expect(fs.readFileSync(path.join(repoRoot, file), 'utf8'), file).not.toMatch(relativeProjectionImport)
+    }
+
+    const
+        manifest       = readJson(path.join(repoRoot, 'package.json')),
+        prepareSource  = fs.readFileSync(path.join(repoRoot, 'ai/scripts/setup/initServerConfigs.mjs'), 'utf8'),
+        engineTestRoot = path.join(repoRoot, 'test/playwright/unit/ai/buildScripts');
+
+    expect(manifest.scripts.prepare).toBe('node ./ai/scripts/setup/initServerConfigs.mjs');
+    expect(manifest.scripts).not.toHaveProperty('cockpit');
+    expect(manifest.scripts).not.toHaveProperty('cockpit:live');
+    expect(prepareSource).not.toMatch(/materializeEngineDependency|ENGINE_(?:LINK|COPY)_PROJECTIONS/);
+    expect(fs.existsSync(engineTestRoot)).toBe(false)
+});
+
 test('deployment definitions have one exact plane-owned home', () => {
     expect(fs.readdirSync(hostDir).sort()).toEqual(HOST_DEFINITIONS.sort());
     expect(fs.readdirSync(cloudDir).sort()).toEqual(CLOUD_DEFINITIONS.sort());

@@ -28,10 +28,10 @@ import RawRepoSource  from '../../../../../../../ai/services/knowledge-base/sour
  * @summary Unit coverage for the explicit raw repository Source fallback.
  */
 test.describe('Neo.ai.services.knowledge-base.source.RawRepoSource (#12029)', () => {
-    let originalNeoRootDir, originalSourcePaths, tempDir;
+    let originalProjectRoot, originalSourcePaths, tempDir;
 
     test.beforeEach(async () => {
-        originalNeoRootDir = aiConfig.neoRootDir;
+        originalProjectRoot = aiConfig.projectRoot;
         originalSourcePaths = aiConfig.sourcePaths;
         tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-raw-repo-source-'));
 
@@ -44,7 +44,7 @@ test.describe('Neo.ai.services.knowledge-base.source.RawRepoSource (#12029)', ()
         await fs.outputFile(path.join(tempDir, 'repo/resources/images/logo.png'), 'not really png\n');
         await fs.outputFile(path.join(tempDir, 'repo/assets/logo.png'), 'not really png\n');
 
-        aiConfig.neoRootDir = tempDir;
+        aiConfig.projectRoot = tempDir;
         aiConfig.sourcePaths = {
             RawRepoSource: {
                 root: 'repo'
@@ -53,7 +53,7 @@ test.describe('Neo.ai.services.knowledge-base.source.RawRepoSource (#12029)', ()
     });
 
     test.afterEach(async () => {
-        aiConfig.neoRootDir = originalNeoRootDir;
+        aiConfig.projectRoot = originalProjectRoot;
         aiConfig.sourcePaths = originalSourcePaths;
         await fs.remove(tempDir);
     });
