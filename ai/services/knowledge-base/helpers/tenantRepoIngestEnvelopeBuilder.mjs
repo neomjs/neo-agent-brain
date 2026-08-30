@@ -208,9 +208,9 @@ async function listRevisionPaths({gitMirror, identity, revision}) {
  * @param {String} options.revision Resolved revision.
  * @param {String} options.sourcePath Repo-relative source path.
  * @param {String|Object|null} [options.credentialRef] Durable credential reference. The mirror is
- *     blobless, so this read is the one envelope operation that reaches the network — see
- *     `gitMirror.readRevisionFile`. It is threaded explicitly rather than carried on `identity`,
- *     which is spread into the graph and tree reads that must stay credential-free.
+ *     blobless, so this read is the FALLBACK network tier — `prefetchRevisionBlobs` acquires the same
+ *     blobs in bulk first, and both authenticate. It is threaded explicitly rather than carried on
+ *     `identity`, which is spread into the graph and tree reads that must stay credential-free.
  * @returns {Promise<String>}
  * @private
  */
@@ -310,9 +310,9 @@ async function buildFullEnvelope({gitMirror, identity, headRevision, rootKind, p
  * @param {String} [options.parserVersion] Optional parser version.
  * @param {Object} [options.gitMirror=GitMirror] Injectable GitMirror implementation for tests.
  * @param {String|Object|null} [options.credentialRef] Durable credential reference for the tenant
- *     repo. Reaches only the content read: the mirror is blobless, so `show <rev>:<path>` resolves
- *     each blob through a lazy promisor fetch that re-authenticates against the remote. Omitted,
- *     content reads are anonymous — correct for a public remote, fatal for a private one.
+ *     repo. Reaches the content acquisition only, on both tiers: the bulk `prefetchRevisionBlobs` and,
+ *     for anything it did not localize, the per-file `show <rev>:<path>` promisor fetch. Omitted, both
+ *     are anonymous — correct for a public remote, fatal for a private one.
  * @returns {Promise<Object>}
  */
 export async function buildIngestEnvelope({

@@ -895,7 +895,8 @@ function getChangedRefs(before, after) {
  * large allocation roughly every 290 seconds. A polling multi-repo deployment pays that per repo.
  *
  * `--filter=blob:none` is shaped to that read profile: commits and trees stay complete, so every
- * ref/graph/diff operation above is untouched, and blobs arrive lazily only when `show` asks for one.
+ * ref/graph/diff operation above is untouched, and blobs arrive through the two acquisition tiers —
+ * `prefetchRevisionBlobs` in bulk ahead of an ingest, or lazily when `show` asks for one.
  *
  * **NOT `--depth`.** A shallow clone makes the previous revision unreachable, which breaks
  * `merge-base --is-ancestor` and the base-to-head `diff --name-status` that incremental sync is built
