@@ -100,6 +100,7 @@ const expectedNeuralLinkToolTiers = {
     create_component             : 'write-locked',
     create_instance              : 'write-locked',
     diff_dock_topology           : 'read',
+    drive_drag                   : 'write-locked',
     execute_dock_operation       : 'write-locked',
     find_instances               : 'read',
     focus_window                 : 'write-locked',
@@ -159,6 +160,7 @@ const neuralLinkDangerousReadForbidden = [
     'commit_transaction',
     'create_component',
     'create_instance',
+    'drive_drag',
     'focus_window',
     'highlight_component',
     'manage_connection',
@@ -818,6 +820,59 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
             offenders  = neuralLinkDangerousReadForbidden.filter(id => operations[id]?.['x-neo-tool-tier'] === 'read');
 
         expect(offenders, `Dangerous Neural Link operations mislabeled read:\n${offenders.join('\n')}`).toEqual([]);
+    });
+
+    test('neural-link drive_drag exposes one strict descriptor mode and preserves gesture bounds', () => {
+        const
+            doc        = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/neural-link/openapi.yaml'), 'utf8')),
+            operation  = getOperationsById(doc).drive_drag,
+            schema     = buildZodSchema(doc, operation),
+            listed     = toOpenApiJsonSchema(schema),
+            baseSource = {anchor: {x: 0.5, y: 0.5}, targetId: 'splitter-1', windowId: 'main'};
+
+        expect(operation['x-neo-tool-tier']).toBe('write-locked');
+        expect(operation['x-pass-as-object']).toBe(true);
+
+        const nodeRequest = schema.parse({
+            destination: {targetId: 'drop-zone', windowId: 'popup'},
+            source     : baseSource
+        });
+
+        expect(nodeRequest.steps).toBe(8);
+        expect(nodeRequest.destination).toEqual({targetId: 'drop-zone', windowId: 'popup'});
+        expect(schema.safeParse({
+            destination: {clientX: 120, clientY: 80, windowId: 'popup'},
+            source     : baseSource,
+            steps      : 120,
+            waypoints  : [{targetId: 'midpoint', windowId: 'main'}]
+        }).success).toBe(true);
+        expect(schema.safeParse({
+            destination: {deltaX: 240, deltaY: 0},
+            durationMs : 160,
+            source     : baseSource,
+            steps      : 8
+        }).success).toBe(true);
+
+        const invalidRequests = [
+            {destination: {deltaX: 10, deltaY: 0, targetId: 'also-node', windowId: 'main'}, source: baseSource},
+            {destination: {screenX: 10, screenY: 20}, source: baseSource},
+            {destination: {deltaX: 10, deltaY: 0}, source: {...baseSource, screenX: 1}},
+            {destination: {deltaX: 10, deltaY: 0}, source: {...baseSource, anchor: {x: 1.1, y: 0.5}}},
+            {destination: {deltaX: 10, deltaY: 0}, source: baseSource, steps: 0},
+            {destination: {deltaX: 10, deltaY: 0}, source: baseSource, steps: 121},
+            {destination: {deltaX: 10, deltaY: 0}, durationMs: 15, source: baseSource},
+            {destination: {deltaX: 10, deltaY: 0}, durationMs: 30001, source: baseSource},
+            {destination: {deltaX: 10, deltaY: 0}, source: baseSource, waypoints: [{deltaX: 1, deltaY: 1}]},
+            {destination: {deltaX: 10, deltaY: 0}, source: baseSource, unexpected: true}
+        ];
+
+        for (const request of invalidRequests) {
+            expect(schema.safeParse(request).success, JSON.stringify(request)).toBe(false)
+        }
+
+        expect(listed.additionalProperties).toBe(false);
+        expect(listed.properties.destination.anyOf).toHaveLength(3);
+        expect(listed.properties.destination.anyOf.every(mode => mode.additionalProperties === false)).toBe(true)
     });
 
     test('knowledge-base declares the harness-visible projection policy (#14164)', () => {

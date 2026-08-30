@@ -2233,6 +2233,66 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /interaction/drive_drag:
+    post:
+      summary: Drive Physical Drag Gesture
+      operationId: drive_drag
+      x-neo-tool-tier: write-locked
+      x-pass-as-object: true
+      description: |
+        Requests one complete Engine-owned physical drag and returns its observed Mouse-lifecycle receipt.
+        Source and destination are semantic DOM/window descriptors; the Engine resolves geometry,
+        reads live sensor thresholds, dispatches the gesture, and owns cleanup.
+
+        **When to Use:**
+        To exercise the physical drag pipeline for splitters, grid headers, tabs, and generic draggables.
+        Follow the receipt with a separate consumer-specific assertion; gesture completion does not prove
+        that an application committed the intended semantic change.
+      tags: [Interaction]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriveDragRequest'
+      responses:
+        '200':
+          description: Engine physical-drag receipt or a structured gesture failure
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  phase:
+                    type: string
+                  error:
+                    oneOf:
+                      - type: string
+                      - type: object
+                        properties:
+                          code:
+                            type: string
+                          message:
+                            type: string
+                  message:
+                    type: string
+                  receipt:
+                    type: object
+        '400':
+          description: Invalid gesture descriptor or timing bounds
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Engine method unavailable or transport failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /interaction/simulate_event:
     post:
       summary: Simulate DOM Event
@@ -2911,6 +2971,114 @@ components:
         sessionId:
           type: string
           description: The target App Worker Session ID
+
+    NormalizedDragAnchor:
+      type: object
+      additionalProperties: false
+      required:
+        - x
+        - y
+      properties:
+        x:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Horizontal fraction within the target rectangle.
+        y:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Vertical fraction within the target rectangle.
+
+    DragNodeDescriptor:
+      type: object
+      additionalProperties: false
+      required:
+        - targetId
+        - windowId
+      properties:
+        targetId:
+          type: string
+          description: DOM id resolved by the Engine at gesture time.
+        windowId:
+          type: string
+          description: Window containing the target node.
+        anchor:
+          $ref: '#/components/schemas/NormalizedDragAnchor'
+
+    DragPointDescriptor:
+      type: object
+      additionalProperties: false
+      required:
+        - clientX
+        - clientY
+        - windowId
+      properties:
+        clientX:
+          type: number
+          description: Target-window client X coordinate.
+        clientY:
+          type: number
+          description: Target-window client Y coordinate.
+        windowId:
+          type: string
+          description: Window whose client coordinates own the point.
+
+    DragDeltaDescriptor:
+      type: object
+      additionalProperties: false
+      required:
+        - deltaX
+        - deltaY
+      properties:
+        deltaX:
+          type: number
+          description: Horizontal offset from the resolved source point.
+        deltaY:
+          type: number
+          description: Vertical offset from the resolved source point.
+
+    DragDestinationDescriptor:
+      oneOf:
+        - $ref: '#/components/schemas/DragNodeDescriptor'
+        - $ref: '#/components/schemas/DragPointDescriptor'
+        - $ref: '#/components/schemas/DragDeltaDescriptor'
+
+    DragWaypointDescriptor:
+      oneOf:
+        - $ref: '#/components/schemas/DragNodeDescriptor'
+        - $ref: '#/components/schemas/DragPointDescriptor'
+
+    DriveDragRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - source
+        - destination
+      properties:
+        source:
+          $ref: '#/components/schemas/DragNodeDescriptor'
+        destination:
+          $ref: '#/components/schemas/DragDestinationDescriptor'
+        waypoints:
+          type: array
+          items:
+            $ref: '#/components/schemas/DragWaypointDescriptor'
+          description: Optional node or target-window point stops along the gesture path.
+        steps:
+          type: integer
+          minimum: 1
+          maximum: 120
+          default: 8
+          description: Post-arm mousemove count distributed across the whole path.
+        durationMs:
+          type: number
+          minimum: 16
+          maximum: 30000
+          description: Post-arm gesture duration; must also be at least steps multiplied by 16.
+        sessionId:
+          type: string
+          description: The target App Worker Session ID.
 
     SimulateEventRequest:
       type: object

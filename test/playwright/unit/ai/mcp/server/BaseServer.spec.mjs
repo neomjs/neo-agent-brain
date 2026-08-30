@@ -293,15 +293,22 @@ test.describe('Neo.ai.mcp.server.BaseServer — formatToolResult shapes', () => 
         expect(result.structuredContent).toEqual({foo: 'bar', count: 3});
     });
 
-    test('object result with error key → tool-error envelope', () => {
+    test('object result with error key → tool-error envelope with machine-readable receipt', () => {
         const Cls    = makeTestServerClass();
         const server = Neo.create(Cls);
 
-        const result = server.formatToolResult({error: 'BadInput', message: 'Missing field'});
+        const failure = {
+            error  : 'Drag gesture failed',
+            message: 'Target node missing',
+            phase  : 'resolution',
+            receipt: {success: false, released: false, observed: {started: false}}
+        };
+        const result = server.formatToolResult(failure);
+
         expect(result.isError).toBe(true);
-        expect(result.content[0].text).toContain('Tool Error: BadInput');
-        expect(result.content[0].text).toContain('Missing field');
-        expect(result.structuredContent).toBeUndefined();
+        expect(result.content[0].text).toContain('Tool Error: Drag gesture failed');
+        expect(result.content[0].text).toContain('Target node missing');
+        expect(result.structuredContent).toEqual(failure);
     });
 
     test('primitive (string) result → text-only with structuredContent={result}', () => {
