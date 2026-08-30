@@ -584,10 +584,7 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
 
             const {waiters} = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS, now: Date.now()});
             expect(waiters).toHaveLength(1);
-            // The cause fields are asserted HERE because this is the only place they are knowable.
-            // Asserting the bootstrap class alone leaves them unwitnessed: delete `reasonCode` /
-            // `blockingTaskName` / `leaseOwner` from the production writer and a fixture checking
-            // only `taskName` / `deferredSince` / `bootstrapCritical` stays green.
+            // Falsifier: without these three, deleting the cause from the production writer stays green.
             expect(waiters[0]).toMatchObject({
                 taskName         : 'tenant-repo-sync',
                 deferredSince    : since,
@@ -601,10 +598,8 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
     })
 });
 
-// The ROUND TRIP, and the witness the watchdog specs cannot provide: they feed hand-built entries
-// straight to the evaluator, so removing the write at registration is invisible to them. The cause is
-// known only at registration — one not written there is unrecoverable by any later consumer, not
-// merely unexposed.
+// The round trip the watchdog specs cannot provide: they hand-build entries for the evaluator, so a
+// missing write at registration is invisible to them. A cause not written there is unrecoverable.
 test.describe('the waiter ledger carries the cause from writer to reader (#239)', () => {
     let leasePath, dir;
 
@@ -667,29 +662,16 @@ test.describe('the waiter ledger carries the cause from writer to reader (#239)'
     });
 });
 
-// The specs above stop one hop short in BOTH directions: the round trip proves the ledger preserves
-// what it was handed, and the watchdog specs prove the evaluator projects what it was handed —
-// neither runs the production WRITER, so a cause the writer never passes is invisible to both. This
-// is the full chain, once per cause class:
+// The full chain — `recordDeferral` → `registerWaiterSync` → `listActiveWaitersSync` →
+// `evaluateWaiterStarvation` → `collectHeavyMaintenanceStarvationSnapshot` — because neither the
+// round trip nor the watchdog specs run the production WRITER.
 //
-//   MaintenanceBackpressureService.recordDeferral  (the only place the cause is known)
-//     → registerWaiterSync                         (durable ledger entry)
-//     → listActiveWaitersSync                      (the admission-clock read the watchdog uses)
-//     → evaluateWaiterStarvation                   (the breach)
-//     → collectHeavyMaintenanceStarvationSnapshot  (what the plane actually serves)
-//
-// The two classes are here because they carry DIFFERENT blocker fields, and a witness for only one
-// of them cannot tell a working chain from a chain that copies the wrong field: a lease hold names
-// an OWNER with no blocking task, a fairness yield names a blocking TASK with no owner. Run either
-// arm alone and swapping the two fields at any hop still passes.
-test.describe('a waiter\'s cause survives writer → ledger → evaluator → bridge (#242 RA-1)', () => {
+// Both classes are required: a lease hold names an OWNER with no blocking task, a fairness yield a
+// blocking TASK with no owner. On one arm alone, swapping the two fields at any hop still passes.
+test.describe('a waiter\'s cause survives writer → ledger → evaluator → bridge (#239)', () => {
     const DEGRADE_AFTER_MS = 30 * 60 * 1000;
 
-    /**
-     * Drives the REAL evaluator over the REAL ledger read, then the REAL bridge projection — the
-     * same three calls `scheduling/pipeline.mjs` makes, in the same order, over whatever the
-     * production writer left on disk.
-     */
+    /** The same three calls `scheduling/pipeline.mjs` makes, over whatever the writer left on disk. */
     function projectFromLedger({leasePath, now}) {
         const ledgerReading = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS, now}),
               evaluation    = evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs: DEGRADE_AFTER_MS, leaseHolder: null, leaseStatus: 'missing'}),

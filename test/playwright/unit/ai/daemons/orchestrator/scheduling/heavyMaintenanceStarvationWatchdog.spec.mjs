@@ -32,10 +32,8 @@ test.describe('orchestrator/scheduling/heavyMaintenanceStarvationWatchdog (#1704
         expect(evaluation.degraded).toBe(true);
         expect(evaluation.waiterCount).toBe(2);
         expect(evaluation.breaches).toHaveLength(1);
-        // Exact-shape on purpose: this is the receipt contract, so a field arriving or leaving is a
-        // deliberate change rather than a silent one. #239 added the four causal fields below — the
-        // fixture supplies no cause, so they read `null`, which is the honest value for a waiter
-        // whose reason was never recorded.
+        // Exact-shape on purpose: the receipt is a contract, so a field arriving or leaving must be a
+        // deliberate change. A fixture supplying no cause reads `null` — never a guessed one.
         expect(evaluation.breaches[0]).toEqual({
             taskName         : 'backup',
             priorityZero     : true,
@@ -247,11 +245,8 @@ test.describe('describeStarvationReceiptReachability — the producer/consumer p
     });
 });
 
-// `leaseHolder` describes ONE of the three reason classes that can register a waiter
-// (`lease-held`, `backpressure`, `yield-to-waiter`), so a breach carrying only the holder cannot say
-// why any particular waiter is waiting. Three live plane samples of one starvation produced three
-// different mechanisms for exactly this reason — sampling a surface that reports only the symptom
-// cannot converge on the cause.
+// `leaseHolder` describes ONE of the three classes that can register a waiter (`lease-held`,
+// `backpressure`, `yield-to-waiter`), so a holder-only breach cannot say why any waiter is waiting.
 test.describe('the waiter\'s OWN cause reaches the breach (#239)', () => {
     const NOW = Date.parse('2026-08-30T00:00:00.000Z'),
           OLD = new Date(NOW - 4 * HOUR).toISOString(),
@@ -314,12 +309,10 @@ test.describe('the waiter\'s OWN cause reaches the breach (#239)', () => {
     });
 });
 
-// The OpenAPI block is the contract a plane consumer reads instead of this source, so it can advertise
-// fewer fields than the breach carries and nothing fails — a consumer simply cannot discover
-// `reasonCode` exists. A doc describing a superseded shape is worse than no doc: it is a confident
-// wrong answer. Same drift class as the recognized-codes list, and it gets the same treatment — a
-// comparison rather than a comment.
-test.describe('the published breach schema equals the shipped breach (#242 RA-3)', () => {
+// The OpenAPI block is the contract a plane consumer reads instead of this source, so advertising
+// fewer fields than the breach carries fails nothing — it just makes `reasonCode` undiscoverable.
+// Guarded by comparison, not by a comment.
+test.describe('the published breach schema equals the shipped breach (#239)', () => {
     test('every field the evaluator emits is advertised, and nothing is advertised that it does not emit', async () => {
         const {parse} = await import('yaml'),
               fs      = (await import('node:fs')).default,

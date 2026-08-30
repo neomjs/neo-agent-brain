@@ -56,10 +56,9 @@ export const TASK_STALENESS_CADENCE_KEY = Object.freeze({
  * against, so admitting one widens the allowlist without widening what can legitimately reach it —
  * a category error rather than a generous default.
  *
- * The set is held in lockstep by a spec that parses the emitters out of their call expressions, not by
- * this docblock asking an editor to remember. Omitting a real emitter is the expensive direction: the
- * fairness class exists to protect a starving peer, and while it was absent its deferrals reached the
- * stall detector as skips it could not classify.
+ * A spec parses the emitters out of their call expressions and holds this set in lockstep. Omitting a
+ * real emitter is the expensive direction: its deferrals reach the stall detector as skips it cannot
+ * classify.
  * @type {ReadonlyArray<String>}
  */
 export const RECOGNIZED_DEFERRAL_REASON_CODES = Object.freeze([

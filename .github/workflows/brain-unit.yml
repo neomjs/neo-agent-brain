@@ -41,12 +41,8 @@ jobs:
             - name: Verify the received unit collection
               run: npm run test-unit -- --list
 
-            # `--list` above COLLECTS; it does not execute. At f7b9468 it reported
-            # `12139 did not run` and this step then ran 49 tests from three specs — so a green Brain
-            # Unit job says nothing about any spec not named here. #239's lockstep guard is a drift
-            # detector whose whole value is running on someone else's PR, which made it exactly the
-            # kind of spec that must not live outside the executing set. Added under #239; the wider
-            # question of a Brain CI that runs its own suite is #212's, not this list's.
+            # `--list` above COLLECTS; only the specs named here execute. A cross-PR drift detector
+            # is worthless outside this list, so it belongs in it.
             - name: Run the move-first Brain smoke
               run: >-
                   npm run test-unit --

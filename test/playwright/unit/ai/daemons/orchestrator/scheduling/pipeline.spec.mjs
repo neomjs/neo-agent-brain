@@ -1468,34 +1468,18 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
     });
 });
 
-// `RECOGNIZED_DEFERRAL_REASON_CODES` decides whether a `skipped` outcome counts as a DESIGNED
-// deferral (pipeline.mjs:1118); an unrecognized skip "can never mask a genuine stall". Its docblock
-// asks an editor to keep it in lockstep with the `recordDeferral` emitters, and a comment cannot
-// enforce that — which is why this compares the two sets instead.
+// `RECOGNIZED_DEFERRAL_REASON_CODES` must equal the set reachable through a `recordDeferral` call, or
+// a designed deferral reads as a stall (pipeline.mjs:1118). Contract: PARSE, because the property is
+// behaviour and text scanning measures spelling; DISCOVER callers by walking the tree, because a
+// hardcoded list cannot see a new file; and FAIL on an unresolvable `reasonCode`, because silence
+// about an emitter the guard cannot read is indistinguishable from approving it.
 //
-// ⚠️ It PARSES rather than scans, because the property under guard is behaviour and text scanning
-// measures spelling. Three syntax-valid emitters are invisible to any regex over property literals:
-//
-//   - a shorthand emitter — `const reasonCode = '…'; service.recordDeferral({reasonCode})` — carries
-//     no literal at the call site at all;
-//   - a `reasonText: ')'` earlier in the call closes a parenthesis-balanced span before the real
-//     `reasonCode` is reached;
-//   - an emitter in a file no hardcoded list names is unreachable by construction.
-//
-// `acorn` answers all three: a string containing `)` is a string, a shorthand property is a property,
-// and callers are DISCOVERED by walking the tree rather than enumerated.
-//
-// ⭐ The load-bearing rule is the last one, not the parser. An unresolvable `reasonCode` FAILS the
-// guard rather than going unreported, because silence about an emitter it cannot read is
-// indistinguishable from approving it — and that silence is what lets a scanning guard pass.
+// ⭐ That last rule is the load-bearing one — the mutant tests below name what each rule catches.
 test.describe('recognized deferral codes stay in lockstep with their emitters (#239)', () => {
     /**
-     * Every `reasonCode` reaching a `recordDeferral(...)` call in one module, plus the ones that could
-     * not be resolved to a string.
-     *
-     * `unresolved` is the load-bearing half. A guard that can only report what it understood will
-     * always pass on the construct it does not understand, which is the one an author is most likely
-     * to introduce next.
+     * Every `reasonCode` reaching a `recordDeferral(...)` call, plus the ones that resolved to no
+     * string. `unresolved` is the load-bearing half: a guard reporting only what it understood always
+     * passes on the construct it does not.
      */
     function extractDeferralEmitters(source, acorn) {
         const ast        = acorn.parse(source, {ecmaVersion: 'latest', sourceType: 'module'}),
@@ -1674,13 +1658,9 @@ test.describe('recognized deferral codes stay in lockstep with their emitters (#
         expect(service.source).toContain('heavy-maintenance-lease-acquire-error')
     });
 
-    // 🔴 THE RED CONTROLS. Each is a mutant a text-scanning guard passes, fed to the extractor as
-    // source so every falsifier runs rather than being described.
-    //
-    // ⚠️ Committed is not the same as executed: `brain-unit.yml` COLLECTS the suite (`--list`) and
-    // then runs a named handful, so a spec absent from that list is green by not having run. This
-    // file is named there — check it still is before reading a green Brain Unit job as evidence
-    // about anything in here.
+    // 🔴 RED CONTROLS — each a mutant a text-scanning guard passes, run rather than described.
+    // ⚠️ Setup hazard: `brain-unit.yml` executes only the specs it names, so check this file is still
+    // named there before reading a green Brain Unit job as evidence about anything in here.
     test.describe('mutants that defeated the text-scanning guards', () => {
         async function extract(source) {
             return extractDeferralEmitters(source, await import('acorn'))
