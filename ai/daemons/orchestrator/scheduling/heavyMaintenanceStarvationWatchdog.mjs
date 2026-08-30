@@ -57,12 +57,24 @@
  * @param {Number} options.now Current epoch milliseconds (injected clock).
  * @param {Number} options.degradeAfterMs Starvation bound; `<= 0` (or non-finite) disables — never degraded.
  * @param {String|null} [options.leaseHolder=null] Owner of the currently ACTIVE lease, or null when none.
+ * @param {String|null} [options.leaseStatus=null] Lease-file reading at check time (`active`, `missing`,
+ * `stale`, `unreadable`, `malformed`). Four of those five report a null holder, so this is the
+ * discriminator a holderless breach needs.
  * @returns {{posture: String, degraded: Boolean, breaches: Object[], waiterCount: Number,
- *   unreadableCount: Number, degradeAfterMs: Number, leaseHolder: (String|null)}} `breaches` entries
- *   carry `{taskName, priorityZero, bootstrapCritical, deferredSince, starvedForMs, leaseHolder}` —
- *   the receipt the consumed health projection publishes.
+ *   unreadableCount: Number, degradeAfterMs: Number, leaseHolder: (String|null), leaseStatus: (String|null)}}
+ *   `breaches` entries carry `{taskName, priorityZero, bootstrapCritical, deferredSince, starvedForMs,
+ *   leaseHolder, reasonCode, blockingTaskName, leaseOwner, leaseStatus}` — the receipt the consumed
+ *   health projection publishes.
+ *
+ *   Two clocks live in that shape and confusing them is the whole reason it exists. `leaseHolder` and
+ *   `leaseStatus` are CHECK-time facts: identical on every breach in one receipt, and therefore unable
+ *   to say why any individual waiter is queued. `reasonCode`, `blockingTaskName` and `leaseOwner` are
+ *   copied from the waiter's OWN registration, so they stay true after the holder changed or the lease
+ *   went stale — exactly when the check-time pair stops explaining the queue. Three mechanisms can
+ *   register a waiter and they take different remedies; `reasonCode` is the only field that separates
+ *   them, and it reads `null` rather than guessing when a waiter's cause was never recorded.
  */
-export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, leaseHolder = null} = {}) {
+export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, leaseHolder = null, leaseStatus = null} = {}) {
     const waiters    = Array.isArray(ledgerReading?.waiters)    ? ledgerReading.waiters    : [];
     const unreadable = Array.isArray(ledgerReading?.unreadable) ? ledgerReading.unreadable : [];
     const breaches   = [];
@@ -79,7 +91,21 @@ export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, le
                     bootstrapCritical: entry.bootstrapCritical === true,
                     deferredSince    : entry.deferredSince,
                     starvedForMs,
-                    leaseHolder
+                    leaseHolder,
+                    // `leaseHolder` describes ONE of the three reason classes that can register a
+                    // waiter, so on its own a breach cannot tell a lease-held waiter from an
+                    // intra-process-backpressure one or a fairness abstention. These three fields are
+                    // the waiter's own cause, carried from the emitter that knew it.
+                    reasonCode      : entry.reasonCode ?? null,
+                    blockingTaskName: entry.blockingTaskName ?? null,
+                    // The lease class's blocker, a DIFFERENT field from the intra-process one on
+                    // purpose: a backpressure conflict names a TASK, a lease hold names an OWNER. One
+                    // field carrying both would have to lie about one of them.
+                    leaseOwner      : entry.leaseOwner ?? null,
+                    // The holder-side discriminator belongs on the breach and not only on the
+                    // maintenance block: a null `leaseHolder` is unreadable without it, and the two
+                    // halves of one question are useless on separate objects.
+                    leaseStatus     : leaseStatus ?? null
                 });
             }
         }
@@ -98,6 +124,7 @@ export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, le
         degraded       : posture === 'degraded',
         breaches,
         waiterCount    : waiters.length,
+        leaseStatus,
         unreadableCount: unreadable.length,
         degradeAfterMs,
         leaseHolder

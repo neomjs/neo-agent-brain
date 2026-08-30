@@ -17,8 +17,10 @@ import {
     WAITER_ENTRY_STALE_AFTER_MS,
     recordDeferral
 } from '../../../../../../../ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs';
-import {PRIORITY_ZERO_TASKS} from '../../../../../../../ai/daemons/orchestrator/scheduling/pipeline.mjs';
-import {pickNextCandidate}   from '../../../../../../../ai/daemons/orchestrator/scheduling/picker.mjs';
+import {evaluateWaiterStarvation}   from '../../../../../../../ai/daemons/orchestrator/scheduling/heavyMaintenanceStarvationWatchdog.mjs';
+import DeploymentStateBridgeService from '../../../../../../../ai/daemons/orchestrator/services/DeploymentStateBridgeService.mjs';
+import {PRIORITY_ZERO_TASKS}        from '../../../../../../../ai/daemons/orchestrator/scheduling/pipeline.mjs';
+import {pickNextCandidate}          from '../../../../../../../ai/daemons/orchestrator/scheduling/picker.mjs';
 
 const T0   = Date.parse('2026-08-13T10:00:00.000Z');
 const HOUR = 60 * 60 * 1000;
@@ -28,6 +30,29 @@ function tmpLeasePath() {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'waiter-ledger-'));
     return path.join(dir, 'heavy-maintenance-lease.json');
 }
+
+    function buildService({leasePath, taskState = {}, acquireResult, dataDir}) {
+        const outcomes = [];
+        const service  = Neo.create(MaintenanceBackpressureService, {
+            heavyMaintenanceTaskNames: DEFAULT_HEAVY_MAINTENANCE_TASK_NAMES,
+            writeLog                 : () => {},
+            dataDir                  : dataDir ?? null,
+            // acquireLeaseAndExecute's fairness gate calls isBootstrapCriticalTask, which kicks
+            // the lazy coverage refresh — without this seam these arms would run the real tiered
+            // resolver in the background and touch the tenant sync lane's lease guards.
+            resolveConfiguredTenantRepoLabelsFn: async () => null,
+            healthService                      : {recordTaskOutcome: (name, status, payload) => outcomes.push({name, status, payload})},
+            taskStateService                   : {
+                getTaskState: name => taskState[name] ?? null,
+                markDeferred: name => taskState[name]?.deferralStreakStartedAt ?? null
+            },
+            acquireLeaseFn: () => acquireResult,
+            releaseLeaseFn: () => {}
+        });
+
+        service.resolveHeavyMaintenanceLeasePath = () => leasePath;
+        return {service, outcomes};
+    }
 
 test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger (#16561)', () => {
 
@@ -482,29 +507,6 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
 
     test.describe('acquireLeaseAndExecute integration — the gate at the single acquisition point', () => {
 
-        function buildService({leasePath, taskState = {}, acquireResult, dataDir}) {
-            const outcomes = [];
-            const service  = Neo.create(MaintenanceBackpressureService, {
-                heavyMaintenanceTaskNames: DEFAULT_HEAVY_MAINTENANCE_TASK_NAMES,
-                writeLog                 : () => {},
-                dataDir                  : dataDir ?? null,
-                // acquireLeaseAndExecute's fairness gate calls isBootstrapCriticalTask, which kicks
-                // the lazy coverage refresh — without this seam these arms would run the real tiered
-                // resolver in the background and touch the tenant sync lane's lease guards.
-                resolveConfiguredTenantRepoLabelsFn: async () => null,
-                healthService                      : {recordTaskOutcome: (name, status, payload) => outcomes.push({name, status, payload})},
-                taskStateService                   : {
-                    getTaskState: name => taskState[name] ?? null,
-                    markDeferred: name => taskState[name]?.deferralStreakStartedAt ?? null
-                },
-                acquireLeaseFn: () => acquireResult,
-                releaseLeaseFn: () => {}
-            });
-
-            service.resolveHeavyMaintenanceLeasePath = () => leasePath;
-            return {service, outcomes};
-        }
-
         test('an acquirer yields to a registered starving waiter and records the deferral', () => {
             const leasePath = tmpLeasePath();
 
@@ -582,8 +584,187 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
 
             const {waiters} = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS, now: Date.now()});
             expect(waiters).toHaveLength(1);
-            expect(waiters[0]).toMatchObject({taskName: 'tenant-repo-sync', deferredSince: since, bootstrapCritical: true});
+            // Falsifier: without these three, deleting the cause from the production writer stays green.
+            expect(waiters[0]).toMatchObject({
+                taskName         : 'tenant-repo-sync',
+                deferredSince    : since,
+                bootstrapCritical: true,
+                reasonCode       : 'heavy-maintenance-lease-held',
+                blockingTaskName : null,
+                leaseOwner       : 'dream'
+            });
             service.destroy()
         })
+    })
+});
+
+// The round trip the watchdog specs cannot provide: they hand-build entries for the evaluator, so a
+// missing write at registration is invisible to them. A cause not written there is unrecoverable.
+test.describe('the waiter ledger carries the cause from writer to reader (#239)', () => {
+    let leasePath, dir;
+
+    test.beforeEach(async () => {
+        dir       = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-waiter-cause-'));
+        leasePath = path.join(dir, 'heavy-maintenance-lease.json');
+    });
+
+    test.afterEach(async () => {
+        await fs.remove(dir);
+    });
+
+    test('reasonCode, blockingTaskName and leaseOwner survive the write/read round trip', () => {
+        registerWaiterSync({
+            leasePath,
+            taskName        : 'dream',
+            deferredSince   : new Date(Date.now() - 60_000).toISOString(),
+            reasonCode      : 'heavy-maintenance-backpressure',
+            blockingTaskName: 'summary',
+            leaseOwner      : null
+        });
+
+        const {waiters} = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS});
+
+        expect(waiters).toHaveLength(1);
+        expect(waiters[0].reasonCode).toBe('heavy-maintenance-backpressure');
+        expect(waiters[0].blockingTaskName).toBe('summary');
+    });
+
+    test('the lease owner travels for the lease-held class, where blockingTaskName is not the blocker', () => {
+        registerWaiterSync({
+            leasePath,
+            taskName     : 'kbSync',
+            deferredSince: new Date(Date.now() - 60_000).toISOString(),
+            reasonCode   : 'heavy-maintenance-lease-held',
+            leaseOwner   : 'tenant-repo-sync'
+        });
+
+        const {waiters} = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS});
+
+        // Two reason classes, two different blocker fields: an intra-process conflict names a TASK,
+        // a lease hold names an OWNER. One field could not carry both without lying about one.
+        expect(waiters[0].reasonCode).toBe('heavy-maintenance-lease-held');
+        expect(waiters[0].leaseOwner).toBe('tenant-repo-sync');
+        expect(waiters[0].blockingTaskName).toBe(null);
+    });
+
+    test('an omitted cause reads null — an unknown reason is never a guessed one', () => {
+        registerWaiterSync({
+            leasePath,
+            taskName     : 'summary',
+            deferredSince: new Date(Date.now() - 60_000).toISOString()
+        });
+
+        const {waiters} = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS});
+
+        expect(waiters[0].reasonCode).toBe(null);
+        expect(waiters[0].blockingTaskName).toBe(null);
+        expect(waiters[0].leaseOwner).toBe(null);
+    });
+});
+
+// The full chain — `recordDeferral` → `registerWaiterSync` → `listActiveWaitersSync` →
+// `evaluateWaiterStarvation` → `collectHeavyMaintenanceStarvationSnapshot` — because neither the
+// round trip nor the watchdog specs run the production WRITER.
+//
+// Both classes are required: a lease hold names an OWNER with no blocking task, a fairness yield a
+// blocking TASK with no owner. On one arm alone, swapping the two fields at any hop still passes.
+test.describe('a waiter\'s cause survives writer → ledger → evaluator → bridge (#239)', () => {
+    const DEGRADE_AFTER_MS = 30 * 60 * 1000;
+
+    /** The same three calls `scheduling/pipeline.mjs` makes, over whatever the writer left on disk. */
+    function projectFromLedger({leasePath, now}) {
+        const ledgerReading = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS, now}),
+              evaluation    = evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs: DEGRADE_AFTER_MS, leaseHolder: null, leaseStatus: 'missing'}),
+              verdict       = {posture: evaluation.posture, breaches: evaluation.breaches, leaseHolder: evaluation.leaseHolder, leaseStatus: evaluation.leaseStatus};
+
+        return DeploymentStateBridgeService.prototype.collectHeavyMaintenanceStarvationSnapshot({watchdogTaskState: {starvation: verdict}});
+    }
+
+    test('the lease-held class carries its OWNER to the served snapshot, with no blocking task', () => {
+        const leasePath = tmpLeasePath(),
+              now       = Date.now(),
+              since     = iso(now - 4 * HOUR);
+
+        const {service} = buildService({
+            leasePath,
+            taskState    : {'tenant-repo-sync': {deferralStreakStartedAt: since}},
+            acquireResult: {acquired: false, lease: {owner: 'dream', pid: 42}}
+        });
+
+        service.acquireLeaseAndExecute({taskName: 'tenant-repo-sync', executeFn: () => true, reason: 'scheduled', activeHeavyTask: {name: null}});
+
+        const snapshot = projectFromLedger({leasePath, now});
+
+        expect(snapshot.posture).toBe('degraded');
+        expect(snapshot.breaches).toHaveLength(1);
+        expect(snapshot.breaches[0]).toMatchObject({
+            taskName        : 'tenant-repo-sync',
+            reasonCode      : 'heavy-maintenance-lease-held',
+            leaseOwner      : 'dream',
+            blockingTaskName: null
+        });
+        service.destroy()
+    });
+
+    test('the fairness-yield class carries its blocking TASK, and names no owner', () => {
+        const leasePath = tmpLeasePath(),
+              now       = Date.now(),
+              since     = iso(now - 4 * HOUR);
+
+        // A starving waiter already registered is what makes the acquirer yield; the acquirer's own
+        // deferral is the entry under test, so the pre-existing one is cleared before the read.
+        registerWaiterSync({leasePath, taskName: 'tenant-repo-sync', deferredSince: since, now});
+
+        // `dream`'s own streak must be SHORTER than the waiter's or fairness correctly refuses to
+        // yield — an acquirer at least as starved as the queue is not the one that should step
+        // aside. One hour still clears the 30-minute degrade bound, so the yield registers a
+        // breaching waiter rather than a merely present one.
+        const {service} = buildService({
+            leasePath,
+            taskState    : {dream: {deferralStreakStartedAt: iso(now - HOUR)}},
+            acquireResult: {acquired: true, lease: {token: 't1'}}
+        });
+
+        service.acquireLeaseAndExecute({taskName: 'dream', executeFn: () => true, reason: 'scheduled', activeHeavyTask: {name: null}});
+        clearWaiterSync({leasePath, taskName: 'tenant-repo-sync'});
+
+        const snapshot = projectFromLedger({leasePath, now});
+
+        expect(snapshot.breaches).toHaveLength(1);
+        expect(snapshot.breaches[0]).toMatchObject({
+            taskName        : 'dream',
+            reasonCode      : 'heavy-maintenance-yield-to-waiter',
+            blockingTaskName: 'tenant-repo-sync',
+            leaseOwner      : null
+        });
+        service.destroy()
+    });
+
+    // 🔴 The discrimination the two arms exist for, asserted directly rather than left to a reader
+    // comparing two tests: neither class's blocker field may leak into the other's.
+    test('the two classes do not share a blocker field — a swap at any hop is visible', () => {
+        const leasePath = tmpLeasePath(),
+              now       = Date.now(),
+              since     = iso(now - 4 * HOUR);
+
+        registerWaiterSync({leasePath, taskName: 'seed', deferredSince: since, now});
+
+        const {service} = buildService({
+            leasePath,
+            taskState    : {dream: {deferralStreakStartedAt: since}, 'tenant-repo-sync': {deferralStreakStartedAt: since}},
+            acquireResult: {acquired: false, lease: {owner: 'rem', pid: 7}}
+        });
+
+        service.acquireLeaseAndExecute({taskName: 'tenant-repo-sync', executeFn: () => true, reason: 'scheduled', activeHeavyTask: {name: null}});
+        clearWaiterSync({leasePath, taskName: 'seed'});
+
+        const held = projectFromLedger({leasePath, now}).breaches.find(breach => breach.taskName === 'tenant-repo-sync');
+
+        expect(held.leaseOwner).toBe('rem');
+        expect(held.blockingTaskName).toBeNull();
+        // …and the owner is NOT the task name, so a chain that copied `taskName` into `leaseOwner`
+        // would fail here rather than read plausibly.
+        expect(held.leaseOwner).not.toBe(held.taskName);
+        service.destroy()
     })
 });

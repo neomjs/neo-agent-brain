@@ -48,16 +48,25 @@ export const TASK_STALENESS_CADENCE_KEY = Object.freeze({
  * emits onto a deferred task's `skipped` outcome. The REM-consolidation watchdog re-labels a recent
  * `dream` (REM producer) skip as a `designed-deferral` boot-freshness disposition ONLY when its
  * `reasonCode` is one of these AND it carries a recency-bounded deferral-specific `deferredAt` — so a
- * generic or unrecognized skip is NOT a designed deferral and can never mask a genuine stall. Keep in
- * lockstep with the `recordDeferral` emitters in `MaintenanceBackpressureService`.
+ * generic or unrecognized skip is NOT a designed deferral and can never mask a genuine stall.
+ *
+ * This is exactly the set reachable through a `recordDeferral(...)` call, and membership is decided by
+ * OUTCOME CLASS rather than by topic. A code emitted through `recordTaskOutcome(name, 'failed', …)`
+ * belongs to a failed outcome and can never appear on the `skipped` status this list is consulted
+ * against, so admitting one widens the allowlist without widening what can legitimately reach it —
+ * a category error rather than a generous default.
+ *
+ * A spec parses the emitters out of their call expressions and holds this set in lockstep. Omitting a
+ * real emitter is the expensive direction: its deferrals reach the stall detector as skips it cannot
+ * classify.
  * @type {ReadonlyArray<String>}
  */
 export const RECOGNIZED_DEFERRAL_REASON_CODES = Object.freeze([
     'heavy-maintenance-shed-window',
     'heavy-maintenance-backpressure',
-    'heavy-maintenance-lease-acquire-error',
     'heavy-maintenance-lease-held',
-    'golden-path-dependency-backpressure'
+    'golden-path-dependency-backpressure',
+    'heavy-maintenance-yield-to-waiter'
 ]);
 
 /**
@@ -811,7 +820,10 @@ async function runHeavyMaintenanceStarvationWatchdogTask({taskName, reason, serv
             ledgerReading,
             now,
             degradeAfterMs: runtime.heavyMaintenanceStarvationDegradeAfterMs,
-            leaseHolder
+            leaseHolder,
+            // The holder-side discriminator is computed here for the maintenance block; the breach
+            // needs it too, or the two halves of "why is nothing running" sit on different objects.
+            leaseStatus   : inspection.status
         });
 
         if (evaluation.unreadableCount > 0) {
@@ -850,7 +862,14 @@ async function runHeavyMaintenanceStarvationWatchdogTask({taskName, reason, serv
 
         if (evaluation.posture === 'degraded') {
             services.healthService?.recordTaskOutcome?.(taskName, 'failed', details);
-            runtime.writeLog?.('WARN', `[Orchestrator] heavy-maintenance-starvation-watchdog: ${evaluation.breaches.length} waiter(s) starved past ${evaluation.degradeAfterMs}ms under holder ${evaluation.leaseHolder ?? 'none'}: ${evaluation.breaches.map(breach => `${breach.taskName} (deferred since ${breach.deferredSince})`).join(', ')} — the fairness yield bound has been exceeded; the lease pipeline is not admitting its waiters.`);
+            // Reports the cause each waiter REPORTS, and says `unreported` plainly when it has none.
+            // Three reason classes can register a waiter, and this reading cannot isolate one of them
+            // from the others — so the line states what was observed and leaves the diagnosis to its
+            // reader. A log that names a mechanism it cannot distinguish is read as a finding, and
+            // sends whoever acts on it after the wrong one.
+            const causes = evaluation.breaches.map(breach => `${breach.taskName} (deferred since ${breach.deferredSince}, cause ${breach.reasonCode ?? 'unreported'}${breach.blockingTaskName ? ` behind ${breach.blockingTaskName}` : ''})`);
+
+            runtime.writeLog?.('WARN', `[Orchestrator] heavy-maintenance-starvation-watchdog: ${evaluation.breaches.length} waiter(s) starved past ${evaluation.degradeAfterMs}ms; lease holder ${evaluation.leaseHolder ?? 'none'} (status ${evaluation.leaseStatus ?? 'unknown'}): ${causes.join(', ')}. Each waiter's own reason code is the discriminator; the holder alone does not identify why any of them is waiting.`);
         } else if (evaluation.posture === 'unknown') {
             // Inconclusive is neither green nor red: recorded as skipped (the check ran, the answer
             // could not be asserted), and the posture — not the outcome word — is what consumers read.

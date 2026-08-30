@@ -8,8 +8,8 @@ import {listActiveWaitersSync} from '../../../../../../../ai/daemons/orchestrato
 
 const HOUR = 60 * 60 * 1000;
 
-function waiterEntry({taskName, deferredSince, updatedAt = deferredSince, priorityZero = false, bootstrapCritical = false}) {
-    return {taskName, deferredSince, updatedAt, priorityZero, bootstrapCritical, pid: 4242};
+function waiterEntry({taskName, deferredSince, updatedAt = deferredSince, priorityZero = false, bootstrapCritical = false, reasonCode = null, blockingTaskName = null}) {
+    return {taskName, deferredSince, updatedAt, priorityZero, bootstrapCritical, reasonCode, blockingTaskName, pid: 4242};
 }
 
 test.describe('orchestrator/scheduling/heavyMaintenanceStarvationWatchdog (#17049 / #16561)', () => {
@@ -32,13 +32,19 @@ test.describe('orchestrator/scheduling/heavyMaintenanceStarvationWatchdog (#1704
         expect(evaluation.degraded).toBe(true);
         expect(evaluation.waiterCount).toBe(2);
         expect(evaluation.breaches).toHaveLength(1);
+        // Exact-shape on purpose: the receipt is a contract, so a field arriving or leaving must be a
+        // deliberate change. A fixture supplying no cause reads `null` — never a guessed one.
         expect(evaluation.breaches[0]).toEqual({
             taskName         : 'backup',
             priorityZero     : true,
             bootstrapCritical: false,
             deferredSince    : new Date(now - 2 * HOUR).toISOString(),
             starvedForMs     : 2 * HOUR,
-            leaseHolder      : 'dream'
+            leaseHolder      : 'dream',
+            reasonCode       : null,
+            blockingTaskName : null,
+            leaseOwner       : null,
+            leaseStatus      : null
         });
     });
 
@@ -237,4 +243,122 @@ test.describe('describeStarvationReceiptReachability — the producer/consumer p
             expect(describeStarvationReceiptReachability(pair).reachable).toBe(false);
         }
     });
+});
+
+// `leaseHolder` describes ONE of the three classes that can register a waiter (`lease-held`,
+// `backpressure`, `yield-to-waiter`), so a holder-only breach cannot say why any waiter is waiting.
+test.describe('the waiter\'s OWN cause reaches the breach (#239)', () => {
+    const NOW = Date.parse('2026-08-30T00:00:00.000Z'),
+          OLD = new Date(NOW - 4 * HOUR).toISOString(),
+
+          evaluate = (waiters, extra = {}) => evaluateWaiterStarvation({
+              ledgerReading : {waiters, unreadable: []},
+              now           : NOW,
+              degradeAfterMs: HOUR,
+              ...extra
+          });
+
+    test('two waiters with the SAME null holder are distinguishable by their own reason codes', () => {
+        const {breaches} = evaluate([
+            waiterEntry({taskName: 'dream',  deferredSince: OLD, reasonCode: 'heavy-maintenance-lease-held'}),
+            waiterEntry({taskName: 'kbSync', deferredSince: OLD, reasonCode: 'heavy-maintenance-backpressure', blockingTaskName: 'summary'})
+        ], {leaseHolder: null});
+
+        // The field that used to be the only causal one is identical across both.
+        expect(breaches.map(b => b.leaseHolder)).toEqual([null, null]);
+
+        // The field that discriminates them is not.
+        expect(breaches.map(b => b.reasonCode))
+            .toEqual(['heavy-maintenance-lease-held', 'heavy-maintenance-backpressure']);
+        expect(breaches[1].blockingTaskName).toBe('summary');
+    });
+
+    test('a waiter whose cause was never recorded reports null, never a guessed one', () => {
+        const {breaches} = evaluate([waiterEntry({taskName: 'dream', deferredSince: OLD})], {leaseHolder: 'summary'});
+
+        // An entry written before the field existed still reads — the ledger projects the whole
+        // entry rather than an allowlist — and its unknown cause stays unknown.
+        expect(breaches[0].reasonCode).toBe(null);
+        expect(breaches[0].blockingTaskName).toBe(null);
+        expect(breaches[0].leaseHolder).toBe('summary');
+    });
+
+    // `leaseStatus` qualifies a null holder, but it lands on the maintenance block —
+    // so the two halves of "why is nothing running" lived on different objects.
+    test('the holder-side discriminator travels WITH the breach, not beside it', () => {
+        const {breaches, leaseStatus} = evaluate(
+            [waiterEntry({taskName: 'dream', deferredSince: OLD, reasonCode: 'heavy-maintenance-lease-held'})],
+            {leaseHolder: null, leaseStatus: 'stale'}
+        );
+
+        expect(breaches[0].leaseStatus).toBe('stale');
+        expect(leaseStatus).toBe('stale');
+    });
+
+    // 🔴 THE FALSIFIER THIS EXISTS TO ENABLE. A payload whose breaches report a null holder and no
+    // cause must not be readable as a lease finding. If this passes while every causal field is
+    // absent, the exposure did not do its job.
+    test('a holder-only breach carries no evidence for ANY specific mechanism', () => {
+        const {breaches} = evaluate([waiterEntry({taskName: 'dream', deferredSince: OLD})], {leaseHolder: null});
+        const causal     = ['reasonCode', 'blockingTaskName', 'leaseStatus'].filter(k => breaches[0][k] != null);
+
+        // Nothing here identifies a mechanism — and the shape says so explicitly rather than
+        // leaving `leaseHolder: null` to be read as "the lease is the problem".
+        expect(causal).toEqual([]);
+        expect(breaches[0].leaseHolder).toBe(null);
+    });
+});
+
+// The OpenAPI block is the contract a plane consumer reads instead of this source, so advertising
+// fewer fields than the breach carries fails nothing — it just makes `reasonCode` undiscoverable.
+// Guarded by comparison, not by a comment.
+test.describe('the published breach schema equals the shipped breach (#239)', () => {
+    test('every field the evaluator emits is advertised, and nothing is advertised that it does not emit', async () => {
+        const {parse} = await import('yaml'),
+              fs      = (await import('node:fs')).default,
+              url     = await import('node:url'),
+              here    = url.fileURLToPath(import.meta.url),
+              root    = here.slice(0, here.indexOf('/test/playwright/')),
+              doc     = parse(fs.readFileSync(`${root}/ai/mcp/server/memory-core/openapi.yaml`, 'utf8'));
+
+        function findBreachSchema(node) {
+            if (node && typeof node === 'object') {
+                if (typeof node.description === 'string' && node.description.startsWith('Starved-waiter receipt')) return node;
+
+                for (const key of Object.keys(node)) {
+                    const found = findBreachSchema(node[key]);
+                    if (found) return found
+                }
+            }
+
+            return null
+        }
+
+        const schema = findBreachSchema(doc);
+
+        // Positive control: a walk that found nothing would make both comparisons below vacuous.
+        expect(schema, 'breach schema not found in openapi.yaml').toBeTruthy();
+
+        const now        = Date.parse('2026-08-30T12:00:00.000Z'),
+              evaluation = evaluateWaiterStarvation({
+                  ledgerReading : {waiters: [{
+                      taskName        : 'tenant-repo-sync',
+                      priorityZero    : true,
+                      deferredSince   : new Date(now - 4 * 60 * 60 * 1000).toISOString(),
+                      updatedAt       : new Date(now).toISOString(),
+                      reasonCode      : 'heavy-maintenance-lease-held',
+                      blockingTaskName: null,
+                      leaseOwner      : 'dream'
+                  }], unreadable: []},
+                  now,
+                  degradeAfterMs: 30 * 60 * 1000,
+                  leaseHolder   : 'dream',
+                  leaseStatus   : 'active'
+              });
+
+        const emitted    = Object.keys(evaluation.breaches[0]).sort(),
+              advertised = Object.keys(schema.items.properties).sort();
+
+        expect(advertised).toEqual(emitted)
+    })
 });

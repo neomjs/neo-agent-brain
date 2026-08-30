@@ -57,12 +57,21 @@ function waiterFilePath(dir, taskName) {
  * uncheckpointed repos). Evaluated fresh on every registration so the class evaporates the
  * moment the underlying state completes.
  * @param {String} options.deferredSince Durable streak start (ISO) from the task envelope.
+ * @param {String|null} [options.reasonCode=null] Why this waiter registered — one of
+ * `heavy-maintenance-lease-held`, `heavy-maintenance-backpressure`, `heavy-maintenance-yield-to-waiter`.
+ * Known HERE and nowhere downstream: the starvation surface reads this ledger, so a cause not written
+ * at registration is unrecoverable by any later consumer rather than merely unexposed.
+ * @param {String|null} [options.blockingTaskName=null] The in-process task this waiter stood behind
+ * (backpressure and fairness-yield classes). Null for a lease hold, whose blocker is an owner, not a task.
+ * @param {String|null} [options.leaseOwner=null] The lease owner this waiter deferred behind, captured
+ * at ITS deferral. A separate field from `blockingTaskName` on purpose — one field carrying both would
+ * have to lie about one of the two classes.
  * @param {Object} [options.fsModule=fs] Injected fs for fixtures.
  * @param {Date|Number} [options.now=new Date()] Clock seam.
  * @param {Number} [options.pid=process.pid] Recorded for forensics, not liveness.
  * @returns {Object} The persisted waiter entry.
  */
-export function registerWaiterSync({leasePath, taskName, priorityZero = false, bootstrapCritical = false, deferredSince, fsModule = fs, now = new Date(), pid = process.pid} = {}) {
+export function registerWaiterSync({leasePath, taskName, priorityZero = false, bootstrapCritical = false, deferredSince, reasonCode = null, blockingTaskName = null, leaseOwner = null, fsModule = fs, now = new Date(), pid = process.pid} = {}) {
     if (!taskName) {
         throw new TypeError('registerWaiterSync: taskName is required');
     }
@@ -73,11 +82,23 @@ export function registerWaiterSync({leasePath, taskName, priorityZero = false, b
 
     const dir = resolveWaitersDir({leasePath});
 
+    // The waiter's OWN cause travels with it. Three reason classes register here, and
+    // `leaseHolder` on the starvation surface describes exactly one of them — so without this a
+    // breach cannot distinguish a lease-held waiter from an intra-process-backpressure one or a
+    // fairness abstention, and a reader is left inferring a mechanism from the one field that
+    // happens to be exposed — an inference that lands on a different answer each time it is made.
+    //
+    // Null-tolerant by design: an older entry written before this field existed still reads,
+    // because `listActiveWaitersSync` projects the whole entry rather than an allowlist. A waiter
+    // whose cause is unknown reports `null` — never a guessed one.
     const entry = {
         taskName,
         priorityZero     : priorityZero === true,
         bootstrapCritical: bootstrapCritical === true,
         deferredSince,
+        reasonCode       : typeof reasonCode === 'string' && reasonCode ? reasonCode : null,
+        blockingTaskName : typeof blockingTaskName === 'string' && blockingTaskName ? blockingTaskName : null,
+        leaseOwner       : typeof leaseOwner === 'string' && leaseOwner ? leaseOwner : null,
         updatedAt        : new Date(typeof now === 'number' ? now : now.getTime()).toISOString(),
         pid
     };

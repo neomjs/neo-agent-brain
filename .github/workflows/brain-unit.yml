@@ -41,9 +41,12 @@ jobs:
             - name: Verify the received unit collection
               run: npm run test-unit -- --list
 
+            # `--list` above COLLECTS; only the specs named here execute. A cross-PR drift detector
+            # is worthless outside this list, so it belongs in it.
             - name: Run the move-first Brain smoke
               run: >-
                   npm run test-unit --
                   test/playwright/unit/ai/AgentOrchestrator.spec.mjs
                   test/playwright/unit/ai/Env.spec.mjs
                   test/playwright/unit/harness/terminateDaemon.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/scheduling/pipeline.spec.mjs

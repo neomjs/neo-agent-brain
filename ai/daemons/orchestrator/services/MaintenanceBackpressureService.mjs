@@ -683,7 +683,13 @@ export class MaintenanceBackpressureService extends Base {
                     taskName,
                     priorityZero     : this.isPriorityZeroTask(taskName),
                     bootstrapCritical: this.isBootstrapCriticalTask(taskName),
-                    deferredSince    : outcome.deferredSince
+                    deferredSince    : outcome.deferredSince,
+                    // The cause is known HERE and nowhere downstream. The starvation surface reads
+                    // the ledger, so a cause not written at registration is unrecoverable by any
+                    // later consumer — it is not merely unexposed, it is gone.
+                    reasonCode,
+                    blockingTaskName,
+                    leaseOwner       : holdingLease?.owner ?? null
                 });
             } catch (e) {
                 this.writeLog('ERROR', `[Orchestrator] Waiter registration failed for ${taskName}: ${e.message}`);

@@ -3707,7 +3707,7 @@ components:
           example: "2025-10-24T10:00:00.000Z"
         heavyMaintenanceStarvation:
           type: object
-          description: "Consumed heavy-maintenance starvation observation, request-fresh on every response including cached and unhealthy paths. `state` records what the aggregate verdict consumed: `consumed-degraded` (a fresh degraded watchdog receipt lowered `status` to degraded), `consumed-clear`, `receipt-stale`, `absent`, `snapshot-stale`, `snapshot-degraded`, `snapshot-unavailable`, or `fold-error` — only `consumed-degraded` ever changes `status`. `posture` echoes the watchdog receipt's four-state verdict when present; `breaches` and `leaseHolder` carry the consumed receipt on `consumed-degraded`."
+          description: "Consumed heavy-maintenance starvation observation, request-fresh on every response including cached and unhealthy paths. `state` records what the aggregate verdict consumed: `consumed-degraded` (a fresh degraded watchdog receipt lowered `status` to degraded), `consumed-clear`, `receipt-stale`, `absent`, `snapshot-stale`, `snapshot-degraded`, `snapshot-unavailable`, or `fold-error` — only `consumed-degraded` ever changes `status`. `posture` echoes the watchdog receipt's four-state verdict when present; `breaches` and `leaseHolder` carry the consumed receipt on `consumed-degraded`; each breach carries its OWN `reasonCode` / `blockingTaskName` / `leaseOwner` plus the check-time `leaseStatus`, because the holder alone cannot identify why any individual waiter is queued."
           properties:
             state:
               type: string
@@ -3748,7 +3748,30 @@ components:
                   leaseHolder:
                     type: string
                     nullable: true
+                    description: "Holder of the lease at CHECK time — a property of the moment, not of this waiter. Identical across every breach in one receipt, and null for four distinct lease readings, so it cannot say why any individual waiter is waiting. The three fields below are the per-waiter answer."
                     example: "dream"
+                  reasonCode:
+                    type: string
+                    nullable: true
+                    description: "Why THIS waiter registered, recorded at its own deferral: `heavy-maintenance-lease-held`, `heavy-maintenance-backpressure` or `heavy-maintenance-yield-to-waiter`. Three different mechanisms can produce one breach and they take different remedies. Null when the waiter predates the field or its cause was never recorded — an unreported cause is reported as unreported, never inferred from the holder."
+                    enum: [heavy-maintenance-lease-held, heavy-maintenance-backpressure, heavy-maintenance-yield-to-waiter]
+                    example: "heavy-maintenance-lease-held"
+                  blockingTaskName:
+                    type: string
+                    nullable: true
+                    description: "The in-process task this waiter stood behind, for the backpressure and fairness-yield classes. Null for `heavy-maintenance-lease-held`, whose blocker is a lease owner rather than a task — see `leaseOwner`."
+                    example: "tenant-repo-sync"
+                  leaseOwner:
+                    type: string
+                    nullable: true
+                    description: "The lease owner this waiter deferred behind, captured at ITS deferral rather than at check time — so it stays correct after the holder changed or the lease went stale, which is exactly when `leaseHolder` stops explaining the queue. Null outside the `heavy-maintenance-lease-held` class."
+                    example: "dream"
+                  leaseStatus:
+                    type: string
+                    nullable: true
+                    description: "Lease-file reading at check time: `active`, `missing`, `stale`, `unreadable` or `malformed`. The discriminator a null `leaseHolder` needs — four of those five report no holder, and only `stale` explains waiters queued behind a holder that died without releasing."
+                    enum: [active, missing, stale, unreadable, malformed]
+                    example: "stale"
         corpusProjectionFreshness:
           type: object
           description: "Source-bound core-corpus projection freshness. `disabled` is explicit and non-degrading; `lagging` is inside the declared SLA; `breached` or enabled-but-`unavailable` degrades the aggregate healthcheck without blocking unrelated MCP tools."
