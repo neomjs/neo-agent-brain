@@ -13,8 +13,11 @@ import GitMirror, {
     fetch,
     inspectCredentialReadiness,
     isAncestor,
+    listRevisionEntries,
+    listRevisionPaths,
     prefetchRevisionBlobs,
     probeRemoteAccess,
+    readRevisionBlob,
     readRevisionFile,
     TenantRepoAccessCode,
     resolveHead
@@ -22,7 +25,8 @@ import GitMirror, {
 
 // Imported from the contract rather than re-exported through GitMirror: the clone-URL grammar has an
 // owner, and this predicate is a member of it. Re-exporting it only for a test would blur that.
-import {isTransportCloneUrl} from '../../../../../../ai/services/knowledge-base/helpers/tenantRepoAccessContract.mjs';
+import {isTransportCloneUrl}            from '../../../../../../ai/services/knowledge-base/helpers/tenantRepoAccessContract.mjs';
+import {createRepositoryRevisionReader} from '../../../../../../ai/services/knowledge-base/helpers/repositoryRevisionReader.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -300,6 +304,53 @@ exit 1
 
         expect(await readRevisionFile({...mirrorOptions(source), revision: head, sourcePath: 'alpha.txt'}))
             .toBe('alpha v1\n')
+    });
+
+    test('lists mode-bearing entries while retaining the legacy path-only projection', async () => {
+        const source = await createSourceRepo();
+        const commit = await git(['rev-parse', 'HEAD'], source);
+
+        await fs.symlink('alpha.txt', path.join(source, 'alpha-link.txt'));
+        await fs.writeFile(path.join(source, 'binary.bin'), Buffer.from([0xff, 0xfe, 0x41]));
+        await git(['add', 'alpha-link.txt', 'binary.bin'], source);
+        await git(['update-index', '--add', '--cacheinfo', `160000,${commit},vendor/package`], source);
+        await git(['-c', 'user.name=Neo Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'entry modes'], source);
+        await cloneIfMissing(mirrorOptions(source));
+
+        const revision = await resolveHead({...mirrorOptions(source), ref: 'main'});
+        const entries  = await listRevisionEntries({...mirrorOptions(source), revision});
+        const byPath   = Object.fromEntries(entries.map(entry => [entry.sourcePath, entry]));
+
+        expect(byPath['alpha.txt']).toMatchObject({mode: '100644', type: 'blob'});
+        expect(byPath['alpha-link.txt']).toMatchObject({mode: '120000', type: 'blob'});
+        expect(byPath['vendor/package']).toMatchObject({mode: '160000', type: 'commit'});
+        expect(await listRevisionPaths({...mirrorOptions(source), revision}))
+            .toEqual(entries.map(entry => entry.sourcePath));
+
+        const bytes = await readRevisionBlob({
+            ...mirrorOptions(source),
+            revision,
+            sourcePath: 'alpha.txt'
+        });
+
+        expect(Buffer.isBuffer(bytes)).toBe(true);
+        expect(bytes).toEqual(Buffer.from('alpha v1\n'));
+
+        const binary = await readRevisionBlob({
+            ...mirrorOptions(source),
+            revision,
+            sourcePath: 'binary.bin'
+        });
+
+        expect(binary).toEqual(Buffer.from([0xff, 0xfe, 0x41]));
+
+        const reader = createRepositoryRevisionReader({
+            ...mirrorOptions(source),
+            revision
+        });
+
+        await expect(reader.readText('binary.bin'))
+            .rejects.toMatchObject({code: 'KB_REVISION_READER_BINARY_BLOB'});
     });
 
     test('a remote that IGNORES the filter is refused, and the half-trusted mirror is removed', async () => {

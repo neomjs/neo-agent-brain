@@ -14,7 +14,9 @@ setup({
 });
 
 import {test, expect}  from '@playwright/test';
+import {createHash}    from 'node:crypto';
 import fs              from 'fs-extra';
+import os              from 'node:os';
 import path            from 'path';
 import {fileURLToPath} from 'url';
 import Neo             from 'neo.mjs/src/Neo.mjs';
@@ -28,6 +30,7 @@ test.describe('Neo.ai.services.knowledge-base.source.SkillSource', () => {
     let SkillSource;
     let aiConfig;
     let originalRoot;
+    let originalSkillSourcePath;
     let mockRoot;
 
     test.beforeAll(async () => {
@@ -35,10 +38,9 @@ test.describe('Neo.ai.services.knowledge-base.source.SkillSource', () => {
         SkillSource = (await import('../../../../../../../ai/services/knowledge-base/source/SkillSource.mjs')).default;
 
         originalRoot = aiConfig.neoRootDir;
+        originalSkillSourcePath = aiConfig.sourcePaths.SkillSource;
 
-        const tmpDir = path.resolve(process.cwd(), 'tmp');
-        fs.ensureDirSync(tmpDir);
-        mockRoot = path.join(tmpDir, `skill-source-mock-${process.pid}-${Date.now()}`);
+        mockRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-source-mock-'));
 
         const skillsDir = path.join(mockRoot, '.agents/skills');
         fs.ensureDirSync(path.join(skillsDir, 'ideation-sandbox/references/audits'));
@@ -82,10 +84,12 @@ Simple skill contents.`);
 Legacy skill payload.`);
 
         aiConfig.neoRootDir = mockRoot;
+        aiConfig.sourcePaths.SkillSource = '.agents/skills';
     });
 
     test.afterAll(() => {
         aiConfig.neoRootDir = originalRoot;
+        aiConfig.sourcePaths.SkillSource = originalSkillSourcePath;
         if (mockRoot && fs.existsSync(mockRoot)) fs.removeSync(mockRoot);
     });
 
@@ -149,6 +153,158 @@ Legacy skill payload.`);
         const legacyChunk = written.find(w => w.skillName === 'legacy-skill');
         expect(legacyChunk).toBeDefined();
         expect(legacyChunk.isAtlasMonolithSubRule).toBe(true);
+    });
+
+    test('repository-bound extraction is byte-equivalent for one Skill territory and ignores ambient config', async () => {
+        const
+            createHashFn = chunk => 'hash:' + chunk.name,
+            legacyWrites = [],
+            portWrites   = [],
+            legacyCount  = await SkillSource.extract({
+                write: value => legacyWrites.push(value)
+            }, createHashFn),
+            skillsDir = path.join(mockRoot, '.agents/skills'),
+            relativeFiles = (await fs.readdir(skillsDir, {recursive: true}))
+                .filter(filePath => filePath.endsWith('.md'))
+                .map(filePath => filePath.split(path.sep).join('/'))
+                .sort(),
+            assignments = relativeFiles.map(skillRelativePath => ({
+                root        : '.agents/skills',
+                relativePath: skillRelativePath,
+                entry       : {
+                    sourcePath: `.agents/skills/${skillRelativePath}`
+                }
+            }));
+
+        aiConfig.sourcePaths.SkillSource = 'does-not-exist';
+        aiConfig.neoRootDir = path.join(mockRoot, 'ambient-root-must-not-be-read');
+
+        try {
+            const result = await SkillSource.extractFromRepository({
+                context: {
+                    repositoryReader: {
+                        async readText(sourcePath) {
+                            return await fs.readFile(path.join(mockRoot, sourcePath), 'utf8')
+                        }
+                    },
+                    territory: {assignments}
+                },
+                writeStream: {write: value => portWrites.push(value)},
+                createHashFn
+            });
+
+            expect(result.count).toBe(legacyCount);
+            expect(portWrites).toEqual(legacyWrites);
+            expect(result.yieldedSourcePaths).toEqual(assignments
+                .map(assignment => assignment.entry.sourcePath)
+                .sort());
+        } finally {
+            aiConfig.sourcePaths.SkillSource = originalSkillSourcePath;
+            aiConfig.neoRootDir = mockRoot;
+        }
+    });
+
+    test('a trigger-pointer-only change re-identifies an unchanged target on territory replay', () => {
+        const
+            createHashFn = chunk => createHash('sha256').update(JSON.stringify(chunk)).digest('hex'),
+            target       = {
+                sourcePath       : '.agents/skills/skill/rule.md',
+                skillRelativePath: 'skill/rule.md',
+                content          : '# Rule\nUnchanged target content.'
+            },
+            withPointer = SkillSource.createChunksFromDocuments({
+                createHashFn,
+                documents: [{
+                    sourcePath       : '.agents/skills/skill/SKILL.md',
+                    skillRelativePath: 'skill/SKILL.md',
+                    content          : '## Skill\n<!-- trigger: edge → read ./rule.md -->\nPointer.'
+                }, target]
+            }),
+            withoutPointer = SkillSource.createChunksFromDocuments({
+                createHashFn,
+                documents: [{
+                    sourcePath       : '.agents/skills/skill/SKILL.md',
+                    skillRelativePath: 'skill/SKILL.md',
+                    content          : '## Skill\nPointer removed.'
+                }, target]
+            }),
+            before = withPointer.chunks.find(chunk => chunk.source === target.sourcePath),
+            after  = withoutPointer.chunks.find(chunk => chunk.source === target.sourcePath);
+
+        expect(before.content).toBe(after.content);
+        expect(before.isAtlasMonolithSubRule).toBe(true);
+        expect(after.isAtlasMonolithSubRule).toBe(false);
+        expect(before.hash).not.toBe(after.hash);
+        expect(withPointer.yieldedSourcePaths).toContain(target.sourcePath);
+        expect(withoutPointer.yieldedSourcePaths).toContain(target.sourcePath);
+    });
+
+    test('trigger-target membership cannot bleed across same-shaped folders in two roots', () => {
+        const
+            createHashFn = chunk => createHash('sha256').update(JSON.stringify(chunk)).digest('hex'),
+            result       = SkillSource.createChunksFromDocuments({
+                createHashFn,
+                documents: [{
+                    root             : 'root-a',
+                    sourcePath       : 'root-a/skill/SKILL.md',
+                    skillRelativePath: 'skill/SKILL.md',
+                    content          : '## Skill\n<!-- trigger: edge → read ./rule.md -->\nPointer.'
+                }, {
+                    root             : 'root-a',
+                    sourcePath       : 'root-a/skill/rule.md',
+                    skillRelativePath: 'skill/rule.md',
+                    content          : '# Rule\nA.'
+                }, {
+                    root             : 'root-b',
+                    sourcePath       : 'root-b/skill/SKILL.md',
+                    skillRelativePath: 'skill/SKILL.md',
+                    content          : '## Skill\nNo pointer.'
+                }, {
+                    root             : 'root-b',
+                    sourcePath       : 'root-b/skill/rule.md',
+                    skillRelativePath: 'skill/rule.md',
+                    content          : '# Rule\nB.'
+                }]
+            }),
+            rootA = result.chunks.find(chunk => chunk.source === 'root-a/skill/rule.md'),
+            rootB = result.chunks.find(chunk => chunk.source === 'root-b/skill/rule.md');
+
+        expect(rootA.isAtlasMonolithSubRule).toBe(true);
+        expect(rootB.isAtlasMonolithSubRule).toBe(false);
+    });
+
+    test('records a matched binary Markdown blob as an extractor-owned skip', async () => {
+        const result = await SkillSource.extractFromRepository({
+            context: {
+                repositoryReader: {
+                    async readText() {
+                        const error = new Error('binary');
+                        error.code = 'KB_REVISION_READER_BINARY_BLOB';
+                        throw error
+                    }
+                },
+                territory: {
+                    assignments: [{
+                        root        : '.agents/skills',
+                        relativePath: 'skill/Binary.md',
+                        entry       : {sourcePath: '.agents/skills/skill/Binary.md'}
+                    }]
+                }
+            },
+            writeStream: {write() {
+                throw new Error('binary content must not emit')
+            }},
+            createHashFn: () => 'hash'
+        });
+
+        expect(result).toEqual({
+            count             : 0,
+            yieldedSourcePaths: [],
+            skippedSourcePaths: [{
+                sourcePath: '.agents/skills/skill/Binary.md',
+                reason    : 'binary'
+            }]
+        });
     });
 
     test('extract() returns 0 and writes nothing when the skills directory is absent', async () => {

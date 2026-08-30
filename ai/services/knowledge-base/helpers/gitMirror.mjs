@@ -492,6 +492,7 @@ async function runGit(args, {
     maxOutputBytes = GIT_MAX_OUTPUT_BYTES,
     outputLimitCode = 'KB_GITMIRROR_OUTPUT_LIMIT',
     outputLimitMessage = 'GitMirror git command exceeded its output limit',
+    stdoutAsBuffer = false,
     timeoutCode = 'KB_GITMIRROR_GIT_TIMEOUT',
     timeoutMessage = 'GitMirror git command timed out',
     timeoutMs = 0
@@ -510,7 +511,7 @@ async function runGit(args, {
                 env  : {...execution.env, ...extraEnv},
                 stdio: ['ignore', 'pipe', 'pipe']
             });
-            let stdout = '';
+            let stdout = stdoutAsBuffer ? [] : '';
             let stderr = '';
             let outputBytes = 0;
             let settled = false;
@@ -531,8 +532,8 @@ async function runGit(args, {
             };
             const resolveOnce = settle(resolve);
             const rejectOnce  = settle(reject);
-            const appendOutput = (current, data) => {
-                const nextBytes = Buffer.byteLength(data);
+            const appendOutput = (current, data, asBuffer = false) => {
+                const nextBytes = data.length;
 
                 if (
                     Number.isFinite(maxOutputBytes)
@@ -552,12 +553,17 @@ async function runGit(args, {
 
                 outputBytes += nextBytes;
 
+                if (asBuffer) {
+                    current.push(Buffer.from(data));
+                    return current
+                }
+
                 return current + data;
             };
 
             child.stdout.on('data', data => {
                 if (!settled) {
-                    stdout = appendOutput(stdout, data);
+                    stdout = appendOutput(stdout, data, stdoutAsBuffer);
                 }
             });
 
@@ -568,7 +574,11 @@ async function runGit(args, {
             });
 
             child.on('error', rejectOnce);
-            child.on('close', exitCode => resolveOnce({exitCode, stdout, stderr}));
+            child.on('close', exitCode => resolveOnce({
+                exitCode,
+                stdout: stdoutAsBuffer ? Buffer.concat(stdout) : stdout,
+                stderr
+            }));
 
             if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
                 timeoutId = setTimeout(() => {
@@ -586,13 +596,20 @@ async function runGit(args, {
         if (!acceptedExitCodes.includes(result.exitCode)) {
             throw createGitMirrorError(failureCode, failureMessage, {
                 ...result,
+                // Binary stdout is repository content, never diagnostic prose. Do not traverse a
+                // Buffer through the redactor on a failed read.
+                ...(stdoutAsBuffer ? {stdout: ''} : {}),
                 secretHints: execution.secretHints
             });
         }
 
         return {
             exitCode: result.exitCode,
-            stdout  : redactTenantRepoSecrets(result.stdout, {secretHints: execution.secretHints}),
+            // Successful blob reads intentionally return bytes. They are content, not diagnostics,
+            // and must never be replacement-decoded before the extractor can classify them.
+            stdout  : stdoutAsBuffer
+                ? result.stdout
+                : redactTenantRepoSecrets(result.stdout, {secretHints: execution.secretHints}),
             stderr  : redactTenantRepoSecrets(result.stderr, {secretHints: execution.secretHints})
         };
     } catch (error) {
@@ -1168,24 +1185,85 @@ export async function diffRevisions({mirrorRoot, tenantId, repoSlug, baseRevisio
 }
 
 /**
- * @summary Lists all repo-relative paths present at one mirror revision.
+ * @summary Parses NUL-delimited `git ls-tree -r` output without losing the entry mode.
+ *
+ * Git object `type` alone is insufficient: regular files and symlinks are both `blob`
+ * objects. The mode is the discriminator that prevents a `120000` symlink target from being
+ * ingested as ordinary file content and a `160000` gitlink from being traversed as a tree.
+ *
+ * @param {String} raw NUL-delimited `<mode> <type> <oid>\t<path>` rows.
+ * @returns {Array<{sourcePath: String, mode: String, type: String, oid: String}>}
+ */
+export function parseRevisionEntries(raw = '') {
+    return String(raw)
+        .split('\0')
+        .filter(Boolean)
+        .map(row => {
+            const tabIndex = row.indexOf('\t');
+
+            if (tabIndex < 1) {
+                throw createGitMirrorError(
+                    'KB_GITMIRROR_TREE_ENTRY_INVALID',
+                    'GitMirror received a malformed revision-tree entry'
+                )
+            }
+
+            const
+                [mode, type, oid] = row.slice(0, tabIndex).split(' '),
+                sourcePath        = row.slice(tabIndex + 1);
+
+            if (
+                !/^\d{6}$/u.test(mode)
+                || !/^(?:blob|commit|tree)$/u.test(type)
+                || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(oid)
+                || !sourcePath
+                || sourcePath.includes('\0')
+            ) {
+                throw createGitMirrorError(
+                    'KB_GITMIRROR_TREE_ENTRY_INVALID',
+                    'GitMirror received a malformed revision-tree entry'
+                )
+            }
+
+            return {sourcePath, mode, type, oid}
+        })
+        .sort((left, right) => left.sourcePath === right.sourcePath
+            ? 0
+            : left.sourcePath < right.sourcePath ? -1 : 1);
+}
+
+/**
+ * @summary Lists mode-bearing repo-relative entries present at one mirror revision.
  * @param {Object} options
  * @param {String} options.mirrorRoot Root directory for tenant repo mirrors.
  * @param {String} options.tenantId Tenant id.
  * @param {String} options.repoSlug Repository slug.
  * @param {String} options.revision Resolved revision.
- * @returns {Promise<Array<String>>}
+ * @returns {Promise<Array<{sourcePath: String, mode: String, type: String, oid: String}>>}
  */
-export async function listRevisionPaths({mirrorRoot, tenantId, repoSlug, revision} = {}) {
+export async function listRevisionEntries({mirrorRoot, tenantId, repoSlug, revision} = {}) {
     const mirrorPath = getMirrorPath({mirrorRoot, tenantId, repoSlug});
 
-    const result = await runGit(['ls-tree', '-r', '-z', '--name-only', revision], {
+    const result = await runGit(['ls-tree', '-r', '-z', revision], {
         cwd           : mirrorPath,
         failureCode   : 'KB_GITMIRROR_LIST_FAILED',
-        failureMessage: 'GitMirror failed to list revision paths'
+        failureMessage: 'GitMirror failed to list revision entries'
     });
 
-    return result.stdout.split('\0').filter(Boolean).sort();
+    return parseRevisionEntries(result.stdout);
+}
+
+/**
+ * @summary Lists all repo-relative paths present at one mirror revision.
+ *
+ * This compatibility projection deliberately retains the original `String[]` contract used by
+ * tenant-repo envelopes. Mode-aware extraction consumes {@link listRevisionEntries} instead.
+ *
+ * @param {Object} options
+ * @returns {Promise<Array<String>>}
+ */
+export async function listRevisionPaths(options = {}) {
+    return (await listRevisionEntries(options)).map(entry => entry.sourcePath);
 }
 
 /**
@@ -1328,7 +1406,7 @@ export async function prefetchRevisionBlobs({mirrorRoot, tenantId, repoSlug, rev
 }
 
 /**
- * @summary Reads one text file from a mirror revision.
+ * @summary Reads one raw blob from a mirror revision.
  *
  * ## Why this read takes a credential and the other reads do not
  *
@@ -1361,9 +1439,9 @@ export async function prefetchRevisionBlobs({mirrorRoot, tenantId, repoSlug, rev
  * @param {String} options.sourcePath Repo-relative source path.
  * @param {String|Object|null} [options.credentialRef] Durable credential reference for the lazy
  *     promisor fetch. Required for a private remote whose blobs are not yet local.
- * @returns {Promise<String>}
+ * @returns {Promise<Buffer>}
  */
-export async function readRevisionFile({mirrorRoot, tenantId, repoSlug, revision, sourcePath, credentialRef} = {}) {
+export async function readRevisionBlob({mirrorRoot, tenantId, repoSlug, revision, sourcePath, credentialRef} = {}) {
     if (!sourcePath || sourcePath.includes('\0')) {
         throw createGitMirrorError(
             'KB_GITMIRROR_PATH_INVALID',
@@ -1378,10 +1456,24 @@ export async function readRevisionFile({mirrorRoot, tenantId, repoSlug, revision
         credentialRef,
         failureCode   : 'KB_GITMIRROR_FILE_READ_FAILED',
         failureMessage: 'GitMirror failed to read a revision file',
-        knownHostsPath: getKnownHostsPath(mirrorRoot)
+        knownHostsPath: getKnownHostsPath(mirrorRoot),
+        stdoutAsBuffer: true
     });
 
     return result.stdout;
+}
+
+/**
+ * @summary Reads one UTF-8 text file from a mirror revision.
+ *
+ * Retains the original string-returning API. Extraction code that must classify binary content
+ * consumes {@link readRevisionBlob} before decoding.
+ *
+ * @param {Object} options
+ * @returns {Promise<String>}
+ */
+export async function readRevisionFile(options = {}) {
+    return (await readRevisionBlob(options)).toString('utf8');
 }
 
 const GitMirror = {
@@ -1390,9 +1482,11 @@ const GitMirror = {
     fetch,
     inspectCredentialReadiness,
     isAncestor,
+    listRevisionEntries,
     listRevisionPaths,
     prefetchRevisionBlobs,
     probeRemoteAccess,
+    readRevisionBlob,
     readRevisionFile,
     resolveHead
 };

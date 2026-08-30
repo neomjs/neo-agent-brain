@@ -60,6 +60,26 @@ class Base extends CoreBase {
     async extract(writeStream, createHashFn) {
         throw new Error('extract() must be implemented by subclass');
     }
+
+    /**
+     * @summary Extracts one route from an immutable repository-bound invocation.
+     *
+     * The legacy `extract(writeStream, createHashFn)` wrapper remains live until the tenant lane
+     * cuts over. New profile execution calls this method with explicit repository, revision,
+     * territory, and hierarchy authority; implementations must not recover those values from
+     * `AiConfig`, cwd, or a process-wide Source registry.
+     *
+     * @param {Object} options
+     * @param {Object} options.context Repository-bound invocation context.
+     * @param {Object} options.options Extractor-specific canonical route options.
+     * @param {Object} options.writeStream JSONL output stream.
+     * @param {Function} options.createHashFn Legacy chunk hash function.
+     * @returns {Promise<{count: Number, yieldedSourcePaths: String[], skippedSourcePaths: Object[]}>}
+     * @abstract
+     */
+    async extractFromRepository(options) {
+        throw new Error('extractFromRepository() must be implemented by repository-capable subclasses');
+    }
 }
 
 export default Neo.setupClass(Base);

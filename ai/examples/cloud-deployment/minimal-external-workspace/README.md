@@ -29,6 +29,12 @@ sourcePaths   : {ProtoSource: '<absolute path to this workspace>/proto'}
 …or programmatically — `SourceRegistry.registerParser(ProtoParser, {parserId: 'proto'})`
 and `SourceRegistry.registerSource(ProtoSource, {sourceName: 'ProtoSource'})`.
 
+The programmatic `SourceRegistry` form above is a **legacy full-corpus compatibility surface**.
+It stays operational while the extract-all builder exists, but repository-profile execution does
+not consult it and tenant-declared extractors must never enter the process singleton. For a new
+multi-tenant integration, prefer the parser-backed push path shown below until the deployment's
+tenant profile explicitly declares an invocation-local extractor.
+
 ## Smoke test
 
 Push `proto/example.proto` through the bulk facade. With no `parserId` on the record,
