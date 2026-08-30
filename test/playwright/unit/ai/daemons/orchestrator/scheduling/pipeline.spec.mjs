@@ -1610,7 +1610,7 @@ test.describe('recognized deferral codes stay in lockstep with their emitters (#
               emitted = [...new Set(parsed.flatMap(file => file.codes))].sort();
 
         // Positive controls: the walk must actually reach files and find emitters in more than one,
-        // or every assertion below passes vacuously — how round 1 and round 2 both stayed green.
+        // or every assertion below passes vacuously, which is how a text-scanning guard stays green.
         expect(files.length).toBeGreaterThan(10);
         expect(emitted.length).toBeGreaterThanOrEqual(5);
         expect(parsed.filter(file => file.codes.length > 0).length).toBeGreaterThanOrEqual(2);
@@ -1635,7 +1635,7 @@ test.describe('recognized deferral codes stay in lockstep with their emitters (#
               blind = files.flatMap(file => extractDeferralEmitters(file.source, acorn).unresolved.map(reason => `${file.rel}: ${reason}`));
 
         // If this ever fires, the guard is not wrong — it is telling you it has stopped being able to
-        // answer, which is the state both earlier rounds occupied silently.
+        // answer, which is the state a scanning guard occupies silently.
         expect(blind, `unreadable reasonCode at a recordDeferral call:\n${blind.join('\n')}`).toEqual([])
     });
 
