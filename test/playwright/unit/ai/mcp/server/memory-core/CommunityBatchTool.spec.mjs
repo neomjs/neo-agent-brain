@@ -105,6 +105,37 @@ test.describe('Memory Core hosted community tools (#15156)', () => {
         expect(dispatched).toBe(false);
     });
 
+    test('advertised closed objects reject provider-native fields instead of stripping them', async () => {
+        let dispatched = 0;
+
+        AdmissionService.admitHostedBatch = () => {
+            dispatched++;
+            return {status: 'accepted'}
+        };
+
+        const cases = [{
+            label : 'request root',
+            mutate: value => value.connectorVersion = 'github-v2'
+        }, {
+            label : 'source identity',
+            mutate: value => value.source.displayName = 'Neo'
+        }, {
+            label : 'observation',
+            mutate: value => value.batch.observations[0].htmlUrl = 'https://github.com/neomjs/neo/pull/1'
+        }];
+
+        for (const {label, mutate} of cases) {
+            const value = envelope();
+
+            mutate(value);
+
+            await expect(hostedFacade.callTool('admit_community_batch', value), label)
+                .rejects.toThrow(/unrecognized key/i)
+        }
+
+        expect(dispatched).toBe(0)
+    });
+
     test('raw boundary refuses nested prose and health credentials before OpenAPI can strip them', async () => {
         let admissionDispatched = false,
             healthDispatched    = false;
