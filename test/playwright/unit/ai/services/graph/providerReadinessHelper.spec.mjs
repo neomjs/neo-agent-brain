@@ -953,3 +953,137 @@ test.describe('embedding serving canary — safe-band floor (#17070)', () => {
         expect(result.ready).toBe(true);
     });
 });
+
+test.describe('#29 — an identifier collision is adopted, not retried forever', () => {
+    let ensureLmsModelsLoaded, isLmsIdentifierCollision, loadLmsModel;
+
+    // LM Studio's refusal arrives on **stderr**, not as the thrown error's own message —
+    // `createLmsCliError()` folds it in as `; stderr=<text>`. Composing the message by hand would
+    // test a string this spec authored rather than the one production produces, so every collision
+    // below is built by driving the real `loadLmsModel()` with a stubbed `execFileFn`.
+    const LMS_REFUSAL_STDERR = 'A model with identifier embedding-model already exists.\n';
+
+    /**
+     * Produces the rejection the real conduit produces: `execFileFn` error + stderr →
+     * `createLmsCliError()` → the message `isLmsIdentifierCollision()` must recognize.
+     */
+    const viaRealConduit = (stderr, message = 'Command failed: lms load embedding-model') =>
+        loadLmsModel('embedding-model', {
+            identifier: 'embedding-model',
+            timeoutMs : 10,
+            execFileFn: (cmd, args, opts, cb) => {
+                const error = new Error(message);
+
+                error.code = 1;
+                cb(error, '', stderr);
+            }
+        });
+
+    test.beforeAll(async () => {
+        ({ensureLmsModelsLoaded, isLmsIdentifierCollision, loadLmsModel} =
+            await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
+    });
+
+    test('the real conduit composes a message the predicate recognizes (execFileFn → createLmsCliError → predicate)', async () => {
+        // Binds the whole chain rather than asserting against a hand-written string. If
+        // `createLmsCliError()` ever stops folding stderr in, or `describeLmsCliFailure()` reshapes
+        // the message, this reds — which a pre-composed fixture could never do.
+        const composed = await viaRealConduit(LMS_REFUSAL_STDERR).catch(error => error);
+
+        expect(composed.message).toContain('stderr=');
+        expect(isLmsIdentifierCollision(composed)).toBe(true);
+
+        const unrelated = await viaRealConduit('', 'Command failed: lms load embedding-model: ETIMEDOUT').catch(error => error);
+
+        expect(isLmsIdentifierCollision(unrelated)).toBe(false);
+    });
+
+    // The collision string is the whole discriminator, so it gets a truth table rather than one
+    // happy case. The third row is the one that matters: a genuine failure that merely QUOTES the
+    // model id must not be mistaken for a collision, or a real load failure becomes a silent adopt.
+    test('isLmsIdentifierCollision matches the refusal and nothing adjacent', () => {
+        expect(isLmsIdentifierCollision({message: 'A MODEL WITH IDENTIFIER x ALREADY EXISTS'})).toBe(true);
+        expect(isLmsIdentifierCollision({message: 'lms load failed: no such model embedding-model'})).toBe(false);
+        expect(isLmsIdentifierCollision({message: 'lms load embedding-model failed: ETIMEDOUT'})).toBe(false);
+        expect(isLmsIdentifierCollision({message: ''})).toBe(false);
+        expect(isLmsIdentifierCollision(undefined)).toBe(false);
+    });
+
+    // Reproduces the actual race rather than a convenient fixture: the model is ABSENT at the
+    // immediate probe (so the ensure decides to load), and RESIDENT by the time the load runs —
+    // which is exactly the JIT re-load that produces the collision. Making it resident from the
+    // start would skip the load entirely and test nothing, which is how the first draft of these
+    // specs passed vacuously.
+    // `preLoadProbes` is measured, not assumed: the ensure probes residency three times before it
+    // will attempt a load (immediate assessment, force-fresh preflight, and the in-loop witness).
+    // Returning the resident row any earlier makes the loop conclude the model is already there
+    // and skip the load entirely — which is how two earlier drafts of these specs passed while
+    // never once exercising a collision. Raising it to 4 leaves the collision re-probe empty, which
+    // is the absence case rather than a broken fixture.
+    const runCollision = ({residentRows, requiredContext = 8192, loadError = LMS_REFUSAL_STDERR, preLoadProbes = 3}) => {
+        let probes = 0;
+
+        return ensureLmsModelsLoaded({
+            host          : 'http://127.0.0.1:1234',
+            models        : ['embedding-model'],
+            attempts      : 1,
+            delayMs       : 0,
+            timeoutMs     : 10,
+            allowPartial  : true,
+            contextLengths: {'embedding-model': requiredContext},
+            fetchModelIds    : async () => ['embedding-model'],
+            fetchLoadedModels: async () => (probes++ < preLoadProbes ? [] : residentRows),
+            // Real conduit, not a pre-composed Error: the ensure sees exactly the rejection
+            // `loadLmsModel()` produces from a CLI failure plus stderr.
+            loadModel        : () => viaRealConduit(loadError),
+            log              : {info() {}, warn() {}}
+        });
+    };
+
+    test('POSITIVE: a collision over a sufficient resident instance adopts instead of failing', async () => {
+        const result = await runCollision({
+            residentRows: [{id: 'embedding-model', contextLength: 32768}]
+        });
+
+        expect(result.adoptedModels.map(entry => entry.model)).toEqual(['embedding-model']);
+        expect(result.failedModels).toEqual([]);
+        // Adopted is deliberately NOT loaded: a supervisor that cannot tell "I loaded it" from
+        // "it was already there" loses the signal that would show this race recurring.
+        expect(result.loadedModels).toEqual([]);
+    });
+
+    test('NEGATIVE: a collision over an INSUFFICIENT resident instance stays a failure', async () => {
+        const result = await runCollision({
+            residentRows: [{id: 'embedding-model', contextLength: 4096}]
+        });
+
+        // The JIT instance is resident but below the configured context gate. Adopting here would
+        // green a verify the instance cannot honour — this is the mutant-killer for an adopt that
+        // fires on the collision alone rather than on the classifier's answer.
+        expect(result.adoptedModels).toEqual([]);
+        expect(result.failedModels.map(entry => entry.model)).toEqual(['embedding-model']);
+    });
+
+    test('NEGATIVE: a collision whose re-probe finds nothing stays a failure — absence is not sufficiency', async () => {
+        // One probe later than the others, so the collision re-probe itself returns empty.
+        const result = await runCollision({residentRows: [], preLoadProbes: 4});
+
+        // No row for the model means the classifier reports `missing`, not `sufficient`. An empty
+        // or unreadable probe must never be read as "it is fine" — that is the fail-open shape the
+        // whole guard exists to avoid.
+        expect(result.adoptedModels).toEqual([]);
+        expect(result.failedModels.map(entry => entry.model)).toEqual(['embedding-model']);
+    });
+
+    test('NEGATIVE: a non-collision load failure is untouched by the adopt path', async () => {
+        // Sufficient resident row on purpose: if the adopt keyed on residency rather than on the
+        // collision, this ETIMEDOUT would be silently adopted.
+        const result = await runCollision({
+            residentRows: [{id: 'embedding-model', contextLength: 32768}],
+            loadError   : 'connect ECONNREFUSED 127.0.0.1:1234'
+        });
+
+        expect(result.adoptedModels).toEqual([]);
+        expect(result.failedModels.map(entry => entry.model)).toEqual(['embedding-model']);
+    });
+});
