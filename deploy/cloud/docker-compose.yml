@@ -78,6 +78,10 @@ services:
         # the unpinned path without passing an empty ref to `git fetch`.
         NEO_REF     : ${NEO_REVISION:-dev}
         NEO_REVISION: ${NEO_REVISION:-}
+        # The canonical definition builds from Brain topology. The Dockerfile's own default
+        # still names the Engine repo for generic reuse; without this line every service
+        # here silently builds Engine source, which a green healthcheck never surfaces.
+        NEO_REPO_URL: ${NEO_REPO_URL:-https://github.com/neomjs/neo-agent-brain.git}
     environment:
       - NEO_TRANSPORT=streamable-http
       - NEO_CHROMA_HOST=chroma
@@ -216,6 +220,7 @@ services:
         # Cohort invariant (#15774/#16087): every Neo service uses the SAME resolved pin.
         NEO_REF     : ${NEO_REVISION:-dev}
         NEO_REVISION: ${NEO_REVISION:-}
+        NEO_REPO_URL: ${NEO_REPO_URL:-https://github.com/neomjs/neo-agent-brain.git}
     environment:
       - NEO_TRANSPORT=streamable-http
       # `NEO_MAILBOX_DEFAULT_REPLY_POLICY` is deliberately NOT set here.
@@ -382,6 +387,7 @@ services:
         # Cohort invariant (#15774/#16087): every Neo service uses the SAME resolved pin.
         NEO_REF     : ${NEO_REVISION:-dev}
         NEO_REVISION: ${NEO_REVISION:-}
+        NEO_REPO_URL: ${NEO_REPO_URL:-https://github.com/neomjs/neo-agent-brain.git}
     environment:
       - *handoff-file-env
       - NEO_MODEL_PROVIDER=${NEO_MODEL_PROVIDER:-}
@@ -615,6 +621,7 @@ services:
         SERVICE_ENTRYPOINT: ai/services/fleet/fleetServer.mjs
         NEO_REF           : ${NEO_REVISION:-dev}
         NEO_REVISION      : ${NEO_REVISION:-}
+        NEO_REPO_URL      : ${NEO_REPO_URL:-https://github.com/neomjs/neo-agent-brain.git}
     environment:
       # Caddy reaches Fleet over the compose network. Standalone `ai:fleet-server` remains the
       # loopback-only transitional dev transport; only this composed entrypoint binds all interfaces.
