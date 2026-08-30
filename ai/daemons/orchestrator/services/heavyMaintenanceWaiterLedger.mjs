@@ -86,8 +86,7 @@ export function registerWaiterSync({leasePath, taskName, priorityZero = false, b
     // `leaseHolder` on the starvation surface describes exactly one of them — so without this a
     // breach cannot distinguish a lease-held waiter from an intra-process-backpressure one or a
     // fairness abstention, and a reader is left inferring a mechanism from the one field that
-    // happens to be exposed. ticket-ref-ok: #239 measured that gap against three live plane
-    // samples that each produced a different mechanism.
+    // happens to be exposed — an inference that lands on a different answer each time it is made.
     //
     // Null-tolerant by design: an older entry written before this field existed still reads,
     // because `listActiveWaitersSync` projects the whole entry rather than an allowlist. A waiter

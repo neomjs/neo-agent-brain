@@ -1468,29 +1468,26 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
     });
 });
 
-// #239 / #242 RA-2, round 3. `RECOGNIZED_DEFERRAL_REASON_CODES` decides whether a `skipped` outcome
-// counts as a DESIGNED deferral (pipeline.mjs:1118); an unrecognized skip "can never mask a genuine
-// stall". Its docblock asks an editor to keep it in lockstep with the `recordDeferral` emitters, and
-// a comment cannot enforce that — the list had drifted, missing the fairness class.
+// `RECOGNIZED_DEFERRAL_REASON_CODES` decides whether a `skipped` outcome counts as a DESIGNED
+// deferral (pipeline.mjs:1118); an unrecognized skip "can never mask a genuine stall". Its docblock
+// asks an editor to keep it in lockstep with the `recordDeferral` emitters, and a comment cannot
+// enforce that — which is why this compares the two sets instead.
 //
-// ⚠️ TWO earlier guards for this were false-green, and the second looked much more like a real one:
+// ⚠️ It PARSES rather than scans, because the property under guard is behaviour and text scanning
+// measures spelling. Three syntax-valid emitters are invisible to any regex over property literals:
 //
-//   Round 1 matched `reasonCode:` literals in ONE file. It counted
-//   `heavy-maintenance-lease-acquire-error` — emitted by `recordTaskOutcome(…, 'failed')`, which can
-//   never reach a `skipped` outcome — and missed the callers in `Orchestrator.mjs` and `pipeline.mjs`.
+//   - a shorthand emitter — `const reasonCode = '…'; service.recordDeferral({reasonCode})` — carries
+//     no literal at the call site at all;
+//   - a `reasonText: ')'` earlier in the call closes a parenthesis-balanced span before the real
+//     `reasonCode` is reached;
+//   - an emitter in a file no hardcoded list names is unreachable by construction.
 //
-//   Round 2 balanced parentheses from each `recordDeferral(` and read literals inside that span,
-//   across a HARDCODED three-file list. @neo-gpt-euclid named three syntax-valid mutants it still
-//   passed: a shorthand emitter (`const reasonCode = '…'; service.recordDeferral({reasonCode})`),
-//   which carries no literal inside the span at all; a `reasonText: ')'` earlier in the call, which
-//   closes the span before the real `reasonCode` is reached; and an emitter in a FOURTH file, which a
-//   fixed list cannot see. Text scanning keeps failing the same way — it measures spelling, and the
-//   property being guarded is behaviour.
+// `acorn` answers all three: a string containing `)` is a string, a shorthand property is a property,
+// and callers are DISCOVERED by walking the tree rather than enumerated.
 //
-// So this parses. `acorn` gives real call expressions, so a string containing `)` is a string, a
-// shorthand property is a property, and callers are DISCOVERED by walking the tree rather than
-// listed. And the extractor treats an unresolvable `reasonCode` as a FAILURE rather than as nothing
-// to report — silence about an emitter it could not read is precisely how both earlier rounds passed.
+// ⭐ The load-bearing rule is the last one, not the parser. An unresolvable `reasonCode` FAILS the
+// guard rather than going unreported, because silence about an emitter it cannot read is
+// indistinguishable from approving it — and that silence is what lets a scanning guard pass.
 test.describe('recognized deferral codes stay in lockstep with their emitters (#239)', () => {
     /**
      * Every `reasonCode` reaching a `recordDeferral(...)` call in one module, plus the ones that could
@@ -1660,8 +1657,8 @@ test.describe('recognized deferral codes stay in lockstep with their emitters (#
 
     // 🔴 NEGATIVE CONTROL. `heavy-maintenance-lease-acquire-error` is a FAILED outcome, not a
     // deferral — it reaches `recordTaskOutcome(…, 'failed')` and can never appear on the `skipped`
-    // status this list is consulted against. Round 1 counted it; the parser must not, and the list
-    // must not carry it.
+    // status this list is consulted against. A literal-matching guard counts it; the parser must not,
+    // and the list must not carry it.
     test('a failed-outcome code is neither extracted nor recognized', async () => {
         const acorn   = await import('acorn'),
               files   = await readOrchestratorSources(),
@@ -1677,12 +1674,13 @@ test.describe('recognized deferral codes stay in lockstep with their emitters (#
         expect(service.source).toContain('heavy-maintenance-lease-acquire-error')
     });
 
-    // 🔴 THE RED CONTROLS. Each is a mutant that defeated an earlier round of this guard, fed to the
-    // extractor as source so the falsifier lives in the committed canonical spec rather than in a
-    // review comment. ⚠️ Committed is not the same as executed: `brain-unit.yml` COLLECTS the suite
-    // (`--list`) and then runs a named handful, so a spec absent from that list is green by not
-    // having run. This file is named there under #239 — check it is still named before reading a
-    // green Brain Unit job as evidence about anything in here.
+    // 🔴 THE RED CONTROLS. Each is a mutant a text-scanning guard passes, fed to the extractor as
+    // source so every falsifier runs rather than being described.
+    //
+    // ⚠️ Committed is not the same as executed: `brain-unit.yml` COLLECTS the suite (`--list`) and
+    // then runs a named handful, so a spec absent from that list is green by not having run. This
+    // file is named there — check it still is before reading a green Brain Unit job as evidence
+    // about anything in here.
     test.describe('mutants that defeated the text-scanning guards', () => {
         async function extract(source) {
             return extractDeferralEmitters(source, await import('acorn'))

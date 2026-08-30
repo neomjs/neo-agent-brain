@@ -247,7 +247,7 @@ test.describe('describeStarvationReceiptReachability — the producer/consumer p
     });
 });
 
-// #239. `leaseHolder` describes ONE of the three reason classes that can register a waiter
+// `leaseHolder` describes ONE of the three reason classes that can register a waiter
 // (`lease-held`, `backpressure`, `yield-to-waiter`), so a breach carrying only the holder cannot say
 // why any particular waiter is waiting. Three live plane samples of one starvation produced three
 // different mechanisms for exactly this reason — sampling a surface that reports only the symptom
@@ -288,7 +288,7 @@ test.describe('the waiter\'s OWN cause reaches the breach (#239)', () => {
         expect(breaches[0].leaseHolder).toBe('summary');
     });
 
-    // #224 shipped `leaseStatus` to qualify a null holder, but it landed on the maintenance block —
+    // `leaseStatus` qualifies a null holder, but it lands on the maintenance block —
     // so the two halves of "why is nothing running" lived on different objects.
     test('the holder-side discriminator travels WITH the breach, not beside it', () => {
         const {breaches, leaseStatus} = evaluate(
@@ -314,11 +314,11 @@ test.describe('the waiter\'s OWN cause reaches the breach (#239)', () => {
     });
 });
 
-// #242 RA-3. The OpenAPI block is the contract a plane consumer reads instead of this source, and it
-// had advertised six breach fields while the shipped breach carried ten — a consumer building
-// against the published schema could not know `reasonCode` existed. A doc that describes a
-// superseded shape is worse than no doc: it is a confident wrong answer. Same drift class as the
-// recognized-codes list, so it gets the same treatment — a comparison, not a comment.
+// The OpenAPI block is the contract a plane consumer reads instead of this source, so it can advertise
+// fewer fields than the breach carries and nothing fails — a consumer simply cannot discover
+// `reasonCode` exists. A doc describing a superseded shape is worse than no doc: it is a confident
+// wrong answer. Same drift class as the recognized-codes list, and it gets the same treatment — a
+// comparison rather than a comment.
 test.describe('the published breach schema equals the shipped breach (#242 RA-3)', () => {
     test('every field the evaluator emits is advertised, and nothing is advertised that it does not emit', async () => {
         const {parse} = await import('yaml'),

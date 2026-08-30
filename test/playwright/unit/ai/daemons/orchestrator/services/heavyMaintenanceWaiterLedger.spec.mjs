@@ -584,10 +584,10 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
 
             const {waiters} = listActiveWaitersSync({leasePath, staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS, now: Date.now()});
             expect(waiters).toHaveLength(1);
-            // #242 RA-1. The bootstrap class alone left the cause fields unwitnessed at the only
-            // place they are knowable: delete `reasonCode` / `blockingTaskName` / `leaseOwner` from
-            // the production writer and this fixture still passed, because it asserted the two
-            // fields that predate them.
+            // The cause fields are asserted HERE because this is the only place they are knowable.
+            // Asserting the bootstrap class alone leaves them unwitnessed: delete `reasonCode` /
+            // `blockingTaskName` / `leaseOwner` from the production writer and a fixture checking
+            // only `taskName` / `deferredSince` / `bootstrapCritical` stays green.
             expect(waiters[0]).toMatchObject({
                 taskName         : 'tenant-repo-sync',
                 deferredSince    : since,
@@ -601,10 +601,10 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
     })
 });
 
-// #239. The ROUND TRIP, and it is the witness the watchdog specs cannot provide: they feed
-// hand-built entries straight to the evaluator, so removing the write at registration is invisible
-// to them. The cause is known only at registration — a cause not written there is unrecoverable by
-// any later consumer, not merely unexposed.
+// The ROUND TRIP, and the witness the watchdog specs cannot provide: they feed hand-built entries
+// straight to the evaluator, so removing the write at registration is invisible to them. The cause is
+// known only at registration — one not written there is unrecoverable by any later consumer, not
+// merely unexposed.
 test.describe('the waiter ledger carries the cause from writer to reader (#239)', () => {
     let leasePath, dir;
 
@@ -667,10 +667,10 @@ test.describe('the waiter ledger carries the cause from writer to reader (#239)'
     });
 });
 
-// #242 RA-1. The specs above stop one hop short in BOTH directions: the round trip proves the ledger
-// preserves what it was handed, and the watchdog specs prove the evaluator projects what it was
-// handed — neither runs the production WRITER, so a cause the writer never passes is invisible to
-// both. This is the full chain, once per cause class:
+// The specs above stop one hop short in BOTH directions: the round trip proves the ledger preserves
+// what it was handed, and the watchdog specs prove the evaluator projects what it was handed —
+// neither runs the production WRITER, so a cause the writer never passes is invisible to both. This
+// is the full chain, once per cause class:
 //
 //   MaintenanceBackpressureService.recordDeferral  (the only place the cause is known)
 //     → registerWaiterSync                         (durable ledger entry)

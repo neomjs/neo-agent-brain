@@ -48,27 +48,25 @@ export const TASK_STALENESS_CADENCE_KEY = Object.freeze({
  * emits onto a deferred task's `skipped` outcome. The REM-consolidation watchdog re-labels a recent
  * `dream` (REM producer) skip as a `designed-deferral` boot-freshness disposition ONLY when its
  * `reasonCode` is one of these AND it carries a recency-bounded deferral-specific `deferredAt` — so a
- * generic or unrecognized skip is NOT a designed deferral and can never mask a genuine stall. Keep in
- * lockstep with the `recordDeferral` emitters in `MaintenanceBackpressureService`.
+ * generic or unrecognized skip is NOT a designed deferral and can never mask a genuine stall.
+ *
+ * This is exactly the set reachable through a `recordDeferral(...)` call, and membership is decided by
+ * OUTCOME CLASS rather than by topic. A code emitted through `recordTaskOutcome(name, 'failed', …)`
+ * belongs to a failed outcome and can never appear on the `skipped` status this list is consulted
+ * against, so admitting one widens the allowlist without widening what can legitimately reach it —
+ * a category error rather than a generous default.
+ *
+ * The set is held in lockstep by a spec that parses the emitters out of their call expressions, not by
+ * this docblock asking an editor to remember. Omitting a real emitter is the expensive direction: the
+ * fairness class exists to protect a starving peer, and while it was absent its deferrals reached the
+ * stall detector as skips it could not classify.
  * @type {ReadonlyArray<String>}
  */
 export const RECOGNIZED_DEFERRAL_REASON_CODES = Object.freeze([
     'heavy-maintenance-shed-window',
     'heavy-maintenance-backpressure',
-    // `heavy-maintenance-lease-acquire-error` was listed here and is NOT a deferral: it is emitted by
-    // `recordTaskOutcome(taskName, 'failed', …)`, so it can never appear on the `skipped` outcome this
-    // list is consulted against (:1118). A failure code in a deferral allowlist is a category error
-    // that widens the allowlist without widening what can legitimately reach it.
-    // ticket-ref-ok: #242 RA-2 measured the emitter set from `recordDeferral(...)` call expressions
-    // across all three production callers; this list is now exactly that set.
     'heavy-maintenance-lease-held',
     'golden-path-dependency-backpressure',
-    // Restored 2026-08-30: absent while `MaintenanceBackpressureService` had emitted it, which broke
-    // this list's own docblock contract ("keep in lockstep with the recordDeferral emitters"). The
-    // consequence is one line up — an unrecognized skip "can never mask a genuine stall" — so the
-    // FAIRNESS class, the one that exists to protect a starving peer, produced a skip the stall
-    // detector could not classify. ticket-ref-ok: #239; the drift is now guarded by a spec comparing
-    // the two sets rather than by a comment asking an editor to remember.
     'heavy-maintenance-yield-to-waiter'
 ]);
 
@@ -824,9 +822,8 @@ async function runHeavyMaintenanceStarvationWatchdogTask({taskName, reason, serv
             now,
             degradeAfterMs: runtime.heavyMaintenanceStarvationDegradeAfterMs,
             leaseHolder,
-            // The holder-side discriminator from #224 was already computed here and published to the
-            // maintenance block; the breach never received it, so the two halves of "why is nothing
-            // running" lived on different objects.
+            // The holder-side discriminator is computed here for the maintenance block; the breach
+            // needs it too, or the two halves of "why is nothing running" sit on different objects.
             leaseStatus   : inspection.status
         });
 
@@ -866,13 +863,11 @@ async function runHeavyMaintenanceStarvationWatchdogTask({taskName, reason, serv
 
         if (evaluation.posture === 'degraded') {
             services.healthService?.recordTaskOutcome?.(taskName, 'failed', details);
-            // Names the cause each waiter REPORTS, and says so plainly when it has none. The previous
-            // wording ended "the fairness yield bound has been exceeded; the lease pipeline is not
-            // admitting its waiters" — a definite claim about ONE of the three reason classes that
-            // can register a waiter, emitted from a reading that could not isolate it. That sentence
-            // sent two maintainers after the wrong mechanism for an afternoon with the code open, so
-            // the log now reports what was observed and leaves the diagnosis to whoever reads it.
-            // ticket-ref-ok: #239 is where the misdirection was measured against three plane samples.
+            // Reports the cause each waiter REPORTS, and says `unreported` plainly when it has none.
+            // Three reason classes can register a waiter, and this reading cannot isolate one of them
+            // from the others — so the line states what was observed and leaves the diagnosis to its
+            // reader. A log that names a mechanism it cannot distinguish is read as a finding, and
+            // sends whoever acts on it after the wrong one.
             const causes = evaluation.breaches.map(breach => `${breach.taskName} (deferred since ${breach.deferredSince}, cause ${breach.reasonCode ?? 'unreported'}${breach.blockingTaskName ? ` behind ${breach.blockingTaskName}` : ''})`);
 
             runtime.writeLog?.('WARN', `[Orchestrator] heavy-maintenance-starvation-watchdog: ${evaluation.breaches.length} waiter(s) starved past ${evaluation.degradeAfterMs}ms; lease holder ${evaluation.leaseHolder ?? 'none'} (status ${evaluation.leaseStatus ?? 'unknown'}): ${causes.join(', ')}. Each waiter's own reason code is the discriminator; the holder alone does not identify why any of them is waiting.`);

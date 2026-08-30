@@ -100,15 +100,12 @@ export function evaluateWaiterStarvation({ledgerReading, now, degradeAfterMs, le
                     blockingTaskName: entry.blockingTaskName ?? null,
                     // The lease class's blocker, a DIFFERENT field from the intra-process one on
                     // purpose: a backpressure conflict names a TASK, a lease hold names an OWNER. One
-                    // field carrying both would have to lie about one. Round 1 persisted this at
-                    // registration and never copied it here, so the ledger round trip proved the WRITE
-                    // while the consumed breach dropped it — a witness on the producer says nothing
-                    // about the projection. ticket-ref-ok: #242 RA-1.
+                    // field carrying both would have to lie about one of them.
                     leaseOwner      : entry.leaseOwner ?? null,
-                    // The holder-side discriminator (#224/#222) qualified a null `leaseHolder` on the
-                    // maintenance block but never reached the breach, so the two halves of one
-                    // question lived on different objects.
-                    leaseStatus      : leaseStatus ?? null
+                    // The holder-side discriminator belongs on the breach and not only on the
+                    // maintenance block: a null `leaseHolder` is unreadable without it, and the two
+                    // halves of one question are useless on separate objects.
+                    leaseStatus     : leaseStatus ?? null
                 });
             }
         }

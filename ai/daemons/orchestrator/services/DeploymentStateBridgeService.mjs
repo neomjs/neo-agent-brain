@@ -484,9 +484,8 @@ export class DeploymentStateBridgeService extends Base {
      * `posture` is the consumable word (`degraded` / `healthy` / `unknown` / `disabled`), `breaches`
      * carries the receipt (waiter, class, `deferredSince`, lease holder) plus each waiter's OWN cause —
      * `reasonCode`, `blockingTaskName`, `leaseOwner`, recorded at its deferral rather than at check time,
-     * because three different mechanisms register waiters and they take different remedies — and an
-     * `unknown` posture is
-     * explicitly NOT a degradation — it marks a reading that could not assert green.
+     * because three different mechanisms register waiters and they take different remedies. An
+     * `unknown` posture is explicitly NOT a degradation — it marks a reading that could not assert green.
      *
      * `leaseStatus` is the discriminator a null `leaseHolder` needs: `missing`, `stale`, `unreadable`
      * and `malformed` all report no holder, and only `stale` explains waiters queued behind a holder
