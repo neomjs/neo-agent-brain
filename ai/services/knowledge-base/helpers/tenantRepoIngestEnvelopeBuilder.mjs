@@ -247,9 +247,9 @@ async function readRevisionFile({gitMirror, identity, revision, sourcePath, cred
 async function buildFilePayloads({gitMirror, identity, revision, paths, rootKind, parserId, parserVersion, credentialRef}) {
     const files = [];
 
-    // One negotiation for the batch before the per-file loop: each `readRevisionFile` is a promisor
-    // round trip on a `blob:none` mirror, so a first ingest costs hours rather than seconds. Never
-    // rejects — on refusal the loop below reads exactly as before, slowly but correctly.
+    // Tier 1 of two: bulk-acquire the batch's blobs in one negotiation per chunk. The loop below is
+    // tier 2, one promisor round trip per file, which a first ingest pays in hours rather than
+    // seconds. Never rejects — on refusal the loop reads exactly as before, slowly but correctly.
     await gitMirror.prefetchRevisionBlobs?.({...identity, revision, sourcePaths: paths, credentialRef});
 
     for (const sourcePath of paths) {

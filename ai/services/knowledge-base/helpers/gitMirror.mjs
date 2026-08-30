@@ -1331,11 +1331,14 @@ export async function prefetchRevisionBlobs({mirrorRoot, tenantId, repoSlug, rev
  *
  * ## Why this read takes a credential and the other reads do not
  *
- * On the blobless mirror `cloneIfMissing` creates, this is the ONLY operation that can reach the
- * network. `for-each-ref`, `rev-parse`, `merge-base --is-ancestor`, `diff --name-status` and
- * `ls-tree` are answered entirely from the commit graph and trees, which the filter keeps complete.
- * `show <revision>:<path>` wants a blob, and the filter guarantees the blob is absent — so git
- * resolves it through a lazy promisor fetch against `remote.origin`.
+ * On the blobless mirror `cloneIfMissing` creates, blobs arrive through one of two network paths:
+ * `prefetchRevisionBlobs` acquires them in bulk ahead of an ingest, and this read is the per-file
+ * FALLBACK when that was unavailable or when nobody ran it. Both authenticate; nothing else here
+ * does. `for-each-ref`, `rev-parse`, `merge-base --is-ancestor`, `diff --name-status` and `ls-tree`
+ * are answered entirely from the commit graph and trees, which the filter keeps complete.
+ * `show <revision>:<path>` wants a blob, and if the prefetch did not already localize it the filter
+ * guarantees it is absent — so git resolves it through a lazy promisor fetch against `remote.origin`,
+ * one round trip for that single file.
  *
  * That fetch is a fresh authentication. Credentials here are per-invocation by design:
  * `createGitExecutionEnvironment` builds a disposable `mkdtemp` HOME with an empty `.gitconfig`,
