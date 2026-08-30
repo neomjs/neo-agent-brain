@@ -14,19 +14,19 @@ import path            from 'node:path';
 import os              from 'node:os';
 import {pathToFileURL} from 'node:url';
 
-import {parseLaneState}            from '../../ai/scripts/lifecycle/parseLaneState.mjs';
+import {parseLaneState}            from '../../parseLaneState.mjs';
 import {classifyPromptingContext,
         decideDeferenceStopHookAction,
         decideStopHookAction,
         isSyntheticPromptingText,
         LANE_STATE_SCHEMA_HINT,
         parseOutcomeToVerdict,
-        STOP_HOOK_TURN_OPTIONS_HINT} from '../../ai/scripts/lifecycle/stopHookDecision.mjs';
+        STOP_HOOK_TURN_OPTIONS_HINT} from '../../stopHookDecision.mjs';
 import {collectLaneStateToolEvidenceFromJsonl,
         collectLaneStateToolEvidenceFromMessages,
-        validateLaneStateTerminal} from '../../ai/scripts/lifecycle/validateLaneStateTerminal.mjs';
+        validateLaneStateTerminal} from '../../validateLaneStateTerminal.mjs';
 import {appendHookProjection,
-        readConfiguredHookProjection} from '../../ai/scripts/lifecycle/hookProjectionReader.mjs';
+        readConfiguredHookProjection} from '../../hookProjectionReader.mjs';
 
 export const CODEX_STOP_BLOCK_INJECTION_SUPPORTED = true;
 export const CODEX_PROMPT_CONTEXT_TTL_MS           = 10 * 60 * 1000;
@@ -600,10 +600,10 @@ export function classifyCodexStopPayload(input = {}, {enforcing = false, logDir,
  */
 async function resolveStopHookPolicy() {
     try {
-        await import('../../src/Neo.mjs');
-        await import('../../src/core/_export.mjs');
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
 
-        const {default: AiConfig} = await import('../../ai/config.mjs');
+        const {default: AiConfig} = await import('../../../../config.mjs');
 
         const projection = AiConfig.stopHook.projection;
 

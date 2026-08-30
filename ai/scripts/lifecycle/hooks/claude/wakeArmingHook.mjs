@@ -2,8 +2,8 @@ import os              from 'node:os';
 import path            from 'node:path';
 import {pathToFileURL} from 'node:url';
 
-import {armSeatWakeRoute}         from '../../ai/daemons/wake/armSeatWakeRoute.mjs';
-import {readSubscriptionsOverMcp} from '../../ai/daemons/wake/readSubscriptionsOverMcp.mjs';
+import {armSeatWakeRoute}         from '../../../../daemons/wake/armSeatWakeRoute.mjs';
+import {readSubscriptionsOverMcp} from '../../../../daemons/wake/readSubscriptionsOverMcp.mjs';
 
 /**
  * Where the wake receiver reads its route table. Matches the `--manifest` the running receiver is
@@ -67,10 +67,10 @@ export async function readPlaneConfig() {
     // Namespace bootstrap before the config import, the entry-point invariant `devFleetServer.mjs`
     // documents: `Neo` + `core/_export` populate `globalThis.Neo` so the Provider's `setupClass`
     // succeeds at module-load. Without them `ai/config.mjs` throws `Neo is not defined`.
-    await import('../../src/Neo.mjs');
-    await import('../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
-    const {default: AiConfig} = await import('../../ai/config.mjs');
+    const {default: AiConfig} = await import('../../../../config.mjs');
 
     return {planeBase: AiConfig.fleet.planeBase, planeBearer: AiConfig.fleet.planeBearer}
 }

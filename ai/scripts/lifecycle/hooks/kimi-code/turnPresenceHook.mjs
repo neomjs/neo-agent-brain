@@ -2,8 +2,8 @@ import {pathToFileURL} from 'node:url';
 import {
     readHookPayload,
     recordTurnPresenceFromHook
-} from '../../ai/mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
-import {normalizeAgentIdentityNodeId} from '../../ai/graph/normalizeAgentIdentityNodeId.mjs';
+} from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
+import {normalizeAgentIdentityNodeId} from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
 
 const EVENT_MAP = Object.freeze({
     Interrupt: Object.freeze({
@@ -69,10 +69,10 @@ export function resolveKimiTurnPresenceEvent(hookPayload) {
  * @returns {Promise<Object>} `{baseUrl, credential}`
  */
 export async function readPlaneConfig() {
-    await import('../../src/Neo.mjs');
-    await import('../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
-    const {default: AiConfig} = await import('../../ai/config.mjs'),
+    const {default: AiConfig} = await import('../../../../config.mjs'),
           planeBase           = String(AiConfig.fleet.planeBase ?? '').trim().replace(/\/+$/, '');
 
     return {

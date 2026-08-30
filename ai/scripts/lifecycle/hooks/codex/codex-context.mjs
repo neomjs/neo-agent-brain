@@ -6,7 +6,7 @@ import {
     extractWakeSubmitNonce,
     readHookPayload,
     recordTurnPresenceFromHook
-} from '../../ai/mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
+} from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 
 const LOG_DIR_NAME              = 'codex-lane-state-hook',
       PROMPT_CONTEXT_FILE_NAME  = 'codex-prompt-context.json',
@@ -160,10 +160,10 @@ export function writePromptContextFromHookPayload({
  * @returns {Promise<Object>} `{baseUrl, credential}`
  */
 export async function readPlaneConfig() {
-    await import('../../src/Neo.mjs');
-    await import('../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
-    const {default: AiConfig} = await import('../../ai/config.mjs'),
+    const {default: AiConfig} = await import('../../../../config.mjs'),
           planeBase           = String(AiConfig.fleet.planeBase ?? '').trim().replace(/\/+$/, '');
 
     return {

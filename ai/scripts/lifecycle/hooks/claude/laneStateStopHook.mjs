@@ -61,7 +61,7 @@ import path            from 'node:path';
 import os              from 'node:os';
 import {pathToFileURL} from 'node:url';
 
-import {parseLaneState} from '../../ai/scripts/lifecycle/parseLaneState.mjs';
+import {parseLaneState} from '../../parseLaneState.mjs';
 import {buildDeferenceStopHookDirective,
         classifyPromptingContext,
         decideDeferenceStopHookAction,
@@ -71,13 +71,13 @@ import {buildDeferenceStopHookDirective,
         LANE_STATE_SCHEMA_HINT,
         parseOutcomeToVerdict,
         scanHoldLexicon,
-        STOP_HOOK_TURN_OPTIONS_HINT} from '../../ai/scripts/lifecycle/stopHookDecision.mjs';
+        STOP_HOOK_TURN_OPTIONS_HINT} from '../../stopHookDecision.mjs';
 import {collectLaneStateToolEvidenceFromJsonl,
-        validateLaneStateTerminal} from '../../ai/scripts/lifecycle/validateLaneStateTerminal.mjs';
+        validateLaneStateTerminal} from '../../validateLaneStateTerminal.mjs';
 import {collectMaterialArtifactsFromJsonl,
-        evaluateMaterialArtifactKey} from '../../ai/scripts/lifecycle/materialArtifactKey.mjs';
+        evaluateMaterialArtifactKey} from '../../materialArtifactKey.mjs';
 import {appendHookProjection,
-        readConfiguredHookProjection} from '../../ai/scripts/lifecycle/hookProjectionReader.mjs';
+        readConfiguredHookProjection} from '../../hookProjectionReader.mjs';
 
 export {isOperatorInLoop, parseOutcomeToVerdict};
 
@@ -105,10 +105,10 @@ const ENFORCING = process.env.NEO_LANE_STATE_ENFORCE === '1';
  */
 async function resolveStopHookPolicy() {
     try {
-        await import('../../src/Neo.mjs');
-        await import('../../src/core/_export.mjs');
+        await import('neo.mjs/src/Neo.mjs');
+        await import('neo.mjs/src/core/_export.mjs');
 
-        const {default: AiConfig} = await import('../../ai/config.mjs');
+        const {default: AiConfig} = await import('../../../../config.mjs');
 
         const projection = AiConfig.stopHook.projection;
 

@@ -2,7 +2,7 @@ import {pathToFileURL} from 'node:url';
 import {
     readHookPayload,
     recordTurnPresenceFromHook
-} from '../../ai/mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
+} from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 
 function parseHookPayload(raw) {
     if (!raw) return null;
@@ -54,10 +54,10 @@ function resolveNote({action, hookPayload} = {}) {
 export async function readPlaneConfig() {
     // Namespace bootstrap before the config import, the entry-point invariant `devFleetServer.mjs`
     // documents: without them `ai/config.mjs` throws `Neo is not defined` at module-load.
-    await import('../../src/Neo.mjs');
-    await import('../../src/core/_export.mjs');
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs');
 
-    const {default: AiConfig} = await import('../../ai/config.mjs'),
+    const {default: AiConfig} = await import('../../../../config.mjs'),
           planeBase           = String(AiConfig.fleet.planeBase ?? '').trim().replace(/\/+$/, '');
 
     return {

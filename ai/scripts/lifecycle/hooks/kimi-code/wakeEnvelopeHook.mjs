@@ -5,7 +5,7 @@ import path            from 'node:path';
 import {spawnSync}     from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 
-import {normalizeAgentIdentityNodeId} from '../../ai/graph/normalizeAgentIdentityNodeId.mjs';
+import {normalizeAgentIdentityNodeId} from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
 
 /**
  * @summary Normalizes a provisioned seat identity to the canonical `@handle` form the wake
