@@ -87,20 +87,155 @@ class ApiSource extends Base {
             )
         }
 
-        // Throws on a regression below the interim floor — the incident's actual shape, where `src`
-        // fell from 96.42% populated to 0% and every check passed. Standing gaps do NOT throw; see
-        // the helper for why refusing on those would make the degraded corpus unrebuildable.
+        this.assertAndReportCoverage(coverage);
+
+        return count;
+    }
+
+    /**
+     * @summary Extracts one API territory from an exact repository revision.
+     *
+     * This is the profile-runner path. Every authority arrives through `context`; unlike the
+     * temporary legacy wrapper above it never reads `aiConfig.sourcePaths`,
+     * `aiConfig.hierarchyPath`, cwd, or a filesystem root.
+     *
+     * @param {Object} params
+     * @param {Object} params.context Repository-bound invocation context.
+     * @param {Object} params.options Route options; requires semantic `type`.
+     * @param {Object} params.writeStream JSONL output.
+     * @param {Function} params.createHashFn Legacy content hash function.
+     * @returns {Promise<{count: Number, yieldedSourcePaths: String[], skippedSourcePaths: Object[], coverage: Object}>}
+     */
+    async extractFromRepository({context, options = {}, writeStream, createHashFn} = {}) {
+        const
+            reader       = context?.repositoryReader,
+            resolver     = context?.hierarchyResolver,
+            semanticType = typeof options.type === 'string' ? options.type.trim() : '';
+
+        if (!reader || typeof reader.readText !== 'function') {
+            throw new TypeError('ApiSource repository extraction requires context.repositoryReader')
+        }
+        if (
+            !context?.hierarchy
+            && (!resolver || typeof resolver.resolve !== 'function' || !resolver.id || !resolver.version)
+        ) {
+            throw new TypeError('ApiSource repository extraction requires an identity-bearing hierarchyResolver')
+        }
+        if (!semanticType) {
+            throw new TypeError('ApiSource repository extraction requires route.options.type')
+        }
+
+        const
+            assignments = [...(context?.territory?.assignments || [])]
+                .sort((left, right) => left.entry.sourcePath === right.entry.sourcePath
+                    ? 0
+                    : left.entry.sourcePath < right.entry.sourcePath ? -1 : 1),
+            hierarchy = context.hierarchy || await resolver.resolve({
+                tenantId        : context.tenantId,
+                repoSlug        : context.repoSlug,
+                revision        : context.revision,
+                repositoryReader: reader,
+                territory       : context.territory
+            }),
+            coverage = {},
+            yieldedSourcePaths = [],
+            skippedSourcePaths = [],
+            chunksToWrite = [];
+
+        if (!hierarchy || typeof hierarchy !== 'object' || Array.isArray(hierarchy)) {
+            throw new TypeError('ApiSource hierarchyResolver.resolve() must return a hierarchy map')
+        }
+
+        for (const assignment of assignments) {
+            const sourcePath = assignment.entry.sourcePath;
+
+            if (!sourcePath.endsWith('.mjs')) {
+                continue
+            }
+
+            let content;
+
+            try {
+                content = await reader.readText(sourcePath);
+            } catch (error) {
+                if (error.code === 'KB_REVISION_READER_BINARY_BLOB') {
+                    skippedSourcePaths.push({sourcePath, reason: 'binary'});
+                    continue
+                }
+                throw error
+            }
+
+            const rootCoverage = coverage[assignment.root] ||= {declared: 0, resolved: 0};
+            const chunks       = SourceParser.parse(
+                content,
+                sourcePath,
+                semanticType,
+                hierarchy,
+                rootCoverage
+            );
+
+            if (chunks.length) {
+                yieldedSourcePaths.push(sourcePath);
+            }
+
+            chunksToWrite.push(...chunks);
+        }
+
+        // Resolve and validate every class before the first write. The legacy wrapper writes to a
+        // disposable build stream before checking; profile execution may become durable through the
+        // tenant lane, so a hierarchy regression cannot leak a partial route.
+        this.assertAndReportCoverage(coverage);
+        const count = this.writeChunks({
+            chunks: chunksToWrite,
+            createHashFn,
+            writeStream
+        });
+
+        return {
+            count,
+            yieldedSourcePaths: [...new Set(yieldedSourcePaths)].sort(),
+            skippedSourcePaths,
+            coverage
+        };
+    }
+
+    /**
+     * @summary Applies the interim hierarchy regression floor and reports standing debt.
+     *
+     * Unknown tenant roots have no floor and remain observable without being refused. Repository
+     * hierarchy authority and the eventual baseline retirement stay owned by the injected resolver
+     * lane; this preserves the existing guard while that migration lands.
+     *
+     * @param {Object} coverage Per-root declared/resolved tallies.
+     * @returns {void}
+     * @protected
+     */
+    assertAndReportCoverage(coverage) {
         for (const {root, declared, resolved, ratio, floor} of assertCoverageBaseline({coverage})) {
             const percent = (ratio * 100).toFixed(1);
 
             if (resolved < declared) {
-                // Named as DEBT, never as health: these chunks take an id derived from an empty
-                // `extends`, so the number is a defect description that happens to be within floor.
                 logger.warn?.(`[ApiSource] Class hierarchy resolves ${resolved}/${declared} (${percent}%) of the classes declaring a superclass under '${root}' — the remainder ingest with an empty 'extends', which is part of their chunk id. Known interim debt at floor ${floor === undefined ? 'unbaselined' : (floor * 100).toFixed(1) + '%'}; the generator's domain does not cover this root.`);
             } else {
                 logger.log?.(`[ApiSource] Class hierarchy resolves ${resolved}/${declared} (100%) under '${root}'.`);
             }
         }
+    }
+
+    /**
+     * @summary Hashes and writes parsed chunks in their parser-provided order.
+     * @param {Object} options
+     * @returns {Number}
+     * @protected
+     */
+    writeChunks({chunks, createHashFn, writeStream}) {
+        let count = 0;
+
+        chunks.forEach(chunk => {
+            chunk.hash = createHashFn(chunk);
+            writeStream.write(JSON.stringify(chunk) + '\n');
+            count++;
+        });
 
         return count;
     }
@@ -141,11 +276,7 @@ class ApiSource extends Base {
                 // Absolute paths would hard-code the local FS layout into the distributed zip.
                 const chunks = SourceParser.parse(content, relativeEntryPath, defaultType, hierarchy, coverage);
 
-                chunks.forEach(chunk => {
-                    chunk.hash = createHashFn(chunk);
-                    writeStream.write(JSON.stringify(chunk) + '\n');
-                    count++;
-                });
+                count += this.writeChunks({chunks, createHashFn, writeStream});
             }
         }
         return count;

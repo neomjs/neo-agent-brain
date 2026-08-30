@@ -75,83 +75,177 @@ class SkillSource extends Base {
      * @returns {Promise<Number>} The number of chunks extracted.
      */
     async extract(writeStream, createHashFn) {
-        let count = 0;
         // Per-source path from the `sourcePaths` config (SSOT).
         const skillsBasePath = path.resolve(aiConfig.neoRootDir, aiConfig.sourcePaths.SkillSource);
 
-        if (await fs.pathExists(skillsBasePath)) {
-            // Using fast-glob to recursively find all .md files in the skills directory
-            const pattern    = path.join(skillsBasePath, '**/*.md').replace(/\\/g, '/');
-            const skillFiles = await fg(pattern);
+        if (!await fs.pathExists(skillsBasePath)) {
+            return 0
+        }
 
-            const triggerTargetPathsBySkill = await this.collectTriggerTargetPathsBySkill(skillFiles, skillsBasePath);
+        // Fast-glob's ordering is not a contract. Sort explicitly so legacy and repository readers
+        // feed the shared parser byte-identically.
+        const
+            pattern    = path.join(skillsBasePath, '**/*.md').replace(/\\/g, '/'),
+            skillFiles = (await fg(pattern)).sort(),
+            documents  = await Promise.all(skillFiles.map(async filePath => ({
+                content          : await fs.readFile(filePath, 'utf8'),
+                root             : this.normalizeRelativePath(path.relative(aiConfig.neoRootDir, skillsBasePath)),
+                sourcePath       : this.normalizeRelativePath(path.relative(aiConfig.neoRootDir, filePath)),
+                skillRelativePath: this.normalizeRelativePath(path.relative(skillsBasePath, filePath))
+            }))),
+            result = this.createChunksFromDocuments({documents, createHashFn});
 
-            for (const filePath of skillFiles) {
-                const content                = await fs.readFile(filePath, 'utf-8');
-                const relativePath           = path.relative(aiConfig.neoRootDir, filePath);
-                const skillRelativePath      = path.relative(skillsBasePath, filePath);
-                const pathParts              = skillRelativePath.split(path.sep);
-                const skillFolder            = pathParts[0];
-                const skillTriggerTargets    = triggerTargetPathsBySkill.get(skillFolder);
-                const normalizedSkillPath    = this.normalizeRelativePath(skillRelativePath);
-                const isAtlasMonolithSubRule = skillTriggerTargets?.size
+        this.writeChunks({chunks: result.chunks, writeStream});
+
+        return result.chunks.length;
+    }
+
+    /**
+     * @summary Extracts one Skill territory from an exact repository revision.
+     * @param {Object} params
+     * @returns {Promise<{count: Number, yieldedSourcePaths: String[], skippedSourcePaths: Object[]}>}
+     */
+    async extractFromRepository({context, writeStream, createHashFn} = {}) {
+        const reader = context?.repositoryReader;
+
+        if (!reader || typeof reader.readText !== 'function') {
+            throw new TypeError('SkillSource repository extraction requires context.repositoryReader')
+        }
+
+        const
+            documents          = [],
+            skippedSourcePaths = [];
+
+        for (const assignment of [...(context?.territory?.assignments || [])]
+            .sort((left, right) => left.entry.sourcePath === right.entry.sourcePath
+                ? 0
+                : left.entry.sourcePath < right.entry.sourcePath ? -1 : 1)) {
+            if (!assignment.entry.sourcePath.endsWith('.md')) {
+                continue
+            }
+
+            let content;
+
+            try {
+                content = await reader.readText(assignment.entry.sourcePath);
+            } catch (error) {
+                if (error.code === 'KB_REVISION_READER_BINARY_BLOB') {
+                    skippedSourcePaths.push({
+                        sourcePath: assignment.entry.sourcePath,
+                        reason    : 'binary'
+                    });
+                    continue
+                }
+                throw error
+            }
+
+            documents.push({
+                content,
+                root             : assignment.root,
+                sourcePath       : assignment.entry.sourcePath,
+                skillRelativePath: assignment.relativePath
+            });
+        }
+
+        const result = this.createChunksFromDocuments({documents, createHashFn});
+
+        this.writeChunks({chunks: result.chunks, writeStream});
+
+        return {
+            count             : result.chunks.length,
+            yieldedSourcePaths: result.yieldedSourcePaths,
+            skippedSourcePaths
+        };
+    }
+
+    /**
+     * @summary Parses already-bound Skill documents without filesystem or config authority.
+     * @param {Object} options
+     * @returns {{chunks: Object[], yieldedSourcePaths: String[]}}
+     * @protected
+     */
+    createChunksFromDocuments({documents = [], createHashFn}) {
+        const
+            ordered = [...documents].sort((left, right) => left.sourcePath === right.sourcePath
+                ? 0
+                : left.sourcePath < right.sourcePath ? -1 : 1),
+            triggerTargetPathsBySkill = this.collectTriggerTargetPathsFromDocuments(ordered),
+            chunks = [],
+            yieldedSourcePaths = new Set();
+
+        for (const {content, root = '.', sourcePath, skillRelativePath} of ordered) {
+            const
+                normalizedSkillPath = this.normalizeRelativePath(skillRelativePath),
+                pathParts           = normalizedSkillPath.split('/'),
+                skillFolder         = pathParts[0],
+                skillTriggerTargets = triggerTargetPathsBySkill.get(
+                    this.createSkillTerritoryKey(root, skillFolder)
+                ),
+                isAtlasMonolithSubRule = skillTriggerTargets?.size
                     ? skillTriggerTargets.has(normalizedSkillPath)
                     : pathParts.includes('references');
 
-                let skillName        = skillFolder;
-                let triggerCondition = '';
-                let contentToParse   = content;
+            let skillName        = skillFolder;
+            let triggerCondition = '';
+            let contentToParse   = content;
 
-                // Parse YAML frontmatter
-                const yamlMatch = content.match(/^---\n([\s\S]*?)\n---/);
-                if (yamlMatch) {
-                    const yaml      = yamlMatch[1];
-                    const nameMatch = yaml.match(/^name:\s*(.*)/m);
-                    if (nameMatch) {
-                        skillName = nameMatch[1].trim();
-                    }
+            const yamlMatch = content.match(/^---\n([\s\S]*?)\n---/);
 
-                    const triggerMatch = yaml.match(/^triggers:\s*(.*)/m);
-                    if (triggerMatch) {
-                        triggerCondition = triggerMatch[1].trim();
-                    }
+            if (yamlMatch) {
+                const
+                    yaml         = yamlMatch[1],
+                    nameMatch    = yaml.match(/^name:\s*(.*)/m),
+                    triggerMatch = yaml.match(/^triggers:\s*(.*)/m);
 
-                    contentToParse = content.substring(yamlMatch[0].length).trim();
+                if (nameMatch) {
+                    skillName = nameMatch[1].trim();
+                }
+                if (triggerMatch) {
+                    triggerCondition = triggerMatch[1].trim();
                 }
 
-                // Split by headers for chunking
-                const sectionsRegex = /(?=^#+\s)/m;
-                const sections      = contentToParse.split(sectionsRegex);
+                contentToParse = content.substring(yamlMatch[0].length).trim();
+            }
 
-                for (const section of sections) {
-                    if (section.trim() === '') continue;
+            for (const section of contentToParse.split(/(?=^#+\s)/m)) {
+                if (section.trim() === '') {
+                    continue
+                }
 
-                    const headingMatch  = section.match(/^#+\s(.*)/);
-                    const sectionAnchor = headingMatch ? headingMatch[1].trim() : '';
-
-                    const chunkName = `${skillName}${sectionAnchor ? ` - ${sectionAnchor}` : ''}`;
-
-                    const chunk = {
+                const
+                    headingMatch  = section.match(/^#+\s(.*)/),
+                    sectionAnchor = headingMatch ? headingMatch[1].trim() : '',
+                    chunk         = {
                         type   : 'skill',
                         kind   : 'skill',
-                        name   : chunkName,
+                        name   : `${skillName}${sectionAnchor ? ` - ${sectionAnchor}` : ''}`,
                         content: section.trim(),
-                        source : relativePath,
-                        // Per-section skill sub-metadata (name, anchor, trigger).
+                        source : sourcePath,
                         skillName,
                         sectionAnchor,
                         triggerCondition,
                         isAtlasMonolithSubRule
                     };
 
-                    chunk.hash = createHashFn(chunk);
-                    writeStream.write(JSON.stringify(chunk) + '\n');
-                    count++;
-                }
+                chunk.hash = createHashFn(chunk);
+                chunks.push(chunk);
+                yieldedSourcePaths.add(sourcePath);
             }
         }
 
-        return count;
+        return {
+            chunks,
+            yieldedSourcePaths: [...yieldedSourcePaths].sort()
+        };
+    }
+
+    /**
+     * @summary Writes parsed chunks in deterministic order.
+     * @param {Object} options
+     * @protected
+     */
+    writeChunks({chunks, writeStream}) {
+        chunks.forEach(chunk => writeStream.write(JSON.stringify(chunk) + '\n'));
     }
 
     /**
@@ -161,31 +255,69 @@ class SkillSource extends Base {
      * @returns {Promise<Map<String, Set<String>>>}
      */
     async collectTriggerTargetPathsBySkill(skillFiles, skillsBasePath) {
+        const documents = await Promise.all(skillFiles.map(async filePath => ({
+            content          : await fs.readFile(filePath, 'utf8'),
+            root             : this.normalizeRelativePath(path.relative(aiConfig.neoRootDir, skillsBasePath)),
+            sourcePath       : this.normalizeRelativePath(path.relative(aiConfig.neoRootDir, filePath)),
+            skillRelativePath: this.normalizeRelativePath(path.relative(skillsBasePath, filePath))
+        })));
+
+        return this.collectTriggerTargetPathsFromDocuments(documents);
+    }
+
+    /**
+     * @summary Builds trigger-target membership across a complete in-memory Skill territory.
+     * @param {Object[]} documents
+     * @returns {Map<String, Set<String>>}
+     * @protected
+     */
+    collectTriggerTargetPathsFromDocuments(documents = []) {
         const targetPathsBySkill = new Map();
 
-        for (const filePath of skillFiles) {
-            const skillRelativePath = path.relative(skillsBasePath, filePath);
-            const pathParts         = skillRelativePath.split(path.sep);
-            const skillFolder       = pathParts[0];
-            const content           = await fs.readFile(filePath, 'utf-8');
-            const sectionTriggers   = parseSectionTriggers(content);
+        for (const {content, root = '.', skillRelativePath} of documents) {
+            const
+                normalizedSkillPath = this.normalizeRelativePath(skillRelativePath),
+                skillFolder         = normalizedSkillPath.split('/')[0],
+                sectionTriggers     = parseSectionTriggers(content),
+                territoryKey        = this.createSkillTerritoryKey(root, skillFolder);
 
-            if (!sectionTriggers.length) continue;
+            if (!sectionTriggers.length) {
+                continue
+            }
 
-            const skillTargets = targetPathsBySkill.get(skillFolder) || new Set();
-            targetPathsBySkill.set(skillFolder, skillTargets);
+            const skillTargets = targetPathsBySkill.get(territoryKey) || new Set();
+
+            targetPathsBySkill.set(territoryKey, skillTargets);
 
             for (const {subRulePath} of sectionTriggers) {
-                const targetPath     = path.resolve(path.dirname(filePath), subRulePath);
-                const targetRelative = this.normalizeRelativePath(path.relative(skillsBasePath, targetPath));
+                const targetRelative = this.normalizeRelativePath(
+                    path.posix.normalize(path.posix.join(path.posix.dirname(normalizedSkillPath), subRulePath))
+                );
 
-                if (!targetRelative.startsWith(`${skillFolder}/`)) continue;
+                if (!targetRelative.startsWith(`${skillFolder}/`)) {
+                    continue
+                }
 
                 skillTargets.add(targetRelative);
             }
         }
 
         return targetPathsBySkill;
+    }
+
+    /**
+     * @summary Keys trigger-target metadata by territory root plus skill folder.
+     *
+     * Two declared roots may both contain `skill/SKILL.md`. Folder-only keys would let a pointer
+     * from one repository territory mark the other root's same-relative-path document.
+     *
+     * @param {String} root Canonical repository-relative route root.
+     * @param {String} skillFolder Root-relative skill folder.
+     * @returns {String}
+     * @protected
+     */
+    createSkillTerritoryKey(root, skillFolder) {
+        return `${root}\0${skillFolder}`;
     }
 
     /**

@@ -2,6 +2,12 @@
 
 > **Status — Phase 3B.** This guide documents how a deployment teaches the Knowledge Base to index a new content territory by authoring a custom `Source` class — the Phase 0/1B `SourceRegistry` substrate of Epic [#11624](https://github.com/neomjs/neo/issues/11624). A runnable custom Source ships alongside this guide under [`ai/examples/cloud-deployment/`](../../../ai/examples/cloud-deployment/).
 
+> **Compatibility boundary.** `SourceRegistry` is the mutable legacy surface for the
+> full-corpus extract-all path. The repository-profile kernel does not consult it: built-in
+> extractors come from an immutable descriptor catalogue, and tenant-declared extractors resolve
+> per invocation. Keep existing registry integrations working while that legacy path is live, but
+> do not register a new multi-tenant extractor globally.
+
 ## Source vs Parser — which do you need?
 
 The KB ingestion substrate splits content acquisition into two roles (see [Overview](./Overview.md)):
@@ -90,7 +96,7 @@ export default Neo.setupClass(ProtoSource);
 
 Sort the territory deterministically (`.sort()` above) so the generated corpus is byte-stable run-to-run.
 
-## Registering a Source
+## Registering a legacy full-corpus Source
 
 A Source class is registered in the `SourceRegistry` singleton under a stable name:
 
@@ -98,6 +104,14 @@ A Source class is registered in the `SourceRegistry` singleton under a stable na
 - **Programmatically** — `SourceRegistry.registerSource(ProtoSource, {sourceName: 'ProtoSource'})` at runtime; re-registering the same name overwrites (idempotent, useful for hot-reload).
 
 `aiConfig.useDefaultSources` (default `true`) controls whether Neo's 10 curated Source classes are also registered. A deployment indexing *only* tenant content sets it `false`; the registry then contains only the tenant's custom Sources. See [Configuration](./Configuration.md).
+
+This registry remains mutable for compatibility: the current full-corpus builder still enumerates
+it, and freezing or removing it before that consumer cuts over would break a working deployment.
+New repository-profile execution uses `ExtractorCatalogue` plus
+`extractFromRepository({context, options, writeStream, createHashFn})` instead. That invocation is
+bound to one tenant, repository, and revision; it never reads `SourceRegistry`, ambient cwd, or
+process-wide path config. The legacy registry retires only after every legacy Source consumer has
+ported and the tenant ingestion lane has cut over.
 
 ## Built-in Raw Repo Fallback
 
