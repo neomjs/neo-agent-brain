@@ -807,17 +807,13 @@ exit 1
     });
 
 
-// The mirror is blobless, so every `readRevisionFile` is a lazy promisor fetch — one network round
-// trip per file. Measured against a cold `--filter=blob:none` mirror of `neomjs/neo`: **0.468 s/file**
-// over 500 files, which the container plane independently measured at 0.42 s/file. A first ingest
-// reads the whole tree, so 23,187 blobs cost **~3.0 hours of pure latency** — paid by every new
-// tenant, and again on every re-clone. Asking for the same blobs together took **28 seconds**, after
-// which `rev-list --missing=print` reported zero missing.
+// Each `readRevisionFile` on a blobless mirror is a promisor round trip: 0.468 s/file cold over 500
+// files, so a 23,187-blob first ingest costs ~3.0 hours against 28 seconds for the same blobs asked
+// for together.
 //
-// These tests use `file://` sources with `uploadpack.allowFilter`, because git ignores `--filter`
-// for local PATH clones — and, silently, for a remote that does not advertise filter support. A
-// local partial clone over the file transport does genuinely omit blobs, so the cold path below is
-// the real one and not a simulation.
+// ⚠️ Setup hazard: these use `file://` with `uploadpack.allowFilter`, because git ignores `--filter`
+// for local PATH clones and, silently, for a remote that does not advertise filter support. Over the
+// file transport blobs are genuinely omitted, so the cold path below is real rather than simulated.
 test.describe('prefetchRevisionBlobs — one negotiation instead of one per file (#65)', () => {
     /**
      * A source whose blobs are large enough to be worth omitting, served over a transport that
@@ -867,10 +863,8 @@ test.describe('prefetchRevisionBlobs — one negotiation instead of one per file
 
         for (const sourcePath of paths) oids.push(await oidFor(mirrorPath, revision, sourcePath));
 
-        // 🔴 THE CONTROL THIS TICKET EXISTS FOR. Two prior attempts at measuring this reported a
-        // non-result as a result: one where both arms fell through to sequential, and one where both
-        // arms timed WARM reads and returned 0s. If the blobs are already local, everything below
-        // passes while proving nothing — so coldness is asserted first, with the fetch-free probe.
+        // 🔴 Falsifier: if the blobs are already local, everything below passes while proving nothing.
+        // Coldness is asserted first, with the fetch-free probe.
         for (const oid of oids) {
             expect(await localObjectExists(mirrorPath, oid), `${oid} should be missing on a cold mirror`).toBe(false);
         }
@@ -888,9 +882,8 @@ test.describe('prefetchRevisionBlobs — one negotiation instead of one per file
     });
 
     test('it is SCOPED — an unrequested path stays missing, so incremental sync keeps its cost', async () => {
-        // AC: "Incremental sync stays untouched." A prefetch that helpfully pulled the whole revision
-        // would hand every steady-state poll the first-ingest bill this function exists to avoid, and
-        // no test of the requested paths alone would notice.
+        // A prefetch pulling the whole revision would hand every steady-state poll the first-ingest
+        // bill, and no test of the requested paths alone would notice.
         const {mirrorPath, options, revision} = await bloblessMirror(),
               requested                       = await oidFor(mirrorPath, revision, 'file-0.txt'),
               untouched                       = await oidFor(mirrorPath, revision, 'file-5.txt');
@@ -924,8 +917,7 @@ test.describe('prefetchRevisionBlobs — one negotiation instead of one per file
     });
 
     test('🔴 it DEGRADES rather than throwing — a failed prefetch must never fail an ingest', async () => {
-        // This sits in front of a path that already works. A throw here would turn a slow ingest into
-        // a failed one, which is strictly worse than the cost it is removing.
+        // A throw here turns a slow ingest into a failed one — worse than the cost being removed.
         const {mirrorPath, options, revision} = await bloblessMirror();
 
         await execFileAsync('git', ['remote', 'set-url', 'origin', `${root}/does-not-exist.git`], {cwd: mirrorPath});
@@ -955,10 +947,8 @@ test.describe('prefetchRevisionBlobs — one negotiation instead of one per file
     });
 
     test('chunking issues more than one fetch and still lands every blob', async () => {
-        // The chunk bound exists because ~23k OIDs at 41 bytes each is ~950 KB of argv, past ARG_MAX
-        // on macOS. Forcing a tiny chunk proves the loop rather than trusting the default never to be
-        // exercised — the production tree is the only place the default would be, and no unit test
-        // reaches it.
+        // ~23k OIDs at 41 bytes is ~950 KB of argv, past ARG_MAX on macOS. A tiny chunk proves the
+        // loop, which no unit test would otherwise reach at the production default.
         const {mirrorPath, options, revision} = await bloblessMirror(),
               paths                           = ['file-0.txt', 'file-1.txt', 'file-2.txt', 'file-3.txt'],
               oids                            = [];
@@ -973,10 +963,8 @@ test.describe('prefetchRevisionBlobs — one negotiation instead of one per file
     });
 
     test('the GitMirror contract exposes it, so a caller\'s optional call cannot hide a removal', async () => {
-        // `tenantRepoIngestEnvelopeBuilder` invokes this as `gitMirror.prefetchRevisionBlobs?.()`,
-        // because many test doubles implement the GitMirror shape only partially. That `?.` is what
-        // keeps those doubles simple — and it would also swallow an accidental deletion from the real
-        // primitive without a single test going red. This is the assertion that refuses that.
+        // The builder calls this optionally, so partial doubles stay simple — and so an accidental
+        // deletion from the real primitive would go unnoticed. This is what refuses that.
         expect(typeof GitMirror.prefetchRevisionBlobs).toBe('function');
     });
 });

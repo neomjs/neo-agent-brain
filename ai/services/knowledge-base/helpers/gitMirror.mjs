@@ -1200,37 +1200,17 @@ const PREFETCH_OID_CHUNK_SIZE = 1000;
 /**
  * @summary Fetches every blob a revision's paths need in a few negotiations instead of one per file.
  *
- * ## The cost this exists to remove
+ * On a `--filter=blob:none` mirror each `readRevisionFile` is a lazy promisor fetch — one round trip
+ * per file, measured cold at 0.52 s/file (0.42 on the plane), so a revision's 23,187 blobs cost ~3.3
+ * hours. The same blobs asked for together: 28 seconds. Only the round-trip count changes.
  *
- * `cloneIfMissing` creates the mirror with `--filter=blob:none`, so no blob is local until something
- * asks for it. `readRevisionFile` asks for exactly one, which git answers with a lazy promisor fetch
- * — a full round trip per file. Measured cold against `neomjs/neo`: **0.52 s/file**, which the live
- * plane independently measured at 0.42 s/file. Across the 23,187 blobs of one revision that is
- * **~3.3 hours** of latency, paid by every new tenant on its first ingest, and paid again on any
- * re-clone.
+ * **Never rejects, by contract.** This is an accelerator in front of a path that already works, so a
+ * throw would turn a slow ingest into a failed one. Every failure leaves `readRevisionFile` exactly as
+ * capable as before. It must equally never claim success it did not achieve, which is why `status`
+ * separates `prefetched` from `already-local` from `unavailable`.
  *
- * Asking for them together costs one negotiation per chunk. Measured on a cold mirror of the same
- * repo: the whole tree, 23,187 blobs, **28 seconds** — after which `rev-list --missing=print`
- * reports zero missing and the reads that follow are local. The blobs transferred are identical; only
- * the number of round trips changes.
- *
- * ## Why it is best-effort, and why that is not defensive coding
- *
- * This is an accelerator in front of a path that already works. Every failure mode — a server that
- * refuses SHA-1 wants, a credential that cannot authenticate, a mirror that is not a partial clone —
- * leaves `readRevisionFile` exactly as capable as it was before this function existed. So a throw here
- * would convert a *slow* ingest into a *failed* one, which is strictly worse than the status quo it
- * is trying to improve. It returns a status instead, and the caller reads on regardless.
- *
- * The one thing it must never do is report success it did not achieve: `status` distinguishes
- * `prefetched` from `already-local` from `unavailable`, so a caller (or a log) can tell a mirror that
- * needed nothing from a prefetch that silently did nothing.
- *
- * ## Scoped to the paths being read
- *
- * `sourcePaths` is required rather than optional, and the whole tree is never implied. An incremental
- * sync reads only changed paths, and a prefetch that helpfully fetched the entire revision would
- * hand every steady-state poll the first-ingest bill this function exists to avoid.
+ * **Scoped to `sourcePaths`; the whole tree is never implied.** An incremental sync reads only changed
+ * paths, and prefetching the full revision would hand every steady-state poll the first-ingest bill.
  *
  * @param {Object} options
  * @param {String} options.mirrorRoot Root directory for tenant repo mirrors.
