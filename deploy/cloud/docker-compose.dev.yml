@@ -86,6 +86,7 @@ x-plane-env: &plane-env
   NEO_MESSAGE_WAL_DAEMON_DIR: /app/.neo-ai-data-parity/message-daemon
   NEO_AI_DAEMON_DIR: /app/.neo-ai-data-parity/wake-daemon
   NEO_HOOK_PROJECTION_ROOT: /app/.neo-ai-data-parity/hook-projections
+  NEO_HANDOFF_FILE_PATH: /app/.neo-ai-data-parity/handoff/sandman_handoff.md
   NEO_GOLDEN_PATH_ROUTE_ATTRIBUTION_LEDGER_DIR: /app/.neo-ai-data-parity/orchestrator-daemon/route-attribution
   NEO_MEMORY_LOG_PATH: /app/.neo-ai-data-parity/logs
   NEO_LAZY_EDGES_QUEUE_PATH: /app/.neo-ai-data-parity/memory-core/lazy-edges.jsonl

@@ -341,24 +341,36 @@ test.describe('parity profile — volume scoping is the isolation mechanism', ()
         }
     });
 
-    test('the relocated parity anchor places every declared Tier-1 plane member', async () => {
+    test('the relocated parity anchor places every declared plane member across all four config owners', async () => {
         await import('neo.mjs/src/Neo.mjs');
         await import('neo.mjs/src/core/_export.mjs');
+        // Server config bases re-wrap the registered Tier-1 singleton. Load the template first,
+        // sequentially like production boot; parallel imports race that registration and test the
+        // module loader rather than plane membership.
+        await import('../../../../../ai/config.template.mjs');
 
-        const {default: ConfigBase, PLANE_MEMBER_PATHS} = await import('../../../../../ai/configBase.mjs');
         const
-            descriptors   = ConfigBase.config.data,
-            canonicalRoot = descriptors.plane.dataRoot.default,
+            declarations = [
+                await import('../../../../../ai/configBase.mjs'),
+                await import('../../../../../ai/mcp/server/memory-core/configBase.mjs'),
+                await import('../../../../../ai/mcp/server/knowledge-base/configBase.mjs'),
+                await import('../../../../../ai/mcp/server/neural-link/configBase.mjs')
+            ],
             planeEnv      = compose['x-plane-env'],
-            relocatedRoot = planeEnv.NEO_PLANE_DATA_ROOT;
+            relocatedRoot = planeEnv.NEO_PLANE_DATA_ROOT,
+            canonicalRoot = declarations[0].default.config.data.plane.dataRoot.default;
 
-        for (const memberPath of PLANE_MEMBER_PATHS) {
-            const descriptor = memberPath.split('.').reduce((value, key) => value[key], descriptors);
-            const relative   = path.relative(canonicalRoot, descriptor.default);
+        for (const declaration of declarations) {
+            const descriptors = declaration.default.config.data;
 
-            expect(relative, `${memberPath} escapes the canonical plane anchor`).not.toMatch(/^\.\.(?:[/\\]|$)/);
-            expect(planeEnv[descriptor.env], `${memberPath} (${descriptor.env}) is absent from x-plane-env`)
-                .toBe(path.join(relocatedRoot, relative))
+            for (const memberPath of declaration.PLANE_MEMBER_PATHS) {
+                const descriptor = memberPath.split('.').reduce((value, key) => value[key], descriptors);
+                const relative   = path.relative(canonicalRoot, descriptor.default);
+
+                expect(relative, `${memberPath} escapes the canonical plane anchor`).not.toMatch(/^\.\.(?:[/\\]|$)/);
+                expect(planeEnv[descriptor.env], `${memberPath} (${descriptor.env}) is absent from x-plane-env`)
+                    .toBe(path.join(relocatedRoot, relative))
+            }
         }
     });
 
