@@ -3,10 +3,38 @@ import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 import PrimaryRepoSyncService, {
     DEV_SYNC_ROOTS_ENV_VAR,
+    KB_SYNC_UNAUTHORIZED_REASON_CODE,
     isConfigTemplateChangePath,
     isKbRelevantChangePath,
+    isKbSyncAuthorized,
     parseDevSyncRoots
 } from '../../../../../../../ai/daemons/orchestrator/services/PrimaryRepoSyncService.mjs';
+
+const NPM_BIN = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+
+/**
+ * Steps for one KB-relevant fast-forward pull on the primary root. The caller appends the
+ * `npm run ai:sync-kb` step only when it expects the cascade — `createExecStub` is a strict
+ * sequence, so an unexpected cascade exhausts the list and fails loudly rather than silently.
+ * @param {Object} [options]
+ * @param {String} [options.diffError] Forces the changed-path probe to throw (fail-open path).
+ * @returns {Object[]}
+ */
+function kbRelevantFfPullSteps({diffError} = {}) {
+    return [
+        {cmd: 'git', args: ['worktree', 'list', '--porcelain'],       output: 'worktree /primary/neo\n'},
+        {cmd: 'git', args: ['rev-parse', '--abbrev-ref', 'HEAD'],     output: 'dev\n'},
+        {cmd: 'git', args: ['fetch', 'origin', 'dev', '--quiet']},
+        {cmd: 'git', args: ['rev-list', '--count', 'dev..origin/dev'], output: '2\n'},
+        {cmd: 'git', args: ['status', '--porcelain'],                 output: ''},
+        {cmd: 'git', args: ['rev-parse', 'HEAD'],                     output: 'old-head\n'},
+        {cmd: 'git', args: ['pull', '--ff-only', 'origin', 'dev']},
+        {cmd: 'git', args: ['rev-parse', 'HEAD'],                     output: 'new-head\n'},
+        diffError
+            ? {cmd: 'git', args: ['diff', '--name-only', 'old-head..new-head'], error : diffError}
+            : {cmd: 'git', args: ['diff', '--name-only', 'old-head..new-head'], output: 'src/button/Base.mjs\n'}
+    ];
+}
 
 function createExecStub(steps) {
     const calls = [];
@@ -244,9 +272,10 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
         }]);
 
         const result = PrimaryRepoSyncService.syncPrimaryDev({
-            cwd           : '/primary/neo',
-            execFileSyncFn: execStub,
-            writeLog      : () => {}
+            cwd             : '/primary/neo',
+            execFileSyncFn  : execStub,
+            writeLog        : () => {},
+            kbSyncAuthorized: true
         });
 
         expect(result.status).toBe('completed');
@@ -311,9 +340,10 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
         }]);
 
         const result = PrimaryRepoSyncService.syncPrimaryDev({
-            cwd           : '/primary/neo',
-            execFileSyncFn: execStub,
-            writeLog      : () => {}
+            cwd             : '/primary/neo',
+            execFileSyncFn  : execStub,
+            writeLog        : () => {},
+            kbSyncAuthorized: true
         });
 
         expect(result.status).toBe('completed');
@@ -526,7 +556,8 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
             cwd               : '/primary/neo',
             execFileSyncFn    : execStub,
             writeLog          : () => {},
-            devSyncRootsConfig: '["/primary/neo","/agent/neo"]'
+            devSyncRootsConfig: '["/primary/neo","/agent/neo"]',
+            kbSyncAuthorized  : true
         });
 
         expect(result).toEqual({
@@ -1322,5 +1353,156 @@ test.describe('PrimaryRepoSyncService (#11017)', () => {
 
         expect(execFileSyncFn.calls.length).toBe(1);
         expect(execFileSyncFn.calls[0].cmd).toBe(process.execPath);
+    });
+
+    // ---------------------------------------------------------------------------------------
+    // #251 — the KB cascade requires an explicit authorization.
+    //
+    // `enables.kbSync` gated the SCHEDULED task in `../scheduling/registry.mjs` and nothing
+    // else; this service reached the same destructive-by-default rebuild by a second route
+    // that consulted no enable. The controls below are stated as one positive and four
+    // negatives because the negatives are the whole point: a guard that only demonstrates
+    // the allowed case cannot witness the bypass it was written to close.
+    //
+    // The refused paths are exactly the four doors: completed root, changed-path-probe
+    // failure (which fails OPEN into a full cascade), the unset-roots primary fallthrough,
+    // and the metadata-reset path.
+    // ---------------------------------------------------------------------------------------
+
+    test('#251 POSITIVE control: authorized + KB-relevant completed root cascades exactly once', () => {
+        const execStub = createExecStub([...kbRelevantFfPullSteps(), {cmd: NPM_BIN, args: ['run', 'ai:sync-kb']}]);
+
+        const result = PrimaryRepoSyncService.syncPrimaryDev({
+            cwd             : '/primary/neo',
+            execFileSyncFn  : execStub,
+            writeLog        : () => {},
+            kbSyncAuthorized: true
+        });
+
+        expect(result.status).toBe('completed');
+        expect(result.details.kbSync).toBe(true);
+        expect(result.details.reasonCode).toBeUndefined();
+        // Exactly once — not merely "at least once". A guard that permits a double cascade
+        // still ships the destructive run twice.
+        expect(execStub.calls.filter(call => call.cmd === NPM_BIN).length).toBe(1);
+    });
+
+    test('#251 NEGATIVE control: unauthorized + completed root refuses the cascade with a receipt', () => {
+        const execStub = createExecStub(kbRelevantFfPullSteps());
+
+        const result = PrimaryRepoSyncService.syncPrimaryDev({
+            cwd             : '/primary/neo',
+            execFileSyncFn  : execStub,
+            writeLog        : () => {},
+            kbSyncAuthorized: false
+        });
+
+        expect(result.status).toBe('completed');
+        expect(result.details.kbSync).toBe(false);
+        expect(result.details.kbSyncRequired).toBe(true);
+        expect(result.details.reasonCode).toBe(KB_SYNC_UNAUTHORIZED_REASON_CODE);
+        expect(execStub.calls.map(call => call.cmd)).not.toContain(NPM_BIN);
+    });
+
+    test('#251 NEGATIVE control: omitted authorization fails CLOSED (the pre-#251 caller shape)', () => {
+        const execStub = createExecStub(kbRelevantFfPullSteps());
+
+        // Every caller written before #251 passes exactly this shape. A permissive default
+        // would leave them all cascading, which is the bypass itself.
+        const result = PrimaryRepoSyncService.syncPrimaryDev({
+            cwd           : '/primary/neo',
+            execFileSyncFn: execStub,
+            writeLog      : () => {}
+        });
+
+        expect(result.details.kbSync).toBe(false);
+        expect(result.details.reasonCode).toBe(KB_SYNC_UNAUTHORIZED_REASON_CODE);
+        expect(execStub.calls.map(call => call.cmd)).not.toContain(NPM_BIN);
+    });
+
+    test('#251 NEGATIVE control: refusal outranks the fail-open changed-path-probe fallback', () => {
+        const execStub = createExecStub(kbRelevantFfPullSteps({diffError: 'probe exploded'}));
+
+        const result = PrimaryRepoSyncService.syncPrimaryDev({
+            cwd             : '/primary/neo',
+            execFileSyncFn  : execStub,
+            writeLog        : () => {},
+            kbSyncAuthorized: false
+        });
+
+        // The probe failing escalates `kbSyncRequired` to true — the layer deliberately falls
+        // back to a FULL cascade when it cannot classify the diff. Authorization must still win.
+        expect(result.details.kbSyncRequired).toBe(true);
+        expect(result.details.kbSyncReasonCode).toBe('kb-relevance-check-failed');
+        expect(result.details.kbSync).toBe(false);
+        expect(result.details.reasonCode).toBe(KB_SYNC_UNAUTHORIZED_REASON_CODE);
+        expect(execStub.calls.map(call => call.cmd)).not.toContain(NPM_BIN);
+    });
+
+    test('#251 NEGATIVE control: unauthorized configured-roots path refuses the owner cascade', () => {
+        const execStub = createExecStub([
+            {cmd: 'git', args: ['worktree', 'list', '--porcelain'],        output: 'worktree /primary/neo\n'},
+            {cmd: 'git', args: ['rev-parse', '--show-toplevel'],           output: '/primary/neo\n'},
+            {cmd: 'git', args: ['fetch', 'origin', 'dev', '--quiet']},
+            {cmd: 'git', args: ['rev-parse', '--verify', 'origin/dev'],    output: 'abc123\n'},
+            {cmd: 'git', args: ['rev-parse', '--abbrev-ref', 'HEAD'],      output: 'dev\n'},
+            {cmd: 'git', args: ['rev-list', '--count', 'dev..origin/dev'], output: '2\n'},
+            {cmd: 'git', args: ['status', '--porcelain'],                  output: ''},
+            {cmd: 'git', args: ['rev-parse', 'HEAD'],                      output: 'old-head\n'},
+            {cmd: 'git', args: ['pull', '--ff-only', 'origin', 'dev']},
+            {cmd: 'git', args: ['rev-parse', 'HEAD'],                      output: 'new-head\n'},
+            {cmd: 'git', args: ['diff', '--name-only', 'old-head..new-head'], output: 'learn/guides/testing/UnitTesting.md\n'}
+        ]);
+
+        const result = PrimaryRepoSyncService.syncPrimaryDev({
+            cwd               : '/primary/neo',
+            execFileSyncFn    : execStub,
+            writeLog          : () => {},
+            devSyncRootsConfig: '["/primary/neo"]',
+            kbSyncAuthorized  : false
+        });
+
+        expect(result.details.kbSync).toBe(false);
+        expect(result.details.reasonCode).toBe(KB_SYNC_UNAUTHORIZED_REASON_CODE);
+        expect(execStub.calls.map(call => call.cmd)).not.toContain(NPM_BIN);
+    });
+
+    test('#251 NEGATIVE control: unauthorized metadata-reset path refuses the cascade', () => {
+        const execStub = createExecStub([
+            {cmd: 'git', args: ['worktree', 'list', '--porcelain'],        output: 'worktree /primary/neo\n'},
+            {cmd: 'git', args: ['rev-parse', '--abbrev-ref', 'HEAD'],      output: 'dev\n'},
+            {cmd: 'git', args: ['fetch', 'origin', 'dev', '--quiet']},
+            {cmd: 'git', args: ['rev-list', '--count', 'dev..origin/dev'], output: '1\n'},
+            {cmd: 'git', args: ['status', '--porcelain'],                  output: ' M resources/content/.sync-metadata.json\n'},
+            {cmd: 'git', args: ['rev-parse', 'HEAD'],                      output: 'old-head\n'},
+            {cmd: 'git', args: ['checkout', '--', 'resources/content/.sync-metadata.json']},
+            {cmd: 'git', args: ['pull', '--ff-only', 'origin', 'dev']},
+            {cmd: 'git', args: ['rev-parse', 'HEAD'],                      output: 'new-head\n'},
+            // A KB-relevant path rides along with the metadata reset, so this path WOULD cascade.
+            {cmd: 'git', args: ['diff', '--name-only', 'old-head..new-head'], output: 'src/button/Base.mjs\n'}
+        ]);
+
+        const result = PrimaryRepoSyncService.syncPrimaryDev({
+            cwd             : '/primary/neo',
+            execFileSyncFn  : execStub,
+            writeLog        : () => {},
+            kbSyncAuthorized: false
+        });
+
+        expect(result.details.resolved).toBe('meta-sync');
+        expect(result.details.kbSyncRequired).toBe(true);
+        expect(result.details.kbSync).toBe(false);
+        expect(result.details.reasonCode).toBe(KB_SYNC_UNAUTHORIZED_REASON_CODE);
+        expect(execStub.calls.map(call => call.cmd)).not.toContain(NPM_BIN);
+    });
+
+    test('#251 isKbSyncAuthorized authorizes on explicit true only', () => {
+        expect(isKbSyncAuthorized(true)).toBe(true);
+
+        // Truthy-but-not-true must NOT authorize: a config leaf that arrives as the string
+        // 'false' is truthy, and `!!value` would have shipped the cascade on it.
+        for (const value of [false, undefined, null, 0, 1, '', 'true', 'false', {}]) {
+            expect(isKbSyncAuthorized(value)).toBe(false);
+        }
     });
 });
