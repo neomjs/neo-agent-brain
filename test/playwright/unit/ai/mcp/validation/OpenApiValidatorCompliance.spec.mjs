@@ -623,11 +623,13 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
 
     test('memory-core session rows declare compact summary provenance (#210)', () => {
         const doc    = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/memory-core/openapi.yaml'), 'utf8')),
-              memory = doc.components.schemas.Memory;
+              memory = doc.components.schemas.Memory,
+              params = doc.paths['/memories'].get.parameters.map(param => param.name);
 
         expect(memory.properties.miniSummary).toMatchObject({type: 'string', nullable: true});
         expect(memory.properties.summaryFallback.type).toBe('boolean');
-        expect(memory.properties.summaryFallback.description).toContain('truncated raw prompt/response')
+        expect(memory.properties.summaryFallback.description).toContain('truncated raw prompt/response');
+        expect(params).toEqual(['sessionId', 'limit', 'offset'])
     });
 
     test('memory-core inspect_deployment output compiles for AJV clients (#16086)', () => {
