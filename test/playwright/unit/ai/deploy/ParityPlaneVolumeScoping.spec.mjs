@@ -270,6 +270,11 @@ test.describe('parity profile — volume scoping is the isolation mechanism', ()
         expect(orchestratorEnvironment).not.toContain('NEO_MCP_HEALTHCHECK_TOKEN')
     });
 
+    test('the CI overlay disables full KB sync without disabling core-corpus projection', () => {
+        expect(parityOverlay.services.orchestrator.environment.NEO_ORCHESTRATOR_KB_SYNC_ENABLED).toBe('false');
+        expect(compose.services.orchestrator.environment.NEO_ORCHESTRATOR_CORPUS_PROJECTION_ENABLED).toBe('true')
+    });
+
     test('parity served-identity probes accept consumed maintenance degradation', () => {
         const
             serverSource      = fs.readFileSync(parityServerPath, 'utf8'),
