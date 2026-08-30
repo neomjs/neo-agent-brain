@@ -27,10 +27,6 @@
         "buildScripts/util/check-whitespace.mjs": {
             "reason": "Runs on the `*` glob, so a cold mirror covers every file type in the repo; the pre-existing population is the largest and unmeasured per-guard.",
             "witness": "package.json lint-staged: the only guard under the repo-wide `*` glob."
-        },
-        "ai/scripts/lint/lint-fleet-vocabulary-parity.mjs": {
-            "reason": "Found by this guard's FIRST RUN, not by the hand census that motivated the ticket — that census matched `check-*` only and was structurally blind to the `lint-*` family. Held pending the same shared workflow scaffolding as the others.",
-            "witness": "package.json lint-staged invokes it under the `{ai/services/fleet/...,apps/agentos/config/...}` glob; no .github/workflows file invokes it (comments excluded). @neo-opus-grace reported 6/11 including the lint-* family before this ticket was filed; her count was the complete one."
         }
     }
 }

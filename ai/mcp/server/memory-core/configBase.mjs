@@ -560,10 +560,16 @@ class ConfigBase extends ConfigProvider {
              * Production handoff markdown file — autonomous agent-to-user reporting (offline jobs).
              * The active `handoffFilePath` consumers read is a formula (below) resolving Prod/Test by
              * construction from `UNIT_TEST_MODE`, so test runs that WRITE the handoff (runSandman /
-             * RemDigestion / TopologyInferenceEngine) never clobber the tracked production file.
+             * RemDigestion / TopologyInferenceEngine) never clobber the tracked production file. The
+             * production leaf is a declared plane member so boot coherence verifies its durable mount.
              * @type {string}
              */
-            handoffFilePathProd: leaf(path.resolve(planeDataRoot, 'handoff/sandman_handoff.md'), 'NEO_HANDOFF_FILE_PATH', 'string'),
+            handoffFilePathProd: leaf(
+                path.resolve(planeDataRoot, 'handoff/sandman_handoff.md'),
+                'NEO_HANDOFF_FILE_PATH',
+                'string',
+                {planeMember: true}
+            ),
             /**
              * Unit-test handoff path — a per-worker-unique file under the OS temp root (see
              * `testHandoffFile`), so fullyParallel workers never share a write target and test-mode
@@ -945,6 +951,7 @@ export const PLANE_MEMBER_PATHS = Object.freeze([
     'messageWal.daemonDataDir',
     'wakeDaemon.dataDir',
     'hookProjectionRoot',
+    'handoffFilePathProd',
     'goldenPathRouteAttributionLedgerDirProd',
     'logPath',
     'lazyEdgesQueuePath'
