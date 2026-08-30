@@ -40,7 +40,6 @@
  * @see learn/agentos/decisions  The AiConfig reactive Provider SSOT decision record.
  */
 import fs                             from 'node:fs';
-import {createRequire}                from 'node:module';
 import path                           from 'node:path';
 import process                        from 'node:process';
 import {fileURLToPath, pathToFileURL} from 'node:url';
@@ -48,11 +47,9 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 import {parse}            from 'acorn';
 import {load as loadYaml} from 'js-yaml';
 
-const __filename  = fileURLToPath(import.meta.url);
-const __dirname   = path.dirname(__filename);
-const ROOT_DIR    = path.resolve(__dirname, '../../..');
-const require     = createRequire(import.meta.url);
-const ENGINE_ROOT = path.dirname(require.resolve('neo.mjs/package.json'));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+const ROOT_DIR   = path.resolve(__dirname, '../../..');
 
 const CONFIG_TEMPLATE_BASENAME = 'config.template.mjs';
 // The Tier-1 root base: canonical default leaves live here since the template/base split — the
@@ -69,8 +66,8 @@ const TEST_SCAN_ROOT_REL              = 'test';
 const DEPLOY_SCAN_ROOT_REL            = 'deploy/cloud';
 const SELF_REL_FILE                   = 'ai/scripts/lint/lint-config-template-ssot.mjs';
 const ADR_0019_REL_FILE               = 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md';
-const ANTIPATTERN_GUARD_FILE          = path.join(ENGINE_ROOT, 'buildScripts/util/check-aiconfig-antipatterns.mjs');
-const TEST_MUTATION_GUARD_FILE        = path.join(ENGINE_ROOT, 'buildScripts/util/check-aiconfig-test-mutation.mjs');
+const ANTIPATTERN_GUARD_FILE          = path.join(ROOT_DIR, 'ai/scripts/lint/check-aiconfig-antipatterns.mjs');
+const TEST_MUTATION_GUARD_FILE        = path.join(ROOT_DIR, 'ai/scripts/lint/check-aiconfig-test-mutation.mjs');
 
 // The workflow-parity SSOT: every glob a path-filtered workflow must watch for this lint's
 // verdict to stay reproducible at PR time (scanned ⊆ watched as a mechanical fact, not YAML
@@ -86,11 +83,9 @@ export const SCAN_SURFACE = Object.freeze([
     // report a satisfied invariant over an incomplete picture of what this lint actually reads —
     // the same shape as the unprojected clock these rules exist to catch, one layer up.
     `${DEPLOY_SCAN_ROOT_REL}/**`,
-    // The AiConfig catalog and installed Engine guard revision are verdict inputs for the
-    // tag-to-executable-rule ownership check. A dependency move must rerun the two-way contract.
-    ADR_0019_REL_FILE,
-    'package.json',
-    'package-lock.json'
+    // The AiConfig catalog is a verdict input for the tag-to-executable-rule ownership check.
+    // Both executable guards live under the ai/**/*.mjs surface above.
+    ADR_0019_REL_FILE
 ]);
 const CONFIG_TEMPLATE_KIND_CACHE         = new Map();
 const SERVICE_EXPORT_CONFIG_TEMPLATE_REL = Object.freeze({
