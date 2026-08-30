@@ -112,21 +112,23 @@ test.describe('assertCoverageBaseline — a regression fails, standing debt does
     // These are the PARSER-CANONICAL numbers — a runtime walk of `sourcePaths.ApiSource` with class
     // extraction taken from `SourceParser` (acorn's `ClassDeclaration.superClass`). An earlier draft
     // of this fixture carried numbers from a separately reimplemented regex scan and disagreed on two
-    // roots (`src` 403 vs 404, `ai` /170 vs /171). Two independent implementations now agree on all
-    // five, which is the only reason these are safe to encode.
+    // roots. Two independent implementations agree on all four Engine package roots; the two Brain
+    // roots use the same parser-canonical runtime walk after extraction.
     const liveShape = {
-        'src'     : {declared: 405, resolved: 404},
-        'apps'    : {declared: 358, resolved: 336},
-        'examples': {declared: 259, resolved: 0},
-        'docs/app': {declared: 17,  resolved: 4},
-        'ai'      : {declared: 171, resolved: 127}
+        'node_modules/neo.mjs/src'     : {declared: 405, resolved: 404},
+        'node_modules/neo.mjs/apps'    : {declared: 358, resolved: 336},
+        'node_modules/neo.mjs/examples': {declared: 259, resolved: 0},
+        'node_modules/neo.mjs/docs/app': {declared: 17,  resolved: 4},
+        'src'                          : {declared: 4,   resolved: 0},
+        'ai'                           : {declared: 173, resolved: 130}
     };
 
     test('the live shape passes — standing debt is within floor, so recovery is not blocked', () => {
         const rows = assertCoverageBaseline({coverage: liveShape});
 
-        expect(rows).toHaveLength(5);
-        expect(rows.find(r => r.root === 'examples')).toMatchObject({declared: 259, resolved: 0, ratio: 0});
+        expect(rows).toHaveLength(6);
+        expect(rows.find(r => r.root === 'node_modules/neo.mjs/examples'))
+            .toMatchObject({declared: 259, resolved: 0, ratio: 0});
     });
 
     test('src collapsing to zero FAILS — the incident that motivated all of this', () => {
@@ -134,13 +136,15 @@ test.describe('assertCoverageBaseline — a regression fails, standing debt does
         // passed. This is the assertion that would have caught it.
         const error = (() => {
             try {
-                assertCoverageBaseline({coverage: {...liveShape, src: {declared: 405, resolved: 0}}});
+                assertCoverageBaseline({
+                    coverage: {...liveShape, 'node_modules/neo.mjs/src': {declared: 405, resolved: 0}}
+                });
                 return null;
             } catch (e) { return e }
         })();
 
         expect(error?.code).toBe('CLASS_HIERARCHY_COVERAGE_REGRESSION');
-        expect(error.message).toContain('src 0/405');
+        expect(error.message).toContain('node_modules/neo.mjs/src 0/405');
         expect(error.message).toContain('floor 99.0%');
     });
 
@@ -149,19 +153,29 @@ test.describe('assertCoverageBaseline — a regression fails, standing debt does
         // outside that registry is the realistic regression vector for this root.
         const error = (() => {
             try {
-                assertCoverageBaseline({coverage: {...liveShape, apps: {declared: 358, resolved: 300}}});
+                assertCoverageBaseline({
+                    coverage: {...liveShape, 'node_modules/neo.mjs/apps': {declared: 358, resolved: 300}}
+                });
                 return null;
             } catch (e) { return e }
         })();
 
         expect(error?.code).toBe('CLASS_HIERARCHY_COVERAGE_REGRESSION');
-        expect(error.message).toContain('apps 300/358');
+        expect(error.message).toContain('node_modules/neo.mjs/apps 300/358');
     });
 
     test('CONTROL — examples staying at 0 does NOT fail, because its floor is 0 named debt', () => {
         // Proves the guard is a regression detector rather than a quality gate. If this threw, the
         // corpus could never be rebuilt.
-        expect(() => assertCoverageBaseline({coverage: {examples: {declared: 259, resolved: 0}}})).not.toThrow();
+        expect(() => assertCoverageBaseline({
+            coverage: {'node_modules/neo.mjs/examples': {declared: 259, resolved: 0}}
+        })).not.toThrow();
+    });
+
+    test('Brain ai coverage collapsing to zero fails instead of blessing the extraction gap', () => {
+        expect(() => assertCoverageBaseline({
+            coverage: {...liveShape, ai: {declared: 173, resolved: 0}}
+        })).toThrow(/ai 0\/173.*floor 74\.0%/)
     });
 
     test('CONTROL — a root with zero declaring classes is omitted, not reported as 100%', () => {
@@ -184,12 +198,12 @@ test.describe('assertCoverageBaseline — a regression fails, standing debt does
         // this attempts the mutation and checks the value, which is the claim that actually matters.
         expect(Object.isFrozen(INTERIM_COVERAGE_BASELINE)).toBe(true);
 
-        try { INTERIM_COVERAGE_BASELINE['examples'] = 1 } catch (e) { /* strict mode throws; both fine */ }
+        try { INTERIM_COVERAGE_BASELINE['node_modules/neo.mjs/examples'] = 1 } catch (e) { /* strict mode throws; both fine */ }
         try { INTERIM_COVERAGE_BASELINE['injected'] = 1 } catch (e) { /* ditto */ }
-        try { delete INTERIM_COVERAGE_BASELINE['src'] }   catch (e) { /* ditto */ }
+        try { delete INTERIM_COVERAGE_BASELINE['node_modules/neo.mjs/src'] } catch (e) { /* ditto */ }
 
-        expect(INTERIM_COVERAGE_BASELINE.examples).toBe(0);
+        expect(INTERIM_COVERAGE_BASELINE['node_modules/neo.mjs/examples']).toBe(0);
         expect(INTERIM_COVERAGE_BASELINE.injected).toBeUndefined();
-        expect(INTERIM_COVERAGE_BASELINE.src).toBe(0.99);
+        expect(INTERIM_COVERAGE_BASELINE['node_modules/neo.mjs/src']).toBe(0.99);
     });
 });

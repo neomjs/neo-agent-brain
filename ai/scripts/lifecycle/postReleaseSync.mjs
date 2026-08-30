@@ -11,9 +11,10 @@
  * one-way (the Brain may consume the engine; never the reverse), so the content half of the
  * release moved HERE, to the side that owns the corpus, the sync machinery, and the Knowledge
  * Base. `publish.mjs` now ends after the GitHub release is created and prints this script's npm
- * alias as the explicit next runbook step:
+ * alias as the explicit next runbook step. The Engine checkout is a distinct target authority and
+ * must be named — the Brain checkout/cwd is never treated as the corpus:
  *
- *     npm run ai:post-release-sync
+ *     npm run ai:post-release-sync -- --target-repo-root /absolute/path/to/neo
  *
  * Ordering contract — a fail-closed preflight, then the original stages:
  *
@@ -35,19 +36,22 @@
  * @keywords Release Automation, Knowledge Base, GitHub Sync, Corpus Archive, Engine-Brain Boundary
  */
 
-import {execSync}                      from 'child_process';
+import {execFileSync, execSync}        from 'child_process';
 import fs                              from 'fs-extra';
 import path                            from 'path';
 import {fileURLToPath}                 from 'url';
-import {GH_SyncService}                from '../../services.host.mjs';
-import {findLogicalIdentityCollisions} from '../../../buildScripts/util/check-content-logical-identity.mjs';
+import {findLogicalIdentityCollisions} from 'neo.mjs/buildScripts/util/check-content-logical-identity.mjs';
 import {
     assertAdmissibleStartingState,
     assertOnDevBranch,
-    resolveReleaseVersion
+    buildReleaseChildEnvironment,
+    resolveReleaseVersion,
+    resolveTargetRepoRoot
 } from './postReleasePreflight.mjs';
 
-const root = path.resolve();
+const
+    modulePath = fileURLToPath(import.meta.url),
+    brainRoot  = path.resolve(path.dirname(modulePath), '../../..');
 
 /**
  * @summary Refuses an archive commit that would make two archived artifacts claim one logical name.
@@ -62,10 +66,11 @@ const root = path.resolve();
  * stalls Knowledge Base ingestion for the whole corpus, not just the colliding artifacts.
  *
  * @param {String} stage Human-readable commit site, for the failure message.
+ * @param {String} root Explicit Engine target root.
  * @returns {void}
  * @throws {Error} When any archived logical name is claimed by more than one artifact.
  */
-function assertNoArchiveLogicalIdentityCollisions(stage) {
+function assertNoArchiveLogicalIdentityCollisions(stage, root) {
     const collisions = findLogicalIdentityCollisions({
         archiveRoot: path.join(root, 'resources/content/archive')
     });
@@ -81,6 +86,25 @@ function assertNoArchiveLogicalIdentityCollisions(stage) {
             `Knowledge Base ingestion for the entire corpus. Repair with ` +
             `PullRequestSyncer.repairDuplicateArtifacts (npm run ai:sync-github-workflow), then re-run.`
         );
+    }
+}
+
+/**
+ * @summary Runs one Brain-owned Node entrypoint against the explicit target checkout.
+ * @param {String} scriptPath Absolute Brain runtime script path.
+ * @param {String} errorMessage Message printed when the command fails.
+ * @param {String} cwd Explicit Engine target root.
+ * @param {Object} [env=process.env] Explicit child process environment.
+ * @returns {void}
+ */
+function runNodeScript(scriptPath, errorMessage, cwd, env = process.env) {
+    try {
+        console.log(`> ${process.execPath} ${scriptPath}`);
+        execFileSync(process.execPath, [scriptPath], {cwd, env, stdio: 'inherit'})
+    } catch (error) {
+        console.error(`\n❌ Error: ${errorMessage}`);
+        console.error(error.message);
+        process.exit(1)
     }
 }
 
@@ -116,6 +140,17 @@ function runCommandWithOutput(command) {
 }
 
 async function main() {
+    const root = resolveTargetRepoRoot({
+        argv           : process.argv.slice(2),
+        readPackageJson: targetRoot => fs.readJsonSync(path.join(targetRoot, 'package.json')),
+        runtimeRoot    : brainRoot
+    });
+
+    // Target-bound ConfigProviders still derive `projectRoot` when their module graph loads. Set
+    // cwd ONLY from the validated explicit binding, before importing that graph. Missing bindings
+    // fail above; ambient cwd never becomes target authority by accident.
+    process.chdir(root);
+
     // --- 0. Fail-closed preflight, before ANY mutation (KB upload is irreversible) ---
     //
     // These were publish.mjs's inherited preconditions while both halves shared one process;
@@ -135,12 +170,21 @@ async function main() {
         version
     });
 
+    // Source and executables resolve from the Brain module graph; repository operations resolve
+    // against the explicit Engine target. Delay the service graph until the cheap preflight passes.
+    const {GH_SyncService} = await import('../../services.host.mjs');
+
     console.log(`\n🧠 Post-release content sync for v${version}...\n`);
 
     // --- 1. Upload Knowledge Base ---
 
     console.log('🧠 Step 1: Uploading Knowledge Base...');
-    runCommand('node ai/scripts/maintenance/uploadKnowledgeBase.mjs', 'Failed to upload knowledge base');
+    runNodeScript(
+        path.join(brainRoot, 'ai/scripts/maintenance/uploadKnowledgeBase.mjs'),
+        'Failed to upload knowledge base',
+        root,
+        buildReleaseChildEnvironment({version})
+    );
 
     // --- 2. Full GitHub sync (archive the release's closed tickets, chunk the release note) ---
 
@@ -177,7 +221,7 @@ async function main() {
         // Deliberately AFTER the catch above, so it also fires on the path where `runFullSync()`
         // threw and this script chose to continue: that throw is the integrity verdict, and this is
         // the commit that would publish what the verdict refused.
-        assertNoArchiveLogicalIdentityCollisions('commit archived tickets');
+        assertNoArchiveLogicalIdentityCollisions('commit archived tickets', root);
         runCommand('git add .', 'Failed to stage archive changes');
         runCommand(`git commit --no-verify -m "chore: Archive tickets for v${version}"`, 'Failed to commit archive changes');
         runCommand('git push origin dev', 'Failed to push archive changes');
@@ -193,8 +237,6 @@ async function main() {
 // Knowledge Base upload or an archive commit. `main()` runs only when this file IS the process
 // entrypoint — the same checkable entrypoint predicate `runAgent.mjs` uses.
 const cliEntryPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-const modulePath   = fileURLToPath(import.meta.url);
-
 if (cliEntryPath && cliEntryPath === modulePath) {
     main().catch(error => {
         console.error('\n❌ Unhandled Error:', error);

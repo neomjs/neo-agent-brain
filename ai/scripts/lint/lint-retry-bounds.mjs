@@ -54,7 +54,7 @@
  *
  * ## Scope
  *
- * Production `.mjs` under `ai/`, `src/`, `apps/`, `buildScripts/`. Specs and tests are excluded: a
+ * Production `.mjs` under Brain-owned `ai/` and `src/`. Specs and tests are excluded: a
  * test asserting backoff arithmetic is not a production retry site, and including them would make
  * the registry churn with every fixture.
  */
@@ -67,7 +67,7 @@ const
     __dirname    = path.dirname(__filename),
     ROOT_DIR     = path.resolve(__dirname, '../../../'),
     REGISTRY_REL = 'ai/scripts/lint/retry-bound-registry.json',
-    SCAN_ROOTS   = ['ai', 'src', 'apps', 'buildScripts'],
+    SCAN_ROOTS   = ['ai', 'src'],
 
     SKIP_DIR = new Set(['node_modules', 'dist', '.git', 'test', 'tests', 'coverage']),
 

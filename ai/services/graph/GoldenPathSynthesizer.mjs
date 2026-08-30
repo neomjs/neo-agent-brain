@@ -1,6 +1,5 @@
 import fs                                                      from 'fs';
 import path                                                    from 'path';
-import {fileURLToPath}                                         from 'url';
 import { Memory_Config as aiConfig }                           from '../../services.mjs';
 import Base                                                    from 'neo.mjs/src/core/Base.mjs';
 import { Memory_StorageRouter as StorageRouter }               from '../../services.mjs';
@@ -97,9 +96,6 @@ import {
     renderWorkGraphStallFindingsSection as renderIssueFocusWorkGraphStallFindingsSection,
     scoreCurrentFocusIssue as scoreIssueFocusCurrentIssue
 } from './issueFocusSections.mjs';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
 
 // Candidate admission widens complete prefixes, but an unhealthy proxy must never drive
 // exponentially large ANN requests or SQLite placeholder lists. The collection count narrows the
@@ -986,7 +982,12 @@ class GoldenPathSynthesizer extends Base {
 
     async synthesizeGoldenPath({
         repoEnrichmentEnabled = true,
-        issuesDir = path.resolve(__dirname, '../../../resources/content/issues'),
+        issuesDir = path.resolve(
+            aiConfig.orchestrator.corpusProjection.enabled
+                ? aiConfig.orchestrator.corpusProjection.materializedRoot
+                : path.resolve(aiConfig.projectRoot, 'resources/content'),
+            'issues'
+        ),
         now = new Date()
     } = {}) {
         logger.info('[GoldenPathSynthesizer] Initializing Hybrid GraphRAG Strategic Traversal...');
@@ -1823,8 +1824,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
         let backlogAppend = '';
         if (repoEnrichmentEnabled) {
             try {
-                const rawIssuesDir   = path.resolve(__dirname, '../../../resources/content/issues');
-                const filesRaw       = fs.readdirSync(rawIssuesDir);
+                const filesRaw       = fs.readdirSync(issuesDir);
                 const mdFiles        = filesRaw.filter(f => f.endsWith('.md'));
                 const openIssuesData = [];
                 for (const file of mdFiles) {

@@ -76,9 +76,6 @@ class ConfigBase extends ConfigProvider {
              * a cutover transient; routing NL writes through MC's remote API instead belongs to
              * the streamable-HTTP direction, tracked separately.
              *
-             * Enabled deliberately by `ai/scripts/diagnostics/genesisProbe.mjs`, whose per-tool
-             * telemetry oracle reads `nl_action_log` inside its own disposable root. A blanket
-             * disable would leave that blind probe comparing against an empty oracle.
              * @type {boolean}
              */
             actionLoggingEnabled: leaf(false, 'NEO_NL_ACTION_LOGGING', 'boolean'),

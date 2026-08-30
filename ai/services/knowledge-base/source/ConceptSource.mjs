@@ -1,7 +1,7 @@
-import Base from './Base.mjs';
-import fs   from 'fs-extra';
-import path from 'path';
-import matter from 'gray-matter';
+import Base     from './Base.mjs';
+import fs       from 'fs-extra';
+import path     from 'path';
+import matter   from 'gray-matter';
 import aiConfig from '../../../mcp/server/knowledge-base/config.mjs';
 
 /**
@@ -37,7 +37,7 @@ class ConceptSource extends Base {
     async extract(writeStream, createHashFn) {
         let count = 0;
         // Per-source path from the `sourcePaths` config (SSOT).
-        const conceptsDir = path.resolve(aiConfig.neoRootDir, aiConfig.sourcePaths.ConceptSource);
+        const conceptsDir = path.resolve(aiConfig.projectRoot, aiConfig.sourcePaths.ConceptSource);
 
         if (await fs.pathExists(conceptsDir)) {
             const files = await fs.readdir(conceptsDir);
@@ -46,9 +46,9 @@ class ConceptSource extends Base {
             for (const file of files) {
                 if (!file.endsWith('.md')) continue;
 
-                const filePath = path.join(conceptsDir, file);
+                const filePath   = path.join(conceptsDir, file);
                 const rawContent = await fs.readFile(filePath, 'utf-8');
-                const parsed = matter(rawContent);
+                const parsed     = matter(rawContent);
 
                 const chunk = {
                     type       : 'concept',
@@ -57,7 +57,7 @@ class ConceptSource extends Base {
                     tier       : parsed.data.tier || 0,
                     description: parsed.content.trim(),
                     content    : `${parsed.data.name || path.basename(file, '.md')}: ${parsed.content.trim()}`,
-                    source     : path.relative(aiConfig.neoRootDir, filePath)
+                    source     : path.relative(aiConfig.projectRoot, filePath)
                 };
 
                 chunk.hash = createHashFn(chunk);

@@ -15,10 +15,10 @@ import {splitDiscussionArchiveMarkdown} from './discussionArchiveElementSplitter
  * @extends Neo.ai.services.knowledge-base.source.Base
  * @singleton
  */
-const loadIndexMap = async (neoRootDir, type) => {
-    const map = new Map();
-    const typeIndex = path.resolve(neoRootDir, `resources/content/${type}/_index.json`);
-    const rootIndex = path.resolve(neoRootDir, 'resources/content/_index.json');
+const loadIndexMap = async (projectRoot, type) => {
+    const map       = new Map();
+    const typeIndex = path.resolve(projectRoot, `resources/content/${type}/_index.json`);
+    const rootIndex = path.resolve(projectRoot, 'resources/content/_index.json');
 
     let entries = [];
     if (await fs.pathExists(typeIndex)) {
@@ -60,12 +60,12 @@ class DiscussionSource extends Base {
     async extract(writeStream, createHashFn) {
         let count = 0;
         // Per-source paths (array) from the `sourcePaths` config (SSOT). Each entry is resolved
-        // against `neoRootDir`.
+        // against the configured primary repository root.
         const discussionPaths = aiConfig.sourcePaths.DiscussionSource;
-        const targetPaths     = discussionPaths.map(p => path.resolve(aiConfig.neoRootDir, p));
+        const targetPaths     = discussionPaths.map(p => path.resolve(aiConfig.projectRoot, p));
 
-        const indexMap    = await loadIndexMap(aiConfig.neoRootDir, 'discussions');
-        const contentRoot = path.resolve(aiConfig.neoRootDir, 'resources/content');
+        const indexMap    = await loadIndexMap(aiConfig.projectRoot, 'discussions');
+        const contentRoot = path.resolve(aiConfig.projectRoot, 'resources/content');
 
         for (const targetPath of targetPaths) {
             if (await fs.pathExists(targetPath)) {
@@ -84,7 +84,7 @@ class DiscussionSource extends Base {
 
                         const content = await fs.readFile(filePath, 'utf-8');
                         // Relative path keeps the distributed Chroma zip portable.
-                        const source = path.relative(aiConfig.neoRootDir, filePath);
+                        const source = path.relative(aiConfig.projectRoot, filePath);
                         // Per-element chunks (body + each comment) keep a large converged Discussion
                         // under the embedding cap; a no-comment discussion yields one body chunk whose
                         // content equals the whole file.
@@ -92,9 +92,9 @@ class DiscussionSource extends Base {
 
                         for (const element of elements) {
                             const suffix = element.kind === 'body' ? 'body' : `comment-${element.ordinal}`;
-                            const chunk = {
-                                type: 'discussion',
-                                kind: 'discussion',
+                            const chunk  = {
+                                type   : 'discussion',
+                                kind   : 'discussion',
                                 name   : `discussion-${id}#${suffix}`,
                                 content: element.content,
                                 source

@@ -464,7 +464,7 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
 
     test('retired target vocabulary and adapter spellings stay inside their named boundaries', () => {
         const
-            roots              = ['ai', 'apps', 'learn', 'src', 'test'].map(name => path.join(PROJECT_ROOT, name)),
+            roots              = ['ai', 'learn', 'src', 'test'].map(name => path.join(PROJECT_ROOT, name)),
             retiredTargetField = ['mcp', 'Transport'].join(''),
             retiredTargetMode  = ['remote', 'http'].join('-'),
             codexAdapterToken  = ['streamable', 'http'].join('_'),
@@ -479,10 +479,8 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
 
                 return [
                     'ai/services/fleet/',
-                    'apps/agentos/',
                     'learn/agentos/',
                     'test/playwright/unit/ai/services/fleet/',
-                    'test/playwright/unit/apps/agentos/'
                 ].some(prefix => relative.startsWith(prefix)) ||
                     [
                         'test/playwright/unit/ai/FleetLifecycleService.spec.mjs',

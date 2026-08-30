@@ -35,6 +35,15 @@ function createSourcePathsConfig(sourcePaths) {
     return createConfigProxy(Neo.create(ConfigProvider, {data}));
 }
 
+const API_SOURCE_FALLBACK = Object.freeze([
+    {path: 'node_modules/neo.mjs/src',      type: 'src'},
+    {path: 'node_modules/neo.mjs/apps',     type: 'app'},
+    {path: 'node_modules/neo.mjs/examples', type: 'example'},
+    {path: 'node_modules/neo.mjs/docs/app', type: 'app'},
+    {path: 'src',                           type: 'brain-source'},
+    {path: 'ai',                            type: 'ai-infrastructure'}
+]);
+
 /**
  * Verifies the `aiConfig.sourcePaths` config-driven override + legacy hardcoded-fallback contract
  * across all 10 default Neo Source classes. Each test exercises
@@ -200,47 +209,30 @@ test.describe('aiConfig.sourcePaths config-driven path resolution (#11660)', () 
         }
     });
 
-    test.describe('ApiSource sourceMap (path → type object)', () => {
-        const apiSourceFallback = {
-            'src'     : 'src',
-            'apps'    : 'app',
-            'examples': 'example',
-            'docs/app': 'app',
-            'ai'      : 'ai-infrastructure'
-        };
+    test.describe('ApiSource ordered path/type rows', () => {
+        const apiSourceFallback = API_SOURCE_FALLBACK;
 
         test('template default matches Source-class hardcoded sourceMap fallback (byte-equivalence anchor)', () => {
-            for (const [pathKey, typeValue] of Object.entries(apiSourceFallback)) {
-                expect(templateConfig.sourcePaths.ApiSource[pathKey]).toBe(typeValue);
-            }
+            expect(templateConfig.sourcePaths.ApiSource).toEqual(apiSourceFallback)
         });
 
         test('override sourceMap takes precedence over fallback', () => {
-            // Reactive-config semantics (ConfigProvider extends Neo.state.Provider):
-            // assigning an OBJECT to a config leaf routes through the Provider's `setData`, which
-            // drills into the supplied nested keys and MERGES them onto the existing sub-keys —
-            // override values WIN on a conflicting key; keys the override omits keep their default.
-            // This is NOT the pre-migration wholesale object replace. The override-precedence
-            // contract this test guards is therefore "operator-supplied values win", asserted
-            // against the live merged map rather than exact-equality of the whole object.
-            //
-            // Use a disposable Provider seeded with the canonical fallback map. This keeps the
-            // reactive merge assertion while ensuring the registered template singleton is read-only.
+            // The ordered list is one leaf value: an operator replaces it whole rather than merging
+            // filesystem paths as reactive namespace keys (where dots are structural separators).
             const config = createSourcePathsConfig({ApiSource: apiSourceFallback});
 
             try {
-                // Re-target two existing path-keys to tenant directories with distinct types.
-                config.sourcePaths.ApiSource = {'src': 'tenant-app', 'apps': 'tenant-example'};
+                // Operator override replaces the ordered source list as one contract value.
+                config.sourcePaths.ApiSource = [
+                    {path: 'src',                       type: 'tenant-app'},
+                    {path: 'node_modules/neo.mjs/apps', type: 'tenant-example'}
+                ];
                 const resolved = config.sourcePaths?.ApiSource ?? apiSourceFallback;
 
-                // Override-precedence: operator values win on the keys they target.
-                expect(resolved.src).toBe('tenant-app');
-                expect(resolved.apps).toBe('tenant-example');
-                // Sanity: the override values genuinely displaced the curated defaults.
-                expect(resolved.src).not.toBe(apiSourceFallback.src);
-                expect(resolved.apps).not.toBe(apiSourceFallback.apps);
-                // Keys the override omitted retain their default (reactive-merge, not replace).
-                expect(resolved.examples).toBe(apiSourceFallback.examples);
+                expect(resolved).toEqual([
+                    {path: 'src',                       type: 'tenant-app'},
+                    {path: 'node_modules/neo.mjs/apps', type: 'tenant-example'}
+                ])
             } finally {
                 config.destroy();
             }
@@ -274,7 +266,7 @@ test.describe('aiConfig.sourcePaths config-driven path resolution (#11660)', () 
                 expect(config.sourcePaths?.DiscussionSource   ?? ['resources/content/discussions', 'resources/content/archive/discussions']).toEqual(['resources/content/discussions', 'resources/content/archive/discussions']);
                 expect(config.sourcePaths?.PullRequestSource  ?? ['resources/content/pulls',       'resources/content/archive/pulls']).toEqual(['resources/content/pulls', 'resources/content/archive/pulls']);
                 expect(config.sourcePaths?.TicketSource       ?? ['resources/content/issues',      'resources/content/archive/issues']).toEqual(['resources/content/issues', 'resources/content/archive/issues']);
-                expect(config.sourcePaths?.ApiSource          ?? {'src': 'src', 'apps': 'app', 'examples': 'example', 'docs/app': 'app', 'ai': 'ai-infrastructure'}).toEqual({'src': 'src', 'apps': 'app', 'examples': 'example', 'docs/app': 'app', 'ai': 'ai-infrastructure'});
+                expect(config.sourcePaths?.ApiSource ?? API_SOURCE_FALLBACK).toEqual(API_SOURCE_FALLBACK);
             } finally {
                 config.destroy();
             }

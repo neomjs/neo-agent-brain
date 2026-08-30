@@ -35,16 +35,6 @@
  * files by path, and `path.resolve` traverses symlinks transparently without canonical-path
  * side effects.
  *
- * **Symlinking gitignored SINGLE FILES:** Some cross-clone substrates live
- * outside `.neo-ai-data/` — most notably `resources/content/sandman_handoff.md`, the
- * Sandman strategic-priming handoff that `runSandman.mjs` writes only inside the
- * canonical clone. Without symlink mediation, the other trio members' clones can't read
- * the handoff at boot. The granular per-file primitive ({@link symlinkGitignoredFiles}
- * + {@link GITIGNORED_FILES_TO_LINK}) extends Cross-clone substrate unification to
- * single artifacts without exposing their tracked parent directories. Distinct from the
- * data-dir path because `resources/content/` is heavily git-tracked (issue files, PRs,
- * discussions) — only single gitignored files inside it qualify.
- *
  * **The gitignore boundary inside `.neo-ai-data/` is load-bearing:**
  *
  * ```
@@ -199,34 +189,6 @@ for (const {source, alias} of CANONICAL_DATA_READ_ALIASES) {
         );
     }
 }
-
-/**
- * Allowlist of gitignored single files (outside `.neo-ai-data/`) to symlink to canonical
- * when `--link-data` is set. Initial member is the Sandman strategic-priming handoff,
- * which `runSandman.mjs` writes only inside the canonical clone. Without symlink mediation,
- * Antigravity-Gemini and Codex-GPT clones don't see the handoff at boot per
- * `AGENTS_STARTUP.md §6` step 4.
- *
- * **Allowlist discipline (curated — `.neo-ai-data/` uses the inverse {@link DATA_SUBDIRS_BLOCKLIST}):**
- *
- * Each entry MUST be:
- * 1. **Gitignored** — single file with its own `.gitignore` line. Symlinking a tracked file
- *    would create cross-clone divergence between git's view and the symlink target.
- * 2. **Canonical-only-write** — produced exclusively in the canonical clone (e.g., by an
- *    operator-side script like `runSandman.mjs`). Files written by all clones simultaneously
- *    would race on the symlink target.
- * 3. **Cross-clone-readable** — consumed at boot or runtime by all trio members; the entire
- *    rationale for the symlink is removing the cross-clone visibility asymmetry.
- *
- * Entries that fail any of those conditions belong elsewhere: tracked files need no symlink,
- * locally-written files would corrupt canonical, and clone-private files have no consumer.
- *
- * @see https://github.com/neomjs/neo/issues/10591 (this allowlist's introduction)
- * @see {@link symlinkGitignoredFiles} for the per-file symlink-or-skip-or-warn logic.
- */
-export const GITIGNORED_FILES_TO_LINK = [
-    'resources/content/sandman_handoff.md'  // Sandman strategic-priming handoff
-];
 
 export const DEFAULT_CLAUDE_WORKTREES_ROOT = path.join('.claude', 'worktrees');
 
@@ -958,124 +920,6 @@ export async function symlinkCanonicalDataReadAliases({
 }
 
 /**
- * @summary Granularly symlinks gitignored single files (outside `.neo-ai-data/`) to
- * canonical, unifying cross-clone-readable handoff substrates without exposing the entire
- * tracked parent directory.
- *
- * **Why per-file, not per-parent (Cross-clone substrate unification):**
- *
- * The handoff substrate (initial member: `resources/content/sandman_handoff.md`) lives
- * inside a heavily git-tracked parent — `resources/content/` holds issue files, PR
- * conversations, discussion threads, and release notes that all three trio members
- * generate independently. Symlinking the parent atomically would hide every clone's
- * locally-tracked contributions behind canonical's view (the same parent-symlink anti-pattern
- * fixed for `.neo-ai-data/` parent symlinks before the per-subdir refinement). The
- * gitignore boundary is single-file granular, so the symlink primitive must be too.
- *
- * **Why this is the right substrate (Anchor & Echo on Cross-clone substrate unification):**
- *
- * The companion `symlinkDataDir` function unifies gitignored substrate-data subdirs of
- * `.neo-ai-data/` (Memory Core SQLite, Chroma vectors, wake-daemon PID-lock, etc.) so
- * cross-process state coheres across worktree-spawned MCP server instances. This
- * function extends the same Cross-clone substrate unification pattern to single
- * gitignored artifacts that live outside `.neo-ai-data/` — same canonical-only-write
- * + cross-clone-read semantic, narrower data shape (one file per allowlist entry rather
- * than a tree of state).
- *
- * The `sandman_handoff.md` artifact is the canonical example: `runSandman.mjs` writes
- * it inside the canonical clone only, but every trio member must read it at boot
- * (`AGENTS_STARTUP.md §6` step 4). Without this symlink, only the operator running
- * `runSandman.mjs` sees the strategic priming; Antigravity-Gemini and Codex-GPT clones
- * read empty / nonexistent state — cross-clone strategic divergence.
- *
- * **No `force` clobber semantic on single files:**
- *
- * For data dirs, `--force` is justified for corruption recovery (the dir's contents are
- * fungible substrate that can be regenerated). For a single artifact file, the user's
- * local state may be intentional (e.g., a saved prior handoff worth preserving across
- * canonical's overwrite). Conservative skip-with-warning is the safer default. Users
- * who want the symlink can manually `rm` the local file before re-running.
- *
- * Idempotent per-file by design: an existing symlink to the canonical source reports
- * `'already-linked'`; a symlink to any other checkout refuses rather than silently adopting
- * cross-resident state; a
- * missing canonical source reports `'skipped-no-source'` (graceful for fresh repos that
- * haven't run Sandman yet); a real file at the destination reports `'skipped-real-file'`
- * with a warning pointing at the manual remediation path.
- *
- * @param {object}   options
- * @param {string}   options.mainCheckout     Absolute path to the primary git checkout.
- * @param {string}   options.projectRoot      Absolute path to the worktree root to link from.
- * @param {string[]} [options.files]          Allowlist of files to symlink; defaults to {@link GITIGNORED_FILES_TO_LINK}.
- * @param {Function} [options.log=console.log] Logger fn for action diagnostics.
- * @returns {Promise<{linked: string[], alreadyLinked: string[], skippedNoSource: string[], skippedRealFile: string[], mainCheckout: boolean}>} Per-file action map.
- */
-export async function symlinkGitignoredFiles({
-    mainCheckout,
-    projectRoot,
-    files = GITIGNORED_FILES_TO_LINK,
-    log   = console.log
-}) {
-    const result = {linked: [], alreadyLinked: [], skippedNoSource: [], skippedRealFile: [], mainCheckout: false};
-
-    if (path.resolve(projectRoot) === path.resolve(mainCheckout)) {
-        log(`file-symlink skip (main checkout): no per-file action`);
-        result.mainCheckout = true;
-        return result;
-    }
-
-    for (const rel of files) {
-        const src   = path.join(mainCheckout, rel);
-        const dst   = path.join(projectRoot, rel);
-        const lstat = await fs.lstat(dst).catch(() => null);
-
-        if (lstat?.isSymbolicLink()) {
-            const
-                existingTarget = await fs.readlink(dst),
-                resolvedTarget = path.resolve(path.dirname(dst), existingTarget),
-                canonicalReal  = await fs.realpath(src),
-                existingReal   = await fs.realpath(resolvedTarget).catch(() => resolvedTarget);
-
-            if (existingReal !== canonicalReal) {
-                throw new Error(
-                    `Refusing unexpected symlink target at ${dst}: expected ${src}, found ${resolvedTarget}. ` +
-                    `Managed hydration never adopts another checkout's state implicitly.`
-                );
-            }
-            log(`file-symlink skip (already linked): ${rel}`);
-            result.alreadyLinked.push(rel);
-            continue;
-        }
-
-        // Skip if canonical lacks the file — graceful for the pre-Sandman-run state.
-        const srcExists = await exists(src);
-        if (!srcExists) {
-            log(`file-symlink skip (no source in main checkout): ${rel}`);
-            result.skippedNoSource.push(rel);
-            continue;
-        }
-
-        if (lstat) {
-            // Real file present — preserve local state, surface warning.
-            log(`file-symlink skip (real file present, preserving local state): ${rel}`);
-            log(`  → manually remove the local file and re-run --link-data to override`);
-            result.skippedRealFile.push(rel);
-            continue;
-        }
-
-        // Ensure parent dir exists; resources/content/ is normally tracked + present, but
-        // belt-and-suspenders for fresh repos or future allowlist entries in absent dirs.
-        await fs.mkdir(path.dirname(dst), {recursive: true});
-
-        await fs.symlink(src, dst, 'file');
-        log(`file-symlinked: ${rel} → ${src}`);
-        result.linked.push(rel);
-    }
-
-    return result;
-}
-
-/**
  * @summary Installs the worktree's `node_modules` and bundles the parse5 test prerequisite.
  *
  * Worktrees off `origin/dev` start without `node_modules` (gitignored) AND without
@@ -1386,16 +1230,15 @@ export async function pruneStaleWorktrees({
  * @param {string}   options.projectRoot Current checkout path to hydrate.
  * @param {Function} [options.log] Logger fn.
  * @param {Function} [options.wireClaudeSettings=initClaudeSettings] Claude-settings materializer; injectable for tests.
- * @returns {Promise<object>} Hydration sub-results (`bootstrap`, `data`, `files`, `claudeSettings`).
+ * @returns {Promise<object>} Hydration sub-results (`bootstrap`, `data`, `dataReadAliases`, `claudeSettings`).
  */
 export async function hydrateCurrentWorktree({mainCheckout, projectRoot, log = console.log, wireClaudeSettings = initClaudeSettings}) {
     const bootstrap       = await bootstrapWorktree({mainCheckout, projectRoot, log});
     const data            = await symlinkDataDir({mainCheckout, projectRoot, log});
     const dataReadAliases = await symlinkCanonicalDataReadAliases({mainCheckout, projectRoot, log});
-    const files           = await symlinkGitignoredFiles({mainCheckout, projectRoot, log});
     const claudeSettings  = await wireClaudeSettings({claudeDir: path.join(projectRoot, '.claude'), logger: {log, warn: log}});
 
-    return {bootstrap, data, dataReadAliases, files, claudeSettings};
+    return {bootstrap, data, dataReadAliases, claudeSettings};
 }
 
 /**
@@ -1737,26 +1580,6 @@ if (isMain) {
                 if (raSkippedRealPathN > 0) console.log(`  skipped-real-path: ${readAliasResult.skippedRealPath.join(', ')}`);
             }
 
-            // Cross-clone single-file symlinks. Same --link-data flag, narrower
-            // shape: each entry in GITIGNORED_FILES_TO_LINK is a single artifact rather
-            // than a tree of state. Currently sandman_handoff.md only.
-            const fileResult = await symlinkGitignoredFiles({mainCheckout, projectRoot});
-            if (fileResult.mainCheckout) {
-                console.log(`✓ File symlink: skipped (running in main checkout)`);
-            } else {
-                const fLinkedN          = fileResult.linked.length;
-                const fAlreadyLinkedN   = fileResult.alreadyLinked.length;
-                const fSkippedNoSourceN = fileResult.skippedNoSource.length;
-                const fSkippedRealFileN = fileResult.skippedRealFile.length;
-                console.log(
-                    `✓ File symlink: ${fLinkedN} linked, ${fAlreadyLinkedN} already-linked, ` +
-                    `${fSkippedNoSourceN} skipped-no-source, ${fSkippedRealFileN} skipped-real-file`
-                );
-                if (fLinkedN          > 0) console.log(`  linked:           ${fileResult.linked.join(', ')}`);
-                if (fAlreadyLinkedN   > 0) console.log(`  already-linked:   ${fileResult.alreadyLinked.join(', ')}`);
-                if (fSkippedNoSourceN > 0) console.log(`  skipped-no-src:   ${fileResult.skippedNoSource.join(', ')}`);
-                if (fSkippedRealFileN > 0) console.log(`  skipped-real-file: ${fileResult.skippedRealFile.join(', ')}`);
-            }
         }
 
         // Default behavior: run build-all after config/data linking

@@ -373,7 +373,7 @@ class ConfigBase extends ConfigProvider {
              * The path to the generated class hierarchy JSON file.
              * @type {string}
              */
-            hierarchyPath: leaf(path.resolve(neoRootDir, 'docs/output/class-hierarchy.json')),
+            hierarchyPath: leaf(path.resolve(neoRootDir, 'node_modules/neo.mjs/docs/output/class-hierarchy.json')),
             /**
              * @summary Durable resume-state directory for Knowledge Base shadow-swap embeddings.
              *
@@ -584,8 +584,11 @@ class ConfigBase extends ConfigProvider {
              * Per-source path overrides keyed by Source-class registry name.
              * Empty entries or missing keys fall through to each Source class's hardcoded fallback
              * (preserves byte-equivalence with existing deployment behavior). Shape varies per Source class —
-             * each interprets its own entry shape (string / string-array / path→type object).
-             * @type {Object<string,string|string[]|Object<string,string>>}
+             * each interprets its own entry shape (string / string-array / ordered path/type rows).
+             * ApiSource uses rows rather than filesystem paths as object keys: the reactive data
+             * namespace treats dots as path separators, so `node_modules/neo.mjs/**` keys are not a
+             * lossless config shape.
+             * @type {Object<string,string|string[]|Array<{path:String,type:String}>>}
              */
             sourcePaths: leaf({
                 AdrSource         : 'learn/agentos/decisions',
@@ -601,13 +604,14 @@ class ConfigBase extends ConfigProvider {
                                      'resources/content/archive/pulls'],
                 TicketSource      : ['resources/content/issues',
                                      'resources/content/archive/issues'],
-                ApiSource         : {
-                    'src'     : 'src',
-                    'apps'    : 'app',
-                    'examples': 'example',
-                    'docs/app': 'app',
-                    'ai'      : 'ai-infrastructure'
-                },
+                ApiSource         : [
+                    {path: 'node_modules/neo.mjs/src',      type: 'src'},
+                    {path: 'node_modules/neo.mjs/apps',     type: 'app'},
+                    {path: 'node_modules/neo.mjs/examples', type: 'example'},
+                    {path: 'node_modules/neo.mjs/docs/app', type: 'app'},
+                    {path: 'src',                           type: 'brain-source'},
+                    {path: 'ai',                            type: 'ai-infrastructure'}
+                ],
                 RawRepoSource     : {
                     root             : '.',
                     includeExtensions: [],
@@ -795,7 +799,7 @@ class ConfigBase extends ConfigProvider {
                 {
                     name : 'primary',
                     share: 0.65,
-                    types: ['src', 'ai-infrastructure', 'guide', 'concept', 'skill', 'adr']
+                    types: ['src', 'brain-source', 'ai-infrastructure', 'guide', 'concept', 'skill', 'adr']
                 },
                 {
                     name : 'secondary',

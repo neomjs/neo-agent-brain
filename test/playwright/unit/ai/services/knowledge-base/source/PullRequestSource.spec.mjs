@@ -21,14 +21,14 @@ const repoRoot   = path.resolve(__dirname, '../../../../../../..');
 test.describe('Neo.ai.services.knowledge-base.source.PullRequestSource', () => {
     let PullRequestSource;
     let aiConfig;
-    let originalRoot;
+    let originalProjectRoot;
     let mockRoot;
 
     test.beforeAll(async () => {
         aiConfig = (await import('../../../../../../../ai/mcp/server/knowledge-base/config.template.mjs')).default;
         PullRequestSource = (await import('../../../../../../../ai/services/knowledge-base/source/PullRequestSource.mjs')).default;
 
-        originalRoot = aiConfig.neoRootDir;
+        originalProjectRoot = aiConfig.projectRoot;
 
         const tmpDir = path.resolve(process.cwd(), 'tmp');
         fs.ensureDirSync(tmpDir);
@@ -73,11 +73,11 @@ test.describe('Neo.ai.services.knowledge-base.source.PullRequestSource', () => {
 
         fs.writeFileSync(path.join(mockRoot, 'resources/content/pulls/_index.json'), JSON.stringify(indexMap));
 
-        aiConfig.neoRootDir = mockRoot;
+        aiConfig.projectRoot = mockRoot;
     });
 
     test.afterAll(() => {
-        aiConfig.neoRootDir = originalRoot;
+        aiConfig.projectRoot = originalProjectRoot;
         if (mockRoot && fs.existsSync(mockRoot)) fs.removeSync(mockRoot);
     });
 
@@ -142,7 +142,7 @@ test.describe('Neo.ai.services.knowledge-base.source.PullRequestSource', () => {
 test.describe('Neo.ai.services.knowledge-base.source.PullRequestSource — duplicate identity', () => {
     let PullRequestSource;
     let aiConfig;
-    let originalRoot;
+    let originalProjectRoot;
     let mockRoot;
 
     const collector = () => {
@@ -160,14 +160,14 @@ test.describe('Neo.ai.services.knowledge-base.source.PullRequestSource — dupli
         const tmpDir = path.resolve(process.cwd(), 'tmp');
 
         fs.ensureDirSync(tmpDir);
-        originalRoot = aiConfig.neoRootDir;
+        originalProjectRoot = aiConfig.projectRoot;
         mockRoot     = path.join(tmpDir, 'prsource-dup-' + process.pid + '-' + Date.now() + '-' + Math.random().toString(36).slice(2));
         fs.ensureDirSync(path.join(mockRoot, 'resources/content'));
-        aiConfig.neoRootDir = mockRoot;
+        aiConfig.projectRoot = mockRoot;
     });
 
     test.afterEach(() => {
-        aiConfig.neoRootDir = originalRoot;
+        aiConfig.projectRoot = originalProjectRoot;
         if (mockRoot && fs.existsSync(mockRoot)) fs.removeSync(mockRoot);
     });
 

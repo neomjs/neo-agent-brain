@@ -130,8 +130,8 @@ seat on a standing weekly rotation: a Claude Fable 5 half and a Claude Opus half
 states **only** the fields that are identical on both halves; everything that differs per engine is
 profile-referenced there rather than given a value, so no row asserts a current per-engine fact.
 Read `§neo_fable` for the observed-active Fable half and `§neo_opus` for the planned Opus half. No
-single flat value is true for the whole week, which is why the cockpit engine tag for this resident is
-deliberately `null` rather than a literal (`deriveFleetRoster.mjs`), and why this seat is the
+single flat value is true for the whole week, which is why the Fleet identity resolver returns an
+honest `null` engine tag, and why this seat is the
 sharpest case for the #11318 era layer — an `EmbodiedEpisode` with a span is the shape that fits.
 ADR 0032 §7 already named this exact resident as the reflexive fixture: the same peer running Opus
 in one month and Fable in the next while remaining the same peer — operationally real, yet

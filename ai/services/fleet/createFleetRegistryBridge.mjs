@@ -9,7 +9,7 @@ import {
 /**
  * @summary Build the pane-facing fleet registry bridge from a transport `send`. Given a request
  * sender, returns the exact object the agentos pane resolves at
- * `globalThis.AgentOS.fleet.registryBridge` (`apps/agentos/view/accounts/Panel.mjs:260`) — one async method
+ * Agent Institution's Fleet bridge consumes this one async method
  * per wire-allowlisted operation ({@link FLEET_WIRE_METHODS}). Each operation sends a fresh
  * version/capability offer, then accepts result data only after the response selects a contract the
  * client offered — the operable-cold contract's Node-client half.
@@ -17,7 +17,7 @@ import {
  * The NODE-side client factory (CLI tools like `ai/scripts/fleet/onboardPeer.mjs`, integration
  * specs), binding the same {@link FLEET_WIRE_METHODS} authority `dispatchFleetRequest` validates
  * against — a client built here cannot call a method the server won't route. The BROWSER does not
- * import this module: `apps/agentos/fleet/installFleetBridge.mjs` generates its own proxy map over
+ * import this module: the product-side bridge generates its own proxy map over
  * the app's wire-method twin, and the vocabulary-parity lint keeps the two lists identical
  * **Dependency-light by design** — it imports only the dep-free wire-method list, never
  * the Node-only FleetControlBridge / crypto / fs chain.

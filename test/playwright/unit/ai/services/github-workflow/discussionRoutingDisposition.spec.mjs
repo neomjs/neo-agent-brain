@@ -1,10 +1,17 @@
-import {test, expect} from '@playwright/test';
-import fs             from 'node:fs';
+import {test, expect}  from '@playwright/test';
+import fs              from 'node:fs';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {
     classifyDiscussionRoutingDisposition,
     findLifecycleMarkers,
     normalizeDiscussionRoutingProjection
 } from '../../../../../../ai/services/github-workflow/shared/discussionRoutingDisposition.mjs';
+
+const discussionCorpusRoot = path.resolve(
+    path.dirname(path.dirname(fileURLToPath(import.meta.resolve('neo.mjs/src/Neo.mjs')))),
+    'resources/content/discussions/chunk-1'
+);
 
 test.describe('discussionRoutingDisposition', () => {
     test('classifies explicit trusted convergence and evergreen signals as active', () => {
@@ -183,7 +190,7 @@ test.describe('discussionRoutingDisposition', () => {
 
     test('preserves canonical legacy graduation callouts from the live corpus', () => {
         for (const number of [10289, 14456]) {
-            const content = fs.readFileSync(`resources/content/discussions/chunk-1/discussion-${number}.md`, 'utf8');
+            const content = fs.readFileSync(path.resolve(discussionCorpusRoot, `discussion-${number}.md`), 'utf8');
             const author  = content.match(/^author:\s*([^\n]+)$/m)?.[1]?.trim();
             const body    = content.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n## Comments\s*\n/)[0];
             const result  = classifyDiscussionRoutingDisposition({author, body});
@@ -199,7 +206,7 @@ test.describe('discussionRoutingDisposition', () => {
 
     test('preserves the canonical partially-open corpus shapes', () => {
         for (const number of [13378, 11690]) {
-            const content = fs.readFileSync(`resources/content/discussions/chunk-1/discussion-${number}.md`, 'utf8');
+            const content = fs.readFileSync(path.resolve(discussionCorpusRoot, `discussion-${number}.md`), 'utf8');
             const author  = content.match(/^author:\s*([^\n]+)$/m)?.[1]?.trim();
             const body    = content.replace(/^---\n[\s\S]*?\n---\n/, '').split(/\n## Comments\s*\n/)[0];
             const result  = classifyDiscussionRoutingDisposition({author, body});

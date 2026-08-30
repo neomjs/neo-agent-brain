@@ -281,8 +281,6 @@ export function buildOllamaServeEnv({host, keepAlive, contextLength, requirePara
  * @param {Number} [options.chromaHealthFailureThreshold=3] Consecutive failed probes required before recycle.
  * @param {Number} [options.chromaHealthStartupGraceMs=60000] Delay before probing a newly-started Chroma.
  * @param {Function} [options.chromaHealthFetchFn] Optional fetch implementation seam for tests.
- * @param {String|Number} [options.devServerPort] Local webpack dev-server port — used for the `--port` arg, singleton detection, and TCP liveness probe.
- * @param {Number} [options.devServerLivenessTimeoutMs] TCP liveness probe timeout.
  * @param {String|Number} [options.neuralLinkBridgePort] Neural Link Bridge port — sourced from the Neural Link config provider by the orchestrator entrypoint.
  * @param {Number} [options.neuralLinkBridgeLivenessTimeoutMs] TCP liveness probe timeout.
  * @returns {Object}
@@ -297,12 +295,9 @@ export function buildTaskDefinitions({
     chromaHealthFailureThreshold  = DEFAULT_CHROMA_HEALTH_FAILURE_THRESHOLD,
     chromaHealthStartupGraceMs    = DEFAULT_CHROMA_HEALTH_STARTUP_GRACE_MS,
     chromaHealthFetchFn,
-    devServerPort,
-    devServerLivenessTimeoutMs,
     neuralLinkBridgePort,
     neuralLinkBridgeLivenessTimeoutMs
 } = {}) {
-    const hasDevServerPort                = devServerPort !== undefined && devServerPort !== null;
     const hasNeuralLinkBridgePort         = neuralLinkBridgePort !== undefined && neuralLinkBridgePort !== null;
     let   consecutiveChromaHealthFailures = 0;
 
@@ -347,28 +342,6 @@ export function buildTaskDefinitions({
             pidFileName    : 'wake-daemon.pid',
             expectedCommand: 'daemons/wake/daemon.mjs'
         },
-        ...(hasDevServerPort ? {
-            devServer: {
-                label  : 'local dev-server',
-                command: nodeBin,
-                args   : [
-                    path.resolve(scriptDir, '../../node_modules/webpack/bin/webpack.js'),
-                    'serve',
-                    '-c',
-                    './buildScripts/webpack/webpack.server.config.mjs',
-                    '--port',
-                    String(devServerPort)
-                ],
-                pidFileName            : 'dev-server.pid',
-                expectedCommand        : 'node_modules/webpack/bin/webpack.js',
-                singletonPort          : Number(devServerPort),
-                duplicateListenerPolicy: 'defer',
-                livenessProbe          : () => probeTcpPort({
-                    port     : devServerPort,
-                    timeoutMs: devServerLivenessTimeoutMs
-                })
-            }
-        } : {}),
         ...(hasNeuralLinkBridgePort ? {
             neuralLinkBridge: {
                 label                  : 'Neural Link Bridge',

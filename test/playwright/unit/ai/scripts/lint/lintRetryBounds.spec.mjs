@@ -43,7 +43,7 @@ function discoverFixture(source) {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-retry-bounds-template-'));
 
     try {
-        ['ai', 'src', 'apps', 'buildScripts'].forEach(dir => fs.ensureDirSync(path.join(rootDir, dir)));
+        ['ai', 'src'].forEach(dir => fs.ensureDirSync(path.join(rootDir, dir)));
         fs.writeFileSync(path.join(rootDir, 'ai/templateFixture.mjs'), source);
 
         return discoverCandidates({rootDir})
@@ -255,7 +255,7 @@ test.describe('lint-retry-bounds — discovery + explicit bound classification (
 
         const discovered = LIVE.map(c => c.file);
 
-        ['tenantRepoSync.mjs', 'boundedRetryGate.mjs', 'ai/agent/Loop.mjs', 'DragCoordinator.mjs']
+        ['tenantRepoSync.mjs', 'boundedRetryGate.mjs', 'ai/agent/Loop.mjs']
             .forEach(marker => expect(discovered.some(f => f.includes(marker)), `${marker} must stay discovered`).toBe(true));
     });
 

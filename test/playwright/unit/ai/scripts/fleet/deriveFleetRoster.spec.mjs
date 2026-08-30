@@ -5,20 +5,16 @@ const appName = 'DeriveFleetRosterTest';
 setup({appConfig: {name: appName}});
 
 import {expect, test}      from '@playwright/test';
-import fs                  from 'node:fs';
 import Neo                 from 'neo.mjs/src/Neo.mjs';
 import * as core           from 'neo.mjs/src/core/_export.mjs';
 import {deriveFleetRoster} from '../../../../../../ai/scripts/fleet/deriveFleetRoster.mjs';
-import SourceHealth        from '../../../../../../apps/agentos/util/SourceHealth.mjs';
 
 // Pure derivation — imported directly (the module's main-execution guard makes import side-effect-free).
-// The committed seed is also checked against a fresh derivation so hand-painting fails in CI, not in film.
+// Product repositories own presentation and persistence; Brain owns only the snapshot contract.
 
 const
-    doc        = deriveFleetRoster(),
-    byId       = Object.fromEntries(doc.data.map(row => [row.agentId, row])),
-    COMMITTED  = 'apps/agentos/resources/data/fleetRoster.json',
-    stripClock = value => { const parsed = JSON.parse(value); delete parsed._meta.generatedAt; return JSON.stringify(parsed); };
+    doc  = deriveFleetRoster(),
+    byId = Object.fromEntries(doc.data.map(row => [row.agentId, row]));
 
 test.describe('deriveFleetRoster (registry-derived cockpit roster, #15621)', () => {
     test('every active registry identity is present — including Emmy, Phoebe, and Iris under their canonical identities', () => {
@@ -61,34 +57,16 @@ test.describe('deriveFleetRoster (registry-derived cockpit roster, #15621)', () 
         }
     });
 
-    test('source-health pin (#17210): the shipped seed reads calm through the card contract; the legacy string shape stays invalid', () => {
-        const committed = JSON.parse(fs.readFileSync(COMMITTED, 'utf8')).data;
-
-        for (const row of committed) {
-            // the offline first-run defect: every card alarmed "Roster not nominal · malformed source fact"
-            expect(SourceHealth.summarizeAnsweredAbnormal(row.sources).level, `${row.agentId} source strip`).toBe('ok');
-            expect(SourceHealth.normalizeFleetSources(row.sources).roster.state, `${row.agentId} roster axis`).toBe('not-wired');
-            // display truth unchanged: participation-active with no session observation, or external
-            expect(SourceHealth.resolveFleetDisplayState({state: row.state, sources: row.sources}), row.agentId).toMatch(/^unobserved$|^external$/);
-        }
-
-        // the validator itself is correct and STAYS: a present non-object fact remains rejected evidence
-        expect(SourceHealth.normalizeSourceFact('identityRoots-snapshot'))
-            .toEqual({source: null, state: 'invalid', confidence: 'none', reason: 'malformed source fact'});
-    });
-
     test('engine tags mirror ModelStats for mapped identities and stay null (never fabricated) elsewhere', () => {
         expect(byId['neo-kimi-iris'].engineTag).toBe('kimi-k3');
         expect(byId['neo-kimi-phoebe'].engineTag).toBe('kimi-k3');
         expect(byId['neo-gpt-emmy'].engineTag).toBe('gpt-5.6-sol');
     });
 
-    test('the snapshot carries its provenance in-band (_meta) and the committed file is in sync (no hand-painting)', () => {
+    test('the snapshot carries its provenance in-band without claiming another product output', () => {
         expect(doc._meta.authority).toBe('ai/graph/identityRoots.mjs');
         expect(doc._meta.generator).toBe('ai/scripts/fleet/deriveFleetRoster.mjs');
         expect(doc._meta.generatedAt).toBeTruthy();
-
-        const committed = fs.readFileSync(COMMITTED, 'utf8');
-        expect(stripClock(committed)).toBe(stripClock(JSON.stringify(doc)));
+        expect(JSON.stringify(doc)).not.toContain('apps/agentos')
     });
 });

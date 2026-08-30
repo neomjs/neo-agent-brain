@@ -359,6 +359,19 @@ test.describe('Knowledge Base Config Tier-1 defaults (#11963)', () => {
         }
     });
 
+    test('Engine API inputs resolve through the installed package, never root projections', () => {
+        expect(config.hierarchyPath.replaceAll('\\', '/'))
+            .toContain('node_modules/neo.mjs/docs/output/class-hierarchy.json');
+        expect(config.sourcePaths.ApiSource).toEqual(expect.arrayContaining([
+            {path: 'node_modules/neo.mjs/src',      type: 'src'},
+            {path: 'node_modules/neo.mjs/apps',     type: 'app'},
+            {path: 'node_modules/neo.mjs/examples', type: 'example'},
+            {path: 'node_modules/neo.mjs/docs/app', type: 'app'}
+        ]));
+        expect(config.sourcePaths.ApiSource.some(entry => entry.path === 'apps')).toBe(false);
+        expect(config.sourcePaths.ApiSource.some(entry => entry.path === 'examples')).toBe(false)
+    });
+
     test('invalid NEO_DEBUG values fall back to the debug-off default', () => {
         process.env.NEO_DEBUG = 'maybe';
 

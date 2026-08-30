@@ -31,10 +31,8 @@ export const FLEET_COCKPIT_EVENT_TYPES = Object.freeze([
 
 /**
  * @summary Source labels for the Fleet Manager cockpit DTO — the AUTHORITY. These labels are
- * deliberately stable and transport-agnostic: the Body-side cockpit explains which live substrate
- * produced each row or event via its operable-cold twin
- * (`apps/agentos/config/cockpitSources.mjs`, bound by the vocabulary-parity lint) — it
- * never imports this Node-side module chain.
+ * deliberately stable and transport-agnostic: Agent Institution consumes the serializable contract
+ * through its explicit Brain boundary and never imports this Node-side module chain.
  * @type {Object}
  */
 export const FLEET_COCKPIT_SOURCES = Object.freeze({...WIRE_SOURCES})
@@ -185,10 +183,10 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
 
                     return fromEvents ?? fromPresence
                 })(),
-                displayName  : publicAgent.displayName ?? publicAgent.name ?? publicAgent.githubUsername ?? agentId ?? null,
-                avatarUrl    : publicAgent.metadata?.avatarUrl ?? githubAvatarUrl(publicAgent.githubUsername),
-                family       : publicAgent.family ?? null,
-                engineTag    : publicAgent.engineTag ?? null,
+                displayName: publicAgent.displayName ?? publicAgent.name ?? publicAgent.githubUsername ?? agentId ?? null,
+                avatarUrl  : publicAgent.metadata?.avatarUrl ?? githubAvatarUrl(publicAgent.githubUsername),
+                family     : publicAgent.family ?? null,
+                engineTag  : publicAgent.engineTag ?? null,
                 // The AUTHORITATIVE swarm-participation fact, resolved Brain-side through the ONE
                 // identity join seam — hoisted so fleet-level control eligibility can exclude an
                 // operator-benched identity. Tri-state: null = no identity root / not stamped.

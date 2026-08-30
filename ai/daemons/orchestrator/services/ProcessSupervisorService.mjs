@@ -1163,7 +1163,7 @@ export class ProcessSupervisorService extends Base {
     /**
      * @summary Adopts an externally-owned live listener on a `defer`-policy task's `singletonPort`.
      *
-     * `defer` tasks (shared local infra — the Neural Link Bridge, the dev-server) treat a matching
+     * `defer` tasks (shared local infra such as the Neural Link Bridge) treat a matching
      * port listener as an externally-owned live instance. When tracked state shows the task as NOT
      * running but a process whose command matches `expectedCommand` already holds the port, this
      * adopts it (running flag + pid + pidfile + exit watch) so the supervisor resumes it rather than

@@ -1,30 +1,33 @@
-import {execFileSync}             from 'node:child_process';
+import {execFileSync}                                        from 'node:child_process';
 import {COMMIT_TICKET_PATTERN, DECLARED_TICKET_LINE_PATTERN} from './lint/prStackingGuard.mjs';
-import {existsSync, readFileSync} from 'node:fs';
-import {Command}                  from 'commander';
-import path                       from 'node:path';
-import process                    from 'node:process';
-import {fileURLToPath}            from 'node:url';
+import {existsSync, readFileSync}                            from 'node:fs';
+import {Command}                                             from 'commander';
+import {createRequire}                                       from 'node:module';
+import path                                                  from 'node:path';
+import process                                               from 'node:process';
+import {fileURLToPath}                                       from 'node:url';
+import {findTicketRefs}                                      from 'neo.mjs/buildScripts/util/check-ticket-archaeology.mjs';
 import {collectStaleOverlayFindings}
                                    from './setup/initServerConfigs.mjs';
 
 const
     __filename = fileURLToPath(import.meta.url),
     __dirname  = path.dirname(__filename),
+    require    = createRequire(import.meta.url),
+    engineRoot = path.dirname(require.resolve('neo.mjs/package.json')),
     /**
-     * The gates this orchestrator SPAWNS (`check-ticket-archaeology`, `check-block-alignment`) are
-     * engine-side source guards and stay under `buildScripts/util/`; only this orchestrator moved
-     * Brain-side in the Class B relocation. So the default is resolved against that directory explicitly rather than
-     * against `__dirname`.
+     * The block-alignment gate this orchestrator spawns is an Engine-owned source guard in the
+     * immutable `neo.mjs` dependency. Resolve it from the installed package rather than relying on
+     * a copied repository-root projection. Ticket archaeology imports its pure detector separately.
      *
      * It was `__dirname` while this file sat beside them, which was correct then and would have been
      * silently wrong the moment the file moved: `path.join()` produces a path either way, and the
      * failure would surface as a missing-file spawn at pre-commit time rather than at import. The
-     * unit specs already inject `scriptDir: '/repo/buildScripts/util'`, so they would have kept
-     * passing over a broken default — the reason this is a named constant and not an inlined join.
+     * Unit specs inject `scriptDir`, so the package-resolution default stays a named constant rather
+     * than an inlined join that tests could bypass.
      * @type {String}
      */
-    GATE_DIR   = path.resolve(__dirname, '../../buildScripts/util');
+    GATE_DIR   = path.join(engineRoot, 'buildScripts', 'util');
 
 // Source-to-mirror: keep these PR-body anchors in sync with
 // `.github/workflows/agent-pr-body-lint.yml`. Do not reintroduce a shared
@@ -806,8 +809,8 @@ export function validatePrBody(body, {draft = false, resolveOwnerState = null, r
 
     if ((!draft || hasResolves) && acSection !== null) {
         const
-            acRows        = parseAcEvidenceRows(acSection),
-            declarations  = [...acSection.matchAll(new RegExp(NO_STRUCTURED_ACS_PATTERN.source, 'gm'))].map(match => match[1]),
+            acRows       = parseAcEvidenceRows(acSection),
+            declarations = [...acSection.matchAll(new RegExp(NO_STRUCTURED_ACS_PATTERN.source, 'gm'))].map(match => match[1]),
             // EVERY close target, deduplicated — the author workflow permits several standalone
             // `Resolves #N` lines, and a certificate that consults only the first leaves every
             // other target's ACs unexamined.
@@ -1135,6 +1138,64 @@ function runNodeGate({args, cwd, execFileSyncImpl, name}) {
     }
 }
 
+/**
+ * @summary Applies the Engine-owned ticket-reference detector to Brain-owned source paths.
+ *
+ * The installed Engine CLI deliberately refuses to audit a different repository: its own
+ * checkout is its git-root authority. Brain needs only the CLI's pure whole-file detector for
+ * the already-selected staged paths, so importing that detector preserves one rule authority
+ * without a copied script or a repository-root projection.
+ *
+ * @param {Object} config
+ * @param {String} config.cwd Brain repository root.
+ * @param {String[]} config.files Selected Brain `.mjs` paths.
+ * @param {Function} config.findTicketRefsImpl Pure Engine-owned detector.
+ * @param {Function} config.readFileSyncImpl File reader.
+ * @returns {{name:String,ok:Boolean,output:String,status?:Number}}
+ */
+function runTicketArchaeologyGate({cwd, files, findTicketRefsImpl, readFileSyncImpl}) {
+    const violations = [];
+    let   read       = 0;
+
+    for (const file of files) {
+        let content;
+
+        try {
+            content = readFileSyncImpl(path.resolve(cwd, file), 'utf8')
+        } catch (error) {
+            return {
+                name  : 'check-ticket-archaeology',
+                ok    : false,
+                output: `check-ticket-archaeology: could not read ${file}: ${error.message}\n`,
+                status: 1
+            }
+        }
+
+        read++;
+        findTicketRefsImpl(content)
+            .forEach(({line, text}) => violations.push(`${file}:${line}: ${text}`))
+    }
+
+    if (violations.length > 0) {
+        return {
+            name  : 'check-ticket-archaeology',
+            ok    : false,
+            output: [
+                `check-ticket-archaeology: ${violations.length} decay-prone ref(s) in durable comments, across ${read} file(s) read (supplied paths):`,
+                ...violations.map(violation => `  ${violation}`),
+                ''
+            ].join('\n'),
+            status: 1
+        }
+    }
+
+    return {
+        name  : 'check-ticket-archaeology',
+        ok    : true,
+        output: `check-ticket-archaeology: ${read} file(s) read, 0 violations (supplied paths).\n`
+    }
+}
+
 function runPrBodyGate({cwd, execFileSyncImpl, existsSyncImpl, prBody, prDraft, readFileSyncImpl}) {
     const filePath = path.resolve(cwd, prBody);
 
@@ -1166,15 +1227,16 @@ function runPrBodyGate({cwd, execFileSyncImpl, existsSyncImpl, prBody, prDraft, 
  * @returns {Number}
  */
 export function runAgentPreflight({
-    argv             = process.argv.slice(2),
+    argv                            = process.argv.slice(2),
     collectStaleOverlayFindingsImpl = collectStaleOverlayFindings,
-    cwd              = process.cwd(),
-    execFileSyncImpl = execFileSync,
-    existsSyncImpl   = existsSync,
-    readFileSyncImpl = readFileSync,
-    scriptDir        = GATE_DIR,
-    stderr           = process.stderr,
-    stdout           = process.stdout
+    cwd                             = process.cwd(),
+    execFileSyncImpl                = execFileSync,
+    existsSyncImpl                  = existsSync,
+    findTicketRefsImpl              = findTicketRefs,
+    readFileSyncImpl                = readFileSync,
+    scriptDir                       = GATE_DIR,
+    stderr                          = process.stderr,
+    stdout                          = process.stdout
 } = {}) {
     let options;
 
@@ -1214,14 +1276,12 @@ export function runAgentPreflight({
             writeLine(stdout, 'agent-preflight: check-only mode; skipped check-block-alignment --fix.');
         }
 
-        const gateRuns = [
-            runNodeGate({
-                args: [path.join(scriptDir, 'check-ticket-archaeology.mjs'), ...mjsFiles],
-                cwd,
-                execFileSyncImpl,
-                name: 'check-ticket-archaeology'
-            })
-        ];
+        const gateRuns = [runTicketArchaeologyGate({
+            cwd,
+            files: mjsFiles,
+            findTicketRefsImpl,
+            readFileSyncImpl
+        })];
 
         if (options.fix) {
             gateRuns.push(runNodeGate({

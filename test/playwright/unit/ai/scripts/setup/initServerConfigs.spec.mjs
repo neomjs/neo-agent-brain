@@ -29,7 +29,6 @@ test.describe('initServerConfigs — template drift detection (#10815)', () => {
     let initConfigs, projectSourceShape, projectShape, projectConfigDefaultsShape, detectDrift,
         detectServerOverlayDrift, materializeServerConfigTemplate, listServersWithTemplates,
         hasConfigTemplate, collectStaleOverlayFindings, formatStaleOverlayDriftItems,
-        materializeEngineDependency,
         createConfigInitializationOutcome;
     let workRoot;
 
@@ -78,7 +77,6 @@ test.describe('initServerConfigs — template drift detection (#10815)', () => {
             hasConfigTemplate,
             collectStaleOverlayFindings,
             formatStaleOverlayDriftItems,
-            materializeEngineDependency,
             createConfigInitializationOutcome
         } = await import('../../../../../../ai/scripts/setup/initServerConfigs.mjs'));
 
@@ -90,22 +88,6 @@ test.describe('initServerConfigs — template drift detection (#10815)', () => {
         if (workRoot && fs.existsSync(workRoot)) {
             fs.rmSync(workRoot, {recursive: true, force: true});
         }
-    });
-
-    test('Engine dependency materialization never owns the canonical Brain source root', () => {
-        const
-            root       = path.join(workRoot, 'engine-projection-boundary'),
-            engineRoot = path.join(workRoot, 'engine-package');
-
-        fs.mkdirSync(root, {recursive: true});
-        ['apps', 'examples', 'harness', 'resources'].forEach(name => {
-            fs.mkdirSync(path.join(engineRoot, name), {recursive: true});
-        });
-
-        const created = materializeEngineDependency({root, engineRoot, copyProjections: []});
-
-        expect(created.sort()).toEqual(['apps', 'examples', 'harness', 'resources']);
-        expect(fs.existsSync(path.join(root, 'src'))).toBe(false);
     });
 
     test('AC1: missing config.mjs is cloned from template', async () => {
@@ -1354,7 +1336,7 @@ test.describe('assertConfigFresh — boot freshness guard (#13560)', () => {
 });
 
 test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () => {
-    let initClaudeSettings, mergeClaudeHooks;
+    let initClaudeSettings, mergeClaudeHooks, retargetClaudeHookCommands;
     let claudeRoot;
 
     const recordingLogger = () => {
@@ -1389,7 +1371,8 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
     };
 
     test.beforeAll(async () => {
-        ({initClaudeSettings, mergeClaudeHooks} = await import('../../../../../../ai/scripts/setup/initServerConfigs.mjs'));
+        ({initClaudeSettings, mergeClaudeHooks, retargetClaudeHookCommands} =
+            await import('../../../../../../ai/scripts/setup/initServerConfigs.mjs'));
         claudeRoot = path.resolve(process.cwd(), 'tmp', `init-claude-settings-${process.pid}-${Date.now()}`);
         fs.mkdirSync(claudeRoot, {recursive: true});
     });
@@ -1421,9 +1404,21 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         expect(settings).toBe(active);
     });
 
+    test('installed Engine hook commands retarget to package-qualified paths without mutating the template', () => {
+        const retargeted = retargetClaudeHookCommands(TEMPLATE);
+
+        expect(retargeted.hooks.Stop[0].hooks[0].command)
+            .toContain('/node_modules/neo.mjs/.claude/hooks/laneStateStopHook.mjs');
+        expect(TEMPLATE.hooks.Stop[0].hooks[0].command)
+            .toContain('/.claude/hooks/laneStateStopHook.mjs');
+        expect(TEMPLATE.hooks.Stop[0].hooks[0].command).not.toContain('/node_modules/neo.mjs/')
+    });
+
     test('initClaudeSettings: missing settings.json → clone (full template, enforce=1 command wired)', async () => {
         const dir = buildClaudeDir('clone', {template: TEMPLATE});
-        const r   = await initClaudeSettings({claudeDir: dir, logger: recordingLogger()});
+        const r   = await initClaudeSettings({
+            claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')
+        });
         expect(r.action).toBe('clone');
 
         const written = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf-8'));
@@ -1432,19 +1427,37 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         // rollout. A future drift to dry-run fails this assertion.
         expect(command).toContain('NEO_LANE_STATE_ENFORCE=1');
         expect(command).toContain('laneStateStopHook.mjs');
+        expect(command).toContain('/node_modules/neo.mjs/.claude/hooks/');
         expect(written.hooks.PreToolUse[0].hooks[0].command).toContain('rgReplaceGuardHook.mjs');
     });
 
+    test('initClaudeSettings: missing .claude parent → create it before cloning settings', async () => {
+        const
+            sourceDir    = buildClaudeDir('parent-source', {template: TEMPLATE}),
+            templatePath = path.join(sourceDir, 'settings.template.json'),
+            targetDir    = path.join(claudeRoot, 'missing-parent');
+
+        expect(fs.existsSync(targetDir)).toBe(false);
+
+        const r = await initClaudeSettings({claudeDir: targetDir, logger: recordingLogger(), templatePath});
+
+        expect(r.action).toBe('clone');
+        expect(fs.existsSync(path.join(targetDir, 'settings.json'))).toBe(true)
+    });
+
     test('initClaudeSettings: re-run is idempotent → silent', async () => {
-        const dir = buildClaudeDir('silent', {template: TEMPLATE});
-        await initClaudeSettings({claudeDir: dir, logger: recordingLogger()});
-        const r2 = await initClaudeSettings({claudeDir: dir, logger: recordingLogger()});
+        const dir          = buildClaudeDir('silent', {template: TEMPLATE});
+        const templatePath = path.join(dir, 'settings.template.json');
+        await initClaudeSettings({claudeDir: dir, logger: recordingLogger(), templatePath});
+        const r2 = await initClaudeSettings({claudeDir: dir, logger: recordingLogger(), templatePath});
         expect(r2.action).toBe('silent');
     });
 
     test('initClaudeSettings: existing settings.json (perms only) → wired, local keys preserved', async () => {
         const dir = buildClaudeDir('wired', {template: TEMPLATE, settings: {permissions: {allow: ['my-local-perm']}}});
-        const r   = await initClaudeSettings({claudeDir: dir, logger: recordingLogger()});
+        const r   = await initClaudeSettings({
+            claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')
+        });
         expect(r.action).toBe('wired');
 
         const written = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf-8'));
@@ -1455,7 +1468,9 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
 
     test('initClaudeSettings: no template → skip-no-template (no settings.json written)', async () => {
         const dir = buildClaudeDir('no-template', {});
-        const r   = await initClaudeSettings({claudeDir: dir, logger: recordingLogger()});
+        const r   = await initClaudeSettings({
+            claudeDir: dir, logger: recordingLogger(), templatePath: path.join(dir, 'settings.template.json')
+        });
         expect(r.action).toBe('skip-no-template');
         expect(fs.existsSync(path.join(dir, 'settings.json'))).toBe(false);
     });

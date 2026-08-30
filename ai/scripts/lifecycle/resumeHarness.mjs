@@ -304,7 +304,7 @@ function buildBootGroundingPrompt(identity, reason, originSessionId) {
     return [
         `hi ${identity}, please read @AGENTS_STARTUP.md, then call add_memory once as a boot heartbeat with explicit non-empty prompt/thought/response fields (for example: prompt="Boot heartbeat for ${identity}", thought="Fresh recovery boot after AGENTS_STARTUP.md read; Memory Core write-path health check.", response="Boot heartbeat saved; continuing recovery."), then proceed normally.`,
         `Recovery context: ${reason}.`,
-        `${sessionAnchor} Read resources/content/sandman_handoff.md and your Memory Core context to resume swarm coordination from the prior session anchor.`
+        `${sessionAnchor} Read the latest Memory Core Sandman handoff and your session context to resume swarm coordination from the prior session anchor.`
     ].join(' ');
 }
 

@@ -82,6 +82,14 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
             .rejects.toThrow('A query string must be provided.');
     });
 
+    test('inferSourceType consumes ordered Engine-package and Brain source rows', () => {
+        expect(QueryService.inferSourceType('node_modules/neo.mjs/src/grid/Container.mjs')).toBe('src');
+        expect(QueryService.inferSourceType('node_modules/neo.mjs/apps/portal/app.mjs')).toBe('app');
+        expect(QueryService.inferSourceType('src/composition/orchestrator/hostEdgeProfile.mjs')).toBe('brain-source');
+        expect(QueryService.inferSourceType('ai/services/knowledge-base/QueryService.mjs')).toBe('ai-infrastructure');
+        expect(QueryService.inferSourceType('unknown/place.txt')).toBe('raw')
+    });
+
     test('passes a type where-clause to Chroma for typed searches', async () => {
         const capture = {};
         installQueryStub([{
@@ -162,7 +170,9 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
 
         expect(capture.options).toHaveLength(4);
         expect(capture.options[0].nResults).toBeGreaterThan(capture.options[2].nResults);
-        expect(capture.options[0].where).toEqual({type: {$in: ['src', 'ai-infrastructure', 'guide', 'concept', 'skill', 'adr']}});
+        expect(capture.options[0].where).toEqual({
+            type: {$in: ['src', 'brain-source', 'ai-infrastructure', 'guide', 'concept', 'skill', 'adr']}
+        });
         expect(capture.options[2].where).toEqual({type: {$in: ['ticket', 'pull', 'discussion', 'release', 'blog']}});
         expect(capture.options[3].where).toBeUndefined();
         expect(result.topResult).toBe('ai/services/knowledge-base/QueryService.mjs');
@@ -245,7 +255,7 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
         });
 
         expect(capture.options).toHaveLength(1);
-        expect(capture.options[0].where).toEqual({type: {$in: ['src', 'ai-infrastructure']}});
+        expect(capture.options[0].where).toEqual({type: {$in: ['src', 'brain-source', 'ai-infrastructure']}});
     });
 
     test('returns the no-results message when Chroma returns an empty metadata payload', async () => {

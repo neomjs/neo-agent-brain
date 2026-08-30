@@ -78,7 +78,7 @@ class RawRepoSource extends Base {
      */
     async extract(writeStream, createHashFn) {
         const config   = this.normalizeConfig(aiConfig.sourcePaths.RawRepoSource),
-              rootPath = path.resolve(aiConfig.neoRootDir, config.root);
+              rootPath = path.resolve(aiConfig.projectRoot, config.root);
 
         if (!await fs.pathExists(rootPath)) {
             return 0;
@@ -106,7 +106,7 @@ class RawRepoSource extends Base {
 
         for (const entry of entries) {
             const absolutePath = path.join(directoryPath, entry.name),
-                  sourcePath   = this.toSourcePath(path.relative(aiConfig.neoRootDir, absolutePath));
+                  sourcePath   = this.toSourcePath(path.relative(aiConfig.projectRoot, absolutePath));
 
             if (this.isPathExcluded(sourcePath, config.excludePaths)) {
                 continue;
@@ -175,7 +175,7 @@ class RawRepoSource extends Base {
 
     /**
      * @summary Returns true when a file survives extension allow/deny filters.
-     * @param {String} sourcePath Source path relative to `aiConfig.neoRootDir`.
+     * @param {String} sourcePath Source path relative to `aiConfig.projectRoot`.
      * @param {Object} config Normalized source config.
      * @returns {Boolean}
      * @protected
@@ -192,7 +192,7 @@ class RawRepoSource extends Base {
 
     /**
      * @summary Returns true when a repo-relative path matches an excluded path pattern.
-     * @param {String} sourcePath Source path relative to `aiConfig.neoRootDir`.
+     * @param {String} sourcePath Source path relative to `aiConfig.projectRoot`.
      * @param {String[]} patterns Excluded path patterns.
      * @returns {Boolean}
      * @protected
@@ -205,7 +205,7 @@ class RawRepoSource extends Base {
 
     /**
      * @summary Matches simple repository path patterns without pulling in a glob dependency.
-     * @param {String} sourcePath Source path relative to `aiConfig.neoRootDir`.
+     * @param {String} sourcePath Source path relative to `aiConfig.projectRoot`.
      * @param {String} pattern Exclusion pattern.
      * @returns {Boolean}
      * @protected

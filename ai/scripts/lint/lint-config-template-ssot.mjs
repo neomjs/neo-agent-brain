@@ -40,6 +40,7 @@
  * @see learn/agentos/decisions  The AiConfig reactive Provider SSOT decision record.
  */
 import fs                             from 'node:fs';
+import {createRequire}                from 'node:module';
 import path                           from 'node:path';
 import process                        from 'node:process';
 import {fileURLToPath, pathToFileURL} from 'node:url';
@@ -47,9 +48,11 @@ import {fileURLToPath, pathToFileURL} from 'node:url';
 import {parse}            from 'acorn';
 import {load as loadYaml} from 'js-yaml';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-const ROOT_DIR   = path.resolve(__dirname, '../../..');
+const __filename  = fileURLToPath(import.meta.url);
+const __dirname   = path.dirname(__filename);
+const ROOT_DIR    = path.resolve(__dirname, '../../..');
+const require     = createRequire(import.meta.url);
+const ENGINE_ROOT = path.dirname(require.resolve('neo.mjs/package.json'));
 
 const CONFIG_TEMPLATE_BASENAME = 'config.template.mjs';
 // The Tier-1 root base: canonical default leaves live here since the template/base split — the
@@ -66,8 +69,8 @@ const TEST_SCAN_ROOT_REL              = 'test';
 const DEPLOY_SCAN_ROOT_REL            = 'deploy/cloud';
 const SELF_REL_FILE                   = 'ai/scripts/lint/lint-config-template-ssot.mjs';
 const ADR_0019_REL_FILE               = 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md';
-const ANTIPATTERN_GUARD_REL_FILE      = 'buildScripts/util/check-aiconfig-antipatterns.mjs';
-const TEST_MUTATION_GUARD_REL_FILE    = 'buildScripts/util/check-aiconfig-test-mutation.mjs';
+const ANTIPATTERN_GUARD_FILE          = path.join(ENGINE_ROOT, 'buildScripts/util/check-aiconfig-antipatterns.mjs');
+const TEST_MUTATION_GUARD_FILE        = path.join(ENGINE_ROOT, 'buildScripts/util/check-aiconfig-test-mutation.mjs');
 
 // The workflow-parity SSOT: every glob a path-filtered workflow must watch for this lint's
 // verdict to stay reproducible at PR time (scanned ⊆ watched as a mechanical fact, not YAML
@@ -83,12 +86,11 @@ export const SCAN_SURFACE = Object.freeze([
     // report a satisfied invariant over an incomplete picture of what this lint actually reads —
     // the same shape as the unprojected clock these rules exist to catch, one layer up.
     `${DEPLOY_SCAN_ROOT_REL}/**`,
-    // The AiConfig catalog and both sibling guard declarations are verdict inputs for the
-    // tag-to-executable-rule ownership check. If any changes without this lint running, the
-    // two-way contract can drift on the exact commit that introduced the disagreement.
+    // The AiConfig catalog and installed Engine guard revision are verdict inputs for the
+    // tag-to-executable-rule ownership check. A dependency move must rerun the two-way contract.
     ADR_0019_REL_FILE,
-    ANTIPATTERN_GUARD_REL_FILE,
-    TEST_MUTATION_GUARD_REL_FILE
+    'package.json',
+    'package-lock.json'
 ]);
 const CONFIG_TEMPLATE_KIND_CACHE         = new Map();
 const SERVICE_EXPORT_CONFIG_TEMPLATE_REL = Object.freeze({
@@ -2410,15 +2412,13 @@ export function collectCatalogRuleIdsFromSource(source) {
 /**
  * @summary Builds the named guard registry consumed by the catalog's two-way ownership check.
  * @param {Object} [options] Injectable rule arrays/sources for mutation tests.
- * @param {String} [options.rootDir] Repo root.
  * @returns {Map<String,Set<String>>} Guard name to enforced catalog ids.
  */
 export function createAdr0019GuardRegistry({
-    rootDir = ROOT_DIR,
     antipatternRules,
-    antipatternSource = fs.readFileSync(path.join(rootDir, ANTIPATTERN_GUARD_REL_FILE), 'utf8'),
+    antipatternSource = fs.readFileSync(ANTIPATTERN_GUARD_FILE, 'utf8'),
     testMutationRules,
-    testMutationSource = fs.readFileSync(path.join(rootDir, TEST_MUTATION_GUARD_REL_FILE), 'utf8'),
+    testMutationSource = fs.readFileSync(TEST_MUTATION_GUARD_FILE, 'utf8'),
     configSsotRules = ADR_0019_RULES
 } = {}) {
     const antipatternIds = antipatternRules

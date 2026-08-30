@@ -1,6 +1,4 @@
 import crypto from 'crypto';
-import fs     from 'fs';
-import path   from 'path';
 import Base   from 'neo.mjs/src/core/Base.mjs';
 import config from '../../mcp/server/neural-link/config.mjs';
 import logger from '../../mcp/server/neural-link/logger.mjs';
@@ -131,63 +129,6 @@ function correlationTokenFor(sequenceId) {
 }
 
 /**
- * File name for the seat-local per-tool aggregate, written beside the Neural Link logs.
- * @type {String}
- */
-const LOCAL_AGGREGATE_FILE = 'nl-action-aggregate.json';
-
-/**
- * Per-tool counters for this process: tool → `{tool, count, successCount, durationMs}`.
- * @type {Map<String, Object>}
- */
-const localAggregate = new Map();
-
-/**
- * @summary Accounts one action locally, as ephemeral per-tool aggregate evidence.
- *
- * **This is not a second copy of the telemetry, and the distinction is the whole design.** It holds
- * COUNTS — tool, how many, how many succeeded, total duration — and never a target, a session or an
- * argument, so it cannot become the parallel record the relocation exists to eliminate.
- *
- * It exists because `genesisProbe` needs one: the probe drives a disposable seat and then aggregates
- * what that seat actually did. It used to read the local `nl_action_log` table, which the relocation
- * removes, and the alternative — a remote telemetry READ — is refused by this ticket's own contract,
- * because it would give the container a way to be asked about host activity. Counting locally keeps the
- * proof and the write-only direction at the same time.
- *
- * Written under `logPath`, which is already ephemeral, already rotated, and in a probe run already
- * inside the disposable root that gets deleted with it. Failures are swallowed: diagnostic accounting
- * must never take down the possession session it is describing.
- * @param {Object} entry The host's snake_case log entry.
- * @returns {void}
- */
-function recordLocalAggregate(entry = {}) {
-    const tool = typeof entry.tool === 'string' ? entry.tool : null;
-
-    if (!tool) return;
-
-    const row = localAggregate.get(tool) || {tool, count: 0, successCount: 0, durationMs: 0};
-
-    row.count++;
-    if (entry.success === true || entry.success === 1) row.successCount++;
-    if (Number.isFinite(entry.duration_ms)) row.durationMs += entry.duration_ms;
-
-    localAggregate.set(tool, row);
-
-    try {
-        fs.mkdirSync(config.logPath, {recursive: true});
-        fs.writeFileSync(
-            path.join(config.logPath, LOCAL_AGGREGATE_FILE),
-            // Rewritten in full each time rather than appended: the file IS the running total, so a seat
-            // killed mid-run leaves a complete aggregate rather than a partial journal to replay.
-            JSON.stringify([...localAggregate.values()].sort((a, b) => a.tool.localeCompare(b.tool)), null, 4)
-        )
-    } catch (error) {
-        logger.debug('[RecorderService] Local aggregate accounting unavailable:', error.message)
-    }
-}
-
-/**
  * @summary Projects the host's log entry into the admitted telemetry record.
  *
  * Drops `agent_id`, `result` and the raw `args` — a census of every production READ found no reader for
@@ -313,11 +254,6 @@ class RecorderService extends Base {
         // Policy gate stays telemetry-only: the archive contract is reachable while this is off, which is
         // the independence an earlier change established and this relocation must not quietly alter.
         if (!config.actionLoggingEnabled) return;
-
-        // Local ephemeral accounting, kept BEFORE the wire on purpose: it records what this seat did,
-        // which is a different fact from what Memory Core accepted, and the genesis probe needs the
-        // former. See `recordLocalAggregate`.
-        recordLocalAggregate(entry);
 
         // Fire-and-forget on purpose. Telemetry is observability, so it must never block the tool call
         // that produced it nor surface a transport failure to it; the admission counts refusals instead.

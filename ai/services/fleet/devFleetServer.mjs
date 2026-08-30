@@ -1,7 +1,7 @@
 /**
  * @module ai/services/fleet/devFleetServer
  * @summary Node-process entry that runs the dev-server (Option B) app↔fleet HTTP transport — the
- * companion process a developer starts alongside `npm run server-start` so the `apps/agentos` pane's
+ * companion process Agent Institution starts so the product pane's
  * fleet controls go live in a plain browser, without the Electron shell (Option A, the product
  * target). It owns the Neo namespace bootstrap (so the `FleetControlBridge → FleetManager /
  * FleetRegistryService` singletons behind `startFleetBridgeServer` construct) + SIGTERM/SIGINT
@@ -38,7 +38,7 @@
  *
  * @see ai/services/fleet/fleetBridgeServer.mjs
  * @see ai/services/fleet/fleetLaunchContract.mjs
- * @see apps/agentos/fleet/installFleetBridge.mjs (the App-Worker consumer)
+ * @see Agent Institution's Fleet transport (the App-Worker consumer)
  */
 
 // Neo namespace bootstrap (entry-point invariant): `Neo` + `core/_export` populate globalThis.Neo so
@@ -75,7 +75,7 @@ import {wireFleetSessionMemoriesSource}                                  from '.
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
 import {wireOperatorComposeWriter}                                       from './wireOperatorComposeWriter.mjs';
 import path                                                              from 'node:path';
-import {fileURLToPath, pathToFileURL}                                    from 'node:url';
+import {pathToFileURL}                                                   from 'node:url';
 
 /**
  * @summary Composes the launch contract and starts the authenticated Fleet transport.
@@ -279,8 +279,8 @@ async function boot() {
         // defer-disposition degrades per that slot's own fail-soft contract while issues/pulls
         // keep reading the git-synced local trees (correctly host-local, ticket Out of Scope).
         wireFleetActivityReadSource({
-            issuesDir   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../resources/content/issues'),
-            pullsDir    : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../resources/content/pulls'),
+            issuesDir   : path.resolve(AiConfig.projectRoot, 'resources/content/issues'),
+            pullsDir    : path.resolve(AiConfig.projectRoot, 'resources/content/pulls'),
             listMessages: args => planeClient.listMessages(args)
         });
 
@@ -293,8 +293,8 @@ async function boot() {
             import('../memory-core/GraphService.mjs')
         ]).then(([{default: MailboxService}, {default: GraphService}]) => {
             wireFleetActivityReadSource({
-                issuesDir   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../resources/content/issues'),
-                pullsDir    : path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../resources/content/pulls'),
+                issuesDir   : path.resolve(AiConfig.projectRoot, 'resources/content/issues'),
+                pullsDir    : path.resolve(AiConfig.projectRoot, 'resources/content/pulls'),
                 listMessages: MailboxService.listMessages.bind(MailboxService),
                 graphService: GraphService
             });
@@ -412,8 +412,8 @@ async function boot() {
             bearerToken,
             viewerContext : viewer,
             allowedOrigins: origins,
-            // The launcher's custody decision, resolved at the use site: `npm run cockpit` arms
-            // the browser bearer handshake in this child's env; a standalone boot defaults off.
+            // The launcher's custody decision, resolved at the use site: Agent Institution arms
+            // the browser bearer handshake in this process env; a standalone boot defaults off.
             bearerHandshake: AiConfig.fleet.bearerHandshake,
             // The viewer's class-3 MC mint, when the deployment declares one: class-asserted here
             // (never the relay's plane or admission credential), served by the armed handshake as

@@ -1,6 +1,6 @@
-import Base from './Base.mjs';
-import fs   from 'fs-extra';
-import path from 'path';
+import Base     from './Base.mjs';
+import fs       from 'fs-extra';
+import path     from 'path';
 import aiConfig from '../../../mcp/server/knowledge-base/config.mjs';
 
 /**
@@ -37,7 +37,7 @@ class ReleaseNotesSource extends Base {
     async extract(writeStream, createHashFn) {
         let count = 0;
         // Per-source path from the `sourcePaths` config (SSOT).
-        const releaseNotesPath = path.resolve(aiConfig.neoRootDir, aiConfig.sourcePaths.ReleaseNotesSource);
+        const releaseNotesPath = path.resolve(aiConfig.projectRoot, aiConfig.sourcePaths.ReleaseNotesSource);
 
         if (await fs.pathExists(releaseNotesPath)) {
             const releaseFiles = await fs.readdir(releaseNotesPath);
@@ -48,12 +48,12 @@ class ReleaseNotesSource extends Base {
                     const filePath = path.join(releaseNotesPath, file);
                     const content  = await fs.readFile(filePath, 'utf-8');
                     const chunk    = {
-                        type   : 'release',
-                        kind   : 'release',
-                        name   : file.replace('.md', ''),
+                        type: 'release',
+                        kind: 'release',
+                        name: file.replace('.md', ''),
                         content,
                         // Relative path keeps the distributed Chroma zip portable.
-                        source : path.relative(aiConfig.neoRootDir, filePath)
+                        source : path.relative(aiConfig.projectRoot, filePath)
                     };
 
                     chunk.hash = createHashFn(chunk);

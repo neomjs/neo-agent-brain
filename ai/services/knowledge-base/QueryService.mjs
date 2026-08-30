@@ -33,7 +33,7 @@ const lexicalRescueSkipDirs   = new Set([
 const codeTermRescueRoots     = ['ai/services', 'ai/mcp/server', 'ai/graph'];
 const codeTermRescueFileLimit = 500;
 const sourceLikeTypeAliases   = {
-    src: ['src', 'ai-infrastructure']
+    src: ['src', 'brain-source', 'ai-infrastructure']
 };
 
 dotenv.config({
@@ -843,12 +843,12 @@ class QueryService extends Base {
         if (source.startsWith('resources/content/pulls/') || source.startsWith('resources/content/archive/pulls/')) return 'pull';
         if (source.startsWith('resources/content/release-notes/') || source.startsWith('.github/RELEASE_NOTES/')) return 'release';
 
-        const apiSourceMap = aiConfig.sourcePaths.ApiSource || {};
-        const match        = Object.entries(apiSourceMap).find(([sourceRoot]) =>
+        const apiSources = aiConfig.sourcePaths.ApiSource || [];
+        const match      = apiSources.find(({path: sourceRoot}) =>
             source === sourceRoot || source.startsWith(`${sourceRoot}/`)
         );
 
-        return match ? match[1] : 'raw';
+        return match?.type ?? 'raw';
     }
 
     /**

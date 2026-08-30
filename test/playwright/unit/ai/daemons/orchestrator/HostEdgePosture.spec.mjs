@@ -5,7 +5,6 @@ import os                                                                       
 import path                                                                          from 'path';
 import * as yaml                                                                     from 'js-yaml';
 import {buildHostEdgeEnv, HOST_EDGE_STATE_DIR_ENV}                                   from '../../../../../../src/composition/orchestrator/hostEdgeProfile.mjs';
-import {buildBrainProfile, buildPackagedBrainEnv}                                    from '../../../../../../harness/brain.mjs';
 import {ORCHESTRATOR_AUTHORITY_PROFILE, getTaskAuthorityClass, isTaskOwnedByProfile} from '../../../../../../ai/daemons/orchestrator/taskAuthority.mjs';
 
 /**
@@ -142,21 +141,6 @@ test.describe('#16229 — host-edge posture: every producer declares a valid rol
         // deleted or renamed launcher still under a stale declaration fails the second.
         expect(discovered).toEqual([...DECLARED_LAUNCHERS, ...NON_LAUNCHER_REFERENCES].sort());
         expect(DECLARED_LAUNCHERS.filter(file => NON_LAUNCHER_REFERENCES.includes(file))).toEqual([]);
-    });
-
-    test('BOTH harness Brain profiles declare a role — the launch the first attempt would have broken', () => {
-        // The defect the first attempt would have shipped: `harness/main.mjs` launches ORCHESTRATOR_ENTRY
-        // with these exact fragments, and neither carried a role. Against an empty leaf default
-        // that is a refused launch on the checkout smoke AND the packaged product boot.
-        const profiles = {
-            buildBrainProfile    : buildBrainProfile({chromaPort: 18181, fleetPort: 18182, isolationRoot: '/tmp/neo-16229-probe'}),
-            buildPackagedBrainEnv: buildPackagedBrainEnv({dataRoot: '/tmp/neo-16229-probe'})
-        };
-
-        for (const [name, profile] of Object.entries(profiles)) {
-            expect(LEGAL_PROFILES, `${name} must declare a role from the frozen enum`)
-                .toContain(profile[ROLE_ENV]);
-        }
     });
 
     test('both Compose profiles declare container-plane explicitly, never by inheritance', () => {

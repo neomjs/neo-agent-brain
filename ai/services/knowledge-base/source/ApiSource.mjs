@@ -10,7 +10,8 @@ import {assertCoverageBaseline, loadClassHierarchy} from '../helpers/classHierar
 /**
  * @summary Extracts knowledge chunks from Neo.mjs source code.
  *
- * This source provider scans the `src/` directory for `.mjs` files.
+ * This source provider scans configured Brain roots and installed Engine package roots for `.mjs`
+ * files. No repository-root compatibility projection participates.
  * It delegates the parsing logic to `SourceParser`, which decomposes the source code
  * into semantic chunks (Module Context, Class Properties, Config, Methods).
  *
@@ -43,8 +44,16 @@ class ApiSource extends Base {
      * @returns {Promise<Number>} The number of chunks extracted.
      */
     async extract(writeStream, createHashFn) {
-        // Per-source sourceMap (path → type object) from the `sourcePaths` config (SSOT).
-        const sourceMap = aiConfig.sourcePaths.ApiSource;
+        // Ordered source rows keep dotted package paths as VALUES. Filesystem paths cannot be
+        // reactive-namespace object keys: dots are structural separators in the config substrate.
+        const sourceEntries = aiConfig.sourcePaths.ApiSource;
+
+        if (!Array.isArray(sourceEntries) || !sourceEntries.every(entry =>
+            entry && typeof entry.path === 'string' && entry.path &&
+            typeof entry.type === 'string' && entry.type
+        )) {
+            throw new TypeError('ApiSource requires sourcePaths.ApiSource as ordered {path,type} rows')
+        }
 
         // Fail-closed, because the hierarchy is an IDENTITY input rather than an enrichment:
         // `extends` is hashed into every chunk id, so an absent map re-identifies every class
@@ -53,7 +62,7 @@ class ApiSource extends Base {
         // so no chunk is written under a degraded identity.
         const hierarchy = await loadClassHierarchy({
             hierarchyPath  : aiConfig.hierarchyPath,
-            sourcePathCount: Object.keys(sourceMap).length
+            sourcePathCount: sourceEntries.length
         });
 
         let count = 0;
@@ -65,10 +74,17 @@ class ApiSource extends Base {
         // this reports instead of refusing.
         const coverage = {};
 
-        for (const [path, type] of Object.entries(sourceMap)) {
-            coverage[path] = {declared: 0, resolved: 0};
+        for (const {path: sourcePath, type} of sourceEntries) {
+            coverage[sourcePath] = {declared: 0, resolved: 0};
 
-            count += await this.indexRawDirectory(writeStream, createHashFn, path, type, hierarchy, coverage[path]);
+            count += await this.indexRawDirectory(
+                writeStream,
+                createHashFn,
+                sourcePath,
+                type,
+                hierarchy,
+                coverage[sourcePath]
+            )
         }
 
         // Throws on a regression below the interim floor — the incident's actual shape, where `src`

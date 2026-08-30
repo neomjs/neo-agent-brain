@@ -286,7 +286,7 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
     test('the plan/apply composer has one production caller', async () => {
         const callers = [];
 
-        for (const rootName of ['ai', 'apps', 'buildScripts', 'src']) {
+        for (const rootName of ['ai', 'src']) {
             for (const filePath of await sourceFiles(path.join(PROJECT_ROOT, rootName))) {
                 if ((await read(filePath)).includes('prepareManagedAgentWorkspace.mjs')) {
                     callers.push(path.relative(PROJECT_ROOT, filePath))

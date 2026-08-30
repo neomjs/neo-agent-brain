@@ -16,10 +16,10 @@ import {splitTicketArchiveMarkdown} from './ticketArchiveElementSplitter.mjs';
  * @extends Neo.ai.services.knowledge-base.source.Base
  * @singleton
  */
-const loadIndexMap = async (neoRootDir, type) => {
-    const map = new Map();
-    const typeIndex = path.resolve(neoRootDir, `resources/content/${type}/_index.json`);
-    const rootIndex = path.resolve(neoRootDir, 'resources/content/_index.json');
+const loadIndexMap = async (projectRoot, type) => {
+    const map       = new Map();
+    const typeIndex = path.resolve(projectRoot, `resources/content/${type}/_index.json`);
+    const rootIndex = path.resolve(projectRoot, 'resources/content/_index.json');
 
     let entries = [];
     if (await fs.pathExists(typeIndex)) {
@@ -64,10 +64,10 @@ class TicketSource extends Base {
         let count = 0;
         // Per-source paths (array) from the `sourcePaths` config (SSOT).
         const ticketPaths = aiConfig.sourcePaths.TicketSource;
-        const targetPaths = ticketPaths.map(p => path.resolve(aiConfig.neoRootDir, p));
+        const targetPaths = ticketPaths.map(p => path.resolve(aiConfig.projectRoot, p));
 
-        const indexMap    = await loadIndexMap(aiConfig.neoRootDir, 'issues');
-        const contentRoot = path.resolve(aiConfig.neoRootDir, 'resources/content');
+        const indexMap    = await loadIndexMap(aiConfig.projectRoot, 'issues');
+        const contentRoot = path.resolve(aiConfig.projectRoot, 'resources/content');
 
         for (const targetPath of targetPaths) {
             if (await fs.pathExists(targetPath)) {
@@ -87,7 +87,7 @@ class TicketSource extends Base {
 
                         const content = await fs.readFile(filePath, 'utf-8');
                         // Relative path keeps the distributed Chroma zip portable.
-                        const source = path.relative(aiConfig.neoRootDir, filePath);
+                        const source = path.relative(aiConfig.projectRoot, filePath);
                         // Per-element chunks (body + each Timeline comment) keep a multi-cycle
                         // ticket under the embedding cap; a no-comment ticket yields one body chunk
                         // whose content equals the whole file.
@@ -95,9 +95,9 @@ class TicketSource extends Base {
 
                         for (const element of elements) {
                             const suffix = element.kind === 'body' ? 'body' : `comment-${element.ordinal}`;
-                            const chunk = {
-                                type: 'ticket',
-                                kind: 'ticket',
+                            const chunk  = {
+                                type   : 'ticket',
+                                kind   : 'ticket',
                                 name   : `issue-${id}#${suffix}`,
                                 content: element.content,
                                 source

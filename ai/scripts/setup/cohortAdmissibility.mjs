@@ -10,7 +10,7 @@
  * and exit. So moving a lagging deployment onto a newer cohort can produce a plane whose daemons
  * refuse to boot, and nothing in the tree could say so BEFORE the move: `compatibilityContract`,
  * `supportMatrix`, `minimumSupportedRevision` and `externallyAdmissible` return zero hits across
- * `ai/`, `src/` and `buildScripts/`.
+ * Brain-owned `ai/` and `src/`.
  *
  * The raw material already exists and is machine-readable — every leaf that can block a boot
  * declares `requiredFor` on its own descriptor. What was missing is a predicate over it. This module

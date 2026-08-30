@@ -409,7 +409,7 @@ test.describe('ai/scripts/resumeHarness', () => {
         expect(scriptContent).toContain('explicit non-empty prompt/thought/response fields');
         expect(scriptContent).toContain('Boot heartbeat for ${identity}');
         expect(scriptContent).not.toContain('call add_memory once as a boot heartbeat, then proceed normally');
-        expect(scriptContent).toContain('resources/content/sandman_handoff.md');
+        expect(scriptContent).toContain('latest Memory Core Sandman handoff');
         expect(scriptContent).toContain('Origin Session ID');
         // Negative assertion: the old Q1a prose payload must be gone
         expect(scriptContent).not.toContain('Auto-Wakeup Substrate: Resuming sunsetted session.');

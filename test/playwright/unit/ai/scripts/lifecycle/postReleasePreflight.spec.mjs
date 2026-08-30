@@ -3,7 +3,9 @@ import {test, expect} from '@playwright/test';
 import {
     assertAdmissibleStartingState,
     assertOnDevBranch,
+    buildReleaseChildEnvironment,
     resolveReleaseVersion,
+    resolveTargetRepoRoot,
     SEMVER_PATTERN
 } from '../../../../../../ai/scripts/lifecycle/postReleasePreflight.mjs';
 
@@ -15,6 +17,47 @@ import {
  * refusal direction proven, since a preflight that cannot refuse is prose.
  */
 test.describe('postReleasePreflight (#17239)', () => {
+    test.describe('resolveTargetRepoRoot — explicit target authority, never ambient cwd', () => {
+        const
+            resolvePath     = value => ({brain: '/runtime/brain', engine: '/targets/neo'}[value] ?? value),
+            readPackageJson = root => root === '/targets/neo' ? {name: 'neo.mjs'} : {name: 'neo-agent-brain'};
+
+        test('returns the Engine target named by the explicit binding', () => {
+            expect(resolveTargetRepoRoot({
+                argv: ['--target-repo-root', 'engine'], readPackageJson, resolvePath, runtimeRoot: 'brain'
+            })).toBe('/targets/neo')
+        });
+
+        test('refuses missing, malformed, and extra arguments — cwd is never a fallback', () => {
+            for (const argv of [[], ['engine'], ['--target-repo-root'], ['--target-repo-root', ''],
+                ['--target-repo-root', 'engine', 'extra']]) {
+                expect(() => resolveTargetRepoRoot({argv, readPackageJson, resolvePath, runtimeRoot: 'brain'}))
+                    .toThrow(/required explicitly/)
+            }
+        });
+
+        test('refuses a target that aliases the Brain runtime root', () => {
+            expect(() => resolveTargetRepoRoot({
+                argv: ['--target-repo-root', 'brain'], readPackageJson, resolvePath, runtimeRoot: 'brain'
+            })).toThrow(/aliases agentosRuntimeRoot/)
+        });
+
+        test('refuses a readable checkout whose manifest is not the Engine package', () => {
+            expect(() => resolveTargetRepoRoot({
+                argv: ['--target-repo-root', '/other'], readPackageJson, resolvePath, runtimeRoot: 'brain'
+            })).toThrow(/must identify the Engine package/)
+        });
+
+        test('refuses an unreadable target manifest by naming the target', () => {
+            expect(() => resolveTargetRepoRoot({
+                argv           : ['--target-repo-root', '/missing'],
+                readPackageJson: () => { throw new Error('ENOENT') },
+                resolvePath,
+                runtimeRoot    : 'brain'
+            })).toThrow(/cannot read target package\.json at \/missing: ENOENT/)
+        })
+    });
+
     test.describe('resolveReleaseVersion — manifest-only, strict semver before any shell string', () => {
         test('returns a valid manifest version', () => {
             expect(resolveReleaseVersion({readPackageJson: () => ({version: '13.2.0'})})).toBe('13.2.0');
@@ -33,6 +76,17 @@ test.describe('postReleasePreflight (#17239)', () => {
             expect(SEMVER_PATTERN.test('13.2.0"; rm -rf "/')).toBe(false);
             expect(SEMVER_PATTERN.test('$(whoami)')).toBe(false);
         });
+    });
+
+    test('the uploader child receives the Engine version, never Brain package metadata', () => {
+        expect(buildReleaseChildEnvironment({
+            baseEnv: {npm_package_name: 'neo-agent-brain', npm_package_version: '0.0.0', TOKEN: 'kept'},
+            version: '13.2.0'
+        })).toEqual({
+            npm_package_name   : 'neo-agent-brain',
+            npm_package_version: '13.2.0',
+            TOKEN              : 'kept'
+        })
     });
 
     test.describe('assertOnDevBranch — the commit lands on the current branch, the push targets dev', () => {

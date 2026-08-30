@@ -38,7 +38,7 @@ import {fileURLToPath} from 'node:url';
  * unwidened workflow filter fails there.
  * @type {String[]}
  */
-export const SCAN_SURFACE = Object.freeze(['package.json', 'ai/**/*.mjs', 'src/**/*.mjs', 'buildScripts/**/*.mjs']);
+export const SCAN_SURFACE = Object.freeze(['package.json', 'ai/**/*.mjs', 'src/**/*.mjs']);
 
 /**
  * Reads the static relative specifiers of one module from its parse tree: `ImportDeclaration`

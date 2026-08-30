@@ -1,11 +1,11 @@
-import fs                      from 'node:fs';
 import path                    from 'node:path';
-import {FLEET_COCKPIT_SOURCES} from '../../../apps/agentos/config/cockpitSources.mjs';
+import {fileURLToPath}         from 'node:url';
 import {IDENTITIES}            from '../../graph/identityRoots.mjs';
+import {FLEET_COCKPIT_SOURCES} from '../../services/fleet/fleetCockpitStatus.mjs';
 
 /**
- * @summary Derives the AgentOS cockpit roster seed (`apps/agentos/resources/data/fleetRoster.json`)
- * from the authoritative identity registry — never hand-paint the sample again.
+ * @summary Derives a presentation-neutral Fleet roster snapshot from the authoritative identity
+ * registry. Product repositories decide if and where to persist it.
  *
  * **Authority chain (read before editing the output):**
  * - Identity, canonical names, family, `participationStatus`, bench reasons: `ai/graph/identityRoots.mjs`
@@ -17,45 +17,34 @@ import {IDENTITIES}            from '../../graph/identityRoots.mjs';
  * - Session `state`: registry participation is NOT live session truth. This snapshot maps
  *   `active → 'ok'` and any known non-active status → `'off'`, and stamps the provenance per row
  *   (`sources.roster`) plus the `_meta` block, so "this is a registry snapshot" is visible in the
- *   data itself. Live session state is the wired roster path's job (`FleetCockpit.loadRoster`).
- *   The per-row stamp is a DECLARED-CALM source fact in the cockpit's source-health contract
- *   (`apps/agentos/util/SourceHealth.mjs`): it names the live producer as expected-absent
- *   (`not-wired` / `none`) and carries the static provenance in `reason`. A bare provenance string
- *   is a present-but-malformed fact there — `invalid`, one red alarm per card on the offline
- *   first-run; declared absence is the one present shape allowed to be calm. The producer literal
- *   rides the Body-side vocabulary twin, which `lint-fleet-vocabulary-parity` binds to the Brain
- *   authority, so the emitted literal tracks the contract it must satisfy.
+ *   data itself. Live session state is a separate runtime producer. The per-row stamp names that
+ *   producer as expected-absent (`not-wired` / `none`) while retaining static provenance in
+ *   `reason`.
  *
- * **Honesty invariants (the model's own contract, `apps/agentos/model/FleetAgent.mjs`):**
+ * **Honesty invariants:**
  * - `openLaneCount` stays `null` — the model renders NO badge for null; a derived count would be
  *   a fabricated one ("never a fake 0").
  * - `laneLine` carries only the registry's `statusReason` (bench reason); no invented lane lines.
  * - `participationStatus` is stamped per row (the roster-DTO tri-state truth) — the fleet view's
  *   eligibility logic reads it, so the derived seed feeds the authoritative field, not just prose.
  *
- * Usage: `node ai/scripts/fleet/deriveFleetRoster.mjs [--check]` (with `--check`: verify the
- * committed file is STRUCTURALLY equal to a fresh derivation, comparing every field except
- * `_meta.generatedAt` — the CI guard against hand-painting. Not a byte comparison: the timestamp
- * changes on every run, so a byte check would fail on a clock tick rather than on data drift).
+ * Usage: `node ai/scripts/fleet/deriveFleetRoster.mjs` writes one JSON document to stdout. A product
+ * consumer may redirect or ingest it; Brain never writes another repository's files.
  */
-
-const OUTPUT = path.resolve('apps/agentos/resources/data/fleetRoster.json');
 
 /**
  * Observation-owned engine tags, mirrored from learn/agentos/ModelStats.md (§ anchor per entry).
  * An identity missing here emits `engineTag: null` — honest absence, never an invented tag.
  *
  * **`neo-opus-vega` is deliberately absent.** That seat runs an operator-managed weekly
- * Fable/Opus rotation, so no static literal stays true for more than a few days, and
- * `apps/agentos/CARD-CONTRACT.md` names exactly this failure: a durable identity literal
- * publishes baseline as current and goes stale on any unmanaged engine boost, with the
- * July-2026 Fable-week rotations as the reflexive falsifier. A tag that is wrong half the
- * week is worse than no tag — the model renders no badge for `null` by design. Restore a
- * literal for that seat only once an era record can carry a time span instead of a point value.
+ * Fable/Opus rotation, so no static literal stays true for more than a few days. A durable identity
+ * literal would publish baseline as current and go stale on an unmanaged engine boost. A tag that
+ * is wrong half the week is worse than no tag. Restore a literal for that seat only once an era
+ * record can carry a time span instead of a point value.
  *
  * Exported so `ai/scripts/lint/lint-identity-engine-coherence.mjs` can read the map directly
  * instead of re-parsing this file. The lint is the CI guard that these tags still agree with
- * `ModelStats.md` and the registry — the three places drifted once and nothing noticed. That
+ * `ModelStats.md` and the registry — the two places drifted once and nothing noticed. That
  * lint treats the absence above as VALID, never as drift: it fails only on contradiction, so a
  * rotating seat can stay honestly silent without being pressured back into a false literal.
  * @type {Object<String,String>}
@@ -133,28 +122,8 @@ export function deriveFleetRoster() {
     };
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL('', import.meta.url).pathname);
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isMain) {
-    const
-        next      = JSON.stringify(deriveFleetRoster(), null, 4) + '\n',
-        checkMode = process.argv.includes('--check');
-
-    if (checkMode) {
-        const current = fs.existsSync(OUTPUT) ? fs.readFileSync(OUTPUT, 'utf8') : '';
-
-        // --check compares structure, not the timestamp: hand-painting is any data drift, not a clock tick.
-        const strip = doc => { const parsed = JSON.parse(doc); delete parsed._meta.generatedAt; return JSON.stringify(parsed); };
-
-        if (current && strip(current) === strip(next)) {
-            console.log('deriveFleetRoster: committed seed is in sync with the registry');
-            process.exit(0);
-        }
-
-        console.error('deriveFleetRoster: committed seed is STALE — run `node ai/scripts/fleet/deriveFleetRoster.mjs`');
-        process.exit(1);
-    }
-
-    fs.writeFileSync(OUTPUT, next);
-    console.log(`deriveFleetRoster: wrote ${OUTPUT} (${deriveFleetRoster().data.length} residents, registry-derived)`);
+    process.stdout.write(JSON.stringify(deriveFleetRoster(), null, 4) + '\n')
 }

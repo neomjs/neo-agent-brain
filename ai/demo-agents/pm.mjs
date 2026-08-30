@@ -16,7 +16,7 @@ import * as yaml       from 'js-yaml';
 import dotenv          from 'dotenv';
 import path            from 'path';
 import {fileURLToPath} from 'url';
-import {sanitizeInput} from '../../buildScripts/util/sanitizer.mjs';
+import {sanitizeInput} from 'neo.mjs/buildScripts/util/sanitizer.mjs';
 import {
     GH_IssueService,
     GH_HealthService,
@@ -49,12 +49,12 @@ async function generateBreakdown(epic, contextDocs) {
 
     const task1 = {
         version: 1.0,
-        type: 'implementation',
-        role: 'dev',
-        goal: `Implement the core logic for "${epic.title}"`,
+        type   : 'implementation',
+        role   : 'dev',
+        goal   : `Implement the core logic for "${epic.title}"`,
         context: {
-            epic_issue: epic.number,
-            files: ["src/Main.mjs"],
+            epic_issue         : epic.number,
+            files              : ["src/Main.mjs"],
             knowledge_base_refs: contextRefs.length > 0 ? contextRefs : ["N/A"]
         },
         requirements: [
@@ -65,9 +65,9 @@ async function generateBreakdown(epic, contextDocs) {
 
     const task2 = {
         version: 1.0,
-        type: 'implementation',
-        role: 'dev',
-        goal: `Update documentation for "${epic.title}"`,
+        type   : 'implementation',
+        role   : 'dev',
+        goal   : `Update documentation for "${epic.title}"`,
         context: {
             epic_issue: epic.number
         },
@@ -94,9 +94,9 @@ function parseIssueContent(rawContent) {
     }
 
     const frontmatter = parts[1];
-    const body = parts.slice(2).join('---').trim();
+    const body        = parts.slice(2).join('---').trim();
 
-    let title = 'Unknown Title';
+    let   title      = 'Unknown Title';
     const titleMatch = frontmatter.match(/^title:\s*(.*)$/m);
     if (titleMatch) {
         title = titleMatch[1].trim().replace(/^['"](.*)['"]$/, '$1'); // Remove quotes if present
@@ -131,7 +131,7 @@ async function run() {
         }
 
         const { title, body } = parseIssueContent(result.content);
-        const epic = { number: parseInt(epicId), title, body };
+        const epic            = { number: parseInt(epicId), title, body };
 
         console.log(`   -> Found: "${epic.title}"`);
 
@@ -156,8 +156,8 @@ async function run() {
                 issue = { issueNumber: 0 }; // Mock ID
             } else {
                 issue = await GH_IssueService.createIssue({
-                    title: task.title,
-                    body: task.body, // YAML string
+                    title : task.title,
+                    body  : task.body, // YAML string
                     labels: ['agent-task:pending', 'agent-role:dev', 'ai-generated']
                 });
             }
@@ -181,8 +181,8 @@ async function run() {
             } else {
                 await GH_IssueService.createComment({
                     issue_number: parseInt(epicId),
-                    body: summary,
-                    agent: 'Neo PM Agent'
+                    body        : summary,
+                    agent       : 'Neo PM Agent'
                 });
             }
         }

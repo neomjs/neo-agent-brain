@@ -7,9 +7,8 @@ import {IDENTITIES} from './identityRoots.mjs';
  * durable identity registry and already owns `githubLogin`, but it also seeds Memory Core graph
  * nodes — a field added there becomes an ingested, queryable node property, which is real blast
  * radius for what is a git-tooling concern, and that module deliberately retired era-owned facts to
- * stay lean. `deriveFleetRoster.mjs` faced the same question for engine tags and answered it with a
- * small explicit map beside the consumer, every entry naming its source anchor. This follows that
- * precedent, and stays keyed to the registry so the two cannot drift silently.
+ * stay lean. This git-tooling map therefore stays beside its consumer and keyed to the registry so
+ * the two cannot drift silently.
  *
  * **Every address below is observed in committed history, never derived from a handle.** Deriving
  * is the defect this module exists to catch: a peer needing an address the roster did not document
@@ -28,8 +27,6 @@ import {IDENTITIES} from './identityRoots.mjs';
  *
  * @see #16280 — the ticket this module implements (ticket-ref-ok: implementing ticket)
  * @see ai/graph/identityRoots.mjs — the authoritative identity registry this map is keyed to
- * @see ai/scripts/fleet/deriveFleetRoster.mjs — the precedent for a build script consuming that
- *      registry alongside a small source-anchored map of facts the registry does not carry
  */
 
 /**

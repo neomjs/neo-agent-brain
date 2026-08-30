@@ -16,7 +16,7 @@ import * as core       from 'neo.mjs/src/core/_export.mjs'; // For Neo.core.Base
 import InstanceManager from 'neo.mjs/src/manager/Instance.mjs'; // For Neo.core.Base setup
 import Client          from './Client.mjs';
 import aiConfig        from './config.mjs';
-import {sanitizeInput} from '../../../buildScripts/util/sanitizer.mjs';
+import {sanitizeInput} from 'neo.mjs/buildScripts/util/sanitizer.mjs';
 
 const program = new Command();
 
