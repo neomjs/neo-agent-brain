@@ -190,6 +190,13 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
         runtime: {
             goldenPathRepoEnrichmentEnabled         : orchestrator.goldenPathRepoEnrichmentEnabled,
             primaryDevSyncRootsConfig               : orchestrator.primaryDevSyncRootsConfig,
+            // Same resolution that feeds `enables.kbSync` above. The scheduled task and the
+            // `primary-dev-sync` cascade are two convergent routes to one destructive-by-default
+            // rebuild; before #251 only the scheduled one was gated. Note this is deliberately
+            // `kbSyncEnabled` (resolveCloudOnlyEnabled) and NOT `primaryDevSyncEnabled`
+            // (resolveDeploymentEnabled) — the latter is the ergonomic reach here, type-checks,
+            // and would re-open the hole while looking gated.
+            kbSyncEnabled                           : orchestrator.kbSyncEnabled,
             tenantRepoSyncGlobalCadenceMs           : config.orchestrator.intervals.tenantRepoSyncMs,
             tenantRepoSyncJitterRatio               : config.orchestrator.tenantRepoSync.jitterRatio,
             embedDrainLivenessWatchdogWalDir        : orchestrator.embedDrainLivenessWatchdogWalDir,
@@ -460,7 +467,8 @@ function executeServiceRunnerCandidate({candidate, activeHeavyTask, services, ru
             taskStateService  : services.taskStateService,
             healthService     : services.healthService,
             writeLog          : runtime.writeLog,
-            devSyncRootsConfig: runtime.primaryDevSyncRootsConfig
+            devSyncRootsConfig: runtime.primaryDevSyncRootsConfig,
+            kbSyncAuthorized  : runtime.kbSyncEnabled === true
         }),
         // `taskOptions` is the fourth argument `acquireLeaseAndExecute` passes, and until now this
         // runner dropped it — which is why the scheduler's own acquisition could not be yielded

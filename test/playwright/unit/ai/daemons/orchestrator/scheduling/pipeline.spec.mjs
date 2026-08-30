@@ -1747,3 +1747,101 @@ test.describe('recognized deferral codes stay in lockstep with their emitters (#
         })
     })
 });
+
+test.describe('orchestrator/scheduling/pipeline — kbSync cascade authorization (#251)', () => {
+    // -------------------------------------------------------------------------------------------
+    // #251 — composition seam.
+    //
+    // The scheduled `kbSync` task and the `primary-dev-sync` cascade are two convergent routes to
+    // one destructive-by-default corpus rebuild. Before #251 only the scheduled route consulted an
+    // enable, so `kbSync = false` suppressed one door and left the other open.
+    //
+    // These live at the composition seam ON PURPOSE. The service units inject explicit
+    // authorization values — correct, because that is dependency injection and it keeps the four
+    // negative controls isolated. But an injected unit cannot witness the two paths reading
+    // DIFFERENT sources, which is the actual defect class. Only a spec that builds the real
+    // options object can.
+    //
+    // Named mutant: hardcode the runner's `kbSyncAuthorized` to `true` and the false-arm below
+    // reds. A mutant that reds only the service units has not exercised this class.
+    // -------------------------------------------------------------------------------------------
+    test.describe('#251 kbSync authorization reaches BOTH consumers from one resolution', () => {
+        function optionsFor(kbSyncEnabled) {
+            return buildOrchestratorSchedulingOptions({
+                orchestrator: makeOrchestratorAdapterFixture({kbSyncEnabled}),
+                config      : makeAdapterConfig(),
+                now         : 10,
+                registry    : []
+            });
+        }
+
+        test('both consumers track the same orchestrator.kbSyncEnabled resolution', () => {
+            for (const enabled of [true, false]) {
+                const options = optionsFor(enabled);
+
+                // Scheduled consumer — `scheduling/registry.mjs` reads `enables.kbSync`.
+                expect(options.context.enables.kbSync).toBe(enabled);
+                // Cascade consumer — the `primary-dev-sync` runner reads `runtime.kbSyncEnabled`.
+                expect(options.runtime.kbSyncEnabled).toBe(enabled);
+            }
+        });
+
+        test('the cascade consumes kbSyncEnabled, NOT primaryDevSyncEnabled', () => {
+            // The two enables resolve through different paths (`resolveCloudOnlyEnabled` vs
+            // `resolveDeploymentEnabled`), and `primaryDevSyncEnabled` is the ergonomic reach at
+            // the runner because `runtime` already carries `primaryDevSyncRootsConfig`. Wiring it
+            // type-checks, runs, and re-opens the hole while LOOKING gated — so pin them apart.
+            const options = buildOrchestratorSchedulingOptions({
+                orchestrator: makeOrchestratorAdapterFixture({
+                    kbSyncEnabled        : false,
+                    primaryDevSyncEnabled: true
+                }),
+                config  : makeAdapterConfig(),
+                now     : 10,
+                registry: []
+            });
+
+            expect(options.runtime.kbSyncEnabled).toBe(false);
+            expect(options.context.enables.primaryDevSync).toBe(true);
+        });
+
+        test('the primary-dev-sync runner forwards the resolved enable as kbSyncAuthorized', () => {
+            for (const enabled of [true, false]) {
+                let forwarded = 'never-called';
+
+                const options = buildOrchestratorSchedulingOptions({
+                    orchestrator: makeOrchestratorAdapterFixture({
+                        kbSyncEnabled                 : enabled,
+                        primaryDevSyncGetDueTask      : () => ({reason: 'primary-dev-sync-reason'}),
+                        maintenanceBackpressureService: {
+                            acquireLeaseAndExecute: ({taskName, executeFn, reason, onSuccess, taskOptions}) =>
+                                executeFn(taskName, reason, onSuccess, taskOptions)
+                        },
+                        primaryRepoSyncService: {
+                            runTask({kbSyncAuthorized}) {
+                                forwarded = kbSyncAuthorized;
+                                return {status: 'completed', details: {}};
+                            }
+                        }
+                    }),
+                    config  : makeAdapterConfig(),
+                    now     : 10,
+                    registry: []
+                });
+
+                executeCandidate({
+                    candidate: {
+                        taskName  : 'primary-dev-sync',
+                        trigger   : {reason: 'primary-dev-sync-reason'},
+                        descriptor: {executionKind: 'service-runner', maintenanceClass: 'light'}
+                    },
+                    activeHeavyTask: {name: null},
+                    services       : options.services,
+                    runtime        : options.runtime
+                });
+
+                expect(forwarded).toBe(enabled);
+            }
+        });
+    });
+});
