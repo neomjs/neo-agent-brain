@@ -1,6 +1,93 @@
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}  from '@playwright/test';
+import * as acorn      from 'acorn';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import fs              from 'node:fs/promises';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
+
+const
+    REPO_ROOT            = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
+    PROFILE_RUNNER_ENTRY = path.join(
+        REPO_ROOT,
+        'ai/services/knowledge-base/helpers/extractionProfileRunner.mjs'
+    ),
+    EXTRACTOR_CATALOGUE     = path.join(
+        REPO_ROOT,
+        'ai/services/knowledge-base/source/ExtractorCatalogue.mjs'
+    ),
+    BUILT_IN_SKILL_SOURCE   = path.join(
+        REPO_ROOT,
+        'ai/services/knowledge-base/source/SkillSource.mjs'
+    ),
+    LEGACY_SOURCE_REGISTRY  = path.join(
+        REPO_ROOT,
+        'ai/services/knowledge-base/source/SourceRegistry.mjs'
+    ),
+    LEGACY_SOURCE_BARREL    = path.join(
+        REPO_ROOT,
+        'ai/services/knowledge-base/source/_export.mjs'
+    );
+
+/**
+ * @summary Parses literal static and dynamic ESM edges without treating comments as executable code.
+ * @param {String} source
+ * @returns {String[]}
+ */
+function collectModuleSpecifiers(source) {
+    const
+        specifiers = new Set(),
+        stack      = [acorn.parse(source, {ecmaVersion: 'latest', sourceType: 'module'})];
+
+    while (stack.length) {
+        const node = stack.pop();
+
+        if (
+            (
+                node.type === 'ImportDeclaration'
+                || node.type === 'ExportNamedDeclaration'
+                || node.type === 'ExportAllDeclaration'
+                || node.type === 'ImportExpression'
+            )
+            && typeof node.source?.value === 'string'
+        ) {
+            specifiers.add(node.source.value)
+        }
+
+        for (const value of Object.values(node)) {
+            if (Array.isArray(value)) {
+                value.forEach(item => item && typeof item === 'object' && stack.push(item))
+            } else if (value && typeof value === 'object') {
+                stack.push(value)
+            }
+        }
+    }
+
+    return [...specifiers]
+}
+
+/**
+ * @summary Resolves the runner's transitive repo-local ESM import closure without evaluating modules.
+ * @param {String} filePath
+ * @param {Set<String>} [seen]
+ * @returns {Promise<Set<String>>}
+ */
+async function resolveModuleClosure(filePath, seen = new Set()) {
+    if (seen.has(filePath)) return seen;
+    seen.add(filePath);
+
+    const imports = collectModuleSpecifiers(await fs.readFile(filePath, 'utf8'));
+
+    for (const specifier of imports) {
+        if (specifier.startsWith('.')) {
+            const resolved = path.resolve(path.dirname(filePath), specifier);
+
+            if (resolved.startsWith(REPO_ROOT + path.sep)) await resolveModuleClosure(resolved, seen)
+        }
+    }
+
+    return seen
+}
 
 test.describe('extraction profile runner (#261)', () => {
     let createExtractorCatalogue;
@@ -319,6 +406,17 @@ test.describe('extraction profile runner (#261)', () => {
         } finally {
             SourceRegistry.getSources = originalGetSources;
         }
+    });
+
+    test('module graph excludes the mutable legacy SourceRegistry and its barrel', async () => {
+        const closure = [...await resolveModuleClosure(PROFILE_RUNNER_ENTRY)];
+
+        expect(closure, 'positive control: the runner must reach its immutable catalogue')
+            .toContain(EXTRACTOR_CATALOGUE);
+        expect(closure, 'positive control: the walker must follow literal dynamic imports')
+            .toContain(BUILT_IN_SKILL_SOURCE);
+        expect(closure).not.toContain(LEGACY_SOURCE_REGISTRY);
+        expect(closure).not.toContain(LEGACY_SOURCE_BARREL);
     });
 
     test('executes the built-in SkillSource descriptor through the bound reader', async () => {
