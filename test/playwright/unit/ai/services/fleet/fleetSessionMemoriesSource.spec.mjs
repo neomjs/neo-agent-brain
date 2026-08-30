@@ -9,12 +9,14 @@ const HEALTHY_RESULT = {
         {
             id           : 'mem-2', sessionId: '7ee47ccf-d1c7-469d-a75e-15cebf3b5ea5', timestamp: '2026-08-17T21:58:50.000Z',
             prompt       : 'Operator: sunset', thought: 'Consolidating the day.', response: 'Session closed with handover.',
-            agentIdentity: '@neo-fable-clio', amountToolCalls: 4
+            agentIdentity: '@neo-fable-clio', amountToolCalls: 4,
+            miniSummary  : 'Session sunset and handover', summaryFallback: false
         },
         {
             id           : 'mem-1', sessionId: '7ee47ccf-d1c7-469d-a75e-15cebf3b5ea5', timestamp: '2026-08-17T13:25:00.000Z',
             prompt       : 'Operator: good morning', thought: 'Recovering context.', response: 'Recovered, lane claimed.',
-            agentIdentity: '@neo-fable-clio', amountToolCalls: 9
+            agentIdentity: '@neo-fable-clio', amountToolCalls: 9,
+            miniSummary  : 'Operator: good morning — Recovered, lane claimed.', summaryFallback: true
         }
     ]
 };
@@ -53,6 +55,10 @@ test.describe('fleetSessionMemoriesSource — viewer-bound session drill-in', ()
 
         expect(calls).toEqual([{sessionId: HEALTHY_RESULT.sessionId, limit: 20}]);
         expect(result.turns).toBe(HEALTHY_RESULT.memories);
+        expect(result.turns.map(turn => [turn.miniSummary, turn.summaryFallback])).toEqual([
+            ['Session sunset and handover', false],
+            ['Operator: good morning — Recovered, lane claimed.', true]
+        ]);
         expect(result).toMatchObject({
             capability: {state: 'wired', capturedAt: '2026-08-18T10:00:00.000Z'},
             viewer    : '@neo-fable-clio',
