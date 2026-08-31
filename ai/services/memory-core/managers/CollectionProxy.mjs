@@ -42,6 +42,36 @@ class CollectionProxy extends Base {
         }));
     }
 
+    /**
+     * @summary The identity of the vector collection(s) this proxy fronts — never the proxy's own id.
+     *
+     * `CollectionProxy` extends `Neo.core.Base`, so `proxy.id` is a framework-assigned INSTANCE id
+     * (`neo-base-86`) that moves with construction order. Reading it as a collection identity is what
+     * #281 fixes: backup receipts recorded it as `collectionId`, so `deriveLineage` compared
+     * process-instance counters rather than collections and could not detect a collection change in
+     * either direction — `changed` for an ordinary restart, `same` for a genuine swap under a stable
+     * process. That is why #270's collapse guard was KB-complete but MC-partial.
+     *
+     * **On the array.** `getManagers()` returns at most one manager today: both `aiConfig.engine`
+     * values (`'hybrid'`, `'chroma'`) select `ChromaManager` alone, so the array is future shape
+     * rather than current multiplicity. Rather than assume a scalar stays safe, the identity of a
+     * fan-out is defined as the identity of its members — ids are sorted and joined, so one manager
+     * yields a bare id and any future second yields a deterministic composite that still compares
+     * correctly. **Sorting is load-bearing:** resolution order must never make an unchanged fan-out
+     * read as changed.
+     *
+     * @returns {Promise<String|null>} `null` when no manager resolves, so the lineage axis degrades to
+     * `unknown` rather than asserting a continuity it cannot observe.
+     */
+    async resolveCollectionId() {
+        const ids = (await this.getCollections())
+            .map(collection => collection?.id)
+            .filter(Boolean)
+            .sort();
+
+        return ids.length ? ids.join('+') : null
+    }
+
     async add(args) {
         const collections = await this.getCollections();
         await Promise.all(collections.map(c => c.add(args)));

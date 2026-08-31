@@ -61,7 +61,20 @@ class DatabaseService extends Base {
         // the id can distinguish "the same source held nothing" from "a different source is here now".
         // Absent on sources that have no Chroma handle (the native graph); `null` degrades the
         // lineage axis to `unknown` rather than asserting continuity it cannot observe.
-        const collectionId = collection?.id ?? null;
+        //
+        // #281: this line previously read `collection?.id` unconditionally. In production every caller
+        // passes a `CollectionProxy` — a `Neo.core.Base` subclass whose `id` is a framework INSTANCE id
+        // (`neo-base-86`) — so the receipt recorded construction order where the comment above promises
+        // a source identity, and `deriveLineage` compared counters that move on restart and hold across
+        // a genuine swap.
+        //
+        // The branch is NOT a fallback to that bug. Two shapes legitimately reach here and each has a
+        // DIFFERENT correct answer: a proxy must be asked, because its own `id` is meaningless; a raw
+        // Chroma collection already carries the real identity in `.id`. A proxy always exposes
+        // `resolveCollectionId`, so it can never silently take the second path.
+        const collectionId = typeof collection?.resolveCollectionId === 'function'
+            ? await collection.resolveCollectionId()
+            : collection?.id ?? null;
 
         // 1. Get total count first
         const count = await collection.count();

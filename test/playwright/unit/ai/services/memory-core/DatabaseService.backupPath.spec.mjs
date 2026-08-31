@@ -69,8 +69,13 @@ test.describe('Memory_DatabaseService — backupPath routing (#10129 Phase 2 pre
             {id: 'sum-1', embedding: [0.2], metadata: {cat: 'feat'}, document: 'sum-doc'}
         ];
 
+        // Stands in for what `StorageRouter.getMemoryCollection()` returns — a `CollectionProxy`, not a
+        // raw Chroma collection. `resolveCollectionId` is part of that contract (#281): the exporter
+        // asks the proxy for the underlying SOURCE identity, because the proxy's own `id` is a
+        // `Neo.core.Base` instance counter and recording it made the backup lineage axis blind.
         const fakeCollection = (rows, name) => ({
             name,
+            resolveCollectionId: async () => `${name}-collection-id`,
             count: async () => rows.length,
             get  : async ({include = [], limit, offset = 0} = {}) => {
                 if (include.length === 0) return {ids: rows.map(r => r.id)};
