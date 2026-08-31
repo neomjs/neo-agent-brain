@@ -863,6 +863,113 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
     })
 });
 
+/**
+ * ADR 0040 §2.5's re-materialization covenant: a seat provisioned by an EARLIER revision has to be
+ * brought current by re-running the projector, and that has to be demonstrated by reading the seat
+ * back — not inferred from the sources being correct now.
+ *
+ * The distinction is the whole acceptance criterion. A corrected template proves the next FRESH
+ * provision is right and says nothing about the seats already out there, which are the ones actually
+ * running hooks. Every failure mode here is silent from inside the seat: stale bytes still execute,
+ * a retired hook still executes, and a settings entry pointing at a deleted file executes nothing
+ * while reporting nothing.
+ */
+test.describe('projectSeatHooks — re-materializing an already-provisioned seat (ADR 0040 §2.5)', () => {
+    test('a seat provisioned at an earlier revision is brought fully current', () => {
+        const
+            root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE, 'retired.mjs': HOOK_SOURCE}}),
+            target = targetRepo(),
+            manifestPath = path.join(root, 'ai/scripts/lifecycle/hooks/claude/events.manifest.json'),
+            command      = name => `/usr/bin/env node "$(git rev-parse --show-toplevel)/.claude/hooks/${name}"`;
+
+        // ---- revision A: provision the seat -------------------------------------------------
+        fs.writeFileSync(manifestPath, `${JSON.stringify({
+            events: {Stop: [{hooks: [{command: command('retired.mjs'), timeout: 10, type: 'command'}]}]}
+        }, null, 2)}\n`, 'utf8');
+
+        fs.mkdirSync(path.join(target, '.claude'), {recursive: true});
+        fs.writeFileSync(path.join(target, '.claude/settings.json'), `${JSON.stringify({model: 'opus'}, null, 2)}\n`, 'utf8');
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        const provisioned = {
+            aBytes  : fs.readFileSync(path.join(target, '.claude/hooks/a.mjs'), 'utf8'),
+            settings: fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8')
+        };
+
+        expect(provisioned.settings).toContain('retired.mjs');
+        expect(fs.existsSync(path.join(target, '.claude/hooks/retired.mjs'))).toBe(true);
+
+        // ---- revision B: the substrate moves on --------------------------------------------
+        // A hook's contents change, a hook is retired outright, a new hook appears, and the manifest
+        // re-points. All four are things a real revision does, and all four are invisible to a seat
+        // that is never re-materialized.
+        fs.writeFileSync(
+            path.join(root, 'ai/scripts/lifecycle/hooks/claude/a.mjs'),
+            `${HOOK_SOURCE}export const revision = 'B';\n`, 'utf8'
+        );
+        fs.rmSync(path.join(root, 'ai/scripts/lifecycle/hooks/claude/retired.mjs'));
+        fs.writeFileSync(path.join(root, 'ai/scripts/lifecycle/hooks/claude/added.mjs'), HOOK_SOURCE, 'utf8');
+        fs.writeFileSync(manifestPath, `${JSON.stringify({
+            events: {Stop: [{hooks: [{command: command('a.mjs'), timeout: 10, type: 'command'}]}]}
+        }, null, 2)}\n`, 'utf8');
+
+        // Before re-materializing, --check must SAY the seat is behind. A projector that could bring
+        // a seat current but not report that it needed it leaves the operator with no way to know.
+        expect(checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target}).ok).toBe(false);
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        // ---- read the seat back -------------------------------------------------------------
+        const settings = fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8');
+
+        // Stale bytes replaced, not merely present.
+        expect(fs.readFileSync(path.join(target, '.claude/hooks/a.mjs'), 'utf8')).not.toBe(provisioned.aBytes);
+        expect(fs.readFileSync(path.join(target, '.claude/hooks/a.mjs'), 'utf8')).toContain("revision = 'B'");
+
+        // The retired hook is GONE from disk — a leftover executable keeps running.
+        expect(fs.existsSync(path.join(target, '.claude/hooks/retired.mjs'))).toBe(false);
+
+        // And gone from the config, which is the half that would otherwise point at a deleted file.
+        expect(settings).not.toContain('retired.mjs');
+        expect(settings).toContain('a.mjs');
+
+        // The new hook arrived.
+        expect(fs.existsSync(path.join(target, '.claude/hooks/added.mjs'))).toBe(true);
+
+        // Operator-owned state carried through both provisions.
+        expect(JSON.parse(settings).model).toBe('opus');
+
+        // And the seat now reports current — read back through the same instrument an operator uses.
+        expect(checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target}).ok).toBe(true)
+    });
+
+    test('re-materialization is what fixes it — corrected sources alone do not', () => {
+        // The negative control for the covenant, and the reason AC-7 says "a corrected template alone
+        // is not migration evidence". Same revision-A seat, same revision-B sources, and NO second
+        // projection: the seat keeps executing the old bytes and the retired hook, and `--check`
+        // still reds. Nothing about correct sources reaches a provisioned seat on its own.
+        const
+            root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE, 'retired.mjs': HOOK_SOURCE}}),
+            target = targetRepo();
+
+        fs.mkdirSync(path.join(target, '.claude'), {recursive: true});
+        fs.writeFileSync(path.join(target, '.claude/settings.json'), `${JSON.stringify({model: 'opus'}, null, 2)}\n`, 'utf8');
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        fs.writeFileSync(
+            path.join(root, 'ai/scripts/lifecycle/hooks/claude/a.mjs'),
+            `${HOOK_SOURCE}export const revision = 'B';\n`, 'utf8'
+        );
+        fs.rmSync(path.join(root, 'ai/scripts/lifecycle/hooks/claude/retired.mjs'));
+
+        expect(fs.readFileSync(path.join(target, '.claude/hooks/a.mjs'), 'utf8')).not.toContain("revision = 'B'");
+        expect(fs.existsSync(path.join(target, '.claude/hooks/retired.mjs'))).toBe(true);
+        expect(checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target}).ok).toBe(false)
+    })
+});
+
 test.describe('the real Claude manifest — contract properties of the shipped file', () => {
     const
         MANIFEST_PATH = path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude/events.manifest.json'),
