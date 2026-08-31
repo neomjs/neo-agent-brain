@@ -359,7 +359,14 @@ test.describe('#286 RA-3 — the same refusal, reached through actual config res
     const CONSTRUCT_SCRIPT = `
         import 'neo.mjs/src/Neo.mjs';
 
-        const {default: kbConfig} = await import('./ai/mcp/server/knowledge-base/config.mjs');
+        // The COMMITTED template, never the gitignored config.mjs overlay -- ADR-0019 C3, and the
+        // same ordering every other KB spec uses: seed the canonical config before anything
+        // resolves the singleton. Reading the overlay made this witness checkout-dependent: a local
+        // data.host override turned the same script from REFUSED into ALLOWED with a socket
+        // attempt, so the arm proved whatever the running machine happened to have on disk.
+        //
+        // No backticks in here: this whole script is a template literal, and one terminates it.
+        const {default: kbConfig} = await import('./ai/mcp/server/knowledge-base/config.template.mjs');
 
         console.log('RESOLVED='   + kbConfig.host + ':' + kbConfig.port);
         console.log('PRODUCTION=' + kbConfig.engines.chroma.hostProd + ':' + kbConfig.engines.chroma.portProd);
