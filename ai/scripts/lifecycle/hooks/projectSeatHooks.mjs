@@ -66,6 +66,17 @@ const
         ])
     }),
     /**
+     * The Claude seat's two halves, which live in different repositories on purpose.
+     *
+     * `CLAUDE_EVENT_MANIFEST` is ours: the declaration of which events the Agent OS wires and with
+     * what commands. `CLAUDE_SETTINGS` is the target's active file, hydrated from the *Engine's*
+     * `settings.template.json` before we ever see it. We reconcile into it; we never author it and
+     * never replace it. That asymmetry is why Claude is absent from {@link HARNESS_CONFIGS} — it is
+     * not a config we generate, it is a config we hold one custody share of.
+     */
+    CLAUDE_EVENT_MANIFEST = 'ai/scripts/lifecycle/hooks/claude/events.manifest.json',
+    CLAUDE_SETTINGS       = '.claude/settings.json',
+    /**
      * Marks a generated artifact so a reader never mistakes a projection for an authored file,
      * keyed by the comment syntax each format actually has.
      *
@@ -344,15 +355,35 @@ export function checkProjection({agentosRuntimeRoot, targetRepoRoot}) {
              .forEach(relPath => unplacedCommands.push({harness, target: relPath}))
     });
 
+    // Dry-run of the same reconciliation the write arm performs, so `--check` fails on exactly what
+    // re-projecting would change. A separate "does settings look right" heuristic would be a second
+    // model of the same decision, and the two would drift.
+    const
+        reconciliation      = reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot, write: false}),
+        unreconciledEvents  = [];
+
+    if (!reconciliation.declared) {
+        // Nothing declared, nothing to drift from.
+    } else if (reconciliation.reason) {
+        unreconciledEvents.push({harness: 'claude', target: reconciliation.reason})
+    } else if (reconciliation.changed) {
+        unreconciledEvents.push({
+            harness: 'claude',
+            target : `${CLAUDE_SETTINGS} drifted — ${reconciliation.removed} retired entr(ies), ` +
+                     `${reconciliation.added} declared entr(ies) to (re)apply`
+        })
+    }
+
     return {
         escapedSpecifiers,
         missing,
         ok: !missing.length && !stale.length && !orphans.length && !trackedConflicts.length &&
-            !escapedSpecifiers.length && !unplacedCommands.length,
+            !escapedSpecifiers.length && !unplacedCommands.length && !unreconciledEvents.length,
         orphans,
         stale,
         trackedConflicts,
-        unplacedCommands
+        unplacedCommands,
+        unreconciledEvents
     }
 }
 
@@ -478,6 +509,68 @@ export function reconcileClaudeEvents({settings, manifest, targetRepoRoot}) {
 }
 
 /**
+ * @summary Applies {@link reconcileClaudeEvents} to the target's real settings file.
+ *
+ * The filesystem half, kept separate from the pure reconciliation so the decision logic stays
+ * testable without a checkout, and so this half can be read for exactly what it does to disk.
+ *
+ * **Absent settings are not reconciled into existence.** The active file is the Engine's to create —
+ * `initClaudeSettings` hydrates it from `settings.template.json`, and that template carries Engine
+ * entries this repository has no business inventing. Writing a settings file containing only our
+ * four events would look like a successful reconciliation while having silently dropped every
+ * Engine hook, so an absent file is reported as a condition to repair, not filled in.
+ *
+ * Re-serialized with two-space indent and a trailing newline — the shape the Engine template already
+ * uses, so a reconciliation that changes nothing semantically also changes nothing textually and
+ * `git diff` stays a signal.
+ * @param {Object} options
+ * @param {String} options.agentosRuntimeRoot
+ * @param {String} options.targetRepoRoot
+ * @param {Boolean} [options.write=true] When false, computes the reconciliation without writing.
+ * @returns {{added: Number, changed: Boolean, path: String, reason: String|null, removed: Number}}
+ */
+export function reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot, write = true}) {
+    const
+        manifestPath = path.join(agentosRuntimeRoot, CLAUDE_EVENT_MANIFEST),
+        settingsPath = path.join(targetRepoRoot, CLAUDE_SETTINGS),
+        absent       = {added: 0, changed: false, declared: true, path: settingsPath, removed: 0};
+
+    // No manifest is not drift. A runtime root that declares no Claude events is a coherent
+    // deployment — not every one wires this seat — and treating its absence as a fault would make
+    // `--check` red for every target that correctly has nothing to reconcile. `declared: false` is
+    // what lets the caller tell "nothing to do" apart from "something is wrong".
+    if (!fs.existsSync(manifestPath)) {
+        return {...absent, declared: false, reason: null}
+    }
+
+    if (!fs.existsSync(settingsPath)) {
+        return {...absent, reason: `${CLAUDE_SETTINGS} absent — the Engine hydrates it; run its seat init first`}
+    }
+
+    const raw = fs.readFileSync(settingsPath, 'utf8');
+
+    let settings;
+
+    try {
+        settings = JSON.parse(raw)
+    } catch (error) {
+        // Refuse rather than repair. A settings file we cannot parse may still be one an operator is
+        // mid-edit on, and overwriting it with a reconstruction would destroy work to satisfy a check.
+        return {...absent, reason: `${CLAUDE_SETTINGS} is not valid JSON (${error.message}) — refusing to rewrite it`}
+    }
+
+    const
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')),
+        result   = reconcileClaudeEvents({manifest, settings, targetRepoRoot}),
+        next     = `${JSON.stringify(result.settings, null, 2)}\n`,
+        changed  = next !== raw;
+
+    if (changed && write) fs.writeFileSync(settingsPath, next, 'utf8');
+
+    return {added: result.added, changed, declared: true, path: settingsPath, reason: null, removed: result.removed}
+}
+
+/**
  * @summary Writes the projected paths into the target's `.git/info/exclude`, inside a managed block.
  *
  * ADR 0040 §2.7 gives the Engine's tracked ignore rules authority over these paths, and a companion
@@ -574,9 +667,18 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
         written.push(target)
     });
 
+    // Reconciled last, and deliberately: the settings file is what makes the harness *invoke* these
+    // files, so pointing at them before they exist would open a window where the seat declares hooks
+    // that are not there. The reverse order only ever leaves files nothing calls yet.
+    //
+    // Its path is not added to the exclude block. `.claude/settings.json` is shared custody, not a
+    // projection — excluding it would hide the Engine's own file from the operator's `git status`.
+    const reconciled = reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot});
+
     return {
         excludeFile: writeLocalExclude({targetRepoRoot, targets: written}),
         pruned,
+        reconciled,
         written
     }
 }
@@ -632,8 +734,9 @@ export function main(argv) {
             missing          : 'declared but not projected (the seat runs nothing)',
             orphans          : 'projected but no longer declared (still executing)',
             stale            : 'projected from a different revision or a different runtime root',
-            trackedConflicts : 'tracked file occupies a projection path',
-            unplacedCommands : 'a seat config declares a script the projector did not place'
+            trackedConflicts  : 'tracked file occupies a projection path',
+            unplacedCommands  : 'a seat config declares a script the projector did not place',
+            unreconciledEvents: 'the Claude settings do not match the declared event manifest'
         };
 
         console.error('projectSeatHooks --check: FAILED');
@@ -653,12 +756,26 @@ export function main(argv) {
         return 1
     }
 
-    const {excludeFile, pruned, written} = projectHooks({agentosRuntimeRoot, targetRepoRoot});
+    const {excludeFile, pruned, reconciled, written} = projectHooks({agentosRuntimeRoot, targetRepoRoot});
 
     console.log(`projectSeatHooks: projected ${written.length} hook(s) into ${targetRepoRoot}`);
     written.forEach(target => console.log(`  + ${target}`));
     pruned.forEach(target => console.log(`  - ${target} (no longer declared)`));
     console.log(`  exclude patterns written to ${excludeFile}`);
+
+    // Reported even when nothing moved. "Reconciled: no change" and "reconciliation never ran" are
+    // different facts, and silence on success makes them indistinguishable to whoever reads this
+    // output to find out whether the seat is wired.
+    if (!reconciled.declared) {
+        console.log(`  ${CLAUDE_SETTINGS}: no event manifest in this runtime root — nothing to reconcile`)
+    } else if (reconciled.reason) {
+        console.log(`  ${CLAUDE_SETTINGS}: NOT reconciled — ${reconciled.reason}`)
+    } else {
+        console.log(
+            `  ${CLAUDE_SETTINGS}: ${reconciled.changed ? 'reconciled' : 'already current'} ` +
+            `(${reconciled.removed} retired, ${reconciled.added} declared)`
+        )
+    }
 
     return 0
 }

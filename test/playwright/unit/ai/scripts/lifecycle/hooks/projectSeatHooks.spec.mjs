@@ -570,3 +570,239 @@ test.describe('projectSeatHooks — AC-5: every declared command resolves to som
         expect(fs.existsSync(bystander)).toBe(true)
     })
 });
+
+/**
+ * The Claude seat is the one surface #250 reconciles rather than generates, so it is the one place
+ * the projector can destroy somebody else's work. Every test below is shaped around that: the
+ * question is never "did our four events land" alone, but "did they land *without* taking anything
+ * with them".
+ *
+ * The Engine's `PreToolUse → rgReplaceGuardHook` is the positive control throughout. It sits in a
+ * projector-owned directory with a projector-shaped command, so the only thing distinguishing it
+ * from something we may retire is that the target tracks it. A fixture that forgot to `git add` it
+ * would pass these tests for the wrong reason — which is exactly what the first fixture I wrote did.
+ */
+test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2.7 shared custody)', () => {
+    const
+        ENGINE_GUARD  = '/usr/bin/env node "$(git rev-parse --show-toplevel)/.claude/hooks/rgReplaceGuardHook.mjs"',
+        OPERATOR_HOOK = 'echo operator-owned',
+        RETIRED       = '/usr/bin/env node "$(git rev-parse --show-toplevel)/.claude/hooks/laneStateStopHook.mjs"',
+        MANIFEST      = {
+            events: {
+                SessionStart: [{hooks: [{command: `/usr/bin/env node "$(git rev-parse --show-toplevel)/.claude/hooks/a.mjs"`, timeout: 15, type: 'command'}]}],
+                Stop        : [{hooks: [{command: `/usr/bin/env node "$(git rev-parse --show-toplevel)/.claude/hooks/a.mjs" stop`, timeout: 10, type: 'command'}]}]
+            }
+        };
+
+    /**
+     * @summary A runtime root carrying a Claude event manifest beside a projectable hook.
+     * @param {Object} [manifest]
+     * @returns {String}
+     */
+    function runtimeWithManifest(manifest = MANIFEST) {
+        const root = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE}});
+
+        fs.writeFileSync(
+            path.join(root, 'ai/scripts/lifecycle/hooks/claude/events.manifest.json'),
+            `${JSON.stringify(manifest, null, 2)}\n`, 'utf8'
+        );
+
+        return root
+    }
+
+    /**
+     * @summary A target whose settings the Engine has already hydrated.
+     *
+     * `tracked` is the whole point: the guard is committed, so it is the Engine's. Without the
+     * commit it would be indistinguishable from a retired hook of ours.
+     * @param {Object} [options]
+     * @param {Boolean} [options.hydrated=true] Write a settings file at all.
+     * @param {Boolean} [options.tracked=true] Commit the Engine guard so it reads as authored.
+     * @returns {String}
+     */
+    function hydratedTarget({hydrated = true, tracked = true} = {}) {
+        const
+            root  = targetRepo(),
+            hooks = path.join(root, '.claude/hooks');
+
+        fs.mkdirSync(hooks, {recursive: true});
+        fs.writeFileSync(path.join(hooks, 'rgReplaceGuardHook.mjs'), '// engine-owned\n', 'utf8');
+
+        if (tracked) {
+            execFileSync('git', ['add', '-f', '.claude/hooks/rgReplaceGuardHook.mjs'], {cwd: root});
+            execFileSync('git', ['commit', '-qm', 'engine guard'], {cwd: root})
+        }
+
+        if (hydrated) {
+            fs.writeFileSync(path.join(root, '.claude/settings.json'), `${JSON.stringify({
+                model: 'opus',
+                hooks: {
+                    PreToolUse  : [{matcher: 'Bash', hooks: [{command: ENGINE_GUARD,  type: 'command'}]}],
+                    SessionStart: [{hooks: [{command: OPERATOR_HOOK, type: 'command'}]}],
+                    Stop        : [{hooks: [{command: RETIRED,       type: 'command'}]}]
+                }
+            }, null, 2)}\n`, 'utf8')
+        }
+
+        return root
+    }
+
+    /**
+     * @summary Reads the reconciled settings back off disk.
+     * @param {String} target
+     * @returns {Object}
+     */
+    const settingsOf = target => JSON.parse(fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8'));
+
+    /** @summary Every command string in an event bucket, flattened. */
+    const commandsFor = (settings, event) =>
+        (settings.hooks[event] || []).flatMap(bucket => (bucket.hooks || []).map(entry => entry.command));
+
+    test('retires our stale command while the tracked Engine entry survives untouched', () => {
+        const
+            root   = runtimeWithManifest(),
+            target = hydratedTarget(),
+            {reconciled} = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target}),
+            settings     = settingsOf(target);
+
+        expect(reconciled.reason).toBeNull();
+        expect(reconciled.removed).toBe(1);
+
+        // The retired Stop command is gone, replaced rather than accumulated.
+        expect(commandsFor(settings, 'Stop')).toHaveLength(1);
+        expect(commandsFor(settings, 'Stop')[0]).not.toBe(RETIRED);
+
+        // POSITIVE CONTROL. Same directory, same command shape, tracked — therefore preserved.
+        expect(commandsFor(settings, 'PreToolUse')).toEqual([ENGINE_GUARD]);
+    });
+
+    test('an untracked guard at the same path IS retired — proving the control is the tracked bit', () => {
+        // Non-vacuity for the test above. If the guard survived regardless of tracking, that
+        // assertion would be measuring the directory, not the ownership predicate, and the whole
+        // custody model would be decorative.
+        const
+            root   = runtimeWithManifest(),
+            target = hydratedTarget({tracked: false});
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(commandsFor(settingsOf(target), 'PreToolUse')).toEqual([])
+    });
+
+    test('preserves an operator hook on an event the manifest also declares', () => {
+        // The case a `{...active, ...manifest}` spread loses silently: SessionStart exists on both
+        // sides, so a shallow merge would drop the operator's entry while reporting success.
+        const
+            root   = runtimeWithManifest(),
+            target = hydratedTarget();
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(commandsFor(settingsOf(target), 'SessionStart')).toContain(OPERATOR_HOOK)
+    });
+
+    test('leaves every non-hook setting alone', () => {
+        const
+            root   = runtimeWithManifest(),
+            target = hydratedTarget();
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(settingsOf(target).model).toBe('opus')
+    });
+
+    test('deletes a bucket emptied by retirement instead of leaving []', () => {
+        // An empty array is not equivalent to an absent key: it is a declaration that the event is
+        // wired to nothing, and it accumulates one entry per retirement cycle.
+        const
+            root   = runtimeWithManifest({events: {SessionStart: MANIFEST.events.SessionStart}}),
+            target = hydratedTarget();
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        // Stop held only our retired command and the manifest no longer declares it.
+        expect('Stop' in settingsOf(target).hooks).toBe(false)
+    });
+
+    test('re-running is byte-identical — the second projection changes nothing', () => {
+        const
+            root   = runtimeWithManifest(),
+            target = hydratedTarget();
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        const first = fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8'),
+              {reconciled} = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(reconciled.changed).toBe(false);
+        expect(fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8')).toBe(first)
+    });
+
+    test('refuses to invent a settings file the Engine has not hydrated', () => {
+        // Writing one containing only our four events would read as success while having dropped
+        // every Engine entry the template owns. The absence is a condition to repair, not to fill.
+        const
+            root   = runtimeWithManifest(),
+            target = hydratedTarget({hydrated: false}),
+            {reconciled} = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(reconciled.reason).toContain('absent');
+        expect(fs.existsSync(path.join(target, '.claude/settings.json'))).toBe(false)
+    });
+
+    test('refuses to rewrite settings it cannot parse, rather than reconstructing them', () => {
+        const
+            root     = runtimeWithManifest(),
+            target   = hydratedTarget(),
+            settings = path.join(target, '.claude/settings.json'),
+            corrupt  = '{ mid-edit, not json';
+
+        fs.writeFileSync(settings, corrupt, 'utf8');
+
+        const {reconciled} = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(reconciled.reason).toContain('not valid JSON');
+        expect(fs.readFileSync(settings, 'utf8')).toBe(corrupt)
+    });
+
+    test('--check reds on settings drift and greens again after re-projecting', () => {
+        const
+            root   = runtimeWithManifest(),
+            target = hydratedTarget(),
+            argv   = [`--runtime-root=${root}`, `--target-root=${target}`];
+
+        expect(silentMain(argv)).toBe(0);
+        expect(silentMain([...argv, '--check'])).toBe(0);
+
+        // Re-introduce a command we retired — the drift a live seat actually suffers.
+        const settings = settingsOf(target);
+
+        settings.hooks.Stop.push({hooks: [{command: RETIRED, type: 'command'}]});
+        fs.writeFileSync(path.join(target, '.claude/settings.json'), `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+
+        const report = checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(report.ok).toBe(false);
+        expect(report.unreconciledEvents).toHaveLength(1);
+        expect(silentMain([...argv, '--check'])).toBe(1);
+
+        expect(silentMain(argv)).toBe(0);
+        expect(silentMain([...argv, '--check'])).toBe(0)
+    });
+
+    test('--check stays green when the manifest is absent rather than failing every seat', () => {
+        // A runtime root with no Claude manifest declares no Claude events. That is a coherent
+        // state — not every deployment wires the Claude seat — and reporting it as drift would make
+        // `--check` red for every target that legitimately has nothing to reconcile.
+        const
+            root   = runtimeRoot({codex: {'b.mjs': HOOK_SOURCE}}),
+            target = targetRepo();
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        const report = checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(report.unreconciledEvents).toEqual([]);
+        expect(report.ok).toBe(true)
+    })
+});
