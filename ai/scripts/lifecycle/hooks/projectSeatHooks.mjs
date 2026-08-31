@@ -656,6 +656,26 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
         )
     }
 
+    // Third refusal, same shape as the two above and for the same reason. A run that writes nine
+    // hook files and then cannot wire them leaves the seat holding executables nothing invokes —
+    // which is the silently-dead-hook failure this projector exists to prevent, reproduced one layer
+    // up: the files are perfect, the harness never calls them, and every layer reports success.
+    //
+    // Preflighted as a dry run rather than discovered after the writes, so the projection stays
+    // all-or-nothing. An absent manifest is not a failure and passes here untouched.
+    //
+    // Found by @neo-gpt-emmy reviewing #250: the write arm returned normally and `main()` exited 0
+    // after printing "NOT reconciled", so a failed seat wiring was indistinguishable from a good one
+    // to any caller that checks an exit code.
+    const preflight = reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot, write: false});
+
+    if (preflight.declared && preflight.reason) {
+        throw new Error(
+            `cannot wire the Claude seat: ${preflight.reason}. Nothing was written — the hooks and ` +
+            'the settings that invoke them land together or not at all.'
+        )
+    }
+
     const
         pruned  = findOrphans(agentosRuntimeRoot, targetRepoRoot),
         written = [];

@@ -655,6 +655,28 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
      */
     const settingsOf = target => JSON.parse(fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8'));
 
+    /**
+     * @summary Runs the projector as a real process and returns its exit code.
+     *
+     * The entrypoint guard maps a thrown refusal to `process.exit(1)`; `main()` itself throws. Only
+     * running it as a process observes the code a setup script or CI step actually branches on.
+     * @param {String} root
+     * @param {String} target
+     * @returns {Number}
+     */
+    function cliExitCode(root, target) {
+        try {
+            execFileSync(process.execPath, [
+                path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/projectSeatHooks.mjs'),
+                `--runtime-root=${root}`, `--target-root=${target}`
+            ], {stdio: 'ignore'});
+
+            return 0
+        } catch (error) {
+            return error.status ?? 1
+        }
+    }
+
     /** @summary Every command string in an event bucket, flattened. */
     const commandsFor = (settings, event) =>
         (settings.hooks[event] || []).flatMap(bucket => (bucket.hooks || []).map(entry => entry.command));
@@ -739,19 +761,37 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
         expect(fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8')).toBe(first)
     });
 
-    test('refuses to invent a settings file the Engine has not hydrated', () => {
-        // Writing one containing only our four events would read as success while having dropped
-        // every Engine entry the template owns. The absence is a condition to repair, not to fill.
+    /**
+     * A declared manifest that cannot be reconciled is a FAILED projection, not a partial one.
+     *
+     * The write arm used to return normally in both cases below, and `main()` exited 0 after
+     * printing "NOT reconciled" — so a seat left holding nine hook files that nothing invokes was
+     * indistinguishable, to any caller checking an exit code, from a correctly wired one. That is
+     * the silently-dead-hook failure the module header opens with, reproduced one layer up.
+     *
+     * Found by @neo-gpt-emmy reviewing #250. Both arms assert the refusal AND that nothing was
+     * written: "it threw" is not the property that matters if it threw after writing eight files.
+     */
+    test('declared manifest + absent settings: refuses, writes nothing, exits nonzero', () => {
         const
             root   = runtimeWithManifest(),
-            target = hydratedTarget({hydrated: false}),
-            {reconciled} = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+            target = hydratedTarget({hydrated: false});
 
-        expect(reconciled.reason).toContain('absent');
-        expect(fs.existsSync(path.join(target, '.claude/settings.json'))).toBe(false)
+        expect(() => projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target}))
+            .toThrow(/cannot wire the Claude seat.*absent/s);
+
+        // Zero projected mutation — the hooks and the settings that invoke them land together.
+        expect(fs.existsSync(path.join(target, '.claude/hooks/a.mjs'))).toBe(false);
+        expect(fs.existsSync(path.join(target, '.claude/settings.json'))).toBe(false);
+
+        // The exit code an actual caller sees. Asserted by running the CLI as a process rather than
+        // by reading `main()`'s return value: `main()` throws and the entrypoint guard maps that to
+        // exit 1, so a return-value assertion would be testing my model of the CLI instead of the
+        // surface a setup script or CI step reads.
+        expect(cliExitCode(root, target)).not.toBe(0)
     });
 
-    test('refuses to rewrite settings it cannot parse, rather than reconstructing them', () => {
+    test('declared manifest + invalid JSON: refuses, writes nothing, leaves the file untouched', () => {
         const
             root     = runtimeWithManifest(),
             target   = hydratedTarget(),
@@ -760,10 +800,25 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
 
         fs.writeFileSync(settings, corrupt, 'utf8');
 
-        const {reconciled} = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+        expect(() => projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target}))
+            .toThrow(/cannot wire the Claude seat.*not valid JSON/s);
 
-        expect(reconciled.reason).toContain('not valid JSON');
-        expect(fs.readFileSync(settings, 'utf8')).toBe(corrupt)
+        expect(fs.existsSync(path.join(target, '.claude/hooks/a.mjs'))).toBe(false);
+        // Reconstructing a file an operator may be mid-edit on destroys real work to satisfy a check.
+        expect(fs.readFileSync(settings, 'utf8')).toBe(corrupt);
+
+        expect(cliExitCode(root, target)).not.toBe(0)
+    });
+
+    test('an absent manifest still projects — the no-op stays coherent', () => {
+        // The boundary of the refusal above. A runtime root declaring no Claude events must not be
+        // dragged into failing just because the target has no settings file to reconcile into.
+        const
+            root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE}}),
+            target = targetRepo();
+
+        expect(() => projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target})).not.toThrow();
+        expect(fs.existsSync(path.join(target, '.claude/hooks/a.mjs'))).toBe(true)
     });
 
     test('--check reds on settings drift and greens again after re-projecting', () => {
