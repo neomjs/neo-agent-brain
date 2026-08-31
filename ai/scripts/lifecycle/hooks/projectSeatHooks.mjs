@@ -386,6 +386,98 @@ export function renderProjection(source, runtimeRoot) {
 }
 
 /**
+ * @summary Is this settings command owned by the projector — i.e. does it invoke an untracked hook
+ * in a projector-owned directory?
+ *
+ * Deliberately the **same ownership predicate** `findOrphans` uses, applied to a command string
+ * rather than a file: projector-owned means "lives in one of our target directories and is not
+ * tracked by the target". Reusing it means configuration reconciliation and file projection cannot
+ * disagree about what we own — a second boundary is how a command survives the retirement of the
+ * file it invokes.
+ *
+ * The tracked test is what protects the Engine's `rgReplaceGuardHook` entry: same directory, same
+ * shape, but tracked in the target, so it is somebody else's and is preserved untouched.
+ * @param {String} command Command string from a settings hook entry.
+ * @param {String} targetRepoRoot Absolute target repository root.
+ * @returns {Boolean}
+ */
+export function isProjectorOwnedCommand(command, targetRepoRoot) {
+    const dirs = Object.values(HARNESS_TARGETS);
+
+    return dirs.some(dir => {
+        // A command embeds its target as a path fragment (`…/.claude/hooks/x.mjs"` possibly followed
+        // by arguments), so the reference is matched rather than parsed — the command grammar is the
+        // harness's, not ours, and parsing it would couple us to a format we do not own.
+        const
+            escaped = dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+            match   = command.match(new RegExp(`${escaped}/([\\w.-]+\\.mjs)`));
+
+        if (!match) return false;
+
+        return !tracked(targetRepoRoot, path.posix.join(dir, match[1]))
+    })
+}
+
+/**
+ * @summary Reconciles the Brain's Claude event manifest into an already-hydrated settings object.
+ *
+ * Entry-level, never event replacement. `{...active.hooks, ...manifest.hooks}` would discard an
+ * operator's hook on an event we also declare, and would leave a retired command in place on an
+ * event we no longer declare — both silent. So each event bucket is filtered and rebuilt:
+ *
+ * - commands invoking projector-owned untracked hooks are **removed** (retirement);
+ * - commands invoking **tracked** targets survive — the Engine's `PreToolUse → rgReplaceGuardHook`
+ *   is the positive control, and it is hydrated by the Engine template, never restated by us;
+ * - commands outside projector-owned directories survive — operator hooks are not ours to retire;
+ * - every non-hook setting is untouched;
+ * - current manifest entries are appended;
+ * - buckets left empty by retirement are deleted rather than kept as `[]`.
+ *
+ * Pure: takes and returns plain objects so the reconciliation is testable without a filesystem.
+ * @param {Object} options
+ * @param {Object} options.settings Active settings object (already Engine-hydrated).
+ * @param {Object} options.manifest Parsed Brain event manifest (`{events: {...}}`).
+ * @param {String} options.targetRepoRoot Absolute target repository root.
+ * @returns {{added: Number, removed: Number, settings: Object}}
+ */
+export function reconcileClaudeEvents({settings, manifest, targetRepoRoot}) {
+    const
+        next   = {...settings, hooks: {...(settings?.hooks || {})}},
+        events = manifest?.events || {};
+
+    let added = 0, removed = 0;
+
+    // Retire ours everywhere first — including events the manifest no longer declares, which is the
+    // case a manifest-driven merge cannot see at all.
+    Object.keys(next.hooks).forEach(event => {
+        const kept = (next.hooks[event] || []).map(bucket => {
+            const hooks = (bucket.hooks || []).filter(entry => {
+                const owned = isProjectorOwnedCommand(String(entry.command || ''), targetRepoRoot);
+
+                if (owned) removed++;
+
+                return !owned
+            });
+
+            return {...bucket, hooks}
+        }).filter(bucket => bucket.hooks.length > 0);
+
+        if (kept.length) next.hooks[event] = kept;
+        else delete next.hooks[event]
+    });
+
+    Object.entries(events).forEach(([event, buckets]) => {
+        const incoming = JSON.parse(JSON.stringify(buckets));
+
+        incoming.forEach(bucket => {added += (bucket.hooks || []).length});
+
+        next.hooks[event] = [...(next.hooks[event] || []), ...incoming]
+    });
+
+    return {added, removed, settings: next}
+}
+
+/**
  * @summary Writes the projected paths into the target's `.git/info/exclude`, inside a managed block.
  *
  * ADR 0040 §2.7 gives the Engine's tracked ignore rules authority over these paths, and a companion
