@@ -94,22 +94,27 @@ Topology-level gaps recorded here and routed to their owning subs (D0 decides; i
 
 ### 2.3 The cloud-safe `Orchestrator` profile
 
-The cloud `orchestrator` container runs `Neo.ai.daemons.Orchestrator` with **only the four cloud-deployable lanes** active (`summary`, `backup`, `dream`, `golden-path`) and **all four local-only lanes disabled by config**:
+The cloud `orchestrator` container derives its admitted work from the fail-closed runtime authority
+map and deployment-profile leaves; it no longer owns a frozen four-lane list in this ADR.
+`host-edge` work such as `primary-dev-sync`, local model launchers, and `bridgeDaemon` is not admitted
+to the container plane. The current map is authoritative for the complete population.
 
-| Local-only lane | Disable mechanism | Today |
-|---|---|---|
-| `primary-dev-sync` | `NEO_ORCHESTRATOR_PRIMARY_DEV_SYNC_ENABLED=false` | toggle **exists** (`parseEnabledFlag`) |
-| `mlx` | `NEO_ORCHESTRATOR_MLX_ENABLED` | already default `false` |
-| `kbSync` (standalone lane) | needs a deployment-mode toggle | **no clean disable today** |
-| `bridgeDaemon` | needs a deployment-mode toggle (it sits in the hardcoded `continuousTasks` array) | **no per-lane disable today** |
-
-D0 **decides** the cloud profile excludes those four lanes. The missing toggles (`kbSync`, `bridgeDaemon`) — plus deployment-mode gating for `golden-path`'s two Neo-repo-specific enrichment sections (§2.1) — are an implementation handoff to **Sub A #11722** (top-level `ai` deployment / maintenance config + deployment-mode feature toggles).
+`kbSync` is now a **container-plane** lane. The container is the checkout carrying the shared Neo
+corpus, so the old checkout-bound classification no longer applies. Its `cloudOnly.kbSyncEnabled`
+leaf is the clean disable/enable surface, and both the scheduled lane and the
+`primary-dev-sync` cascade require the same explicit authorization; the cascade helper admits
+strict `true` only. `tenant-repo-sync` remains a separate container-plane lane over GitMirror and
+must never be folded into `kbSync`.
 
 The `chroma` shared primitive is **not** `Orchestrator`-supervised in cloud — compose owns the `chroma` container lifecycle.
 
 ### 2.4 Cloud-profile negative-behavior contract
 
-The cloud profile asserts the **absence** of local-only behavior. From the lane taxonomy, the cloud `orchestrator` container MUST NOT: run `git pull origin/dev`; perform local-worktree discovery; reset `resources/content/.sync-metadata.json`; cascade a local-checkout `ai:sync-kb`; deliver `osascript` / `tmux` desktop-harness wakes. These map exactly to the `primary-dev-sync` + `kbSync` + `bridgeDaemon` lanes. **Sub D #11725** owns the CI-safe negative assertion proving the cloud profile cannot execute this behavior (CI-safe vs heavyweight-provider proof separation per the Epic's Sub D test-lane note).
+The cloud profile asserts the **absence of host effects**, not the absence of `kbSync`. It MUST NOT
+run `git pull origin/dev`, perform maintainer-worktree discovery or metadata resets, launch host-local
+model processes, or deliver `osascript` / `tmux` desktop-harness wakes. Those effects belong to
+`host-edge` lanes. A container-plane `kbSync` scans only the image-carried shared Neo corpus; it does
+not authorize a host checkout mutation or tenant acquisition.
 
 ### 2.5 Stale-ADR sweep — 0003 / 0009
 
@@ -132,23 +137,28 @@ Broader deployment-doc / ADR reconciliation beyond 0003 / 0009 is tracked by the
 ## 4. Consequences
 
 ### Positive
-- **The `Orchestrator` becomes containerizable** — excluding the four local-only lanes by config removes every local-checkout / git / desktop-harness dependency. The taxonomy *is* the unblock.
+- **The `Orchestrator` remains containerizable** — authority projection excludes every host effect while allowing container-owned corpus maintenance. The taxonomy *is* the unblock.
 - **Sub B / C / D / F1 are unblocked** with a decided topology and a classified lane set, instead of guessing.
 - **The cloud profile is contract-bound** — the negative-behavior contract (§2.4) gives Sub D a precise, falsifiable assertion target.
 - **Profile-derived service count** — the container count follows the topology (§2.2), not a target number.
 
 ### Negative / handoffs
-- **Sub A #11722 must add new deployment-mode toggles** — `kbSync` and `bridgeDaemon` have no clean disable today; `bridgeDaemon` additionally sits in a hardcoded `continuousTasks` array, so making it config-disableable is a small `Orchestrator.poll()` change.
+- **Profile and authority are independent axes** — classifying a lane container-plane does not start it; the deployment-profile leaf still decides enablement. New lanes must wire both or risk a valid owner with no producer.
 - **`golden-path` carries Neo-maintainer-repo-specific enrichment** — its "Active PR Cycle State" (`gh pr list`) and "Latest Priority Backlog" (`resources/content/issues` scan) sections degrade gracefully but emit per-cycle warnings + dead sections in a tenant deployment. Routed to Sub A #11722 for deployment-mode gating; a friction → gold cleanup, not an MVP blocker.
 - **The digestion lanes (`summary` / `dream` / `golden-path`) need a reachable provider endpoint in cloud** — a deployment without a configured provider runs a degraded Agent OS. The provider-profile decision (D1) is a near-dependency, not fully independent.
 
 ## 5. Anti-Patterns
 
 ### 5.1 Re-merging local-only lanes into the cloud profile
-A change that enables `primary-dev-sync` / `kbSync` / `bridgeDaemon` in a cloud deployment re-introduces the un-containerizable mixed-responsibility shape. The cloud profile's lane set is a contract, not a default-config convenience.
+A change that enables host-effect lanes such as `primary-dev-sync`, local model launchers, or
+`bridgeDaemon` in a cloud deployment re-introduces the un-containerizable mixed-responsibility shape.
+The authority profile is a contract, not a default-config convenience.
 
-### 5.2 Feeding the cloud KB through `kbSync`
-The cloud KB is fed by (a) the pre-baked Neo-shared corpus and (b) push-based tenant ingestion (Sub E #11726). Re-pointing the local `kbSync` lane at tenant content re-couples the cloud deployment to a local-checkout scan model.
+### 5.2 Feeding tenant repositories through `kbSync`
+`kbSync` owns the image-carried **shared Neo corpus**. Tenant content arrives through push ingestion
+or the separate `tenant-repo-sync` GitMirror lane. Re-pointing `kbSync` at tenant repositories, or
+admitting the same shared Neo repository through both lanes, creates two acquisition authorities over
+one corpus. Tenant onboarding must choose the owning lane explicitly rather than double-ingesting it.
 
 ### 5.3 Letting the container count lead the topology
 Service boundaries derive from the lane taxonomy + resource-isolation needs. Picking "N containers" first and back-filling responsibilities inverts the decision.
@@ -184,7 +194,7 @@ After this ADR was accepted, [#11766](https://github.com/neomjs/neo/issues/11766
 |---|---|---|---|
 | `swarm-heartbeat` | periodic, light | **Requires a desktop harness to key into.** | `SwarmHeartbeatService.pulse()` delivers wake events to *local desktop agent harnesses* via `osascript` (macOS) / `tmux` keystroke simulation — the same wake-*delivery* dependency that makes `bridgeDaemon` local-only (§2.1). A cloud tenant deployment has no local harness apps to key into. (A2A *message storage* + the TTL sweep stay cloud-relevant — distinct from this wake-*delivery* lane.) |
 
-**Updated summary:** cloud-deployable = `{summary, backup, dream, golden-path}` · local-only = `{bridgeDaemon, mlx, kbSync, primary-dev-sync, swarm-heartbeat}` · shared primitive = `{chroma}`.
+**Historical summary at this amendment:** cloud-deployable = `{summary, backup, dream, golden-path}` · local-only = `{bridgeDaemon, mlx, kbSync, primary-dev-sync, swarm-heartbeat}` · shared primitive = `{chroma}`. The 2026-08-05 amendment below supersedes the `kbSync` row.
 
 **Cloud disable is a config default, not a hardcode.** The cloud `Orchestrator` profile disables the lane via the `localOnly.swarmHeartbeatEnabled` config key (`NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED` env override) — resolved by the same `assignLocalOnlyToggle` deployment-mode mechanism §2.3 uses for the other local-only lanes. The lane is not stripped from the build. This is the deliberate forward-compat seam: post-v13, agents could run inside a container deployment, which would flip `swarmHeartbeatEnabled` back on with no code redesign. The lane's exclusion from the cloud profile is a profile contract (§5.1), not a permanent capability removal.
 
@@ -218,7 +228,7 @@ Epic #12679's temporal-pyramid substrate (ADR 0028) adds a durable L1/L2 aggrega
 
 **Cloud disable is a config default, not a hardcode.** The cloud profile disables the lane via `localOnly.temporalSummaryEnabled` (`NEO_ORCHESTRATOR_TEMPORAL_SUMMARY_ENABLED` env override), resolved by the same deployment-mode mechanism the other local-only lanes use. The `temporalSummaryEnabled` getter ANDs that deployment gate with the ADR 0028 opt-in (`AiConfig.temporalSummary.aggregationEnabled`), so the lane runs only in a local profile that has explicitly opted in. Forward-compat seam: a future container deployment with a mounted corpus could flip it back on with no code redesign.
 
-**Updated summary:** local-only = `{bridgeDaemon, mlx, kbSync, primary-dev-sync, swarm-heartbeat, temporal-summary}` (cloud-deployable + shared-primitive sets unchanged).
+**Historical summary at this amendment:** local-only = `{bridgeDaemon, mlx, kbSync, primary-dev-sync, swarm-heartbeat, temporal-summary}` (cloud-deployable + shared-primitive sets unchanged). The 2026-08-05 amendment below reclassifies `kbSync` and `temporal-summary`.
 
 ### 2026-07-30 — exhaustive host-edge / container-plane authority projection (#16166)
 
@@ -233,6 +243,9 @@ the target two-role topology:
 | `host-edge` (the operational form of `local-only`) | `bridgeDaemon`, `neuralLinkBridge`, `mlx`, `ollama`, `lms` | `kbSync`, `githubWorkflowSync`, `primary-dev-sync`, `temporal-summary`, `swarm-heartbeat` | host-edge orchestrator |
 | `container-plane` (cloud-capable Agent OS work) | `embedDaemon`, `messageDaemon` | `summary`, `memory-summary-backfill`, `backup`, `graphlog-compaction`, `tenant-repo-sync`, `dream`, `message-concept-harvest`, `golden-path`, `embed-drain-liveness-watchdog`, `rem-consolidation-liveness-watchdog`, `data-integrity-sweep` | container plane |
 | `shared-primitive` | `chroma` | — | container plane in the split topology; Compose owns its lifecycle |
+
+This table is the 2026-07-30 projection snapshot. The 2026-08-05 amendment below moves `kbSync`
+and `temporal-summary` to `container-plane`; `TASK_AUTHORITY_BY_NAME` remains current authority.
 
 The three recurring poll-side effects which are neither child processes nor cadence-picked tasks are
 also explicit container-plane lanes: `boot-identity-fact`, `deployment-state-bridge`, and
@@ -412,6 +425,43 @@ lifted in a pinned-and-verified version, (b) the constrained plane gains a GPU-c
 whose single-server per-model controls satisfy both lanes' contracts, or (c) role-scoped
 same-type host leaves land (D#17015 fallback topology A), which changes the config surface this
 profile routes through.
+
+### 2026-08-31 — repository-bound hierarchy identity for tenant ingestion (#263)
+
+The repository split invalidated one ambient identity input: tenant ApiSource extraction could read
+the installed Engine hierarchy even while materializing a Brain or tenant repository revision. An
+Engine-generated map cannot enumerate classes that exist only in another repository, and `extends`
+participates in chunk identity. Same source revision plus a different ambient map therefore produced
+a different corpus while the materialization receipt still named only the source revision.
+
+Tenant repository ingestion now receives a pure, identity-bearing hierarchy resolver through its
+repository execution context. The resolver reads only the exact scoped revision reader, reuses
+SourceParser's class-description universe, and owns its own `id` and `version`; no config surface may
+restate those coordinates. For hierarchy-consuming profiles, resolver identity is part of the
+existing extraction/materialization identity. A version change at the same Git SHA forces null-base
+full replay, proof replacement, and extraction-currency reconciliation. Profiles whose descriptors
+do not consume hierarchy do not churn when the resolver version changes.
+
+This does **not** make `get_class_hierarchy` tenant-aware. `QueryService.getClassHierarchy()` remains
+the explicit static Neo-only MCP surface backed by the tracked Engine hierarchy artifact. The legacy
+multi-root `ApiSource.extract()` wrapper also retains that artifact until the shared core-corpus scan
+is ported to repository profiles; its interim coverage baseline retires at that migration, while the
+tracked artifact remains for the static public query.
+
+The lane boundary is unchanged and now stated in current terms: `kbSync` is container-plane and owns
+the image-carried shared Neo corpus; `tenant-repo-sync` owns tenant GitMirror acquisition. The
+scheduled `kbSync` route and every `primary-dev-sync` cascade door share the same strict authorization
+gate (`true` only). Neither authorization nor container ownership permits re-pointing `kbSync` at
+tenant repositories or admitting the same shared Neo repository through both lanes.
+
+ADR successor-risk verdict: `adr-amendment-required` — the original D0 checkout-local premise and
+missing-toggle rows were correct at acceptance and are superseded by the runtime authority map,
+deployment-profile leaves, strict cascade authorization, and repository-bound extraction described
+above. The topology decision itself remains accepted.
+
+**Revalidation trigger:** re-evaluate this amendment if `kbSync` stops scanning an image-carried
+checkout, `get_class_hierarchy` becomes tenant-aware, hierarchy ceases to participate in chunk
+identity, or tenant acquisition no longer runs through an exact revision reader.
 
 ## 9. Status / Lifecycle
 

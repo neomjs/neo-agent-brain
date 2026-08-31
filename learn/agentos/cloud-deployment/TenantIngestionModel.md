@@ -30,6 +30,13 @@ flowchart TD
 
 The profile is the single territory-to-extractor authority. Its canonical form, the referenced descriptor versions, and any hierarchy-resolver identity produce one extraction identity. That identity is a component of the existing materialization digest, chunk hash, checkpoint, and reconciliation currency; it is not a second receipt or digest authority.
 
+Hierarchy is a repository capability, not ambient deployment config. When an active descriptor
+declares `requiresHierarchy`, the production resolver derives the map from the same exact scoped
+revision reader that supplies the source blobs. The resolver module owns its `id` and `version`; a
+version change forces full replay even at the same Git SHA. Profiles whose descriptors do not consume
+hierarchy do not churn on that version. The public `get_class_hierarchy` MCP operation remains a
+separate static Neo-only reference surface and is never the tenant extraction input.
+
 ## Entry Points
 
 Use the same underlying ingestion service through three operational surfaces:

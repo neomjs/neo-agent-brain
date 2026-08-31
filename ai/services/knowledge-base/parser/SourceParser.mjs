@@ -3,6 +3,147 @@ import Base       from 'neo.mjs/src/core/Base.mjs';
 import logger     from '../../../mcp/server/knowledge-base/logger.mjs';
 
 /**
+ * @summary Parses one source module into the single class-description universe shared by chunking
+ * and repository hierarchy derivation.
+ *
+ * A separate hierarchy scan already produced different class totals from the chunks whose ids it
+ * was meant to protect. Keeping the AST walk here makes `className`, superclass declaration, and
+ * import bindings one producer contract rather than two implementations that merely look similar.
+ *
+ * @param {String} content Raw module source.
+ * @param {String} filePath Repository-relative source path.
+ * @param {Object} [options]
+ * @param {Boolean} [options.strict=false]
+ * @returns {Object|null}
+ * @private
+ */
+function inspectSourceModule(content, filePath, {strict = false} = {}) {
+    if (content.startsWith('#!')) {
+        content = content.replace(/^#!.*\n/u, '');
+    }
+
+    let ast;
+
+    try {
+        ast = acorn.parse(content, {sourceType: 'module', locations: true, ecmaVersion: 'latest'});
+    } catch (cause) {
+        logger.warn(`Failed to parse source file ${filePath}: ${cause.message}`);
+
+        if (strict) {
+            const error = new Error(`Repository source '${filePath}' could not be parsed.`);
+
+            error.code    = 'KB_SOURCE_PARSE_FAILED';
+            error.details = {sourcePath: filePath};
+
+            throw error
+        }
+
+        return null
+    }
+
+    const
+        contextNodes  = [],
+        propertyNodes = [],
+        methodNodes   = [],
+        imports       = [];
+    let
+        classStart          = 0,
+        classDefinition     = '',
+        className           = '',
+        configNode          = null,
+        declaresSuper       = false,
+        superClassReference = null;
+
+    ast.body.forEach(node => {
+        if (node.type === 'ImportDeclaration' || node.type === 'VariableDeclaration') {
+            contextNodes.push(node);
+
+            if (node.type === 'ImportDeclaration' && typeof node.source?.value === 'string') {
+                node.specifiers.forEach(specifier => {
+                    const localName = specifier.local?.name;
+
+                    if (!localName) {
+                        return
+                    }
+
+                    imports.push(Object.freeze({
+                        kind: specifier.type === 'ImportDefaultSpecifier'
+                            ? 'default'
+                            : specifier.type === 'ImportNamespaceSpecifier'
+                                ? 'namespace'
+                                : 'named',
+                        localName,
+                        importedName: specifier.type === 'ImportSpecifier'
+                            ? (specifier.imported?.name || specifier.imported?.value || '')
+                            : specifier.type === 'ImportDefaultSpecifier' ? 'default' : '*',
+                        source: node.source.value
+                    }))
+                })
+            }
+        } else if (node.type === 'ClassDeclaration' || node.type === 'ExportDefaultDeclaration') {
+            const classDecl = node.type === 'ExportDefaultDeclaration' ? node.declaration : node;
+
+            if (classDecl.type !== 'ClassDeclaration') {
+                return
+            }
+
+            classStart      = classDecl.start;
+            classDefinition = content.substring(classDecl.start, classDecl.body.start + 1);
+            className       = classDecl.id?.name || '';
+            declaresSuper   = Boolean(classDecl.superClass);
+
+            if (classDecl.superClass?.type === 'Identifier') {
+                superClassReference = Object.freeze({
+                    kind: 'identifier',
+                    name: classDecl.superClass.name
+                });
+            } else if (classDecl.superClass) {
+                superClassReference = Object.freeze({
+                    kind : 'expression',
+                    value: content.substring(classDecl.superClass.start, classDecl.superClass.end).trim()
+                });
+            }
+
+            classDecl.body.body.forEach(member => {
+                if (member.type === 'MethodDefinition') {
+                    methodNodes.push(member);
+                } else if (member.type === 'PropertyDefinition') {
+                    if (member.key.name === 'config' && member.static) {
+                        configNode = member;
+
+                        if (member.value?.type === 'ObjectExpression') {
+                            const classNameProp = member.value.properties
+                                .find(property => property.key?.name === 'className');
+
+                            if (classNameProp?.value?.type === 'Literal') {
+                                className = classNameProp.value.value;
+                            }
+                        }
+                    } else {
+                        propertyNodes.push(member);
+                    }
+                }
+            })
+        }
+    });
+
+    return {
+        ast,
+        content,
+        contextNodes,
+        propertyNodes,
+        configNode,
+        methodNodes,
+        classStart,
+        classDefinition,
+        className,
+        declaresSuper,
+        superClassReference,
+        imports: Object.freeze(imports)
+    }
+}
+
+/**
  * @summary Parses Neo.mjs source files into granular knowledge chunks.
  *
  * This parser decomposes ES modules (source code) into semantically meaningful chunks,
@@ -36,6 +177,30 @@ class SourceParser extends Base {
     }
 
     /**
+     * @summary Describes one module's class and import-bound superclass using the same AST walk as
+     * chunk generation.
+     * @param {String} content Raw file content.
+     * @param {String} filePath Repository-relative file path.
+     * @param {Object} [options]
+     * @param {Boolean} [options.strict=false]
+     * @returns {{className: String, declaresSuper: Boolean, superClassReference: Object|null, imports: Object[]}|null}
+     */
+    describeClass(content, filePath, {strict = false} = {}) {
+        const inspected = inspectSourceModule(content, filePath, {strict});
+
+        if (!inspected) {
+            return null
+        }
+
+        return Object.freeze({
+            className          : inspected.className,
+            declaresSuper      : inspected.declaresSuper,
+            superClassReference: inspected.superClassReference,
+            imports            : inspected.imports
+        })
+    }
+
+    /**
      * Parses a Neo.mjs source file into granular chunks.
      * @param {String} content The raw file content.
      * @param {String} filePath The relative file path.
@@ -52,100 +217,27 @@ class SourceParser extends Base {
      * @returns {Array<Object>} An array of chunks.
      */
     parse(content, filePath, defaultType='src', hierarchy={}, coverage=null, {strict = false} = {}) {
-        const chunks = [];
-        let ast;
+        const inspected = inspectSourceModule(content, filePath, {strict});
 
-        // Strip shebang if present (acorn doesn't handle it)
-        if (content.startsWith('#!')) {
-            content = content.replace(/^#!.*\n/, '');
+        if (!inspected) {
+            return []
         }
 
-        try {
-            // `ecmaVersion: 'latest'` lets acorn auto-track its highest-supported syntax
-            // rather than pinning a literal year that future TC39 features (e.g. import
-            // attributes `with {type: 'json'}`, decorators) would silently fail to parse.
-            ast = acorn.parse(content, { sourceType: 'module', locations: true, ecmaVersion: 'latest' });
-        } catch (e) {
-            logger.warn(`Failed to parse source file ${filePath}: ${e.message}`);
+        ({content} = inspected);
 
-            if (strict) {
-                const error = new Error(`Repository source '${filePath}' could not be parsed.`);
-
-                error.code    = 'KB_SOURCE_PARSE_FAILED';
-                error.details = {sourcePath: filePath};
-
-                throw error
-            }
-
-            return [];
-        }
-
-        const contextNodes    = [];
-        const propertyNodes   = [];
-        let   configNode      = null;
-        const methodNodes     = [];
-        let   classStart      = 0;
-        let   classDefinition = '';
-        let   className       = '';
-        let   superClass      = '';
-        // Whether the SOURCE declares a superclass, taken from the AST node rather than re-detected.
-        // This is the denominator for hierarchy-coverage reporting, and it has to come from the same
-        // extraction the chunks come from: a separately reimplemented scan measures its own universe
-        // and drifts from the one whose ids are actually at risk, which is the producer/consumer
-        // mismatch this whole area exists to fix. Three independent scans of these roots produced
-        // three different totals before this was derived here.
-        let declaresSuper = false;
-
-        // 1. Traverse AST to categorize nodes
-        ast.body.forEach(node => {
-            if (node.type === 'ImportDeclaration' || node.type === 'VariableDeclaration') {
-                // Top-level imports and vars belong to Module Context
-                contextNodes.push(node);
-            } else if (node.type === 'ClassDeclaration' || node.type === 'ExportDefaultDeclaration') {
-                // Handle Class Definition
-                const classDecl = node.type === 'ExportDefaultDeclaration' ? node.declaration : node;
-
-                if (classDecl.type === 'ClassDeclaration') {
-                    classStart = classDecl.start;
-                    // Capture JSDoc comments preceding the class
-                    const classHeadEnd = classDecl.body.start + 1; // Include opening brace
-                    classDefinition    = content.substring(classDecl.start, classHeadEnd);
-
-                    if (classDecl.id) {
-                        className = classDecl.id.name;
-                    }
-
-                    // acorn sets `superClass` only for an actual `extends` clause, so this is the
-                    // canonical answer to "does this module declare a superclass" — no regex.
-                    declaresSuper = !!classDecl.superClass;
-
-                    // Iterate Class Body
-                    classDecl.body.body.forEach(member => {
-                        if (member.type === 'MethodDefinition') {
-                            if (member.kind === 'constructor') {
-                                methodNodes.push(member);
-                            } else {
-                                methodNodes.push(member);
-                            }
-                        } else if (member.type === 'PropertyDefinition') {
-                            if (member.key.name === 'config' && member.static) {
-                                configNode = member;
-
-                                // Extract className from static config (Prioritize this over local identifier)
-                                if (member.value.type === 'ObjectExpression') {
-                                    const classNameProp = member.value.properties.find(p => p.key.name === 'className');
-                                    if (classNameProp && classNameProp.value.type === 'Literal') {
-                                        className = classNameProp.value.value;
-                                    }
-                                }
-                            } else {
-                                propertyNodes.push(member);
-                            }
-                        }
-                    });
-                }
-            }
-        });
+        const {
+            ast,
+            contextNodes,
+            propertyNodes,
+            configNode,
+            methodNodes,
+            classStart,
+            classDefinition,
+            className,
+            declaresSuper
+        } = inspected;
+        const chunks     = [];
+        let   superClass = '';
 
         // Resolve superclass using the authoritative hierarchy map
         if (className && hierarchy[className]) {

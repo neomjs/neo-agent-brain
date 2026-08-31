@@ -39,6 +39,12 @@ import {TENANT_REPO_SYNC_ERROR_CODES}
 import {deriveTenantRepoMirrorPath} from '../../../../../../../ai/services/knowledge-base/helpers/tenantRepoAccessContract.mjs';
 import {createTenantRepoMaterializationDigest}
     from '../../../../../../../ai/services/knowledge-base/helpers/tenantRepoIngestEnvelopeBuilder.mjs';
+import {createExtractionProfileIdentity}
+    from '../../../../../../../ai/services/knowledge-base/helpers/extractionProfileContract.mjs';
+import RepositoryClassHierarchyResolver
+    from '../../../../../../../ai/services/knowledge-base/helpers/repositoryClassHierarchyResolver.mjs';
+import {diffTenantExtractionIdentity}
+    from '../../../../../../../ai/services/knowledge-base/helpers/kbReconciliationEngine.mjs';
 import {
     LIFECYCLE_GUARD_SUFFIX,
     acquireHeavyMaintenanceLease,
@@ -2619,11 +2625,35 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         })).toBe('invalid');
     });
 
-    test('D6 same-SHA profile change forces a full envelope and commits identity after matching snapshot proof', async () => {
+    test('same-SHA hierarchy-resolver version change forces full replay and commits matching proof', async () => {
         const
-            repoSlug        = 'org/profile-changed',
-            priorIdentity   = '1'.repeat(64),
-            currentIdentity = '2'.repeat(64),
+            repoSlug          = 'org/hierarchy-changed',
+            extractionProfile = {
+                profileSchemaVersion: 1,
+                routes              : [{
+                    territory: {
+                        roots  : ['ai'],
+                        include: ['**/*.mjs']
+                    },
+                    extractorId: 'ApiSource',
+                    options    : {type: 'ai-infrastructure'}
+                }],
+                fallback: {action: 'exclude'}
+            },
+            priorIdentity = createExtractionProfileIdentity({
+                profile          : extractionProfile,
+                hierarchyIdentity: {
+                    id     : RepositoryClassHierarchyResolver.id,
+                    version: '0.9.0'
+                }
+            }),
+            currentIdentity = createExtractionProfileIdentity({
+                profile          : extractionProfile,
+                hierarchyIdentity: {
+                    id     : RepositoryClassHierarchyResolver.id,
+                    version: RepositoryClassHierarchyResolver.version
+                }
+            }),
             envelopeCalls   = [];
         let extractionSnapshot = null;
 
@@ -2645,7 +2675,8 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             taskStateService : createInMemoryTaskStateService(),
             tenantReposConfig: {tenantRepos: [{
                 tenantId          : 't1', repoSlug, mirrorRoot,
-                cloneUrl          : 'https://example.invalid/profile-changed.git',
+                cloneUrl          : 'https://example.invalid/hierarchy-changed.git',
+                extractionProfile,
                 extractionIdentity: currentIdentity
             }]},
             gitMirror      : makeFakeGitMirror(),
@@ -2694,12 +2725,53 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         expect(result.status).toBe('completed');
         expect(envelopeCalls[0].lastIngestedRev).toBeNull();
+        expect(envelopeCalls[0].hierarchyResolver).toBe(RepositoryClassHierarchyResolver);
+        expect(envelopeCalls[0].hierarchyResolver.version).toBeTruthy();
 
         const persisted = (await fs.readJson(revisionsFile)).revisions[`t1/${repoSlug}`];
 
         expect(persisted.lastIngestedRev).toBe('same-sha');
         expect(persisted.extractionIdentity).toBe(currentIdentity);
         expect(persisted.lastCommittedMaterializationAttemptId).toBe(extractionSnapshot.proof.attemptId);
+
+        const currency = diffTenantExtractionIdentity({
+            rows: [{
+                id      : 'prior-hierarchy-row',
+                metadata: {
+                    tenantId          : 't1',
+                    repoSlug,
+                    sourcePath        : 'ai/RemovedFromHierarchy.mjs',
+                    ingestedAt        : 1_000,
+                    extractionIdentity: priorIdentity
+                }
+            }],
+            tenantId                 : 't1',
+            declaredByRepo           : {[repoSlug]: {extractionIdentity: currentIdentity}},
+            extractionSnapshotsByRepo: {[repoSlug]: {
+                yieldedSourcePaths: [],
+                extractionIdentity: currentIdentity,
+                updatedAt         : 2_000
+            }}
+        });
+        const VectorService = (await import(
+            '../../../../../../../ai/services/knowledge-base/VectorService.mjs'
+        )).default;
+
+        expect(currency.extractionOrphans).toEqual([expect.objectContaining({
+            id    : 'prior-hierarchy-row',
+            reason: 'extraction-currency-mismatch'
+        })]);
+        expect(currency.actionableIds).toEqual(['prior-hierarchy-row']);
+        expect(VectorService.buildOwnedScopeFilter({
+            tenantId          : 't1',
+            repoSlug,
+            extractionIdentity: currentIdentity
+        })).toEqual({
+            $and: [
+                {tenantId: {$eq: 't1'}},
+                {repoSlug: {$eq: repoSlug}}
+            ]
+        });
     });
 
     test('a repeated manual full replay of an unchanged EMPTY repo completes the SECOND time too (#16897)', async () => {

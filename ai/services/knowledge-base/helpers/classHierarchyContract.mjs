@@ -110,11 +110,12 @@ export async function loadClassHierarchy({hierarchyPath, sourcePathCount}) {
  * on growth. A ratio fails only when resolution genuinely degrades. Each floor sits just below its
  * measured value, so ordinary churn passes and a real drop does not.
  *
- * **Sunset — this constant is designed to be deleted.** When hierarchy derivation moves to the
- * consumer (the source that walks these roots derives its own map, making coverage total by
- * construction), three things retire together: the tracked `docs/output/class-hierarchy.json`, the
- * freshness workflow that guards its staleness, and this baseline. Any of the three outliving that
- * migration is drift.
+ * **Sunset — partially discharged by repository profiles.** Repository-bound ApiSource invocation
+ * now derives hierarchy from its exact revision and does not consume this baseline. This constant
+ * remains only for the legacy multi-root `extract()` wrapper and retires when that core-corpus path
+ * is ported to repository profiles. The tracked Engine hierarchy and its freshness guard do NOT
+ * retire with this constant: the deliberately static, Neo-only `QueryService.getClassHierarchy()`
+ * still consumes that artifact under its separate public contract.
  *
  * @type {Object}
  */

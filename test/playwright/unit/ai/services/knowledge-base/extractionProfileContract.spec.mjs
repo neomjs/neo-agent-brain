@@ -24,10 +24,11 @@ test.describe('extraction profile contract (#261)', () => {
         ));
 
         catalogue = createExtractorCatalogue([{
-            extractorId: 'ApiSource',
-            version    : '1.0.0',
-            deltaSafe  : false,
-            extract    : async () => ({count: 0, yieldedSourcePaths: []})
+            extractorId      : 'ApiSource',
+            version          : '1.0.0',
+            deltaSafe        : false,
+            requiresHierarchy: true,
+            extract          : async () => ({count: 0, yieldedSourcePaths: []})
         }, {
             extractorId: 'SkillSource',
             version    : '2.0.0',
@@ -154,7 +155,7 @@ test.describe('extraction profile contract (#261)', () => {
                 extractorId      : 'ApiSource',
                 version          : '1.0.0',
                 deltaSafe        : false,
-                requiresHierarchy: false
+                requiresHierarchy: true
             }, {
                 extractorId      : 'SkillSource',
                 version          : '2.0.0',

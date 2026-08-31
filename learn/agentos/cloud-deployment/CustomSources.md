@@ -146,6 +146,12 @@ The deployment pins `tenantExtractorRoot` (or `NEO_KB_TENANT_EXTRACTOR_ROOT`) to
 
 Custom descriptors currently cannot claim `deltaSafe: true`. Arbitrary extractor code may contain hidden cross-file dependencies that a generic loader cannot prove absent, so the unsafe capability claim is rejected rather than trusted. Built-in descriptors can carry that capability when their one-file-to-one-output behavior is part of the maintained contract.
 
+`requiresHierarchy: true` is also executable identity, not descriptive metadata. The runner injects a
+pure resolver that reads only the bound repository revision; neither tenant config nor route options
+may restate the resolver's id, version, roots, or hierarchy source. Missing identity/version refuses
+before extraction. Changing the module-owned resolver version changes extraction identity and forces
+full replay; descriptors with `requiresHierarchy: false` are unaffected.
+
 Reference the descriptor from one repository profile route:
 
 ```js

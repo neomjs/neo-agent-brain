@@ -26,6 +26,10 @@ import TenantRepoIngestEnvelopeBuilder, {
     buildIngestEnvelope,
     createTenantRepoMaterializationDigest
 } from '../../../../../../ai/services/knowledge-base/helpers/tenantRepoIngestEnvelopeBuilder.mjs';
+import {createExtractionProfileIdentity}
+    from '../../../../../../ai/services/knowledge-base/helpers/extractionProfileContract.mjs';
+import RepositoryClassHierarchyResolver
+    from '../../../../../../ai/services/knowledge-base/helpers/repositoryClassHierarchyResolver.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -71,6 +75,39 @@ test.describe('TenantRepoIngestEnvelopeBuilder (#11789)', () => {
         await git(['-c', 'user.name=Neo Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'initial'], source);
 
         return source;
+    }
+
+    async function createHierarchySourceRepo() {
+        const source = path.join(root, 'hierarchy-source');
+
+        await fs.ensureDir(path.join(source, 'ai'));
+        await git(['init', '--initial-branch=main'], source);
+        await fs.writeFile(path.join(source, 'ai', 'BaseThing.mjs'), `
+import Base from 'neo.mjs/src/core/Base.mjs';
+
+class BaseThing extends Base {
+    static config = {className: 'Neo.ai.BaseThing'}
+}
+
+export default Neo.setupClass(BaseThing);
+`);
+        await fs.writeFile(path.join(source, 'ai', 'Child.mjs'), `
+import BaseThing from './BaseThing.mjs';
+
+class Child extends BaseThing {
+    static config = {className: 'Neo.ai.Child'}
+}
+
+export default Neo.setupClass(Child);
+`);
+        await git(['add', '.'], source);
+        await git([
+            '-c', 'user.name=Neo Test',
+            '-c', 'user.email=test@example.com',
+            'commit', '-m', 'hierarchy fixture'
+        ], source);
+
+        return source
     }
 
     test('materialization digest is order-stable and head/parser bound (#16045)', () => {
@@ -205,6 +242,51 @@ test.describe('TenantRepoIngestEnvelopeBuilder (#11789)', () => {
             rootKind    : 'bare-repo',
             profileChunk: {content: '# Guide\n'}
         });
+    });
+
+    test('materializes ApiSource with hierarchy derived from the same exact Git revision', async () => {
+        const
+            source            = await createHierarchySourceRepo(),
+            options           = await createMirror(source),
+            newHead           = await resolveHead({...options, ref: 'main'}),
+            extractionProfile = {
+                profileSchemaVersion: 1,
+                routes              : [{
+                    territory: {
+                        roots  : ['ai'],
+                        include: ['**/*.mjs']
+                    },
+                    extractorId: 'ApiSource',
+                    options    : {type: 'ai-infrastructure'}
+                }],
+                fallback: {action: 'exclude'}
+            },
+            extractionIdentity = createExtractionProfileIdentity({
+                profile          : extractionProfile,
+                hierarchyIdentity: {
+                    id     : RepositoryClassHierarchyResolver.id,
+                    version: RepositoryClassHierarchyResolver.version
+                }
+            }),
+            envelope = await buildIngestEnvelope({
+                ...options,
+                newHead,
+                extractionProfile,
+                extractionIdentity,
+                hierarchyResolver: RepositoryClassHierarchyResolver
+            });
+
+        expect(envelope.extractionIdentity).toBe(extractionIdentity);
+        expect(envelope.manifestSnapshot).toMatchObject({
+            extractionIdentity,
+            yieldedSourcePaths: ['ai/BaseThing.mjs', 'ai/Child.mjs']
+        });
+        expect(envelope.files.find(file =>
+            file.profileChunk?.className === 'Neo.ai.BaseThing'
+        )?.profileChunk.extends).toBe('Neo.core.Base');
+        expect(envelope.files.find(file =>
+            file.profileChunk?.className === 'Neo.ai.Child'
+        )?.profileChunk.extends).toBe('Neo.ai.BaseThing');
     });
 
     test('routes revision reads through the isolated GitMirror subprocess boundary (#16045)', async () => {
