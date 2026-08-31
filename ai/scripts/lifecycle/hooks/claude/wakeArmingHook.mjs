@@ -20,8 +20,17 @@ export const DEFAULT_MANIFEST_RELATIVE = 'Library/Application Support/Neo/AgentO
  * first version was wrong: the hook's registered timeout was 15s while the reader allowed 8s to connect
  * and another 8s to list, so a slow plane could consume the caller's entire budget and be killed AFTER
  * reading subscriptions and BEFORE publishing — the worst possible moment to stop. `HOOK_TIMEOUT_MS`
- * must stay equal to the `timeout` registered in `.claude/settings.template.json`; a spec asserts it,
- * because two places holding the same number silently drift.
+ * must stay equal to the `timeout` this hook is registered with, because two places holding the same
+ * number silently drift.
+ *
+ * That registration moved: it is `SessionStart` in `hooks/claude/events.manifest.json`, reconciled
+ * into the seat's `.claude/settings.json` by `projectSeatHooks`. It is no longer
+ * `.claude/settings.template.json`, which after the leaf-11 cut declares only the Engine's own
+ * `PreToolUse` guard.
+ *
+ * This comment previously said "a spec asserts it". No spec did — `git grep HOOK_TIMEOUT_MS` over
+ * `test/` returned nothing, so the sentence was a guard existing only in prose while the number was
+ * free to drift. `projectSeatHooks.spec.mjs` now asserts the parity for real.
  * @type {Number}
  */
 export const HOOK_TIMEOUT_MS = 15000;

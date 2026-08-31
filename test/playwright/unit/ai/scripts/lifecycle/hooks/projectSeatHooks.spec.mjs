@@ -29,6 +29,7 @@ import {
     findOrphans,
     main,
     projectHooks,
+    reconcileClaudeEvents,
     rewriteSpecifiers,
     writeLocalExclude
 } from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
@@ -804,5 +805,91 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
 
         expect(report.unreconciledEvents).toEqual([]);
         expect(report.ok).toBe(true)
+    })
+});
+
+test.describe('the real Claude manifest — contract properties of the shipped file', () => {
+    const
+        MANIFEST_PATH = path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude/events.manifest.json'),
+        manifest      = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+
+    test('wakeArmingHook\'s HOOK_TIMEOUT_MS equals the timeout it is registered with', async () => {
+        // The parity `wakeArmingHook.mjs` asserted in prose for months without any spec behind it —
+        // `git grep HOOK_TIMEOUT_MS test/` returned nothing. The hook derives its MCP connect and
+        // list budgets from this constant, so a manifest registering less does not merely mismatch:
+        // it kills the process AFTER reading subscriptions and BEFORE publishing, which is the one
+        // moment where stopping loses work rather than deferring it.
+        //
+        // Found by @neo-gpt-emmy in peer review of #250.
+        const
+            {HOOK_TIMEOUT_MS} = await import('../../../../../../../ai/scripts/lifecycle/hooks/claude/wakeArmingHook.mjs'),
+            registered        = manifest.events.SessionStart[0].hooks[0].timeout;
+
+        expect(registered, 'SessionStart carries no timeout — the hook would inherit a default it does not know')
+            .toBeGreaterThan(0);
+
+        expect(HOOK_TIMEOUT_MS).toBe(registered * 1000)
+    });
+
+    test('every declared command targets a hook this repository actually ships', () => {
+        // A manifest entry naming a file that does not exist wires the seat to nothing and reports
+        // no error at any layer: the harness runs the command, node fails to resolve, the hook is
+        // simply silent. Checked against the sources rather than a projection, because the manifest
+        // is source data and this must hold before anything is materialized.
+        const commands = Object.values(manifest.events)
+            .flatMap(buckets => buckets.flatMap(bucket => bucket.hooks.map(entry => entry.command)));
+
+        expect(commands.length).toBeGreaterThan(0);
+
+        commands.forEach(command => {
+            const match = command.match(/\.claude\/hooks\/([\w.-]+\.mjs)/);
+
+            expect(match, `command declares no .claude/hooks target: ${command}`).not.toBeNull();
+            expect(
+                fs.existsSync(path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude', match[1])),
+                `${match[1]} is declared by the manifest but not shipped in hooks/claude/`
+            ).toBe(true)
+        })
+    });
+
+    test('the decision core runs with no repository, no filesystem, and no git', () => {
+        // The evidence for the word "pure" in reconcileClaudeEvents' JSDoc. Its first draft claimed
+        // purity while reaching isProjectorOwnedCommand -> tracked() -> execFileSync('git'), and
+        // @neo-gpt-emmy caught the claim in review. Injecting the predicate made the claim true;
+        // this test is what keeps it true, because a doc asserting an untested property is the same
+        // defect in a different file — which is precisely what wakeArmingHook's "a spec asserts it"
+        // turned out to be.
+        //
+        // Every path here is fictional. If anything in the core touched disk or git, this throws.
+        const
+            seen  = [],
+            owned = '/usr/bin/env node "/nowhere/.claude/hooks/ours.mjs"',
+            alien = 'echo not-ours',
+            {added, removed, settings} = reconcileClaudeEvents({
+                isOwned : command => {seen.push(command); return command === owned},
+                manifest: {events: {Stop: [{hooks: [{command: 'fresh', type: 'command'}]}]}},
+                settings: {
+                    model: 'kept',
+                    hooks: {
+                        Stop        : [{hooks: [{command: owned, type: 'command'}]}],
+                        SessionStart: [{hooks: [{command: alien, type: 'command'}]}]
+                    }
+                }
+            });
+
+        expect(seen).toEqual([owned, alien]);   // the core asked, and asked about everything
+        expect(removed).toBe(1);
+        expect(added).toBe(1);
+        expect(settings.model).toBe('kept');
+        expect(settings.hooks.SessionStart[0].hooks[0].command).toBe(alien);
+        expect(settings.hooks.Stop).toEqual([{hooks: [{command: 'fresh', type: 'command'}]}])
+    });
+
+    test('does NOT declare the Engine-owned PreToolUse guard', () => {
+        // The custody line, asserted rather than trusted to a comment. Restating the Engine's tracked
+        // entry here would make this repository the second author of it, and the two would drift with
+        // no arbiter — the reversal @neo-gpt-emmy rejected when deciding this fork.
+        expect('PreToolUse' in manifest.events).toBe(false);
+        expect(JSON.stringify(manifest.events)).not.toContain('rgReplaceGuardHook')
     })
 });

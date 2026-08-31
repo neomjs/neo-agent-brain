@@ -464,14 +464,18 @@ export function isProjectorOwnedCommand(command, targetRepoRoot) {
  * - current manifest entries are appended;
  * - buckets left empty by retirement are deleted rather than kept as `[]`.
  *
- * Pure: takes and returns plain objects so the reconciliation is testable without a filesystem.
+ * Genuinely pure: ownership arrives as an injected predicate rather than being derived here, so this
+ * layer never learns what git is. The first draft called {@link isProjectorOwnedCommand} directly
+ * and documented itself as pure anyway — which was false, since that reaches `tracked()` and shells
+ * out. Injection makes the claim true instead of retracting it, and lets a test drive the ownership
+ * decision without a repository while the real-git fixtures still cover the wiring.
  * @param {Object} options
- * @param {Object} options.settings Active settings object (already Engine-hydrated).
+ * @param {Function} options.isOwned `(command: String) => Boolean` — is this command ours to retire?
  * @param {Object} options.manifest Parsed Brain event manifest (`{events: {...}}`).
- * @param {String} options.targetRepoRoot Absolute target repository root.
+ * @param {Object} options.settings Active settings object (already Engine-hydrated).
  * @returns {{added: Number, removed: Number, settings: Object}}
  */
-export function reconcileClaudeEvents({settings, manifest, targetRepoRoot}) {
+export function reconcileClaudeEvents({isOwned, manifest, settings}) {
     const
         next   = {...settings, hooks: {...(settings?.hooks || {})}},
         events = manifest?.events || {};
@@ -483,7 +487,7 @@ export function reconcileClaudeEvents({settings, manifest, targetRepoRoot}) {
     Object.keys(next.hooks).forEach(event => {
         const kept = (next.hooks[event] || []).map(bucket => {
             const hooks = (bucket.hooks || []).filter(entry => {
-                const owned = isProjectorOwnedCommand(String(entry.command || ''), targetRepoRoot);
+                const owned = isOwned(String(entry.command || ''));
 
                 if (owned) removed++;
 
@@ -561,7 +565,10 @@ export function reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot, wri
 
     const
         manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')),
-        result   = reconcileClaudeEvents({manifest, settings, targetRepoRoot}),
+        // The impure half lives here, in the function that already owns a filesystem and a target
+        // repository. The decision core receives a yes/no and stays ignorant of both.
+        isOwned  = command => isProjectorOwnedCommand(command, targetRepoRoot),
+        result   = reconcileClaudeEvents({isOwned, manifest, settings}),
         next     = `${JSON.stringify(result.settings, null, 2)}\n`,
         changed  = next !== raw;
 
