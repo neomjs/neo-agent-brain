@@ -71,15 +71,25 @@ test.describe('ai/scripts/lifecycle/sweepExpiredTasks.mjs regression guard (#105
         const {default: fs} = await import('fs-extra');
         const content       = await fs.readFile(scriptPath, 'utf-8');
         const lines         = content.split('\n');
-        const neoImportIdx  = lines.findIndex(l => /^import\s+Neo\s+from\s+['"]\.\.\/\.\.\/\.\.\/src\/Neo\.mjs['"]/.test(l));
-        const coreImportIdx = lines.findIndex(l => /^import\s+\*\s+as\s+core\s+from\s+['"]\.\.\/\.\.\/\.\.\/src\/core\/_export\.mjs['"]/.test(l));
-        const lifecycleIdx  = lines.findIndex(l => /^import\s+LifecycleService\s+from\s+['"]\.\.\/\.\.\/services\/memory-core\/lifecycle\/SystemLifecycleService\.mjs['"]/.test(l));
+        // Matched on the module each import RESOLVES to, never on one literal specifier. The Agent
+        // OS consumes the PUBLISHED Engine, so these two modules arrive as `neo.mjs/src/**`; an
+        // earlier layout reached the same files by climbing relatively into an in-repo `src/**`.
+        // A guard pinned to either spelling is invalidated by the next specifier migration rather
+        // than surviving it, and an invalidated guard covers nothing while still looking like
+        // coverage. The invariant is "the Neo class system is bootstrapped before the first module
+        // that calls `Neo.gatekeep()` at load time"; the specifier form is not part of it.
+        const neoImportIdx  = lines.findIndex(l => /^import\s+Neo\s+from\s+['"][^'"]*src\/Neo\.mjs['"]/.test(l));
+        const coreImportIdx = lines.findIndex(l => /^import\s+\*\s+as\s+core\s+from\s+['"][^'"]*src\/core\/_export\.mjs['"]/.test(l));
+        const lifecycleIdx  = lines.findIndex(l => /^import\s+LifecycleService\s+from\s+['"][^'"]*SystemLifecycleService\.mjs['"]/.test(l));
 
-        // All three imports MUST be present and ordered correctly.
-        expect(neoImportIdx).toBeGreaterThanOrEqual(0);
-        expect(coreImportIdx).toBeGreaterThanOrEqual(0);
-        expect(lifecycleIdx).toBeGreaterThanOrEqual(0);
-        expect(neoImportIdx).toBeLessThan(lifecycleIdx);
-        expect(coreImportIdx).toBeLessThan(lifecycleIdx);
+        // Presence FIRST, each with its own message. `findIndex` returns -1 on absence and
+        // `-1 < lifecycleIdx` is vacuously true, so an ordering assertion evaluated with a missing
+        // import would report correct ordering about an import that is not there.
+        expect(neoImportIdx, 'the Neo prelude is absent from sweepExpiredTasks.mjs — direct invocation will die at module load with `ReferenceError: Neo is not defined` (#10595)').toBeGreaterThanOrEqual(0);
+        expect(coreImportIdx, 'the core/_export augmentation is absent — Neo globals will be missing at setupClass time').toBeGreaterThanOrEqual(0);
+        expect(lifecycleIdx, 'the LifecycleService import is absent — this guard has lost its subject, so re-point it rather than deleting it').toBeGreaterThanOrEqual(0);
+
+        expect(neoImportIdx, 'the Neo prelude is imported AFTER LifecycleService, so Compare.mjs gatekeeps before Neo exists').toBeLessThan(lifecycleIdx);
+        expect(coreImportIdx, 'core/_export is imported AFTER LifecycleService, so Neo globals are absent when the chain loads').toBeLessThan(lifecycleIdx);
     });
 });
