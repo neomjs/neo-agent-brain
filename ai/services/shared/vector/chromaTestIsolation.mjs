@@ -134,9 +134,11 @@ export function isSameChromaHost(host, otherHost) {
  * ## Why this refuses instead of warning
  *
  * This combination is not a degraded mode that can still do useful work — it is a client about to
- * write a test-named database into the production vector store, which is how three empty
- * `neo-kb-unit-test-*` databases came to sit inside the live instance (`#285`). A warning on this
- * path produces the store mutation anyway and a log line nobody reads until a census runs by hand.
+ * write a test-named database into whatever store the production leaves resolve to. That is the
+ * shape of the three empty `neo-kb-unit-test-*` databases found in the local agent-OS instance
+ * (`#285`); this module refuses the pairing that produces them and does not claim to have found
+ * what minted those three. A warning on this path produces the store mutation anyway and a log line
+ * nobody reads until a census runs by hand.
  *
  * ## Why the coordinates are compared to PRODUCTION, not to the test coordinates
  *

@@ -7,10 +7,10 @@
  *
  * ## Why this script exists
  *
- * Three empty `neo-kb-unit-test-*` databases were found sitting inside the production Chroma
- * instance (`#285`) — by hand, during an unrelated investigation, and they would not have been
- * found otherwise. The residue was harmless; the absence of any layer that NOTICES was not. This is
- * that layer.
+ * Three empty `neo-kb-unit-test-*` databases were found sitting beside `default_database` in the
+ * local agent-OS Chroma instance (`neo-local-agent-os-chroma-1`, `#285`) — by hand, during an
+ * unrelated investigation, and they would not have been found otherwise. The residue was harmless;
+ * the absence of any layer that NOTICES was not. This is that layer.
  *
  * ## Why it censuses every database rather than the configured one
  *
@@ -28,6 +28,12 @@
  * database no detector keyed on the generated shape can recognise. The report states that bound in
  * its own output rather than letting "no matches" be read as "no test databases" — an unrecognised
  * name is outside the instrument, not absent.
+ *
+ * Clean is also scoped to the ONE instance the run reached. The defaults resolve to whatever the
+ * production leaves point at, which on a developer host is the local agent-OS container above
+ * (`127.0.0.1:8000`). The cloud-plane Chroma publishes no host port, so a host-edge run cannot open
+ * it at all and a `leaked = 0` here carries no statement about that store. Name the instance a
+ * result belongs to before reading it as coverage.
  *
  * Exit code is the point of the script, not a courtesy: `1` when leaked databases are present, so a
  * scheduled run surfaces without anyone reading the output. `--allow-leaks` reports and exits `0`
@@ -61,8 +67,8 @@ import {
  *
  * Coordinates default to the resolved PRODUCTION leaves rather than to `host`/`port`. Those two
  * resolve to the test instance under a test selector, and a census that followed them would
- * cheerfully report the unit harness clean while the production instance it was pointed away from
- * held the leak.
+ * cheerfully report the unit harness clean while never once looking at the store the leaked
+ * databases sit in.
  * @returns {Command}
  */
 export function createProgram() {
@@ -81,7 +87,7 @@ export function createProgram() {
  * @summary Splits an enumerated database list into leaked and retained sets.
  *
  * Pure and exported so the detection can be tested against a known population without a live Chroma
- * — the red control the ticket asks for runs here, not against the production instance.
+ * — the red control the ticket asks for runs here, not against a live instance.
  * @param {String[]} databases Every database name in the tenant.
  * @returns {{databases: String[], leaked: String[], clean: String[], total: Number}}
  */
