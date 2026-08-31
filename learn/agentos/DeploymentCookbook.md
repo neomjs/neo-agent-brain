@@ -41,26 +41,34 @@ placed into a cloud container:
 | Lane set | Cloud profile behavior |
 |---|---|
 | `summary`, `backup`, `dream`, `golden-path` | Cloud-deployable maintenance lanes. They need reachable model/provider and storage substrates, but no local maintainer checkout. |
-| `bridgeDaemon`, `mlx`, `kbSync`, `primary-dev-sync` | Local-only lanes. They must be disabled in a tenant cloud deployment. |
+| `kbSync` | Container-plane lane. It scans the Neo repo's own corpus, which the container image carries at its built revision — so it **runs** in a cloud deployment rather than being disabled. It is never re-pointed at tenant content; that is `tenant-repo-sync`'s lane. |
+| `bridgeDaemon`, `mlx`, `primary-dev-sync` | Host-edge lanes. They need the maintainer's checkout or desktop harness and must be disabled in a tenant cloud deployment. |
 | `chroma` | Shared primitive. Compose or the platform owns the Chroma process in cloud; the orchestrator does not supervise it. |
 
 Sub A (#11722) delivered the config-level deployment-mode surface. A cloud
 orchestrator profile sets `NEO_AI_DEPLOYMENT_MODE=cloud`; the config resolver
-then disables local-only lanes unless an operator explicitly opts a narrower
+then disables host-edge lanes unless an operator explicitly opts a narrower
 lane back in. The explicit env overrides are:
 
 | Env var | Cloud default intent |
 |---|---|
 | `NEO_ORCHESTRATOR_PRIMARY_DEV_SYNC_ENABLED=false` | Prevents `git fetch` / `git pull`, worktree discovery, `.sync-metadata.json` resets, and local KB-sync cascades. |
-| `NEO_ORCHESTRATOR_KB_SYNC_ENABLED=false` | Prevents the local Neo checkout full-corpus `npm --prefix cloud run ai:sync-kb` loop. Tenant KB content arrives through push/bulk ingestion instead. |
 | `NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED=false` | Prevents desktop wake delivery through `osascript` / `tmux`. A2A message storage remains Memory Core behavior. |
 | `NEO_ORCHESTRATOR_GOLDEN_PATH_REPO_ENRICHMENT_ENABLED=false` | Keeps tenant deployments from emitting Neo-maintainer repo backlog/PR enrichment sections. |
 | `NEO_ORCHESTRATOR_MLX_ENABLED=false` | Keeps Apple-Silicon local inference out of the cloud profile; the `local-model` profile is a separate provider service, not an orchestrator child process. |
 | `NEO_MAILBOX_DEFAULT_REPLY_POLICY=blocked` | Keeps cloud A2A message writes tenant-bound through the Memory Core `CAN_REPLY_TO` / reachable-counterparty policy; local wake delivery remains disabled by the orchestrator bridge toggle. |
 
+`NEO_ORCHESTRATOR_KB_SYNC_ENABLED` is deliberately **absent** from that table.
+`kbSyncEnabled` lives in the `cloudOnly` config group, where `null` means "use
+the deployment-profile default" — cloud enables, local disables — so the cloud
+default is already the value you want. Do not pin it in your Compose file:
+`mcpHealthcheck.spec.mjs` refuses a compose that restates this variable, because
+a deployment restating an AiConfig default silently freezes today's value.
+Disabling `kbSync` would leave the shared Neo corpus with no producer at all.
+
 Sub D (#11725) owns the CI-safe negative proof that the cloud profile cannot run
-the forbidden local-only behavior. The current unit substrate already asserts
-that cloud-mode default resolution disables `primary-dev-sync`, `kbSync`,
+the forbidden host-edge behavior. The current unit substrate already asserts
+that cloud-mode default resolution disables `primary-dev-sync`,
 `bridgeDaemon`, and Golden Path repo enrichment unless an operator explicitly
 opts a lane back in.
 
@@ -267,7 +275,6 @@ Supply these values per service/profile as needed:
 | `NEO_MAILBOX_DEFAULT_REPLY_POLICY=blocked` | MC | Enables the strict A2A reply policy for multi-tenant deployments. |
 | `NEO_AI_DEPLOYMENT_MODE=cloud` | Orchestrator | Selects the cloud maintenance profile. |
 | `NEO_ORCHESTRATOR_PRIMARY_DEV_SYNC_ENABLED=false` | Orchestrator | Disables local maintainer checkout sync. |
-| `NEO_ORCHESTRATOR_KB_SYNC_ENABLED=false` | Orchestrator | Disables local full-corpus KB sync. |
 | `NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED=false` | Orchestrator | Disables desktop wake delivery. |
 | `NEO_ORCHESTRATOR_GOLDEN_PATH_REPO_ENRICHMENT_ENABLED=false` | Orchestrator | Disables Neo-maintainer repo enrichment sections. |
 | `NEO_ORCHESTRATOR_MLX_ENABLED=false` | Orchestrator | Keeps local MLX supervision disabled. |
@@ -419,7 +426,7 @@ negative local-only behavior assertions.
 ## Section 9: Tenant Repo Ingestion Boundary
 
 Tenant KB content enters through the cloud-native ingestion facades, not through
-the local `kbSync` scheduler lane. Use the
+the `kbSync` scheduler lane — `kbSync` owns the shared Neo corpus only. Use the
 [Cloud-Native KB Ingestion](cloud-deployment/Overview.md) guide tree for:
 
 - per-tenant identity and visibility rules;
