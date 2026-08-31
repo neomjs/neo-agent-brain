@@ -97,12 +97,21 @@ async function assertSyncGithubWorkflowDevBranch() {
 
 /**
  * @summary CLI entry point for full manual sync or scheduled pull-only corpus emission.
+ *
+ * Both modes default from `process.argv` so the direct CLI behaves exactly as before. They are also
+ * accepted as arguments, because {@link module:ai/scripts/maintenance/emitGithubCorpus} delegates
+ * here after binding an explicit target root, and a caller that has already decided its mode should
+ * not have to encode that decision back into argv for this function to read it out again.
+ *
+ * @param {Object} [options]
+ * @param {Boolean} [options.emitOnly] Pull-only corpus emission rather than the full bi-directional sync.
+ * @param {Boolean} [options.verbose] Debug-level logging.
  * @returns {Promise<void>}
  */
-async function syncGithubWorkflow() {
-    const
-        emitOnly = process.argv.includes('--emit-only'),
-        verbose  = process.argv.includes('--verbose');
+async function syncGithubWorkflow({
+    emitOnly = process.argv.includes('--emit-only'),
+    verbose  = process.argv.includes('--verbose')
+} = {}) {
 
     GH_Config.data.logLevel = verbose ? 'debug' : 'info';
 
