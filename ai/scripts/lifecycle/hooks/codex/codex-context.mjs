@@ -214,11 +214,34 @@ export async function recordTurnStarted({
 
 /**
  * @summary Reads the repo-local Codex context payload injected at prompt submit.
- * @returns {String}
+ *
+ * **`../CODEX.md` is the TARGET's file, and a target without one is a valid shape.** The path stays
+ * relative on purpose — it resolves beside the projected hook, in whatever checkout the seat lives in
+ * — and the file is target-authored, never projector custody: `.codex/CODEX.md` is tracked in the
+ * Engine and has never existed in this repository, so `projectSeatHooks` correctly does not place it.
+ *
+ * Before #250 that could not matter, because this hook only ever ran from `.codex/hooks/` inside the
+ * Engine, where the file is always present. Projecting it into arbitrary checkouts is what turned a
+ * guaranteed read into an optional one, and an unguarded `readFileSync` made the optional case fatal:
+ * the projected hook exited 1 on every `UserPromptSubmit` in a seat that authors no context.
+ *
+ * So absence resolves to `''`, which `main()` already handles — it branches on empty context and
+ * writes nothing. **ENOENT only.** Any other read failure — a permission error, a directory in the
+ * file's place — still throws, because those describe a broken seat rather than an unconfigured one,
+ * and swallowing them would be the silent-success shape this ticket exists to remove.
+ *
+ * Found while verifying the RA-2 rewriter repair; disposition by @neo-gpt-emmy in review.
+ * @returns {String} The context payload, or `''` when the target authors none.
  */
 export function readCodexContext() {
     const contextUrl = new URL('../CODEX.md', import.meta.url);
-    return readFileSync(contextUrl, 'utf8').trim();
+
+    try {
+        return readFileSync(contextUrl, 'utf8').trim()
+    } catch (error) {
+        if (error.code === 'ENOENT') return '';
+        throw error
+    }
 }
 
 /**
