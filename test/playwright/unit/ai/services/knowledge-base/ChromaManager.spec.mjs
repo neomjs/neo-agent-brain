@@ -178,6 +178,29 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager', () => {
             // its own — the flag describes ONE resolution.
             expect(ChromaManager.knowledgeBaseCollectionBootstrapped).toBeNull();
         });
+
+        test('a FAILING resolution resets provenance to `null` through the catch path', async () => {
+            // The tail of @neo-gpt-emmy's RA-2: invalidation is reachable two ways, and the explicit
+            // call is the easy one. This drives the other — `getKnowledgeBaseCollection`'s catch
+            // (`:231-234`) invalidating before it rethrows.
+            //
+            // Provenance is pre-seeded NON-NULL on purpose. The resolver sets `false` on entry, so a
+            // failed resolution ends null either way if the catch never ran; seeding `true` makes the
+            // assertion witness the catch rather than the entry default.
+            ChromaManager.knowledgeBaseCollectionBootstrapped = true;
+
+            ChromaManager.client = {
+                getCollection   : async () => { throw new Error('chroma exploded') },
+                listCollections : async () => [],
+                createCollection: async () => { throw new Error('createCollection must not run for a non-not-found failure') }
+            };
+
+            await expect(ChromaManager.getKnowledgeBaseCollection()).rejects.toThrow('chroma exploded');
+
+            // A rejected resolution has no provenance to report. Leaving `true` standing would let the
+            // next caller inherit a bootstrap claim from an attempt that never produced a collection.
+            expect(ChromaManager.knowledgeBaseCollectionBootstrapped).toBeNull();
+        });
     });
 
     test('getKnowledgeBaseCollection retries transient ChromaConnectionError while resolving the canonical collection', async () => {
