@@ -5,10 +5,25 @@
  * Memory Core, knowledge-base, and bridge-daemon state is unified across worktree
  * MCP server processes — while leaving the git-tracked `concepts/` subdir untouched.
  *
- * It also materializes the worktree's `.claude/settings.json` (the no-hold Stop hook) from the
- * tracked `.claude/settings.template.json` via `initClaudeSettings` — the Claude analog of the
- * config-overlay hydration, so the hook is wired in worktrees deterministically rather than
- * relying on the `npm prepare` that `installDependencies` skips when `node_modules` already exists.
+ * It also materializes the worktree's `.claude/settings.json` via `initClaudeSettings` — the Claude
+ * analog of the config-overlay hydration, so the seat is wired in worktrees deterministically rather
+ * than relying on the `npm prepare` that `installDependencies` skips when `node_modules` already
+ * exists.
+ *
+ * **Which template, precisely.** This passes no `templatePath`, so `initClaudeSettings` reads its
+ * default: `<engineRoot>/.claude/settings.template.json`, resolved through
+ * `require.resolve('neo.mjs/package.json')` — the **installed package's** template. The worktree's
+ * own tracked `settings.template.json` is never consulted. This comment previously claimed the
+ * opposite, and a spec seeded a worktree template to match it; the seeded file was ignored and the
+ * assertion passed on the installed package's contents instead (#250 AC-9).
+ *
+ * That template no longer carries the no-hold Stop hook. After the ADR 0040 §2.7 custody split it
+ * declares only the Engine's own `PreToolUse` guard; the Agent-OS events are reconciled in by
+ * `ai/scripts/lifecycle/hooks/projectSeatHooks.mjs` from the Brain's event manifest. A worktree
+ * hydrated by `bootstrapWorktree` alone is therefore half-wired by design — both authorities have to
+ * run, and #250 makes the second one run here rather than leaving it to be remembered: both
+ * {@link hydrateCurrentWorktree} and this module's CLI invoke the projector with explicit roots,
+ * immediately after the Engine hydration it reconciles into.
  *
  * **Background (config copy):** `ai/config.mjs` is the Tier-1 operator overlay.
  * `ai/mcp/server/{github-workflow,knowledge-base,memory-core,neural-link}/config.mjs`
@@ -118,9 +133,22 @@ import {promisify}     from 'util';
 
 import {IDENTITIES}                                                                    from '../../graph/identityRoots.mjs';
 import {rosterEmailForLogin}                                                           from '../../graph/agentCoAuthorEmails.mjs';
+import {projectHooks}                                                                  from '../lifecycle/hooks/projectSeatHooks.mjs';
 import {initClaudeSettings, listServersWithTemplates, materializeServerConfigTemplate} from '../setup/initServerConfigs.mjs';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * This module's own repository root — the Agent OS runtime whose hook sources get projected.
+ *
+ * ADR 0040 §2.5 forbids `process.cwd()` as a root fallback, and this is not one. `cwd` is a fact
+ * about where a process happened to start; this is a fact about where this file lives, and this file
+ * is Brain substrate by definition. The runtime root is therefore *known* rather than guessed, and
+ * {@link hydrateCurrentWorktree} still passes it to the projector explicitly — the binding is
+ * derived once, in the open, instead of defaulted inside the projector where a wrong value would be
+ * invisible.
+ */
+const AGENTOS_RUNTIME_ROOT = path.resolve(import.meta.dirname, '../../..');
 
 /**
  * The set of gitignored config overlays a fresh worktree must hydrate from the main
@@ -1216,8 +1244,9 @@ export async function pruneStaleWorktrees({
 }
 
 /**
- * @summary Reuses the existing bootstrap + `--link-data` hydration path for one checkout, and
- * wires the Claude no-hold Stop hook into the worktree's `.claude/settings.json`.
+ * @summary Reuses the existing bootstrap + `--link-data` hydration path for one checkout, wires the
+ * Claude no-hold Stop hook into the worktree's `.claude/settings.json`, and projects the Agent-OS
+ * seat hooks into the checkout.
  *
  * The Claude-settings wiring (`initClaudeSettings`) materializes the gitignored
  * `.claude/settings.json` from the worktree's own tracked `.claude/settings.template.json` — the
@@ -1225,20 +1254,46 @@ export async function pruneStaleWorktrees({
  * Without it the Stop hook is only wired by the `npm prepare` that `installDependencies` skips when
  * `node_modules` already exists, leaving the no-hold enforcement silently inert in worktrees.
  *
+ * **Why the projector runs here, and last.** #250 restored the seven Agent-OS hook sources and gave
+ * them a projector, and a projector nothing invokes places no hooks in any seat: the capability
+ * would exist as a CLI while every hydrated checkout stayed exactly as unwired as before. This is
+ * the canonical seat-hydration path — it is where a checkout acquires the rest of its Agent OS
+ * surface — so it is where the hooks are acquired too. It runs after `wireClaudeSettings` because
+ * the projector *reconciles into* `.claude/settings.json` rather than authoring it (ADR 0040 §2.7
+ * shared custody); reconciling before the Engine hydrated the file would reconcile into nothing.
+ *
+ * **It is allowed to fail the hydration.** Both roots are passed explicitly and the projector
+ * refuses as a whole rather than half-writing, so a throw here means the seat did not get working
+ * hooks — which is the one outcome this leaf exists to make impossible to miss. Swallowing it would
+ * reproduce the silently-dead-hook failure one layer up.
+ *
  * @param {object}   options
  * @param {string}   options.mainCheckout Canonical checkout path.
  * @param {string}   options.projectRoot Current checkout path to hydrate.
  * @param {Function} [options.log] Logger fn.
+ * @param {Function} [options.projectSeatHooks=projectHooks] Seat-hook projector; injectable for tests.
  * @param {Function} [options.wireClaudeSettings=initClaudeSettings] Claude-settings materializer; injectable for tests.
- * @returns {Promise<object>} Hydration sub-results (`bootstrap`, `data`, `dataReadAliases`, `claudeSettings`).
+ * @returns {Promise<object>} Hydration sub-results (`bootstrap`, `data`, `dataReadAliases`, `claudeSettings`, `seatHooks`).
  */
-export async function hydrateCurrentWorktree({mainCheckout, projectRoot, log = console.log, wireClaudeSettings = initClaudeSettings}) {
+export async function hydrateCurrentWorktree({
+    mainCheckout,
+    projectRoot,
+    log                = console.log,
+    projectSeatHooks   = projectHooks,
+    wireClaudeSettings = initClaudeSettings
+}) {
     const bootstrap       = await bootstrapWorktree({mainCheckout, projectRoot, log});
     const data            = await symlinkDataDir({mainCheckout, projectRoot, log});
     const dataReadAliases = await symlinkCanonicalDataReadAliases({mainCheckout, projectRoot, log});
     const claudeSettings  = await wireClaudeSettings({claudeDir: path.join(projectRoot, '.claude'), logger: {log, warn: log}});
+    const seatHooks       = await projectSeatHooks({
+        agentosRuntimeRoot: AGENTOS_RUNTIME_ROOT,
+        targetRepoRoot    : projectRoot
+    });
 
-    return {bootstrap, data, dataReadAliases, claudeSettings};
+    log(`Projected ${seatHooks.written.length} Agent-OS seat hook(s) into ${projectRoot}.`);
+
+    return {bootstrap, claudeSettings, data, dataReadAliases, seatHooks};
 }
 
 /**
@@ -1539,6 +1594,13 @@ if (isMain) {
         // skips when node_modules already exists.
         const claudeSettings = await initClaudeSettings({claudeDir: path.join(projectRoot, '.claude')});
         console.log(`✓ Claude settings: ${claudeSettings.action}`);
+
+        // Authority 2 of the ADR 0040 §2.7 split, on the arm an operator actually types. This is the
+        // same projection {@link hydrateCurrentWorktree} performs; both surfaces bootstrap a seat, so
+        // wiring only the programmatic one would leave every CLI-bootstrapped checkout holding a
+        // hydrated settings file that names hooks nothing ever placed.
+        const seatHooks = projectHooks({agentosRuntimeRoot: AGENTOS_RUNTIME_ROOT, targetRepoRoot: projectRoot});
+        console.log(`✓ Seat hooks: ${seatHooks.written.length} projected, ${seatHooks.pruned.length} pruned`);
 
         if (linkData) {
             const symlinkResult = await symlinkDataDir({mainCheckout, projectRoot, force});

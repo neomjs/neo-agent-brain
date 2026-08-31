@@ -1,0 +1,61 @@
+{
+  "$comment": [
+    "Agent-OS-owned Claude event wiring. SOURCE DATA for projectSeatHooks, never a target artifact:",
+    "the harness reads .claude/settings.json, and this file is reconciled INTO it entry-by-entry",
+    "after the Engine template hydrates. It therefore declares only the events Agent OS owns.",
+    "PreToolUse -> rgReplaceGuardHook is deliberately ABSENT: that guard is Engine-owned and tracked",
+    "(ADR 0040 2.7), so the Engine template hydrates it and the projector must preserve rather than",
+    "restate it. Restating it here would make the Brain the second author of an Engine entry.",
+    "Timeouts are part of the contract, not decoration: wakeArmingHook exports HOOK_TIMEOUT_MS = 15000",
+    "and derives its MCP exchange budget from it, so a drift between that constant and the 15 below",
+    "silently shortens the window the hook believes it has.",
+    "Commands are byte-identical to the pre-cut Engine template at c623b2f63c^, so the reconciliation",
+    "restores the wiring that existed rather than a re-derived approximation."
+  ],
+  "events": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/wakeArmingHook.mjs\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/turnPresenceHook.mjs\" start",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/turnPresenceHook.mjs\" progress",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "NEO_LANE_STATE_ENFORCE=1 /usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/laneStateStopHook.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

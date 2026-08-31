@@ -22,6 +22,7 @@ import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs';
 import fsExtra         from 'fs-extra';
 import path            from 'path';
+import {createRequire} from 'node:module';
 
 test.describe.configure({mode: 'serial'});
 
@@ -1344,8 +1345,19 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         return {log: (...a) => log.push(a.join(' ')), warn: (...a) => warn.push(a.join(' ')), entries: {log, warn}};
     };
 
-    // The tracked template the materializer reads — the Stop hook with the operator-directed
-    // enforce=1 default (the forcing-function rollout; NOT dry-run) plus PreToolUse guards.
+    // A CONTROLLED INPUT for the merge functions below — deliberately NOT a mirror of any real
+    // template, and not evidence about one.
+    //
+    // It used to be labelled "the tracked template the materializer reads". It was not: the
+    // materializer defaults to `<engineRoot>/.claude/settings.template.json` from the INSTALLED
+    // package, and after the ADR 0040 §2.7 custody split the tracked Engine template declares only
+    // `PreToolUse -> rgReplaceGuardHook`. So a reader took this fixture's Stop entry as proof the
+    // Engine still owned no-hold wiring, and every assertion here stayed green through the cut that
+    // removed it (#250 AC-9).
+    //
+    // The merge tests are legitimate as they stand — `mergeClaudeHooks` is a pure function and this
+    // is its input. What was missing is anything reading the real file, which the final describe in
+    // this suite now does.
     const TEMPLATE = {
         permissions: {allow: ['mcp__neo-mjs-memory-core__healthcheck']},
         hooks      : {
@@ -1474,4 +1486,64 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         expect(r.action).toBe('skip-no-template');
         expect(fs.existsSync(path.join(dir, 'settings.json'))).toBe(false);
     });
+});
+
+/**
+ * The template the materializer ACTUALLY reads — not a fixture standing in for it.
+ *
+ * Everything above drives `mergeClaudeHooks` and `initClaudeSettings` with controlled inputs, which
+ * is correct for testing those functions and tells you nothing about the real file. #250 AC-9 exists
+ * because the gap was invisible: a hand-written `TEMPLATE` declaring `Stop -> laneStateStopHook` read
+ * as evidence that the Engine wires the no-hold hook, and stayed green straight through the leaf-11
+ * cut that removed it.
+ *
+ * The assertions here are deliberately revision-INDEPENDENT. The installed package and the Engine
+ * checkout currently disagree — measured tonight: installed declares five events, Engine `dev`
+ * declares one — and both are coherent states either side of a publish. A test pinning the event
+ * count would go red on a correct release, which is the failure mode being repaired, not a stricter
+ * version of the fix.
+ */
+test.describe('the installed Engine settings template — properties that hold across the cut', () => {
+    // Resolved exactly the way initServerConfigs.mjs resolves it, so this reads the same file the
+    // materializer will. Deriving the path any other way would test a path, not the template.
+    const
+        engineRoot   = path.dirname(createRequire(import.meta.url).resolve('neo.mjs/package.json')),
+        templatePath = path.join(engineRoot, '.claude/settings.template.json');
+
+    test('exists and parses — the materializer has something to read', () => {
+        expect(fs.existsSync(templatePath), `no template at ${templatePath}`).toBe(true);
+        expect(() => JSON.parse(fs.readFileSync(templatePath, 'utf-8'))).not.toThrow()
+    });
+
+    test('every command it declares resolves to a hook the package actually ships', () => {
+        // The invariant that breaks in practice, and the one nothing checked. A template entry naming
+        // a file the package does not ship wires the seat to silence: the harness runs the command,
+        // node fails to resolve it, and no layer reports anything. Exactly what a half-completed cut
+        // produces — the template keeps its entry, the file leaves with the extraction.
+        const
+            template = JSON.parse(fs.readFileSync(templatePath, 'utf-8')),
+            commands = Object.values(template.hooks || {})
+                .flatMap(buckets => buckets.flatMap(bucket => (bucket.hooks || []).map(entry => entry.command)));
+
+        expect(commands.length, 'the template declares no hooks at all').toBeGreaterThan(0);
+
+        commands.forEach(command => {
+            const match = command.match(/\.claude\/hooks\/([\w.-]+\.mjs)/);
+
+            expect(match, `command declares no .claude/hooks target: ${command}`).not.toBeNull();
+            expect(
+                fs.existsSync(path.join(engineRoot, '.claude/hooks', match[1])),
+                `${match[1]} is declared by the installed template but not shipped in the package`
+            ).toBe(true)
+        })
+    });
+
+    test('declares the Engine-owned PreToolUse guard on both sides of the cut', () => {
+        // The one entry the Engine owns outright under ADR 0040 §2.7. Pre-cut it sits beside the four
+        // Agent-OS events; post-cut it is the only entry left. Either way its absence would mean the
+        // Engine had stopped wiring its own guard, which no custody split licenses.
+        const template = JSON.parse(fs.readFileSync(templatePath, 'utf-8'));
+
+        expect(JSON.stringify(template.hooks?.PreToolUse ?? null)).toContain('rgReplaceGuardHook')
+    })
 });
