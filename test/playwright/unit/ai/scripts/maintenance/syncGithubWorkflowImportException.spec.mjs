@@ -1,7 +1,8 @@
-import {test, expect}     from '@playwright/test';
-import {readFileSync}     from 'node:fs';
-import {dirname, resolve} from 'node:path';
-import {fileURLToPath}    from 'node:url';
+import {test, expect}       from '@playwright/test';
+import {readFileSync}       from 'node:fs';
+import {dirname, resolve}   from 'node:path';
+import {fileURLToPath}      from 'node:url';
+import {normalizeSpecifier} from '../../../../../../ai/scripts/lint/scriptPlaneClosure.mjs';
 
 const
     // maintenance -> scripts -> ai -> unit -> playwright -> test -> repo root
@@ -81,10 +82,15 @@ function reachesPackage(entry, barePackage) {
             if (specifier.startsWith('.')) {
                 resolved = resolve(dirname(file), specifier)
             } else {
-                if (specifier === barePackage) {
+                // Collapse subpaths to the package root before comparing. `specifier === barePackage`
+                // saw only the bare root, so `import 'chromadb/subpath'` — reach into the forbidden
+                // package by any reading — passed as clean. `normalizeSpecifier` is the repository's
+                // existing authority for this and already handles the scoped-package case, so the
+                // comparison is delegated rather than re-derived here.
+                if (normalizeSpecifier(specifier) === normalizeSpecifier(barePackage)) {
                     // First chain wins — it is the one reported — but the walk continues, so
                     // `walked` still measures the whole graph. See the note on `walk` above.
-                    hit ??= [...chain, file, barePackage];
+                    hit ??= [...chain, file, specifier];
                     continue
                 }
 
