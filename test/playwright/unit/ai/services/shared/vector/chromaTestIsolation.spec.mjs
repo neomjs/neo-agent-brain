@@ -1,4 +1,5 @@
-import {test, expect} from '@playwright/test';
+import {test, expect}  from '@playwright/test';
+import {execFileSync}  from 'node:child_process';
 import {
     assertChromaCoordinateCoherence,
     CHROMA_PRODUCTION_DATABASE,
@@ -339,6 +340,87 @@ test.describe('#286 RA-3 — endpoint identity is not host-string identity', () 
         expect(isSameChromaHost('example.com',     'localhost')).toBe(false);
         expect(isSameChromaHost('chroma.internal', '127.0.0.1')).toBe(false);
         expect(isSameChromaHost('10.0.0.1',        'localhost')).toBe(false);
+    });
+});
+
+test.describe('#286 RA-3 — the same refusal, reached through actual config resolution', () => {
+    // Every arm above hands the guard its coordinates, so it can only confirm the guard's own
+    // arithmetic. The incident #285 records was produced by CONFIG: a test selector resolved a
+    // test-shaped database while the coordinates resolved to the production instance. So the arm
+    // that carries the claim runs the real provider hierarchy and lets `ChromaManager.construct`
+    // decide, with nothing hand-fed but the environment.
+    //
+    // A child process, not an in-process provider: leaves read the environment at resolution time,
+    // and a test may not mutate the shared `aiConfig` singleton to change what they read. Resolving
+    // a different environment therefore means a different process.
+    //
+    // `ChromaManager` is a singleton, so the import itself constructs it — and the guard sits before
+    // `new ChromaClient`, which is why this reaches a verdict without a Chroma server or a socket.
+    const CONSTRUCT_SCRIPT = `
+        import 'neo.mjs/src/Neo.mjs';
+
+        const {default: kbConfig} = await import('./ai/mcp/server/knowledge-base/config.mjs');
+
+        console.log('RESOLVED='   + kbConfig.host + ':' + kbConfig.port);
+        console.log('PRODUCTION=' + kbConfig.engines.chroma.hostProd + ':' + kbConfig.engines.chroma.portProd);
+        console.log('DATABASE='   + kbConfig.chromaDatabase);
+
+        try {
+            await import('./ai/services/knowledge-base/ChromaManager.mjs');
+            console.log('OUTCOME=ALLOWED')
+        } catch (error) {
+            console.log('OUTCOME=REFUSED')
+        }
+    `;
+
+    /**
+     * Resolves the Knowledge Base config in a fresh process under `overrides` and reports what
+     * `ChromaManager`'s constructor did with it.
+     * @param {Object} overrides Environment applied on top of `UNIT_TEST_MODE`.
+     * @returns {String} The child's stdout, carrying RESOLVED / PRODUCTION / DATABASE / OUTCOME.
+     */
+    const resolveAndConstruct = overrides => {
+        const env = {...process.env, UNIT_TEST_MODE: 'true', ...overrides};
+
+        // The production coordinate variables are UNSET here rather than set, and that is the whole
+        // arm. `NEO_CHROMA_HOST` / `NEO_CHROMA_PORT` are re-bound by the KB child leaves (the
+        // duplicate producer #288 owns), so exporting them resolves `host` straight from the
+        // production binding — the refusal then fires on two byte-identical host strings and proves
+        // nothing about endpoint identity. Measured: with `NEO_CHROMA_HOST=localhost` exported, this
+        // same arm resolves `localhost:8000` and refuses for that unrelated reason. Unset, the
+        // production side falls to its declared Tier-1 defaults and the test coordinate is the only
+        // thing the environment supplies — which is what makes `127.0.0.1` vs `localhost` the
+        // discriminating difference. The child prints both sides rather than letting either be
+        // assumed.
+        delete env.NEO_CHROMA_HOST;
+        delete env.NEO_CHROMA_PORT;
+
+        return execFileSync(process.execPath, ['--input-type=module', '-e', CONSTRUCT_SCRIPT], {
+            cwd     : process.cwd(),
+            encoding: 'utf8',
+            env
+        })
+    };
+
+    test('REFUSES the config-resolved alias arm — NEO_CHROMA_HOST_TEST=127.0.0.1 on the production port', () => {
+        const output = resolveAndConstruct({NEO_CHROMA_HOST_TEST: '127.0.0.1', NEO_CHROMA_PORT_TEST: '8000'});
+
+        // Read the resolution before the verdict: a refusal on coordinates that never resolved as
+        // intended would be the same green for a different reason.
+        expect(output).toContain('RESOLVED=127.0.0.1:8000');
+        expect(output).toContain('PRODUCTION=localhost:8000');
+        expect(output).toMatch(/DATABASE=neo-kb-unit-test-\d+/);
+        expect(output).toContain('OUTCOME=REFUSED')
+    });
+
+    test('ALLOWS the ordinary test coordinate through the same path — 127.0.0.1:18180', () => {
+        // Non-vacuity: without this, a child that failed to boot for any reason would read as a
+        // refusal, and the arm above would pass on a broken harness.
+        const output = resolveAndConstruct({NEO_CHROMA_HOST_TEST: '127.0.0.1', NEO_CHROMA_PORT_TEST: '18180'});
+
+        expect(output).toContain('RESOLVED=127.0.0.1:18180');
+        expect(output).toContain('PRODUCTION=localhost:8000');
+        expect(output).toContain('OUTCOME=ALLOWED')
     });
 });
 
