@@ -13,11 +13,12 @@ setup({
     }
 });
 
-import {test, expect}  from '@playwright/test';
-import path            from 'path';
-import {fileURLToPath} from 'url';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}           from '@playwright/test';
+import path                     from 'path';
+import {fileURLToPath}          from 'url';
+import Neo                      from 'neo.mjs/src/Neo.mjs';
+import * as core                from 'neo.mjs/src/core/_export.mjs';
+import {resolveModuleSpecifier} from '../../../../../../ai/scripts/lint/scriptPlaneClosure.mjs';
 
 const __filename  = fileURLToPath(import.meta.url);
 const __dirname   = path.dirname(__filename);
@@ -71,15 +72,52 @@ test.describe('ai/scripts/lifecycle/sweepExpiredTasks.mjs regression guard (#105
         const {default: fs} = await import('fs-extra');
         const content       = await fs.readFile(scriptPath, 'utf-8');
         const lines         = content.split('\n');
-        const neoImportIdx  = lines.findIndex(l => /^import\s+Neo\s+from\s+['"]\.\.\/\.\.\/\.\.\/src\/Neo\.mjs['"]/.test(l));
-        const coreImportIdx = lines.findIndex(l => /^import\s+\*\s+as\s+core\s+from\s+['"]\.\.\/\.\.\/\.\.\/src\/core\/_export\.mjs['"]/.test(l));
-        const lifecycleIdx  = lines.findIndex(l => /^import\s+LifecycleService\s+from\s+['"]\.\.\/\.\.\/services\/memory-core\/lifecycle\/SystemLifecycleService\.mjs['"]/.test(l));
+        // Matched on the module each import RESOLVES to, never on one literal specifier. The Agent
+        // OS consumes the PUBLISHED Engine, so these two modules arrive as `neo.mjs/src/**`; an
+        // earlier layout reached the same files by climbing relatively into an in-repo `src/**`.
+        // A guard pinned to either spelling is invalidated by the next specifier migration rather
+        // than surviving it, and an invalidated guard covers nothing while still looking like
+        // coverage. The invariant is "the Neo class system is bootstrapped before the first module
+        // that calls `Neo.gatekeep()` at load time"; the specifier form is not part of it.
+        // An earlier revision of this guard matched `['"][^'"]*src/Neo\.mjs['"]` — a SUFFIX, not a
+        // resolution. `fake/src/Neo.mjs` satisfied it while direct invocation would still die before
+        // `Neo.gatekeep()`, so the guard read green over exactly the defect it exists to catch. The
+        // comment above already claimed "the module each import RESOLVES to"; only the code was
+        // matching spelling. Both now resolve through the repository's existing authority.
+        const specifierOf = line => line.match(/^import\s+[^'"]*from\s+['"]([^'"]+)['"]/)?.[1] ?? null;
 
-        // All three imports MUST be present and ordered correctly.
-        expect(neoImportIdx).toBeGreaterThanOrEqual(0);
-        expect(coreImportIdx).toBeGreaterThanOrEqual(0);
-        expect(lifecycleIdx).toBeGreaterThanOrEqual(0);
-        expect(neoImportIdx).toBeLessThan(lifecycleIdx);
-        expect(coreImportIdx).toBeLessThan(lifecycleIdx);
+        /**
+         * Index of the first import whose specifier RESOLVES to `target`, or -1. A specifier that
+         * does not resolve at all returns null from the resolver and can never match, which is the
+         * property the suffix regex lacked.
+         */
+        const resolvedIndex = target => lines.findIndex(line => {
+            const specifier = specifierOf(line);
+
+            return Boolean(specifier) && resolveModuleSpecifier(specifier, scriptPath) === target
+        });
+
+        const
+            neoTarget       = resolveModuleSpecifier('neo.mjs/src/Neo.mjs',           scriptPath),
+            coreTarget      = resolveModuleSpecifier('neo.mjs/src/core/_export.mjs',  scriptPath);
+
+        // The targets must themselves resolve, or every assertion below compares against null and
+        // -1 === -1 would read as agreement. This is the floor under the floor.
+        expect(neoTarget,  'neo.mjs/src/Neo.mjs does not resolve from the subject — the guard cannot judge anything').toBeTruthy();
+        expect(coreTarget, 'neo.mjs/src/core/_export.mjs does not resolve from the subject').toBeTruthy();
+
+        const neoImportIdx  = resolvedIndex(neoTarget);
+        const coreImportIdx = resolvedIndex(coreTarget);
+        const lifecycleIdx  = lines.findIndex(l => /^import\s+LifecycleService\s+from\s+['"][^'"]*SystemLifecycleService\.mjs['"]/.test(l));
+
+        // Presence FIRST, each with its own message. `findIndex` returns -1 on absence and
+        // `-1 < lifecycleIdx` is vacuously true, so an ordering assertion evaluated with a missing
+        // import would report correct ordering about an import that is not there.
+        expect(neoImportIdx, 'the Neo prelude is absent from sweepExpiredTasks.mjs — direct invocation will die at module load with `ReferenceError: Neo is not defined` (#10595)').toBeGreaterThanOrEqual(0);
+        expect(coreImportIdx, 'the core/_export augmentation is absent — Neo globals will be missing at setupClass time').toBeGreaterThanOrEqual(0);
+        expect(lifecycleIdx, 'the LifecycleService import is absent — this guard has lost its subject, so re-point it rather than deleting it').toBeGreaterThanOrEqual(0);
+
+        expect(neoImportIdx, 'the Neo prelude is imported AFTER LifecycleService, so Compare.mjs gatekeeps before Neo exists').toBeLessThan(lifecycleIdx);
+        expect(coreImportIdx, 'core/_export is imported AFTER LifecycleService, so Neo globals are absent when the chain loads').toBeLessThan(lifecycleIdx);
     });
 });
