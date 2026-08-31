@@ -16,11 +16,12 @@ setup({
 import {test, expect}   from '@playwright/test';
 import Neo              from 'neo.mjs/src/Neo.mjs';
 import * as core        from 'neo.mjs/src/core/_export.mjs';
-import {execFileSync}   from 'node:child_process';
+import {execFileSync, spawnSync} from 'node:child_process';
 import fs               from 'node:fs';
 import os               from 'node:os';
 import path             from 'node:path';
 import {
+    assertRuntimeRoot,
     checkProjection,
     declaredHookCommands,
     enumerateConfigs,
@@ -30,11 +31,14 @@ import {
     main,
     projectHooks,
     reconcileClaudeEvents,
+    renderProjection,
     rewriteSpecifiers,
     writeLocalExclude
 } from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
 
-const REPO_ROOT = path.resolve(process.cwd());
+const
+    REPO_ROOT        = path.resolve(process.cwd()),
+    PROJECTOR_SCRIPT = path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/projectSeatHooks.mjs');
 
 let scratchDirs = [];
 
@@ -169,6 +173,124 @@ test.describe('projectSeatHooks — specifier rewriting', () => {
         expect(result.escaped.length).toBe(1);
         // Unchanged: silently re-pointing it would fabricate a dependency the source never declared.
         expect(result.contents).toContain('../../../../../../outside.mjs')
+    });
+
+    test('rewrites a relative literal only in ESM specifier position, never elsewhere', () => {
+        // The discrimination the previous quote-only matcher could not make. Every literal below is
+        // a `'../…'` string in one file; only the first three are module bindings.
+        const
+            root   = runtimeRoot({claude: {'a.mjs':
+                "import {substrate} from '../../../../lib/substrate.mjs';\n" +
+                "const engine = await import('../../../../lib/substrate.mjs');\n" +
+                "import '../../../../lib/substrate.mjs';\n" +
+                "const CHECKOUT_ROOT = path.resolve(import.meta.dirname, '../..');\n" +
+                "const contextUrl = new URL('../CODEX.md', import.meta.url);\n"
+            }}),
+            source = path.join(root, 'ai/scripts/lifecycle/hooks/claude/a.mjs'),
+            result = rewriteSpecifiers(fs.readFileSync(source, 'utf8'), source, root);
+
+        // Static, dynamic and side-effect forms are all specifier position — all three bind.
+        expect(result.rewritten).toBe(3);
+
+        // The operational paths belong to the TARGET seat and are correct only while relative.
+        expect(result.contents).toContain("path.resolve(import.meta.dirname, '../..')");
+        expect(result.contents).toContain("new URL('../CODEX.md', import.meta.url)")
+    })
+});
+
+test.describe('projectSeatHooks — the real corpus, rendered', () => {
+    // The tests above drive authored fixtures, which is right for the projector's logic and wrong
+    // for this question: whether the REAL seven hooks survive projection with working paths. The
+    // previous rewriter passed every fixture assertion and still rendered two corrupted artifacts,
+    // because no fixture happened to hold a relative literal outside specifier position. The real
+    // corpus does, in two files. Found by @neo-gpt-emmy reviewing #250.
+    const rendered = suffix => {
+        const hook = enumerateHooks(REPO_ROOT).find(entry => entry.source.endsWith(suffix));
+
+        expect(hook, `${suffix} is missing from the real corpus`).toBeTruthy();
+        return renderProjection(hook.source, REPO_ROOT).contents
+    };
+
+    test('MUTANT — the Kimi seat keeps the target checkout root it reads .env from', () => {
+        const contents = rendered('kimi-code/wakeEnvelopeHook.mjs');
+
+        // Rewritten, this resolved to <runtimeRoot>/ai/scripts/lifecycle — the Brain's own tree — so
+        // every projected Kimi seat read another repository's state, and reported no problem doing it.
+        expect(contents).toContain("path.resolve(import.meta.dirname, '../..')");
+        expect(contents).not.toContain(path.join(REPO_ROOT, 'ai/scripts/lifecycle') + "')")
+    });
+
+    test('MUTANT — the Codex seat keeps the relative URL of its own CODEX.md', () => {
+        const contents = rendered('codex/codex-context.mjs');
+
+        expect(contents).toContain("new URL('../CODEX.md', import.meta.url)");
+        expect(contents).not.toContain(path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/CODEX.md'))
+    });
+
+    test('CONTROL — the same two files still get their module specifiers bound', () => {
+        // Without this, both mutants above are satisfied by a rewriter that does nothing at all.
+        ['kimi-code/wakeEnvelopeHook.mjs', 'codex/codex-context.mjs'].forEach(suffix => {
+            const contents = rendered(suffix);
+
+            expect(contents, `${suffix} bound no Brain specifier`).toContain(`from '${path.join(REPO_ROOT, 'ai')}`);
+            expect(contents, `${suffix} left a relative Brain import`).not.toMatch(/\bfrom\s+'\.\.\//)
+        })
+    })
+});
+
+test.describe('projectSeatHooks — runtime-root identity', () => {
+    // `requireRoot` proves a root was bound and exists. Neither fact says it is the RIGHT root, and
+    // an empty population trivially satisfies every condition `--check` audits — so both arms
+    // reported success on a wrong binding, the write arm after mutating the target's exclude file.
+    // Found by @neo-gpt-emmy reviewing #250.
+    test('MUTANT — a directory that is not a hook source reds both arms and mutates nothing', () => {
+        const
+            root        = scratch('not-an-agentos-root'),
+            target      = targetRepo(),
+            argv        = [`--runtime-root=${root}`, `--target-root=${target}`],
+            excludeFile = path.join(target, '.git/info/exclude'),
+            // `git init` writes this file, so its EXISTENCE proves nothing. Its bytes do.
+            before      = {exclude: fs.readFileSync(excludeFile, 'utf8'), tree: fs.readdirSync(target).sort()};
+
+        expect(() => projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target}))
+            .toThrow(/not an Agent OS hook source/);
+        expect(() => checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target}))
+            .toThrow(/not an Agent OS hook source/);
+
+        // The exit code is what a provisioning caller reads, and it comes from the entrypoint guard
+        // rather than from `main()` — so it is asserted by running the real script as a real process
+        // instead of inferred from the throw.
+        [argv, [...argv, '--check']].forEach(args => {
+            const run = spawnSync(process.execPath, [PROJECTOR_SCRIPT, ...args], {encoding: 'utf8'});
+
+            expect(run.status, `${args.join(' ')} did not exit 1`).toBe(1);
+            expect(run.stderr).toMatch(/not an Agent OS hook source/)
+        });
+
+        // Zero mutation. The write arm previously ran to completion on this binding and rewrote the
+        // exclude block, having read no source and written no hook.
+        expect(fs.readdirSync(target).sort()).toEqual(before.tree);
+        expect(fs.readFileSync(excludeFile, 'utf8')).toBe(before.exclude)
+    });
+
+    test('MUTANT — a hook source tree holding no declared harness is refused, not reported empty', () => {
+        // The second condition, which the first does not imply: the directory is there and the
+        // population is still zero. A renamed or half-deleted tree lands exactly here.
+        const
+            root   = scratch('empty-hook-source'),
+            target = targetRepo();
+
+        fs.mkdirSync(path.join(root, 'ai/scripts/lifecycle/hooks'), {recursive: true});
+
+        expect(() => projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target}))
+            .toThrow(/declares no projectable hook or config/);
+        expect(() => checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target}))
+            .toThrow(/declares no projectable hook or config/)
+    });
+
+    test('CONTROL — the real runtime root passes the same assertion', () => {
+        // Without this, both mutants are satisfied by a guard that refuses everything.
+        expect(() => assertRuntimeRoot(REPO_ROOT)).not.toThrow()
     })
 });
 

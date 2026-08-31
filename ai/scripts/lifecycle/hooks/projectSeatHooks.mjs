@@ -31,6 +31,15 @@ import {fileURLToPath, pathToFileURL}      from 'node:url';
 const
     dirname = path.dirname(fileURLToPath(import.meta.url)),
     /**
+     * The one path under a runtime root that holds every harness's hook sources.
+     *
+     * Written once rather than inlined at each enumerator, because {@link assertRuntimeRoot} has to
+     * check the *same* directory the enumerators read. A guard that validated a path the readers do
+     * not use would pass while they still found nothing — which is precisely the false green it
+     * exists to close.
+     */
+    HOOK_SOURCE_DIR = 'ai/scripts/lifecycle/hooks',
+    /**
      * Source directory → target directory, per harness. The target segments are dot-prefixed by the
      * harnesses themselves; the source segments are not, because a dotted source directory is
      * hostile to tooling and to diffing a projection against its origin.
@@ -119,7 +128,7 @@ export function enumerateHooks(runtimeRoot) {
     const hooks = [];
 
     Object.entries(HARNESS_TARGETS).forEach(([harness, targetDir]) => {
-        const sourceDir = path.join(runtimeRoot, 'ai/scripts/lifecycle/hooks', harness);
+        const sourceDir = path.join(runtimeRoot, HOOK_SOURCE_DIR, harness);
 
         if (!fs.existsSync(sourceDir)) return;
 
@@ -152,7 +161,7 @@ export function enumerateConfigs(runtimeRoot) {
 
     Object.entries(HARNESS_CONFIGS).forEach(([harness, entries]) => {
         entries.forEach(({source, target}) => {
-            const absSource = path.join(runtimeRoot, 'ai/scripts/lifecycle/hooks', harness, source);
+            const absSource = path.join(runtimeRoot, HOOK_SOURCE_DIR, harness, source);
 
             if (fs.existsSync(absSource)) configs.push({executable: false, harness, source: absSource, target})
         })
@@ -174,13 +183,87 @@ export function enumerateProjection(runtimeRoot) {
 }
 
 /**
- * @summary Rewrites Brain-substrate specifiers to absolute paths beneath the runtime root.
+ * @summary Proves the bound runtime root is an Agent OS hook source before either arm may report on it.
  *
- * Only `../`-relative specifiers are touched, and only those that resolve inside the runtime root.
- * Package specifiers (`neo.mjs/src/**`) are deliberately left alone: they resolve through the
- * target's own `node_modules` against the published Engine, which is the §2.3 dependency direction.
- * A specifier that resolves OUTSIDE the runtime root is returned unchanged and reported, because
- * silently rewriting it would invent a dependency the source never declared.
+ * `requireRoot` establishes that a root was *bound* and that the path exists. Neither fact says the
+ * path is the right one, and existence is the weaker half by far: any directory that happens to be
+ * there satisfies it. Bound to an empty or swapped root the enumerators found nothing, so the write
+ * arm reported `projected 0 hook(s)` and exited 0, and `--check` reported `OK — every declared hook
+ * is projected and current` and exited 0. An empty population trivially satisfies every condition
+ * `--check` audits; a zero-artifact projection is indistinguishable from a complete one when the
+ * only question asked is whether anything is missing.
+ *
+ * So identity is asserted rather than inferred from a clean audit, and it is asserted *before any
+ * target mutation* — the write arm previously reached `writeLocalExclude` and rewrote the target's
+ * `.git/info/exclude` on a wrong root, which is a mutation performed on the strength of a binding
+ * that was never valid.
+ *
+ * Both conditions are required and neither implies the other: the directory can exist while holding
+ * no harness the manifest declares (a partial or renamed tree), and a population can only be counted
+ * once there is a directory to count it in.
+ *
+ * Found by @neo-gpt-emmy reviewing #250, whose swapped-root probe drove both arms green.
+ * @param {String} runtimeRoot Absolute AgentOS runtime root.
+ * @throws {Error} If the root is not a hook source, or declares no projectable artifact at all.
+ */
+export function assertRuntimeRoot(runtimeRoot) {
+    const hookSourceRoot = path.join(runtimeRoot, HOOK_SOURCE_DIR);
+
+    if (!fs.existsSync(hookSourceRoot)) {
+        throw new Error(
+            `runtime root is not an Agent OS hook source: ${runtimeRoot} has no ${HOOK_SOURCE_DIR}. ` +
+            'Nothing was read and nothing was written — bind --runtime-root to the Brain checkout.'
+        )
+    }
+
+    if (enumerateProjection(runtimeRoot).length === 0) {
+        throw new Error(
+            `runtime root declares no projectable hook or config: ${hookSourceRoot} holds none of ` +
+            `${Object.keys(HARNESS_TARGETS).join(', ')}. Refusing to report a zero-artifact ` +
+            'projection as a complete one.'
+        )
+    }
+}
+
+/**
+ * A relative string in ESM **specifier position**, and nowhere else.
+ *
+ * The three prefixes are the only syntactic places a module specifier can appear: `from '…'` covers
+ * every static `import`/`export … from` including the multi-line forms this corpus uses, `import(…)`
+ * covers the dynamic form, and a bare `import '…'` covers the side-effect form.
+ *
+ * The narrowness is the point. A quote-only matcher — `/(['"])(\.\.?\/[^'"]+)\1/g`, the previous
+ * implementation — cannot tell a module binding from an operational path, and both appear as
+ * `'../…'` literals in these hooks. See {@link rewriteSpecifiers} for what that cost.
+ */
+const ESM_SPECIFIER = /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(['"])(\.\.?\/[^'"]+)\2/g;
+
+/**
+ * @summary Rewrites Brain-substrate **module specifiers** to absolute paths beneath the runtime root.
+ *
+ * Only `../`-relative specifiers are touched, only in ESM specifier position, and only those that
+ * resolve inside the runtime root. Package specifiers (`neo.mjs/src/**`) are deliberately left
+ * alone: they resolve through the target's own `node_modules` against the published Engine, which is
+ * the §2.3 dependency direction. A specifier that resolves OUTSIDE the runtime root is returned
+ * unchanged and reported, because silently rewriting it would invent a dependency the source never
+ * declared.
+ *
+ * **Why position and not merely shape.** Rewriting is correct for exactly one category: a binding
+ * the *Brain runtime* must resolve, which cannot survive being read from a tree that does not
+ * contain this repository. A hook's other relative literals are the opposite category — they are
+ * operational paths the *target seat* must resolve, and they are correct only while they stay
+ * relative to the projected artifact. The two are indistinguishable by shape, so position is the
+ * only honest discriminator:
+ *
+ * - `kimi-code/wakeEnvelopeHook.mjs`: `path.resolve(import.meta.dirname, '../..')` is the target
+ *   checkout root the seat reads its `.env` from. Rewritten, the seat read the Brain runtime's
+ *   `ai/scripts/lifecycle` instead — a projected hook resolving another repository's state.
+ * - `codex/codex-context.mjs`: `new URL('../CODEX.md', import.meta.url)` is the target's own context
+ *   file. Rewritten, every seat was handed the Brain's copy.
+ *
+ * Both hooks projected, both ran, neither reported a problem — the failure mode was a *wrong* answer
+ * rather than a missing one, which no presence check can see. Found by @neo-gpt-emmy reviewing #250,
+ * rendering the real corpus rather than the spec's authored fixtures.
  * @param {String} contents Source text.
  * @param {String} sourceFile Absolute path of the source module.
  * @param {String} runtimeRoot Absolute AgentOS runtime root.
@@ -193,7 +276,7 @@ export function rewriteSpecifiers(contents, sourceFile, runtimeRoot) {
 
     let rewritten = 0;
 
-    const next = contents.replace(/(['"])(\.\.?\/[^'"]+)\1/g, (match, quote, specifier) => {
+    const next = contents.replace(ESM_SPECIFIER, (match, prefix, quote, specifier) => {
         const resolved = path.resolve(sourceDir, specifier);
 
         if (!resolved.startsWith(runtimeRoot + path.sep)) {
@@ -202,7 +285,7 @@ export function rewriteSpecifiers(contents, sourceFile, runtimeRoot) {
         }
 
         rewritten++;
-        return `${quote}${resolved}${quote}`
+        return `${prefix}${quote}${resolved}${quote}`
     });
 
     return {contents: next, escaped, rewritten}
@@ -350,6 +433,8 @@ export function declaredHookCommands(runtimeRoot, targetRepoRoot) {
  * @returns {{escapedSpecifiers: Object[], missing: String[], ok: Boolean, orphans: String[], stale: String[], trackedConflicts: String[], unplacedCommands: Object[]}}
  */
 export function checkProjection({agentosRuntimeRoot, targetRepoRoot}) {
+    assertRuntimeRoot(agentosRuntimeRoot);
+
     const
         escapedSpecifiers = [],
         missing           = [],
@@ -666,6 +751,11 @@ export function writeLocalExclude({targetRepoRoot, targets}) {
  * @throws {Error} If any projection path is tracked, or a source escapes the runtime root.
  */
 export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
+    // First of the four refusals, and first for a reason the other three do not share: it is the
+    // only one that can fire before a single byte of the target is read. The rest audit what this
+    // projection would do; this one asks whether the binding it would do it from is real at all.
+    assertRuntimeRoot(agentosRuntimeRoot);
+
     const
         hooks     = enumerateProjection(agentosRuntimeRoot),
         conflicts = hooks.filter(hook => tracked(targetRepoRoot, hook.target)).map(hook => hook.target);
@@ -688,7 +778,7 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
         )
     }
 
-    // Third refusal, same shape as the two above and for the same reason. A run that writes nine
+    // Fourth refusal, same shape as the three above and for the same reason. A run that writes nine
     // hook files and then cannot wire them leaves the seat holding executables nothing invokes —
     // which is the silently-dead-hook failure this projector exists to prevent, reproduced one layer
     // up: the files are perfect, the harness never calls them, and every layer reports success.
