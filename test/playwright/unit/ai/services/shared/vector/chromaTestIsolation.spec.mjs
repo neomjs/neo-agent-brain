@@ -7,6 +7,7 @@ import {
     ensureChromaTestDatabase,
     isChromaAlreadyExistsError,
     isChromaTestDatabaseName,
+    isSameChromaHost,
     KB_CHROMA_TEST_DATABASE_PREFIX,
     kbChromaTestDatabaseName,
     listChromaDatabases
@@ -272,5 +273,116 @@ test.describe('#285 — listChromaDatabases pagination', () => {
 
     test('stops cleanly on an empty instance', async () => {
         expect(await listChromaDatabases({adminClient: {listDatabases: async () => []}})).toEqual([]);
+    });
+});
+
+test.describe('#286 RA-3 — endpoint identity is not host-string identity', () => {
+    const productionCoordinates = {productionHost: 'localhost', productionPort: 8000};
+
+    const testDatabaseArm = overrides => () => assertChromaCoordinateCoherence({
+        database    : 'neo-kb-unit-test-24521',
+        testDatabase: 'neo-kb-unit-test-24521',
+        ...productionCoordinates,
+        ...overrides
+    });
+
+    // Reviewer-resolved on the live host: both `localhost:8000` and `127.0.0.1:8000` answer at
+    // /api/v2/heartbeat. A guard comparing hosts as bytes reads them as two instances and allows the
+    // write it exists to refuse — the config arm `--unit + NEO_CHROMA_HOST_TEST=127.0.0.1 +
+    // NEO_CHROMA_PORT_TEST=8000` resolves exactly this and reported ALLOWED before this fix.
+    for (const host of ['127.0.0.1', '::1', '[::1]', 'LocalHost', 'localhost.', '127.0.0.53']) {
+        test(`REFUSES the alias-equivalent production coordinate ${host}:8000`, () => {
+            expect(testDatabaseArm({host, port: 8000})).toThrow(/PRODUCTION Chroma instance/);
+        });
+    }
+
+    test('the refusal names the production spelling too, not just the resolved one', () => {
+        // An operator who sees only "127.0.0.1:8000 is production" has to re-derive why; the message
+        // has to close the gap it just widened.
+        let message = '';
+
+        try {
+            testDatabaseArm({host: '127.0.0.1', port: 8000})()
+        } catch (error) {
+            message = error.message
+        }
+
+        expect(message).toContain('127.0.0.1:8000');
+        expect(message).toContain('localhost:8000');
+    });
+
+    // Pinned controls: widening host identity must not widen the refusal. The port stays the
+    // discriminating coordinate, and a non-test database is never refused at all.
+    test('PASSES the ordinary test instance on a loopback alias — 127.0.0.1:18180', () => {
+        expect(testDatabaseArm({host: '127.0.0.1', port: 18180})).not.toThrow();
+    });
+
+    test('PASSES the production database reached through a loopback alias', () => {
+        expect(() => assertChromaCoordinateCoherence({
+            database    : CHROMA_PRODUCTION_DATABASE,
+            testDatabase: 'neo-kb-unit-test-24521',
+            host        : '127.0.0.1',
+            port        : 8000,
+            ...productionCoordinates
+        })).not.toThrow();
+    });
+
+    test('PASSES a genuinely different host on the production port', () => {
+        expect(testDatabaseArm({host: 'chroma.internal', port: 8000})).not.toThrow();
+    });
+
+    test('isSameChromaHost normalises the loopback family and nothing else', () => {
+        expect(isSameChromaHost('127.0.0.1', 'localhost')).toBe(true);
+        expect(isSameChromaHost('::1',       'localhost')).toBe(true);
+        expect(isSameChromaHost('127.0.0.2', '127.0.0.1')).toBe(true);
+        // No DNS on a boot path: names that may or may not resolve to the same listener stay distinct.
+        expect(isSameChromaHost('example.com',     'localhost')).toBe(false);
+        expect(isSameChromaHost('chroma.internal', '127.0.0.1')).toBe(false);
+        expect(isSameChromaHost('10.0.0.1',        'localhost')).toBe(false);
+    });
+});
+
+test.describe('#286 RA-4 — the census fails closed on a row it cannot read', () => {
+    // The failure this guards: `entry?.name` behind a `.filter(Boolean)` turns a moved chromadb
+    // response shape into an EMPTY census, which reads exactly like a clean production instance.
+    // A leaked test database would then be reported as absent. Missing evidence is not absence.
+    const refuses = adminClient => expect(listChromaDatabases({adminClient})).rejects.toThrow();
+
+    test('REFUSES a record whose name lives under an unrecognised key', async () => {
+        // Reviewer falsifier: returned [] silently before this fix.
+        await expect(listChromaDatabases({
+            adminClient: {listDatabases: async () => [{database_name: 'neo-kb-unit-test-123'}]}
+        })).rejects.toThrow(/unrecognised database row at index 0/);
+    });
+
+    test('the diagnostic names the keys it actually received', async () => {
+        // Without the observed shape, a maintainer cannot tell an API move from a broken fake.
+        await expect(listChromaDatabases({
+            adminClient: {listDatabases: async () => [{database_name: 'x', id: '1'}]}
+        })).rejects.toThrow(/keys \[database_name, id\]/);
+    });
+
+    test('REFUSES a page that is not an array', async () => {
+        await refuses({listDatabases: async () => ({databases: ['neo-unit-test']})});
+    });
+
+    test('REFUSES a blank name', async () => {
+        await refuses({listDatabases: async () => [{name: '   '}]});
+    });
+
+    test('REFUSES a null row', async () => {
+        await refuses({listDatabases: async () => [null]});
+    });
+
+    test('refuses on a later page too — not just the first', async () => {
+        // The census pages to exhaustion; a shape change that only appears past page 1 is the same
+        // false-clean, and an index that restarted per page could not point at the row.
+        const adminClient = {
+            listDatabases: async ({offset}) => offset === 0
+                ? Array.from({length: 100}, (_, i) => ({name: `db-${i}`}))
+                : [{database_name: 'neo-unit-test'}]
+        };
+
+        await expect(listChromaDatabases({adminClient})).rejects.toThrow(/row at index 100/);
     });
 });

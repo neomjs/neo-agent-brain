@@ -97,6 +97,37 @@ export function isChromaTestDatabaseName(name) {
 }
 
 /**
+ * The loopback host spellings that name one endpoint. `127.0.0.0/8` is matched by pattern rather
+ * than enumerated, since every address in it loops back.
+ * @type {Set<String>}
+ */
+const CHROMA_LOOPBACK_HOSTS = new Set(['localhost', '::1', '0:0:0:0:0:0:0:1']);
+
+/**
+ * @summary Answers whether two host spellings address the SAME Chroma endpoint.
+ *
+ * String equality is not endpoint identity: `localhost`, `127.0.0.1` and `::1` all reach one
+ * listener, so a guard comparing hosts as bytes reads `127.0.0.1:8000` and `localhost:8000` as two
+ * instances and allows exactly the write it exists to refuse (#286 RA-3). Only the loopback family
+ * is normalised — resolving arbitrary names would need DNS, which a boot-path guard must not do.
+ *
+ * The port is deliberately NOT folded in here: it stays the discriminating coordinate, so widening
+ * host identity cannot make an ordinary test instance on `127.0.0.1:18180` read as production.
+ * @param {String} host
+ * @param {String} otherHost
+ * @returns {Boolean}
+ */
+export function isSameChromaHost(host, otherHost) {
+    const normalize = value => {
+        const normalized = String(value ?? '').trim().toLowerCase().replace(/^\[|]$/g, '').replace(/\.$/, '');
+
+        return CHROMA_LOOPBACK_HOSTS.has(normalized) || /^127(\.\d{1,3}){3}$/.test(normalized) ? 'localhost' : normalized
+    };
+
+    return normalize(host) === normalize(otherHost)
+}
+
+/**
  * @summary Refuses a client whose resolved database is test-shaped while its resolved coordinates
  * are the production ones. Throws, or returns silently.
  *
@@ -134,12 +165,14 @@ export function assertChromaCoordinateCoherence({database, testDatabase, host, p
         isTestDatabase       = database === testDatabase || isChromaTestDatabaseName(database),
         // Loose port comparison: the leaf types these as numbers, but an env-sourced value that
         // reached here as a string must not read as "different coordinates" and pass the guard.
-        isProductionHostPort = host === productionHost && Number(port) === Number(productionPort);
+        // The host goes through endpoint identity, not byte equality, for the same reason.
+        isProductionHostPort = isSameChromaHost(host, productionHost) && Number(port) === Number(productionPort);
 
     if (isTestDatabase && isProductionHostPort) {
         throw new Error(
             `Refusing to start the ${serverName} Chroma client: the resolved database "${database}" is ` +
-            `test-shaped, but the resolved coordinates ${host}:${port} are the PRODUCTION Chroma instance. ` +
+            `test-shaped, but the resolved coordinates ${host}:${port} are the PRODUCTION Chroma instance ` +
+            `(configured as ${productionHost}:${productionPort} — the same endpoint). ` +
             'Writing there would create a test-named database inside the production store (#285). ' +
             'Most likely NEO_CHROMA_HOST or NEO_CHROMA_PORT is exported while a test selector ' +
             '(UNIT_TEST_MODE / NEO_TEST_CONFIG_TEMPLATES) is on — those are the production coordinate ' +
@@ -243,6 +276,57 @@ export async function dropChromaTestDatabase({host, port, ssl = false, database,
 }
 
 /**
+ * @summary Describes an unexpected value for a diagnostic message — enough to identify a moved API
+ * shape without serialising a payload of unknown size.
+ * @param {*} value
+ * @returns {String}
+ */
+function describeChromaEntry(value) {
+    if (value === null) {
+        return 'null'
+    }
+
+    if (Array.isArray(value)) {
+        return `an array of ${value.length}`
+    }
+
+    if (typeof value === 'object') {
+        return `an object with keys [${Object.keys(value).join(', ')}]`
+    }
+
+    return `${typeof value} ${JSON.stringify(value)}`
+}
+
+/**
+ * @summary Extracts one database name from a listing row, REFUSING any row it does not recognise.
+ *
+ * Fails closed on purpose. The tolerant form — `entry?.name` behind a `.filter(Boolean)` — turns a
+ * moved chromadb response shape into an empty census that reads exactly like a clean instance, which
+ * is the failure the census exists to detect (#286 RA-4). An unrecognised row is missing evidence,
+ * never evidence of absence.
+ * @param {String|Object} entry
+ * @param {Number} index Absolute listing index, so the diagnostic points at a row.
+ * @returns {String}
+ * @throws {Error} When the row is not a bare string or a record carrying a non-blank `name`.
+ */
+function chromaDatabaseNameOf(entry, index) {
+    // chromadb returns database records; older shapes returned bare strings. Both are supported —
+    // anything else is an API this function has not been taught to read.
+    const name = typeof entry === 'string' ? entry : entry?.name;
+
+    if (typeof name !== 'string' || name.trim() === '') {
+        throw new Error(
+            `listChromaDatabases: unrecognised database row at index ${index} — received ` +
+            `${describeChromaEntry(entry)}, expected a name string or a record with a non-blank \`name\`. ` +
+            'Refusing to census a shape this function cannot read, because dropping the row would ' +
+            'report a leaked test database as absent.'
+        )
+    }
+
+    return name
+}
+
+/**
  * @summary Enumerates EVERY database in a Chroma instance, paginating to exhaustion. Read-only.
  *
  * Pagination is the load-bearing part, not a detail. `AdminClient#listDatabases` defaults to
@@ -261,6 +345,9 @@ export async function dropChromaTestDatabase({host, port, ssl = false, database,
  * @param {Number} [options.pageSize=100]
  * @param {Object} [options.adminClient] Injected `AdminClient` seam for unit tests.
  * @returns {Promise<String[]>} Every database name in the tenant, in listing order.
+ * @throws {Error} When a page is not an array, or a row is not a shape this function can read. It
+ * fails closed rather than dropping the row: a silently skipped entry would report a leaked test
+ * database as absent, which is the exact conclusion this census exists to make trustworthy.
  */
 export async function listChromaDatabases({host, port, ssl = false, tenant = CHROMA_DEFAULT_TENANT, pageSize = 100, adminClient} = {}) {
     const
@@ -272,13 +359,18 @@ export async function listChromaDatabases({host, port, ssl = false, tenant = CHR
     while (true) {
         const page = await admin.listDatabases({tenant, limit: pageSize, offset});
 
-        if (!Array.isArray(page) || page.length === 0) {
+        if (!Array.isArray(page)) {
+            throw new Error(
+                `listChromaDatabases: AdminClient#listDatabases returned ${describeChromaEntry(page)} instead of ` +
+                'an array at offset ' + offset + '. The census cannot report a complete result it did not read.'
+            )
+        }
+
+        if (page.length === 0) {
             break
         }
 
-        // chromadb returns database records; older shapes returned bare strings. Accept both rather
-        // than assuming, since a shape change here would silently census zero names.
-        names.push(...page.map(entry => typeof entry === 'string' ? entry : entry?.name).filter(Boolean));
+        names.push(...page.map((entry, index) => chromaDatabaseNameOf(entry, offset + index)));
 
         if (page.length < pageSize) {
             break
