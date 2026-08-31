@@ -5,10 +5,22 @@
  * Memory Core, knowledge-base, and bridge-daemon state is unified across worktree
  * MCP server processes — while leaving the git-tracked `concepts/` subdir untouched.
  *
- * It also materializes the worktree's `.claude/settings.json` (the no-hold Stop hook) from the
- * tracked `.claude/settings.template.json` via `initClaudeSettings` — the Claude analog of the
- * config-overlay hydration, so the hook is wired in worktrees deterministically rather than
- * relying on the `npm prepare` that `installDependencies` skips when `node_modules` already exists.
+ * It also materializes the worktree's `.claude/settings.json` via `initClaudeSettings` — the Claude
+ * analog of the config-overlay hydration, so the seat is wired in worktrees deterministically rather
+ * than relying on the `npm prepare` that `installDependencies` skips when `node_modules` already
+ * exists.
+ *
+ * **Which template, precisely.** This passes no `templatePath`, so `initClaudeSettings` reads its
+ * default: `<engineRoot>/.claude/settings.template.json`, resolved through
+ * `require.resolve('neo.mjs/package.json')` — the **installed package's** template. The worktree's
+ * own tracked `settings.template.json` is never consulted. This comment previously claimed the
+ * opposite, and a spec seeded a worktree template to match it; the seeded file was ignored and the
+ * assertion passed on the installed package's contents instead (#250 AC-9).
+ *
+ * That template no longer carries the no-hold Stop hook. After the ADR 0040 §2.7 custody split it
+ * declares only the Engine's own `PreToolUse` guard; the Agent-OS events are reconciled in by
+ * `ai/scripts/lifecycle/hooks/projectSeatHooks.mjs` from the Brain's event manifest. A worktree
+ * hydrated by this function alone is therefore half-wired by design — both authorities have to run.
  *
  * **Background (config copy):** `ai/config.mjs` is the Tier-1 operator overlay.
  * `ai/mcp/server/{github-workflow,knowledge-base,memory-core,neural-link}/config.mjs`

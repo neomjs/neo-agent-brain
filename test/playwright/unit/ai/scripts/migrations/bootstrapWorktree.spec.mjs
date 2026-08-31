@@ -1514,16 +1514,30 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
             expect(result.claudeSettings).toEqual({action: 'wired'});
         });
 
-        test('real initClaudeSettings materializes the Stop hook from the tracked template', async () => {
-            // Seed the worktree's tracked .claude/settings.template.json (the canonical Stop-hook
-            // wiring); the default (real) initClaudeSettings must clone it into .claude/settings.json.
-            const template = {
-                hooks: {Stop: [{hooks: [{type: 'command', command: 'node .claude/hooks/laneStateStopHook.mjs', timeout: 10}]}]}
-            };
+        test('hydration reads the INSTALLED Engine template, never the worktree\'s own', async () => {
+            // This test used to seed `Stop -> laneStateStopHook` into the worktree's
+            // settings.template.json, call it "the canonical Stop-hook wiring", and assert the result
+            // contained laneStateStopHook.mjs.
+            //
+            // The seeded file was never read. `hydrateCurrentWorktree` calls `wireClaudeSettings({
+            // claudeDir, logger})` with no `templatePath`, so `initClaudeSettings` falls back to
+            // `defaultClaudeSettingsTemplate` — `<engineRoot>/.claude/settings.template.json`,
+            // resolved through `require.resolve('neo.mjs/package.json')`. The INSTALLED package.
+            //
+            // It passed because the installed package is a stale pre-cut artifact that still declares
+            // laneStateStopHook. Write the fixture, ignore the fixture, assert a coincidence of
+            // staleness. On the next publish the same assertion breaks with nothing having gone
+            // wrong. #250 AC-9.
+            //
+            // So the property under test is now the authority itself, with a sentinel proving the
+            // worktree's template is ignored rather than merely absent.
+            const SENTINEL = 'node .claude/hooks/thisWorktreeTemplateMustBeIgnored.mjs';
+
             await fs.ensureDir(path.join(fakeWorktree, '.claude'));
             await fs.writeFile(
                 path.join(fakeWorktree, '.claude', 'settings.template.json'),
-                JSON.stringify(template, null, 2) + '\n', 'utf-8'
+                `${JSON.stringify({hooks: {Stop: [{hooks: [{type: 'command', command: SENTINEL}]}]}}, null, 2)}\n`,
+                'utf-8'
             );
 
             const result = await hydrateCurrentWorktree({
@@ -1534,8 +1548,91 @@ test.describe('ai/scripts/bootstrapWorktree', () => {
 
             expect(result.claudeSettings.action).toBe('clone');
 
-            const settings = JSON.parse(await fs.readFile(path.join(fakeWorktree, '.claude', 'settings.json'), 'utf-8'));
-            expect(settings.hooks.Stop[0].hooks[0].command).toContain('laneStateStopHook.mjs');
+            const
+                written  = await fs.readFile(path.join(fakeWorktree, '.claude', 'settings.json'), 'utf-8'),
+                settings = JSON.parse(written);
+
+            // The control: the worktree's own template contributed nothing.
+            expect(written).not.toContain('thisWorktreeTemplateMustBeIgnored');
+
+            // The Engine's own guard is the one entry it owns across the cut (ADR 0040 §2.7), so it
+            // must be present whichever side of the publish the installed package is on.
+            expect(written, 'the installed Engine template no longer declares its own PreToolUse guard')
+                .toContain('rgReplaceGuardHook.mjs');
+
+            // Deliberately NOT asserting which Agent-OS events appear. Pre-cut the installed template
+            // declares four; post-cut it declares none and the Brain manifest supplies them. Pinning
+            // either number here would re-create the failure this test was just repaired from — a
+            // guard that goes red on a correct publish.
+            expect(Object.keys(settings.hooks)).toContain('PreToolUse');
+        });
+
+        test('the two authorities compose: Engine hydration, then Brain reconciliation', async () => {
+            // The property AC-9 is really about, and the one neither spec covered. A post-cut seat is
+            // wired by TWO authorities in sequence, and each was previously tested against a fixture
+            // that stood in for the other:
+            //
+            //   1. the Engine template hydrates its own PreToolUse guard  (initClaudeSettings)
+            //   2. the Brain manifest reconciles the four Agent-OS events (projectSeatHooks)
+            //
+            // Either half alone leaves a seat that looks configured. Only the union is a wired seat,
+            // so the union is what gets asserted — against a real git repository, because the
+            // reconciler's ownership predicate is "untracked in the target" and a non-repo fixture
+            // would make every command look ownable.
+            const {execFileSync} = await import('node:child_process');
+            const {initClaudeSettings} = await import('../../../../../../ai/scripts/setup/initServerConfigs.mjs');
+            const {reconcileClaudeSettings} =
+                await import('../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs');
+
+            const
+                seat      = path.join(path.dirname(fakeMainCheckout), 'composed-seat'),
+                claudeDir = path.join(seat, '.claude');
+
+            await fs.ensureDir(path.join(claudeDir, 'hooks'));
+            execFileSync('git', ['init', '-q'], {cwd: seat});
+            execFileSync('git', ['config', 'user.email', 'spec@neomjs.test'], {cwd: seat});
+            execFileSync('git', ['config', 'user.name', 'spec'], {cwd: seat});
+
+            // The Engine's guard is TRACKED in the target — that is what makes it the Engine's, and
+            // what stops the reconciler from retiring it alongside our own commands.
+            await fs.writeFile(path.join(claudeDir, 'hooks', 'rgReplaceGuardHook.mjs'), '// engine\n', 'utf-8');
+            execFileSync('git', ['add', '-f', '.claude/hooks/rgReplaceGuardHook.mjs'], {cwd: seat});
+            execFileSync('git', ['commit', '-qm', 'engine guard'], {cwd: seat});
+
+            await fs.writeFile(path.join(claudeDir, 'settings.template.json'), `${JSON.stringify({
+                hooks: {PreToolUse: [{matcher: 'Bash', hooks: [{
+                    type   : 'command',
+                    command: '/usr/bin/env node "$(git rev-parse --show-toplevel)/.claude/hooks/rgReplaceGuardHook.mjs"',
+                    timeout: 2
+                }]}]}
+            }, null, 2)}\n`, 'utf-8');
+
+            // Authority 1.
+            await initClaudeSettings({
+                claudeDir,
+                logger      : {log: () => {}, warn: () => {}},
+                templatePath: path.join(claudeDir, 'settings.template.json')
+            });
+
+            const hydrated = JSON.parse(await fs.readFile(path.join(claudeDir, 'settings.json'), 'utf-8'));
+
+            expect(Object.keys(hydrated.hooks)).toEqual(['PreToolUse']);   // half a seat
+
+            // Authority 2.
+            const reconciled = reconcileClaudeSettings({
+                agentosRuntimeRoot: path.resolve(process.cwd()),
+                targetRepoRoot    : seat
+            });
+
+            expect(reconciled.reason).toBeNull();
+
+            const composed = JSON.parse(await fs.readFile(path.join(claudeDir, 'settings.json'), 'utf-8'));
+
+            expect(Object.keys(composed.hooks).sort())
+                .toEqual(['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit']);
+
+            // The Engine's entry survived the Brain's pass — neither authority overwrote the other.
+            expect(JSON.stringify(composed.hooks.PreToolUse)).toContain('rgReplaceGuardHook');
         });
     });
     test.describe('#15791 CLI reconcile dispatch', () => {
