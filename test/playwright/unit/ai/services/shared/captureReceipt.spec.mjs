@@ -3,6 +3,7 @@ import {test, expect} from '@playwright/test';
 import {
     buildSourceReceipt,
     deriveLineage,
+    derivesCollapse,
     derivesProvenEmpty,
     LINEAGE,
     ROW_STATE
@@ -166,6 +167,89 @@ test.describe('ai/services/shared/captureReceipt — orthogonal facts, one deriv
             expect(measured.rowState).toBe(ROW_STATE.zero);
             expect(measured.rowCount).toBe(0);
             expect(measured.provenEmpty).toBe(true);
+        });
+    });
+
+    /**
+     * @summary `collapsed` — the one row of #270's verdict table that must never publish.
+     *
+     * A run resolved a collection that was not the live corpus, exported zero rows against a live
+     * 68,207, recorded `lineage: changed`, and still became the newest backup. `provenEmpty`
+     * deliberately declines to read `zero + changed`, because a healthy re-embed produces exactly
+     * that shape. `collapsed` answers it with a THIRD fact — what the comparison bundle counted for
+     * the same source — and every exclusion below names a shape that must keep publishing.
+     */
+    test.describe('#270 — `collapsed` fires on a demonstrated loss, and on nothing else', () => {
+        test('RED CONTROL: the observed 2026-08-30T19:18 shape — zero, changed, predecessor held 68207', () => {
+            // The bundle that prompted the ticket. Before the fix, this published as the newest backup.
+            expect(derivesCollapse({
+                rowState        : ROW_STATE.zero,
+                lineage         : LINEAGE.changed,
+                previousRowCount: 68207
+            })).toBe(true);
+        });
+
+        test('a healthy re-embed promotion does NOT collapse — the falsifier that dropped the predecessor', () => {
+            // `VectorService` rebuilds into a shadow collection and promotes it, so the canonical
+            // identity changes with nothing lost: `populated + changed`. If `collapsed` fired here it
+            // would abort every healthy re-embed — the exact defect this module exists to prevent,
+            // re-entering through the new claim instead of the old enum.
+            expect(derivesCollapse({
+                rowState        : ROW_STATE.populated,
+                lineage         : LINEAGE.changed,
+                previousRowCount: 68207
+            })).toBe(false);
+        });
+
+        test('an UNKNOWN lineage never collapses — a missing predecessor must degrade, never refuse', () => {
+            // `readPreviousBundleIdentities` is fail-soft by design: a backup that refuses because it
+            // cannot find its predecessor is a worse failure than one that cannot prove emptiness.
+            // Firing here would resurrect precisely that.
+            expect(derivesCollapse({
+                rowState        : ROW_STATE.zero,
+                lineage         : LINEAGE.unknown,
+                previousRowCount: 68207
+            })).toBe(false);
+        });
+
+        test('a broken instrument never collapses — `unestablished` is not evidence of loss', () => {
+            expect(derivesCollapse({
+                rowState        : ROW_STATE.unestablished,
+                lineage         : LINEAGE.changed,
+                previousRowCount: 68207
+            })).toBe(false);
+        });
+
+        test.describe('NEGATIVE CONTROLS: emptiness alone is never the trigger', () => {
+            const noPriorCorpus = [
+                {label: 'a first run, with no comparison bundle',    previousRowCount: null},
+                {label: 'a predecessor that recorded no count',      previousRowCount: undefined},
+                {label: 'a predecessor that legitimately held zero', previousRowCount: 0}
+            ];
+
+            for (const {label, previousRowCount} of noPriorCorpus) {
+                test(`${label} still publishes`, () => {
+                    // Nothing was demonstrably lost, so there is nothing to refuse. The prior
+                    // non-zero is what turns an observation into a demonstrated loss.
+                    expect(derivesCollapse({
+                        rowState: ROW_STATE.zero,
+                        lineage : LINEAGE.changed,
+                        previousRowCount
+                    })).toBe(false);
+                });
+            }
+        });
+
+        test('`provenEmpty` and `collapsed` are mutually exclusive across every fact combination', () => {
+            // One requires `same`, the other `changed`. No combination satisfies both, so a consumer
+            // can never receive two contradictory claims about one source.
+            for (const lineage of Object.values(LINEAGE)) {
+                for (const rowState of Object.values(ROW_STATE)) {
+                    const facts = {rowState, lineage, previousRowCount: 68207};
+
+                    expect(derivesProvenEmpty(facts) && derivesCollapse(facts)).toBe(false);
+                }
+            }
         });
     });
 });

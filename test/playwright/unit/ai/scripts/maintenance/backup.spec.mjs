@@ -796,6 +796,186 @@ test.describe('backup.mjs orchestrator — atomic bundle assembly (#10129 Phase 
         expect(fs.existsSync(path.join(altBundleRoot, 'ledgers'))).toBe(true);
     });
 
+    test.describe('a capture that collapsed against its predecessor never publishes (#270)', () => {
+        // Driven through `runBackup`, not through the collapse predicate. The predicate answers "do
+        // these three facts describe a collapse"; the property this ticket is about is "such a bundle
+        // does not become the newest backup", and only the real publication path can witness it — the
+        // rename is the step that puts a bundle where a restore selects from.
+        const silentLogger = {error: () => {}, log: () => {}, warn: () => {}};
+
+        /**
+         * Writes a PUBLISHED predecessor carrying a full capture receipt for the kb source.
+         * @param {String} root Backup root the capture will search.
+         * @param {String} name Bundle directory name.
+         * @param {Object} kb `{collectionId, rowCount}` as the predecessor recorded them.
+         */
+        function writePredecessor(root, name, kb) {
+            const dir = path.join(root, name);
+            fs.mkdirSync(dir, {recursive: true});
+            fs.writeFileSync(path.join(dir, 'bundle-meta.json'), JSON.stringify({
+                completedAt: '2026-08-30T14:56:45.665Z',
+                capture    : {schemaVersion: 1, comparedTo: null, sources: {kb: {source: 'kb', ...kb}}}
+            }));
+        }
+
+        /**
+         * A collection handle that also carries an IDENTITY. The suite's base `fakeCollection` has no
+         * `id`, which resolves every lineage axis to `unknown` — the one state that can never
+         * collapse, so a fixture built on it could not fail these tests for the right reason.
+         */
+        const identifiedCollection = (id, rows, name) => ({...fakeCollection(rows, name), id});
+
+        /** Swaps the KB collection for one test. Restored in `finally` so serial order survives a failure. */
+        async function withKbCollection(collection, fn) {
+            const previous = KB_ChromaManager.getKnowledgeBaseCollection;
+
+            KB_ChromaManager.getKnowledgeBaseCollection = async () => collection;
+
+            try {
+                return await fn()
+            } finally {
+                KB_ChromaManager.getKnowledgeBaseCollection = previous
+            }
+        }
+
+        const runInto = bundleRoot => runBackup({
+            bundleRoot,
+            conceptsSourceDir,
+            logger: silentLogger,
+            trajectoriesSourceFile
+        });
+
+        test('the 19:18 replay is refused, and the healthy predecessor stays newest', async () => {
+            // The live shape from the ticket: predecessor `b0710dd0…` held 68,207 rows; the next run
+            // resolved `c962a779…`, read zero, and published anyway.
+            const collapseRoot = path.join(workRoot, 'collapse-root'),
+                  target       = path.join(collapseRoot, 'backup-2026-08-30T19-18-45.403Z');
+
+            fs.mkdirSync(collapseRoot, {recursive: true});
+            writePredecessor(collapseRoot, 'backup-2026-08-30T14-56-45.665Z', {
+                collectionId: 'b0710dd0-cfbf-4196-9855-7a0ea961ebbc',
+                rowCount    : 68207
+            });
+
+            const error = await withKbCollection(
+                identifiedCollection('c962a779-0190-44bc-8b08-217fb1a52dc3', [], 'neo-knowledge-base'),
+                () => runInto(target).then(() => null, e => e)
+            );
+
+            expect(error).not.toBeNull();
+            expect(error.code).toBe('CAPTURE_SOURCE_COLLAPSED');
+            expect(error.details.sources[0]).toMatchObject({
+                source          : 'kb',
+                previousRowCount: 68207,
+                rowCount        : 0,
+                collectionId    : 'c962a779-0190-44bc-8b08-217fb1a52dc3'
+            });
+
+            // The property itself. A thrown error that still left a published bundle behind would
+            // satisfy every assertion above and none of the ticket.
+            expect(fs.existsSync(target)).toBe(false);
+            expect(fs.readdirSync(collapseRoot).filter(name => name.startsWith('backup-')))
+                .toEqual(['backup-2026-08-30T14-56-45.665Z']);
+        });
+
+        test('a source that legitimately holds zero rows, with no predecessor, still publishes', async () => {
+            // Same zero, same identity, same everything — the ONLY axis removed is a predecessor that
+            // held rows. If this refused, the guard would be firing on emptiness, which is the trap
+            // the ticket names.
+            const freshRoot = path.join(workRoot, 'fresh-empty-root'),
+                  target    = path.join(freshRoot, 'backup-2026-08-30T19-18-45.403Z');
+
+            fs.mkdirSync(freshRoot, {recursive: true});
+
+            const result = await withKbCollection(
+                identifiedCollection('c962a779-0190-44bc-8b08-217fb1a52dc3', [], 'neo-knowledge-base'),
+                () => runInto(target)
+            );
+
+            expect(result.bundleRoot).toBe(target);
+            expect(fs.existsSync(path.join(target, 'bundle-meta.json'))).toBe(true);
+            // Unavailable, not zero — an absent predecessor recorded no count, and a `0` here would be
+            // an expectation invented out of silence.
+            expect(result.meta.capture.sources.kb.previousRowCount).toBeNull();
+            expect(result.meta.capture.sources.kb.collapsed).toBe(false);
+        });
+
+        test('a changed identity whose predecessor ALSO held zero still publishes', async () => {
+            // Row three of the ticket's verdict table. Lineage changed and the count is zero, so both
+            // axes `provenEmpty` reads are identical to the refused case; only the prior count
+            // differs. This is what proves the prior non-zero is load-bearing rather than decorative.
+            const root   = path.join(workRoot, 'zero-to-zero-root'),
+                  target = path.join(root, 'backup-2026-08-30T19-18-45.403Z');
+
+            fs.mkdirSync(root, {recursive: true});
+            writePredecessor(root, 'backup-2026-08-30T14-56-45.665Z', {
+                collectionId: 'b0710dd0-cfbf-4196-9855-7a0ea961ebbc',
+                rowCount    : 0
+            });
+
+            const result = await withKbCollection(
+                identifiedCollection('c962a779-0190-44bc-8b08-217fb1a52dc3', [], 'neo-knowledge-base'),
+                () => runInto(target)
+            );
+
+            expect(result.meta.capture.sources.kb.lineage).toBe('changed');
+            expect(result.meta.capture.sources.kb.rowState).toBe('zero');
+            expect(result.meta.capture.sources.kb.collapsed).toBe(false);
+            expect(fs.existsSync(path.join(target, 'bundle-meta.json'))).toBe(true);
+        });
+
+        test('an UNREADABLE predecessor still publishes — the fail-soft position is not annexed', async () => {
+            // `readPreviousBundleIdentities` argues that a backup refusing because it cannot find its
+            // predecessor is a worse failure than one that cannot prove emptiness. That governs
+            // `lineage: unknown`, and #270 must not have quietly widened into it: here the count is
+            // zero and the predecessor is unreadable, which is exactly the shape a careless
+            // implementation would refuse.
+            const root   = path.join(workRoot, 'unreadable-pred-root'),
+                  target = path.join(root, 'backup-2026-08-30T19-18-45.403Z'),
+                  dir    = path.join(root, 'backup-2026-08-30T14-56-45.665Z');
+
+            fs.mkdirSync(dir, {recursive: true});
+            fs.writeFileSync(path.join(dir, 'bundle-meta.json'), '{ this is not json');
+
+            const result = await withKbCollection(
+                identifiedCollection('c962a779-0190-44bc-8b08-217fb1a52dc3', [], 'neo-knowledge-base'),
+                () => runInto(target)
+            );
+
+            expect(result.meta.capture.sources.kb.lineage).toBe('unknown');
+            expect(result.meta.capture.sources.kb.collapsed).toBe(false);
+            expect(fs.existsSync(path.join(target, 'bundle-meta.json'))).toBe(true);
+        });
+
+        test('a POPULATED source whose identity changed publishes — a promotion is not a collapse', async () => {
+            // Re-embed promotes a shadow collection into the canonical name, so a healthy deployment
+            // changes identity routinely. Refusing on lineage alone would fail every backup that
+            // follows a re-embed.
+            const root   = path.join(workRoot, 'promotion-root'),
+                  target = path.join(root, 'backup-2026-08-30T19-18-45.403Z');
+
+            fs.mkdirSync(root, {recursive: true});
+            writePredecessor(root, 'backup-2026-08-30T14-56-45.665Z', {
+                collectionId: 'b0710dd0-cfbf-4196-9855-7a0ea961ebbc',
+                rowCount    : 68207
+            });
+
+            const result = await withKbCollection(
+                identifiedCollection(
+                    'c962a779-0190-44bc-8b08-217fb1a52dc3',
+                    [{id: 'kb-1', embedding: [0.1], metadata: {k: 'class'}, document: 'kb-doc'}],
+                    'neo-knowledge-base'
+                ),
+                () => runInto(target)
+            );
+
+            expect(result.meta.capture.sources.kb.lineage).toBe('changed');
+            expect(result.meta.capture.sources.kb.rowState).toBe('populated');
+            expect(result.meta.capture.sources.kb.collapsed).toBe(false);
+            expect(fs.existsSync(path.join(target, 'bundle-meta.json'))).toBe(true);
+        });
+    });
+
     test.describe('noticeLegacyBackupRoot — the relocation notice', () => {
         // Injected fs: the point of these cases is the DECISION, not the filesystem. A real
         // temp-dir fixture would exercise fs-extra rather than the branch under test.

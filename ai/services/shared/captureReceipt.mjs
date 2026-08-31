@@ -16,7 +16,17 @@
  * lost**. A restore does the same, by dropping and re-resolving. An identity that changes is a
  * statement about lineage; loss is a different proposition needing its own evidence.
  *
- * So the receipt records the facts orthogonally and derives exactly one thing from them.
+ * So the receipt records the facts orthogonally and derives from them, in one place, only claims that
+ * the facts actually establish — today `provenEmpty` and `collapsed`.
+ *
+ * **Two claims, not two enums.** `collapsed` was added for #270, where a run resolved a collection
+ * that was not the live corpus, exported zero rows, and published as the newest backup. It is not a
+ * second opinion about emptiness: it consumes a FOURTH fact — `previousRowCount`, what the comparison
+ * bundle counted for the same source — and answers the question `provenEmpty` deliberately declines,
+ * namely which reading of `zero + changed` applies. The two can never both be true, because
+ * `provenEmpty` requires `lineage: same` and `collapsed` requires `lineage: changed`; and they are
+ * both false for every shape where the facts support neither. Adding the fact rather than widening
+ * either verdict is what keeps the axes orthogonal.
  *
  * **Read completeness is NOT an axis here, and its absence is the same rule applied to itself.** An
  * earlier revision carried `readCompleteness: complete | unavailable`, and nothing in the substrate
@@ -94,7 +104,7 @@ export function deriveLineage({currentId = null, previousId = null} = {}) {
 }
 
 /**
- * @summary Derives `provenEmpty` — the only verdict this module produces — from the recorded facts.
+ * @summary Derives `provenEmpty` — the module's claim about PROVENANCE — from the recorded facts.
  *
  * **`provenEmpty` requires both axes to line up: a measured zero, and a continuous lineage.** Any
  * other combination leaves the facts standing rather than collapsing them, because every other
@@ -118,6 +128,47 @@ export function derivesProvenEmpty({rowState, lineage} = {}) {
 }
 
 /**
+ * @summary Derives `collapsed` — the claim that this source DEMONSTRABLY lost a corpus it had.
+ *
+ * The exact complement of {@link derivesProvenEmpty} on the one combination that function leaves
+ * standing for a reason. `zero + changed` has two readings — a deliberate replacement, or a loss —
+ * and `provenEmpty` correctly refuses to pick between them from two axes alone. This function adds
+ * the third axis that separates them: **what the comparison bundle counted for the same source.**
+ *
+ * A promotion or restore replaces a source and the replacement HOLDS the corpus, so it reads
+ * `populated + changed`. A source that changed identity and came back with nothing, where the
+ * predecessor demonstrably held rows, is the only shape left. That is a collapse, and it is the
+ * single row of the ticket's verdict table that must not become the newest backup.
+ *
+ * **Every axis is required to be affirmative, and each exclusion is load-bearing:**
+ *
+ * - `lineage !== changed` — `same` means the source never moved, and `unknown` means the comparison
+ *   never happened. Firing on `unknown` would resurrect exactly the failure
+ *   {@link module:ai/scripts/maintenance/backup.readPreviousBundleIdentities} argues against: a
+ *   backup that refuses because it cannot find its predecessor is worse than one that cannot prove
+ *   emptiness. A missing predecessor must degrade, never refuse.
+ * - `rowState !== zero` — `populated` is a healthy replacement. `unestablished` is a broken
+ *   instrument, and a broken instrument is not evidence of a collapse any more than it is evidence
+ *   of emptiness; it must not be able to abort a capture.
+ * - `previousRowCount` not finite, or `<= 0` — no prior corpus was demonstrated, so nothing was
+ *   demonstrably lost. A first run, a predecessor that recorded no count, and a predecessor that
+ *   legitimately held zero all land here and all still publish. **Emptiness alone is never the
+ *   trigger** — the prior non-zero is what turns an observation into a demonstrated loss.
+ *
+ * @param {Object}        options
+ * @param {String}        options.rowState         A `ROW_STATE` value.
+ * @param {String}        options.lineage          A `LINEAGE` value.
+ * @param {Number|null}   options.previousRowCount Rows the comparison bundle recorded for this source.
+ * @returns {Boolean} Whether the facts establish that a corpus this source HELD is now gone.
+ */
+export function derivesCollapse({rowState, lineage, previousRowCount} = {}) {
+    return rowState === ROW_STATE.zero
+        && lineage  === LINEAGE.changed
+        && Number.isFinite(previousRowCount)
+        && previousRowCount > 0
+}
+
+/**
  * @summary Assembles one source's receipt entry from its measured facts.
  *
  * Deliberately does NOT take a verdict argument. Callers supply what they observed; the derivation is
@@ -131,23 +182,41 @@ export function derivesProvenEmpty({rowState, lineage} = {}) {
  * `0`, which let a broken exporter plus an unchanged identity derive `empty: true` — a positive claim
  * of emptiness assembled entirely out of the absence of evidence.
  *
+ * **`previousRowCount` is the receipt's one INDEPENDENT expectation.** Every other number here is
+ * read through this capture's own source resolution, so when that resolution is wrong they are all
+ * wrong together and agree with each other — which is how a run that resolved the wrong collection
+ * recorded `expected: 0` beside `count: 0` and read as satisfied. The comparison bundle was written
+ * by a different run against a different resolution, so its count is the only figure on the receipt
+ * that a bad resolution cannot move. `null` when there is nothing to compare against: **unavailable,
+ * never `0`** — the same rule this module already applies to a malformed `rowCount`, since a zero
+ * standing in for an absent expectation is once more affirmative evidence manufactured from silence.
+ *
  * @param {Object}       options
  * @param {String}       options.source        Stable label for the source (collection name / `native-graph`).
  * @param {Number}       options.rowCount      Rows the export actually wrote.
  * @param {String|null} [options.collectionId] Identity observed this capture; `null` when unobservable.
  * @param {String|null} [options.previousId]   Identity the comparison bundle recorded.
  * @param {String|null} [options.comparedBundle] Bundle name the comparison ran against.
- * @returns {Object} The receipt entry, carrying every fact plus the derived `provenEmpty` claim.
+ * @param {Number|null} [options.previousRowCount] Rows the comparison bundle recorded for this source.
+ * @returns {Object} The receipt entry, carrying every fact plus the derived `provenEmpty` and
+ *          `collapsed` claims.
  */
 export function buildSourceReceipt({
     source,
     rowCount,
-    collectionId   = null,
-    previousId     = null,
-    comparedBundle = null
+    collectionId     = null,
+    previousId       = null,
+    comparedBundle   = null,
+    previousRowCount = null
 } = {}) {
     const measured = Number.isFinite(rowCount) && rowCount >= 0,
-          lineage  = deriveLineage({currentId: collectionId, previousId});
+          lineage  = deriveLineage({currentId: collectionId, previousId}),
+          // Same admission rule as `rowCount`: only a finite, non-negative observation is a count.
+          // Anything else is an ABSENT expectation and must read as such, so it can neither satisfy
+          // a zero nor evidence a collapse.
+          priorRows = Number.isFinite(previousRowCount) && previousRowCount >= 0
+              ? previousRowCount
+              : null;
 
     let rowState;
 
@@ -159,11 +228,13 @@ export function buildSourceReceipt({
 
     return {
         source,
-        rowCount   : Number.isFinite(rowCount) ? rowCount : null,
+        rowCount        : Number.isFinite(rowCount) ? rowCount : null,
         rowState,
         lineage,
         collectionId,
         comparedBundle,
-        provenEmpty: derivesProvenEmpty({rowState, lineage})
+        previousRowCount: priorRows,
+        provenEmpty     : derivesProvenEmpty({rowState, lineage}),
+        collapsed       : derivesCollapse({rowState, lineage, previousRowCount: priorRows})
     }
 }

@@ -257,7 +257,7 @@ const LINEAGE_SOURCES = Object.freeze([
 ]);
 
 /**
- * @summary Reads the identities the previous PUBLISHED bundle recorded, keyed by source.
+ * @summary Reads what the previous PUBLISHED bundle recorded per source: its identity, and its count.
  *
  * Consumes {@link listPublishedBundles}, so a `.backup-partial-*` staging directory can never be the
  * comparison basis — comparing against a capture that never completed would report a changed identity
@@ -267,31 +267,52 @@ const LINEAGE_SOURCES = Object.freeze([
  * degrades every lineage axis to `unknown` rather than aborting a backup. A backup that refuses to run
  * because it cannot find its predecessor is a worse failure than one that cannot prove emptiness.
  *
+ * **`rowCounts` is governed by that same sentence and does not weaken it.** It exists so a capture can
+ * tell a source that came back empty from a source that came back empty *having demonstrably held
+ * rows* (#270). An absent, unreadable, or count-less predecessor yields `null` for that source, which
+ * is an unavailable expectation — never `0` — so it can never make a capture refuse. The refusal this
+ * feeds needs an affirmative prior count, so every failure to read one degrades toward publishing,
+ * exactly as the paragraph above requires.
+ *
  * @param {String} backupRoot Directory holding published bundles.
  * @param {Object} [logger=console] Diagnostic sink.
- * @returns {Promise<{bundleName: String|null, identities: Object}>}
+ * @returns {Promise<{bundleName: String|null, identities: Object, rowCounts: Object}>}
  */
 export async function readPreviousBundleIdentities(backupRoot, logger = console) {
     const [previous] = await listPublishedBundles(backupRoot);
 
-    if (!previous) return {bundleName: null, identities: {}};
+    if (!previous) return {bundleName: null, identities: {}, rowCounts: {}};
 
     try {
         const meta = await fs.readJson(path.join(previous.path, 'bundle-meta.json'));
 
         // Prefer the structured capture block; fall back to the raw receipts so the FIRST bundle
         // written after this change still has something to compare against next time.
-        const identities = {};
+        const identities = {},
+              rowCounts  = {};
+
         for (const {key, read} of LINEAGE_SOURCES) {
+            const receipt = read(meta?.subsystems || {});
+
             identities[key] = meta?.capture?.sources?.[key]?.collectionId
-                ?? read(meta?.subsystems || {})?.collectionId
+                ?? receipt?.collectionId
                 ?? null;
+
+            // Same precedence and the same admission rule as the identity axis: the structured
+            // capture block first, then the raw receipt for a predecessor written before it existed.
+            // `?? null` rather than `?? 0` — a predecessor that recorded no count did not record a
+            // zero, and reading it as one would invent the very prior-emptiness claim this axis is
+            // here to demand evidence for.
+            const priorRows = meta?.capture?.sources?.[key]?.rowCount
+                ?? (typeof receipt === 'number' ? receipt : receipt?.count ?? receipt?.exported);
+
+            rowCounts[key] = Number.isFinite(priorRows) ? priorRows : null;
         }
 
-        return {bundleName: previous.name, identities}
+        return {bundleName: previous.name, identities, rowCounts}
     } catch (error) {
         logger.warn?.(`[Backup] Could not read identities from ${previous.name}: ${error.message}. Lineage degrades to unknown.`);
-        return {bundleName: previous.name, identities: {}}
+        return {bundleName: previous.name, identities: {}, rowCounts: {}}
     }
 }
 
@@ -315,8 +336,8 @@ export async function readPreviousBundleIdentities(backupRoot, logger = console)
  * @returns {Promise<Object>} The `capture` block for `bundle-meta.json`.
  */
 export async function buildCaptureBlock({subsystems, backupRoot, logger = console}) {
-    const {bundleName, identities} = await readPreviousBundleIdentities(backupRoot, logger);
-    const sources                  = {};
+    const {bundleName, identities, rowCounts} = await readPreviousBundleIdentities(backupRoot, logger);
+    const sources                             = {};
 
     for (const {key, read} of LINEAGE_SOURCES) {
         const receipt = read(subsystems);
@@ -328,15 +349,31 @@ export async function buildCaptureBlock({subsystems, backupRoot, logger = consol
             : receipt.count ?? receipt.exported;
 
         sources[key] = buildSourceReceipt({
-            source        : key,
+            source          : key,
             rowCount,
-            collectionId  : receipt.collectionId ?? null,
-            previousId    : identities[key] ?? null,
-            comparedBundle: bundleName
+            collectionId    : receipt.collectionId ?? null,
+            previousId      : identities[key] ?? null,
+            comparedBundle  : bundleName,
+            previousRowCount: rowCounts?.[key] ?? null
         });
     }
 
     return {schemaVersion: 1, comparedTo: bundleName, sources}
+}
+
+/**
+ * @summary Names the sources whose capture receipt establishes a collapse.
+ *
+ * A thin read over receipts that already carry the derived claim, so the publication gate and any
+ * future consumer branch on the SAME verdict rather than each re-deriving one from the raw axes. The
+ * derivation itself is {@link module:ai/services/shared/captureReceipt.derivesCollapse}'s and stays
+ * there; a second copy here is how the two would eventually disagree about the same bundle.
+ *
+ * @param {Object} [capture] A `capture` block.
+ * @returns {Object[]} The collapsed source receipts, empty when none collapsed.
+ */
+export function findCollapsedSources(capture) {
+    return Object.values(capture?.sources || {}).filter(source => source?.collapsed === true)
 }
 
 /**
@@ -676,6 +713,48 @@ async function captureBackup({
         backupRoot: path.dirname(publishedRoot),
         logger
     });
+
+    // #270. The gate is here rather than beside the `empty` warning above because it needs the one
+    // fact that warning does not have: what the PREVIOUS bundle counted. `integrity` answers what
+    // this bundle HOLDS, and a zero there is legitimate often enough that escalating it would
+    // fail a fresh environment's first backup. `capture` answers what happened to the SOURCE, and
+    // `collapsed` is the single combination whose readings do not include a healthy one.
+    //
+    // Throwing is the whole mechanism: `runBackup`'s catch removes the staging directory and
+    // re-raises, so a collapsed capture is never renamed into the published namespace and therefore
+    // cannot take the newest-backup position that restore and retention select on. The prior
+    // healthy bundle stays newest — which is the correct recovery source, and the reason this fails
+    // the run rather than publishing a bundle labelled degraded and hoping a reader checks.
+    //
+    // Deliberately NOT a widening of the fail-soft position in `readPreviousBundleIdentities`. That
+    // sentence governs a capture that could not find or read its predecessor, which lands on
+    // `lineage: unknown` and still publishes. This fires only where the predecessor WAS found, WAS
+    // read, and recorded rows for a source that has since changed identity and returned none.
+    const collapsedSources = findCollapsedSources(capture);
+
+    if (collapsedSources.length > 0) {
+        const detail = collapsedSources
+            .map(({source, previousRowCount, comparedBundle}) =>
+                `  - ${source}: ${comparedBundle} recorded ${previousRowCount} rows; this capture read 0 from a DIFFERENT collection`)
+            .join('\n');
+
+        const error = new Error(
+            `Backup refused: ${collapsedSources.length} source(s) collapsed to zero rows against a changed ` +
+            `collection identity, having held rows in the compared bundle:\n${detail}\n` +
+            'Publishing would make a bundle holding nothing the newest backup. The previous bundle remains ' +
+            'the newest and is unaffected. Investigate collection resolution before re-running.'
+        );
+
+        error.code    = 'CAPTURE_SOURCE_COLLAPSED';
+        error.details = {
+            comparedTo: capture.comparedTo,
+            sources   : collapsedSources.map(({source, previousRowCount, rowCount, collectionId}) =>
+                ({source, previousRowCount, rowCount, collectionId}))
+        };
+
+        throw error
+    }
+
     const meta = {
         bundleVersion: 1,
         timestamp,
