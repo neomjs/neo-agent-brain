@@ -103,6 +103,83 @@ test.describe('Neo.ai.services.knowledge-base.ChromaManager', () => {
         });
     });
 
+    /**
+     * @summary `knowledgeBaseCollectionBootstrapped` is written by the RESOLVER, so it is tested there.
+     *
+     * The receipt specs set this field directly and assert the downstream classifier, which proves
+     * the classifier and nothing about the production writer. @neo-gpt-emmy demonstrated the gap on
+     * PR #275 with a mutant: flipping the real create-path assignment from `true` to `false` left
+     * those suites 22/22 green. These arms drive `#resolveKnowledgeBaseCollection` through each of
+     * its exits, so a disconnected writer reds here.
+     *
+     * The flag records WHICH resolution path ran, never why — a created collection is
+     * indistinguishable from a true first-run bootstrap, and it makes no claim about the cause.
+     */
+    test.describe('#270 — the resolver writes the bootstrap provenance flag', () => {
+        test('a FOUND canonical collection records `false` — nothing was bootstrapped', async () => {
+            ChromaManager.client = {
+                getCollection   : async options => ({name: options.name}),
+                listCollections : async () => [],
+                createCollection: async () => { throw new Error('createCollection must not run when the collection exists') }
+            };
+
+            await ChromaManager.getKnowledgeBaseCollection();
+
+            expect(ChromaManager.knowledgeBaseCollectionBootstrapped).toBe(false);
+        });
+
+        test('a CREATED canonical collection records `true`', async () => {
+            ChromaManager.client = {
+                getCollection   : async options => { throw new Error(`Collection ${options.name} does not exist.`) },
+                listCollections : async () => [],
+                createCollection: async options => ({name: options.name})
+            };
+
+            await ChromaManager.getKnowledgeBaseCollection();
+
+            expect(ChromaManager.knowledgeBaseCollectionBootstrapped).toBe(true);
+        });
+
+        test('the CREATE-RACE fallback records `false` — it found one, it did not bootstrap it', async () => {
+            // The collection appeared between our miss and our create. That resolution FOUND a
+            // collection, so it must not claim bootstrap provenance it did not earn.
+            let created = false;
+
+            ChromaManager.client = {
+                getCollection: async options => {
+                    if (!created) throw new Error(`Collection ${options.name} does not exist.`);
+                    return {name: options.name}
+                },
+                listCollections : async () => [],
+                createCollection: async options => {
+                    created = true;
+                    throw new Error(`Collection ${options.name} already exists.`)
+                }
+            };
+
+            await ChromaManager.getKnowledgeBaseCollection();
+
+            expect(ChromaManager.knowledgeBaseCollectionBootstrapped).toBe(false);
+        });
+
+        test('invalidating the cache resets provenance to `null` — no resolution has run', async () => {
+            ChromaManager.client = {
+                getCollection   : async options => { throw new Error(`Collection ${options.name} does not exist.`) },
+                listCollections : async () => [],
+                createCollection: async options => ({name: options.name})
+            };
+
+            await ChromaManager.getKnowledgeBaseCollection();
+            expect(ChromaManager.knowledgeBaseCollectionBootstrapped).toBe(true);
+
+            ChromaManager.invalidateKnowledgeBaseCollectionCache();
+
+            // Leaving it set would let the next caller read a discarded attempt's provenance as
+            // its own — the flag describes ONE resolution.
+            expect(ChromaManager.knowledgeBaseCollectionBootstrapped).toBeNull();
+        });
+    });
+
     test('getKnowledgeBaseCollection retries transient ChromaConnectionError while resolving the canonical collection', async () => {
         const delays   = [];
         let   getCount = 0;
