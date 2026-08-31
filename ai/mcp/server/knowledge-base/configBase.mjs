@@ -2,6 +2,7 @@ import os                                        from 'os';
 import path                                      from 'path';
 import ConfigProvider, {createConfigProxy, leaf} from '../../../ConfigProvider.mjs';
 import {fileURLToPath}                           from 'url';
+import {kbChromaTestDatabaseName}                from '../../../services/shared/vector/chromaTestIsolation.mjs';
 import {resolvePlaneDataRoot}                    from '../../../planeConfig.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,7 +19,13 @@ const planeDataRoot = resolvePlaneDataRoot({rootDir: neoRootDir});
 // separate process that re-evaluates this module, so `fullyParallel` workers never share one.
 // Generated here rather than inside a leaf default so the leaves stay declarative — the same
 // rationale Memory Core's config records for its per-worker test collection names.
-const kbChromaTestDatabase = `neo-kb-unit-test-${process.pid}`;
+//
+// The NAME SHAPE now comes from `chromaTestIsolation`, which is also what the production-instance
+// census detects against. It was a literal here, and the two could drift apart without anything
+// failing: move the generator, and the detector goes on reporting a clean instance. That module is
+// import-cheap by construction (constants and pure functions; the `AdminClient` is lazy), which is
+// what lets a config file consume it before the Provider exists.
+const kbChromaTestDatabase = kbChromaTestDatabaseName();
 
 /**
  * @summary Extendable defaults and formulas for the Knowledge Base MCP server.

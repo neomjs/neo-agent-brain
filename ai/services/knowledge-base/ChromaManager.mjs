@@ -4,7 +4,10 @@ import logger                          from '../../mcp/server/knowledge-base/log
 import Base                            from 'neo.mjs/src/core/Base.mjs';
 import DatabaseLifecycleService        from './DatabaseLifecycleService.mjs';
 import {assertDisposableRestoreTarget} from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
-import {ensureChromaTestDatabase}      from '../shared/vector/chromaTestIsolation.mjs';
+import {
+    assertChromaCoordinateCoherence,
+    ensureChromaTestDatabase
+}                                      from '../shared/vector/chromaTestIsolation.mjs';
 import {
     chromaConnect,
     chromaDeleteCollection,
@@ -83,6 +86,20 @@ class ChromaManager extends Base {
         // isolation Memory Core has had all along was simply absent here. The value is resolved by
         // the config's `chromaDatabase` formula, so this reads one value and carries no env ternary.
         const {host, port, chromaDatabase: database} = aiConfig;
+
+        // Refuse before the client exists, not after. This is the one choke point every KB Chroma
+        // write passes through, so a test-shaped database aimed at production Chroma either dies
+        // here or reaches the store. Production coordinates resolve read-up through the provider
+        // hierarchy — this config is a child of `Neo.ai.Config` — so they are read at the use site
+        // rather than threaded in.
+        assertChromaCoordinateCoherence({
+            database,
+            host,
+            port,
+            productionHost: aiConfig.engines.chroma.hostProd,
+            productionPort: aiConfig.engines.chroma.portProd,
+            testDatabase  : aiConfig.chromaDatabaseTest
+        });
 
         this.client = new ChromaClient({host, port, ssl: false, database});
     }
