@@ -151,6 +151,17 @@ export function isSameChromaHost(host, otherHost) {
  * to `NEO_CHROMA_HOST` / `NEO_CHROMA_PORT` — the PRODUCTION variables — while `chromaDatabase`
  * resolves independently from `UNIT_TEST_MODE`. Exporting a production coordinate var during a test
  * run separates them, with no `_TEST` variable involved anywhere.
+ *
+ * ## Why the refusal names COORDINATES and never an instance
+ *
+ * This function is handed four resolved config leaves and compares two pairs of them. It never opens
+ * a socket, so it cannot know which store answers — and a message asserting one would be claiming a
+ * fact the caller did not supply. `#285` is the standing proof that the distinction is not pedantic:
+ * that ticket read a census of `localhost:8000` as the cloud plane and said "production" nineteen
+ * times, when the base compose publishes no host port for `chroma` at all and `127.0.0.1:8000` comes
+ * solely from the local agent-OS overlay. The guard's own correctness never rested on that — pairing
+ * a test-shaped database with the production leaves is wrong wherever those leaves point — so the
+ * text says exactly that and leaves instance identity to whoever can actually measure it.
  * @param {Object} options
  * @param {String} options.database       The resolved database name.
  * @param {String} options.testDatabase   The resolved test-database name for this server.
@@ -173,9 +184,9 @@ export function assertChromaCoordinateCoherence({database, testDatabase, host, p
     if (isTestDatabase && isProductionHostPort) {
         throw new Error(
             `Refusing to start the ${serverName} Chroma client: the resolved database "${database}" is ` +
-            `test-shaped, but the resolved coordinates ${host}:${port} are the PRODUCTION Chroma instance ` +
-            `(configured as ${productionHost}:${productionPort} — the same endpoint). ` +
-            'Writing there would create a test-named database inside the production store (#285). ' +
+            `test-shaped, but the resolved coordinates ${host}:${port} are this deployment's PRODUCTION Chroma ` +
+            `coordinates (configured as ${productionHost}:${productionPort} — the same endpoint). ` +
+            'Writing there would create a test-named database in whatever store answers them (#285). ' +
             'Most likely NEO_CHROMA_HOST or NEO_CHROMA_PORT is exported while a test selector ' +
             '(UNIT_TEST_MODE / NEO_TEST_CONFIG_TEMPLATES) is on — those are the production coordinate ' +
             'variables and they override the test-resolved default.'

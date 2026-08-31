@@ -116,10 +116,12 @@ test.describe('chromaTestIsolation helpers', () => {
 });
 
 /**
- * Coverage for the `#285` surface: three empty `neo-kb-unit-test-*` databases were found sitting
- * inside the PRODUCTION Chroma instance. The generator and the detector of that name shape must not
- * be able to drift apart, the boot refusal must fire on exactly the leak combination and on nothing
- * else, and the enumeration must not truncate.
+ * Coverage for the `#285` surface: three empty `neo-kb-unit-test-*` databases were found sitting in
+ * the LOCAL agent-OS Chroma instance — `#285` reported them as production and was refuted; the base
+ * compose publishes no host port for `chroma`, so a host-edge census cannot reach the cloud plane.
+ * What the refutation does not touch is the pairing itself: the generator and the detector of that
+ * name shape must not be able to drift apart, the boot refusal must fire on exactly the leak
+ * combination and on nothing else, and the enumeration must not truncate.
  */
 test.describe('#285 — test-database name shape', () => {
     test('the KB generator and the detector agree by construction', () => {
@@ -179,7 +181,7 @@ test.describe('#285 — boot refusal (both directions)', () => {
             host        : 'localhost',
             port        : 8000,
             ...productionCoordinates
-        })).toThrow(/PRODUCTION Chroma instance/);
+        })).toThrow(/PRODUCTION Chroma coordinates/);
     });
 
     test('the refusal names both the database and the resolved coordinates', () => {
@@ -232,7 +234,7 @@ test.describe('#285 — boot refusal (both directions)', () => {
             host        : 'localhost',
             port        : '8000',
             ...productionCoordinates
-        })).toThrow(/PRODUCTION Chroma instance/);
+        })).toThrow(/PRODUCTION Chroma coordinates/);
     });
 
     test('host alone does not decide it — hostTest and hostProd share a default', () => {
@@ -293,7 +295,7 @@ test.describe('#286 RA-3 — endpoint identity is not host-string identity', () 
     // NEO_CHROMA_PORT_TEST=8000` resolves exactly this and reported ALLOWED before this fix.
     for (const host of ['127.0.0.1', '::1', '[::1]', 'LocalHost', 'localhost.', '127.0.0.53']) {
         test(`REFUSES the alias-equivalent production coordinate ${host}:8000`, () => {
-            expect(testDatabaseArm({host, port: 8000})).toThrow(/PRODUCTION Chroma instance/);
+            expect(testDatabaseArm({host, port: 8000})).toThrow(/PRODUCTION Chroma coordinates/);
         });
     }
 
