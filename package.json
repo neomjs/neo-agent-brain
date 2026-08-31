@@ -60,6 +60,7 @@
         "prepare": "node ./ai/scripts/setup/initServerConfigs.mjs",
         "agent-preflight": "node ./ai/scripts/agent-preflight.mjs",
         "ai:analyze-nl-telemetry": "node ./ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
+        "ai:check-backup-integrity": "node ./ai/scripts/maintenance/backupCorruptionTimeline.mjs",
         "ai:check-retired-primitives": "node ./ai/scripts/diagnostics/check-retired-primitives.mjs",
         "ai:kb-push-client": "node ./ai/scripts/maintenance/kbPushClient.mjs",
         "ai:community-batch-push": "node ./ai/scripts/maintenance/communityBatchPushClient.mjs",
