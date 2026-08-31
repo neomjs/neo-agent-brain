@@ -557,6 +557,12 @@ class ConfigBase extends ConfigProvider {
              */
             customParsers: leaf([]),
             /**
+             * Tenant-declared extractor modules. Config owns only the module/export address; the
+             * loaded export owns extractor id, version, and capability declarations.
+             * @type {Array<{extractorModule: String, exportName?: String}>}
+             */
+            customExtractors: leaf([]),
+            /**
              * @summary Absolute root the deployment pins for tenant-declared parser modules.
              *
              * **Empty by default, and that default is load-bearing.** A tenant's config tiers (the
@@ -580,6 +586,21 @@ class ConfigBase extends ConfigProvider {
              * @type {String}
              */
             tenantParserRoot: leaf('', 'NEO_KB_TENANT_PARSER_ROOT', 'string'),
+            /**
+             * @summary Absolute deployment-pinned root for tenant extractor modules.
+             *
+             * Separate from `tenantParserRoot`: authorizing parser code must never silently grant
+             * the broader repository-extractor capability. Empty disables the feature; there is no
+             * repository or cwd fallback.
+             * @type {String}
+             */
+            tenantExtractorRoot: leaf('', 'NEO_KB_TENANT_EXTRACTOR_ROOT', 'string'),
+            /**
+             * Default pull-mode tenant repositories. Tenant-specific graph/YAML tiers override this
+             * array wholesale; entries are normalized by `IngestionService` before consumption.
+             * @type {Array<Object>}
+             */
+            tenantRepos: leaf([]),
             /**
              * Per-source path overrides keyed by Source-class registry name.
              * Empty entries or missing keys fall through to each Source class's hardcoded fallback

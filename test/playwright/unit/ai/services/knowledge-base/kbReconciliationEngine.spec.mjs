@@ -3,6 +3,7 @@ import {test, expect} from '@playwright/test';
 import {
     DEFAULT_ORPHAN_VERSION_GAP,
     diffTenantChunks,
+    diffTenantExtractionIdentity,
     diffTenantManifest,
     diffTenantParserIdentity,
     formatReconciliationDetail,
@@ -32,7 +33,7 @@ const row = (id, v, metadata = {}) => ({
     id,
     metadata: {
         tenantConfigVersion: v,
-        ingestedAt          : 1000,
+        ingestedAt         : 1000,
         repoSlug           : 'repo-x',
         tenantId           : 'tenant-x',
         sourcePath         : 'src/' + id + '.js',
@@ -247,14 +248,15 @@ test.describe('KbReconciliationEngine — formatReconciliationDetail (#11640)', 
         const detail = formatReconciliationDetail({diff, currentVersion: 7, autoTombstone: true, tombstonedCount: 3});
 
         expect(detail).toEqual({
-            staleCount         : 5,
-            manifestOrphanCount: 2,
-            parserOrphanCount  : 0,
-            totalOrphanCount   : 7,
-            actionableCount    : 3,
-            tombstonedCount    : 3,
-            currentVersion     : 7,
-            autoTombstone      : true
+            staleCount           : 5,
+            manifestOrphanCount  : 2,
+            parserOrphanCount    : 0,
+            extractionOrphanCount: 0,
+            totalOrphanCount     : 7,
+            actionableCount      : 3,
+            tombstonedCount      : 3,
+            currentVersion       : 7,
+            autoTombstone        : true
         });
     });
 
@@ -270,14 +272,15 @@ test.describe('KbReconciliationEngine — formatReconciliationDetail (#11640)', 
         const detail = formatReconciliationDetail({});
 
         expect(detail).toEqual({
-            staleCount         : 0,
-            manifestOrphanCount: 0,
-            parserOrphanCount  : 0,
-            totalOrphanCount   : 0,
-            actionableCount    : 0,
-            tombstonedCount    : 0,
-            currentVersion     : 0,
-            autoTombstone      : false
+            staleCount           : 0,
+            manifestOrphanCount  : 0,
+            parserOrphanCount    : 0,
+            extractionOrphanCount: 0,
+            totalOrphanCount     : 0,
+            actionableCount      : 0,
+            tombstonedCount      : 0,
+            currentVersion       : 0,
+            autoTombstone        : false
         });
     });
 });
@@ -426,6 +429,109 @@ test.describe('diffTenantParserIdentity — parser-identity orphans', () => {
 
         expect(out.parserOrphans[0].tier, 'never unyielded on a missing envelope').toBe('superseded');
         expect(out.actionableIds, 'and not reclaimable without a replacement').toEqual([]);
+    });
+});
+
+test.describe('diffTenantExtractionIdentity — proof-bound profile currency', () => {
+    const
+        REPO        = 'org/repo',
+        CURRENT_ID  = 'b'.repeat(64),
+        PRIOR_ID    = 'a'.repeat(64),
+        SNAPSHOT_AT = 2_000;
+
+    function row({id, path, identity = PRIOR_ID, ingestedAt = 1_000}) {
+        return {
+            id,
+            metadata: {
+                tenantId  : 't1',
+                repoSlug  : REPO,
+                sourcePath: path,
+                ingestedAt,
+                ...(identity == null ? {} : {extractionIdentity: identity})
+            }
+        };
+    }
+
+    function diff(rows, snapshot) {
+        return diffTenantExtractionIdentity({
+            rows,
+            tenantId                 : 't1',
+            declaredByRepo           : {[REPO]: {extractionIdentity: CURRENT_ID}},
+            extractionSnapshotsByRepo: snapshot === undefined ? {} : {[REPO]: snapshot}
+        });
+    }
+
+    test('completed exclusion retires an old row while the physical path can remain tracked', () => {
+        const out = diff([row({id: 'excluded', path: 'src/still-tracked.mjs'})], {
+            yieldedSourcePaths: [],
+            extractionIdentity: CURRENT_ID,
+            updatedAt         : SNAPSHOT_AT
+        });
+
+        expect(out.extractionOrphans).toEqual([expect.objectContaining({
+            id    : 'excluded',
+            tier  : 'unyielded',
+            reason: 'extraction-currency-mismatch'
+        })]);
+        expect(out.actionableIds).toEqual(['excluded']);
+    });
+
+    test('still-yielded content waits until a current-identity replacement exists', () => {
+        const authority = {
+            yieldedSourcePaths: ['src/live.mjs'],
+            extractionIdentity: CURRENT_ID,
+            updatedAt         : SNAPSHOT_AT
+        };
+        const waiting = diff([row({id: 'old', path: 'src/live.mjs'})], authority);
+
+        expect(waiting.extractionOrphans[0].tier).toBe('superseded');
+        expect(waiting.actionableIds).toEqual([]);
+
+        const replaced = diff([
+            row({id: 'old', path: 'src/live.mjs'}),
+            row({id: 'new', path: 'src/live.mjs', identity: CURRENT_ID, ingestedAt: 2_100})
+        ], authority);
+
+        expect(replaced.actionableIds).toEqual(['old']);
+    });
+
+    test('missing or prior-identity snapshot is unknown and cannot make an excluded path actionable', () => {
+        const rows = [row({id: 'old', path: 'src/excluded.mjs'})];
+
+        expect(diff(rows).actionableIds).toEqual([]);
+        expect(diff(rows, {
+            yieldedSourcePaths: [],
+            extractionIdentity: PRIOR_ID,
+            updatedAt         : SNAPSHOT_AT
+        }).actionableIds).toEqual([]);
+    });
+
+    test('legacy unstamped rows are classifiable only inside the proof snapshot freshness fence', () => {
+        const authority = {
+            yieldedSourcePaths: [],
+            extractionIdentity: CURRENT_ID,
+            updatedAt         : SNAPSHOT_AT
+        };
+        const out = diff([
+            row({id: 'legacy-old', path: 'src/old.mjs', identity: null, ingestedAt: 1_500}),
+            row({id: 'legacy-new', path: 'src/new.mjs', identity: null, ingestedAt: 2_500})
+        ], authority);
+
+        expect(out.extractionOrphans.map(orphan => orphan.id)).toEqual(['legacy-old']);
+        expect(out.actionableIds).toEqual(['legacy-old']);
+    });
+
+    test('a malformed extraction stamp is unclassifiable and never actionable', () => {
+        const out = diff([
+            row({id: 'malformed', path: 'src/bad.mjs', identity: 'not-a-digest'})
+        ], {
+            yieldedSourcePaths: [],
+            extractionIdentity: CURRENT_ID,
+            updatedAt         : SNAPSHOT_AT
+        });
+
+        expect(out.extractionOrphanCount).toBe(0);
+        expect(out.actionableIds).toEqual([]);
     });
 });
 

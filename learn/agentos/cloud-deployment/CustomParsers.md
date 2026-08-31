@@ -1,6 +1,6 @@
 # Cloud-Native KB Ingestion — Custom Parsers
 
-> **Status — Phase 3B.** This guide documents how a cloud tenant turns its own file formats into Knowledge Base chunks — the `parsed-chunk-v1` contract and the parser registration surface shipped across Phase 0/1 and Phase 2 of Epic [#11624](https://github.com/neomjs/neo/issues/11624). A worked custom parser ships alongside this guide under [`ai/examples/cloud-deployment/`](../../../ai/examples/cloud-deployment/).
+> **Status — operational model.** This guide documents how a cloud tenant turns its own file formats into Knowledge Base chunks through push parsing or a tenant-local pull profile. A worked parser ships alongside this guide under [`ai/examples/cloud-deployment/`](../../../ai/examples/cloud-deployment/).
 
 ## Source vs Parser
 
@@ -9,9 +9,20 @@ The KB ingestion substrate splits content acquisition into two roles (see [Overv
 - A **Source** locates and reads content from a territory — used by the full-corpus build (`ai:sync-kb`). See [Custom Sources](./CustomSources.md).
 - A **Parser** transforms one file *format* into chunk content. A parser is what the **push path** (`ingest_source_files`, `ai:ingest-tenant` — see [Hook Wiring](./HookWiring.md)) invokes to turn a tenant's raw file into `parsed-chunk-v1` records.
 
-Both register in the same `SourceRegistry` singleton. This guide covers parsers — the format layer a cloud tenant most often needs to extend, because a tenant's repos rarely contain only the formats Neo's built-in parsers (`SourceParser` for ES modules, `DocumentationParser` for Markdown, `TestParser`) understand.
+The legacy full-corpus path registers parsers in `SourceRegistry`. Multi-tenant data-tier declarations do not: they resolve per tenant from a deployment-pinned root, preventing one tenant's parser id from overwriting another's process-global entry. This guide covers the format layer a cloud tenant most often needs to extend.
 
 The tenant-level choice of which source families use server parsers, client-side `parsed-chunk-v1`, or an explicit unsupported status is defined in [Tenant Ingestion Model](./TenantIngestionModel.md).
+
+```mermaid
+flowchart TD
+    PushFile[Push raw file] --> TenantResolver[Tenant-local parser resolver]
+    PullRepo[Pulled repository revision] --> ProfileRoute[ParserSource profile route]
+    ProfileRoute --> TenantResolver
+    TenantResolver --> Parser[Operator-authorized parser]
+    Parser --> ParsedChunks[Validated parsed chunks]
+    ClientParser[Client-side parser] --> ParsedChunks
+    ParsedChunks --> ServerEmbed[Server-owned embedding]
+```
 
 ## The `parsed-chunk-v1` contract
 
@@ -31,7 +42,7 @@ Every chunk entering the KB through the push path conforms to [`parsed-chunk-v1`
 | `kind` | Open-enum semantic category (`doc-section`, `method`, `class-config`, …). |
 | `name` | Human-readable chunk name. |
 
-Optional: `line_start`, `line_end`, `className`, `extends`, and `customMeta` (an open extension slot). The schema is `additionalProperties: false` — unknown top-level keys are rejected; put parser-specific extras in `customMeta`.
+Optional: `line_start`, `line_end`, `className`, `extends`, `extractorId`, `extractorVersion`, `extractionIdentity`, and `customMeta` (an open extension slot). The schema is `additionalProperties: false` — unknown top-level keys are rejected; put parser-specific extras in `customMeta`. Pull-mode extractor and extraction fields are server-derived. Extraction identity participates in the chunk hash so a profile change creates a replacement generation instead of becoming metadata on an id the vector store would skip.
 
 **One field is forbidden: `embedding`.** A record carrying an `embedding` is a *restore* record (`backup-record-v1`), not an ingest record. The ingestion service rejects any `parsed-chunk-v1` record with an `embedding` field (`KB_PARSED_CHUNK_EMBEDDING_REJECTED`) — embeddings are always generated server-side. Every record is Ajv-validated against the schema at ingest; a non-conforming record is rejected (`KB_PARSED_CHUNK_INVALID`) without aborting its sibling records in the same push.
 
@@ -50,14 +61,14 @@ This is the **only** path for a non-JS source format: a tenant with C++, Python,
 
 ### Server-side (operator-gated)
 
-A parser class registered on the deployment runs **in the deployment's process** when a tenant pushes a *raw* file (`{sourcePath, content, parserId}`) and the server resolves `parserId` to that class. Because this executes parser code in the shared server process, it is an **operator-gated** surface: a tenant cannot register server-side parser code without operator review — `aiConfig.customParsers` is a deployment config, not a tenant-supplied payload. Use server-side parsers only for operator-installed, Neo-shipped, or signed-package parsers.
+A parser class runs **in the deployment's process** when a tenant pushes a raw file with `parserId`, or when a pull profile routes repository files through `ParserSource`. Because this executes parser code in the shared server process, it is operator-gated. JS config may carry a live `ParserClass`; graph/YAML tiers carry `{parserId, parserModule, exportName?}`, resolved below the deployment's `tenantParserRoot`. Empty root disables module loading, and failures never fall back to raw text.
 
 ## Authoring a server-side parser
 
-A parser is a Neo class registered in `SourceRegistry` under a stable `parserId`:
+A parser has a stable `parserId`. Two declaration modes exist:
 
-- **Declaratively** — list it in `aiConfig.customParsers` (loaded once at boot).
-- **Programmatically** — `SourceRegistry.registerParser(ParserClass, {parserId})`.
+- **Legacy/global:** list a live `ParserClass` in JS `aiConfig.customParsers`, or call `SourceRegistry.registerParser` for the full-corpus/push compatibility path.
+- **Tenant-local:** store `{parserId, parserModule, exportName?}` in the tenant's graph/YAML config and pin `tenantParserRoot` at deployment level. The loaded value is cached by tenant plus full declaration and never registered globally.
 
 `aiConfig.useDefaultParsers` (default `true`) controls whether Neo's built-in parsers are present; a deployment serving only non-Neo content can set it `false`.
 
@@ -76,6 +87,8 @@ The shape that fails is a plain, non-singleton class whose parse method sits on 
 
 If a pushed file names a `parserId` that is not registered, the ingestion service returns `KB_PARSER_NOT_REGISTERED` for that file. A raw file with no `parserId` falls through to the built-in `raw-text` handling — the whole file becomes a single chunk.
 
+Pull-mode compatibility uses the same failure semantics. An absent repository profile with a declared `parserId` synthesizes a `ParserSource` route whose canonical options contain exactly `parserId` and `parserVersion`. An unresolvable parser throws `KB_PARSER_NOT_REGISTERED`; it never silently relabels a `RawRepoSource` whole-file chunk as parser output.
+
 ## The parser-execution boundary
 
 The trust rule is invariant (see [Security](./Security.md) for the full model): **untrusted parsing happens tenant-side; server-side parser execution is operator-gated.** A cloud tenant extending the KB with a new format defaults to the client-side path — it needs no operator coordination, runs no code in the shared process, and supports any source language. The server-side path is reserved for parsers the operator has explicitly vetted.
@@ -91,4 +104,4 @@ A runtime sandbox for in-process execution of tenant-supplied parser code (WASM 
 - [Configuration](./Configuration.md) — `useDefaultParsers`, `customParsers`, and the rest of the `aiConfig` surface.
 - [Security](./Security.md) — the parser-execution trust boundary.
 - [`parsed-chunk-v1.schema.json`](../../../ai/services/knowledge-base/parser/parsed-chunk-v1.schema.json) — the authoritative ingest-chunk schema.
-- [#11629](https://github.com/neomjs/neo/issues/11629) Phase 0/1A contracts · [#11630](https://github.com/neomjs/neo/issues/11630) Phase 0/1B registry · [#11634](https://github.com/neomjs/neo/issues/11634) `ingest_source_files`.
+- [`ParserSource.mjs`](../../../ai/services/knowledge-base/source/ParserSource.mjs) — repository-profile parser route · [`tenantParserLoader.mjs`](../../../ai/services/knowledge-base/source/tenantParserLoader.mjs) — tenant isolation and containment.

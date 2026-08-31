@@ -171,7 +171,8 @@ class ApiSource extends Base {
                 sourcePath,
                 semanticType,
                 hierarchy,
-                rootCoverage
+                rootCoverage,
+                {strict: true}
             );
 
             if (chunks.length) {

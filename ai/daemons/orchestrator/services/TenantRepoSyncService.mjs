@@ -613,6 +613,36 @@ function isMatchingMaterializationReceipt(receipt, expectedDigest) {
 }
 
 /**
+ * @summary Verifies that the graph manifest published the same proof-bound extraction authority.
+ * @param {*} snapshot Candidate graph extraction snapshot.
+ * @param {Object} envelope Current full-materialization envelope.
+ * @param {Object} receipt Receipt accepted by the existing materialization guard.
+ * @returns {Boolean}
+ */
+function isMatchingExtractionSnapshot(snapshot, envelope, receipt) {
+    if (
+        !snapshot
+        || typeof snapshot !== 'object'
+        || !receipt
+        || snapshot.extractionIdentity !== envelope?.extractionIdentity
+        || !Array.isArray(snapshot.yieldedSourcePaths)
+        || !Array.isArray(envelope?.manifestSnapshot?.yieldedSourcePaths)
+        || !Number.isSafeInteger(snapshot.updatedAt)
+        || snapshot.updatedAt <= 0
+    ) {
+        return false
+    }
+
+    const
+        storedYields  = [...new Set(snapshot.yieldedSourcePaths)].sort(),
+        currentYields = [...new Set(envelope.manifestSnapshot.yieldedSourcePaths)].sort();
+
+    return JSON.stringify(storedYields) === JSON.stringify(currentYields)
+        && isMatchingMaterializationReceipt(snapshot.proof, receipt.envelopeDigest)
+        && snapshot.proof.attemptId === receipt.attemptId
+}
+
+/**
  * @summary Requires a durable positive-effect proof before a full materialization can commit.
  *
  * A manifest-bearing envelope represents bootstrap, non-linear fallback, manual full
@@ -648,8 +678,14 @@ function assertFullMaterializationEffect(envelope, summary, priorState, material
         // The envelope's own manifest, not a proxy for it: `pathsAfterPush` is what the repo carries
         // after the push, so an EMPTY array is a positive statement that there is nothing to ingest —
         // and a non-empty one is what makes zero effect a finding.
-        declaredPaths     = envelope.manifestSnapshot.pathsAfterPush,
-        declaresNoContent = Array.isArray(declaredPaths) && declaredPaths.length === 0,
+        declaredPaths      = envelope.manifestSnapshot.pathsAfterPush,
+        declaredYieldPaths = envelope.manifestSnapshot.yieldedSourcePaths,
+        // Profile-era proof names what the extractor yielded, not merely what Git carries. The
+        // physical-path fallback preserves pre-profile test/legacy envelopes without making them
+        // eligible to publish an extraction snapshot.
+        declaresNoContent  = Array.isArray(declaredYieldPaths)
+            ? declaredYieldPaths.length === 0
+            : Array.isArray(declaredPaths) && declaredPaths.length === 0,
         // Chunks that reached the pipeline and were refused before the provider. Disjoint from
         // `ingested`, which counts embeddable chunks only.
         skippedOversized  = Number.isSafeInteger(summary.skippedOversized) ? summary.skippedOversized : 0,
@@ -1714,9 +1750,10 @@ class TenantRepoSyncService extends Base {
         assertConcurrencyLimit(concurrencyLimit);
         assertConcurrencyGateTimeoutMs(concurrencyGateTimeoutMs);
 
-        const resolvedConfig = tenantReposConfig || await this.resolveTenantReposConfig({ingestionService: knowledgeBaseIngestionService});
-        const allRepos       = resolvedConfig.tenantRepos || [];
-        const repos          = onlyRepoSlugs
+        const ingestionService = knowledgeBaseIngestionService || await this.resolveIngestionService();
+        const resolvedConfig   = tenantReposConfig || await this.resolveTenantReposConfig({ingestionService});
+        const allRepos         = resolvedConfig.tenantRepos || [];
+        const repos            = onlyRepoSlugs
             ? allRepos.filter(r => onlyRepoSlugs.includes(r.repoSlug))
             : allRepos;
 
@@ -1815,7 +1852,6 @@ class TenantRepoSyncService extends Base {
         });
 
         const resolvedRevisionsPath          = revisionsFilePath || this.defaultRevisionsFilePath();
-        const ingestionService               = knowledgeBaseIngestionService || await this.resolveIngestionService();
         const ingestSourceFilesForTenantSync = typeof ingestionService.ingestSourceFilesForTenantSync === 'function'
             ? (payload, controls) => ingestionService.ingestSourceFilesForTenantSync(payload, controls)
             : (payload, controls) => ingestionService.ingestSourceFiles(payload, controls);
@@ -1833,6 +1869,37 @@ class TenantRepoSyncService extends Base {
             filePath: resolvedRevisionsPath,
             strict  : true
         });
+
+        const tenantExecutionContexts       = new Map();
+        const resolveTenantExecutionContext = async repo => {
+            if (tenantExecutionContexts.has(repo.tenantId)) {
+                return tenantExecutionContexts.get(repo.tenantId)
+            }
+
+            let customExtractors = [];
+
+            if (typeof ingestionService.getTenantConfig === 'function') {
+                const tenantConfig = await ingestionService.getTenantConfig({tenantId: repo.tenantId});
+
+                customExtractors = tenantConfig?.customExtractors || [];
+            }
+
+            const context = {
+                extractorCatalogue: typeof ingestionService.resolveTenantExtractorCatalogue === 'function'
+                    ? await ingestionService.resolveTenantExtractorCatalogue({
+                        tenantId    : repo.tenantId,
+                        declarations: customExtractors
+                    })
+                    : undefined,
+                parserResolver: typeof ingestionService.createTenantParserResolver === 'function'
+                    ? ingestionService.createTenantParserResolver({tenantId: repo.tenantId})
+                    : undefined
+            };
+
+            tenantExecutionContexts.set(repo.tenantId, context);
+
+            return context
+        };
 
         if (Object.values(persistedRevisions).some(
             state => classifyTenantRepoCheckpoint(state) === TenantRepoCheckpointStatus.UNSUPPORTED
@@ -2168,7 +2235,8 @@ class TenantRepoSyncService extends Base {
                         consecutiveFailures                  : 0,
                         ingestContractVersion                : null,
                         lastAttemptedIngestContractVersion   : null,
-                        lastCommittedMaterializationAttemptId: null
+                        lastCommittedMaterializationAttemptId: null,
+                        extractionIdentity                   : null
                     };
                     seededAny = true;
                     writeLog?.('INFO', `[TenantRepoSync] Bootstrap-seeding ${repoLabel} (sync scheduled within jitter window).`);
@@ -2198,13 +2266,22 @@ class TenantRepoSyncService extends Base {
                             persistedRepoState: priorState,
                             now               : admissionObservedAt,
                             globalCadenceMs,
-                            jitterRatio
+                            jitterRatio,
+                            backoffCapMs
                         });
 
-                    return {repoLabel, priorState, dueState};
+                    return {
+                        repoLabel,
+                        priorState,
+                        dueState,
+                        currentExtractionIdentity: repo.extractionIdentity
+                    };
                 })
-                .filter(({priorState, dueState}) =>
-                    dueState.due && requiresTenantRepoCheckpointRevalidation(priorState)
+                .filter(({priorState, dueState, currentExtractionIdentity}) =>
+                    dueState.due && requiresTenantRepoCheckpointRevalidation(
+                        priorState,
+                        currentExtractionIdentity
+                    )
                 )
                 .sort((a, b) =>
                     (a.priorState?.lastRunAttemptAt ?? 0) - (b.priorState?.lastRunAttemptAt ?? 0)
@@ -2222,7 +2299,10 @@ class TenantRepoSyncService extends Base {
                 repoLabel            = `${repo.tenantId}/${repo.repoSlug}`,
                 priorState           = persistedRevisions[repoLabel] || null,
                 checkpointStatus     = classifyTenantRepoCheckpoint(priorState),
-                revalidationRequired = requiresTenantRepoCheckpointRevalidation(priorState);
+                revalidationRequired = requiresTenantRepoCheckpointRevalidation(
+                    priorState,
+                    repo.extractionIdentity
+                );
             let startedMs = Date.now();
 
             // Per-repo due check applies deterministic jitter + exponential backoff on
@@ -2457,17 +2537,25 @@ class TenantRepoSyncService extends Base {
                 accessConfirmed = true;
                 this.recordTenantRepoAccessOutcome({repo, ready: true, globalCadenceMs});
 
-                const envelope = await envelopeBuilder({
+                const tenantExecutionContext = await resolveTenantExecutionContext(repo);
+                const envelope               = await envelopeBuilder({
                     tenantId       : repo.tenantId,
                     repoSlug       : repo.repoSlug,
                     mirrorRoot     : repo.mirrorRoot,
                     lastIngestedRev: fullReplay || revalidationRequired
                         ? null
                         : (priorState?.lastIngestedRev || null),
-                    newHead      : repo.branchRef || 'HEAD',
-                    rootKind     : repo.rootKind || 'external-source',
-                    parserId     : repo.parserId,
-                    parserVersion: repo.parserVersion,
+                    newHead           : repo.branchRef || 'HEAD',
+                    rootKind          : repo.rootKind || 'external-source',
+                    parserId          : repo.parserId,
+                    parserVersion     : repo.parserVersion,
+                    extractionProfile : repo.extractionProfile,
+                    extractionIdentity: repo.extractionIdentity,
+                    extractorCatalogue: tenantExecutionContext.extractorCatalogue,
+                    parserResolver    : tenantExecutionContext.parserResolver,
+                    // #263 owns the production identity-bearing hierarchy resolver. Passing the
+                    // interface explicitly keeps hierarchy-required profiles fail-closed here.
+                    hierarchyResolver  : null,
                     gitMirror,
                     // The clone and fetch above are not the last authenticated operations of this
                     // sweep. On a blobless mirror the envelope acquires blobs in bulk and then reads
@@ -2475,6 +2563,17 @@ class TenantRepoSyncService extends Base {
                     // reads lists fine, then loses the bulk tier and fails again on the fallback.
                     credentialRef: repo.credentialRef
                 });
+
+                if (
+                    repo.extractionIdentity
+                    && envelope?.extractionIdentity !== repo.extractionIdentity
+                ) {
+                    throw new TenantRepoSyncError(
+                        KB_TENANT_REPO_SYNC_MATERIALIZATION_UNPROVEN,
+                        'Tenant-repo envelope extraction identity does not match the projected profile.',
+                        {phase: 'extraction-identity'}
+                    )
+                }
 
                 if (typeof envelope?.headRevision !== 'string' || !envelope.headRevision.trim()) {
                     throw new Error('Tenant-repo ingestion envelope did not prove a head revision.');
@@ -2501,8 +2600,11 @@ class TenantRepoSyncService extends Base {
                             repoSlug: repo.repoSlug
                         })
                         : null,
-                    declaresNoContent = Array.isArray(envelope.manifestSnapshot?.pathsAfterPush)
-                        && envelope.manifestSnapshot.pathsAfterPush.length === 0,
+                    declaredYieldPaths = envelope.manifestSnapshot?.yieldedSourcePaths,
+                    declaresNoContent = Array.isArray(declaredYieldPaths)
+                        ? declaredYieldPaths.length === 0
+                        : Array.isArray(envelope.manifestSnapshot?.pathsAfterPush)
+                            && envelope.manifestSnapshot.pathsAfterPush.length === 0,
                     // A content-bearing full replay must reach VectorService so its explicit replay
                     // control can clear and re-offer same-generation poison. An authoritative empty
                     // manifest has no embedding work to suppress, so its uncommitted receipt remains
@@ -2880,6 +2982,34 @@ class TenantRepoSyncService extends Base {
                     priorState,
                     materializationAttempt
                 );
+                let committedExtractionIdentity = priorState?.extractionIdentity || null;
+
+                if (envelope.manifestSnapshot && envelope.extractionIdentity) {
+                    const committedManifest = typeof ingestionService.getTenantManifest === 'function'
+                        ? await ingestionService.getTenantManifest({
+                            tenantId: repo.tenantId,
+                            repoSlug: repo.repoSlug
+                        })
+                        : null;
+
+                    if (!isMatchingExtractionSnapshot(
+                        committedManifest?.extractionSnapshot,
+                        envelope,
+                        materializationReceipt
+                    )) {
+                        throw new TenantRepoSyncError(
+                            KB_TENANT_REPO_SYNC_MATERIALIZATION_UNPROVEN,
+                            'Tenant-repo extraction snapshot does not match the completed materialization proof.',
+                            {phase: 'extraction-snapshot'}
+                        )
+                    }
+
+                    committedExtractionIdentity = envelope.extractionIdentity;
+                } else if (envelope.extractionIdentity) {
+                    // Incremental envelopes are admitted only when the prior identity already
+                    // matched the current one. Carry the builder-proved value through explicitly.
+                    committedExtractionIdentity = envelope.extractionIdentity;
+                }
 
                 // Persist full per-repo state on success. Reset consecutiveFailures
                 // to 0 (backoff is the multiplier-component of effectiveCadence; reset on
@@ -2894,6 +3024,7 @@ class TenantRepoSyncService extends Base {
                     lastCommittedMaterializationAttemptId: materializationReceipt?.attemptId
                         || priorState?.lastCommittedMaterializationAttemptId
                         || null,
+                    extractionIdentity                   : committedExtractionIdentity,
                     // Cleared explicitly, not merely omitted. The retained cause is now durable, so a
                     // repo that heals would otherwise keep publishing the reason it used to fail —
                     // a stale cause beside a zero failure count is worse than none, because it reads
@@ -3070,6 +3201,7 @@ class TenantRepoSyncService extends Base {
                     ingestContractVersion                : priorState?.ingestContractVersion ?? null,
                     lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
                     lastCommittedMaterializationAttemptId: priorState?.lastCommittedMaterializationAttemptId || null,
+                    extractionIdentity                   : priorState?.extractionIdentity || null,
                     // PERSIST the cause, not just the count. Before this, `lastErrorCode` existed only
                     // on the in-memory record for the sweep that failed: it was published for one
                     // cadence and then overwritten by the next sweep, which — once backoff parked the

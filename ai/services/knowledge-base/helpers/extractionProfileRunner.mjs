@@ -426,6 +426,7 @@ export async function runExtractionProfile({
     catalogue = ExtractorCatalogue,
     repositoryReader,
     hierarchyResolver = null,
+    parserResolver = null,
     changedPaths,
     writeStream,
     createHashFn
@@ -495,8 +496,22 @@ export async function runExtractionProfile({
             continue;
         }
 
-        const entries      = selected.map(assignment => assignment.entry);
-        const scopedReader = await activeReader.scope(entries);
+        const entries          = selected.map(assignment => assignment.entry);
+        const scopedReader     = await activeReader.scope(entries);
+        const routeWriteStream = typeof writeStream.forRoute === 'function'
+            ? writeStream.forRoute(Object.freeze({
+                extractorId: descriptor.extractorId,
+                version    : descriptor.version,
+                options    : group.route.options || {}
+            }))
+            : writeStream;
+
+        if (!routeWriteStream || typeof routeWriteStream.write !== 'function') {
+            throw createRunnerError(
+                'KB_EXTRACTION_OUTPUT_INVALID',
+                `Route writer for '${descriptor.extractorId}' must expose write()`
+            )
+        }
 
         await scopedReader.prefetch(entries.map(entry => entry.sourcePath));
 
@@ -508,10 +523,11 @@ export async function runExtractionProfile({
                 repositoryReader : scopedReader,
                 territory        : createInvocationTerritory(group, selected),
                 hierarchyResolver: compiled.hierarchyResolver || hierarchyResolver,
-                hierarchy        : compiled.preparedHierarchies?.[group.routeIndex]
+                hierarchy        : compiled.preparedHierarchies?.[group.routeIndex],
+                parserResolver
             }),
-            options     : group.route.options || {},
-            writeStream,
+            options    : group.route.options || {},
+            writeStream: routeWriteStream,
             createHashFn
         });
 

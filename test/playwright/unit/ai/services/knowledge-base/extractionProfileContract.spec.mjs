@@ -4,6 +4,7 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 test.describe('extraction profile contract (#261)', () => {
     let createExtractorCatalogue;
+    let createExtractionProfileIdentity;
     let createExtractionProfileMaterializationInput;
     let normalizeExtractionProfile;
     let serializeExtractionProfileMaterializationInput;
@@ -14,6 +15,7 @@ test.describe('extraction profile contract (#261)', () => {
             '../../../../../../ai/services/knowledge-base/source/ExtractorCatalogue.mjs'
         ));
         ({
+            createExtractionProfileIdentity,
             createExtractionProfileMaterializationInput,
             normalizeExtractionProfile,
             serializeExtractionProfileMaterializationInput
@@ -95,6 +97,38 @@ test.describe('extraction profile contract (#261)', () => {
             profile: upper,
             catalogue
         }));
+    });
+
+    test('derives one bounded extraction identity from canonical materialization input', () => {
+        const first  = profile();
+        const second = profile();
+
+        second.routes.reverse();
+        second.routes.forEach(route => {
+            route.territory.include?.reverse();
+            route.territory.exclude?.reverse();
+        });
+
+        const firstIdentity = createExtractionProfileIdentity({
+            profile          : first,
+            catalogue,
+            hierarchyIdentity: {id: 'repo-hierarchy', version: '7'}
+        });
+
+        expect(firstIdentity).toMatch(/^[a-f0-9]{64}$/u);
+        expect(createExtractionProfileIdentity({
+            profile          : second,
+            catalogue,
+            hierarchyIdentity: {version: '7', id: 'repo-hierarchy'}
+        })).toBe(firstIdentity);
+
+        second.routes.find(route => route.extractorId === 'SkillSource').territory.include = ['**/*.MD'];
+
+        expect(createExtractionProfileIdentity({
+            profile          : second,
+            catalogue,
+            hierarchyIdentity: {id: 'repo-hierarchy', version: '7'}
+        })).not.toBe(firstIdentity);
     });
 
     test('records exact matcher, descriptor, hierarchy, and normalized-root identity without minting a digest', () => {

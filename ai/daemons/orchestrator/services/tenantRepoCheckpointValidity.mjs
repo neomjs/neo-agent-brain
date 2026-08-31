@@ -30,7 +30,8 @@ export const TENANT_REPO_INGEST_CONTRACT_VERSION = 2;
 
 const
     EMBEDDING_RECOVERY_ID_PATTERN      = /^[a-f0-9]{32}$/u,
-    MATERIALIZATION_ATTEMPT_ID_PATTERN = /^[a-f0-9]{32}$/u;
+    MATERIALIZATION_ATTEMPT_ID_PATTERN = /^[a-f0-9]{32}$/u,
+    EXTRACTION_IDENTITY_PATTERN        = /^[a-f0-9]{64}$/u;
 
 /**
  * @summary Closed source-code family that can arm an embedding-recovery episode.
@@ -102,6 +103,7 @@ export function normalizeTenantRepoCheckpointState(value) {
             ingestContractVersion                : null,
             lastAttemptedIngestContractVersion   : null,
             lastCommittedMaterializationAttemptId: null,
+            extractionIdentity                   : null,
             // A bare SHA predates the retained-cause contract, so there is no cause to recover.
             lastErrorCode      : null,
             lastSourceErrorCode: null,
@@ -125,7 +127,11 @@ export function normalizeTenantRepoCheckpointState(value) {
         return null;
     }
 
-    if (hasMalformedContractVersion(value) || hasMalformedMaterializationAttemptId(value)) {
+    if (
+        hasMalformedContractVersion(value)
+        || hasMalformedMaterializationAttemptId(value)
+        || hasMalformedExtractionIdentity(value)
+    ) {
         return null;
     }
 
@@ -140,6 +146,10 @@ export function normalizeTenantRepoCheckpointState(value) {
         lastCommittedMaterializationAttemptId: normalizeMaterializationAttemptId(
             value.lastCommittedMaterializationAttemptId
         ),
+        // Server-derived profile currency. Missing on pre-profile checkpoints by construction;
+        // the caller compares that null against the current executable identity before selecting
+        // an incremental base.
+        extractionIdentity: normalizeExtractionIdentity(value.extractionIdentity),
         // The retained failure cause. Absent on records written before it existed, which normalizes to
         // null rather than dropping the record — a missing reason is not a malformed checkpoint.
         // `lastAccessCode` carries the DISCRIMINATING cause (under-scoped credential vs rejected
@@ -420,7 +430,11 @@ function normalizeEmbeddingRecovery(value) {
  * @returns {String} One `TenantRepoCheckpointStatus` value.
  */
 export function classifyTenantRepoCheckpoint(state) {
-    if (hasMalformedContractVersion(state) || hasMalformedMaterializationAttemptId(state)) {
+    if (
+        hasMalformedContractVersion(state)
+        || hasMalformedMaterializationAttemptId(state)
+        || hasMalformedExtractionIdentity(state)
+    ) {
         return TenantRepoCheckpointStatus.INVALID;
     }
 
@@ -471,13 +485,24 @@ export function classifyTenantRepoCheckpoint(state) {
  * before it may be trusted by the current ingestion contract.
  *
  * @param {Object|null} state Normalized persisted checkpoint state.
+ * @param {String|null} [currentExtractionIdentity] Current server-derived profile identity.
  * @returns {Boolean}
  */
-export function requiresTenantRepoCheckpointRevalidation(state) {
+export function requiresTenantRepoCheckpointRevalidation(state, currentExtractionIdentity = null) {
     const status = classifyTenantRepoCheckpoint(state);
 
-    return status === TenantRepoCheckpointStatus.PENDING
-        || status === TenantRepoCheckpointStatus.FAILED;
+    if (
+        status === TenantRepoCheckpointStatus.PENDING
+        || status === TenantRepoCheckpointStatus.FAILED
+    ) {
+        return true;
+    }
+
+    const current = normalizeExtractionIdentity(currentExtractionIdentity);
+
+    return status === TenantRepoCheckpointStatus.COMPLETE
+        && Boolean(current)
+        && normalizeTenantRepoCheckpointState(state)?.extractionIdentity !== current;
 }
 
 /**
@@ -522,6 +547,23 @@ function hasMalformedMaterializationAttemptId(state) {
 }
 
 /**
+ * @summary Detects a present-but-invalid extraction identity without rejecting legacy absence.
+ * @param {*} state Candidate persisted checkpoint state.
+ * @returns {Boolean}
+ */
+function hasMalformedExtractionIdentity(state) {
+    return Boolean(
+        state
+        && typeof state === 'object'
+        && !Array.isArray(state)
+        && Object.hasOwn(state, 'extractionIdentity')
+        && state.extractionIdentity !== null
+        && state.extractionIdentity !== undefined
+        && normalizeExtractionIdentity(state.extractionIdentity) === null
+    );
+}
+
+/**
  * @summary Accepts only positive integer checkpoint-contract versions.
  * @param {*} value Candidate persisted version.
  * @returns {Number|null}
@@ -537,6 +579,17 @@ function normalizeContractVersion(value) {
  */
 function normalizeMaterializationAttemptId(value) {
     return typeof value === 'string' && MATERIALIZATION_ATTEMPT_ID_PATTERN.test(value)
+        ? value
+        : null;
+}
+
+/**
+ * @summary Accepts only server-derived lowercase SHA-256 extraction identities.
+ * @param {*} value Candidate identity.
+ * @returns {String|null}
+ */
+function normalizeExtractionIdentity(value) {
+    return typeof value === 'string' && EXTRACTION_IDENTITY_PATTERN.test(value)
         ? value
         : null;
 }

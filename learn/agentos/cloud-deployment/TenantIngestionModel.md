@@ -1,18 +1,34 @@
 # Cloud-Native KB Ingestion — Tenant Ingestion Model
 
-> **Status — MVP operational model.** This guide documents Sub E of Epic [#11720](https://github.com/neomjs/neo/issues/11720): how an external tenant gets its repository content into a cloud-deployed Knowledge Base without tacit Neo maintainer knowledge. The substrate it names was delivered by Epic [#11624](https://github.com/neomjs/neo/issues/11624); this guide defines the operator-facing model on top.
+> **Status — operational model.** This guide explains how an external tenant gets repository content into a cloud-deployed Knowledge Base without tacit maintainer knowledge.
 
 ## Decision Summary
 
-For the MVP deployment path, tenant ingestion is **push-based**:
+Tenant ingestion has two delivery modes that converge on one ingestion service:
 
-1. The tenant workspace reads its own repository content.
-2. The tenant sends raw file deltas or `parsed-chunk-v1` records to the deployment.
-3. The KB server validates the payload, stamps the authoritative tenant tuple, embeds the chunk text server-side, and writes into the shared `knowledge-base` collection.
+1. **Push:** the tenant workspace reads its own content and sends raw file deltas or `parsed-chunk-v1` records.
+2. **Pull:** the deployment mirrors a configured repository and executes its canonical `tenantRepos[].extractionProfile` against an exact revision.
+3. Both paths validate records, stamp the authoritative tenant tuple, embed chunk text server-side, and write into the shared `knowledge-base` collection.
 
-The deployment does **not** need clone credentials for the MVP path. Server-side repo cloning is the additive tenant-repo-sync path owned by [#11731](https://github.com/neomjs/neo/issues/11731) after the push MVP; it does not repoint the existing ingestion API or weaken the no-secret persistence boundary.
+Push does not require clone credentials on the deployment. Pull uses a clean `cloneUrl` plus an explicit credential reference, isolated by `GitMirror`; it does not repoint the push API or weaken the no-secret persistence boundary.
 
-This model pairs with the D0 scheduler taxonomy in [#11721](https://github.com/neomjs/neo/issues/11721): local maintainer checkout sync stays local-only, while cloud tenant content arrives through the push-based path below.
+Local maintainer checkout sync stays local-only. Tenant repositories are separate, tenant-namespaced inputs and never inherit the local checkout's source identity.
+
+```mermaid
+flowchart TD
+    RepoEntry[Tenant repository declaration] --> Profile[Canonical extraction profile]
+    Profile --> Identity[Server-derived extraction identity]
+    Identity --> ReplayGate[Checkpoint replay decision]
+    Profile --> Runner[Repository-bound profile runner]
+    Runner --> Chunks[Validated chunks and hashes]
+    Runner --> YieldSet[Yielded source paths]
+    Chunks --> Receipt[Existing materialization receipt]
+    YieldSet --> Snapshot[Proof-bound extraction snapshot]
+    Receipt --> Snapshot
+    Snapshot --> Reconcile[Replacement-gated reconciliation]
+```
+
+The profile is the single territory-to-extractor authority. Its canonical form, the referenced descriptor versions, and any hierarchy-resolver identity produce one extraction identity. That identity is a component of the existing materialization digest, chunk hash, checkpoint, and reconciliation currency; it is not a second receipt or digest authority.
 
 ## Entry Points
 
@@ -24,7 +40,7 @@ Use the same underlying ingestion service through three operational surfaces:
 | `npm run ai:kb-push-client` | A tenant git hook or CI job needs an operator-facing invocation wrapper for the remote MCP call. | Runs in the tenant workspace, uses the configured remote MCP client transport, carries an automation identity bearer token, and preserves the MCP gate. |
 | `npm run ai:ingest-tenant -- <tenantId> ...` | A deployment operator, CI job, or onboarding script performs an initial import, full backfill, or large re-push. | Runs on the deployment host, bypasses the MCP turn-volume gate via `viaMcp: false`, and holds the heavy-maintenance lease. |
 
-All three surfaces call `KnowledgeBaseIngestionService.ingestSourceFiles()`. The MCP facade is hidden and fail-closed for local `stdio` server sessions because repo-push ingestion is an operator-facing remote deployment path, not an interactive local agent tool. A future non-MCP HTTP/queue receiver may share the same service, but it is not the shipped #11743 path.
+All three surfaces call `KnowledgeBaseIngestionService.ingestSourceFiles()`. The MCP facade is hidden and fail-closed for local `stdio` server sessions because repo-push ingestion is an operator-facing remote deployment path, not an interactive local agent tool. A future non-MCP HTTP/queue receiver may share the same service.
 
 ## Repository Identity
 
@@ -67,10 +83,10 @@ The push-based MVP path is credential-free from the KB server's perspective:
 - The tenant push client reads local files and sends content or parsed chunks.
 - The KB server receives ingestion payloads, not Git credentials.
 - The repo-push automation identity token authorizes the tenant to call the KB MCP endpoint; it is not a Git credential and is never folded into `repoSlug`, manifests, or chunk metadata.
-- Optional server-side pull config uses `tenantRepos[]` entries with clean `cloneUrl`, reference-only `credentialRef`, and normalized `repoSlug` (#11787). Credential-bearing HTTP userinfo is rejected before graph persistence; a non-secret SSH login name (`ssh://git@host/...` or `git@host:path`) remains endpoint metadata, while key injection belongs to the `GitMirror` primitive (#11788). `GitMirror` resolves the credential reference only for the git subprocess invocation (`GIT_ASKPASS` for HTTPS, `GIT_SSH_COMMAND` for SSH) and keeps mirror contents on the deployment `tenant-repo-mirrors` volume mounted at `NEO_TENANT_REPO_MIRROR_ROOT`.
+- Optional server-side pull config uses `tenantRepos[]` entries with clean `cloneUrl`, reference-only `credentialRef`, and normalized `repoSlug`. Credential-bearing HTTP userinfo is rejected before graph persistence; a non-secret SSH login name (`ssh://git@host/...` or `git@host:path`) remains endpoint metadata, while key injection belongs to the `GitMirror` primitive. `GitMirror` resolves the credential reference only for the git subprocess invocation (`GIT_ASKPASS` for HTTPS, `GIT_SSH_COMMAND` for SSH) and keeps mirror contents on the deployment `tenant-repo-mirrors` volume mounted at `NEO_TENANT_REPO_MIRROR_ROOT`.
 - `credentialRef: none` means anonymous access, never “inherit the orchestrator account.” Every pull-path Git subprocess ignores system/global Git config, URL rewrites, credential helpers, `.netrc`, user SSH config, agents, and default identities; the selected `env`, `file`, or `ssh` authority is added back explicitly. SSH host-key continuity is kept separately in the GitMirror-owned mirror-volume ledger rather than in the host user's home.
-- For the pull-based follow-up path, `TenantRepoIngestEnvelopeBuilder` adapts the Git mirror into the same ingestion service envelope (#11789). Linear history advances emit raw-file `files`, explicit `deleted` tombstones, `baseRevision`, and `headRevision`; bootstrap, missing-baseline, and non-linear history cases emit a full `files` snapshot plus `manifestSnapshot` so `KnowledgeBaseIngestionService.ingestSourceFiles()` can reconcile the claimed live file set without re-pointing the local `kbSync` lane.
-- Pull-mode **file selection** comes from the git mirror itself (`git ls-tree` / revision diff in `TenantRepoIngestEnvelopeBuilder`) and is independent of `kb-config.yaml`'s Source/Parser registration. In particular, `sourcePaths.RawRepoSource.root` is **not** honored on the pull path — the whole tracked tree is ingested. `rawRepoSource` / `sourcePaths` drive the full-corpus Source build (`kbSync` lane / `npm run ai:sync-kb`), a different path from pull mode.
+- For pull, `TenantRepoIngestEnvelopeBuilder` adapts the Git mirror into the same ingestion service envelope. The mirror supplies the physical revision entries; the effective extraction profile assigns those entries to extractors. Bootstrap, missing-baseline, non-linear history, and profile-identity changes run a full materialization. Linear history may use changed paths only when every active descriptor proves `deltaSafe: true`.
+- `sourcePaths.RawRepoSource` remains a compatibility input: an absent profile with no `parserId` synthesizes a `RawRepoSource` route, translating its `root` into territory and its remaining fields into route options. An absent profile with a declared `parserId` synthesizes `ParserSource` instead; a missing parser remains a coded failure and never degrades to raw text.
 
 Credential-bearing Git URLs are therefore rejected or treated as deferred clone-exploration input. They must not appear in:
 
@@ -81,7 +97,7 @@ Credential-bearing Git URLs are therefore rejected or treated as deferred clone-
 - graph-visible configuration
 - source-family inventory output
 
-If a future server-side clone path becomes necessary, [#11731](https://github.com/neomjs/neo/issues/11731) owns the credential transport and storage contract before implementation begins.
+Any additional clone provider must preserve the same explicit credential transport and storage boundary before implementation begins.
 
 ## Repo-Push Automation Identity
 
@@ -110,9 +126,9 @@ and rotated according to the deployment's auth policy.
 
 The server remains authoritative for tenant identity. `NEO_KB_TENANT_ID` is a client default for envelope construction; authenticated context still stamps or rejects tenant metadata according to deployment policy.
 
-## Parser Dispatch
+## Parser and Extractor Dispatch
 
-The parser decision is per source family, not per tenant:
+Push-mode parser selection remains per file. Pull-mode selection is per repository profile route:
 
 | Source family | Default dispatch |
 |---|---|
@@ -121,11 +137,13 @@ The parser decision is per source family, not per tenant:
 | Custom, untrusted, non-JS, or tenant-owned parser logic | Client-side parser emits `parsed-chunk-v1`; the KB server validates and embeds only the parsed records. |
 | Unknown format | Record as `unsupported` or `client-parser-required`; do not silently skip. |
 
+For pull, each route maps one non-overlapping territory to one `extractorId`. `RawRepoSource` emits raw whole-file chunks. `ParserSource` resolves a tenant-local parser and emits that parser's structured chunks; its canonical route options contain exactly `parserId` and `parserVersion`. Specialized built-in or operator-installed extractors can own richer repository semantics. Descriptor id/version and parser id/version remain distinct provenance—a chunk must never claim parser execution that did not happen.
+
 The KB server owns embeddings. `parsed-chunk-v1` records carrying an `embedding` field are rejected; pre-embedded records belong to restore-only backup paths, not ingestion.
 
 ## Source-Family Inventory
 
-Before onboarding a tenant repository, produce a source-family inventory. The inventory is the handoff from Sub E into the day-0 tutorial work in [#11728](https://github.com/neomjs/neo/issues/11728).
+Before onboarding a tenant repository, produce a source-family inventory. It becomes the input to the repository's extraction profile rather than an informal checklist that only a maintainer can interpret.
 
 Use this checklist:
 
@@ -157,7 +175,12 @@ Incremental pushes should include deletion intent. Prefer this default shape:
 - `baseRevision` + `headRevision` when the push client can provide a reliable SHA range.
 - `manifestSnapshot` when the push point is meant to advance the claimed live file set for a repo.
 
-`manifestSnapshot.repoSlug` must match the repo whose `pathsAfterPush` it describes. A missing manifest does not authorize deleting earlier rows; it only means that push did not advance the claimed-state baseline. A bulk initial import can skip manifest state, but the deployment should follow it with a manifest-carrying push or an explicit claimed-state resync before relying on reconciliation to delete orphans.
+`manifestSnapshot.repoSlug` must match the repo whose `pathsAfterPush` it describes. Pull-mode full materialization carries two path sets:
+
+- `pathsAfterPush` is physical Git truth. A path absent here was deleted from the repository and can be reconciled through the physical-manifest freshness fence.
+- `yieldedSourcePaths` is extractor truth. A still-tracked path absent here was deliberately excluded or produced no chunks under the completed profile.
+
+Yield authority is stored only inside an atomic extraction snapshot: `{yieldedSourcePaths, extractionIdentity, proof, updatedAt}`. The snapshot replaces only when a complete materialization produces a matching digest-bound receipt. An interrupted, live-error, or cooperatively yielded attempt may still advance physical truth, but it retains the prior extraction snapshot unchanged. Missing proof is unknown, never an authoritative empty yield set.
 
 ## Operational Flow
 
@@ -198,10 +221,36 @@ The orchestrator's pull-mode sync (`TenantRepoSyncService.resolveTenantReposConf
     credentialRef : 'file:/run/secrets/neomjs_repo_token', // env:VAR and ssh:/path remain supported
     branchRef     : 'dev',                              // optional; git ref (branch/tag/sha) to ingest from. Default: 'HEAD' = remote default branch
     rootKind      : 'external-source',                  // 'neo-workspace' | 'bare-repo' | 'external-source'
-    parserId      : 'raw-text',                         // optional; defaults to family dispatch
-    parserVersion : '1'                                 // optional
+    extractionProfile: {
+        profileSchemaVersion: 1,
+        routes: [{
+            territory: {
+                roots  : ['proto'],
+                include: ['**/*.proto'],
+                exclude: []
+            },
+            extractorId: 'ParserSource',
+            options    : {parserId: 'proto', parserVersion: '1.0.0'}
+        }],
+        fallback: {action: 'exclude'}
+    }
 }
 ```
+
+Profiles are canonicalized before persistence and use. Route order is not precedence: each repository path must have one unambiguous claim, and overlapping claims fail closed. Omitting `extractionProfile` is a compatibility mode, not an unprofiled second execution path: the projection synthesizes `ParserSource` when the repo declares `parserId`, otherwise `RawRepoSource`, then derives an ordinary extraction identity from that synthesized profile.
+
+### Legacy configuration disposition
+
+| Existing field | Disposition in the profile era |
+|---|---|
+| `useDefaultSources` | **Keep for the legacy full-corpus registry.** It does not choose pull-mode routes. |
+| `rawRepoSource` | **Keep for legacy full-corpus opt-in.** Pull compatibility synthesis chooses `RawRepoSource` from an absent profile with no parser declaration; this boolean is not a second pull gate. |
+| `customSources` | **Keep for legacy full-corpus registration; deprecate for new pull integrations.** Repository profiles use immutable extractor descriptors instead of process-global Source registration. |
+| `customParsers` | **Keep and translate at dispatch.** A synthesized or explicit `ParserSource` route resolves the tenant-local parser without registering it globally. |
+| `tenantParserRoot` | **Keep as the deployment-pinned parser execution root.** Empty disables data-tier parser modules; there is no repository or cwd fallback. |
+| `sourcePaths` | **Translate only the compatible `RawRepoSource` entry for absent-profile pull repos.** Its `root` becomes route territory and remaining fields become route options; other entries continue to serve legacy full-corpus Sources. |
+
+New pull integrations use `tenantRepos[].extractionProfile`. Tenant-level custom extractor modules are declared separately through `customExtractors: [{extractorModule, exportName?}]` and resolve under the empty-by-default `tenantExtractorRoot`. The loaded descriptor owns its `extractorId`, version, and capabilities; configuration owns only its module/export address.
 
 **Credential-bearing `cloneUrl` strings (`https://user:token@...`) are rejected at config normalization.** A clean SSH login name is not credential material and may remain in the endpoint (`ssh://git@host/org/repo.git` or `git@host:org/repo.git`); this keeps the remote user deterministic after ambient SSH config is removed. The `credentialRef` is a reference that uses one shared grammar: `none`, `env:NAME`, `file:/path`, or `ssh:/path` (a legacy bare environment-variable name remains accepted). The same normalized grammar feeds `GitMirror`; unknown schemes such as `helper:*` fail during effective-config resolution rather than becoming delayed environment lookups. `none` is deliberately anonymous. `GitMirror` resolves explicit credential material only at its local validation or isolated git-subprocess boundary (`GIT_ASKPASS` for HTTPS, `GIT_SSH_COMMAND` for SSH). The deployment graph never persists resolved credentials.
 
@@ -298,37 +347,15 @@ renewal failed (or whose lease was reclaimed) aborts with
 every repo's checkpoint and backoff state untouched, and never commits a
 partial sweep.
 
-Each checkpoint also carries `ingestContractVersion`, written together with the
-head only after the Knowledge Base returns an explicit error-free summary. The
-current v2 contract makes every manifest-bearing full materialization
-(bootstrap, non-linear fallback, manual full replay, or legacy revalidation)
-write an attempt-bound positive-effect receipt into the tenant manifest graph
-before the local checkpoint acknowledges that attempt id. A fresh full attempt
-must report a positive safe-integer `ingested` or `deleted` effect. The check
-runs after ingestion so an empty manifest can still delete stale rows; a
-delete-only full reconciliation is valid.
+Each checkpoint carries `ingestContractVersion`, the acknowledged materialization-attempt id, and the committed `extractionIdentity`. The current materialization digest binds the Git head, physical manifest, yielded paths, parser bindings, and extraction identity. A manifest-bearing full run publishes its graph-side extraction snapshot before the local checkpoint can acknowledge the same identity.
 
-If the Knowledge Base effect and graph receipt succeeded but the later local
-checkpoint write crashed, the next run settles the matching unacknowledged
-receipt before re-running Knowledge Base mutation. Its bookkeeping result is
-therefore `ingested=0, deleted=0`. Once a checkpoint acknowledges the attempt
-id, that receipt is stale and cannot excuse a later manual full replay at the
-same head. The receipt field is pull-internal: the public `ingest_source_files`
-facade strips caller-supplied attempts and never returns graph receipts. A
-current incremental envelope may legitimately report `ingested=0, deleted=0`.
-`lastAttemptedIngestContractVersion` records a failed revalidation attempt
-without advancing the head. A head without the current v2 success marker has
-unknown historical validity and is never used as an incremental base; v1
-checkpoints therefore receive the same bounded null-base revalidation as older
-unversioned records.
+A fresh full run proves completion in one of three ways: a positive safe-integer ingest/delete effect; an explicit completed empty yielded set (including a nonempty repository whose profile excludes every path); or a matching prior receipt used for crash recovery. A silent zero-effect run with declared yields remains a failure. Durable embedding fences use the existing completion classifier and may publish proof; cooperative yield and live errors may not.
 
-After an upgrade, the periodic lane automatically replays such legacy
-checkpoints from a null base. It admits at most `concurrencyLimit` legacy
-replays per scheduler sweep, ordered by the oldest prior attempt, while normal
-repos retain their cadence and the semaphore still bounds simultaneous work.
-A failed replay preserves the old head and participates in the existing
-exponential backoff. A clean replay co-writes the new head and current proof
-markers in one repo record, after which normal incremental sync resumes.
+If Knowledge Base mutation and graph proof succeed but the later local checkpoint write crashes, the next run settles the matching unacknowledged receipt without repeating mutation. Once acknowledged, that attempt id cannot excuse an unrelated later replay. The proof fields are pull-internal: the public `ingest_source_files` facade strips caller-supplied attempts and never returns graph receipts.
+
+Replay selection happens before envelope construction. The scheduler therefore compares the current server-derived extraction identity with the checkpoint identity first. Missing or changed identity forces a null revision base even when the Git SHA is unchanged. The new identity commits only after receipt validation and graph readback of a snapshot with the same identity, yield set, and proof. Failed, partial, and yielded runs preserve the prior checkpoint identity.
+
+After an upgrade, the periodic lane automatically replays legacy or identity-stale checkpoints from a null base. It admits at most `concurrencyLimit` such replays per scheduler sweep, ordered by oldest prior attempt, while current repos retain their cadence and the semaphore still bounds simultaneous work. A failed replay preserves the old head and identity; a clean replay co-writes the new head and proof markers, after which normal incremental sync resumes.
 
 ### Redeploy Posture
 
@@ -416,7 +443,7 @@ usernames, fingerprints, Git output, and stacks never enter the snapshot.
 | `partial-progress` | A clean repo slice committed durable vector progress but retained its head checkpoint because work remains | Slice budget fired; the next repo is admitted in the same sweep |
 | `lease-yield-deferred` | Repo was due but remained queued after an active repo observed the outer lease bound | Next sweep after the wrapper releases and later reacquires the outer lease |
 | `degraded` | Last cycle failed but retry budget remains; lane will retry on next tick | First non-success after `active` |
-| `quarantined` | Consecutive failures exceeded the backoff threshold; operator action needed | Implementation tracked in [#11942](https://github.com/neomjs/neo/issues/11942) (per-repo backoff state). Until that lands, repeated failure surfaces as `degraded` with the same operator-runbook guidance |
+| `quarantined` | Compatibility label for an operator-held repository | Current periodic failures surface through bounded `degraded`, `backoff-suppressed`, or `stopped-unresolvable-ref` states instead of silently abandoning the lane |
 | `disabled` | Operator explicitly disabled the repo in `tenantRepos[]` config | Config flag; not a runtime transition |
 
 Status is computed from per-repo `lastIngestedRev` + recent-failure-count state; the projection is deterministic, no separate persisted status column.
@@ -432,7 +459,7 @@ Per-repo failures carry a stable `lastErrorCode` field on the health payload; op
 | `KB_TENANT_REPO_SYNC_REPO_NOT_CONFIGURED` | outer `details.reasonCode` | Manual CLI requested a `--repo-slug` that is not present in `tenantRepos[]` config. CLI exits with code `3`. |
 | `KB_TENANT_REPO_SYNC_MANIFEST_UPDATE_FAILED` | outer `details.reasonCode` | `tenant-repo-sync-revisions.json` write failure. Next cycle settles the matching unacknowledged graph receipt without repeating KB mutation — no manual recovery needed if the underlying filesystem issue is resolved. |
 | `KB_TENANT_REPO_SYNC_TENANT_NOT_FOUND` | reserved | Future `--tenant-id` CLI flag; no current emitter. |
-| `KB_TENANT_REPO_SYNC_CONCURRENCY_GATE_TIMEOUT` | reserved | Future concurrency-limit gate (tracked in [#11942](https://github.com/neomjs/neo/issues/11942) AC2); no current emitter. |
+| `KB_TENANT_REPO_SYNC_CONCURRENCY_GATE_TIMEOUT` | per-repo `lastErrorCode` | A due repository could not acquire a bounded concurrency slot before the configured gate timeout. |
 
 The `KB_TENANT_REPO_SYNC_*` prefix distinguishes these codes from sibling-subsystem error families (`KB_GITMIRROR_*`, `KB_INGEST_*`, `KB_TENANT_REPO_ACCESS_*`).
 `lastSourceErrorCode` is optional and bounded to stable `KB_*` codes only; it never carries clone URLs, credential references, tokens, raw repository identities, or git stderr.
@@ -511,6 +538,6 @@ The day-0 tutorial should reuse this model rather than redefine it.
 - [Custom Parsers](./CustomParsers.md) — `parsed-chunk-v1` and parser execution boundaries.
 - [Custom Sources](./CustomSources.md) — full-corpus Source path, mostly not the push-based tenant default.
 - [Security](./Security.md) — tenant stamping, spoof rejection, parser trust, and KB-as-cache recovery.
-- [#11721](https://github.com/neomjs/neo/issues/11721) — D0 scheduler taxonomy that separates local-only maintainer sync from cloud tenant ingestion.
+- [`TenantRepoSyncService.mjs`](../../../ai/daemons/orchestrator/services/TenantRepoSyncService.mjs) — scheduler, checkpoint, receipt, and replay authority for pull mode.
 - [`identity-tuple.md`](../../../ai/services/knowledge-base/parser/identity-tuple.md) — authoritative path identity tuple.
 - [`deletion-signaling-contract.md`](../../../ai/services/knowledge-base/parser/deletion-signaling-contract.md) — tombstone, manifest, and revision-boundary mechanics.

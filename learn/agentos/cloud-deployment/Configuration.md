@@ -1,6 +1,6 @@
 # Cloud-Native KB Ingestion — Configuration
 
-> **Status — Phase 3B.** This guide documents the configuration surface a cloud deployment uses to control Knowledge Base ingestion — the deployment-wide `aiConfig` keys (Phase 0/1) and the per-tenant `KnowledgeBaseTenantConfig` graph-node storage (Phase 2E, [#11637](https://github.com/neomjs/neo/issues/11637)).
+> **Status — operational model.** This guide documents the deployment-wide defaults and per-tenant graph/YAML configuration that control push and profile-based pull ingestion.
 
 ## Two configuration layers
 
@@ -26,6 +26,10 @@ A deployment's `config.mjs` is gitignored and copied from `config.template.mjs`.
 | `useDefaultParsers` | `true` | Auto-register Neo's built-in Parser classes (`SourceParser`, `DocumentationParser`, `TestParser`). |
 | `customSources` | `[]` | Declarative tenant Source registration — `[{SourceClass, sourceName?}]`. See [Custom Sources](./CustomSources.md). |
 | `customParsers` | `[]` | Declarative tenant Parser registration — `[{ParserClass, parserId?}]`. See [Custom Parsers](./CustomParsers.md). |
+| `customExtractors` | `[]` | Tenant-level repository extractor module declarations — `[{extractorModule, exportName?}]`. Loaded exports own descriptor id/version/capabilities and remain invocation-local. |
+| `tenantParserRoot` | `''` | Absolute deployment-pinned root for data-tier parser modules. Empty disables loading; no repository fallback. Env: `NEO_KB_TENANT_PARSER_ROOT`. |
+| `tenantExtractorRoot` | `''` | Separate absolute root for extractor modules. Empty disables loading and never inherits parser authority. Env: `NEO_KB_TENANT_EXTRACTOR_ROOT`. |
+| `tenantRepos` | `[]` | Default pull-mode repository declarations. Graph or YAML presence wins wholesale per tenant; each repo receives a canonical extraction profile and derived identity. |
 | `sourcePaths` | Neo's layout map | Per-source path overrides keyed by Source-class registry name. Each Source class interprets its own entry shape (string / string-array / object); a tenant whose layout differs overrides only the keys it needs, the rest fall through to the Neo defaults. |
 
 ### Tenant identity + write-side policy
@@ -36,7 +40,7 @@ A deployment's `config.mjs` is gitignored and copied from `config.template.mjs`.
 | `defaultRepoSlug` | `'neo'` | Default repo slug; folded into content hashing + Chroma IDs so cross-tenant byte-identical chunks never collide. |
 | `defaultVisibility` | `'team'` | Default read visibility for embedded chunks. |
 | `spoofRejectionMode` | `'overwrite'` | Policy for conflicting client-supplied tenant metadata. `'overwrite'` logs + replaces with server-derived values; `'reject'` fails the call with `KB_TENANT_SPOOF_REJECTED`. A multi-tenant cloud deployment should consider `'reject'` (fail-closed) — see [Security](./Security.md). |
-| `mcpSyncMaxChunks` | `50` | The [#10572](https://github.com/neomjs/neo/issues/10572) work-volume gate threshold — an MCP-callable sync/ingest batch over this count is refused (the bulk CLI bypasses it). See [Hook Wiring](./HookWiring.md). |
+| `mcpSyncMaxChunks` | `50` | Work-volume gate threshold — an MCP-callable sync/ingest batch over this count is refused (the bulk CLI bypasses it). See [Hook Wiring](./HookWiring.md). |
 
 ### Transport + auth (cloud / Streamable HTTP)
 
@@ -87,13 +91,13 @@ The token is a KB MCP authorization credential, not a Git credential. Store it
 in the tenant hook/CI secret store and rotate it using the deployment's normal
 OIDC, GitLab OAuth, or PAT-rotation policy.
 
-## Per-tenant config storage — `KnowledgeBaseTenantConfig` (#11637)
+## Per-tenant config storage — `KnowledgeBaseTenantConfig`
 
-A multi-tenant deployment cannot express every tenant's source/parser config as static `aiConfig` keys — each tenant needs its own, mutable at runtime, durable across restarts. Phase 2E ([#11637](https://github.com/neomjs/neo/issues/11637)) stores it as a graph node.
+A multi-tenant deployment cannot express every tenant's source/parser/extractor config as static `aiConfig` keys. Each tenant needs state that is mutable at runtime and durable across restarts, stored as a graph node.
 
-**The node.** One `KnowledgeBaseTenantConfig` node per tenant, id `kb-config:<tenantId>`, in the Native Edge Graph. Its `properties` carry the tenant's config payload — `{useDefaultSources, rawRepoSource, useDefaultParsers, customSources, customParsers, sourcePaths, tenantRepos, version, userId}`. `version` increments on every mutation; `userId` is the [#10011](https://github.com/neomjs/neo/issues/10011) RLS ownership stamp — a tenant cannot read or mutate another tenant's config node.
+**The node.** One `KnowledgeBaseTenantConfig` node per tenant, id `kb-config:<tenantId>`, in the Native Edge Graph. Its properties carry declaration data — `{useDefaultSources, rawRepoSource, useDefaultParsers, customSources, customParsers, customExtractors, sourcePaths, tenantRepos, version, userId}`. `version` increments on every mutation; `userId` is the RLS ownership stamp, so a tenant cannot read or mutate another tenant's config node. Derived `extractionIdentity` values are not persisted as declarations; the canonical read projection recomputes them from profile, descriptor versions, normalized options, and hierarchy identity.
 
-**Resolution.** `KnowledgeBaseIngestionService.getTenantConfig({tenantId})` resolves a tenant's effective config through three tiers, first hit wins:
+**Resolution.** `KnowledgeBaseIngestionService.getTenantConfig({tenantId})`, `setTenantConfig()`, and `listConfiguredTenantRepos()` share one normalization/projection contract. Effective config resolves through three tiers, first present tier wins wholesale for that tenant:
 
 1. The `kb-config:<tenantId>` graph node — the canonical, runtime-mutable state.
 2. `kb-config.yaml` — a deployment-root bootstrap file (below).
@@ -107,13 +111,27 @@ A multi-tenant deployment cannot express every tenant's source/parser config as 
 tenants:
   client-org:
     useDefaultSources: false
-    rawRepoSource: true
-    customParsers: [...]
-    sourcePaths: {...}
+    customParsers:
+      - parserId: proto
+        parserModule: ProtoParser.mjs
+    customExtractors: []
     tenantRepos:
       - cloneUrl: https://github.com/neomjs/create-app.git  # SSH may carry a non-secret login name
         credentialRef: env:GIT_TOKEN                          # reference-only pointer; token lives outside the repo
         branchRef: dev                                        # optional; defaults to 'HEAD' = remote default branch
+        extractionProfile:
+          profileSchemaVersion: 1
+          routes:
+            - territory:
+                roots: [proto]
+                include: ['**/*.proto']
+                exclude: []
+              extractorId: ParserSource
+              options:
+                parserId: proto
+                parserVersion: 1.0.0
+          fallback:
+            action: exclude
 ```
 
 The `tenantRepos:` block is the bootstrap tier for the pull-mode polling config — `listConfiguredTenantRepos()` resolves it under the graph node → `kb-config.yaml` → `aiConfig` tiering. Graph-only tenant config nodes are included through the graph service's RLS-aware tenant-config enumeration surface; an unreadable graph tier degrades deployment diagnostics instead of silently behaving like an empty pull-mode config.
@@ -136,6 +154,19 @@ Bootstrap content, host paths, raw errors, tenant/repository identities, clone U
 references never cross that diagnostic boundary.
 
 **Config versioning.** Every ingested chunk is stamped with the `tenantConfigVersion` active at ingest time (server-stamped chunk metadata). A tier-3 (default-registry) resolution stamps `tenantConfigVersion: 0`. The stamp lets a future config change drive retroactive invalidation of chunks ingested under a now-stale config.
+
+### Compatibility-field disposition
+
+The older registry fields remain readable during the transition, but they are not co-equal pull authorities:
+
+| Field | Current disposition |
+|---|---|
+| `useDefaultSources` | Legacy full-corpus registry only. |
+| `rawRepoSource` | Legacy registry opt-in; absent-profile pull synthesis does not use it as a second gate. |
+| `customSources` | Legacy full-corpus registration; new pull integrations use `customExtractors`. |
+| `customParsers` | Retained; `ParserSource` resolves tenant-local declarations without global registration. |
+| `tenantParserRoot` | Retained deployment authority for parser modules. |
+| `sourcePaths` | Retained for legacy Sources; `RawRepoSource` compatibility synthesis translates its own entry into route territory/options. |
 
 ## Zero-config inheritance
 
@@ -222,4 +253,4 @@ content.
 - [Hook Wiring](./HookWiring.md) — `mcpSyncMaxChunks` and the ingestion facades.
 - [Security](./Security.md) — `spoofRejectionMode` and the fail-closed posture.
 - [Migration Path](./MigrationPath.md) — zero-config upgrade for existing deployments.
-- [#11637](https://github.com/neomjs/neo/issues/11637) Phase 2E tenant config storage · [#11658](https://github.com/neomjs/neo/issues/11658) Phase 0/1B registry · [#10572](https://github.com/neomjs/neo/issues/10572) work-volume gate.
+- [`configBase.mjs`](../../../ai/mcp/server/knowledge-base/configBase.mjs) — resolved leaves and environment bindings · [`IngestionService.mjs`](../../../ai/services/knowledge-base/IngestionService.mjs) — canonical tenant projection.

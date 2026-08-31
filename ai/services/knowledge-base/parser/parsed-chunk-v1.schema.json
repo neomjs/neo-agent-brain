@@ -70,6 +70,21 @@
             "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+].+)?$",
             "description": "Semver-like version of the parser. Used by the Phase 2 ingestion service to emit deprecation warnings for stale parser versions."
         },
+        "extractorId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository-profile extractor descriptor id, bound by the route writer. Distinct from parserId."
+        },
+        "extractorVersion": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Repository-profile extractor descriptor version, bound by the route writer."
+        },
+        "extractionIdentity": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Server-derived canonical extraction-profile identity. Profile ingestion adds it to hashInputs; clients cannot choose this authority."
+        },
         "kind": {
             "type": "string",
             "description": "Semantic chunk category. Open enum (parser-specific); examples from Neo's own parsers: 'module-context', 'class-properties', 'class-config', 'method', 'doc-section', 'skill', 'test'. Custom parsers may emit additional kind values; Phase 2 ingestion service does not enforce closed-enum here to keep the parser-protocol extensible."

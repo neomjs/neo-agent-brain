@@ -84,23 +84,33 @@ function refuse(code, message) {
 }
 
 /**
- * @summary Resolves a tenant-declared specifier to an absolute path below the pinned root.
+ * @summary Resolves a tenant-declared module to an absolute path below a deployment-pinned root.
  *
  * Pure apart from the filesystem reads it needs to be correct (`existsSync`, `realpathSync`) — split
- * from {@link loadTenantParser} so the containment predicate is testable without importing anything,
- * which matters because the interesting cases are the refusals.
+ * from the domain loaders so the containment predicate is testable without importing anything.
+ * Parser and extractor execution are separate capabilities with separate roots/codes, but path
+ * containment is one structural property; copying it would make the second surface one missed
+ * symlink fix away from becoming weaker than the first.
  *
  * @param {Object}   options
  * @param {String}   options.specifier      Tenant-declared module name, relative to the root.
  * @param {String}   options.root           Deployment-pinned absolute root. Empty disables the feature.
+ * @param {String}   [options.kind='parser'] Domain noun used in refusal messages.
+ * @param {Object}   [options.errorCodes]    Domain error-code vocabulary.
+ * @param {String}   [options.rootEnv]       Deployment env leaf named in remediation.
+ * @param {String}   [options.rootExample]   Safe under-application-root example.
  * @param {Function} [options.existsSync]   Injectable for tests.
  * @param {Function} [options.realpathSync] Injectable for tests.
  * @returns {String} Absolute, symlink-resolved path below the root.
- * @throws {Error} Coded per {@link TENANT_PARSER_ERROR_CODES}.
+ * @throws {Error} Coded by the caller-provided vocabulary.
  */
-export function resolveTenantParserPath({
+export function resolveTenantModulePath({
     specifier,
     root,
+    kind         = 'parser',
+    errorCodes   = TENANT_PARSER_ERROR_CODES,
+    rootEnv      = 'NEO_KB_TENANT_PARSER_ROOT',
+    rootExample  = '/app/kb-parsers',
     existsSync   = fs.existsSync,
     realpathSync = fs.realpathSync
 } = {}) {
@@ -108,17 +118,17 @@ export function resolveTenantParserPath({
 
     if (!pinnedRoot) {
         throw refuse(
-            TENANT_PARSER_ERROR_CODES.rootNotSet,
-            'tenant parser loading is disabled: no parser root is pinned by the deployment. ' +
-            'Set `NEO_KB_TENANT_PARSER_ROOT` to an absolute path under the application root ' +
-            '(e.g. /app/kb-parsers) and mount the directory read-only. There is deliberately no default.'
+            errorCodes.rootNotSet,
+            `tenant ${kind} loading is disabled: no ${kind} root is pinned by the deployment. ` +
+            `Set \`${rootEnv}\` to an absolute path under the application root ` +
+            `(e.g. ${rootExample}) and mount the directory read-only. There is deliberately no default.`
         )
     }
 
     if (typeof specifier !== 'string' || !specifier.trim()) {
         throw refuse(
-            TENANT_PARSER_ERROR_CODES.unsafeShape,
-            'tenant parser specifier must be a non-empty string naming a module below the pinned root.'
+            errorCodes.unsafeShape,
+            `tenant ${kind} specifier must be a non-empty string naming a module below the pinned root.`
         )
     }
 
@@ -126,8 +136,8 @@ export function resolveTenantParserPath({
 
     if (path.isAbsolute(declared)) {
         throw refuse(
-            TENANT_PARSER_ERROR_CODES.unsafeShape,
-            `tenant parser specifier '${declared}' is absolute. A tenant names a module BELOW the ` +
+            errorCodes.unsafeShape,
+            `tenant ${kind} specifier '${declared}' is absolute. A tenant names a module BELOW the ` +
             'deployment-pinned root and never names a root itself.'
         )
     }
@@ -156,19 +166,18 @@ export function resolveTenantParserPath({
 
     if (!withinRoot(candidate)) {
         throw refuse(
-            TENANT_PARSER_ERROR_CODES.escapesRoot,
-            `tenant parser specifier '${declared}' resolves to '${candidate}', outside the pinned ` +
+            errorCodes.escapesRoot,
+            `tenant ${kind} specifier '${declared}' resolves to '${candidate}', outside the pinned ` +
             `root '${absoluteRoot}'. Refused.`
         )
     }
 
     if (!existsSync(candidate)) {
         throw refuse(
-            TENANT_PARSER_ERROR_CODES.notFound,
-            `tenant parser '${declared}' does not exist at '${candidate}'. The declaration names a ` +
+            errorCodes.notFound,
+            `tenant ${kind} '${declared}' does not exist at '${candidate}'. The declaration names a ` +
             'module the deployment did not mount — fix the declaration or the mount. This is a ' +
-            'configuration defect, NOT a parser-coverage gap: without it the file would fall through ' +
-            'to `raw-text` and ingest successfully as one whole-file chunk, reporting nothing.'
+            `configuration defect, NOT a ${kind}-coverage gap.`
         )
     }
 
@@ -179,13 +188,22 @@ export function resolveTenantParserPath({
 
     if (!(realCandidate === realRoot || realCandidate.startsWith(realRoot + path.sep))) {
         throw refuse(
-            TENANT_PARSER_ERROR_CODES.escapesRoot,
-            `tenant parser specifier '${declared}' resolves through a symlink to '${realCandidate}', ` +
+            errorCodes.escapesRoot,
+            `tenant ${kind} specifier '${declared}' resolves through a symlink to '${realCandidate}', ` +
             `outside the pinned root '${realRoot}'. Refused.`
         )
     }
 
     return realCandidate
+}
+
+/**
+ * @summary Resolves a tenant parser declaration through the shared containment predicate.
+ * @param {Object} options Parser path options.
+ * @returns {String} Absolute, symlink-resolved parser path.
+ */
+export function resolveTenantParserPath(options = {}) {
+    return resolveTenantModulePath(options)
 }
 
 /**

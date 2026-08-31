@@ -167,6 +167,85 @@ export default Foo;
         });
     });
 
+    test('refuses malformed repository source before publishing any chunks or absence', async () => {
+        const writes = [];
+
+        await expect(ApiSource.extractFromRepository({
+            context: {
+                tenantId        : 'tenant-a',
+                repoSlug        : 'org/repo',
+                revision        : 'f'.repeat(40),
+                repositoryReader: {
+                    async readText() {
+                        return `import x from 'y'; this is not valid javascript {{{`
+                    }
+                },
+                territory: {
+                    assignments: [{
+                        root        : 'src',
+                        relativePath: 'Malformed.mjs',
+                        entry       : {sourcePath: 'src/Malformed.mjs'}
+                    }]
+                },
+                hierarchyResolver: {
+                    id     : 'fixture-hierarchy',
+                    version: '1',
+                    async resolve() {
+                        return {}
+                    }
+                }
+            },
+            options     : {type: 'src'},
+            writeStream : {write: value => writes.push(value)},
+            createHashFn: () => 'hash'
+        })).rejects.toMatchObject({
+            code   : 'KB_SOURCE_PARSE_FAILED',
+            details: {sourcePath: 'src/Malformed.mjs'}
+        });
+
+        expect(writes).toEqual([]);
+    });
+
+    test('treats a valid zero-chunk repository source as an ordinary completed result', async () => {
+        const writes = [];
+        const result = await ApiSource.extractFromRepository({
+            context: {
+                tenantId        : 'tenant-a',
+                repoSlug        : 'org/repo',
+                revision        : 'f'.repeat(40),
+                repositoryReader: {
+                    async readText() {
+                        return 'export default 42;\n'
+                    }
+                },
+                territory: {
+                    assignments: [{
+                        root        : 'src',
+                        relativePath: 'Value.mjs',
+                        entry       : {sourcePath: 'src/Value.mjs'}
+                    }]
+                },
+                hierarchyResolver: {
+                    id     : 'fixture-hierarchy',
+                    version: '1',
+                    async resolve() {
+                        return {}
+                    }
+                }
+            },
+            options     : {type: 'src'},
+            writeStream : {write: value => writes.push(value)},
+            createHashFn: () => 'hash'
+        });
+
+        expect(result).toMatchObject({
+            count             : 0,
+            yieldedSourcePaths: [],
+            skippedSourcePaths: []
+        });
+        expect(writes).toEqual([]);
+    });
+
     test('refuses a hierarchy coverage regression before writing any repository chunks', async () => {
         const writes  = [];
         const content = await fs.readFile(path.join(root, 'src/Foo.mjs'), 'utf8');

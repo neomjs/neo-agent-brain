@@ -1,6 +1,6 @@
 # Cloud-Native KB Ingestion — Custom Sources
 
-> **Status — Phase 3B.** This guide documents how a deployment teaches the Knowledge Base to index a new content territory by authoring a custom `Source` class — the Phase 0/1B `SourceRegistry` substrate of Epic [#11624](https://github.com/neomjs/neo/issues/11624). A runnable custom Source ships alongside this guide under [`ai/examples/cloud-deployment/`](../../../ai/examples/cloud-deployment/).
+> **Status — operational model.** This guide explains both the legacy full-corpus `SourceRegistry` contract and the repository-profile extractor contract used by multi-tenant pull ingestion. A runnable legacy Source ships alongside this guide under [`ai/examples/cloud-deployment/`](../../../ai/examples/cloud-deployment/).
 
 > **Compatibility boundary.** `SourceRegistry` is the mutable legacy surface for the
 > full-corpus extract-all path. The repository-profile kernel does not consult it: built-in
@@ -15,7 +15,17 @@ The KB ingestion substrate splits content acquisition into two roles (see [Overv
 - A **Source** locates and reads content from a *territory* it can see on disk — a directory tree, a co-located repo — and feeds it into the **full-corpus build** (`npm run ai:sync-kb`).
 - A **Parser** transforms one file *format* into chunk content for the **push path** (`ingest_source_files`, `ai:ingest-tenant`). See [Custom Parsers](./CustomParsers.md).
 
-**Most cloud tenants need Custom Parsers, not Custom Sources.** A tenant pushing its content to a remote KB server uses the push path — parsers + `parsed-chunk-v1`. Custom Sources matter when a deployment runs its *own* full-corpus build over a repo it has on disk — e.g. a deployment that co-locates a tenant repo and indexes it directly rather than receiving pushes. If you are wiring git hooks to push content, start with [Hook Wiring](./HookWiring.md) and [Custom Parsers](./CustomParsers.md).
+Push and pull need different extension shapes. A tenant pushing content to a remote KB server uses parsers plus `parsed-chunk-v1`. A deployment pulling repositories uses extraction profiles and immutable extractor descriptors. The older `Source` class below still matters to deployments running the legacy full-corpus build; it is not the registration mechanism for a new multi-tenant pull extractor.
+
+```mermaid
+flowchart TD
+    LegacyClass[Legacy Source class] --> GlobalRegistry[Process-global SourceRegistry]
+    GlobalRegistry --> FullCorpus[Full-corpus build]
+    TenantModule[Tenant extractor module] --> ContainedLoader[Contained tenant loader]
+    ContainedLoader --> LocalCatalogue[Invocation-local catalogue]
+    LocalCatalogue --> ProfileRunner[Repository profile runner]
+    ProfileRunner --> RevisionReader[Bound tenant repo revision]
+```
 
 ## The Source contract
 
@@ -113,9 +123,48 @@ bound to one tenant, repository, and revision; it never reads `SourceRegistry`, 
 process-wide path config. The legacy registry retires only after every legacy Source consumer has
 ported and the tenant ingestion lane has cut over.
 
+## Authoring a repository-profile extractor
+
+A repository extractor is an immutable descriptor, not a globally registered class. The loaded module export owns:
+
+- a stable `extractorId` and semantic `version`;
+- `requiresHierarchy`, which declares whether execution needs the identity-bearing hierarchy capability;
+- `deltaSafe`, which states whether one changed path can be materialized without replaying unchanged paths;
+- `normalizeOptions(options)`, which closes and canonicalizes the route's public materialization inputs;
+- `extract({context, options, writeStream, createHashFn})`, which reads only through `context.repositoryReader` and reports `{count, yieldedSourcePaths, skippedSourcePaths}`.
+
+Tenant config declares only the module address:
+
+```js
+customExtractors: [{
+    extractorModule: 'ProtoExtractor.mjs',
+    exportName     : 'ProtoExtractor' // optional; default export otherwise
+}]
+```
+
+The deployment pins `tenantExtractorRoot` (or `NEO_KB_TENANT_EXTRACTOR_ROOT`) to an absolute, read-only execution root. Empty means disabled. Resolution rejects absolute paths, bare packages, traversal, and realpath/symlink escape; there is no repository or cwd fallback. Built-ins assemble before tenant descriptors, and duplicate `extractorId` values fail before profile normalization, so a tenant cannot shadow a built-in.
+
+Custom descriptors currently cannot claim `deltaSafe: true`. Arbitrary extractor code may contain hidden cross-file dependencies that a generic loader cannot prove absent, so the unsafe capability claim is rejected rather than trusted. Built-in descriptors can carry that capability when their one-file-to-one-output behavior is part of the maintained contract.
+
+Reference the descriptor from one repository profile route:
+
+```js
+extractionProfile: {
+    profileSchemaVersion: 1,
+    routes: [{
+        territory: {roots: ['proto'], include: ['**/*.proto'], exclude: []},
+        extractorId: 'ProtoExtractor',
+        options    : {}
+    }],
+    fallback: {action: 'exclude'}
+}
+```
+
+Routes are canonicalized and evaluated as exact territory claims, not an order-dependent cascade. Descriptor version and normalized options enter extraction identity, so changing either forces a full materialization even when the Git SHA is unchanged.
+
 ## Built-in Raw Repo Fallback
 
-Use `rawRepoSource: true` when a tenant needs day-0 ingestion before its repository shape is known well enough to justify a custom Source. This registers `RawRepoSource`, which walks `aiConfig.sourcePaths.RawRepoSource.root` and emits one raw-text parsed chunk per included file. It is not part of Neo's 10 curated default Sources, so zero-config Neo syncs never walk the full repository implicitly. This is the full-corpus Source-build path (`kbSync` lane / `npm run ai:sync-kb`) — **not** pull mode: server-side pull-mode ingestion takes the whole git tree from the deployment mirror regardless of `sourcePaths`.
+Use `RawRepoSource` when a repository needs day-0 ingestion before its shape is known well enough to justify a specialized extractor. In the legacy full-corpus path, `rawRepoSource: true` registers it and `sourcePaths.RawRepoSource` controls its local walk. In pull mode, an absent profile with no declared parser synthesizes a `RawRepoSource` route: `sourcePaths.RawRepoSource.root` becomes route territory and the remaining fields become canonical route options. The pull runner still reads bytes only through its revision-bound reader.
 
 ```js
 rawRepoSource: true,
@@ -152,4 +201,4 @@ Neo's own curated content resolves to `tenantId: 'neo-shared'`, `repoSlug: 'neo'
 - [Hook Wiring](./HookWiring.md) — the `ingest_source_files` / `ai:ingest-tenant` push facades.
 - [Configuration](./Configuration.md) — `useDefaultSources`, `customSources`, `sourcePaths`.
 - [`source/Base.mjs`](../../../ai/services/knowledge-base/source/Base.mjs) — the abstract Source contract · [`identity-tuple.md`](../../../ai/services/knowledge-base/parser/identity-tuple.md) — the chunk-identity tuple.
-- [#11658](https://github.com/neomjs/neo/issues/11658) Phase 0/1B Source/Parser registry · [#11660](https://github.com/neomjs/neo/issues/11660) per-source path externalization.
+- [`ExtractorCatalogue.mjs`](../../../ai/services/knowledge-base/source/ExtractorCatalogue.mjs) — immutable descriptor shape and built-ins · [`tenantExtractorLoader.mjs`](../../../ai/services/knowledge-base/source/tenantExtractorLoader.mjs) — tenant isolation and containment.

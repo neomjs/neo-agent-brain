@@ -1,7 +1,16 @@
 import {createHash} from 'node:crypto';
 import fs           from 'fs-extra';
 
-import GitMirror from './gitMirror.mjs';
+import GitMirror          from './gitMirror.mjs';
+import ExtractorCatalogue from '../source/ExtractorCatalogue.mjs';
+import {
+    createExtractionProfileIdentity,
+    normalizeExtractionProfile
+} from './extractionProfileContract.mjs';
+import {runExtractionProfile}
+    from './extractionProfileRunner.mjs';
+import {createRepositoryRevisionReader}
+    from './repositoryRevisionReader.mjs';
 import {
     deriveTenantRepoMirrorPath,
     normalizeRepoSlug,
@@ -68,12 +77,19 @@ function createIngestEnvelopeError(code, message, details = {}) {
 export function createTenantRepoMaterializationDigest({
     repoSlug,
     headRevision,
+    extractionIdentity,
     manifestSnapshot,
     files = []
 } = {}) {
     const
-        normalizedRepoSlug = normalizeRepoSlug(manifestSnapshot?.repoSlug || repoSlug),
-        normalizedHead     = typeof headRevision === 'string' ? headRevision.trim() : '';
+        normalizedRepoSlug         = normalizeRepoSlug(manifestSnapshot?.repoSlug || repoSlug),
+        normalizedHead             = typeof headRevision === 'string' ? headRevision.trim() : '',
+        envelopeExtractionIdentity = typeof extractionIdentity === 'string'
+            ? extractionIdentity.trim()
+            : '',
+        manifestExtractionIdentity = typeof manifestSnapshot?.extractionIdentity === 'string'
+            ? manifestSnapshot.extractionIdentity.trim()
+            : '';
 
     if (!normalizedHead) {
         throw createIngestEnvelopeError(
@@ -89,10 +105,41 @@ export function createTenantRepoMaterializationDigest({
         );
     }
 
+    if (
+        envelopeExtractionIdentity
+        && manifestExtractionIdentity
+        && envelopeExtractionIdentity !== manifestExtractionIdentity
+    ) {
+        throw createIngestEnvelopeError(
+            'KB_INGEST_ENVELOPE_EXTRACTION_IDENTITY_MISMATCH',
+            'Tenant repo manifest extraction identity does not match the envelope identity'
+        );
+    }
+
+    const normalizedExtractionIdentity = envelopeExtractionIdentity || manifestExtractionIdentity;
+
+    if (!/^[a-f0-9]{64}$/u.test(normalizedExtractionIdentity)) {
+        throw createIngestEnvelopeError(
+            'KB_INGEST_ENVELOPE_EXTRACTION_IDENTITY_INVALID',
+            'Tenant repo materialization identity requires a server-owned extraction identity'
+        );
+    }
+
     const
         pathsAfterPush = [...new Set(manifestSnapshot.pathsAfterPush
             .filter(sourcePath => typeof sourcePath === 'string' && sourcePath.length > 0))]
             .sort(),
+        explicitYieldSet = Object.hasOwn(manifestSnapshot, 'yieldedSourcePaths'),
+        yieldedSourcePaths = explicitYieldSet
+            ? Array.isArray(manifestSnapshot.yieldedSourcePaths)
+                ? [...new Set(manifestSnapshot.yieldedSourcePaths
+                    .filter(sourcePath => typeof sourcePath === 'string' && sourcePath.length > 0))]
+                    .sort()
+                : null
+            : [...new Set((Array.isArray(files) ? files : [])
+                .map(file => file?.sourcePath)
+                .filter(sourcePath => typeof sourcePath === 'string' && sourcePath.length > 0))]
+                .sort(),
         parserBindings = (Array.isArray(files) ? files : [])
             .filter(file => typeof file?.sourcePath === 'string' && file.sourcePath.length > 0)
             .map(file => ({
@@ -113,12 +160,44 @@ export function createTenantRepoMaterializationDigest({
                 return leftKey < rightKey ? -1 : 1;
             });
 
+    if (
+        explicitYieldSet
+        && (
+            !Array.isArray(manifestSnapshot.yieldedSourcePaths)
+            || manifestSnapshot.yieldedSourcePaths
+                .some(sourcePath => typeof sourcePath !== 'string' || sourcePath.length === 0)
+        )
+    ) {
+        throw createIngestEnvelopeError(
+            'KB_INGEST_ENVELOPE_MANIFEST_INVALID',
+            'Tenant repo yielded source paths must be non-empty strings'
+        );
+    }
+
+    if (!yieldedSourcePaths) {
+        throw createIngestEnvelopeError(
+            'KB_INGEST_ENVELOPE_MANIFEST_INVALID',
+            'Tenant repo materialization identity requires manifestSnapshot.yieldedSourcePaths to be an array'
+        );
+    }
+
+    const physicalPaths = new Set(pathsAfterPush);
+
+    if (yieldedSourcePaths.some(sourcePath => !physicalPaths.has(sourcePath))) {
+        throw createIngestEnvelopeError(
+            'KB_INGEST_ENVELOPE_MANIFEST_INVALID',
+            'Tenant repo yielded source path is outside the physical manifest'
+        );
+    }
+
     return createHash('sha256')
         .update(JSON.stringify({
-            formatVersion: 1,
-            repoSlug     : normalizedRepoSlug,
-            headRevision : normalizedHead,
+            formatVersion     : 2,
+            repoSlug          : normalizedRepoSlug,
+            headRevision      : normalizedHead,
+            extractionIdentity: normalizedExtractionIdentity,
             pathsAfterPush,
+            yieldedSourcePaths,
             parserBindings
         }))
         .digest('hex');
@@ -175,130 +254,107 @@ async function resolveRevision({gitMirror, identity, ref, fallbackToFull = false
 }
 
 /**
- * @summary Lists all repo-relative paths present at a revision.
+ * @summary Synthesizes the one compatibility profile used by direct builder callers.
  * @param {Object} options
- * @param {Object} options.gitMirror GitMirror-compatible primitive.
- * @param {Object} options.identity Tenant-repo mirror identity.
- * @param {String} options.revision Resolved revision.
- * @returns {Promise<Array<String>>}
+ * @returns {Object}
  * @private
  */
-async function listRevisionPaths({gitMirror, identity, revision}) {
-    try {
-        return await gitMirror.listRevisionPaths({...identity, revision});
-    } catch (error) {
-        throw createIngestEnvelopeError(
-            'KB_INGEST_ENVELOPE_LIST_FAILED',
-            'Tenant repo ingest envelope failed to list revision paths',
-            {
-                cause   : error,
-                exitCode: error.exitCode,
-                stdout  : error.stdout,
-                stderr  : error.stderr
-            }
-        );
-    }
-}
-
-/**
- * @summary Reads one text file from a revision.
- * @param {Object} options
- * @param {Object} options.gitMirror GitMirror-compatible primitive.
- * @param {Object} options.identity Tenant-repo mirror identity.
- * @param {String} options.revision Resolved revision.
- * @param {String} options.sourcePath Repo-relative source path.
- * @param {String|Object|null} [options.credentialRef] Durable credential reference. The mirror is
- *     blobless, so this read is the FALLBACK network tier — `prefetchRevisionBlobs` acquires the same
- *     blobs in bulk first, and both authenticate. It is threaded explicitly rather than carried on
- *     `identity`, which is spread into the graph and tree reads that must stay credential-free.
- * @returns {Promise<String>}
- * @private
- */
-async function readRevisionFile({gitMirror, identity, revision, sourcePath, credentialRef}) {
-    if (!sourcePath || sourcePath.includes('\0')) {
-        throw createIngestEnvelopeError(
-            'KB_INGEST_ENVELOPE_PATH_INVALID',
-            'Tenant repo ingest envelope received an invalid sourcePath'
-        );
-    }
-
-    try {
-        return await gitMirror.readRevisionFile({...identity, revision, sourcePath, credentialRef});
-    } catch (error) {
-        throw createIngestEnvelopeError(
-            'KB_INGEST_ENVELOPE_FILE_READ_FAILED',
-            `Tenant repo ingest envelope failed to read '${sourcePath}'`,
-            {
-                cause   : error,
-                exitCode: error.exitCode,
-                stdout  : error.stdout,
-                stderr  : error.stderr
-            }
-        );
-    }
-}
-
-/**
- * @summary Builds raw-file payload records from source paths.
- * @param {Object} options
- * @returns {Promise<Array<Object>>}
- * @private
- */
-async function buildFilePayloads({gitMirror, identity, revision, paths, rootKind, parserId, parserVersion, credentialRef}) {
-    const files = [];
-
-    // Tier 1 of two: bulk-acquire the batch's blobs in one negotiation per chunk. The loop below is
-    // tier 2, one promisor round trip per file, which a first ingest pays in hours rather than
-    // seconds. Never rejects — on refusal the loop reads exactly as before, slowly but correctly.
-    await gitMirror.prefetchRevisionBlobs?.({...identity, revision, sourcePaths: paths, credentialRef});
-
-    for (const sourcePath of paths) {
-        files.push({
-            sourcePath,
-            repoSlug: identity.repoSlug,
-            rootKind,
-            content : await readRevisionFile({gitMirror, identity, revision, sourcePath, credentialRef}),
-            ...(parserId ? {parserId} : {}),
-            ...(parserVersion ? {parserVersion} : {})
-        });
-    }
-
-    return files;
-}
-
-/**
- * @summary Builds a manifest-carrying full ingest envelope for bootstrap and non-linear history.
- * @param {Object} options
- * @returns {Promise<Object>}
- * @private
- */
-async function buildFullEnvelope({gitMirror, identity, headRevision, rootKind, parserId, parserVersion, credentialRef}) {
-    const paths = await listRevisionPaths({gitMirror, identity, revision: headRevision});
-    const files = await buildFilePayloads({
-        gitMirror,
-        identity,
-        revision: headRevision,
-        paths,
-        rootKind,
-        parserId,
-        parserVersion,
-        credentialRef
-    });
+function createCompatibilityProfile({rootKind, parserId, parserVersion} = {}) {
+    const declaredParserId = typeof parserId === 'string' ? parserId.trim() : '';
 
     return {
-        tenantId        : identity.tenantId,
-        repoSlug        : identity.repoSlug,
-        files,
-        headRevision,
-        manifestSnapshot: {
-            repoSlug      : identity.repoSlug,
-            pathsAfterPush: paths
-        }
-    };
+        profileSchemaVersion: 1,
+        routes              : [{
+            territory: {
+                roots  : ['.'],
+                include: ['**/*']
+            },
+            extractorId: declaredParserId ? 'ParserSource' : 'RawRepoSource',
+            options    : declaredParserId
+                ? {
+                    parserId     : declaredParserId,
+                    parserVersion: typeof parserVersion === 'string' && parserVersion.trim()
+                        ? parserVersion.trim()
+                        : '1.0.0'
+                }
+                : {rootKind}
+        }],
+        fallback: {action: 'exclude'}
+    }
 }
 
 /**
- * @summary Builds a KnowledgeBaseIngestionService raw-file ingest envelope from a tenant repo mirror.
+ * @summary Collects route-bound runner JSONL writes into the canonical ingestion file envelope.
+ * @param {Object} options
+ * @returns {{files: Object[], writeStream: Object}}
+ * @private
+ */
+function createProfileWriteCollector({extractionIdentity, repoSlug, rootKind} = {}) {
+    const files = [];
+
+    return {
+        files,
+        writeStream: {
+            write() {
+                throw createIngestEnvelopeError(
+                    'KB_INGEST_ENVELOPE_PROVENANCE_UNBOUND',
+                    'Profile chunks must be written through a route-bound writer'
+                )
+            },
+            forRoute({extractorId, version, options = {}} = {}) {
+                return {
+                    write(value) {
+                        let chunk;
+
+                        try {
+                            chunk = JSON.parse(String(value).trim())
+                        } catch (error) {
+                            throw createIngestEnvelopeError(
+                                'KB_INGEST_ENVELOPE_PROFILE_CHUNK_INVALID',
+                                'Profile extractor emitted invalid JSONL',
+                                {cause: error}
+                            )
+                        }
+
+                        const sourcePath = chunk?.sourcePath || chunk?.source;
+
+                        if (typeof sourcePath !== 'string' || !sourcePath) {
+                            throw createIngestEnvelopeError(
+                                'KB_INGEST_ENVELOPE_PROFILE_CHUNK_INVALID',
+                                'Profile extractor chunks require sourcePath or source'
+                            )
+                        }
+
+                        files.push({
+                            sourcePath,
+                            repoSlug,
+                            rootKind,
+                            extractionIdentity,
+                            extractorId,
+                            extractorVersion: version,
+                            parserId        : chunk.parserId || options.parserId || extractorId,
+                            parserVersion   : chunk.parserVersion || options.parserVersion || version,
+                            profileChunk    : chunk
+                        })
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * @summary Creates the legacy Source hash required by built-in extractor ports before adaptation.
+ * @param {Object} chunk
+ * @returns {String}
+ * @private
+ */
+function createLegacyChunkHash(chunk) {
+    return createHash('sha256').update(JSON.stringify(chunk)).digest('hex')
+}
+
+/**
+ * @summary Builds a profile-executed Knowledge Base ingestion envelope from a tenant Git mirror.
  * @param {Object} options
  * @param {String} options.tenantId Tenant id.
  * @param {String} options.repoSlug Clean tenant repository identity.
@@ -308,6 +364,12 @@ async function buildFullEnvelope({gitMirror, identity, headRevision, rootKind, p
  * @param {String} [options.rootKind='external-source'] Raw-file root kind for parser metadata.
  * @param {String} [options.parserId] Optional server parser id.
  * @param {String} [options.parserVersion] Optional parser version.
+ * @param {Object} [options.extractionProfile] Canonical per-repo profile; absent synthesizes the
+ *     compatibility RawRepoSource/ParserSource route.
+ * @param {Object} [options.extractorCatalogue] Tenant-local immutable catalogue.
+ * @param {String} [options.extractionIdentity] Pre-envelope identity; must match derived input.
+ * @param {Object|null} [options.hierarchyResolver] Optional identity-bearing hierarchy capability.
+ * @param {Object|null} [options.parserResolver] IngestionService-owned parser capability.
  * @param {Object} [options.gitMirror=GitMirror] Injectable GitMirror implementation for tests.
  * @param {String|Object|null} [options.credentialRef] Durable credential reference for the tenant
  *     repo. Reaches the content acquisition only, on both tiers: the bulk `prefetchRevisionBlobs` and,
@@ -324,6 +386,11 @@ export async function buildIngestEnvelope({
     rootKind = 'external-source',
     parserId,
     parserVersion,
+    extractionProfile,
+    extractorCatalogue = ExtractorCatalogue,
+    extractionIdentity,
+    hierarchyResolver = null,
+    parserResolver = null,
     gitMirror = GitMirror,
     credentialRef
 } = {}) {
@@ -341,6 +408,34 @@ export async function buildIngestEnvelope({
         );
     }
 
+    const profile = normalizeExtractionProfile(
+        extractionProfile || createCompatibilityProfile({rootKind, parserId, parserVersion}),
+        {catalogue: extractorCatalogue}
+    );
+    const hierarchyIdentity = hierarchyResolver?.id && hierarchyResolver?.version
+        ? {id: hierarchyResolver.id, version: hierarchyResolver.version}
+        : null;
+    const extractorIds = new Set(profile.routes.map(route => route.extractorId));
+
+    if (profile.fallback?.action === 'extract') {
+        extractorIds.add(profile.fallback.extractorId)
+    }
+
+    const profileDeltaSafe = [...extractorIds]
+        .every(extractorId => extractorCatalogue.get(extractorId).deltaSafe === true);
+    const derivedExtractionIdentity = createExtractionProfileIdentity({
+        profile,
+        catalogue: extractorCatalogue,
+        hierarchyIdentity
+    });
+
+    if (extractionIdentity && extractionIdentity !== derivedExtractionIdentity) {
+        throw createIngestEnvelopeError(
+            'KB_INGEST_ENVELOPE_EXTRACTION_IDENTITY_MISMATCH',
+            'Pre-envelope extraction identity does not match the executable profile'
+        )
+    }
+
     const headRevision = await resolveRevision({gitMirror, identity, ref: newHead});
     const baseRevision = await resolveRevision({
         gitMirror,
@@ -348,57 +443,89 @@ export async function buildIngestEnvelope({
         ref           : lastIngestedRev,
         fallbackToFull: true
     });
+    let fullMaterialization = !baseRevision,
+        diff                = null;
 
-    if (!baseRevision) {
-        return await buildFullEnvelope({gitMirror, identity, headRevision, rootKind, parserId, parserVersion, credentialRef});
+    if (baseRevision) {
+        const linear = await gitMirror.isAncestor({
+            ...identity,
+            ancestor  : baseRevision,
+            descendant: headRevision
+        });
+
+        fullMaterialization = !linear;
+
+        if (linear) {
+            diff = await gitMirror.diffRevisions({
+                ...identity,
+                baseRevision,
+                headRevision
+            });
+
+            // A linear Git history is not automatically a delta-safe extraction. Parser-backed,
+            // hierarchy-aware, and arbitrary custom extractors can depend on unchanged files, so
+            // their linear advance is a proof-bearing full materialization.
+            fullMaterialization = !profileDeltaSafe;
+        }
     }
 
-    const linear = await gitMirror.isAncestor({
-        ...identity,
-        ancestor  : baseRevision,
-        descendant: headRevision
-    });
-
-    if (!linear) {
-        return await buildFullEnvelope({gitMirror, identity, headRevision, rootKind, parserId, parserVersion, credentialRef});
-    }
-
-    const diff = await gitMirror.diffRevisions({
-        ...identity,
-        baseRevision,
-        headRevision
-    });
-    const paths = [...new Set(diff.addedOrChanged || [])].sort();
-
-    return {
-        tenantId: identity.tenantId,
+    const repositoryReader = createRepositoryRevisionReader({
+        gitMirror,
+        mirrorRoot,
+        tenantId,
         repoSlug: identity.repoSlug,
-        files   : await buildFilePayloads({
-            gitMirror,
-            identity,
-            revision: headRevision,
-            paths,
-            rootKind,
-            parserId,
-            parserVersion,
-            credentialRef
-        }),
-        deleted: [...new Set(diff.deleted || [])]
-            .sort()
-            .map(sourcePath => ({sourcePath, repoSlug: identity.repoSlug})),
-        // `baseRevision` is deliberately NOT forwarded. It has exactly one consumer in the
-        // ingest path — `IngestionService.resolveRevisionTombstones` — and sending it asks that
-        // service to DERIVE a deletion set we have already proven, three lines above, from
-        // `diff.deleted`. The derivation resolver has no production implementation, so the request
-        // could only ever fail: every tenant repo past its first sync sat at
-        // `consecutiveFailures: 12` with its cadence pinned at the 2h backoff cap, corpus frozen,
-        // because it kept asking for work it had already done.
-        //
-        // The authoritative delta travels in `deleted`. `headRevision` still travels, because the
-        // materializer reads content at that revision; alone it is inert here, since tombstone
-        // derivation short-circuits without a base.
-        headRevision
+        revision: headRevision,
+        credentialRef
+    });
+    const entries   = await repositoryReader.listEntries();
+    const collector = createProfileWriteCollector({
+        extractionIdentity: derivedExtractionIdentity,
+        repoSlug          : identity.repoSlug,
+        rootKind
+    });
+    const execution = await runExtractionProfile({
+        profile,
+        catalogue   : extractorCatalogue,
+        repositoryReader,
+        hierarchyResolver,
+        parserResolver,
+        changedPaths: fullMaterialization ? undefined : [...new Set(diff?.addedOrChanged || [])].sort(),
+        writeStream : collector.writeStream,
+        createHashFn: createLegacyChunkHash
+    });
+    const envelope = {
+        tenantId          : identity.tenantId,
+        repoSlug          : identity.repoSlug,
+        files             : collector.files,
+        headRevision,
+        extractionIdentity: derivedExtractionIdentity
     };
+
+    if (fullMaterialization) {
+        envelope.manifestSnapshot = {
+            repoSlug          : identity.repoSlug,
+            pathsAfterPush    : entries.map(entry => entry.sourcePath),
+            yieldedSourcePaths: execution.yieldedSourcePaths,
+            extractionIdentity: derivedExtractionIdentity
+        }
+    } else {
+        const
+            yielded         = new Set(execution.yieldedSourcePaths),
+            stoppedYielding = [...new Set(diff?.addedOrChanged || [])]
+                .filter(sourcePath => !yielded.has(sourcePath));
+
+        envelope.deleted = [...new Set([
+            ...(diff?.deleted || []),
+            ...stoppedYielding
+        ])]
+            .sort()
+            .map(sourcePath => ({sourcePath, repoSlug: identity.repoSlug}));
+    }
+
+    // `baseRevision` is deliberately NOT forwarded. The authoritative delta travels in `deleted`;
+    // forwarding the base would ask IngestionService to derive the same set through a resolver with
+    // no production implementation.
+    return envelope
 }
 
 const TenantRepoIngestEnvelopeBuilder = {
