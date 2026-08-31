@@ -1,4 +1,17 @@
+import {setup} from '../../../../setup.mjs';
+
+setup({
+    neoConfig: {unitTestMode: true},
+    appConfig: {
+        name             : 'TenantRepoIngestEnvelopeBuilderTest',
+        isMounted        : () => true,
+        vnodeInitialising: false
+    }
+});
+
 import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 import {createHash} from 'node:crypto';
 import fs           from 'fs-extra';
@@ -62,11 +75,14 @@ test.describe('TenantRepoIngestEnvelopeBuilder (#11789)', () => {
 
     test('materialization digest is order-stable and head/parser bound (#16045)', () => {
         const envelope = {
-            repoSlug        : 'org/repo',
-            headRevision    : 'head-a',
-            manifestSnapshot: {
-                repoSlug      : 'org/repo',
-                pathsAfterPush: ['z.md', 'a_b.md', 'aB.md', 'ä.md', 'a_b.md']
+            repoSlug          : 'org/repo',
+            headRevision      : 'head-a',
+            extractionIdentity: 'a'.repeat(64),
+            manifestSnapshot  : {
+                repoSlug          : 'org/repo',
+                pathsAfterPush    : ['z.md', 'a_b.md', 'aB.md', 'ä.md', 'a_b.md'],
+                yieldedSourcePaths: ['ä.md', 'aB.md', 'z.md', 'a_b.md'],
+                extractionIdentity: 'a'.repeat(64)
             },
             files: [
                 {sourcePath: 'z.md', rootKind: 'bare-repo', parserId: 'markdown', parserVersion: '1'},
@@ -79,11 +95,13 @@ test.describe('TenantRepoIngestEnvelopeBuilder (#11789)', () => {
             digest         = createTenantRepoMaterializationDigest(envelope),
             expectedDigest = createHash('sha256')
                 .update(JSON.stringify({
-                    formatVersion : 1,
-                    repoSlug      : 'org/repo',
-                    headRevision  : 'head-a',
-                    pathsAfterPush: ['aB.md', 'a_b.md', 'z.md', 'ä.md'],
-                    parserBindings: [
+                    formatVersion     : 2,
+                    repoSlug          : 'org/repo',
+                    headRevision      : 'head-a',
+                    extractionIdentity: 'a'.repeat(64),
+                    pathsAfterPush    : ['aB.md', 'a_b.md', 'z.md', 'ä.md'],
+                    yieldedSourcePaths: ['aB.md', 'a_b.md', 'z.md', 'ä.md'],
+                    parserBindings    : [
                         {sourcePath: 'aB.md', rootKind: 'bare-repo', parserId: 'markdown', parserVersion: '1'},
                         {sourcePath: 'a_b.md', rootKind: 'bare-repo', parserId: 'markdown', parserVersion: '1'},
                         {sourcePath: 'z.md', rootKind: 'bare-repo', parserId: 'markdown', parserVersion: '1'},
@@ -104,8 +122,36 @@ test.describe('TenantRepoIngestEnvelopeBuilder (#11789)', () => {
         expect(createTenantRepoMaterializationDigest({...envelope, headRevision: 'head-b'})).not.toBe(digest);
         expect(createTenantRepoMaterializationDigest({
             ...envelope,
+            manifestSnapshot: {
+                ...envelope.manifestSnapshot,
+                yieldedSourcePaths: ['aB.md', 'a_b.md', 'z.md']
+            }
+        })).not.toBe(digest);
+        expect(createTenantRepoMaterializationDigest({
+            ...envelope,
             files: [{...envelope.files[0], parserVersion: '3'}, envelope.files[1]]
         })).not.toBe(digest);
+        expect(() => createTenantRepoMaterializationDigest({
+            ...envelope,
+            manifestSnapshot: {
+                ...envelope.manifestSnapshot,
+                yieldedSourcePaths: ['outside.md']
+            }
+        })).toThrow(/outside the physical manifest/u);
+        expect(() => createTenantRepoMaterializationDigest({
+            ...envelope,
+            manifestSnapshot: {
+                ...envelope.manifestSnapshot,
+                yieldedSourcePaths: ['aB.md', null]
+            }
+        })).toThrow(/non-empty strings/u);
+        expect(() => createTenantRepoMaterializationDigest({
+            ...envelope,
+            manifestSnapshot: {
+                ...envelope.manifestSnapshot,
+                extractionIdentity: 'b'.repeat(64)
+            }
+        })).toThrow(/does not match/u);
         expect(TenantRepoIngestEnvelopeBuilder.createTenantRepoMaterializationDigest).toBe(
             createTenantRepoMaterializationDigest
         );
@@ -155,9 +201,9 @@ test.describe('TenantRepoIngestEnvelopeBuilder (#11789)', () => {
         expect(envelope.deleted).toBeUndefined();
         expect(envelope.files.map(file => file.sourcePath)).toEqual(['alpha.txt', 'docs/guide.md', 'remove-me.txt']);
         expect(envelope.files.find(file => file.sourcePath === 'docs/guide.md')).toMatchObject({
-            repoSlug: 'local/source',
-            rootKind: 'bare-repo',
-            content : '# Guide\n'
+            repoSlug    : 'local/source',
+            rootKind    : 'bare-repo',
+            profileChunk: {content: '# Guide\n'}
         });
     });
 
@@ -222,7 +268,7 @@ exec ${JSON.stringify(realGitPath)} "$@"
         }
     });
 
-    test('builds a bounded delta envelope for linear history advances', async () => {
+    test('replays the full non-delta-safe parser territory for linear history advances', async () => {
         const source       = await createSourceRepo();
         const options      = await createMirror(source);
         const baseRevision = await resolveHead({...options, ref: 'main'});
@@ -236,14 +282,27 @@ exec ${JSON.stringify(realGitPath)} "$@"
             lastIngestedRev: baseRevision,
             newHead        : headRevision,
             parserId       : 'raw-text',
-            parserVersion  : 'test-parser-v1'
+            parserVersion  : 'test-parser-v1',
+            parserResolver : {
+                async resolve() {
+                    return {
+                        async parseIngestionFile(file) {
+                            return [{
+                                kind   : 'raw',
+                                name   : file.sourcePath,
+                                content: file.content,
+                                source : file.sourcePath
+                            }]
+                        }
+                    }
+                }
+            }
         });
 
         expect(envelope).toMatchObject({
             tenantId: 'tenant-a',
             repoSlug: 'local/source',
-            headRevision,
-            deleted : [{sourcePath: 'remove-me.txt', repoSlug: 'local/source'}]
+            headRevision
         });
 
         // The delta above is AUTHORITATIVE: `diffRevisions` already resolved it, and it is
@@ -255,15 +314,46 @@ exec ${JSON.stringify(realGitPath)} "$@"
         // This assertion is the fix. If `baseRevision` ever returns to this envelope, the lane
         // silently goes back to asking for work it has already done, and fails on the answer.
         expect(envelope.baseRevision).toBeUndefined();
-        expect(envelope.manifestSnapshot).toBeUndefined();
-        expect(envelope.files.map(file => [file.sourcePath, file.content])).toEqual([
+        expect(envelope.deleted).toBeUndefined();
+        expect(envelope.manifestSnapshot).toEqual({
+            repoSlug          : 'local/source',
+            pathsAfterPush    : ['alpha.txt', 'beta.txt', 'docs/guide.md'],
+            yieldedSourcePaths: ['alpha.txt', 'beta.txt', 'docs/guide.md'],
+            extractionIdentity: envelope.extractionIdentity
+        });
+        expect(envelope.files.map(file => [file.sourcePath, file.profileChunk.content])).toEqual([
             ['alpha.txt', 'alpha v2\n'],
-            ['beta.txt', 'beta\n']
+            ['beta.txt', 'beta\n'],
+            ['docs/guide.md', '# Guide\n']
         ]);
         expect(envelope.files[0]).toMatchObject({
             parserId     : 'raw-text',
             parserVersion: 'test-parser-v1'
         });
+    });
+
+    test('delta-safe incremental extraction tombstones a changed path that stops yielding', async () => {
+        const source       = await createSourceRepo();
+        const options      = await createMirror(source);
+        const baseRevision = await resolveHead({...options, ref: 'main'});
+
+        await fs.writeFile(path.join(source, 'alpha.txt'), Buffer.from([0, 1, 2, 3]));
+        await git(['add', 'alpha.txt'], source);
+        await git(['-c', 'user.name=Neo Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'make alpha binary'], source);
+        await fetch(options);
+
+        const headRevision = await resolveHead({...options, ref: 'main'});
+        const envelope     = await buildIngestEnvelope({
+            ...options,
+            lastIngestedRev: baseRevision,
+            newHead        : headRevision
+        });
+
+        expect(envelope.manifestSnapshot).toBeUndefined();
+        expect(envelope.files).toEqual([]);
+        expect(envelope.deleted).toEqual([
+            {sourcePath: 'alpha.txt', repoSlug: 'local/source'}
+        ]);
     });
 
     test('falls back to a full manifest snapshot when history is non-linear', async () => {
@@ -284,8 +374,10 @@ exec ${JSON.stringify(realGitPath)} "$@"
         expect(envelope.baseRevision).toBeUndefined();
         expect(envelope.deleted).toBeUndefined();
         expect(envelope.manifestSnapshot).toEqual({
-            repoSlug      : 'local/source',
-            pathsAfterPush: ['alpha.txt', 'docs/guide.md', 'remove-me.txt']
+            repoSlug          : 'local/source',
+            pathsAfterPush    : ['alpha.txt', 'docs/guide.md', 'remove-me.txt'],
+            yieldedSourcePaths: ['alpha.txt', 'docs/guide.md', 'remove-me.txt'],
+            extractionIdentity: envelope.extractionIdentity
         });
         expect(envelope.files.map(file => file.sourcePath)).toEqual(['alpha.txt', 'docs/guide.md', 'remove-me.txt']);
     });
@@ -365,9 +457,9 @@ exec ${JSON.stringify(realGitPath)} "$@"
                     calls.push({kind: 'prefetch', credentialRef: options.credentialRef, paths: [...(options.sourcePaths ?? [])]});
                     return GitMirror.prefetchRevisionBlobs(options)
                 },
-                readRevisionFile(options) {
+                readRevisionBlob(options) {
                     calls.push({kind: 'read', sourcePath: options.sourcePath});
-                    return GitMirror.readRevisionFile(options)
+                    return GitMirror.readRevisionBlob(options)
                 }
             }
         }

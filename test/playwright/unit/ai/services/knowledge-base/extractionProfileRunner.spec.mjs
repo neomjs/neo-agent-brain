@@ -449,6 +449,49 @@ test.describe('extraction profile runner (#261)', () => {
         });
     });
 
+    test('binds descriptor provenance at write time for same-shaped chunks from two routes', async () => {
+        const writes = [];
+        const result = await runExtractionProfile({
+            profile: profile([
+                route('A', 'alpha'),
+                route('B', 'beta')
+            ]),
+            catalogue       : catalogue({extractorIds: ['A', 'B']}),
+            repositoryReader: reader([
+                entry('alpha/Same.mjs'),
+                entry('beta/Same.mjs')
+            ]),
+            writeStream: {
+                write() {
+                    throw new Error('route execution must not use the unbound shared writer')
+                },
+                forRoute({extractorId, version}) {
+                    return {
+                        write(value) {
+                            writes.push({
+                                chunk: JSON.parse(value),
+                                extractorId,
+                                version
+                            })
+                        }
+                    }
+                }
+            },
+            createHashFn: () => 'hash'
+        });
+
+        expect(result.count).toBe(2);
+        expect(writes).toEqual([{
+            chunk      : {sourcePath: 'alpha/Same.mjs'},
+            extractorId: 'A',
+            version    : '1.0.0'
+        }, {
+            chunk      : {sourcePath: 'beta/Same.mjs'},
+            extractorId: 'B',
+            version    : '1.0.0'
+        }]);
+    });
+
     test('refuses to execute compiled authority against a different bound reader', async () => {
         const
             descriptors = catalogue(),

@@ -45,9 +45,13 @@ class SourceParser extends Base {
      *     place when this module declares a superclass. Passed in rather than returned so callers
      *     measure the SAME universe the chunks come from — a reimplemented scan measures its own,
      *     which is the producer/consumer mismatch this area exists to fix.
+     * @param {Object} [options]
+     * @param {Boolean} [options.strict=false] Refuse malformed input with a coded error instead of
+     *     publishing the legacy empty-array result. Repository materialization enables this because
+     *     an empty yield can become deletion authority; the legacy corpus path deliberately does not.
      * @returns {Array<Object>} An array of chunks.
      */
-    parse(content, filePath, defaultType='src', hierarchy={}, coverage=null) {
+    parse(content, filePath, defaultType='src', hierarchy={}, coverage=null, {strict = false} = {}) {
         const chunks = [];
         let ast;
 
@@ -63,6 +67,16 @@ class SourceParser extends Base {
             ast = acorn.parse(content, { sourceType: 'module', locations: true, ecmaVersion: 'latest' });
         } catch (e) {
             logger.warn(`Failed to parse source file ${filePath}: ${e.message}`);
+
+            if (strict) {
+                const error = new Error(`Repository source '${filePath}' could not be parsed.`);
+
+                error.code    = 'KB_SOURCE_PARSE_FAILED';
+                error.details = {sourcePath: filePath};
+
+                throw error
+            }
+
             return [];
         }
 

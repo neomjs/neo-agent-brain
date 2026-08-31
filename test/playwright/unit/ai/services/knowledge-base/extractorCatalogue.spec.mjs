@@ -70,7 +70,7 @@ test.describe('immutable extractor catalogue (#261)', () => {
         expect(() => catalogue.get('Missing')).toThrow(/Unknown extractor/u);
     });
 
-    test('exposes only the two ported built-ins and keeps both conservative on delta safety', () => {
+    test('exposes all repository-ported built-ins with their declared capabilities', () => {
         expect(builtinCatalogue.list().map(({extractorId, version, deltaSafe, requiresHierarchy}) => ({
             extractorId,
             version,
@@ -81,6 +81,16 @@ test.describe('immutable extractor catalogue (#261)', () => {
             version          : '1.0.0',
             deltaSafe        : false,
             requiresHierarchy: true
+        }, {
+            extractorId      : 'ParserSource',
+            version          : '1.0.0',
+            deltaSafe        : false,
+            requiresHierarchy: false
+        }, {
+            extractorId      : 'RawRepoSource',
+            version          : '1.0.0',
+            deltaSafe        : true,
+            requiresHierarchy: false
         }, {
             extractorId      : 'SkillSource',
             version          : '1.0.0',

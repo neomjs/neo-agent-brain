@@ -99,7 +99,7 @@ test.describe('Neo.ai.daemons.KbReconciliationService (#11640)', () => {
         // Drop instance-method seam overrides so the real prototype methods resurface for
         // the next test — an instance override otherwise leaks across tests in the worker.
         for (const seam of ['getKbConfig', 'fetchTenants', 'getCollection', 'fetchTenantConfigVersion',
-                             'fetchTenantRows', 'fetchTenantManifests', 'fetchTenantDeclaredParsers',
+                             'fetchTenantRows', 'fetchTenantManifests', 'fetchTenantExtractionIdentities',
                              'tombstoneOrphans', 'recordReconcileMetric',
                              'reconcileTenant', 'scheduleNext']) {
             delete KbReconciliationService[seam];
@@ -235,7 +235,7 @@ test.describe('Neo.ai.daemons.KbReconciliationService (#11640)', () => {
             KbReconciliationService.fetchTenantManifests       = async () => manifestsByRepo;
             // Stubbed even when empty: left unstubbed this seam reaches the real
             // `IngestionService.getTenantConfig` from a unit test.
-            KbReconciliationService.fetchTenantDeclaredParsers = async () => declaredByRepo;
+            KbReconciliationService.fetchTenantExtractionIdentities = async () => declaredByRepo;
         }
 
         test('a clean tenant emits no telemetry and tombstones nothing', async () => {
@@ -488,52 +488,37 @@ test.describe('Neo.ai.daemons.KbReconciliationService (#11640)', () => {
         });
     });
 
-    /**
-     * The third reconciliation signal, consulted by the daemon rather than only by its own spec.
-     *
-     * `diffTenantParserIdentity` shipped classified-but-unwired: green in isolation while no
-     * reconciliation tick called it, so a superseded parser generation stayed queryable forever. The
-     * arms below therefore assert the DAEMON's behaviour — what reaches `tombstoneOrphans` and the
-     * telemetry — never the classifier's return value, which was already covered.
-     */
-    test.describe('reconcileTenant — parser-identity signal', () => {
-        const REPO     = 'org/repo',
-              DECLARED = {parserId: 'docker-mcp-source', parserVersion: '1.1.0'},
-              OLD      = {parserId: 'docker-mcp-source', parserVersion: '1.0.0'};
+    test.describe('reconcileTenant — extraction-currency signal', () => {
+        const
+            REPO       = 'org/repo',
+            CURRENT_ID = 'b'.repeat(64),
+            PRIOR_ID   = 'a'.repeat(64);
 
-        /**
-         * @param {Object} options
-         * @returns {Object} One Chroma row carrying a parser pair.
-         */
-        function parserRow({id, path, parser = OLD, repoSlug = REPO, configVersion = 5}) {
+        function extractionRow({id, path, identity = PRIOR_ID, ingestedAt = 1_000}) {
             return {
                 id,
                 metadata: {
                     tenantId           : 'tenant-x',
-                    repoSlug,
+                    repoSlug           : REPO,
                     sourcePath         : path,
-                    parserId           : parser.parserId,
-                    parserVersion      : parser.parserVersion,
-                    tenantConfigVersion: configVersion
+                    extractionIdentity : identity,
+                    ingestedAt,
+                    tenantConfigVersion: 5
                 }
-            }
+            };
         }
 
-        /**
-         * @param {Object} options
-         * @returns {Promise<{tombstonedIds: String[], metrics: Object[]}>}
-         */
         async function run({rows, declaredByRepo, manifestsByRepo = {}, autoTombstone = true}) {
             applyStubs();
 
-            KbReconciliationService.fetchTenantConfigVersion   = async () => 5;
-            KbReconciliationService.fetchTenantRows            = async () => rows;
-            KbReconciliationService.fetchTenantManifests       = async () => manifestsByRepo;
-            KbReconciliationService.fetchTenantDeclaredParsers = async () => declaredByRepo;
+            KbReconciliationService.fetchTenantConfigVersion       = async () => 5;
+            KbReconciliationService.fetchTenantRows                = async () => rows;
+            KbReconciliationService.fetchTenantManifests           = async () => manifestsByRepo;
+            KbReconciliationService.fetchTenantExtractionIdentities = async () => declaredByRepo;
 
             const tombstonedIds = [], metrics = [];
 
-            KbReconciliationService.tombstoneOrphans      = async (collection, ids) => {
+            KbReconciliationService.tombstoneOrphans = async (collection, ids) => {
                 tombstonedIds.push(...ids);
                 return ids.length
             };
@@ -546,108 +531,88 @@ test.describe('Neo.ai.daemons.KbReconciliationService (#11640)', () => {
             return {tombstonedIds, metrics}
         }
 
-        test('RED-PROOF: a superseded generation is reclaimed by the DAEMON, not merely classifiable', async () => {
-            // Fails before the wiring: the classifier would return the orphan and nothing would ask.
-            const {tombstonedIds, metrics} = await run({
-                rows           : [parserRow({id: 'old', path: 'a.md'}), parserRow({id: 'new', path: 'a.md', parser: DECLARED})],
-                declaredByRepo : {[REPO]: DECLARED},
-                manifestsByRepo: {[REPO]: {pathsAfterPush: ['a.md'], updatedAt: 1}}
-            });
-
-            expect(tombstonedIds, 'the superseded row reaches the delete path').toEqual(['old']);
-            expect(metrics[0].diff.parserOrphanCount).toBe(1);
+        const manifest = yieldedSourcePaths => ({
+            pathsAfterPush    : ['a.md'],
+            updatedAt         : 2_000,
+            extractionSnapshot: {
+                yieldedSourcePaths,
+                extractionIdentity: CURRENT_ID,
+                updatedAt         : 2_000
+            }
         });
 
-        test('CONTROL: an unchanged declared pair reclaims nothing — firing indiscriminately is equally green', async () => {
+        test('a superseded generation reaches the daemon delete path only after replacement', async () => {
             const {tombstonedIds, metrics} = await run({
-                rows           : [parserRow({id: 'current', path: 'a.md', parser: DECLARED})],
-                declaredByRepo : {[REPO]: DECLARED},
-                manifestsByRepo: {[REPO]: {pathsAfterPush: ['a.md'], updatedAt: 1}}
+                rows: [
+                    extractionRow({id: 'old', path: 'a.md'}),
+                    extractionRow({id: 'new', path: 'a.md', identity: CURRENT_ID, ingestedAt: 2_100})
+                ],
+                declaredByRepo : {[REPO]: {extractionIdentity: CURRENT_ID}},
+                manifestsByRepo: {[REPO]: manifest(['a.md'])}
             });
 
-            expect(tombstonedIds).toEqual([]);
-            expect(metrics).toHaveLength(0)
+            expect(tombstonedIds).toEqual(['old']);
+            expect(metrics[0].diff.extractionOrphanCount).toBe(1);
         });
 
-        test('a repo declaring NO parserVersion does not orphan its own `1.0.0`-stamped rows', async () => {
-            // Chunk construction stamps `file.parserVersion || '1.0.0'`. Resolving the declared pair
-            // without that same default would compare `undefined` against `'1.0.0'` and reclaim the
-            // entire repo — a delete caused by a comparison the producer never made.
-            // The seam's own defaulting is asserted in the `fetchTenantDeclaredParsers` describe
-            // below; here the resolved pair is fed through the daemon to prove the round trip
-            // classifies nothing.
+        test('completed exclusion retires an old row even though the physical path remains tracked', async () => {
             const {tombstonedIds, metrics} = await run({
-                rows           : [parserRow({id: 'v1', path: 'a.md', parser: {parserId: 'p', parserVersion: '1.0.0'}})],
-                declaredByRepo : {[REPO]: {parserId: 'p', parserVersion: '1.0.0'}},
-                manifestsByRepo: {[REPO]: {pathsAfterPush: ['a.md'], updatedAt: 1}}
+                rows           : [extractionRow({id: 'excluded', path: 'a.md'})],
+                declaredByRepo : {[REPO]: {extractionIdentity: CURRENT_ID}},
+                manifestsByRepo: {[REPO]: manifest([])}
             });
 
-            expect(tombstonedIds).toEqual([]);
-            expect(metrics).toHaveLength(0)
+            expect(tombstonedIds).toEqual(['excluded']);
+            expect(metrics[0].diff.extractionOrphans[0].reason).toBe('extraction-currency-mismatch');
         });
 
-        test('a repo with NO declared pair is unknown, so its rows are never reclaimed', async () => {
-            // Omission must mean "cannot judge", never "judge against nothing".
-            const {tombstonedIds, metrics} = await run({
-                rows           : [parserRow({id: 'orphanish', path: 'a.md'})],
-                declaredByRepo : {},
-                manifestsByRepo: {[REPO]: {pathsAfterPush: ['a.md'], updatedAt: 1}}
-            });
-
-            expect(tombstonedIds).toEqual([]);
-            expect(metrics).toHaveLength(0)
-        });
-
-        test('a repo with NO manifest skips tier 1 — unknown is not empty', async () => {
-            // Without a manifest the daemon cannot know which paths the declared parser yields. The
-            // row must fall to the replacement-gated tier rather than being treated as unyielded,
-            // which would reclaim a whole repo on a missing envelope.
+        test('missing proof snapshot is unknown and cannot make a whole repo actionable', async () => {
             const {tombstonedIds} = await run({
-                rows           : [parserRow({id: 'old', path: 'gone.md'})],
-                declaredByRepo : {[REPO]: DECLARED},
-                manifestsByRepo: {}
+                rows           : [extractionRow({id: 'old', path: 'a.md'})],
+                declaredByRepo : {[REPO]: {extractionIdentity: CURRENT_ID}},
+                manifestsByRepo: {[REPO]: {pathsAfterPush: ['a.md'], updatedAt: 2_000}}
             });
 
-            expect(tombstonedIds, 'no replacement exists, and tier 1 is unavailable').toEqual([])
+            expect(tombstonedIds).toEqual([])
         });
 
-        test('autoTombstone OFF reports the parser orphan but issues no delete', async () => {
+        test('autoTombstone OFF reports extraction drift but issues no delete', async () => {
             const {tombstonedIds, metrics} = await run({
-                rows           : [parserRow({id: 'old', path: 'a.md'}), parserRow({id: 'new', path: 'a.md', parser: DECLARED})],
-                declaredByRepo : {[REPO]: DECLARED},
-                manifestsByRepo: {[REPO]: {pathsAfterPush: ['a.md'], updatedAt: 1}},
+                rows: [
+                    extractionRow({id: 'old', path: 'a.md'}),
+                    extractionRow({id: 'new', path: 'a.md', identity: CURRENT_ID, ingestedAt: 2_100})
+                ],
+                declaredByRepo : {[REPO]: {extractionIdentity: CURRENT_ID}},
+                manifestsByRepo: {[REPO]: manifest(['a.md'])},
                 autoTombstone  : false
             });
 
             expect(tombstonedIds).toEqual([]);
-            expect(metrics[0].diff.parserOrphanCount).toBe(1)
+            expect(metrics[0].diff.extractionOrphanCount).toBe(1)
         });
     });
 
-    test.describe('fetchTenantDeclaredParsers', () => {
-        test('mirrors the producer default and omits a repo declaring no parserId', async () => {
+    test.describe('fetchTenantExtractionIdentities', () => {
+        test('projects only repo-qualified valid extraction identities', async () => {
             const IngestionService = (await import('../../../../../../ai/services/knowledge-base/IngestionService.mjs')).default,
                   original         = IngestionService.getTenantConfig;
 
             IngestionService.getTenantConfig = async () => ({
                 version    : 5,
                 tenantRepos: [
-                    {repoSlug: 'org/versioned', parserId: 'p', parserVersion: '2.0.0'},
-                    {repoSlug: 'org/unversioned', parserId: 'p'},
-                    {repoSlug: 'org/no-parser'},
-                    {parserId: 'p', parserVersion: '1.0.0'}
+                    {repoSlug: 'org/valid', extractionIdentity: 'c'.repeat(64)},
+                    {repoSlug: 'org/missing'},
+                    {repoSlug: 'org/invalid', extractionIdentity: 'not-a-digest'},
+                    {extractionIdentity: 'd'.repeat(64)}
                 ]
             });
 
             try {
-                const declared = await KbReconciliationService.fetchTenantDeclaredParsers('tenant-x');
+                const declared = await KbReconciliationService.fetchTenantExtractionIdentities('tenant-x');
 
-                expect(declared['org/versioned']).toEqual({parserId: 'p', parserVersion: '2.0.0'});
-                // The producer stamps `file.parserVersion || '1.0.0'`, so the declared pair must too.
-                expect(declared['org/unversioned']).toEqual({parserId: 'p', parserVersion: '1.0.0'});
-                // No parserId and no repoSlug are both "cannot judge", so neither appears.
-                expect(declared['org/no-parser']).toBeUndefined();
-                expect(Object.keys(declared)).toHaveLength(2)
+                expect(declared).toEqual({
+                    'org/valid': {extractionIdentity: 'c'.repeat(64)}
+                })
             } finally {
                 IngestionService.getTenantConfig = original
             }

@@ -14,6 +14,16 @@ import {
     assertDispatchableParser,
     loadTenantParser
 }                           from './source/tenantParserLoader.mjs';
+import {
+    loadTenantExtractor
+}                           from './source/tenantExtractorLoader.mjs';
+import ExtractorCatalogue, {
+    createExtractorCatalogue
+}                           from './source/ExtractorCatalogue.mjs';
+import {
+    createExtractionProfileIdentity,
+    normalizeExtractionProfile
+}                           from './helpers/extractionProfileContract.mjs';
 import {normalizeTenantRepoConfig}
                             from './helpers/tenantRepoAccessContract.mjs';
 import {normalizeSettlementCounts}
@@ -87,6 +97,36 @@ export function resolveIdleProgressStatus(lastRunSummary) {
 
 const MATERIALIZATION_ATTEMPT_ID_PATTERN = /^[a-f0-9]{32}$/u;
 const MATERIALIZATION_DIGEST_PATTERN     = /^[a-f0-9]{64}$/u;
+const EXTRACTION_IDENTITY_PATTERN        = /^[a-f0-9]{64}$/u;
+
+/**
+ * @summary Classifies receipt reuse separately from extraction-snapshot advancement.
+ *
+ * A clean yielded retry may borrow matching prior proof so crash/checkpoint recovery remains
+ * idempotent. It may NOT publish a new extraction snapshot because yielded work is incomplete.
+ * Durable-fence-only work is complete only when it did not yield. Keeping both predicates in one
+ * classifier makes that single intentional truth-table difference visible and prevents either
+ * consumer from redefining the other's contract.
+ *
+ * @param {Object} summary Ingestion result with `errors` and optional `yielded`.
+ * @returns {Object}
+ */
+export function classifyManifestProofCompatibility(summary = {}) {
+    const
+        errors                 = Array.isArray(summary.errors) ? summary.errors : [],
+        durableFenceOnly       = errors.length > 0 && errors.every(isDurableFenceRow),
+        receiptErrorsComplete  = errors.length === 0 || durableFenceOnly,
+        receiptReuseCompatible = errors.length === 0
+            || (durableFenceOnly && summary.yielded !== true),
+        snapshotAdvanceCompatible = receiptErrorsComplete && summary.yielded !== true;
+
+    return Object.freeze({
+        durableFenceOnly,
+        receiptErrorsComplete,
+        receiptReuseCompatible,
+        snapshotAdvanceCompatible
+    })
+}
 
 /**
  * @summary Re-validates a graduation receipt carried on an embed failure into exactly four bounded fields.
@@ -220,6 +260,15 @@ class IngestionService extends Base {
     #tenantParserCache = new Map();
 
     /**
+     * Invocation catalogues keyed by tenant plus the full custom module/export declaration.
+     * A graph/YAML declaration change therefore creates a new catalogue without mutating the
+     * process singleton or pinning the first module selected for the process lifetime.
+     * @member {Map<String,Object>} #tenantExtractorCatalogueCache
+     * @private
+     */
+    #tenantExtractorCatalogueCache = new Map();
+
+    /**
      * @member {Function|null} parsedChunkValidator=null
      * @protected
      */
@@ -248,7 +297,6 @@ class IngestionService extends Base {
      * @param {Object} [payload.manifestSnapshot] Post-push manifest (`{repoSlug, pathsAfterPush}`).
      * @param {String} [payload.baseRevision] Previous revision boundary.
      * @param {String} [payload.headRevision] Current revision boundary.
-     * @param {Object} [payload.materializationAttempt] Opaque pull-attempt id plus checkpoint-contract version.
      * @param {Boolean} [payload.viaMcp=true] Caller-selected work-volume-gate mode. Omitted
      *                                        or truthy values keep `VectorService.embed`
      *                                        MCP-safe. Explicit `false` (the `ai:ingest-tenant`
@@ -266,6 +314,7 @@ class IngestionService extends Base {
         try {
             const tenantContext = this.resolveTenantContext(payload);
             summary.tenantId    = tenantContext.tenantId;
+            const trustBoundary = this.resolveProfileEnvelopeTrust({payload, controls, summary});
 
             // Resolve the active tenant-config version for chunk-metadata stamping.
             // Fail-soft: a graph read must never break an ingest, so a resolution failure degrades to 0.
@@ -290,7 +339,12 @@ class IngestionService extends Base {
                 totalSources: files.length
             });
 
-            const chunks = await this.collectParsedChunks({files, tenantContext, summary});
+            const chunks = await this.collectParsedChunks({
+                files,
+                tenantContext,
+                summary,
+                trustedProfileEnvelope: trustBoundary.trusted
+            });
             this.updateIngestionProgress({
                 errorCount : summary.errors.length,
                 phase      : 'filtering',
@@ -314,7 +368,7 @@ class IngestionService extends Base {
             this.updateIngestionProgress({phase: 'deleting'});
             summary.deleted = await this.applyDeletionSignals({
                 deleted         : payload.deleted,
-                manifestSnapshot: payload.manifestSnapshot,
+                manifestSnapshot: trustBoundary.manifestSnapshot,
                 baseRevision    : payload.baseRevision,
                 headRevision    : payload.headRevision,
                 tenantContext,
@@ -345,10 +399,10 @@ class IngestionService extends Base {
 
             this.updateIngestionProgress({phase: 'manifest'});
             await this.persistManifestSnapshot({
-                manifestSnapshot      : payload.manifestSnapshot,
+                manifestSnapshot      : trustBoundary.manifestSnapshot,
                 files                 : payload.files,
                 headRevision          : payload.headRevision,
-                materializationAttempt: payload.materializationAttempt,
+                materializationAttempt: trustBoundary.materializationAttempt,
                 tenantContext,
                 summary
             });
@@ -382,11 +436,66 @@ class IngestionService extends Base {
      * this unwrapped method rather than smuggling non-contract fields into the public payload.
      *
      * @param {Object} payload Canonical ingestion payload.
+     * @param {Object} [payload.materializationAttempt] Internal opaque pull-attempt identity plus checkpoint-contract version.
      * @param {Object} controls Internal provider-circuit controls.
      * @returns {Promise<Object>} The canonical ingestion summary.
      */
     async ingestSourceFilesForTenantSync(payload = {}, controls = {}) {
-        return this.ingestSourceFiles(payload, controls)
+        return this.ingestSourceFiles(payload, {
+            ...controls,
+            trustedProfileEnvelope: true
+        })
+    }
+
+    /**
+     * @summary Separates public push fields from orchestrator-owned profile/proof authority.
+     * @param {Object} options
+     * @returns {{trusted: Boolean, manifestSnapshot: Object|undefined, materializationAttempt: Object|null}}
+     * @protected
+     */
+    resolveProfileEnvelopeTrust({payload, controls, summary}) {
+        const trusted = controls?.trustedProfileEnvelope === true;
+
+        if (trusted) {
+            return {
+                trusted,
+                manifestSnapshot      : payload.manifestSnapshot,
+                materializationAttempt: payload.materializationAttempt
+            }
+        }
+
+        const
+            manifest                 = payload.manifestSnapshot,
+            manifestCarriesAuthority = Boolean(
+                manifest
+                && typeof manifest === 'object'
+                && (
+                    Object.hasOwn(manifest, 'yieldedSourcePaths')
+                    || Object.hasOwn(manifest, 'extractionIdentity')
+                )
+            ),
+            topLevelCarriesAuthority = payload.materializationAttempt != null
+                || payload.extractionIdentity != null;
+
+        if (manifestCarriesAuthority || topLevelCarriesAuthority) {
+            summary.errors.push(this.createError({
+                code   : 'KB_PROFILE_ENVELOPE_FORBIDDEN',
+                message: 'Extraction profile identity, yielded paths, and materialization attempts are internal tenant-sync fields.'
+            }));
+        }
+
+        return {
+            trusted,
+            manifestSnapshot: manifest && typeof manifest === 'object'
+                ? {
+                    ...(Object.hasOwn(manifest, 'repoSlug') ? {repoSlug: manifest.repoSlug} : {}),
+                    ...(Object.hasOwn(manifest, 'pathsAfterPush')
+                        ? {pathsAfterPush: manifest.pathsAfterPush}
+                        : {})
+                }
+                : manifest,
+            materializationAttempt: null
+        }
     }
 
     /**
@@ -668,14 +777,19 @@ class IngestionService extends Base {
      * @returns {Promise<Array<Object>>}
      * @protected
      */
-    async collectParsedChunks({files, tenantContext, summary}) {
+    async collectParsedChunks({files, tenantContext, summary, trustedProfileEnvelope = false}) {
         const chunks = [];
 
         for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
             const file = files[fileIndex];
 
             try {
-                const parsed = await this.resolveFileChunks({file, fileIndex, tenantContext});
+                const parsed = await this.resolveFileChunks({
+                    file,
+                    fileIndex,
+                    tenantContext,
+                    trustedProfileEnvelope
+                });
 
                 for (let chunkIndex = 0; chunkIndex < parsed.length; chunkIndex++) {
                     const record     = parsed[chunkIndex];
@@ -684,7 +798,8 @@ class IngestionService extends Base {
                         fileIndex,
                         chunkIndex,
                         tenantContext,
-                        summary
+                        summary,
+                        trustedProfileEnvelope
                     });
 
                     if (normalized) {
@@ -1114,7 +1229,7 @@ class IngestionService extends Base {
      *
      * @param {Object}  data
      * @param {String} [data.tenantId] Tenant id.
-     * @returns {Promise<Object<String, {repoSlug: String, pathsAfterPush: Array<String>, updatedAt: Number, materializationReceipt: Object|null}>>}
+     * @returns {Promise<Object<String, {repoSlug: String, pathsAfterPush: Array<String>, updatedAt: Number, extractionSnapshot: Object|null, materializationReceipt: Object|null}>>}
      */
     async getTenantManifests({tenantId} = {}) {
         const {tenantId: resolvedTenant} = this.resolveTenantContext({tenantId});
@@ -1132,12 +1247,15 @@ class IngestionService extends Base {
             .map(([repoSlug, manifest]) => {
                 const
                     paths                  = this.normalizeManifestPaths(manifest?.pathsAfterPush),
-                    materializationReceipt = this.normalizeMaterializationReceipt(manifest?.materializationReceipt);
+                    extractionSnapshot     = this.normalizeExtractionSnapshot(manifest?.extractionSnapshot),
+                    legacyReceipt          = this.normalizeMaterializationReceipt(manifest?.materializationReceipt),
+                    materializationReceipt = extractionSnapshot?.proof || legacyReceipt;
 
                 return paths ? [repoSlug, {
                     repoSlug,
                     pathsAfterPush: paths,
                     updatedAt     : manifest.updatedAt || 0,
+                    extractionSnapshot,
                     materializationReceipt
                 }] : null;
             })
@@ -1149,7 +1267,7 @@ class IngestionService extends Base {
      * @param {Object} data
      * @param {String} data.tenantId Tenant id.
      * @param {String} data.repoSlug Repo slug.
-     * @returns {Promise<{tenantId: String, repoSlug: String, source: String, pathsAfterPush: Array<String>, updatedAt: Number, materializationReceipt: Object|null}>}
+     * @returns {Promise<{tenantId: String, repoSlug: String, source: String, pathsAfterPush: Array<String>, updatedAt: Number, extractionSnapshot: Object|null, materializationReceipt: Object|null}>}
      */
     async getTenantManifest({tenantId, repoSlug} = {}) {
         const {tenantId: resolvedTenant, repoSlug: resolvedRepo} = this.resolveTenantContext({tenantId, repoSlug});
@@ -1162,6 +1280,7 @@ class IngestionService extends Base {
             source                : manifest ? 'graph' : 'empty',
             pathsAfterPush        : manifest?.pathsAfterPush || [],
             updatedAt             : manifest?.updatedAt || 0,
+            extractionSnapshot    : manifest?.extractionSnapshot || null,
             materializationReceipt: manifest?.materializationReceipt || null
         };
     }
@@ -1180,38 +1299,60 @@ class IngestionService extends Base {
      * @param {String} data.tenantId Tenant id.
      * @param {String} data.repoSlug Repo slug.
      * @param {Array<String>} data.pathsAfterPush Post-push source-path set.
-     * @param {Object} [data.materializationReceipt] Optional pull-attempt proof. Omission clears stale proof.
-     * @returns {Promise<{tenantId: String, repoSlug: String, pathsAfterPush: Array<String>, updatedAt: Number, materializationReceipt: Object|null}|{error: String, code: String, message: String}>}
+     * @param {Object} [data.extractionSnapshot] Complete proof-bound extraction candidate.
+     * @param {Object} [data.materializationReceipt] Legacy top-level pull-attempt proof.
+     * @returns {Promise<{tenantId: String, repoSlug: String, pathsAfterPush: Array<String>, updatedAt: Number, extractionSnapshot: Object|null, materializationReceipt: Object|null}|{error: String, code: String, message: String}>}
      */
-    async setTenantManifest({tenantId, repoSlug, pathsAfterPush, materializationReceipt} = {}) {
+    async setTenantManifest({
+        tenantId,
+        repoSlug,
+        pathsAfterPush,
+        extractionSnapshot,
+        materializationReceipt
+    } = {}) {
         try {
             const
-                tenantContext = this.resolveTenantContext({tenantId, repoSlug}),
-                paths         = this.normalizeManifestPaths(pathsAfterPush),
-                receipt       = this.normalizeMaterializationReceipt(materializationReceipt);
+                tenantContext     = this.resolveTenantContext({tenantId, repoSlug}),
+                paths             = this.normalizeManifestPaths(pathsAfterPush),
+                receipt           = this.normalizeMaterializationReceipt(materializationReceipt),
+                snapshotCandidate = extractionSnapshot == null
+                    ? null
+                    : this.normalizeExtractionSnapshotCandidate(extractionSnapshot);
 
-            if (!paths || (materializationReceipt != null && !receipt)) {
+            if (
+                !paths
+                || (materializationReceipt != null && !receipt)
+                || (extractionSnapshot != null && !snapshotCandidate)
+            ) {
                 return {
                     error  : 'Tenant manifest write failed',
                     code   : 'KB_TENANT_MANIFEST_INVALID',
                     message: !paths
                         ? '`pathsAfterPush` must be an array.'
-                        : '`materializationReceipt` has an invalid shape.'
+                        : materializationReceipt != null && !receipt
+                            ? '`materializationReceipt` has an invalid shape.'
+                            : '`extractionSnapshot` has an invalid shape.'
                 };
             }
 
             await this.graphService.ready();
 
-            const nodeId    = `kb-manifest:${tenantContext.tenantId}`,
-                  existing  = this.graphService.getNodeRecord({id: nodeId}),
-                  manifests = {...(existing?.properties?.manifests || {})},
-                  updatedAt = Date.now();
+            const nodeId           = `kb-manifest:${tenantContext.tenantId}`,
+                  existing         = this.graphService.getNodeRecord({id: nodeId}),
+                  manifests        = {...(existing?.properties?.manifests || {})},
+                  previousManifest = manifests[tenantContext.repoSlug],
+                  previousSnapshot = this.normalizeExtractionSnapshot(previousManifest?.extractionSnapshot),
+                  updatedAt        = Date.now(),
+                  storedSnapshot   = snapshotCandidate
+                      ? {...snapshotCandidate, updatedAt}
+                      : previousSnapshot;
 
             manifests[tenantContext.repoSlug] = {
                 repoSlug      : tenantContext.repoSlug,
                 pathsAfterPush: paths,
                 updatedAt,
-                ...(receipt ? {materializationReceipt: receipt} : {})
+                ...(storedSnapshot ? {extractionSnapshot: storedSnapshot} : {}),
+                ...(!storedSnapshot && receipt ? {materializationReceipt: receipt} : {})
             };
 
             await this.graphService.upsertNode({
@@ -1226,11 +1367,15 @@ class IngestionService extends Base {
             });
 
             return {
-                tenantId              : tenantContext.tenantId,
-                repoSlug              : tenantContext.repoSlug,
-                pathsAfterPush        : paths,
+                tenantId          : tenantContext.tenantId,
+                repoSlug          : tenantContext.repoSlug,
+                pathsAfterPush    : paths,
                 updatedAt,
-                materializationReceipt: receipt
+                extractionSnapshot: storedSnapshot || null,
+                // Only proof supplied by THIS call is returned. A retained snapshot remains
+                // readable through getTenantManifest(), but cannot make an incomplete attempt
+                // look complete to its caller.
+                materializationReceipt: snapshotCandidate?.proof || (!storedSnapshot ? receipt : null)
             };
         } catch (error) {
             return {
@@ -1261,14 +1406,16 @@ class IngestionService extends Base {
             return;
         }
 
-        const attempt = this.normalizeMaterializationAttempt(materializationAttempt);
+        let attempt = this.normalizeMaterializationAttempt(materializationAttempt);
 
         if (materializationAttempt != null && !attempt) {
             summary.errors.push(this.createError({
                 code   : 'KB_TENANT_MATERIALIZATION_ATTEMPT_INVALID',
                 message: '`materializationAttempt` has an invalid shape.'
             }));
-            return;
+            // Physical truth is independent of materialization proof. A malformed attempt vetoes
+            // proof, but cannot veto advancing the observed Git-side manifest.
+            attempt = null;
         }
 
         let receipt = null;
@@ -1279,28 +1426,37 @@ class IngestionService extends Base {
         // Method-scoped because the no-receipt diagnostic below must report the same decision that
         // gated mint/reuse. Computing it once before the attempt block keeps every no-receipt path
         // attributable before `setTenantManifest` clears stale proof.
-        const
-            durableFenceOnly      = summary.errors.length > 0
-                && summary.errors.every(isDurableFenceRow),
-            receiptErrorsComplete = summary.errors.length === 0 || durableFenceOnly,
-            // Preserve the pre-existing clean-summary retry behavior, including its yielded shape.
-            // The new fence-only extension is narrower: a yielded fence summary is still incomplete
-            // and must not borrow prior full-materialization proof.
-            receiptReuseCompatible = summary.errors.length === 0
-                || (durableFenceOnly && summary.yielded !== true);
+        const {
+            durableFenceOnly,
+            receiptReuseCompatible,
+            snapshotAdvanceCompatible
+        } = classifyManifestProofCompatibility(summary);
 
-        if (attempt) {
+        let envelopeDigest = null;
+
+        if (attempt && normalized.extractionCandidate) {
             const
-                envelopeDigest = createTenantRepoMaterializationDigest({
-                    repoSlug        : normalized.repoSlug,
-                    headRevision,
-                    manifestSnapshot: normalized,
-                    files
-                }),
-                existing       = await this.getTenantManifest({
+                candidate      = normalized.extractionCandidate,
+                digestManifest = {
+                    repoSlug          : normalized.repoSlug,
+                    pathsAfterPush    : normalized.pathsAfterPush,
+                    yieldedSourcePaths: candidate.yieldedSourcePaths,
+                    extractionIdentity: candidate.extractionIdentity
+                },
+                existing = await this.getTenantManifest({
                     tenantId: tenantContext.tenantId,
                     repoSlug: normalized.repoSlug
-                }),
+                });
+
+            envelopeDigest = createTenantRepoMaterializationDigest({
+                repoSlug          : normalized.repoSlug,
+                headRevision,
+                extractionIdentity: candidate.extractionIdentity,
+                manifestSnapshot  : digestManifest,
+                files
+            });
+
+            const
                 // `yielded` is a hard veto on minting, and it belongs HERE rather than only at the
                 // caller. A materialization receipt is a claim that the corpus is WHOLE: the next
                 // sweep matches it against the envelope digest and, on a hit, skips ingestion
@@ -1311,8 +1467,7 @@ class IngestionService extends Base {
                 //
                 // This does NOT weaken crash-after-complete recovery: a run that exhausted its
                 // corpus reports `yielded: false` and mints exactly as before.
-                hasEffect      = receiptErrorsComplete
-                    && summary.yielded !== true
+                hasEffect      = snapshotAdvanceCompatible
                     && [summary.ingested, summary.deleted]
                         .some(value => Number.isSafeInteger(value) && value > 0);
 
@@ -1334,15 +1489,13 @@ class IngestionService extends Base {
                 // failure after KB mutation can settle idempotently on the retry.
                 receipt = existing.materializationReceipt;
             } else if (
-                summary.errors.length === 0
-                && normalized.pathsAfterPush.length === 0
+                snapshotAdvanceCompatible
+                && candidate.yieldedSourcePaths.length === 0
             ) {
-                // A source-observed empty manifest is a completed materialization, not an
-                // effect-shaped one. It still needs the ordinary digest-bound proof so the
-                // orchestrator can commit a complete checkpoint instead of reporting success
-                // while leaving revalidation armed. Prior positive receipts deliberately win
-                // above: replacing one here would break settle-once recovery after a checkpoint
-                // write failure.
+                // A profile-observed empty YIELD set is a completed materialization even when Git
+                // still carries files. Explicit yields plus extraction identity distinguish that
+                // authoritative exclusion from a legacy zero-chunk silent drop. Prior matching
+                // proof deliberately wins above for settle-once recovery.
                 receipt = {
                     attemptId            : attempt.attemptId,
                     ingestContractVersion: attempt.ingestContractVersion,
@@ -1351,6 +1504,17 @@ class IngestionService extends Base {
                 };
             }
         }
+
+        const extractionSnapshot = receipt
+            && envelopeDigest
+            && normalized.extractionCandidate
+            && snapshotAdvanceCompatible
+            && receipt.envelopeDigest === envelopeDigest
+            ? {
+                ...normalized.extractionCandidate,
+                proof: receipt
+            }
+            : null;
 
         // A manifest that persists WITHOUT a receipt is the shape that rejects an otherwise
         // successful ingest downstream: `assertFullMaterializationEffect` sees a real effect and no
@@ -1390,6 +1554,7 @@ class IngestionService extends Base {
             tenantId              : tenantContext.tenantId,
             repoSlug              : normalized.repoSlug,
             pathsAfterPush        : normalized.pathsAfterPush,
+            extractionSnapshot,
             materializationReceipt: receipt
         });
 
@@ -1398,8 +1563,12 @@ class IngestionService extends Base {
                 code   : result.code,
                 message: result.message
             }));
-        } else if (result.materializationReceipt) {
-            summary.materializationReceipt = result.materializationReceipt;
+        } else if (result.materializationReceipt || (receipt && receiptReuseCompatible)) {
+            // `setTenantManifest` intentionally does not return retained snapshot proof to an
+            // incomplete caller. Clean yielded retries are the one narrower exception: the digest
+            // already matched prior proof and the established reuse predicate admits it, while the
+            // stricter snapshot predicate above still prevents publishing new yield authority.
+            summary.materializationReceipt = result.materializationReceipt || receipt;
         }
     }
 
@@ -1457,9 +1626,66 @@ class IngestionService extends Base {
     }
 
     /**
+     * @summary Normalizes one complete extraction-snapshot replacement candidate.
+     * @param {*} candidate Candidate `{yieldedSourcePaths, extractionIdentity, proof}` value.
+     * @returns {{yieldedSourcePaths: Array<String>, extractionIdentity: String, proof: Object}|null}
+     * @protected
+     */
+    normalizeExtractionSnapshotCandidate(candidate) {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+            return null;
+        }
+
+        const
+            yieldedSourcePaths = this.normalizeManifestPaths(candidate.yieldedSourcePaths),
+            extractionIdentity = typeof candidate.extractionIdentity === 'string'
+                ? candidate.extractionIdentity.trim()
+                : '',
+            proof              = this.normalizeMaterializationReceipt(candidate.proof);
+
+        if (
+            !yieldedSourcePaths
+            || candidate.yieldedSourcePaths.some(path => typeof path !== 'string' || path.length === 0)
+            || !EXTRACTION_IDENTITY_PATTERN.test(extractionIdentity)
+            || !proof
+        ) {
+            return null;
+        }
+
+        return {
+            yieldedSourcePaths,
+            extractionIdentity,
+            proof
+        };
+    }
+
+    /**
+     * @summary Normalizes one durable proof-bound extraction snapshot.
+     * @param {*} snapshot Candidate persisted snapshot.
+     * @returns {{yieldedSourcePaths: Array<String>, extractionIdentity: String, proof: Object, updatedAt: Number}|null}
+     * @protected
+     */
+    normalizeExtractionSnapshot(snapshot) {
+        const candidate = this.normalizeExtractionSnapshotCandidate(snapshot);
+
+        if (
+            !candidate
+            || !Number.isSafeInteger(snapshot.updatedAt)
+            || snapshot.updatedAt <= 0
+        ) {
+            return null;
+        }
+
+        return {
+            ...candidate,
+            updatedAt: snapshot.updatedAt
+        };
+    }
+
+    /**
      * @summary Normalizes a caller-provided manifest snapshot into deterministic repo/path-set form.
      * @param {Object} options
-     * @returns {{repoSlug: String, pathsAfterPush: Array<String>}|null}
+     * @returns {{repoSlug: String, pathsAfterPush: Array<String>, extractionCandidate?: Object}|null}
      * @protected
      */
     normalizeManifestSnapshot({manifestSnapshot, tenantContext, summary}) {
@@ -1477,9 +1703,49 @@ class IngestionService extends Base {
             return null;
         }
 
+        const
+            declaresYieldSet = Object.hasOwn(manifestSnapshot, 'yieldedSourcePaths'),
+            declaresIdentity = Object.hasOwn(manifestSnapshot, 'extractionIdentity');
+        let extractionCandidate;
+
+        if (declaresYieldSet || declaresIdentity) {
+            const
+                yieldedSourcePaths = Array.isArray(manifestSnapshot.yieldedSourcePaths)
+                    ? this.normalizeManifestPaths(manifestSnapshot.yieldedSourcePaths)
+                    : null,
+                extractionIdentity = typeof manifestSnapshot.extractionIdentity === 'string'
+                    ? manifestSnapshot.extractionIdentity.trim()
+                    : '',
+                physicalPaths      = new Set(pathsAfterPush),
+                validYieldMembers  = Array.isArray(manifestSnapshot.yieldedSourcePaths)
+                    && manifestSnapshot.yieldedSourcePaths
+                        .every(path => typeof path === 'string' && path.length > 0),
+                yieldWithinPhysical = yieldedSourcePaths
+                    && yieldedSourcePaths.every(path => physicalPaths.has(path));
+
+            if (
+                !declaresYieldSet
+                || !declaresIdentity
+                || !validYieldMembers
+                || !yieldWithinPhysical
+                || !EXTRACTION_IDENTITY_PATTERN.test(extractionIdentity)
+            ) {
+                summary?.errors.push(this.createError({
+                    code   : 'KB_MANIFEST_EXTRACTION_SNAPSHOT_INVALID',
+                    message: 'Manifest extraction authority requires a valid identity and yielded paths within the physical manifest.'
+                }));
+            } else {
+                extractionCandidate = {
+                    yieldedSourcePaths,
+                    extractionIdentity
+                };
+            }
+        }
+
         return {
             repoSlug: manifestSnapshot.repoSlug || tenantContext.repoSlug,
-            pathsAfterPush
+            pathsAfterPush,
+            ...(extractionCandidate ? {extractionCandidate} : {})
         };
     }
 
@@ -1732,7 +1998,27 @@ class IngestionService extends Base {
      * @returns {Promise<Array<Object>>}
      * @protected
      */
-    async resolveFileChunks({file, fileIndex, tenantContext}) {
+    async resolveFileChunks({file, fileIndex, tenantContext, trustedProfileEnvelope = false}) {
+        if (
+            !trustedProfileEnvelope
+            && ['profileChunk', 'extractorId', 'extractorVersion', 'extractionIdentity']
+                .some(field => Object.hasOwn(file || {}, field))
+        ) {
+            const error = new Error('Route-bound profile chunks and extraction provenance are internal tenant-sync fields.');
+
+            error.code = 'KB_PROFILE_ENVELOPE_FORBIDDEN';
+            throw error
+        }
+
+        if (file?.profileChunk) {
+            return [this.legacyChunkToParsedRecord({
+                chunk   : file.profileChunk,
+                file,
+                parserId: file.parserId,
+                tenantContext
+            })]
+        }
+
         if (file?.schemaVersion === '1.0.0') {
             return [file];
         }
@@ -1883,6 +2169,29 @@ class IngestionService extends Base {
     }
 
     /**
+     * @summary Creates the repository-profile parser resolver for one tenant.
+     *
+     * Resolution preserves the existing raw-envelope order: tenant-local data-tier declaration
+     * first, then the operator-installed shared registry. Tenant classes are never registered into
+     * that singleton; the fallback only exposes parsers the deployment already owns globally.
+     *
+     * @param {Object} options
+     * @param {String} options.tenantId
+     * @returns {{resolve: Function}}
+     */
+    createTenantParserResolver({tenantId} = {}) {
+        const resolvedTenant = normalizeUserId(tenantId) || tenantId;
+
+        return Object.freeze({
+            resolve: async ({parserId} = {}) =>
+                await this.resolveTenantParser({
+                    parserId,
+                    tenantContext: {tenantId: resolvedTenant}
+                }) ?? this.resolveParser(parserId)
+        })
+    }
+
+    /**
      * @summary Resolves a parser instance by parser id from SourceRegistry.
      * @param {String} parserId Parser registry id.
      * @returns {Object|null}
@@ -2012,6 +2321,207 @@ class IngestionService extends Base {
     }
 
     /**
+     * @summary Canonicalizes tenant extractor module declarations without accepting executable data.
+     * @param {*} value Raw `customExtractors` value from graph, YAML, or AiConfig.
+     * @returns {Array<{extractorModule: String, exportName?: String}>}
+     * @protected
+     */
+    normalizeCustomExtractorDeclarations(value) {
+        if (value === undefined || value === null) {
+            return []
+        }
+
+        if (!Array.isArray(value)) {
+            const error = new Error('customExtractors must be an array of module declarations.');
+
+            error.code = 'KB_TENANT_EXTRACTORS_INVALID';
+            throw error
+        }
+
+        return value.map((entry, index) => {
+            if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+                const error = new Error(`customExtractors[${index}] must be an object declaration.`);
+
+                error.code = 'KB_TENANT_EXTRACTORS_INVALID';
+                throw error
+            }
+
+            const extras = Object.keys(entry)
+                .filter(key => key !== 'extractorModule' && key !== 'exportName');
+            const extractorModule = typeof entry.extractorModule === 'string'
+                ? entry.extractorModule.trim()
+                : '';
+            const exportName = typeof entry.exportName === 'string'
+                ? entry.exportName.trim()
+                : '';
+
+            if (extras.length || !extractorModule || (Object.hasOwn(entry, 'exportName') && !exportName)) {
+                const error = new Error(
+                    `customExtractors[${index}] requires extractorModule, optional exportName, and no other fields.`
+                );
+
+                error.code = 'KB_TENANT_EXTRACTORS_INVALID';
+                throw error
+            }
+
+            return {
+                extractorModule,
+                ...(exportName ? {exportName} : {})
+            }
+        }).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    }
+
+    /**
+     * @summary Builds or reuses one tenant-local immutable extractor catalogue.
+     *
+     * Built-ins assemble first, so `createExtractorCatalogue`'s existing duplicate-id refusal blocks
+     * custom shadowing before any profile is normalized. The deployment root is read from AiConfig at
+     * this use site; callers pass declarations, never a resolved root.
+     *
+     * @param {Object} options
+     * @param {String} options.tenantId
+     * @param {Array<Object>} [options.declarations]
+     * @returns {Promise<Object>}
+     */
+    async resolveTenantExtractorCatalogue({tenantId, declarations = []} = {}) {
+        const normalized = this.normalizeCustomExtractorDeclarations(declarations);
+        const cacheKey   = JSON.stringify({tenantId, declarations: normalized});
+
+        if (this.#tenantExtractorCatalogueCache.has(cacheKey)) {
+            return this.#tenantExtractorCatalogueCache.get(cacheKey)
+        }
+
+        const custom = [];
+
+        for (const declaration of normalized) {
+            custom.push(await loadTenantExtractor({
+                specifier : declaration.extractorModule,
+                exportName: declaration.exportName,
+                root      : aiConfig.tenantExtractorRoot
+            }))
+        }
+
+        const catalogue = createExtractorCatalogue([
+            ...ExtractorCatalogue.list(),
+            ...custom
+        ]);
+
+        this.#tenantExtractorCatalogueCache.set(cacheKey, catalogue);
+
+        return catalogue
+    }
+
+    /**
+     * @summary Synthesizes the identity-visible RawRepoSource profile for an absent repo profile.
+     *
+     * `sourcePaths.RawRepoSource.root` becomes profile territory; the remaining source options stay
+     * descriptor options. This translates the live compatibility surface at its consumer without
+     * teaching the profile runner about AiConfig or retaining the raw-file envelope path beside it.
+     *
+     * @param {Object} [sourcePaths]
+     * @returns {Object}
+     * @protected
+     */
+    synthesizeLegacyExtractionProfile({sourcePaths = {}, parserId, parserVersion} = {}) {
+        if (typeof parserId === 'string' && parserId.trim()) {
+            return {
+                profileSchemaVersion: 1,
+                routes              : [{
+                    territory: {
+                        roots  : ['.'],
+                        include: ['**/*']
+                    },
+                    extractorId: 'ParserSource',
+                    options    : {
+                        parserId     : parserId.trim(),
+                        parserVersion: typeof parserVersion === 'string' && parserVersion.trim()
+                            ? parserVersion.trim()
+                            : '1.0.0'
+                    }
+                }],
+                fallback: {action: 'exclude'}
+            }
+        }
+
+        const raw  = sourcePaths?.RawRepoSource;
+        let   root = '.',
+            options = {};
+
+        if (typeof raw === 'string') {
+            root = raw.trim() || '.';
+        } else if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+            ({root = '.', ...options} = raw);
+            root = typeof root === 'string' && root.trim() ? root.trim() : '.';
+        }
+
+        return {
+            profileSchemaVersion: 1,
+            routes              : [{
+                territory: {
+                    roots  : [root],
+                    include: ['**/*']
+                },
+                extractorId: 'RawRepoSource',
+                options
+            }],
+            fallback: {action: 'exclude'}
+        }
+    }
+
+    /**
+     * @summary Projects any tenant-config tier through one canonical executable contract.
+     * @param {Object} options
+     * @param {String} options.tenantId
+     * @param {String} options.source
+     * @param {Number} options.version
+     * @param {Object} options.config Raw winning tier.
+     * @returns {Promise<Object>}
+     * @protected
+     */
+    async projectTenantConfig({tenantId, source, version = 0, config = {}} = {}) {
+        const normalizedConfig = normalizeTenantRepoConfig(config);
+        const customExtractors = this.normalizeCustomExtractorDeclarations(normalizedConfig.customExtractors);
+        const catalogue        = await this.resolveTenantExtractorCatalogue({
+            tenantId,
+            declarations: customExtractors
+        });
+        const sourcePaths = normalizedConfig.sourcePaths || {};
+        const tenantRepos = (normalizedConfig.tenantRepos || []).map(repo => {
+            const extractionProfile = normalizeExtractionProfile(
+                repo.extractionProfile || this.synthesizeLegacyExtractionProfile({
+                    sourcePaths,
+                    parserId     : repo.parserId,
+                    parserVersion: repo.parserVersion
+                }),
+                {catalogue}
+            );
+
+            return {
+                ...repo,
+                extractionProfile,
+                extractionIdentity: createExtractionProfileIdentity({
+                    profile: extractionProfile,
+                    catalogue
+                })
+            }
+        });
+
+        return {
+            tenantId,
+            source,
+            version,
+            useDefaultSources: normalizedConfig.useDefaultSources !== false,
+            rawRepoSource    : normalizedConfig.rawRepoSource === true,
+            useDefaultParsers: normalizedConfig.useDefaultParsers !== false,
+            customSources    : normalizedConfig.customSources || [],
+            customParsers    : normalizedConfig.customParsers || [],
+            customExtractors,
+            sourcePaths,
+            tenantRepos
+        }
+    }
+
+    /**
      * @summary Resolves a tenant's Knowledge Base ingestion config.
      *
      * Three-tier resolution: the `KnowledgeBaseTenantConfig` graph node (`kb-config:<tenantId>`) →
@@ -2028,56 +2538,31 @@ class IngestionService extends Base {
         const record = this.graphService.getNodeRecord({id: `kb-config:${resolvedTenant}`});
 
         if (record?.properties) {
-            const p = record.properties;
-            return {
-                tenantId         : resolvedTenant,
-                source           : 'graph',
-                version          : p.version || 0,
-                useDefaultSources: p.useDefaultSources !== false,
-                rawRepoSource    : p.rawRepoSource === true,
-                useDefaultParsers: p.useDefaultParsers !== false,
-                customSources    : p.customSources || [],
-                customParsers    : p.customParsers || [],
-                sourcePaths      : p.sourcePaths    || {},
-                tenantRepos      : p.tenantRepos    || []
-            };
+            return await this.projectTenantConfig({
+                tenantId: resolvedTenant,
+                source  : 'graph',
+                version : record.properties.version || 0,
+                config  : record.properties
+            })
         }
 
         // Tier 2 — kb-config.yaml deployment bootstrap (first-deploy convenience; the graph node is canonical).
         const bootstrap = this.readKbConfigBootstrap()?.tenants?.[resolvedTenant];
 
         if (bootstrap) {
-            const normalizedBootstrap = normalizeTenantRepoConfig(bootstrap);
-
-            return {
-                tenantId         : resolvedTenant,
-                source           : 'yaml',
-                version          : 0,
-                useDefaultSources: normalizedBootstrap.useDefaultSources !== false,
-                rawRepoSource    : normalizedBootstrap.rawRepoSource === true,
-                useDefaultParsers: normalizedBootstrap.useDefaultParsers !== false,
-                customSources    : normalizedBootstrap.customSources || [],
-                customParsers    : normalizedBootstrap.customParsers || [],
-                sourcePaths      : normalizedBootstrap.sourcePaths    || {},
-                tenantRepos      : normalizedBootstrap.tenantRepos    || []
-            };
+            return await this.projectTenantConfig({
+                tenantId: resolvedTenant,
+                source  : 'yaml',
+                config  : bootstrap
+            })
         }
 
         // Tier 3 — default source/parser registry.
-        const normalizedAiConfig = normalizeTenantRepoConfig(aiConfig);
-
-        return {
-            tenantId         : resolvedTenant,
-            source           : 'default',
-            version          : 0,
-            useDefaultSources: normalizedAiConfig.useDefaultSources !== false,
-            rawRepoSource    : normalizedAiConfig.rawRepoSource === true,
-            useDefaultParsers: normalizedAiConfig.useDefaultParsers !== false,
-            customSources    : normalizedAiConfig.customSources || [],
-            customParsers    : normalizedAiConfig.customParsers || [],
-            sourcePaths      : normalizedAiConfig.sourcePaths    || {},
-            tenantRepos      : normalizedAiConfig.tenantRepos    || []
-        };
+        return await this.projectTenantConfig({
+            tenantId: resolvedTenant,
+            source  : 'default',
+            config  : aiConfig
+        })
     }
 
     /**
@@ -2247,28 +2732,45 @@ class IngestionService extends Base {
             // non-empty array: a graph record / yaml entry that declares `tenantRepos: []`
             // intentionally means "no repos for this tenant" and MUST suppress lower tiers
             // wholesale — selecting on `length > 0` would leak lower-tier repos through.
-            let repos,
+            let rawConfig,
                 configTier;
 
             if (graphRecord?.properties) {
-                repos       = graphRecord.properties.tenantRepos || [];
-                configTier  = 'graph';
+                rawConfig  = graphRecord.properties;
+                configTier = 'graph';
             } else if (yamlEntry) {
-                repos       = yamlEntry.tenantRepos || [];
-                configTier  = 'yaml';
+                rawConfig  = yamlEntry;
+                configTier = 'yaml';
             } else {
-                repos       = defaultRepos.filter(entry => (normalizeUserId(entry.tenantId) || entry.tenantId) === tenantId);
-                configTier  = 'aiConfig';
+                rawConfig = {
+                    useDefaultSources: aiConfig.useDefaultSources,
+                    rawRepoSource    : aiConfig.rawRepoSource,
+                    useDefaultParsers: aiConfig.useDefaultParsers,
+                    customSources    : aiConfig.customSources,
+                    customParsers    : aiConfig.customParsers,
+                    customExtractors : aiConfig.customExtractors,
+                    sourcePaths      : aiConfig.sourcePaths,
+                    tenantRepos      : defaultRepos.filter(entry =>
+                        (normalizeUserId(entry.tenantId) || entry.tenantId) === tenantId
+                    )
+                };
+                configTier = 'aiConfig';
             }
 
-            repos.forEach(repo => effective.push({
+            const projected = await this.projectTenantConfig({
+                tenantId,
+                source: configTier,
+                config: rawConfig
+            });
+
+            projected.tenantRepos.forEach(repo => effective.push({
                 ...repo,
                 tenantId: repo.tenantId || tenantId,
                 configTier
             }));
         }
 
-        return normalizeTenantRepoConfig({
+        return {
             tenantRepos      : effective,
             configDiagnostics: {
                 bootstrap: {
@@ -2278,7 +2780,7 @@ class IngestionService extends Base {
                     messageClass: bootstrapResult.messageClass
                 }
             }
-        });
+        };
     }
 
     /**
@@ -2321,13 +2823,17 @@ class IngestionService extends Base {
      * @param {String} data.tenantId Tenant id.
      * @param {Object} [data.config={}] Config payload — `useDefaultSources` / `rawRepoSource` /
      *                                  `useDefaultParsers` / `customSources` / `customParsers` /
-     *                                  `sourcePaths`.
+     *                                  `customExtractors` / `sourcePaths` / `tenantRepos`.
      * @returns {Promise<{tenantId: String, version: Number}|{error: String, code: String, message: String}>}
      */
     async setTenantConfig({tenantId, config = {}} = {}) {
         try {
-            const {tenantId: resolvedTenant} = this.resolveTenantContext({tenantId}),
-                  normalizedConfig           = normalizeTenantRepoConfig(config);
+            const {tenantId: resolvedTenant} = this.resolveTenantContext({tenantId});
+            const projected                  = await this.projectTenantConfig({
+                tenantId: resolvedTenant,
+                source  : 'graph',
+                config
+            });
 
             await this.graphService.ready();
 
@@ -2340,13 +2846,18 @@ class IngestionService extends Base {
                 type      : 'KnowledgeBaseTenantConfig',
                 properties: {
                     tenantId         : resolvedTenant,
-                    useDefaultSources: normalizedConfig.useDefaultSources !== false,
-                    rawRepoSource    : normalizedConfig.rawRepoSource === true,
-                    useDefaultParsers: normalizedConfig.useDefaultParsers !== false,
-                    customSources    : normalizedConfig.customSources || [],
-                    customParsers    : normalizedConfig.customParsers || [],
-                    sourcePaths      : normalizedConfig.sourcePaths    || {},
-                    tenantRepos      : normalizedConfig.tenantRepos    || [],
+                    useDefaultSources: projected.useDefaultSources,
+                    rawRepoSource    : projected.rawRepoSource,
+                    useDefaultParsers: projected.useDefaultParsers,
+                    customSources    : projected.customSources,
+                    customParsers    : projected.customParsers,
+                    customExtractors : projected.customExtractors,
+                    sourcePaths      : projected.sourcePaths,
+                    tenantRepos      : projected.tenantRepos.map(repo => {
+                        const {extractionIdentity, ...persisted} = repo;
+
+                        return persisted
+                    }),
                     version,
                     visibility       : 'team'
                 }
@@ -2387,8 +2898,31 @@ class IngestionService extends Base {
      * @protected
      */
     legacyChunkToParsedRecord({chunk, file, parserId, tenantContext}) {
-        const sourcePath = chunk.sourcePath || chunk.source || file.sourcePath;
-        const kind       = chunk.kind || chunk.type || 'doc-section';
+        const
+            sourcePath   = chunk.sourcePath || chunk.source || file.sourcePath,
+            kind         = chunk.kind || chunk.type || 'doc-section',
+            standardKeys = new Set([
+                'schemaVersion', 'tenantId', 'repoSlug', 'rootKind', 'sourcePath', 'source',
+                'content', 'description', 'hash', 'hashInputs', 'parserId', 'parserVersion',
+                'extractorId', 'extractorVersion', 'extractionIdentity', 'kind', 'name',
+                'line_start', 'line_end', 'className', 'extends', 'customMeta'
+            ]),
+            customMeta = {
+                ...(chunk.customMeta && typeof chunk.customMeta === 'object' && !Array.isArray(chunk.customMeta)
+                    ? chunk.customMeta
+                    : {})
+            };
+
+        Object.entries(chunk).forEach(([key, value]) => {
+            if (!standardKeys.has(key)) customMeta[key] = value
+        });
+
+        const hashInputs = Array.from(new Set([
+            ...(Array.isArray(chunk.hashInputs) && chunk.hashInputs.length
+                ? chunk.hashInputs
+                : ['kind', 'name', 'content', 'sourcePath', 'parserId', 'parserVersion']),
+            ...(file.extractionIdentity ? ['extractionIdentity'] : [])
+        ]));
 
         return {
             schemaVersion: '1.0.0',
@@ -2397,15 +2931,19 @@ class IngestionService extends Base {
             rootKind     : file.rootKind || 'external-source',
             sourcePath,
             content      : chunk.content || chunk.description || '',
-            hashInputs   : ['kind', 'name', 'content', 'sourcePath', 'parserId', 'parserVersion'],
-            parserId,
-            parserVersion: file.parserVersion || '1.0.0',
+            hashInputs,
+            parserId     : file.parserId || parserId,
+            parserVersion: file.parserVersion || chunk.parserVersion || '1.0.0',
+            ...(file.extractorId ? {extractorId: file.extractorId} : {}),
+            ...(file.extractorVersion ? {extractorVersion: file.extractorVersion} : {}),
+            ...(file.extractionIdentity ? {extractionIdentity: file.extractionIdentity} : {}),
             kind,
             name         : chunk.name || sourcePath,
             ...(chunk.line_start ? {line_start: chunk.line_start} : {}),
             ...(chunk.line_end ? {line_end: chunk.line_end} : {}),
             ...(chunk.className ? {className: chunk.className} : {}),
-            ...(chunk.extends ? {extends: chunk.extends} : {})
+            ...(chunk.extends ? {extends: chunk.extends} : {}),
+            ...(Object.keys(customMeta).length ? {customMeta} : {})
         };
     }
 
@@ -2444,7 +2982,27 @@ class IngestionService extends Base {
      * @returns {Promise<Object|null>}
      * @protected
      */
-    async validateAndNormalizeParsedChunk({record, fileIndex, chunkIndex, tenantContext, summary}) {
+    async validateAndNormalizeParsedChunk({
+        record,
+        fileIndex,
+        chunkIndex,
+        tenantContext,
+        summary,
+        trustedProfileEnvelope = false
+    }) {
+        if (
+            !trustedProfileEnvelope
+            && ['extractorId', 'extractorVersion', 'extractionIdentity']
+                .some(field => Object.hasOwn(record || {}, field))
+        ) {
+            summary.errors.push(this.createError({
+                code   : 'KB_PROFILE_ENVELOPE_FORBIDDEN',
+                message: 'Extractor provenance and extraction identity are server-derived tenant-sync fields.',
+                details: {fileIndex, chunkIndex}
+            }));
+            return null;
+        }
+
         if (Object.prototype.hasOwnProperty.call(record || {}, 'embedding')) {
             summary.errors.push(this.createError({
                 code   : 'KB_PARSED_CHUNK_EMBEDDING_REJECTED',

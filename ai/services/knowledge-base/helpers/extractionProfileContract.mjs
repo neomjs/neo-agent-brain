@@ -1,3 +1,5 @@
+import {createHash} from 'node:crypto';
+
 import ExtractorCatalogue from '../source/ExtractorCatalogue.mjs';
 
 export const EXTRACTION_PROFILE_SCHEMA_VERSION        = 1;
@@ -539,7 +541,24 @@ export function serializeExtractionProfileMaterializationInput(options = {}) {
     return JSON.stringify(createExtractionProfileMaterializationInput(options));
 }
 
+/**
+ * @summary Derives the bounded extraction component identity from canonical materialization input.
+ *
+ * This is not a second materialization digest: it identifies only the extraction component and is
+ * consumed by the existing tenant-repo materialization digest, checkpoint, chunk hash, and
+ * reconciliation currency. Those surfaces never mint competing answers from the raw profile.
+ *
+ * @param {Object} options See {@link createExtractionProfileMaterializationInput}.
+ * @returns {String} Lowercase SHA-256 identity.
+ */
+export function createExtractionProfileIdentity(options = {}) {
+    return createHash('sha256')
+        .update(serializeExtractionProfileMaterializationInput(options))
+        .digest('hex')
+}
+
 export default {
+    createExtractionProfileIdentity,
     createExtractionProfileMaterializationInput,
     normalizeExtractionProfile,
     serializeExtractionProfileMaterializationInput

@@ -49,6 +49,30 @@ function normalizeApiSourceOptions(options = {}) {
 }
 
 /**
+ * @summary Closes ParserSource identity to the declared parser pair.
+ * @param {Object} options
+ * @returns {{parserId: String, parserVersion: String}}
+ * @private
+ */
+function normalizeParserSourceOptions(options = {}) {
+    const keys = Object.keys(options);
+
+    if (keys.some(key => key !== 'parserId' && key !== 'parserVersion')) {
+        throw new TypeError('ParserSource route options support only parserId and parserVersion')
+    }
+
+    const
+        parserId      = typeof options.parserId === 'string' ? options.parserId.trim() : '',
+        parserVersion = typeof options.parserVersion === 'string' ? options.parserVersion.trim() : '';
+
+    if (!parserId || !parserVersion) {
+        throw new TypeError('ParserSource route options require non-empty parserId and parserVersion')
+    }
+
+    return {parserId, parserVersion};
+}
+
+/**
  * @summary Refuses SkillSource options until that extractor owns a declared option surface.
  * @param {Object} options
  * @returns {Object}
@@ -134,9 +158,10 @@ export function createExtractorCatalogue(descriptors = []) {
 /**
  * @summary Built-in extraction definitions available to repository profiles.
  *
- * Both initial ports are intentionally non-delta-safe. Skill metadata can depend on another file's
- * trigger pointer; API chunk identity depends on the repository-wide hierarchy input. A changed
- * path therefore replays the whole selected territory until a narrower capability is proved.
+ * ApiSource, SkillSource, and ParserSource are intentionally non-delta-safe: their output can depend
+ * on repository hierarchy, trigger pointers, or arbitrary parser code. RawRepoSource is the bounded
+ * exception: one output is derived from one file, while every filter option participates in the
+ * extraction identity and therefore forces full materialization when it changes.
  */
 export const ExtractorCatalogue = createExtractorCatalogue([{
     extractorId      : 'ApiSource',
@@ -148,6 +173,27 @@ export const ExtractorCatalogue = createExtractorCatalogue([{
         const {default: ApiSource} = await import('./ApiSource.mjs');
 
         return await ApiSource.extractFromRepository(options)
+    }
+}, {
+    extractorId      : 'ParserSource',
+    version          : '1.0.0',
+    deltaSafe        : false,
+    requiresHierarchy: false,
+    normalizeOptions : normalizeParserSourceOptions,
+    extract          : async options => {
+        const {default: ParserSource} = await import('./ParserSource.mjs');
+
+        return await ParserSource.extractFromRepository(options)
+    }
+}, {
+    extractorId      : 'RawRepoSource',
+    version          : '1.0.0',
+    deltaSafe        : true,
+    requiresHierarchy: false,
+    extract          : async options => {
+        const {default: RawRepoSource} = await import('./RawRepoSource.mjs');
+
+        return await RawRepoSource.extractFromRepository(options)
     }
 }, {
     extractorId      : 'SkillSource',

@@ -1,8 +1,6 @@
 # Minimal External Workspace — Cloud-Native KB Ingestion
 
-A worked example for Epic #11624: a non-Neo workspace whose `.proto` schema files are
-indexed into the Knowledge Base. It demonstrates both ingestion paths with one custom
-class each. See the [`cloud-deployment/`](../../../learn/agentos/cloud-deployment/Overview.md) guide tree.
+A worked non-Neo workspace whose `.proto` schema files are indexed into the Knowledge Base. It demonstrates legacy full-corpus extraction, push-mode parsing, and the profile-based pull route. See the [`cloud-deployment/`](../../../learn/agentos/cloud-deployment/Overview.md) guide tree.
 
 ## Layout
 
@@ -29,11 +27,37 @@ sourcePaths   : {ProtoSource: '<absolute path to this workspace>/proto'}
 …or programmatically — `SourceRegistry.registerParser(ProtoParser, {parserId: 'proto'})`
 and `SourceRegistry.registerSource(ProtoSource, {sourceName: 'ProtoSource'})`.
 
-The programmatic `SourceRegistry` form above is a **legacy full-corpus compatibility surface**.
-It stays operational while the extract-all builder exists, but repository-profile execution does
-not consult it and tenant-declared extractors must never enter the process singleton. For a new
-multi-tenant integration, prefer the parser-backed push path shown below until the deployment's
-tenant profile explicitly declares an invocation-local extractor.
+The programmatic `SourceRegistry` form above is a **legacy full-corpus compatibility surface**. It stays operational while the extract-all builder exists, but repository-profile execution does not consult it and tenant-declared extractors must never enter the process singleton.
+
+For pull mode, mount `ProtoParser.mjs` below the deployment's read-only `tenantParserRoot`, then keep the parser declaration and repository route in tenant config:
+
+```yaml
+tenants:
+  example-tenant:
+    customParsers:
+      - parserId: proto
+        parserModule: ProtoParser.mjs
+    tenantRepos:
+      - repoSlug: example-org/proto-workspace
+        cloneUrl: https://github.com/example-org/proto-workspace.git
+        credentialRef: none
+        branchRef: main
+        extractionProfile:
+          profileSchemaVersion: 1
+          routes:
+            - territory:
+                roots: [proto]
+                include: ['**/*.proto']
+                exclude: []
+              extractorId: ParserSource
+              options:
+                parserId: proto
+                parserVersion: 1.0.0
+          fallback:
+            action: exclude
+```
+
+`ParserSource` executes the declared parser through the tenant-local resolver and fails closed if it cannot load or dispatch. The profile, parser version, and descriptor version participate in extraction identity, so changing any of them forces a full materialization even when the repository SHA is unchanged.
 
 ## Smoke test
 

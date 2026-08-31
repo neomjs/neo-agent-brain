@@ -58,6 +58,8 @@ import {
     runTenantRepoSyncWithGlobalLease
 } from '../../../../../../../ai/scripts/maintenance/syncTenantRepos.mjs';
 import {readHealLedger}        from '../../../../../../../ai/services/memory-core/helpers/healEventLedgerStore.mjs';
+
+const TEST_EXTRACTION_IDENTITY = 'd'.repeat(64);
 import MemoryCoreConfig        from '../../../../../../../ai/mcp/server/memory-core/config.template.mjs';
 import {PROVIDER_TIMEOUT_CODE} from '../../../../../../../ai/provider/createTimeoutError.mjs';
 import {
@@ -123,16 +125,21 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     function makeFakeEnvelopeBuilder({captureCalls = [], includeManifest = false} = {}) {
         return async function buildIngestEnvelope(args) {
             captureCalls.push({op: 'buildIngestEnvelope', args});
+            const extractionIdentity = args.extractionIdentity || TEST_EXTRACTION_IDENTITY;
+
             return {
                 tenantId    : args.tenantId,
                 repoSlug    : args.repoSlug,
                 files       : [{sourcePath: 'fake.txt', repoSlug: args.repoSlug, content: 'x'}],
                 deleted     : [],
                 headRevision: `sha-head-${args.repoSlug}`,
+                extractionIdentity,
                 ...(includeManifest ? {
                     manifestSnapshot: {
-                        repoSlug      : args.repoSlug,
-                        pathsAfterPush: ['fake.txt']
+                        repoSlug          : args.repoSlug,
+                        pathsAfterPush    : ['fake.txt'],
+                        yieldedSourcePaths: ['fake.txt'],
+                        extractionIdentity
                     }
                 } : {}),
                 ...(args.lastIngestedRev ? {baseRevision: args.lastIngestedRev} : {})
@@ -142,13 +149,15 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     function makeFakeIngestionService({captureCalls = [], summaryFactory} = {}) {
         const materializationReceipts = new Map();
+        const extractionSnapshots     = new Map();
 
         return {
             async getTenantManifest({tenantId, repoSlug}) {
                 return {
                     tenantId,
                     repoSlug,
-                    materializationReceipt: materializationReceipts.get(`${tenantId}/${repoSlug}`) || null
+                    materializationReceipt: materializationReceipts.get(`${tenantId}/${repoSlug}`) || null,
+                    extractionSnapshot    : extractionSnapshots.get(`${tenantId}/${repoSlug}`) || null
                 }
             },
             async ingestSourceFiles(payload, controls) {
@@ -181,6 +190,12 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                         };
 
                         materializationReceipts.set(key, receipt);
+                        extractionSnapshots.set(key, {
+                            yieldedSourcePaths: payload.manifestSnapshot.yieldedSourcePaths,
+                            extractionIdentity: payload.extractionIdentity,
+                            proof             : receipt,
+                            updatedAt         : Date.now()
+                        });
                         summary.materializationReceipt = receipt;
                     } else if (
                         payload.materializationAttempt
@@ -192,8 +207,8 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                         payload.materializationAttempt
                         && Array.isArray(summary.errors)
                         && summary.errors.length === 0
-                        && Array.isArray(payload.manifestSnapshot.pathsAfterPush)
-                        && payload.manifestSnapshot.pathsAfterPush.length === 0
+                        && Array.isArray(payload.manifestSnapshot.yieldedSourcePaths)
+                        && payload.manifestSnapshot.yieldedSourcePaths.length === 0
                     ) {
                         const receipt = {
                             ...payload.materializationAttempt,
@@ -202,9 +217,16 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                         };
 
                         materializationReceipts.set(key, receipt);
+                        extractionSnapshots.set(key, {
+                            yieldedSourcePaths: [],
+                            extractionIdentity: payload.extractionIdentity,
+                            proof             : receipt,
+                            updatedAt         : Date.now()
+                        });
                         summary.materializationReceipt = receipt;
                     } else if (!payload.materializationAttempt) {
                         materializationReceipts.delete(key);
+                        extractionSnapshots.delete(key);
                     }
                 }
 
@@ -720,13 +742,27 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             receiptWriter = {
                 normalizeManifestSnapshot      : IngestionService.normalizeManifestSnapshot.bind(IngestionService),
                 normalizeMaterializationAttempt: IngestionService.normalizeMaterializationAttempt.bind(IngestionService),
+                normalizeExtractionSnapshotCandidate:
+                    IngestionService.normalizeExtractionSnapshotCandidate.bind(IngestionService),
                 async getTenantManifest({tenantId, repoSlug}) {
                     return manifests.get(`${tenantId}/${repoSlug}`) || {
-                        tenantId, repoSlug, materializationReceipt: null
+                        tenantId, repoSlug, extractionSnapshot: null, materializationReceipt: null
                     }
                 },
-                async setTenantManifest({tenantId, repoSlug, pathsAfterPush, materializationReceipt}) {
-                    const value = {tenantId, repoSlug, pathsAfterPush, materializationReceipt};
+                async setTenantManifest({
+                    tenantId, repoSlug, pathsAfterPush, extractionSnapshot, materializationReceipt
+                }) {
+                    const prior          = manifests.get(`${tenantId}/${repoSlug}`);
+                    const storedSnapshot = extractionSnapshot
+                        ? {...extractionSnapshot, updatedAt: Date.now()}
+                        : prior?.extractionSnapshot || null;
+                    const value = {
+                        tenantId,
+                        repoSlug,
+                        pathsAfterPush,
+                        extractionSnapshot    : storedSnapshot,
+                        materializationReceipt: extractionSnapshot?.proof || materializationReceipt || null
+                    };
 
                     manifests.set(`${tenantId}/${repoSlug}`, value);
                     return value
@@ -1202,8 +1238,10 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         };
 
         const initialFailure = await TenantRepoSyncService.runTask(options);
-        let   persisted      = (await fs.readJson(revisionsFile)).revisions;
-        const episodeId      = persisted[`t1/${embeddingSlug}`].embeddingRecovery.episodeId;
+        expect(initialFailure.status).toBe('deferred');
+
+        let   persisted = (await fs.readJson(revisionsFile)).revisions;
+        const episodeId = persisted[`t1/${embeddingSlug}`].embeddingRecovery.episodeId;
 
         // `deferred`, not `failed`: a deferrable embedding outcome no longer fails its run, because
         // failing discarded the checkpoint for every chunk that DID embed. Recovery eligibility is
@@ -1212,7 +1250,6 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // terms. Only this verdict moved; every generation-history assertion below is intact,
         // because the point of the episode is that a still-broken provider cannot buy one retry per
         // sweep by deferring instead of failing.
-        expect(initialFailure.status).toBe('deferred');
         expect(persisted[`t1/${embeddingSlug}`].embeddingRecovery).toMatchObject({
             episodeId,
             causeCode   : 'KB_VECTOR_EMBED_CONNECTION_REFUSED',
@@ -2045,7 +2082,8 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 consecutiveFailures                  : 0,
                 ingestContractVersion                : TENANT_REPO_INGEST_CONTRACT_VERSION,
                 lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
-                lastCommittedMaterializationAttemptId: 'a'.repeat(32)
+                lastCommittedMaterializationAttemptId: 'a'.repeat(32),
+                extractionIdentity                   : TEST_EXTRACTION_IDENTITY
             },
             expectedBase : 'sha-nonlinear-good',
             manifestPaths: ['README.md']
@@ -2123,7 +2161,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 reason           : 'manual',
                 taskStateService,
                 tenantReposConfig: {tenantRepos: [{
-                    tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/private.git'
+                    tenantId          : 't1', repoSlug, mirrorRoot,
+                    cloneUrl          : 'https://example.invalid/private.git',
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
                 }]},
                 gitMirror      : makeFakeGitMirror(),
                 envelopeBuilder: async args => {
@@ -2137,10 +2177,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                             repoSlug: args.repoSlug,
                             content : 'source exists but parser materialized nothing'
                         })),
-                        headRevision    : `sha-empty-${scenario.label}`,
-                        manifestSnapshot: {
-                            repoSlug      : args.repoSlug,
-                            pathsAfterPush: scenario.manifestPaths
+                        headRevision      : `sha-empty-${scenario.label}`,
+                        extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                        manifestSnapshot  : {
+                            repoSlug          : args.repoSlug,
+                            pathsAfterPush    : scenario.manifestPaths,
+                            yieldedSourcePaths: scenario.manifestPaths,
+                            extractionIdentity: TEST_EXTRACTION_IDENTITY
                         }
                     };
                 },
@@ -2195,17 +2238,22 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [{
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/echoed.git'
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/echoed.git',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
-                tenantId        : args.tenantId,
-                repoSlug        : args.repoSlug,
-                files           : [{sourcePath: 'README.md', repoSlug: args.repoSlug, content: 'source'}],
-                headRevision    : 'sha-echoed-receipt',
-                manifestSnapshot: {
-                    repoSlug      : args.repoSlug,
-                    pathsAfterPush: ['README.md']
+                tenantId          : args.tenantId,
+                repoSlug          : args.repoSlug,
+                files             : [{sourcePath: 'README.md', repoSlug: args.repoSlug, content: 'source'}],
+                headRevision      : 'sha-echoed-receipt',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    repoSlug          : args.repoSlug,
+                    pathsAfterPush    : ['README.md'],
+                    yieldedSourcePaths: ['README.md'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
                 }
             }),
             knowledgeBaseIngestionService: makeFakeIngestionService({
@@ -2257,17 +2305,22 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [{
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/effect.git'
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/effect.git',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
-                tenantId        : args.tenantId,
-                repoSlug        : args.repoSlug,
-                files           : [{sourcePath: 'README.md', repoSlug: args.repoSlug, content: 'source'}],
-                headRevision    : 'sha-effect-no-receipt',
-                manifestSnapshot: {
-                    repoSlug      : args.repoSlug,
-                    pathsAfterPush: ['README.md']
+                tenantId          : args.tenantId,
+                repoSlug          : args.repoSlug,
+                files             : [{sourcePath: 'README.md', repoSlug: args.repoSlug, content: 'source'}],
+                headRevision      : 'sha-effect-no-receipt',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    repoSlug          : args.repoSlug,
+                    pathsAfterPush    : ['README.md'],
+                    yieldedSourcePaths: ['README.md'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
                 }
             }),
             // Deliberately NOT `makeFakeIngestionService`: that fake mints a receipt whenever an
@@ -2352,17 +2405,22 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [{
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/delete-only.git'
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/delete-only.git',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
-                tenantId        : args.tenantId,
-                repoSlug        : args.repoSlug,
-                files           : [],
-                headRevision    : 'sha-after-delete',
-                manifestSnapshot: {
-                    repoSlug      : args.repoSlug,
-                    pathsAfterPush: []
+                tenantId          : args.tenantId,
+                repoSlug          : args.repoSlug,
+                files             : [],
+                headRevision      : 'sha-after-delete',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    repoSlug          : args.repoSlug,
+                    pathsAfterPush    : [],
+                    yieldedSourcePaths: [],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
                 }
             }),
             knowledgeBaseIngestionService: makeFakeIngestionService({
@@ -2415,20 +2473,28 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [{
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/empty.git'
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/empty.git',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => {
                 envelopeCalls.push(args);
 
                 return {
-                    tenantId    : args.tenantId,
-                    repoSlug    : args.repoSlug,
-                    files       : [],
-                    deleted     : [],
-                    headRevision: 'sha-empty-head',
+                    tenantId          : args.tenantId,
+                    repoSlug          : args.repoSlug,
+                    files             : [],
+                    deleted           : [],
+                    headRevision      : 'sha-empty-head',
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY,
                     ...(args.lastIngestedRev ? {} : {
-                        manifestSnapshot: {repoSlug: args.repoSlug, pathsAfterPush: []}
+                        manifestSnapshot: {
+                            repoSlug          : args.repoSlug,
+                            pathsAfterPush    : [],
+                            yieldedSourcePaths: [],
+                            extractionIdentity: TEST_EXTRACTION_IDENTITY
+                        }
                     })
                 }
             },
@@ -2525,6 +2591,117 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(requiresTenantRepoCheckpointRevalidation(nullRevState())).toBe(false);
     });
 
+    test('D6 profile identity mismatch revalidates an otherwise complete same-SHA checkpoint', () => {
+        const
+            currentIdentity = 'a'.repeat(64),
+            changedIdentity = 'b'.repeat(64),
+            completeState   = {
+                lastIngestedRev                      : 'same-sha',
+                lastRunAttemptAt                     : 1_700_000_000_000,
+                consecutiveFailures                  : 0,
+                ingestContractVersion                : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastCommittedMaterializationAttemptId: 'c'.repeat(32),
+                extractionIdentity                   : currentIdentity
+            };
+
+        expect(classifyTenantRepoCheckpoint(completeState)).toBe('complete');
+        expect(normalizeTenantRepoCheckpointState(completeState).extractionIdentity).toBe(currentIdentity);
+        expect(requiresTenantRepoCheckpointRevalidation(completeState, currentIdentity)).toBe(false);
+        expect(requiresTenantRepoCheckpointRevalidation(completeState, changedIdentity)).toBe(true);
+        expect(requiresTenantRepoCheckpointRevalidation({
+            ...completeState,
+            extractionIdentity: undefined
+        }, currentIdentity)).toBe(true);
+        expect(classifyTenantRepoCheckpoint({
+            ...completeState,
+            extractionIdentity: 'not-a-digest'
+        })).toBe('invalid');
+    });
+
+    test('D6 same-SHA profile change forces a full envelope and commits identity after matching snapshot proof', async () => {
+        const
+            repoSlug        = 'org/profile-changed',
+            priorIdentity   = '1'.repeat(64),
+            currentIdentity = '2'.repeat(64),
+            envelopeCalls   = [];
+        let extractionSnapshot = null;
+
+        await provisionMirrorDir({tenantId: 't1', repoSlug});
+        await fs.writeJson(revisionsFile, {revisions: {
+            [`t1/${repoSlug}`]: {
+                lastIngestedRev                      : 'same-sha',
+                lastRunAttemptAt                     : 0,
+                consecutiveFailures                  : 0,
+                ingestContractVersion                : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastCommittedMaterializationAttemptId: '3'.repeat(32),
+                extractionIdentity                   : priorIdentity
+            }
+        }});
+
+        const result = await TenantRepoSyncService.runTask({
+            reason           : 'manual',
+            taskStateService : createInMemoryTaskStateService(),
+            tenantReposConfig: {tenantRepos: [{
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/profile-changed.git',
+                extractionIdentity: currentIdentity
+            }]},
+            gitMirror      : makeFakeGitMirror(),
+            envelopeBuilder: async args => {
+                envelopeCalls.push(args);
+
+                return {
+                    tenantId          : args.tenantId,
+                    repoSlug          : args.repoSlug,
+                    files             : [{sourcePath: 'README.md', repoSlug, content: 'current'}],
+                    deleted           : [],
+                    headRevision      : 'same-sha',
+                    extractionIdentity: currentIdentity,
+                    manifestSnapshot  : {
+                        repoSlug,
+                        pathsAfterPush    : ['README.md'],
+                        yieldedSourcePaths: ['README.md'],
+                        extractionIdentity: currentIdentity
+                    }
+                };
+            },
+            knowledgeBaseIngestionService: {
+                async getTenantManifest() {
+                    return {materializationReceipt: extractionSnapshot?.proof || null, extractionSnapshot}
+                },
+                async ingestSourceFilesForTenantSync(payload) {
+                    const proof = {
+                        ...payload.materializationAttempt,
+                        envelopeDigest: createTenantRepoMaterializationDigest(payload),
+                        recordedAt    : Date.now()
+                    };
+
+                    extractionSnapshot = {
+                        yieldedSourcePaths: payload.manifestSnapshot.yieldedSourcePaths,
+                        extractionIdentity: payload.extractionIdentity,
+                        proof,
+                        updatedAt         : Date.now()
+                    };
+
+                    return {ingested: 1, deleted: 0, errors: [], materializationReceipt: proof}
+                }
+            },
+            onlyRepoSlugs    : [repoSlug],
+            revisionsFilePath: revisionsFile
+        });
+
+        expect(result.status).toBe('completed');
+        expect(envelopeCalls[0].lastIngestedRev).toBeNull();
+
+        const persisted = (await fs.readJson(revisionsFile)).revisions[`t1/${repoSlug}`];
+
+        expect(persisted.lastIngestedRev).toBe('same-sha');
+        expect(persisted.extractionIdentity).toBe(currentIdentity);
+        expect(persisted.lastCommittedMaterializationAttemptId).toBe(extractionSnapshot.proof.attemptId);
+    });
+
     test('a repeated manual full replay of an unchanged EMPTY repo completes the SECOND time too (#16897)', async () => {
         // The sibling above runs a CADENCE sweep, whose second envelope is manifest-less and incremental,
         // so it never reaches the zero-effect chain. This one forces `fullReplay: true` on both sweeps,
@@ -2548,16 +2725,24 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [{
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/empty-replayed.git'
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/empty-replayed.git',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
-                tenantId        : args.tenantId,
-                repoSlug        : args.repoSlug,
-                files           : [],
-                deleted         : [],
-                headRevision    : 'sha-unchanged-empty',
-                manifestSnapshot: {repoSlug: args.repoSlug, pathsAfterPush: []}
+                tenantId          : args.tenantId,
+                repoSlug          : args.repoSlug,
+                files             : [],
+                deleted           : [],
+                headRevision      : 'sha-unchanged-empty',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    repoSlug          : args.repoSlug,
+                    pathsAfterPush    : [],
+                    yieldedSourcePaths: [],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             }),
             knowledgeBaseIngestionService: makeFakeIngestionService({
                 captureCalls  : ingestCalls,
@@ -2609,16 +2794,25 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('#17017 full replay bypasses a matching retry receipt and carries the poison-replay control', async () => {
+        let committedSnapshot = null;
+
         const
             taskStateService = createInMemoryTaskStateService(),
             repoSlug         = 'org/poison-replay-receipt',
+            retryAttemptId   = 'a'.repeat(32),
             envelope         = {
-                tenantId        : 't1',
+                tenantId          : 't1',
                 repoSlug,
-                files           : [{sourcePath: 'README.md', repoSlug, content: 'source'}],
-                deleted         : [],
-                headRevision    : 'sha-poison-replay',
-                manifestSnapshot: {repoSlug, pathsAfterPush: ['README.md']}
+                files             : [{sourcePath: 'README.md', repoSlug, content: 'source'}],
+                deleted           : [],
+                headRevision      : 'sha-poison-replay',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    repoSlug,
+                    pathsAfterPush    : ['README.md'],
+                    yieldedSourcePaths: ['README.md'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             },
             envelopeDigest   = createTenantRepoMaterializationDigest(envelope),
             ingestionCalls   = [];
@@ -2630,15 +2824,20 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [{
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/poison-replay.git'
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/poison-replay.git',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }]},
             gitMirror                    : makeFakeGitMirror(),
             envelopeBuilder              : async () => ({...envelope}),
             knowledgeBaseIngestionService: {
                 async getTenantManifest() {
-                    return {
+                    return committedSnapshot ? {
+                        extractionSnapshot    : committedSnapshot,
+                        materializationReceipt: committedSnapshot.proof
+                    } : {
                         materializationReceipt: {
-                            attemptId            : 'uncommitted-retry-receipt',
+                            attemptId            : retryAttemptId,
                             ingestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION,
                             envelopeDigest,
                             recordedAt           : Date.now()
@@ -2648,6 +2847,19 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 async ingestSourceFilesForTenantSync(payload, controls) {
                     ingestionCalls.push({payload, controls});
 
+                    const proof = {
+                        ...payload.materializationAttempt,
+                        envelopeDigest,
+                        recordedAt: Date.now()
+                    };
+
+                    committedSnapshot = {
+                        yieldedSourcePaths: payload.manifestSnapshot.yieldedSourcePaths,
+                        extractionIdentity: payload.extractionIdentity,
+                        proof,
+                        updatedAt         : Date.now()
+                    };
+
                     return {
                         ingested              : 1,
                         deleted               : 0,
@@ -2655,11 +2867,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                         errors                : [],
                         tenantId              : payload.tenantId,
                         durationMs            : 1,
-                        materializationReceipt: {
-                            ...payload.materializationAttempt,
-                            envelopeDigest,
-                            recordedAt: Date.now()
-                        }
+                        materializationReceipt: proof
                     }
                 }
             },
@@ -2673,7 +2881,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(ingestionCalls).toHaveLength(1);
         expect(ingestionCalls[0].controls.replayEmbeddingPoison).toBe(true);
         expect(ingestionCalls[0].payload.materializationAttempt.attemptId)
-            .not.toBe('uncommitted-retry-receipt');
+            .not.toBe(retryAttemptId);
     });
 
     test('POSITIVE CONTROL — declared paths with NO effect and NO explanation still fails', async () => {
@@ -2691,15 +2899,23 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [{
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/silent.git'
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/silent.git',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
-                tenantId        : args.tenantId,
-                repoSlug        : args.repoSlug,
-                files           : [{path: 'a.txt'}],
-                headRevision    : 'sha-silent-head',
-                manifestSnapshot: {repoSlug: args.repoSlug, pathsAfterPush: ['a.txt']}
+                tenantId          : args.tenantId,
+                repoSlug          : args.repoSlug,
+                files             : [{sourcePath: 'a.txt'}],
+                headRevision      : 'sha-silent-head',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    repoSlug          : args.repoSlug,
+                    pathsAfterPush    : ['a.txt'],
+                    yieldedSourcePaths: ['a.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             }),
             knowledgeBaseIngestionService: makeFakeIngestionService({
                 summaryFactory: () => ({ingested: 0, deleted: 0, errors: []})
@@ -2734,15 +2950,23 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [{
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/oversized.git'
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/oversized.git',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
-                tenantId        : args.tenantId,
-                repoSlug        : args.repoSlug,
-                files           : [{path: 'huge.txt'}],
-                headRevision    : 'sha-oversized-head',
-                manifestSnapshot: {repoSlug: args.repoSlug, pathsAfterPush: ['huge.txt']}
+                tenantId          : args.tenantId,
+                repoSlug          : args.repoSlug,
+                files             : [{sourcePath: 'huge.txt'}],
+                headRevision      : 'sha-oversized-head',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    repoSlug          : args.repoSlug,
+                    pathsAfterPush    : ['huge.txt'],
+                    yieldedSourcePaths: ['huge.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             }),
             knowledgeBaseIngestionService: makeFakeIngestionService({
                 summaryFactory: () => ({ingested: 0, deleted: 0, skippedOversized: 1, errors: []})
@@ -2788,17 +3012,22 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [{
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://example.invalid/delete-only-retry.git'
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : 'https://example.invalid/delete-only-retry.git',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
-                tenantId        : args.tenantId,
-                repoSlug        : args.repoSlug,
-                files           : [],
-                headRevision    : 'sha-after-delete',
-                manifestSnapshot: {
-                    repoSlug      : args.repoSlug,
-                    pathsAfterPush: []
+                tenantId          : args.tenantId,
+                repoSlug          : args.repoSlug,
+                files             : [],
+                headRevision      : 'sha-after-delete',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    repoSlug          : args.repoSlug,
+                    pathsAfterPush    : [],
+                    yieldedSourcePaths: [],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
                 }
             }),
             knowledgeBaseIngestionService: makeFakeIngestionService({
@@ -3063,16 +3292,25 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [
-                {tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://github.com/neomjs/empty-envelope.git'}
+                {
+                    tenantId          : 't1', repoSlug, mirrorRoot,
+                    cloneUrl          : 'https://github.com/neomjs/empty-envelope.git',
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             ]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
-                tenantId        : args.tenantId,
-                repoSlug        : args.repoSlug,
-                files           : [],
-                deleted         : [],
-                headRevision    : 'sha-empty-envelope',
-                manifestSnapshot: {pathsAfterPush: []}
+                tenantId          : args.tenantId,
+                repoSlug          : args.repoSlug,
+                files             : [],
+                deleted           : [],
+                headRevision      : 'sha-empty-envelope',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    pathsAfterPush    : [],
+                    yieldedSourcePaths: [],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             }),
             knowledgeBaseIngestionService: makeFakeIngestionService({
                 summaryFactory: () => ({ingested: 0, deleted: 0, embeddingsGenerated: 0, errors: []})
@@ -3105,16 +3343,25 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [
-                {tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://github.com/neomjs/error-bearing.git'}
+                {
+                    tenantId          : 't1', repoSlug, mirrorRoot,
+                    cloneUrl          : 'https://github.com/neomjs/error-bearing.git',
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             ]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
-                tenantId        : args.tenantId,
-                repoSlug        : args.repoSlug,
-                files           : [{sourcePath: 'a.txt', repoSlug: args.repoSlug, content: 'x'}],
-                deleted         : [],
-                headRevision    : 'sha-error-bearing',
-                manifestSnapshot: {pathsAfterPush: ['a.txt']}
+                tenantId          : args.tenantId,
+                repoSlug          : args.repoSlug,
+                files             : [{sourcePath: 'a.txt', repoSlug: args.repoSlug, content: 'x'}],
+                deleted           : [],
+                headRevision      : 'sha-error-bearing',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    pathsAfterPush    : ['a.txt'],
+                    yieldedSourcePaths: ['a.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             }),
             knowledgeBaseIngestionService: makeFakeIngestionService({
                 summaryFactory: () => ({
@@ -3161,7 +3408,11 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [
-                {tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://github.com/neomjs/empty-materialization.git'}
+                {
+                    tenantId          : 't1', repoSlug, mirrorRoot,
+                    cloneUrl          : 'https://github.com/neomjs/empty-materialization.git',
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             ]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => ({
@@ -3171,12 +3422,17 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                     {sourcePath: 'a.txt', repoSlug: args.repoSlug, content: 'x'},
                     {sourcePath: 'b.txt', repoSlug: args.repoSlug, content: 'y'}
                 ],
-                deleted     : [],
-                headRevision: 'sha-empty',
+                deleted           : [],
+                headRevision      : 'sha-empty',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
                 // `pathsAfterPush` is required — materialization identity is derived from it, and a
                 // manifest without it is rejected as KB_INGEST_ENVELOPE_MANIFEST_INVALID before the
                 // effect guard is ever reached.
-                manifestSnapshot: {pathsAfterPush: ['a.txt', 'b.txt']}
+                manifestSnapshot: {
+                    pathsAfterPush    : ['a.txt', 'b.txt'],
+                    yieldedSourcePaths: ['a.txt', 'b.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             }),
             knowledgeBaseIngestionService: makeFakeIngestionService({
                 summaryFactory: () => ({ingested: 0, deleted: 0, embeddingsGenerated: 0, errors: []})
@@ -3945,20 +4201,27 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'manual',
             taskStateService,
             tenantReposConfig: {tenantRepos: [
-                {tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: 'https://github.com/neomjs/full-replay.git'}
+                {
+                    tenantId          : 't1', repoSlug, mirrorRoot,
+                    cloneUrl          : 'https://github.com/neomjs/full-replay.git',
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             ]},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => {
                 envelopeCalls.push(args);
                 return {
-                    tenantId        : args.tenantId,
-                    repoSlug        : args.repoSlug,
-                    files           : [{sourcePath: 'fake.txt', repoSlug: args.repoSlug, content: 'x'}],
-                    deleted         : [],
-                    headRevision    : envelopeCalls.length === 1 ? 'sha-replay-failed' : 'sha-replay-clean',
-                    manifestSnapshot: {
-                        repoSlug      : args.repoSlug,
-                        pathsAfterPush: ['fake.txt']
+                    tenantId          : args.tenantId,
+                    repoSlug          : args.repoSlug,
+                    files             : [{sourcePath: 'fake.txt', repoSlug: args.repoSlug, content: 'x'}],
+                    deleted           : [],
+                    headRevision      : envelopeCalls.length === 1 ? 'sha-replay-failed' : 'sha-replay-clean',
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                    manifestSnapshot  : {
+                        repoSlug          : args.repoSlug,
+                        pathsAfterPush    : ['fake.txt'],
+                        yieldedSourcePaths: ['fake.txt'],
+                        extractionIdentity: TEST_EXTRACTION_IDENTITY
                     }
                 }
             },
@@ -4098,7 +4361,8 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                     consecutiveFailures                  : 0,
                     ingestContractVersion                : TENANT_REPO_INGEST_CONTRACT_VERSION,
                     lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
-                    lastCommittedMaterializationAttemptId: 'd'.repeat(32)
+                    lastCommittedMaterializationAttemptId: 'd'.repeat(32),
+                    extractionIdentity                   : TEST_EXTRACTION_IDENTITY
                 }
             }
         });
@@ -4107,21 +4371,26 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'periodic-sweep:60000',
             taskStateService,
             tenantReposConfig: {tenantRepos: [...legacySlugs, currentSlug].map(repoSlug => ({
-                tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: `https://github.com/neomjs/${repoSlug}.git`
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : `https://github.com/neomjs/${repoSlug}.git`,
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }))},
             gitMirror      : makeFakeGitMirror(),
             envelopeBuilder: async args => {
                 envelopeCalls.push({op: 'buildIngestEnvelope', args});
 
                 return {
-                    tenantId        : args.tenantId,
-                    repoSlug        : args.repoSlug,
-                    files           : [{sourcePath: 'fake.txt', repoSlug: args.repoSlug, content: 'x'}],
-                    deleted         : [],
-                    headRevision    : `sha-head-${args.repoSlug}`,
-                    manifestSnapshot: {
-                        repoSlug      : args.repoSlug,
-                        pathsAfterPush: ['fake.txt']
+                    tenantId          : args.tenantId,
+                    repoSlug          : args.repoSlug,
+                    files             : [{sourcePath: 'fake.txt', repoSlug: args.repoSlug, content: 'x'}],
+                    deleted           : [],
+                    headRevision      : `sha-head-${args.repoSlug}`,
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                    manifestSnapshot  : {
+                        repoSlug          : args.repoSlug,
+                        pathsAfterPush    : ['fake.txt'],
+                        yieldedSourcePaths: ['fake.txt'],
+                        extractionIdentity: TEST_EXTRACTION_IDENTITY
                     },
                     ...(args.lastIngestedRev ? {baseRevision: args.lastIngestedRev} : {})
                 };
@@ -5086,11 +5355,14 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                     repoSlug,
                     parsedChunks: chunks
                 }],
-                deleted         : [],
-                headRevision    : `sha-head-${repoSlug}`,
-                manifestSnapshot: {
+                deleted           : [],
+                headRevision      : `sha-head-${repoSlug}`,
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
                     repoSlug,
-                    pathsAfterPush: chunks.map(chunk => chunk.sourcePath)
+                    pathsAfterPush    : chunks.map(chunk => chunk.sourcePath),
+                    yieldedSourcePaths: chunks.map(chunk => chunk.sourcePath),
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
                 },
                 ...(lastIngestedRev ? {baseRevision: lastIngestedRev} : {})
             }
@@ -5136,7 +5408,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 reason           : 'periodic-sweep:60000',
                 taskStateService,
                 tenantReposConfig: {tenantRepos: slugs.map(repoSlug => ({
-                    tenantId: 't1', repoSlug, mirrorRoot, cadenceMs: 1, cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`
+                    tenantId          : 't1', repoSlug, mirrorRoot, cadenceMs: 1,
+                    cloneUrl          : `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`,
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
                 }))},
                 gitMirror                    : makeFakeGitMirror(),
                 envelopeBuilder,
@@ -5670,6 +5944,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             ingestContractVersion                : null,
             lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
             lastCommittedMaterializationAttemptId: null,
+            extractionIdentity                   : null,
             // The failure REASON is persisted alongside the count. Previously only the count survived
             // a sweep, which is what left a wedged lane reporting `consecutiveFailures` with a null
             // cause. This mirror is deliberate: the exact-shape assertion is the contract,
@@ -8254,11 +8529,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             captureCalls     = [],
             taskStateService = createInMemoryTaskStateService(),
             seededRevisions  = Object.fromEntries(repoSlugs.map(repoSlug => [`t1/${repoSlug}`, {
-                lastIngestedRev                   : null,
-                lastRunAttemptAt                  : Date.now() - 120_000,
-                consecutiveFailures               : 0,
-                ingestContractVersion             : TENANT_REPO_INGEST_CONTRACT_VERSION,
-                lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION
+                lastIngestedRev                      : `sha-seeded-${repoSlug}`,
+                lastRunAttemptAt                     : Date.now() - 120_000,
+                consecutiveFailures                  : 0,
+                ingestContractVersion                : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastCommittedMaterializationAttemptId: 'f'.repeat(32),
+                extractionIdentity                   : TEST_EXTRACTION_IDENTITY
             }]));
 
         let voteCalls = 0,
@@ -8329,8 +8606,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 }
             },
             tenantReposConfig: {tenantRepos: repoSlugs.map(repoSlug => ({
-                tenantId: 't1', repoSlug, mirrorRoot,
-                cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`,
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }))},
             gitMirror                    : makeFakeGitMirror(),
             envelopeBuilder              : makeFakeEnvelopeBuilder(),
@@ -8392,11 +8670,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             repoSlugs       = ['org/timeout-observer', 'org/timeout-tail'],
             captureCalls    = [],
             seededRevisions = Object.fromEntries(repoSlugs.map(repoSlug => [`t1/${repoSlug}`, {
-                lastIngestedRev                   : null,
-                lastRunAttemptAt                  : Date.now() - 120_000,
-                consecutiveFailures               : 0,
-                ingestContractVersion             : TENANT_REPO_INGEST_CONTRACT_VERSION,
-                lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION
+                lastIngestedRev                      : `sha-seeded-${repoSlug}`,
+                lastRunAttemptAt                     : Date.now() - 120_000,
+                consecutiveFailures                  : 0,
+                ingestContractVersion                : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastCommittedMaterializationAttemptId: 'e'.repeat(32),
+                extractionIdentity                   : TEST_EXTRACTION_IDENTITY
             }]));
 
         for (const repoSlug of repoSlugs) {
@@ -8432,8 +8712,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             taskStateService        : createInMemoryTaskStateService(),
             leaseGuard              : async () => {},
             tenantReposConfig       : {tenantRepos: repoSlugs.map(repoSlug => ({
-                tenantId: 't1', repoSlug, mirrorRoot,
-                cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`,
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }))},
             gitMirror                    : makeFakeGitMirror(),
             envelopeBuilder              : makeFakeEnvelopeBuilder(),
@@ -8469,11 +8750,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             captureCalls     = [],
             taskStateService = createInMemoryTaskStateService(),
             seededRevisions  = Object.fromEntries(repoSlugs.map(repoSlug => [`t1/${repoSlug}`, {
-                lastIngestedRev                   : null,
-                lastRunAttemptAt                  : Date.now() - 120_000,
-                consecutiveFailures               : 0,
-                ingestContractVersion             : TENANT_REPO_INGEST_CONTRACT_VERSION,
-                lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION
+                lastIngestedRev                      : `sha-seeded-${repoSlug}`,
+                lastRunAttemptAt                     : Date.now() - 120_000,
+                consecutiveFailures                  : 0,
+                ingestContractVersion                : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
+                lastCommittedMaterializationAttemptId: 'd'.repeat(32),
+                extractionIdentity                   : TEST_EXTRACTION_IDENTITY
             }]));
 
         let activeEntered = 0,
@@ -8520,8 +8803,9 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             reason           : 'periodic-sweep:60000',
             taskStateService,
             tenantReposConfig: {tenantRepos: repoSlugs.map(repoSlug => ({
-                tenantId: 't1', repoSlug, mirrorRoot,
-                cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`
+                tenantId          : 't1', repoSlug, mirrorRoot,
+                cloneUrl          : `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`,
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
             }))},
             gitMirror                    : makeFakeGitMirror(),
             envelopeBuilder              : makeFakeEnvelopeBuilder(),

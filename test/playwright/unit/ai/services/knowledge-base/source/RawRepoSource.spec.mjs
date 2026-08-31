@@ -96,4 +96,56 @@ test.describe('Neo.ai.services.knowledge-base.source.RawRepoSource (#12029)', ()
         expect(count).toBe(1);
         expect(chunks[0].sourcePath).toBe('repo/README.md');
     });
+
+    test('extracts through a repository-bound reader without ambient config or filesystem roots', async () => {
+        const chunks = [];
+        const result = await RawRepoSource.extractFromRepository({
+            context: {
+                tenantId        : 'tenant-a',
+                repoSlug        : 'org/repo',
+                revision        : 'f'.repeat(40),
+                repositoryReader: {
+                    async readText(sourcePath) {
+                        return {
+                            'README.md'   : '# Tenant Repo\n',
+                            'src/index.js': 'export const value = 42;\n'
+                        }[sourcePath]
+                    }
+                },
+                territory: {
+                    assignments: [
+                        {entry: {sourcePath: 'src/index.js'}},
+                        {entry: {sourcePath: 'dist/bundle.js'}},
+                        {entry: {sourcePath: 'assets/logo.png'}},
+                        {entry: {sourcePath: 'README.md'}}
+                    ]
+                }
+            },
+            options: {
+                excludePaths: ['dist'],
+                rootKind    : 'bare-repo'
+            },
+            writeStream : {write: line => chunks.push(JSON.parse(line))},
+            createHashFn: chunk => `hash:${chunk.sourcePath}`
+        });
+
+        expect(result).toMatchObject({
+            count             : 2,
+            yieldedSourcePaths: ['README.md', 'src/index.js']
+        });
+        expect(result.skippedSourcePaths).toEqual([{
+            sourcePath: 'assets/logo.png',
+            reason    : 'extension-excluded'
+        }, {
+            sourcePath: 'dist/bundle.js',
+            reason    : 'path-excluded'
+        }]);
+        expect(chunks.map(chunk => chunk.sourcePath)).toEqual(['README.md', 'src/index.js']);
+        expect(chunks[0]).toMatchObject({
+            parserId     : 'raw-text',
+            parserVersion: '1.0.0',
+            rootKind     : 'bare-repo',
+            hash         : 'hash:README.md'
+        });
+    });
 });

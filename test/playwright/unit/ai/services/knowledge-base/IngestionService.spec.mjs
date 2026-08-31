@@ -27,6 +27,8 @@ import {
 import {createTenantRepoMaterializationDigest}
     from '../../../../../../ai/services/knowledge-base/helpers/tenantRepoIngestEnvelopeBuilder.mjs';
 
+const TEST_EXTRACTION_IDENTITY = 'e'.repeat(64);
+
 /**
  * Contract coverage for IngestionService.
  *
@@ -855,13 +857,19 @@ test.describe('IngestionService.ingestSourceFiles', () => {
         };
 
         const envelope = {
-            tenantId        : 'tenant-a',
-            repoSlug        : 'repo-a',
-            files           : [],
-            headRevision    : 'head-delete-only',
-            manifestSnapshot: {repoSlug: 'repo-a', pathsAfterPush: []}
+            tenantId          : 'tenant-a',
+            repoSlug          : 'repo-a',
+            files             : [],
+            headRevision      : 'head-delete-only',
+            extractionIdentity: TEST_EXTRACTION_IDENTITY,
+            manifestSnapshot  : {
+                repoSlug          : 'repo-a',
+                pathsAfterPush    : [],
+                yieldedSourcePaths: [],
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
+            }
         };
-        const first = await Service.ingestSourceFiles({
+        const first = await Service.ingestSourceFilesForTenantSync({
             ...envelope,
             materializationAttempt: {
                 attemptId            : 'a'.repeat(32),
@@ -879,7 +887,7 @@ test.describe('IngestionService.ingestSourceFiles', () => {
         });
         expect(first.materializationReceipt.envelopeDigest).toMatch(/^[a-f0-9]{64}$/u);
 
-        const retry = await Service.ingestSourceFiles({
+        const retry = await Service.ingestSourceFilesForTenantSync({
             ...envelope,
             materializationAttempt: {
                 attemptId            : 'b'.repeat(32),
@@ -902,13 +910,20 @@ test.describe('IngestionService.ingestSourceFiles', () => {
             repoSlug      : 'repo-a',
             pathsAfterPush: []
         });
-        expect((await Service.getTenantManifest({
+        const afterPhysicalOnlyWrite = await Service.getTenantManifest({
             tenantId: 'tenant-a',
             repoSlug: 'repo-a'
-        })).materializationReceipt).toBeNull();
+        });
+
+        expect(afterPhysicalOnlyWrite.materializationReceipt).toEqual(first.materializationReceipt);
+        expect(afterPhysicalOnlyWrite.extractionSnapshot).toMatchObject({
+            yieldedSourcePaths: [],
+            extractionIdentity: TEST_EXTRACTION_IDENTITY,
+            proof             : first.materializationReceipt
+        });
     });
 
-    test('error-bearing retries clear rather than preserve an older materialization receipt (#16045)', async () => {
+    test('error-bearing retries preserve older proof-bound extraction authority (#16045)', async () => {
         collection = createSpyCollection([
             {id: 'stale', metadata: {tenantId: 'tenant-a', repoSlug: 'repo-a', sourcePath: 'src/stale.js'}}
         ]);
@@ -917,13 +932,19 @@ test.describe('IngestionService.ingestSourceFiles', () => {
         };
 
         const envelope = {
-            tenantId        : 'tenant-a',
-            repoSlug        : 'repo-a',
-            files           : [],
-            headRevision    : 'head-error-retry',
-            manifestSnapshot: {repoSlug: 'repo-a', pathsAfterPush: []}
+            tenantId          : 'tenant-a',
+            repoSlug          : 'repo-a',
+            files             : [],
+            headRevision      : 'head-error-retry',
+            extractionIdentity: TEST_EXTRACTION_IDENTITY,
+            manifestSnapshot  : {
+                repoSlug          : 'repo-a',
+                pathsAfterPush    : [],
+                yieldedSourcePaths: [],
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
+            }
         };
-        const first = await Service.ingestSourceFiles({
+        const first = await Service.ingestSourceFilesForTenantSync({
             ...envelope,
             materializationAttempt: {
                 attemptId            : 'e'.repeat(32),
@@ -933,7 +954,7 @@ test.describe('IngestionService.ingestSourceFiles', () => {
 
         expect(first.materializationReceipt).toBeTruthy();
 
-        const errored = await Service.ingestSourceFiles({
+        const errored = await Service.ingestSourceFilesForTenantSync({
             ...envelope,
             baseRevision          : 'base-requiring-unavailable-resolver',
             materializationAttempt: {
@@ -946,10 +967,17 @@ test.describe('IngestionService.ingestSourceFiles', () => {
             code: 'KB_REVISION_BOUNDARY_UNAVAILABLE'
         }));
         expect(errored.materializationReceipt).toBeUndefined();
-        expect((await Service.getTenantManifest({
+        const afterError = await Service.getTenantManifest({
             tenantId: 'tenant-a',
             repoSlug: 'repo-a'
-        })).materializationReceipt).toBeNull();
+        });
+
+        expect(afterError.materializationReceipt).toEqual(first.materializationReceipt);
+        expect(afterError.extractionSnapshot).toMatchObject({
+            yieldedSourcePaths: [],
+            extractionIdentity: TEST_EXTRACTION_IDENTITY,
+            proof             : first.materializationReceipt
+        });
     });
 
     test('an authoritative empty manifest earns a current digest-bound receipt (#16577)', async () => {
@@ -959,13 +987,19 @@ test.describe('IngestionService.ingestSourceFiles', () => {
                 ingestContractVersion: 2
             },
             envelope = {
-                tenantId        : 'tenant-a',
-                repoSlug        : 'repo-empty',
-                files           : [],
-                headRevision    : 'head-empty',
-                manifestSnapshot: {repoSlug: 'repo-empty', pathsAfterPush: []}
+                tenantId          : 'tenant-a',
+                repoSlug          : 'repo-empty',
+                files             : [],
+                headRevision      : 'head-empty',
+                extractionIdentity: TEST_EXTRACTION_IDENTITY,
+                manifestSnapshot  : {
+                    repoSlug          : 'repo-empty',
+                    pathsAfterPush    : [],
+                    yieldedSourcePaths: [],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                }
             },
-            summary = await Service.ingestSourceFiles({
+            summary = await Service.ingestSourceFilesForTenantSync({
                 ...envelope,
                 materializationAttempt: attempt
             }),
@@ -990,15 +1024,16 @@ test.describe('IngestionService.ingestSourceFiles', () => {
 
     test('fresh zero-effect NON-EMPTY full attempts never manufacture a replay receipt (#16045)', async () => {
         const envelope = {
-            tenantId        : 'tenant-a',
-            repoSlug        : 'repo-silent-drop',
-            files           : [{sourcePath: 'README.md', parsedChunks: []}],
-            headRevision    : 'head-silent-drop',
-            manifestSnapshot: {repoSlug: 'repo-silent-drop', pathsAfterPush: ['README.md']}
+            tenantId          : 'tenant-a',
+            repoSlug          : 'repo-silent-drop',
+            files             : [{sourcePath: 'README.md', parsedChunks: []}],
+            headRevision      : 'head-silent-drop',
+            extractionIdentity: TEST_EXTRACTION_IDENTITY,
+            manifestSnapshot  : {repoSlug: 'repo-silent-drop', pathsAfterPush: ['README.md']}
         };
 
         for (const attemptId of ['c'.repeat(32), 'd'.repeat(32)]) {
-            const summary = await Service.ingestSourceFiles({
+            const summary = await Service.ingestSourceFilesForTenantSync({
                 ...envelope,
                 materializationAttempt: {attemptId, ingestContractVersion: 2}
             });
@@ -1011,6 +1046,71 @@ test.describe('IngestionService.ingestSourceFiles', () => {
             tenantId: 'tenant-a',
             repoSlug: 'repo-silent-drop'
         })).materializationReceipt).toBeNull();
+    });
+
+    test('public ingestion rejects internal profile chunks and proof authority', async () => {
+        const extractionIdentity = '9'.repeat(64);
+        const summary            = await Service.ingestSourceFiles({
+            tenantId: 'tenant-a',
+            repoSlug: 'repo-public',
+            files   : [{
+                sourcePath      : 'README.md',
+                repoSlug        : 'repo-public',
+                extractionIdentity,
+                extractorId     : 'RawRepoSource',
+                extractorVersion: '1.0.0',
+                profileChunk    : {
+                    source : 'README.md',
+                    kind   : 'doc-section',
+                    name   : 'README',
+                    content: 'forged internal chunk'
+                }
+            }],
+            headRevision    : 'public-head',
+            extractionIdentity,
+            manifestSnapshot: {
+                repoSlug          : 'repo-public',
+                pathsAfterPush    : ['README.md'],
+                yieldedSourcePaths: [],
+                extractionIdentity
+            },
+            materializationAttempt: {
+                attemptId            : '9'.repeat(32),
+                ingestContractVersion: 2
+            }
+        });
+
+        expect(summary.ingested).toBe(0);
+        expect(summary.materializationReceipt).toBeUndefined();
+        expect(summary.errors).toContainEqual(expect.objectContaining({
+            code: 'KB_PROFILE_ENVELOPE_FORBIDDEN'
+        }));
+
+        const stored = await Service.getTenantManifest({
+            tenantId: 'tenant-a', repoSlug: 'repo-public'
+        });
+
+        expect(stored.pathsAfterPush).toEqual(['README.md']);
+        expect(stored.extractionSnapshot).toBeNull();
+    });
+
+    test('public parsed chunks cannot forge server-derived extraction identity', async () => {
+        const summary = await Service.ingestSourceFiles({
+            tenantId: 'tenant-a',
+            repoSlug: 'repo-a',
+            files   : [{parsedChunks: [validParsedChunk({
+                extractionIdentity: '8'.repeat(64),
+                hashInputs        : [
+                    'kind', 'name', 'content', 'sourcePath',
+                    'parserId', 'parserVersion', 'extractionIdentity'
+                ]
+            })]}]
+        });
+
+        expect(summary.ingested).toBe(0);
+        expect(summary.errors).toEqual([expect.objectContaining({
+            code: 'KB_PROFILE_ENVELOPE_FORBIDDEN'
+        })]);
     });
 
     test('records reconcile telemetry when one push ingests and deletes chunks', async () => {
@@ -1358,7 +1458,7 @@ test.describe('IngestionService.ingestSourceFiles', () => {
 });
 
 test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnostic', () => {
-    let Service, logger, originalWarn, warnings;
+    let Service, classifyManifestProofCompatibility, logger, originalGraphService, originalWarn, warnings;
 
     const chunkId = 'a'.repeat(64);
 
@@ -1368,18 +1468,24 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
     });
 
     test.beforeAll(async () => {
-        Service = (await import('../../../../../../ai/services/knowledge-base/IngestionService.mjs')).default;
-        logger  = (await import('../../../../../../ai/mcp/server/knowledge-base/logger.mjs')).default;
+        const module = await import('../../../../../../ai/services/knowledge-base/IngestionService.mjs');
+
+        Service                            = module.default;
+        classifyManifestProofCompatibility = module.classifyManifestProofCompatibility;
+        logger                             = (await import('../../../../../../ai/mcp/server/knowledge-base/logger.mjs')).default;
     });
 
     test.beforeEach(() => {
-        warnings     = [];
-        originalWarn = logger.warn;
-        logger.warn  = (message, details) => warnings.push({message, details});
+        warnings             = [];
+        originalGraphService = Service.graphService;
+        originalWarn         = logger.warn;
+        Service.graphService = createGraphStub();
+        logger.warn          = (message, details) => warnings.push({message, details});
     });
 
     test.afterEach(() => {
-        logger.warn = originalWarn;
+        Service.graphService = originalGraphService;
+        logger.warn          = originalWarn;
     });
 
     test('names WHY no receipt was produced when the attempt is absent', async () => {
@@ -1421,7 +1527,12 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
         const summary = {ingested: 3, deleted: 0, errors: []};
 
         await Service.persistManifestSnapshot({
-            manifestSnapshot      : {repoSlug: 'diag-ok', pathsAfterPush: ['b.txt']},
+            manifestSnapshot      : {
+                repoSlug          : 'diag-ok',
+                pathsAfterPush    : ['b.txt'],
+                yieldedSourcePaths: ['b.txt'],
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
+            },
             files                 : [{sourcePath: 'b.txt', repoSlug: 'diag-ok', content: 'y'}],
             headRevision          : 'sha-ok',
             materializationAttempt: {attemptId: 'a'.repeat(32), ingestContractVersion: 2},
@@ -1447,7 +1558,12 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
      */
     test('REGRESSION: a yielded summary mints NO materialization receipt, however much landed', async () => {
         const persist = yielded => Service.persistManifestSnapshot({
-            manifestSnapshot      : {repoSlug: 'slice-repo', pathsAfterPush: ['c.txt']},
+            manifestSnapshot      : {
+                repoSlug          : 'slice-repo',
+                pathsAfterPush    : ['c.txt'],
+                yieldedSourcePaths: ['c.txt'],
+                extractionIdentity: TEST_EXTRACTION_IDENTITY
+            },
             files                 : [{sourcePath: 'c.txt', repoSlug: 'slice-repo', content: 'z'}],
             headRevision          : 'sha-slice',
             materializationAttempt: {attemptId: 'c'.repeat(32), ingestContractVersion: 2},
@@ -1479,6 +1595,79 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
         ).toBeTruthy();
     });
 
+    test('receipt reuse and snapshot advancement differ only for a clean yielded retry', () => {
+        const rows = [
+            {
+                label   : 'clean-complete',
+                summary : {errors: [], yielded: false},
+                expected: {receiptReuseCompatible: true, snapshotAdvanceCompatible: true}
+            },
+            {
+                label   : 'clean-yielded',
+                summary : {errors: [], yielded: true},
+                expected: {receiptReuseCompatible: true, snapshotAdvanceCompatible: false}
+            },
+            {
+                label   : 'fence-complete',
+                summary : {errors: [durableFence('proven-content-poison')], yielded: false},
+                expected: {receiptReuseCompatible: true, snapshotAdvanceCompatible: true}
+            },
+            {
+                label   : 'fence-yielded',
+                summary : {errors: [durableFence('proven-content-poison')], yielded: true},
+                expected: {receiptReuseCompatible: false, snapshotAdvanceCompatible: false}
+            },
+            {
+                label   : 'ordinary-error',
+                summary : {errors: [{code: 'KB_INGEST_FAILED'}], yielded: false},
+                expected: {receiptReuseCompatible: false, snapshotAdvanceCompatible: false}
+            }
+        ];
+
+        for (const {label, summary, expected} of rows) {
+            expect(classifyManifestProofCompatibility(summary), label).toMatchObject(expected)
+        }
+    });
+
+    test('a clean yielded retry reuses matching proof without advancing the extraction snapshot', async () => {
+        const
+            repoSlug = 'clean-yielded-retry',
+            envelope = {
+                manifestSnapshot: {
+                    repoSlug,
+                    pathsAfterPush    : ['pending.txt'],
+                    yieldedSourcePaths: ['pending.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                },
+                files        : [{sourcePath: 'pending.txt', repoSlug, content: 'pending'}],
+                headRevision : 'sha-clean-yielded-retry',
+                tenantContext: {tenantId: 'retry-tenant', repoSlug}
+            };
+
+        await Service.persistManifestSnapshot({
+            ...envelope,
+            materializationAttempt: {attemptId: '8'.repeat(32), ingestContractVersion: 2},
+            summary               : {ingested: 1, deleted: 0, errors: [], yielded: false}
+        });
+
+        const completed = await Service.getTenantManifest({
+            tenantId: 'retry-tenant', repoSlug
+        });
+        const retrySummary = {ingested: 1, deleted: 0, errors: [], yielded: true};
+
+        await Service.persistManifestSnapshot({
+            ...envelope,
+            materializationAttempt: {attemptId: '9'.repeat(32), ingestContractVersion: 2},
+            summary               : retrySummary
+        });
+
+        const stored = await Service.getTenantManifest({tenantId: 'retry-tenant', repoSlug});
+
+        expect(retrySummary.materializationReceipt).toEqual(completed.materializationReceipt);
+        expect(stored.materializationReceipt).toEqual(completed.materializationReceipt);
+        expect(stored.extractionSnapshot).toEqual(completed.extractionSnapshot);
+    });
+
     test('validated fence-only summaries mint positive-effect proof for both fence families (#17440)', async () => {
         const cases = [
             ['content-poison', durableFence('proven-content-poison')],
@@ -1495,7 +1684,12 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
             };
 
             await Service.persistManifestSnapshot({
-                manifestSnapshot      : {repoSlug, pathsAfterPush: ['fenced.txt']},
+                manifestSnapshot      : {
+                    repoSlug,
+                    pathsAfterPush    : ['fenced.txt'],
+                    yieldedSourcePaths: ['fenced.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                },
                 files                 : [{sourcePath: 'fenced.txt', repoSlug, content: 'fenced'}],
                 headRevision          : `sha-${repoSlug}`,
                 materializationAttempt: attempt,
@@ -1536,7 +1730,12 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
 
         for (const [repoSlug, errors] of cases) {
             await Service.persistManifestSnapshot({
-                manifestSnapshot      : {repoSlug, pathsAfterPush: ['blocked.txt']},
+                manifestSnapshot      : {
+                    repoSlug,
+                    pathsAfterPush    : ['blocked.txt'],
+                    yieldedSourcePaths: ['blocked.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                },
                 files                 : [{sourcePath: 'blocked.txt', repoSlug, content: 'blocked'}],
                 headRevision          : `sha-${repoSlug}`,
                 materializationAttempt: {attemptId: 'f'.repeat(32), ingestContractVersion: 2},
@@ -1554,10 +1753,15 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
         const
             repoSlug = 'yielded-fence',
             envelope = {
-                manifestSnapshot: {repoSlug, pathsAfterPush: ['pending.txt']},
-                files           : [{sourcePath: 'pending.txt', repoSlug, content: 'pending'}],
-                headRevision    : 'sha-yielded-fence',
-                tenantContext   : {tenantId: 'fence-tenant', repoSlug}
+                manifestSnapshot: {
+                    repoSlug,
+                    pathsAfterPush    : ['pending.txt'],
+                    yieldedSourcePaths: ['pending.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                },
+                files        : [{sourcePath: 'pending.txt', repoSlug, content: 'pending'}],
+                headRevision : 'sha-yielded-fence',
+                tenantContext: {tenantId: 'fence-tenant', repoSlug}
             };
 
         // Seed matching complete proof. Without this setup, the second call can only test fresh
@@ -1568,34 +1772,45 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
             summary               : {ingested: 1, deleted: 0, errors: [], yielded: false}
         });
 
-        expect((await Service.getTenantManifest({
+        const completed = await Service.getTenantManifest({
             tenantId: 'fence-tenant', repoSlug
-        })).materializationReceipt).toBeTruthy();
+        });
+
+        expect(completed.materializationReceipt).toBeTruthy();
+
+        const yieldedSummary = {
+            ingested: 1,
+            deleted : 0,
+            errors  : [durableFence('proven-content-poison')],
+            yielded : true
+        };
 
         await Service.persistManifestSnapshot({
             ...envelope,
             materializationAttempt: {attemptId: '1'.repeat(32), ingestContractVersion: 2},
-            summary               : {
-                ingested: 1,
-                deleted : 0,
-                errors  : [durableFence('proven-content-poison')],
-                yielded : true
-            }
+            summary               : yieldedSummary
         });
 
         const stored = await Service.getTenantManifest({tenantId: 'fence-tenant', repoSlug});
 
-        expect(stored.materializationReceipt ?? null).toBeNull();
+        expect(yieldedSummary.materializationReceipt).toBeUndefined();
+        expect(stored.materializationReceipt).toEqual(completed.materializationReceipt);
+        expect(stored.extractionSnapshot).toEqual(completed.extractionSnapshot);
     });
 
     test('a fence-only retry reuses matching completed proof (#17440)', async () => {
         const
             repoSlug = 'fence-retry',
             envelope = {
-                manifestSnapshot: {repoSlug, pathsAfterPush: ['settled.txt']},
-                files           : [{sourcePath: 'settled.txt', repoSlug, content: 'settled'}],
-                headRevision    : 'sha-fence-retry',
-                tenantContext   : {tenantId: 'fence-tenant', repoSlug}
+                manifestSnapshot: {
+                    repoSlug,
+                    pathsAfterPush    : ['settled.txt'],
+                    yieldedSourcePaths: ['settled.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                },
+                files        : [{sourcePath: 'settled.txt', repoSlug, content: 'settled'}],
+                headRevision : 'sha-fence-retry',
+                tenantContext: {tenantId: 'fence-tenant', repoSlug}
             },
             firstAttempt = {attemptId: '2'.repeat(32), ingestContractVersion: 2};
 
@@ -1619,6 +1834,125 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
         const stored = await Service.getTenantManifest({tenantId: 'fence-tenant', repoSlug});
 
         expect(stored.materializationReceipt).toMatchObject(firstAttempt);
+    });
+
+    test('D7 preserves prior extraction authority while errored or yielded runs advance physical truth', async () => {
+        const cases = [
+            {
+                label  : 'errored',
+                summary: {
+                    ingested: 0,
+                    deleted : 0,
+                    errors  : [{code: 'KB_SOURCE_PARSE_FAILED', message: 'coded parse failure'}],
+                    yielded : false
+                }
+            },
+            {
+                label  : 'yielded',
+                summary: {ingested: 1, deleted: 0, errors: [], yielded: true}
+            }
+        ];
+
+        for (const {label, summary} of cases) {
+            const
+                repoSlug          = `d7-${label}`,
+                priorIdentity     = '1'.repeat(64),
+                attemptedIdentity = '2'.repeat(64);
+
+            await Service.persistManifestSnapshot({
+                manifestSnapshot: {
+                    repoSlug,
+                    pathsAfterPush    : ['src/prior.mjs'],
+                    yieldedSourcePaths: ['src/prior.mjs'],
+                    extractionIdentity: priorIdentity
+                },
+                files                 : [{sourcePath: 'src/prior.mjs', repoSlug, content: 'prior'}],
+                headRevision          : `head-${label}-prior`,
+                materializationAttempt: {attemptId: '4'.repeat(32), ingestContractVersion: 2},
+                tenantContext         : {tenantId: 'd7-tenant', repoSlug},
+                summary               : {ingested: 1, deleted: 0, errors: [], yielded: false}
+            });
+
+            const before = await Service.getTenantManifest({tenantId: 'd7-tenant', repoSlug});
+
+            expect(before.extractionSnapshot).toMatchObject({
+                yieldedSourcePaths: ['src/prior.mjs'],
+                extractionIdentity: priorIdentity,
+                proof             : before.materializationReceipt
+            });
+
+            await Service.persistManifestSnapshot({
+                manifestSnapshot: {
+                    repoSlug,
+                    pathsAfterPush    : ['src/current.mjs'],
+                    yieldedSourcePaths: ['src/current.mjs'],
+                    extractionIdentity: attemptedIdentity
+                },
+                files: label === 'yielded'
+                    ? [{sourcePath: 'src/current.mjs', repoSlug, content: 'current'}]
+                    : [],
+                headRevision          : `head-${label}-current`,
+                materializationAttempt: {attemptId: '5'.repeat(32), ingestContractVersion: 2},
+                tenantContext         : {tenantId: 'd7-tenant', repoSlug},
+                summary
+            });
+
+            const after = await Service.getTenantManifest({tenantId: 'd7-tenant', repoSlug});
+
+            expect(after.pathsAfterPush, label).toEqual(['src/current.mjs']);
+            expect(after.extractionSnapshot, label).toEqual(before.extractionSnapshot);
+            expect(after.materializationReceipt, label).toEqual(before.materializationReceipt);
+            expect(summary.materializationReceipt, label).toBeUndefined();
+        }
+    });
+
+    test('D7 complete zero-yield profile replaces proof-bound authority for a still-tracked path', async () => {
+        const
+            repoSlug      = 'd7-completed-exclusion',
+            priorIdentity = '6'.repeat(64),
+            nextIdentity  = '7'.repeat(64);
+
+        await Service.persistManifestSnapshot({
+            manifestSnapshot: {
+                repoSlug,
+                pathsAfterPush    : ['src/still-tracked.mjs'],
+                yieldedSourcePaths: ['src/still-tracked.mjs'],
+                extractionIdentity: priorIdentity
+            },
+            files                 : [{sourcePath: 'src/still-tracked.mjs', repoSlug, content: 'prior'}],
+            headRevision          : 'same-head',
+            materializationAttempt: {attemptId: '6'.repeat(32), ingestContractVersion: 2},
+            tenantContext         : {tenantId: 'd7-tenant', repoSlug},
+            summary               : {ingested: 1, deleted: 0, errors: [], yielded: false}
+        });
+
+        const summary = {ingested: 0, deleted: 0, errors: [], yielded: false};
+
+        await Service.persistManifestSnapshot({
+            manifestSnapshot: {
+                repoSlug,
+                pathsAfterPush    : ['src/still-tracked.mjs'],
+                yieldedSourcePaths: [],
+                extractionIdentity: nextIdentity
+            },
+            files                 : [],
+            headRevision          : 'same-head',
+            materializationAttempt: {attemptId: '7'.repeat(32), ingestContractVersion: 2},
+            tenantContext         : {tenantId: 'd7-tenant', repoSlug},
+            summary
+        });
+
+        const stored = await Service.getTenantManifest({tenantId: 'd7-tenant', repoSlug});
+
+        expect(summary.materializationReceipt).toBeTruthy();
+        expect(stored.pathsAfterPush).toEqual(['src/still-tracked.mjs']);
+        expect(stored.extractionSnapshot).toMatchObject({
+            yieldedSourcePaths: [],
+            extractionIdentity: nextIdentity,
+            proof             : summary.materializationReceipt,
+            updatedAt         : expect.any(Number)
+        });
+        expect(stored.materializationReceipt).toEqual(summary.materializationReceipt);
     });
 });
 
@@ -1963,12 +2297,29 @@ test.describe('IngestionService.tenantConfig (#11637)', () => {
         const node = graphStub.store.get('kb-config:tenant-a');
 
         expect(node.properties.tenantRepos).toEqual([{
-            cloneUrl     : 'https://github.com/neomjs/neo.git',
-            credentialRef: 'env:GITHUB_TOKEN',
-            repoSlug     : 'github.com/neomjs/neo'
+            cloneUrl         : 'https://github.com/neomjs/neo.git',
+            credentialRef    : 'env:GITHUB_TOKEN',
+            repoSlug         : 'github.com/neomjs/neo',
+            extractionProfile: {
+                profileSchemaVersion: 1,
+                routes              : [{
+                    territory: {
+                        roots  : [{path: '.', optional: false}],
+                        include: ['**/*'],
+                        exclude: []
+                    },
+                    extractorId: 'RawRepoSource',
+                    options    : {}
+                }],
+                fallback: {action: 'exclude'}
+            }
         }]);
 
-        expect((await Service.getTenantConfig({tenantId: 'tenant-a'})).tenantRepos).toEqual(node.properties.tenantRepos);
+        const [resolvedRepo] = (await Service.getTenantConfig({tenantId: 'tenant-a'})).tenantRepos;
+
+        expect(resolvedRepo).toMatchObject(node.properties.tenantRepos[0]);
+        expect(resolvedRepo.extractionIdentity).toMatch(/^[a-f0-9]{64}$/u);
+        expect(node.properties.tenantRepos[0]).not.toHaveProperty('extractionIdentity');
     });
 
     test('setTenantConfig rejects credential-bearing tenant repo clone URLs (#11787)', async () => {

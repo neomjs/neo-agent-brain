@@ -89,4 +89,19 @@ export default Tool;
         // still warns and returns empty.
         expect(chunks).toEqual([]);
     });
+
+    test('strict repository parsing refuses malformed source with a coded outcome', () => {
+        const fixture = `import x from 'y'; this is not valid javascript {{{`;
+
+        expect(() => SourceParser.parse(
+            fixture,
+            'fixture/malformed-strict.mjs',
+            'src',
+            {},
+            null,
+            {strict: true}
+        )).toThrow(expect.objectContaining({
+            code: 'KB_SOURCE_PARSE_FAILED'
+        }));
+    });
 });

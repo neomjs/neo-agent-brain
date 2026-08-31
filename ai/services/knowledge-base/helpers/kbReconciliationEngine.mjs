@@ -223,80 +223,121 @@ export function diffTenantManifest({rows, manifestsByRepo} = {}) {
  * @param {Object}  [params.yieldedPathsByRepo] `{[repoSlug]: string[]|Set}` — paths the declared parser yields. A repo absent here skips tier 1.
  * @returns {{parserOrphans: Object[], parserOrphanCount: Number, actionableIds: String[], actionableCount: Number}}
  */
-export function diffTenantParserIdentity({rows, tenantId, declaredByRepo, yieldedPathsByRepo} = {}) {
-    const parserOrphans = [],
-          actionableIds = [];
+function diffTenantGenerationIdentity({
+    rows,
+    tenantId,
+    declaredByRepo,
+    resolveDeclaredIdentity,
+    resolveRowIdentity,
+    resolveAuthority,
+    isMissingRowClassifiable = () => false,
+    buildOrphan
+} = {}) {
+    const orphans       = [];
+    const actionableIds = [];
 
-    const empty = {parserOrphans, parserOrphanCount: 0, actionableIds, actionableCount: 0};
-
-    if (!Array.isArray(rows) || typeof tenantId !== 'string' || !tenantId || !declaredByRepo) {
-        return empty;
+    if (
+        !Array.isArray(rows)
+        || typeof tenantId !== 'string'
+        || !tenantId
+        || !declaredByRepo
+        || typeof resolveDeclaredIdentity !== 'function'
+        || typeof resolveRowIdentity !== 'function'
+        || typeof resolveAuthority !== 'function'
+        || typeof buildOrphan !== 'function'
+    ) {
+        return {orphans, actionableIds};
     }
 
-    // Which paths already carry a row at the declared pair, read from the same snapshot the
-    // classification runs on so tier 2 cannot gate on a replacement this view cannot see.
+    // Which paths already carry a row at the declared generation, read from the same snapshot the
+    // classification runs on so the superseded tier cannot gate on a replacement this view cannot see.
     const replacedPaths = new Set();
 
     for (const row of rows) {
         const meta = row?.metadata;
 
-        if (!meta || meta.tenantId !== tenantId) continue;
+        if (!meta || meta.tenantId !== tenantId || typeof meta.sourcePath !== 'string') continue;
 
-        const declared = declaredByRepo[meta.repoSlug];
+        const declaredIdentity = resolveDeclaredIdentity(declaredByRepo[meta.repoSlug]);
 
-        if (declared && meta.parserId === declared.parserId && meta.parserVersion === declared.parserVersion) {
-            typeof meta.sourcePath === 'string' && replacedPaths.add(`${meta.repoSlug}\u0000${meta.sourcePath}`);
+        if (declaredIdentity && resolveRowIdentity(meta) === declaredIdentity) {
+            replacedPaths.add(`${meta.repoSlug}\u0000${meta.sourcePath}`);
         }
     }
 
     for (const row of rows) {
         const meta = row?.metadata;
 
-        if (!meta || meta.tenantId !== tenantId) continue;
+        if (!meta || meta.tenantId !== tenantId || typeof meta.sourcePath !== 'string') continue;
 
-        const declared = declaredByRepo[meta.repoSlug];
+        const declaredIdentity = resolveDeclaredIdentity(declaredByRepo[meta.repoSlug]);
 
-        // Never guess a generation: a repo with no declared pair is unresolvable, not stale.
-        if (!declared || typeof declared.parserId !== 'string' || typeof declared.parserVersion !== 'string') {
-            continue;
-        }
+        // Never guess a generation: a repo with no current declaration is unresolvable, not stale.
+        if (!declaredIdentity) continue;
 
-        // Missing stamp is unclassifiable — the same fail-safe `kbGarbageCollectionEngine` applies.
-        if (typeof meta.parserId !== 'string' || typeof meta.parserVersion !== 'string' || typeof meta.sourcePath !== 'string') {
-            continue;
-        }
+        const
+            authority       = resolveAuthority({repoSlug: meta.repoSlug, declaredIdentity}) || {},
+            rowIdentity     = resolveRowIdentity(meta),
+            identityMissing = rowIdentity === undefined;
 
-        if (meta.parserId === declared.parserId && meta.parserVersion === declared.parserVersion) {
-            continue;
-        }
+        if (identityMissing && !isMissingRowClassifiable({metadata: meta, authority})) continue;
+        if (!identityMissing && typeof rowIdentity !== 'string') continue;
+        if (rowIdentity === declaredIdentity) continue;
 
-        const yielded = yieldedPathsByRepo?.[meta.repoSlug],
-              hasSet  = yielded instanceof Set || Array.isArray(yielded);
+        const insideAuthorityWindow = authority.hasYieldSet === true
+            && (
+                !Number.isFinite(authority.updatedAt)
+                || (Number.isFinite(meta.ingestedAt) && meta.ingestedAt <= authority.updatedAt)
+            );
+        const tier = insideAuthorityWindow && !authority.yieldSet.has(meta.sourcePath)
+            ? 'unyielded'
+            : 'superseded';
 
-        let tier;
-
-        if (hasSet) {
-            const isYielded = yielded instanceof Set ? yielded.has(meta.sourcePath) : yielded.includes(meta.sourcePath);
-
-            tier = isYielded ? 'superseded' : 'unyielded';
-        } else {
-            // Unknown is not empty: with no envelope, only the replacement-gated tier can fire.
-            tier = 'superseded';
-        }
-
-        parserOrphans.push({
-            id           : row.id,
-            repoSlug     : meta.repoSlug,
-            sourcePath   : meta.sourcePath,
-            parserId     : meta.parserId,
-            parserVersion: meta.parserVersion,
-            tier
-        });
+        orphans.push(buildOrphan({row, metadata: meta, rowIdentity, tier}));
 
         if (tier === 'unyielded' || replacedPaths.has(`${meta.repoSlug}\u0000${meta.sourcePath}`)) {
             actionableIds.push(row.id);
         }
     }
+
+    return {orphans, actionableIds};
+}
+
+export function diffTenantParserIdentity({rows, tenantId, declaredByRepo, yieldedPathsByRepo} = {}) {
+    const {orphans: parserOrphans, actionableIds} = diffTenantGenerationIdentity({
+        rows,
+        tenantId,
+        declaredByRepo,
+        resolveDeclaredIdentity(declared) {
+            return typeof declared?.parserId === 'string' && typeof declared?.parserVersion === 'string'
+                ? `${declared.parserId}\u0000${declared.parserVersion}`
+                : null;
+        },
+        resolveRowIdentity(metadata) {
+            return typeof metadata.parserId === 'string' && typeof metadata.parserVersion === 'string'
+                ? `${metadata.parserId}\u0000${metadata.parserVersion}`
+                : null;
+        },
+        resolveAuthority({repoSlug}) {
+            const yielded = yieldedPathsByRepo?.[repoSlug];
+            const hasSet  = yielded instanceof Set || Array.isArray(yielded);
+
+            return {
+                hasYieldSet: hasSet,
+                yieldSet   : new Set(hasSet ? yielded : [])
+            };
+        },
+        buildOrphan({row, metadata, tier}) {
+            return {
+                id           : row.id,
+                repoSlug     : metadata.repoSlug,
+                sourcePath   : metadata.sourcePath,
+                parserId     : metadata.parserId,
+                parserVersion: metadata.parserVersion,
+                tier
+            };
+        }
+    });
 
     return {
         parserOrphans,
@@ -307,29 +348,107 @@ export function diffTenantParserIdentity({rows, tenantId, declaredByRepo, yielde
 }
 
 /**
+ * @summary Classifies profile-generation rows through proof-bound extraction currency.
+ *
+ * The replacement gate is shared with parser reconciliation. A current proof snapshot authorizes
+ * the `unyielded` tier only when its identity matches the current declared profile and the row is
+ * not newer than that snapshot. Missing or prior-identity snapshots are unknown, never empty.
+ *
+ * @param {Object} params
+ * @param {Object[]} params.rows Tenant rows from the shared collection.
+ * @param {String} params.tenantId Tenant scope.
+ * @param {Object} params.declaredByRepo Current extraction identities keyed by repo.
+ * @param {Object} params.extractionSnapshotsByRepo Proof-bound snapshots keyed by repo.
+ * @returns {{extractionOrphans: Object[], extractionOrphanCount: Number, actionableIds: String[], actionableCount: Number}}
+ */
+export function diffTenantExtractionIdentity({
+    rows,
+    tenantId,
+    declaredByRepo,
+    extractionSnapshotsByRepo
+} = {}) {
+    const {orphans: extractionOrphans, actionableIds} = diffTenantGenerationIdentity({
+        rows,
+        tenantId,
+        declaredByRepo,
+        resolveDeclaredIdentity(declared) {
+            return typeof declared?.extractionIdentity === 'string'
+                && /^[a-f0-9]{64}$/u.test(declared.extractionIdentity)
+                ? declared.extractionIdentity
+                : null;
+        },
+        resolveRowIdentity(metadata) {
+            if (!Object.hasOwn(metadata, 'extractionIdentity') || metadata.extractionIdentity == null) {
+                return undefined;
+            }
+
+            return typeof metadata.extractionIdentity === 'string'
+                && /^[a-f0-9]{64}$/u.test(metadata.extractionIdentity)
+                    ? metadata.extractionIdentity
+                    : null;
+        },
+        resolveAuthority({repoSlug, declaredIdentity}) {
+            const snapshot = extractionSnapshotsByRepo?.[repoSlug];
+            const valid    = snapshot?.extractionIdentity === declaredIdentity
+                && Array.isArray(snapshot?.yieldedSourcePaths)
+                && Number.isFinite(snapshot?.updatedAt);
+
+            return {
+                hasYieldSet: valid,
+                yieldSet   : new Set(valid ? snapshot.yieldedSourcePaths : []),
+                updatedAt  : valid ? snapshot.updatedAt : null
+            };
+        },
+        isMissingRowClassifiable({metadata, authority}) {
+            return authority.hasYieldSet === true
+                && Number.isFinite(metadata.ingestedAt)
+                && metadata.ingestedAt <= authority.updatedAt;
+        },
+        buildOrphan({row, metadata, rowIdentity, tier}) {
+            return {
+                id                : row.id,
+                repoSlug          : metadata.repoSlug,
+                sourcePath        : metadata.sourcePath,
+                extractionIdentity: rowIdentity,
+                tier,
+                reason            : 'extraction-currency-mismatch'
+            };
+        }
+    });
+
+    return {
+        extractionOrphans,
+        extractionOrphanCount: extractionOrphans.length,
+        actionableIds,
+        actionableCount      : actionableIds.length
+    };
+}
+
+/**
  * @summary Builds the Phase 4A telemetry `detail` payload for one tenant's reconciliation tick.
  *
  * Pure — kept here (not in the daemon) so the telemetry shape is unit-testable. The daemon
  * passes the returned object straight to `KBRecorderService.recordIngestionMetric`'s `detail`.
  *
  * @param {Object}  params
- * @param {{staleCount: Number, manifestOrphanCount: Number, parserOrphanCount: Number, actionableCount: Number, totalOrphanCount: Number}} params.diff  Combined reconciliation diff.
+ * @param {{staleCount: Number, manifestOrphanCount: Number, parserOrphanCount: Number, extractionOrphanCount: Number, actionableCount: Number, totalOrphanCount: Number}} params.diff  Combined reconciliation diff.
  * @param {Number}  params.currentVersion   The tenant's current config version.
  * @param {Boolean} params.autoTombstone    Whether the daemon's auto-tombstone path is enabled.
  * @param {Number} [params.tombstonedCount=0] Chunks actually deleted this tick (`0` when auto-tombstone is off).
- * @returns {{staleCount: Number, manifestOrphanCount: Number, parserOrphanCount: Number, totalOrphanCount: Number, actionableCount: Number, tombstonedCount: Number, currentVersion: Number, autoTombstone: Boolean}}
+ * @returns {{staleCount: Number, manifestOrphanCount: Number, parserOrphanCount: Number, extractionOrphanCount: Number, totalOrphanCount: Number, actionableCount: Number, tombstonedCount: Number, currentVersion: Number, autoTombstone: Boolean}}
  */
 export function formatReconciliationDetail({diff, currentVersion, autoTombstone, tombstonedCount = 0} = {}) {
     // The three counts stay separate: folding them would leave a reader unable to tell whether a
     // reclaim followed a config change, a path drop, or a parser bump.
     return {
-        staleCount         : diff?.staleCount          ?? 0,
-        manifestOrphanCount: diff?.manifestOrphanCount ?? 0,
-        parserOrphanCount  : diff?.parserOrphanCount   ?? 0,
-        totalOrphanCount   : diff?.totalOrphanCount    ?? diff?.staleCount ?? 0,
-        actionableCount    : diff?.actionableCount     ?? 0,
-        tombstonedCount    : Number.isFinite(tombstonedCount) ? tombstonedCount : 0,
-        currentVersion     : typeof currentVersion === 'number' ? currentVersion : 0,
-        autoTombstone      : autoTombstone === true
+        staleCount           : diff?.staleCount          ?? 0,
+        manifestOrphanCount  : diff?.manifestOrphanCount ?? 0,
+        parserOrphanCount    : diff?.parserOrphanCount   ?? 0,
+        extractionOrphanCount: diff?.extractionOrphanCount ?? 0,
+        totalOrphanCount     : diff?.totalOrphanCount    ?? diff?.staleCount ?? 0,
+        actionableCount      : diff?.actionableCount     ?? 0,
+        tombstonedCount      : Number.isFinite(tombstonedCount) ? tombstonedCount : 0,
+        currentVersion       : typeof currentVersion === 'number' ? currentVersion : 0,
+        autoTombstone        : autoTombstone === true
     };
 }
