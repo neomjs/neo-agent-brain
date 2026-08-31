@@ -29,10 +29,10 @@
 # declarable per tenant, so it can use our own extractors instead of the raw-file fallback; that is
 # sequencing, not a retreat from the goal.
 #
-# `branchRef` is per-repo and NOT inheritable: every entry above has only `main` (verified against
-# each remote). Copying a sibling's `branchRef` is a clone failure waiting to happen — and note that
-# no entry currently differs from its `default_branch`, so the resolution path has no live witness
-# until a non-default-branch tenant is added.
+# `branchRef` is per-repo and NOT inheritable: create-app, devindex-opt-in and devindex-opt-out have
+# only `main`, while devindex has only `dev` (verified against each remote). Copying a sibling's
+# `branchRef` is a clone failure waiting to happen. Every entry still follows its own
+# `default_branch`; a future non-default-branch tenant remains the witness for that separate path.
 #
 # Read fail-soft from `<neoRootDir>/kb-config.yaml` — tier 2 of the tenant-config resolution
 # (KnowledgeBaseTenantConfig graph node → THIS file → aiConfig defaults). The document root is a
@@ -67,4 +67,4 @@ tenants:
         repoSlug     : devindex
         cloneUrl     : https://github.com/neomjs/devindex.git
         credentialRef: none
-        branchRef    : main
+        branchRef    : dev

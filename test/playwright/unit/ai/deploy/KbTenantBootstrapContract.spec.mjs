@@ -77,10 +77,10 @@ test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () =>
         const normalized = repos.map(normalizeTenantRepoEntry);
 
         const expected = [
-            {repoSlug: 'create-app',       cloneUrl: 'https://github.com/neomjs/create-app.git'},
-            {repoSlug: 'devindex-opt-in',  cloneUrl: 'https://github.com/neomjs/devindex-opt-in.git'},
-            {repoSlug: 'devindex-opt-out', cloneUrl: 'https://github.com/neomjs/devindex-opt-out.git'},
-            {repoSlug: 'devindex',         cloneUrl: 'https://github.com/neomjs/devindex.git'}
+            {repoSlug: 'create-app',       cloneUrl: 'https://github.com/neomjs/create-app.git',       branchRef: 'main'},
+            {repoSlug: 'devindex-opt-in',  cloneUrl: 'https://github.com/neomjs/devindex-opt-in.git',  branchRef: 'main'},
+            {repoSlug: 'devindex-opt-out', cloneUrl: 'https://github.com/neomjs/devindex-opt-out.git', branchRef: 'main'},
+            {repoSlug: 'devindex',         cloneUrl: 'https://github.com/neomjs/devindex.git',         branchRef: 'dev'}
         ];
 
         expected.forEach((entry, index) => {
@@ -88,7 +88,7 @@ test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () =>
             expect(normalized[index].repoSlug).toBe(entry.repoSlug);
             expect(normalized[index].cloneUrl).toBe(entry.cloneUrl);
             expect(normalized[index].credentialRef).toBe('none');
-            expect(normalized[index].branchRef).toBe('main');
+            expect(normalized[index].branchRef).toBe(entry.branchRef);
         });
 
         // The Neo repo is deliberately absent: `kbSync` already ingests it through the source
@@ -125,10 +125,9 @@ test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () =>
         // `bySlug.neo` becomes undefined and `undefined !== 'main'` still passes, so the old
         // assertion would have gone VACUOUS instead of red — a green test proving nothing.
         //
-        // Coverage regression stated on purpose: neo was the only entry whose branchRef differed
-        // from its `default_branch`, so nothing here currently exercises resolving a NON-default
-        // branch. A future non-default-branch tenant should restore that, and this comment is the
-        // pointer for whoever adds one.
+        // The mixed values prove `branchRef` is per-repo rather than copied from a sibling. They do
+        // NOT exercise resolving a non-default branch: every configured value still matches its
+        // remote's `default_branch`. A future non-default-branch tenant should add that witness.
         //
         // Note this is a DEPLOYMENT POLICY on top of the access contract, not a restatement of it:
         // `tenantRepoAccessContract` documents `branchRef` as present only when configured, so an
@@ -156,7 +155,7 @@ test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () =>
         expect(bySlug['create-app']).toBe('main');
         expect(bySlug['devindex-opt-in']).toBe('main');
         expect(bySlug['devindex-opt-out']).toBe('main');
-        expect(bySlug['devindex']).toBe('main')
+        expect(bySlug['devindex']).toBe('dev')
     });
 
     test('exactly the two consuming services mount the bootstrap read-only in the local-agent-os overlay', () => {
