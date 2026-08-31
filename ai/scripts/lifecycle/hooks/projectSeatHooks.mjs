@@ -45,7 +45,7 @@ const
      *
      * #250 classifies the leaf-6 removal into three kinds, and they take three dispositions:
      * executables move and have their imports rewritten, deleted config artifacts are regenerated
-     * by this projector, and the stripped `.claude/settings.template.json` is reconciled in place.
+     * by this projector, and the target's active `.claude/settings.json` is reconciled in place.
      * These are the second kind. Without them the Codex seat declares nothing at all — leaf 6 took
      * `hooks.json` and nothing put it back — so the restored executables sit in the checkout with
      * no surface naming them.
@@ -55,9 +55,11 @@ const
      * wants a disposition stated for every file, and a mapping rule that happens to be wrong for
      * half its entries is not a census.
      *
-     * Claude is deliberately absent. Its surviving surface is the Engine's
-     * `.claude/settings.template.json` (`initServerConfigs.mjs` resolves it from `engineRoot`), so
-     * reconciling it is not a write this repository may make — it is the companion Engine leaf.
+     * Claude is deliberately absent, and not for want of permission: we do reconcile the target's
+     * active `.claude/settings.json`. It is absent because that file is not one we *generate* — the
+     * Engine hydrates it from `.claude/settings.template.json` (`initServerConfigs.mjs` resolves
+     * that template from `engineRoot`), and we hold one custody share of the result.
+     * {@link CLAUDE_SETTINGS} states that split; this table is only for configs written out whole.
      */
     HARNESS_CONFIGS = Object.freeze({
         'codex'    : Object.freeze([{source: 'hooks.json', target: '.codex/hooks.json'}]),
