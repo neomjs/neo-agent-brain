@@ -100,6 +100,35 @@ const MATERIALIZATION_DIGEST_PATTERN     = /^[a-f0-9]{64}$/u;
 const EXTRACTION_IDENTITY_PATTERN        = /^[a-f0-9]{64}$/u;
 
 /**
+ * @summary Classifies receipt reuse separately from extraction-snapshot advancement.
+ *
+ * A clean yielded retry may borrow matching prior proof so crash/checkpoint recovery remains
+ * idempotent. It may NOT publish a new extraction snapshot because yielded work is incomplete.
+ * Durable-fence-only work is complete only when it did not yield. Keeping both predicates in one
+ * classifier makes that single intentional truth-table difference visible and prevents either
+ * consumer from redefining the other's contract.
+ *
+ * @param {Object} summary Ingestion result with `errors` and optional `yielded`.
+ * @returns {Object}
+ */
+export function classifyManifestProofCompatibility(summary = {}) {
+    const
+        errors                 = Array.isArray(summary.errors) ? summary.errors : [],
+        durableFenceOnly       = errors.length > 0 && errors.every(isDurableFenceRow),
+        receiptErrorsComplete  = errors.length === 0 || durableFenceOnly,
+        receiptReuseCompatible = errors.length === 0
+            || (durableFenceOnly && summary.yielded !== true),
+        snapshotAdvanceCompatible = receiptErrorsComplete && summary.yielded !== true;
+
+    return Object.freeze({
+        durableFenceOnly,
+        receiptErrorsComplete,
+        receiptReuseCompatible,
+        snapshotAdvanceCompatible
+    })
+}
+
+/**
  * @summary Re-validates a graduation receipt carried on an embed failure into exactly four bounded fields.
  *
  * The receipt is minted by `VectorService` at the graduation site, but it arrives here on a
@@ -1397,14 +1426,11 @@ class IngestionService extends Base {
         // Method-scoped because the no-receipt diagnostic below must report the same decision that
         // gated mint/reuse. Computing it once before the attempt block keeps every no-receipt path
         // attributable before `setTenantManifest` clears stale proof.
-        const
-            durableFenceOnly      = summary.errors.length > 0
-                && summary.errors.every(isDurableFenceRow),
-            receiptErrorsComplete = summary.errors.length === 0 || durableFenceOnly,
-            // Preserve the pre-existing clean-summary retry behavior, including its yielded shape.
-            // The new fence-only extension is narrower: a yielded fence summary is still incomplete
-            // and must not borrow prior full-materialization proof.
-            receiptReuseCompatible = receiptErrorsComplete && summary.yielded !== true;
+        const {
+            durableFenceOnly,
+            receiptReuseCompatible,
+            snapshotAdvanceCompatible
+        } = classifyManifestProofCompatibility(summary);
 
         let envelopeDigest = null;
 
@@ -1441,8 +1467,7 @@ class IngestionService extends Base {
                 //
                 // This does NOT weaken crash-after-complete recovery: a run that exhausted its
                 // corpus reports `yielded: false` and mints exactly as before.
-                hasEffect      = receiptErrorsComplete
-                    && summary.yielded !== true
+                hasEffect      = snapshotAdvanceCompatible
                     && [summary.ingested, summary.deleted]
                         .some(value => Number.isSafeInteger(value) && value > 0);
 
@@ -1464,8 +1489,7 @@ class IngestionService extends Base {
                 // failure after KB mutation can settle idempotently on the retry.
                 receipt = existing.materializationReceipt;
             } else if (
-                receiptErrorsComplete
-                && summary.yielded !== true
+                snapshotAdvanceCompatible
                 && candidate.yieldedSourcePaths.length === 0
             ) {
                 // A profile-observed empty YIELD set is a completed materialization even when Git
@@ -1484,8 +1508,7 @@ class IngestionService extends Base {
         const extractionSnapshot = receipt
             && envelopeDigest
             && normalized.extractionCandidate
-            && receiptErrorsComplete
-            && summary.yielded !== true
+            && snapshotAdvanceCompatible
             && receipt.envelopeDigest === envelopeDigest
             ? {
                 ...normalized.extractionCandidate,
@@ -1540,8 +1563,12 @@ class IngestionService extends Base {
                 code   : result.code,
                 message: result.message
             }));
-        } else if (result.materializationReceipt) {
-            summary.materializationReceipt = result.materializationReceipt;
+        } else if (result.materializationReceipt || (receipt && receiptReuseCompatible)) {
+            // `setTenantManifest` intentionally does not return retained snapshot proof to an
+            // incomplete caller. Clean yielded retries are the one narrower exception: the digest
+            // already matched prior proof and the established reuse predicate admits it, while the
+            // stricter snapshot predicate above still prevents publishing new yield authority.
+            summary.materializationReceipt = result.materializationReceipt || receipt;
         }
     }
 

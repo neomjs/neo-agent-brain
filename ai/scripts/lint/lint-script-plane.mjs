@@ -118,6 +118,10 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
     // config of its own (`source/tenantParserLoader.mjs`). Recorded rather than special-cased,
     // per this ledger's own rule.
     'ai/services/knowledge-base/source/tenantParserLoader.mjs::dynamic-import::importModule',
+    // Exact sibling of the tenant-parser loader: deployment-pinned, tenant-selected extractor
+    // modules are intentionally unknowable to the static closure and recover soundness through
+    // realpath containment plus module-owned identity/version validation.
+    'ai/services/knowledge-base/source/tenantExtractorLoader.mjs::dynamic-import::importModule',
     'ai/mcp/client/config.mjs::dynamic-import::load',
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::buildConfigEnvDefaultsForTemplate',
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::collectConfigPathKindsFromTemplate',

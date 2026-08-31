@@ -1458,7 +1458,7 @@ test.describe('IngestionService.ingestSourceFiles', () => {
 });
 
 test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnostic', () => {
-    let Service, logger, originalGraphService, originalWarn, warnings;
+    let Service, classifyManifestProofCompatibility, logger, originalGraphService, originalWarn, warnings;
 
     const chunkId = 'a'.repeat(64);
 
@@ -1468,8 +1468,11 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
     });
 
     test.beforeAll(async () => {
-        Service = (await import('../../../../../../ai/services/knowledge-base/IngestionService.mjs')).default;
-        logger  = (await import('../../../../../../ai/mcp/server/knowledge-base/logger.mjs')).default;
+        const module = await import('../../../../../../ai/services/knowledge-base/IngestionService.mjs');
+
+        Service                            = module.default;
+        classifyManifestProofCompatibility = module.classifyManifestProofCompatibility;
+        logger                             = (await import('../../../../../../ai/mcp/server/knowledge-base/logger.mjs')).default;
     });
 
     test.beforeEach(() => {
@@ -1590,6 +1593,79 @@ test.describe('IngestionService.persistManifestSnapshot receipt-absence diagnost
             afterComplete?.materializationReceipt ?? null,
             'a run that exhausted its corpus must still mint — the veto is scoped to yielded runs'
         ).toBeTruthy();
+    });
+
+    test('receipt reuse and snapshot advancement differ only for a clean yielded retry', () => {
+        const rows = [
+            {
+                label   : 'clean-complete',
+                summary : {errors: [], yielded: false},
+                expected: {receiptReuseCompatible: true, snapshotAdvanceCompatible: true}
+            },
+            {
+                label   : 'clean-yielded',
+                summary : {errors: [], yielded: true},
+                expected: {receiptReuseCompatible: true, snapshotAdvanceCompatible: false}
+            },
+            {
+                label   : 'fence-complete',
+                summary : {errors: [durableFence('proven-content-poison')], yielded: false},
+                expected: {receiptReuseCompatible: true, snapshotAdvanceCompatible: true}
+            },
+            {
+                label   : 'fence-yielded',
+                summary : {errors: [durableFence('proven-content-poison')], yielded: true},
+                expected: {receiptReuseCompatible: false, snapshotAdvanceCompatible: false}
+            },
+            {
+                label   : 'ordinary-error',
+                summary : {errors: [{code: 'KB_INGEST_FAILED'}], yielded: false},
+                expected: {receiptReuseCompatible: false, snapshotAdvanceCompatible: false}
+            }
+        ];
+
+        for (const {label, summary, expected} of rows) {
+            expect(classifyManifestProofCompatibility(summary), label).toMatchObject(expected)
+        }
+    });
+
+    test('a clean yielded retry reuses matching proof without advancing the extraction snapshot', async () => {
+        const
+            repoSlug = 'clean-yielded-retry',
+            envelope = {
+                manifestSnapshot: {
+                    repoSlug,
+                    pathsAfterPush    : ['pending.txt'],
+                    yieldedSourcePaths: ['pending.txt'],
+                    extractionIdentity: TEST_EXTRACTION_IDENTITY
+                },
+                files        : [{sourcePath: 'pending.txt', repoSlug, content: 'pending'}],
+                headRevision : 'sha-clean-yielded-retry',
+                tenantContext: {tenantId: 'retry-tenant', repoSlug}
+            };
+
+        await Service.persistManifestSnapshot({
+            ...envelope,
+            materializationAttempt: {attemptId: '8'.repeat(32), ingestContractVersion: 2},
+            summary               : {ingested: 1, deleted: 0, errors: [], yielded: false}
+        });
+
+        const completed = await Service.getTenantManifest({
+            tenantId: 'retry-tenant', repoSlug
+        });
+        const retrySummary = {ingested: 1, deleted: 0, errors: [], yielded: true};
+
+        await Service.persistManifestSnapshot({
+            ...envelope,
+            materializationAttempt: {attemptId: '9'.repeat(32), ingestContractVersion: 2},
+            summary               : retrySummary
+        });
+
+        const stored = await Service.getTenantManifest({tenantId: 'retry-tenant', repoSlug});
+
+        expect(retrySummary.materializationReceipt).toEqual(completed.materializationReceipt);
+        expect(stored.materializationReceipt).toEqual(completed.materializationReceipt);
+        expect(stored.extractionSnapshot).toEqual(completed.extractionSnapshot);
     });
 
     test('validated fence-only summaries mint positive-effect proof for both fence families (#17440)', async () => {
