@@ -1,4 +1,21 @@
+import {setup} from '../../../../setup.mjs';
+
+setup({
+    neoConfig: {
+        allowVdomUpdatesInTests: false,
+        unitTestMode           : true,
+        useDomApiRenderer      : false
+    },
+    appConfig: {
+        name             : 'TenantRepoIngestEnvelopeCredentialTest',
+        isMounted        : () => true,
+        vnodeInitialising: false
+    }
+});
+
 import {test, expect} from '@playwright/test';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import * as core      from 'neo.mjs/src/core/_export.mjs';
 
 import fs          from 'fs-extra';
 import os          from 'os';
@@ -142,11 +159,12 @@ test.describe('Tenant repo ingest: content reads carry a credential (#16631)', (
         const
             credentialRef = 'env:TENANT_TEST_TOKEN',
             seen          = {
-                resolveHead      : [],
-                isAncestor       : [],
-                diffRevisions    : [],
-                listRevisionPaths: [],
-                readRevisionFile : []
+                resolveHead          : [],
+                isAncestor           : [],
+                diffRevisions        : [],
+                listRevisionEntries  : [],
+                prefetchRevisionBlobs: [],
+                readRevisionBlob     : []
             },
             record        = (name, options) => {
                 seen[name].push(options.credentialRef);
@@ -165,13 +183,22 @@ test.describe('Tenant repo ingest: content reads carry a credential (#16631)', (
                 record('diffRevisions', options);
                 return {addedOrChanged: ['alpha.txt'], deleted: []};
             },
-            listRevisionPaths(options) {
-                record('listRevisionPaths', options);
-                return ['alpha.txt'];
+            listRevisionEntries(options) {
+                record('listRevisionEntries', options);
+                return [{
+                    sourcePath: 'alpha.txt',
+                    mode      : '100644',
+                    type      : 'blob',
+                    oid       : 'c'.repeat(40)
+                }];
             },
-            readRevisionFile(options) {
-                record('readRevisionFile', options);
-                return 'alpha v1\n';
+            prefetchRevisionBlobs(options) {
+                record('prefetchRevisionBlobs', options);
+                return {prefetched: options.sourcePaths};
+            },
+            readRevisionBlob(options) {
+                record('readRevisionBlob', options);
+                return Buffer.from('alpha v1\n');
             }
         };
 
@@ -186,8 +213,8 @@ test.describe('Tenant repo ingest: content reads carry a credential (#16631)', (
         await cloneIfMissing({mirrorRoot, tenantId: 'tenant-a', repoSlug: 'org/repo', cloneUrl});
 
         // BOTH envelope shapes, because they read through different call chains and a single run
-        // exercises only one of them: with a base revision the builder diffs and never calls
-        // listRevisionPaths, so asserting on that call from the incremental run alone is an
+        // exercises only one of them: with a base revision the builder diffs and never enters
+        // the full-manifest branch, so asserting on tree/content calls from one run alone is an
         // assertion over an empty array — vacuously true, and green against a mirror that leaks the
         // credential to every read.
         await buildIngestEnvelope({
@@ -213,7 +240,8 @@ test.describe('Tenant repo ingest: content reads carry a credential (#16631)', (
         }
 
         // The fix.
-        expect(seen.readRevisionFile.every(ref => ref === credentialRef)).toBe(true);
+        expect(seen.prefetchRevisionBlobs.every(ref => ref === credentialRef)).toBe(true);
+        expect(seen.readRevisionBlob.every(ref => ref === credentialRef)).toBe(true);
 
         // The invariant the fix must not break. A read that cannot reach the network must stay unable
         // to resolve a secret, so a later "consistency" pass cannot widen this by spreading
@@ -221,6 +249,6 @@ test.describe('Tenant repo ingest: content reads carry a credential (#16631)', (
         expect(seen.resolveHead.every(ref => ref === undefined)).toBe(true);
         expect(seen.isAncestor.every(ref => ref === undefined)).toBe(true);
         expect(seen.diffRevisions.every(ref => ref === undefined)).toBe(true);
-        expect(seen.listRevisionPaths.every(ref => ref === undefined)).toBe(true);
+        expect(seen.listRevisionEntries.every(ref => ref === undefined)).toBe(true);
     });
 });
