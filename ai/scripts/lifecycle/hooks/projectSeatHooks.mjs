@@ -291,6 +291,36 @@ export function declaredHookCommands(runtimeRoot, targetRepoRoot) {
         declared[harness] = [...new Set([...(declared[harness] ?? []), ...paths])].sort()
     });
 
+    // Claude's surface is not an enumerated config — we reconcile into it rather than generating it
+    // — so the loop above cannot see it, and an unplaced Claude command would be invisible to the
+    // very check that exists to catch unplaced commands. Read separately, from the target.
+    //
+    // Filtered to commands we own: the Engine's tracked `rgReplaceGuardHook` and any operator hook
+    // are declared here too, and neither is ours to place. Reporting them as unplaced would make
+    // `--check` red on a correct seat, which is the failure mode one step removed.
+    const claudeSettings = path.join(targetRepoRoot, CLAUDE_SETTINGS);
+
+    if (fs.existsSync(claudeSettings)) {
+        let settings;
+
+        try {
+            settings = JSON.parse(fs.readFileSync(claudeSettings, 'utf8'))
+        } catch {
+            // Unparseable settings are reported by the reconciliation check, which says so precisely.
+            // Guessing at the contents here would produce a second, vaguer complaint about one file.
+            settings = null
+        }
+
+        const paths = Object.values(settings?.hooks ?? {})
+            .flatMap(buckets => buckets.flatMap(bucket => (bucket.hooks ?? []).map(entry => String(entry.command ?? ''))))
+            .filter(command => isProjectorOwnedCommand(command, targetRepoRoot))
+            .flatMap(command => [...command.matchAll(pattern)].map(match => match[1]));
+
+        if (paths.length) {
+            declared.claude = [...new Set([...(declared.claude ?? []), ...paths])].sort()
+        }
+    }
+
     return declared
 }
 

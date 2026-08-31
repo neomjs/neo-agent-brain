@@ -542,6 +542,88 @@ test.describe('projectSeatHooks — AC-5: every declared command resolves to som
         expect(report.orphans).toEqual([])
     });
 
+    test('MUTANT — the same condition on the KIMI surface, asserted rather than inferred', () => {
+        // AC-5 says "asserted per harness, not inferred from one", and it is right to insist. The
+        // codex arm above proves the mechanism works where the config is an enumerated artifact the
+        // projector generates. Kimi's config is a different FORMAT (TOML), reached by the same
+        // extraction — a regression narrowing that extraction to JSON would leave this arm as the
+        // only thing that noticed.
+        //
+        // Built directly rather than through `projected()`, which only parameterizes the codex
+        // script — passing it a kimi path would have been silently ignored and this would have been
+        // the codex arm wearing a different name.
+        const
+            root = runtimeRoot({
+                'kimi-code': {
+                    'turnPresenceHook.mjs'      : HOOK_SOURCE,
+                    'turn-presence.example.toml': KIMI_CONFIG.replace('turnPresenceHook.mjs', 'never-placed.mjs')
+                }
+            }),
+            target = targetRepo();
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        const report = checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(report.ok).toBe(false);
+        expect(report.unplacedCommands)
+            .toEqual([{harness: 'kimi-code', target: '.kimi-code/hooks/never-placed.mjs'}])
+    });
+
+    test('MUTANT — the same condition on the CLAUDE surface, which is not an enumerated config', () => {
+        // The third harness, and structurally the one most likely to be missed: Claude's
+        // `.claude/settings.json` is reconciled into rather than generated, so it is absent from
+        // HARNESS_CONFIGS and the config-enumerating sweep cannot see it at all. An unplaced Claude
+        // command was therefore invisible to the check whose entire job is unplaced commands.
+        const
+            root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE}}),
+            target = targetRepo(),
+            ours   = '/usr/bin/env node "$(git rev-parse --show-toplevel)/.claude/hooks/never-placed.mjs"';
+
+        fs.mkdirSync(path.join(target, '.claude'), {recursive: true});
+        fs.writeFileSync(path.join(target, '.claude/settings.json'), `${JSON.stringify({
+            hooks: {Stop: [{hooks: [{command: ours, type: 'command'}]}]}
+        }, null, 2)}\n`, 'utf8');
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        // Re-declare it after projection: reconciliation retires our stale entries, which is correct,
+        // so the drift being tested is a settings file that acquires an unplaced command afterwards.
+        const settings = JSON.parse(fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8'));
+
+        settings.hooks.Stop = [{hooks: [{command: ours, type: 'command'}]}];
+        fs.writeFileSync(path.join(target, '.claude/settings.json'), `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+
+        expect(declaredHookCommands(root, target).claude).toContain('.claude/hooks/never-placed.mjs');
+        expect(checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target}).unplacedCommands)
+            .toEqual([{harness: 'claude', target: '.claude/hooks/never-placed.mjs'}])
+    });
+
+    test('CONTROL — the Engine\'s TRACKED guard is never reported as an unplaced command', () => {
+        // The boundary of the arm above. `rgReplaceGuardHook` is declared in the same file, in the
+        // same directory, in the same command shape — and the projector does not place it, because
+        // the Engine tracks it. Collecting it would make `--check` red on a correct seat, which is
+        // the previous failure one step removed rather than a fix.
+        const
+            root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE}}),
+            target = targetRepo(),
+            guard  = '/usr/bin/env node "$(git rev-parse --show-toplevel)/.claude/hooks/rgReplaceGuardHook.mjs"';
+
+        fs.mkdirSync(path.join(target, '.claude/hooks'), {recursive: true});
+        fs.writeFileSync(path.join(target, '.claude/hooks/rgReplaceGuardHook.mjs'), '// engine\n', 'utf8');
+        execFileSync('git', ['add', '-f', '.claude/hooks/rgReplaceGuardHook.mjs'], {cwd: target});
+        execFileSync('git', ['commit', '-qm', 'engine guard'], {cwd: target});
+
+        fs.writeFileSync(path.join(target, '.claude/settings.json'), `${JSON.stringify({
+            hooks: {PreToolUse: [{matcher: 'Bash', hooks: [{command: guard, type: 'command'}]}]}
+        }, null, 2)}\n`, 'utf8');
+
+        projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
+
+        expect(declaredHookCommands(root, target).claude ?? []).not.toContain('.claude/hooks/rgReplaceGuardHook.mjs');
+        expect(checkProjection({agentosRuntimeRoot: root, targetRepoRoot: target}).unplacedCommands).toEqual([])
+    });
+
     test('MUTANT — a retired .toml left in an owned directory is pruned, not left executing', () => {
         // Before the manifest drove the sweep, orphan detection was hardcoded to `.mjs`, so a
         // retired config artifact would have stayed behind and kept being read forever.
