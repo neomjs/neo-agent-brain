@@ -164,11 +164,11 @@ export async function readPlaneConfig() {
     await import('neo.mjs/src/core/_export.mjs');
 
     const {default: AiConfig} = await import('../../../../config.mjs'),
-          planeBase           = String(AiConfig.fleet.planeBase ?? '').trim().replace(/\/+$/, '');
+          planeBase           = AiConfig.fleet.planeBase.trim().replace(/\/+$/, '');
 
     return {
         baseUrl   : planeBase ? `${planeBase}/mc/mcp` : '',
-        credential: AiConfig.fleet.planeBearer ?? ''
+        credential: AiConfig.fleet.planeBearer
     };
 }
 
