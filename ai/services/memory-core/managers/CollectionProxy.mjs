@@ -42,6 +42,39 @@ class CollectionProxy extends Base {
         }));
     }
 
+    /**
+     * @summary The identity of the vector collection(s) this proxy fronts — never the proxy's own id.
+     *
+     * `CollectionProxy` extends `Neo.core.Base`, so `proxy.id` is a framework-assigned INSTANCE id
+     * (`neo-base-86`) that moves with construction order. Reading it as a collection identity is what
+     * #281 fixes: backup receipts recorded it as `collectionId`, so `deriveLineage` compared
+     * process-instance counters rather than collections and could not detect a collection change in
+     * either direction — `changed` for an ordinary restart, `same` for a genuine swap under a stable
+     * process. That is why #270's collapse guard was KB-complete but MC-partial.
+     *
+     * **It identifies the PRIMARY, because the primary is what gets exported.** `get()` and `count()`
+     * both read `collections[0]` and ignore the rest, so the rows in a receipt come from exactly one
+     * collection. The identity beside them has to be that collection's.
+     *
+     * A composite over every manager was the first shape here, and it was wrong in a way worth
+     * recording: it described a SET while the data came from a MEMBER. With a second manager present,
+     * a change confined to a non-reading member would move the identity and derive `lineage: changed`
+     * for a source whose exported rows never changed — a false refuse in #270's collapse guard, caused
+     * by an identity that did not identify what it accompanied.
+     *
+     * So this deliberately does NOT generalise ahead of the read path. If Memory Core ever exports
+     * more than the primary, the fix is per-manager export **and** per-manager receipts together; an
+     * identity cannot get there first.
+     *
+     * @returns {Promise<String|null>} The primary collection's id, or `null` when none resolves — which
+     * degrades the lineage axis to `unknown` rather than asserting a continuity it cannot observe.
+     */
+    async resolveCollectionId() {
+        const [primary] = await this.getCollections();
+
+        return primary?.id ?? null
+    }
+
     async add(args) {
         const collections = await this.getCollections();
         await Promise.all(collections.map(c => c.add(args)));
