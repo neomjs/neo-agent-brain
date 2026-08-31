@@ -121,17 +121,65 @@ export function rewriteSpecifiers(contents, sourceFile, runtimeRoot) {
 }
 
 /**
+ * @summary Finds projected-looking files the manifest no longer claims.
+ *
+ * The other conditions all start from a source and ask what happened to it. This one runs the
+ * other way — it starts from what is *on disk* in a projection directory — because a hook that
+ * was renamed or retired leaves a file behind that no enumeration will ever visit again. That
+ * leftover keeps executing in every seat, and it is the one failure mode a source-driven sweep
+ * structurally cannot see.
+ *
+ * Tracked files are never orphans: an authored file that happens to sit in a projection directory
+ * (the Engine-only `rgReplaceGuardHook.mjs` carve-out of ADR 0040 §2.7 is exactly this) is
+ * somebody's content, not our leftover.
+ * @param {String} runtimeRoot Absolute AgentOS runtime root.
+ * @param {String} targetRepoRoot Absolute target repository root.
+ * @returns {String[]} Repository-relative paths.
+ */
+export function findOrphans(runtimeRoot, targetRepoRoot) {
+    const
+        claimed = new Set(enumerateHooks(runtimeRoot).map(hook => hook.target)),
+        orphans = [];
+
+    Object.values(HARNESS_TARGETS).forEach(targetDir => {
+        const absDir = path.join(targetRepoRoot, targetDir);
+
+        if (!fs.existsSync(absDir)) return;
+
+        fs.readdirSync(absDir)
+            .filter(name => name.endsWith('.mjs'))
+            .sort()
+            .forEach(name => {
+                const relPath = path.posix.join(targetDir, name);
+
+                if (!claimed.has(relPath) && !tracked(targetRepoRoot, relPath)) orphans.push(relPath)
+            })
+    });
+
+    return orphans
+}
+
+/**
  * @summary Compares what is projected against what should be, without writing anything.
  *
- * Reports four independent conditions, because they need different answers: `missing` means the
- * seat will silently run nothing; `stale` means it runs an older revision than the source;
- * `trackedConflicts` means an authored file occupies a projection path and must never be
- * overwritten; `escapedSpecifiers` means a source reaches outside the runtime root and the
- * projection cannot bind it.
+ * Reports five independent conditions, because they need different answers and different repairs.
+ * Each maps to one #250 acceptance mutant:
+ *
+ * | field | AC mutant | meaning |
+ * |---|---|---|
+ * | `missing` | dangling target | the seat declares a hook whose file is absent — it silently runs nothing |
+ * | `stale` | wrong root, or an outdated copy | projected bytes differ from what this runtime root renders |
+ * | `orphans` | a stale entry the manifest no longer projects | a leftover still executing after a rename or retirement |
+ * | `trackedConflicts` | a tracked projection path | authored content occupies the path; never overwrite it |
+ * | `escapedSpecifiers` | — | a source reaches outside the runtime root and the projection cannot bind it |
+ *
+ * A projection built against the wrong runtime root lands in `stale` rather than in a field of its
+ * own: the rewritten specifiers are absolute, so a different root produces different bytes. That is
+ * the same signal as an outdated copy and wants the same repair — re-project from the right root.
  * @param {Object} options
  * @param {String} options.agentosRuntimeRoot
  * @param {String} options.targetRepoRoot
- * @returns {{escapedSpecifiers: Object[], missing: String[], ok: Boolean, stale: String[], trackedConflicts: String[]}}
+ * @returns {{escapedSpecifiers: Object[], missing: String[], ok: Boolean, orphans: String[], stale: String[], trackedConflicts: String[]}}
  */
 export function checkProjection({agentosRuntimeRoot, targetRepoRoot}) {
     const
@@ -160,10 +208,14 @@ export function checkProjection({agentosRuntimeRoot, targetRepoRoot}) {
         if (fs.readFileSync(absTarget, 'utf8') !== expected.contents) stale.push(target)
     });
 
+    const orphans = findOrphans(agentosRuntimeRoot, targetRepoRoot);
+
     return {
         escapedSpecifiers,
         missing,
-        ok: !missing.length && !stale.length && !trackedConflicts.length && !escapedSpecifiers.length,
+        ok: !missing.length && !stale.length && !orphans.length && !trackedConflicts.length &&
+            !escapedSpecifiers.length,
+        orphans,
         stale,
         trackedConflicts
     }
@@ -187,6 +239,199 @@ export function renderProjection(source, runtimeRoot) {
         contents: shebang
             ? shebang + result.contents
             : result.contents.replace(/^(#![^\n]*\n)/, `$1${GENERATED_BANNER}`)
+    }
+}
+
+/**
+ * @summary Writes the projected paths into the target's `.git/info/exclude`, inside a managed block.
+ *
+ * ADR 0040 §2.7 gives the Engine's tracked ignore rules authority over these paths, and a companion
+ * leaf (neomjs/neo#17892) adds them there. This is the *general* case underneath that: a target may
+ * be any tenant repository whose `.gitignore` we have no right to edit. `.git/info/exclude` is
+ * per-checkout and untracked, so the projector can own it outright.
+ *
+ * **Untracked is not ignored.** Without these patterns `git status` reports every projection in
+ * every seat forever, and a permanently dirty tree trains people to stop reading it — which is how
+ * a real stray file goes unnoticed. Acceptance for #250 is a clean `git status`, not merely
+ * untracked artifacts.
+ *
+ * Exact paths, not directory globs: a glob would also hide a genuinely new authored file dropped
+ * into a hooks directory, and tracked carve-outs like the Engine-only guard must stay visible. The
+ * block is delimited and rewritten whole, so retiring a hook removes its line instead of
+ * accumulating one.
+ * @param {Object} options
+ * @param {String[]} options.targets Repository-relative projected paths.
+ * @param {String} options.targetRepoRoot Absolute target repository root.
+ * @returns {String} Absolute path of the exclude file written.
+ */
+export function writeLocalExclude({targetRepoRoot, targets}) {
+    const
+        gitDir      = execFileSync('git', ['rev-parse', '--absolute-git-dir'], {cwd: targetRepoRoot, encoding: 'utf8'}).trim(),
+        excludeFile = path.join(gitDir, 'info', 'exclude'),
+        begin       = '# BEGIN projectSeatHooks — generated seat hooks, do not edit inside this block',
+        end         = '# END projectSeatHooks',
+        block       = [begin, ...[...targets].sort().map(target => `/${target}`), end].join('\n'),
+        existing    = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '',
+        pattern     = new RegExp(`\\n?${begin}[\\s\\S]*?${end}\\n?`),
+        stripped    = existing.replace(pattern, '\n'),
+        next        = `${stripped.replace(/\n+$/, '')}\n\n${block}\n`;
+
+    fs.mkdirSync(path.dirname(excludeFile), {recursive: true});
+    fs.writeFileSync(excludeFile, next.replace(/^\n+/, ''), 'utf8');
+
+    return excludeFile
+}
+
+/**
+ * @summary Materializes every enumerated hook into the target checkout.
+ *
+ * Refuses as a whole before writing anything. A projector that wrote four files and then hit a
+ * tracked path would leave the seat in a state that is neither the old one nor the new one, and the
+ * operator would have to work out which — so the tracked-path audit runs first, across every hook,
+ * and an offence aborts the run with nothing written.
+ *
+ * Orphans are pruned rather than reported, because a leftover hook is not information the operator
+ * has to act on — it is a file that keeps executing until it is gone.
+ * @param {Object} options
+ * @param {String} options.agentosRuntimeRoot
+ * @param {String} options.targetRepoRoot
+ * @returns {{excludeFile: String, pruned: String[], written: String[]}}
+ * @throws {Error} If any projection path is tracked, or a source escapes the runtime root.
+ */
+export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
+    const
+        hooks     = enumerateHooks(agentosRuntimeRoot),
+        conflicts = hooks.filter(hook => tracked(targetRepoRoot, hook.target)).map(hook => hook.target);
+
+    if (conflicts.length) {
+        throw new Error(
+            `refusing to overwrite tracked path(s): ${conflicts.join(', ')}. A tracked file at a ` +
+            'projection path is authored content — resolve its ownership before projecting.'
+        )
+    }
+
+    const
+        rendered = hooks.map(hook => ({...hook, ...renderProjection(hook.source, agentosRuntimeRoot)})),
+        escapees = rendered.filter(hook => hook.escaped.length);
+
+    if (escapees.length) {
+        throw new Error(
+            'source(s) reach outside the runtime root and cannot be bound: ' +
+            escapees.map(hook => `${hook.target} → ${hook.escaped.join(', ')}`).join('; ')
+        )
+    }
+
+    const
+        pruned  = findOrphans(agentosRuntimeRoot, targetRepoRoot),
+        written = [];
+
+    pruned.forEach(relPath => fs.rmSync(path.join(targetRepoRoot, relPath)));
+
+    rendered.forEach(({contents, target}) => {
+        const absTarget = path.join(targetRepoRoot, target);
+
+        fs.mkdirSync(path.dirname(absTarget), {recursive: true});
+        fs.writeFileSync(absTarget, contents, 'utf8');
+        // Hooks are invoked as executables by the harnesses, not imported.
+        fs.chmodSync(absTarget, 0o755);
+        written.push(target)
+    });
+
+    return {
+        excludeFile: writeLocalExclude({targetRepoRoot, targets: written}),
+        pruned,
+        written
+    }
+}
+
+/**
+ * @summary Resolves one required root binding, failing loud when it is absent.
+ *
+ * ADR 0040 §2.5 forbids `process.cwd()` as a fallback for either root. A projector that defaulted
+ * would write a full set of hooks into whatever directory it happened to start in, and report
+ * success doing it.
+ * @param {String[]} argv
+ * @param {String} flag
+ * @param {String} envVar
+ * @returns {String} Absolute path.
+ * @throws {Error} If the binding is absent or does not exist on disk.
+ */
+function requireRoot(argv, flag, envVar) {
+    const
+        prefix = `--${flag}=`,
+        raw    = argv.find(arg => arg.startsWith(prefix))?.slice(prefix.length) || process.env[envVar];
+
+    if (!raw) {
+        throw new Error(`missing required root: pass ${prefix}<path> or set ${envVar}. There is no default.`)
+    }
+
+    const resolved = path.resolve(raw);
+
+    if (!fs.existsSync(resolved)) throw new Error(`${flag} does not exist: ${resolved}`);
+
+    return resolved
+}
+
+/**
+ * @summary CLI entrypoint. `--check` audits without writing; the default arm projects.
+ * @param {String[]} argv
+ * @returns {Number} Process exit code.
+ */
+export function main(argv) {
+    const
+        agentosRuntimeRoot = requireRoot(argv, 'runtime-root', 'AGENTOS_RUNTIME_ROOT'),
+        targetRepoRoot     = requireRoot(argv, 'target-root',  'AGENTOS_TARGET_REPO_ROOT');
+
+    if (argv.includes('--check')) {
+        const report = checkProjection({agentosRuntimeRoot, targetRepoRoot});
+
+        if (report.ok) {
+            console.log(`projectSeatHooks --check: OK — every declared hook is projected and current in ${targetRepoRoot}`);
+            return 0
+        }
+
+        const labels = {
+            escapedSpecifiers: 'source reaches outside the runtime root',
+            missing          : 'declared but not projected (the seat runs nothing)',
+            orphans          : 'projected but no longer declared (still executing)',
+            stale            : 'projected from a different revision or a different runtime root',
+            trackedConflicts : 'tracked file occupies a projection path'
+        };
+
+        console.error('projectSeatHooks --check: FAILED');
+
+        Object.entries(labels).forEach(([field, label]) => {
+            const entries = report[field];
+
+            if (entries?.length) {
+                console.error(`\n  ${label}:`);
+                entries.forEach(entry => console.error(`    ${entry.target || entry}`))
+            }
+        });
+
+        console.error('\n  Repair: re-run without --check to re-project.');
+        return 1
+    }
+
+    const {excludeFile, pruned, written} = projectHooks({agentosRuntimeRoot, targetRepoRoot});
+
+    console.log(`projectSeatHooks: projected ${written.length} hook(s) into ${targetRepoRoot}`);
+    written.forEach(target => console.log(`  + ${target}`));
+    pruned.forEach(target => console.log(`  - ${target} (no longer declared)`));
+    console.log(`  exclude patterns written to ${excludeFile}`);
+
+    return 0
+}
+
+// Direct-execution guard. Deliberately compares against the realpath of argv[1]: through a symlink
+// the two disagree and main() would never run, which is the silent-no-op this projector exists to
+// prevent — so the hooks are copied rather than linked (see the module header).
+if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process.argv[1])).href) {
+    try {
+        process.exit(main(process.argv.slice(2)))
+    } catch (error) {
+        console.error(`projectSeatHooks: ${error.message}`);
+        process.exit(1)
     }
 }
 
