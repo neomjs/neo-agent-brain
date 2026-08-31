@@ -30,6 +30,8 @@ import {normalizeSettlementCounts}
                             from './helpers/corpusOutstanding.mjs';
 import {createTenantRepoMaterializationDigest}
                             from './helpers/tenantRepoIngestEnvelopeBuilder.mjs';
+import RepositoryClassHierarchyResolver
+                            from './helpers/repositoryClassHierarchyResolver.mjs';
 import {isChromaConnectionError}
                             from '../shared/vector/chromaClientPrimitives.mjs';
 import {resolveEmbeddingAdmissionBand}
@@ -2500,8 +2502,12 @@ class IngestionService extends Base {
                 ...repo,
                 extractionProfile,
                 extractionIdentity: createExtractionProfileIdentity({
-                    profile: extractionProfile,
-                    catalogue
+                    profile          : extractionProfile,
+                    catalogue,
+                    hierarchyIdentity: {
+                        id     : RepositoryClassHierarchyResolver.id,
+                        version: RepositoryClassHierarchyResolver.version
+                    }
                 })
             }
         });

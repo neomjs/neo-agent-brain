@@ -31,6 +31,8 @@ import {
     buildIngestEnvelope,
     createTenantRepoMaterializationDigest
 } from '../../../services/knowledge-base/helpers/tenantRepoIngestEnvelopeBuilder.mjs';
+import RepositoryClassHierarchyResolver
+    from '../../../services/knowledge-base/helpers/repositoryClassHierarchyResolver.mjs';
 import {
     classifyTenantRepoAccessFailure,
     isTenantRepoAccessReadinessOutcome,
@@ -813,9 +815,9 @@ function assertFullMaterializationEffect(envelope, summary, priorState, material
  *
  * The push-based ingestion path (`ingest_source_files`, `npm run ai:kb-push-client`,
  * `npm run ai:ingest-tenant`) is unchanged. This lane is the additive PULL complement
- * for cloud tenant deployments. Local-only lanes (`primary-dev-sync`, `kbSync`,
- * `bridgeDaemon`) are unaffected — `kbSync` is never re-pointed at tenant content per
- * the cloud-deployment lane-classification ADR's separation invariant.
+ * for cloud tenant deployments. Host-edge lanes (`primary-dev-sync`, `bridgeDaemon`) are
+ * unaffected. The container-plane `kbSync` lane remains the shared Neo-corpus scan and is never
+ * re-pointed at tenant content; this lane owns tenant GitMirror acquisition instead.
  *
  * Per-repo failure isolation: a failure on one tenantRepo entry does NOT halt the
  * sweep; it is logged + healthService-recorded + the remaining repos continue. The
@@ -1893,7 +1895,10 @@ class TenantRepoSyncService extends Base {
                     : undefined,
                 parserResolver: typeof ingestionService.createTenantParserResolver === 'function'
                     ? ingestionService.createTenantParserResolver({tenantId: repo.tenantId})
-                    : undefined
+                    : undefined,
+                // Module-owned id/version are materialization input. No config surface restates
+                // them, and the runner retains its coded refusal when this capability is absent.
+                hierarchyResolver: RepositoryClassHierarchyResolver
             };
 
             tenantExecutionContexts.set(repo.tenantId, context);
@@ -2553,9 +2558,7 @@ class TenantRepoSyncService extends Base {
                     extractionIdentity: repo.extractionIdentity,
                     extractorCatalogue: tenantExecutionContext.extractorCatalogue,
                     parserResolver    : tenantExecutionContext.parserResolver,
-                    // #263 owns the production identity-bearing hierarchy resolver. Passing the
-                    // interface explicitly keeps hierarchy-required profiles fail-closed here.
-                    hierarchyResolver  : null,
+                    hierarchyResolver : tenantExecutionContext.hierarchyResolver,
                     gitMirror,
                     // The clone and fetch above are not the last authenticated operations of this
                     // sweep. On a blobless mirror the envelope acquires blobs in bulk and then reads

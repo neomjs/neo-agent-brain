@@ -521,12 +521,18 @@ export function createExtractionProfileMaterializationInput({
                 requiresHierarchy: descriptor.requiresHierarchy
             }
         });
+    const hierarchyRequired = descriptors.some(descriptor => descriptor.requiresHierarchy);
 
     return deepFreeze(canonicalizeData({
         formatVersion               : 1,
         normalizationContractVersion: EXTRACTION_NORMALIZATION_CONTRACT_VERSION,
         matcher                     : EXTRACTION_MATCHER_CONTRACT,
-        hierarchyIdentity           : normalizeHierarchyIdentity(hierarchyIdentity),
+        // A resolver version is identity input only for routes that consume hierarchy. Binding it
+        // to RawRepoSource/ParserSource would replay tenants whose extraction cannot observe the
+        // resolver, while dropping it for ApiSource would silently reuse proof across algorithms.
+        hierarchyIdentity           : hierarchyRequired
+            ? normalizeHierarchyIdentity(hierarchyIdentity)
+            : null,
         descriptors,
         profile                     : normalizedProfile
     }, 'extraction materialization input'));

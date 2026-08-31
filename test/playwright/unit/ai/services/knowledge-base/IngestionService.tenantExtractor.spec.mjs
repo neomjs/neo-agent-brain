@@ -65,11 +65,35 @@ function customProfile(extractorId) {
     }
 }
 
+function apiProfile() {
+    return {
+        profileSchemaVersion: 1,
+        routes              : [{
+            territory: {
+                roots  : ['ai'],
+                include: ['**/*.mjs']
+            },
+            extractorId: 'ApiSource',
+            options    : {type: 'ai-infrastructure'}
+        }],
+        fallback: {action: 'exclude'}
+    }
+}
+
 test.describe('IngestionService tenant extraction projection (#262)', () => {
-    let Service, graphStub, originals, tmpRoot, extractorRoot;
+    let Service, createExtractionProfileIdentity, graphStub, originals,
+        RepositoryClassHierarchyResolver, tmpRoot, extractorRoot;
 
     test.beforeAll(async () => {
-        Service       = (await import('../../../../../../ai/services/knowledge-base/IngestionService.mjs')).default;
+        const [serviceModule, contractModule, resolverModule] = await Promise.all([
+            import('../../../../../../ai/services/knowledge-base/IngestionService.mjs'),
+            import('../../../../../../ai/services/knowledge-base/helpers/extractionProfileContract.mjs'),
+            import('../../../../../../ai/services/knowledge-base/helpers/repositoryClassHierarchyResolver.mjs')
+        ]);
+
+        Service                         = serviceModule.default;
+        createExtractionProfileIdentity = contractModule.createExtractionProfileIdentity;
+        RepositoryClassHierarchyResolver = resolverModule.default;
         tmpRoot       = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-tenant-extractor-'));
         extractorRoot = path.join(tmpRoot, 'kb-extractors');
 
@@ -215,6 +239,48 @@ export default {
         });
         expect(secondProjection.tenantRepos[0].extractionIdentity)
             .not.toBe(firstProjection.tenantRepos[0].extractionIdentity);
+    });
+
+    test('ApiSource projection binds the module-owned hierarchy identity and reds on a version drop', async () => {
+        const projection = await Service.projectTenantConfig({
+            tenantId: 'tenant-a',
+            source  : 'fixture',
+            config  : {tenantRepos: [repo(apiProfile())]}
+        });
+        const projectedIdentity = projection.tenantRepos[0].extractionIdentity;
+        const expectedIdentity  = createExtractionProfileIdentity({
+            profile          : apiProfile(),
+            hierarchyIdentity: {
+                id     : RepositoryClassHierarchyResolver.id,
+                version: RepositoryClassHierarchyResolver.version
+            }
+        });
+        const bumpedIdentity = createExtractionProfileIdentity({
+            profile          : apiProfile(),
+            hierarchyIdentity: {
+                id     : RepositoryClassHierarchyResolver.id,
+                version: '1.0.1'
+            }
+        });
+
+        expect(projectedIdentity).toBe(expectedIdentity);
+        expect(bumpedIdentity).not.toBe(projectedIdentity);
+        expect(() => createExtractionProfileIdentity({
+            profile          : apiProfile(),
+            hierarchyIdentity: {id: RepositoryClassHierarchyResolver.id, version: ''}
+        })).toThrow(/requires non-empty id and version/u)
+    });
+
+    test('non-hierarchy profiles do not churn when the resolver version changes', () => {
+        const profile = customProfile('RawRepoSource');
+
+        expect(createExtractionProfileIdentity({
+            profile,
+            hierarchyIdentity: {id: 'resolver', version: '1'}
+        })).toBe(createExtractionProfileIdentity({
+            profile,
+            hierarchyIdentity: {id: 'resolver', version: '2'}
+        }))
     });
 
     test('adapts a route-bound legacy chunk with distinct extractor and parser provenance', async () => {
