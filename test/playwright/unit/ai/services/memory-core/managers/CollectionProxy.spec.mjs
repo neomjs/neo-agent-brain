@@ -79,29 +79,44 @@ test.describe('Neo.ai.services.memory-core.managers.CollectionProxy — collecti
         expect(await proxyFronting().resolveCollectionId()).toBeNull();
     });
 
-    test.describe('the fan-out case, dispositioned rather than assumed', () => {
-        // `getManagers()` returns at most one manager today — both `aiConfig.engine` values select
-        // `ChromaManager` alone — so the array is future shape. These arms fix the behaviour now, so a
-        // second manager cannot silently redefine what the receipt's identity means.
-        test('several collections compose into one deterministic identity', async () => {
-            const proxy = proxyFronting({id: 'alpha'}, {id: 'beta'});
+    test.describe('the identity is bound to the READ handle, not to the manager set', () => {
+        // `get()` and `count()` read `collections[0]` and ignore the rest, so a receipt's rows come
+        // from exactly one collection. An identity describing the whole set would describe something
+        // other than the data it accompanies.
+        test('several managers still identify the PRIMARY — the one the rows came from', async () => {
+            const proxy = proxyFronting({id: 'primary'}, {id: 'secondary'});
 
-            expect(await proxy.resolveCollectionId()).toBe('alpha+beta');
+            expect(await proxy.resolveCollectionId()).toBe('primary');
         });
 
-        test('resolution ORDER does not change the identity — an unchanged fan-out never reads as changed', async () => {
-            // Sorting is load-bearing, not tidiness: without it, managers resolving in a different
-            // order would derive `lineage: changed` for a fan-out that never moved.
-            const forward = proxyFronting({id: 'alpha'}, {id: 'beta'}),
-                  reverse = proxyFronting({id: 'beta'}, {id: 'alpha'});
+        test('NEGATIVE CONTROL: a change confined to a SECONDARY does not move the identity', async () => {
+            // The false-refuse this prevents. Under a composite identity, swapping a member that
+            // contributes no exported rows would derive `lineage: changed` for a source whose data
+            // never moved — and #270's collapse guard would refuse a healthy capture on that basis.
+            const before = proxyFronting({id: 'primary'}, {id: 'secondary-v1'}),
+                  after  = proxyFronting({id: 'primary'}, {id: 'secondary-v2'});
 
-            expect(await forward.resolveCollectionId()).toBe(await reverse.resolveCollectionId());
+            expect(await before.resolveCollectionId()).toBe(await after.resolveCollectionId());
         });
 
-        test('an unresolvable member is dropped rather than poisoning the identity', async () => {
-            const proxy = proxyFronting({id: 'alpha'}, {});
+        test('the identity names the SAME handle `count()` and `get()` read', async () => {
+            // Binds the two together, so a future change to either selection rule breaks this rather
+            // than silently decoupling the rows from the id recorded beside them.
+            const proxy = proxyFronting(
+                {id: 'primary', count: async () => 42},
+                {id: 'secondary', count: async () => 99}
+            );
 
-            expect(await proxy.resolveCollectionId()).toBe('alpha');
+            expect(await proxy.count()).toBe(42);
+            expect(await proxy.resolveCollectionId()).toBe('primary');
+        });
+
+        test('an unresolvable PRIMARY yields `null` rather than borrowing a secondary\'s identity', async () => {
+            // Falling through to a later member would put a secondary's id beside the primary's rows —
+            // the same not-what-it-accompanies defect, arriving through the failure path.
+            const proxy = proxyFronting({}, {id: 'secondary'});
+
+            expect(await proxy.resolveCollectionId()).toBeNull();
         });
     });
 });

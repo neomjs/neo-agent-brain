@@ -105,6 +105,15 @@ test.describe('Memory_DatabaseService — backupPath routing (#10129 Phase 2 pre
         expect(result.summaries.exported).toBe(1);
         expect(result.summaries.expected).toBe(1);
 
+        // #281 RED CONTROL — the receipt must carry the SOURCE identity the resolver reports, not the
+        // proxy's `Neo.core.Base` instance id. Declaring `resolveCollectionId` on the fake proves only
+        // that the method exists; these assert the exporter actually consumed it, so reverting the
+        // call site to `collection?.id` reds here rather than passing with a plausible-looking
+        // `neo-base-NN` in the persisted bundle.
+        expect(result.memories.collectionId).toBe('fake-memories-collection-id');
+        expect(result.summaries.collectionId).toBe('fake-summaries-collection-id');
+        expect(result.memories.collectionId).not.toMatch(/^neo-base-\d+$/u);
+
         const produced = fs.readdirSync(tmpDir).filter(f => f.endsWith('.jsonl')).sort();
         expect(produced.length).toBe(2);
         expect(produced.some(f => f.startsWith('memory-backup-'))).toBe(true);

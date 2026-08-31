@@ -52,24 +52,27 @@ class CollectionProxy extends Base {
      * either direction — `changed` for an ordinary restart, `same` for a genuine swap under a stable
      * process. That is why #270's collapse guard was KB-complete but MC-partial.
      *
-     * **On the array.** `getManagers()` returns at most one manager today: both `aiConfig.engine`
-     * values (`'hybrid'`, `'chroma'`) select `ChromaManager` alone, so the array is future shape
-     * rather than current multiplicity. Rather than assume a scalar stays safe, the identity of a
-     * fan-out is defined as the identity of its members — ids are sorted and joined, so one manager
-     * yields a bare id and any future second yields a deterministic composite that still compares
-     * correctly. **Sorting is load-bearing:** resolution order must never make an unchanged fan-out
-     * read as changed.
+     * **It identifies the PRIMARY, because the primary is what gets exported.** `get()` and `count()`
+     * both read `collections[0]` and ignore the rest, so the rows in a receipt come from exactly one
+     * collection. The identity beside them has to be that collection's.
      *
-     * @returns {Promise<String|null>} `null` when no manager resolves, so the lineage axis degrades to
-     * `unknown` rather than asserting a continuity it cannot observe.
+     * A composite over every manager was the first shape here, and it was wrong in a way worth
+     * recording: it described a SET while the data came from a MEMBER. With a second manager present,
+     * a change confined to a non-reading member would move the identity and derive `lineage: changed`
+     * for a source whose exported rows never changed — a false refuse in #270's collapse guard, caused
+     * by an identity that did not identify what it accompanied.
+     *
+     * So this deliberately does NOT generalise ahead of the read path. If Memory Core ever exports
+     * more than the primary, the fix is per-manager export **and** per-manager receipts together; an
+     * identity cannot get there first.
+     *
+     * @returns {Promise<String|null>} The primary collection's id, or `null` when none resolves — which
+     * degrades the lineage axis to `unknown` rather than asserting a continuity it cannot observe.
      */
     async resolveCollectionId() {
-        const ids = (await this.getCollections())
-            .map(collection => collection?.id)
-            .filter(Boolean)
-            .sort();
+        const [primary] = await this.getCollections();
 
-        return ids.length ? ids.join('+') : null
+        return primary?.id ?? null
     }
 
     async add(args) {
