@@ -198,6 +198,24 @@ class ChromaManager extends Base {
     }
 
     /**
+     * @summary Whether the last canonical resolution BOOTSTRAPPED the collection instead of finding it.
+     *
+     * The one fact that separates "this corpus is empty" from "I could not find this corpus, so I
+     * made an empty one" — and it is knowable only here, at the resolution. Downstream, both states
+     * present identically: a valid collection handle whose `count()` is `0`. A consumer that sees only
+     * the handle is structurally unable to tell them apart, which is why the KB export receipt
+     * reported a bootstrapped collection with the same `source-collection-empty` code it uses for a
+     * genuinely empty one (#270).
+     *
+     * `null` until a resolution has run, so "not yet resolved" is never readable as "found normally".
+     * Cleared by {@link ChromaManager#invalidateKnowledgeBaseCollectionCache} alongside the promise it
+     * describes — a flag outliving its resolution would report the previous attempt's provenance for
+     * the next one.
+     * @member {Boolean|null} knowledgeBaseCollectionBootstrapped=null
+     */
+    knowledgeBaseCollectionBootstrapped = null
+
+    /**
      * @returns {Promise<Object>}
      */
     async getKnowledgeBaseCollection() {
@@ -233,6 +251,8 @@ class ChromaManager extends Base {
     async #resolveKnowledgeBaseCollection() {
         const options = this.#getKnowledgeBaseCollectionOptions();
 
+        this.knowledgeBaseCollectionBootstrapped = false;
+
         try {
             return await this.#getCollectionWithConnectionRetry(options);
         } catch (error) {
@@ -247,7 +267,15 @@ class ChromaManager extends Base {
         }
 
         try {
-            return await this.client.createCollection(options);
+            // Reached only when the canonical collection was ABSENT and no swap explains its absence.
+            // Whatever comes back is a collection this call created: correct for a true first-run
+            // bootstrap, and indistinguishable from it for any other cause of absence. The flag
+            // records which of the two resolution paths ran, and makes no claim about why (#270).
+            const collection = await this.client.createCollection(options);
+
+            this.knowledgeBaseCollectionBootstrapped = true;
+
+            return collection;
         } catch (error) {
             if (!this.#isCollectionAlreadyExistsError(error)) {
                 throw error;
@@ -258,6 +286,9 @@ class ChromaManager extends Base {
                 throw this.#createSwapInProgressError(activeSwapCollections);
             }
 
+            // The collection existed after all — it appeared between our miss and our create, so this
+            // resolution FOUND one rather than bootstrapping it. The flag is still `false` from the
+            // top of this method, because it is set only AFTER a create resolves; no reset here.
             return await this.client.getCollection(options);
         }
     }
@@ -456,8 +487,11 @@ class ChromaManager extends Base {
      * @see https://github.com/neomjs/neo/issues/11683
      */
     invalidateKnowledgeBaseCollectionCache() {
-        this._knowledgeBaseCollectionPromise = null;
-        this.knowledgeBaseCollection         = null;
+        this._knowledgeBaseCollectionPromise     = null;
+        this.knowledgeBaseCollection             = null;
+        // Back to "no resolution has run". The flag describes ONE resolution, so leaving it set would
+        // let the next caller read the discarded attempt's provenance as its own (#270).
+        this.knowledgeBaseCollectionBootstrapped = null;
     }
 
     /**

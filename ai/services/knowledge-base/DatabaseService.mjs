@@ -51,15 +51,27 @@ dotenv.config({
  * upstream and cannot arrive here, but a verdict added to the classifier later would, and the safe
  * direction for an unrecognised completeness state is "not certified".
  *
- * @param {Object} options
- * @param {Number} options.exported Rows actually written.
- * @param {String} options.verdict From {@link classifyExportCompleteness}.
+ * **A zero has two causes and now has two codes (#270).** `source-collection-empty` used to answer
+ * both "this collection legitimately holds nothing" and "I could not find this collection, so one was
+ * created and it holds nothing" — states with opposite operational meanings sharing one verdict, so a
+ * consumer branching on the code could not act differently on them however carefully it read. The
+ * discriminator is not observable from the counts, which are `0` either way; it is
+ * `bootstrapped`, reported by the resolver that took one path or the other. Absent that signal
+ * (`undefined`) the code is unchanged, so every existing caller and bundle keeps its meaning.
+ *
+ * @param {Object}         options
+ * @param {Number}         options.exported Rows actually written.
+ * @param {String}         options.verdict From {@link classifyExportCompleteness}.
+ * @param {Boolean|null}  [options.bootstrapped] Whether the resolution CREATED the source collection
+ *                        rather than finding it. From `ChromaManager.knowledgeBaseCollectionBootstrapped`.
  * @returns {{status: String, reason: String|null}}
  * @private
  */
-function describeKbExportOutcome({exported, verdict}) {
+function describeKbExportOutcome({exported, verdict, bootstrapped = null}) {
     if (exported === 0) {
-        return {status: 'degraded', reason: 'source-collection-empty'}
+        return bootstrapped === true
+            ? {status: 'degraded', reason: 'source-collection-unresolved'}
+            : {status: 'degraded', reason: 'source-collection-empty'}
     }
 
     if (verdict === EXPORT_COMPLETENESS.grew) {
@@ -180,12 +192,19 @@ class DatabaseService extends Base {
         try {
             logger.log('Starting knowledge base export...');
             const collection                    = await ChromaManager.getKnowledgeBaseCollection();
+            const bootstrapped                  = ChromaManager.knowledgeBaseCollectionBootstrapped;
             const {expected, exported, verdict} = await this.#exportCollection(collection, backupPath, 'knowledge-base-backup');
 
             // A zero-row export against a POPULATED collection already throws upstream
-            // (`PARTIAL_COLLECTION_EXPORT`). What reaches here is a genuinely empty corpus — a real
-            // state, and not a complete capture. Reporting it as `complete` is what let four
-            // consecutive backups present as recovery sources while holding nothing.
+            // (`PARTIAL_COLLECTION_EXPORT`). What reaches here is an empty corpus — a real state, and
+            // not a complete capture. Reporting it as `complete` is what let four consecutive backups
+            // present as recovery sources while holding nothing.
+            //
+            // "Empty" is not automatically "genuinely empty", which is why `bootstrapped` is read here
+            // and not inferred from the counts: a collection this process just CREATED because it
+            // could not find the canonical one also exports zero rows, and is a resolution failure
+            // rather than a fact about the corpus (#270). Read from the manager immediately after the
+            // resolution it describes, before any other caller can invalidate the cache.
             //
             // `status` is the branchable field: a consumer must not have to string-match the prose to
             // learn a bundle has no rows. `expected` is carried for the same reason the `mc` and
@@ -195,7 +214,7 @@ class DatabaseService extends Base {
             // and that branch's own source says it is complete-or-better but NOT provably exact,
             // because the export pages by offset. A new branchable field must model every state the
             // producer already had, or it over-certifies the one it was not written for.
-            const {reason, status} = describeKbExportOutcome({exported, verdict});
+            const {reason, status} = describeKbExportOutcome({exported, verdict, bootstrapped});
 
             return {
                 message     : status === 'complete'

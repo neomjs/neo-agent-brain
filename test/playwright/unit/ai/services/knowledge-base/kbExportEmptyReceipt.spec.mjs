@@ -28,7 +28,14 @@ test.describe('KB export receipt on an empty collection', () => {
 
     test.afterAll(() => { ChromaManager.getKnowledgeBaseCollection = originalResolve });
 
-    test.beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-kb-export-')) });
+    test.beforeEach(async () => {
+        root = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-kb-export-'));
+        // `ChromaManager` is a singleton shared by every spec in this worker, and
+        // `knowledgeBaseCollectionBootstrapped` describes whichever resolution ran last — including
+        // one performed by a different spec file. Pinned per test so these assertions read the state
+        // they declare rather than the residue of whatever ran before them.
+        ChromaManager.knowledgeBaseCollectionBootstrapped = null;
+    });
     test.afterEach (async () => { await fs.remove(root) });
 
     /**
@@ -102,6 +109,78 @@ test.describe('KB export receipt on an empty collection', () => {
         expect(receipt.status).not.toBe('complete');
         expect(receipt.reason).toBe('source-grew-during-export');
         expect(receipt.message).not.toContain('Export complete');
+    });
+
+    test.describe('a BOOTSTRAPPED collection is unresolved, not empty (#270)', () => {
+        // Both states hand the exporter a valid collection handle whose `count()` is `0`, so no
+        // number on the receipt can separate them — `expected` and `count` are both zero either way,
+        // and `expected` is read through the same resolution that produced the zero, so it agrees
+        // with it rather than checking it. The discriminator has to come from the resolver, which
+        // knows whether it FOUND the canonical collection or CREATED one after failing to.
+        //
+        // Left unsplit, one code answered "this corpus is empty" and "I could not find this corpus",
+        // states with opposite operational meanings — the first is routine, the second is the
+        // 2026-08-30T19:18 bundle that exported zero rows against a live 68,207 and published.
+        test.afterEach(() => { ChromaManager.knowledgeBaseCollectionBootstrapped = null });
+
+        test('a collection the resolver CREATED reports source-collection-unresolved', async () => {
+            ChromaManager.knowledgeBaseCollectionBootstrapped = true;
+
+            const receipt = await exportWithCollectionCount(0);
+
+            expect(receipt.status).toBe('degraded');
+            expect(receipt.reason).toBe('source-collection-unresolved');
+            expect(receipt.reason).not.toBe('source-collection-empty');
+        });
+
+        test('a collection the resolver FOUND still reports source-collection-empty', async () => {
+            // The control that keeps the split honest. Identical counts, identical status, identical
+            // everything the receipt can measure — only the resolution path differs. If this returned
+            // the new code too, the split would be renaming the state rather than dividing it.
+            ChromaManager.knowledgeBaseCollectionBootstrapped = false;
+
+            const receipt = await exportWithCollectionCount(0);
+
+            expect(receipt.status).toBe('degraded');
+            expect(receipt.reason).toBe('source-collection-empty');
+        });
+
+        test('an unreported resolution keeps the existing code, so older callers are unaffected', async () => {
+            // `null` is "no resolution has been recorded" — every consumer that never reads the flag,
+            // and every bundle written before it existed, keeps the meaning it already had.
+            ChromaManager.knowledgeBaseCollectionBootstrapped = null;
+
+            expect((await exportWithCollectionCount(0)).reason).toBe('source-collection-empty');
+        });
+
+        test('bootstrapping does not degrade a capture that actually wrote rows', async () => {
+            // The flag qualifies a ZERO. A bootstrapped collection holding rows is a first-run
+            // deployment that then ingested, and its capture is clean — reading the flag earlier than
+            // the zero would fail it for its own history.
+            ChromaManager.knowledgeBaseCollectionBootstrapped = true;
+
+            // Serves the row it counts. `exportWithCollectionCount` reports a count without serving
+            // anything, which is a genuinely PARTIAL export — it can only build the zero case.
+            let   served     = 0;
+            const collection = {
+                id  : 'ab75f86b-1651-4865-96f4-0287acd42ea7',
+                name: 'neo-knowledge-base',
+                async count() { return 1 },
+                async get() {
+                    if (served++ > 0) { return {ids: [], documents: [], embeddings: [], metadatas: []} }
+
+                    return {ids: ['a'], documents: ['one'], embeddings: [[0.1]], metadatas: [{}]}
+                }
+            };
+
+            ChromaManager.getKnowledgeBaseCollection = async () => collection;
+
+            const receipt = await DatabaseService.exportDatabase({backupPath: root});
+
+            expect(receipt.count).toBe(1);
+            expect(receipt.status).toBe('complete');
+            expect(receipt.reason).toBeNull();
+        });
     });
 
     test('the receipt carries `expected`, so a zero has something to be zero against', async () => {
