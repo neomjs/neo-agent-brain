@@ -96,6 +96,28 @@ function targetRepo() {
     return root
 }
 
+/**
+ * @summary Builds a target checkout that declares a package name of its own.
+ *
+ * The degenerate case of #79 is not a property of the *source* — it is a property of the target, so
+ * the fixture that expresses it is a manifest rather than a hook. Passing `exports` produces the
+ * mapped variant, where a subpath no longer implies a file path.
+ * @param {String} name The target's own `package.json` name.
+ * @param {Object} [exports] An `exports` map, when the mapped variant is under test.
+ * @returns {String} Absolute target repository root.
+ */
+function selfPackageTarget(name, exports) {
+    const root = targetRepo();
+
+    fs.writeFileSync(
+        path.join(root, 'package.json'),
+        JSON.stringify(exports ? {exports, name, type: 'module'} : {name, type: 'module'}, null, 4),
+        'utf8'
+    );
+
+    return root
+}
+
 /** A hook that reaches for Brain substrate the way the real ones do. */
 const HOOK_SOURCE = "#!/usr/bin/env node\nimport {substrate} from '../../../../lib/substrate.mjs';\n" +
                     "const engine = await import('neo.mjs/src/Neo.mjs');\nexport {substrate, engine};\n";
@@ -161,6 +183,52 @@ test.describe('projectSeatHooks — specifier rewriting', () => {
         // §2.3: the Agent OS consumes the PUBLISHED Engine, so this specifier must survive untouched.
         expect(result.contents).toContain("'neo.mjs/src/Neo.mjs'");
         expect(result.contents).not.toContain("'../../../../lib/substrate.mjs'")
+    });
+
+    test('MUTANT — the seat that IS the package resolves its own specifiers inside itself', () => {
+        // #79: `neo.mjs/src/Neo.mjs` resolves upward from the projected file to
+        // `<engine>/node_modules/neo.mjs`, and the Engine checkout IS `neo.mjs`, so that directory
+        // cannot exist. All three Claude hooks threw `Cannot find package 'neo.mjs'` and exited 0 —
+        // the fleet's wake-arming path was dead from 2026-08-24 with every surface green.
+        const
+            root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE}}),
+            source = path.join(root, 'ai/scripts/lifecycle/hooks/claude/a.mjs'),
+            engine = selfPackageTarget('neo.mjs'),
+            result = renderProjection(source, root, engine);
+
+        expect(result.escaped).toEqual([]);
+        expect(result.contents).toContain(`'${path.join(engine, 'src/Neo.mjs')}'`);
+        // The pre-fix bytes. A projection still carrying this is one Node cannot resolve.
+        expect(result.contents).not.toContain("'neo.mjs/src/Neo.mjs'");
+        // The Brain-relative binding is untouched by the second pass — different root, different question.
+        expect(result.contents).toContain(path.join(root, 'ai/lib/substrate.mjs'))
+    });
+
+    test('a target that merely DEPENDS on the package keeps §2.3 — nothing is rewritten', () => {
+        // The discriminator, run as a control: same source, same runtime root, a target whose own
+        // name is not the package it imports. Without this arm the fix above could be an
+        // unconditional rewrite and the assertion would not know.
+        const
+            root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE}}),
+            source = path.join(root, 'ai/scripts/lifecycle/hooks/claude/a.mjs'),
+            result = renderProjection(source, root, selfPackageTarget('neo-agent-brain'));
+
+        expect(result.escaped).toEqual([]);
+        expect(result.contents).toContain("'neo.mjs/src/Neo.mjs'")
+    });
+
+    test('a self-package target with an exports map is REPORTED, never guessed at', () => {
+        // Without `exports` a subpath specifier is a file path beneath the package root, so the
+        // rewrite is exact. With one, the package chooses its own mapping and any path we derive is
+        // a plausible-looking fabrication — so it takes the `escaped` channel, which makes
+        // `projectHooks` refuse rather than write a wrong answer no surface can see.
+        const
+            root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE}}),
+            source = path.join(root, 'ai/scripts/lifecycle/hooks/claude/a.mjs'),
+            result = renderProjection(source, root, selfPackageTarget('neo.mjs', {'./src/*': './src/*'}));
+
+        expect(result.escaped).toEqual(['neo.mjs/src/Neo.mjs']);
+        expect(result.contents).toContain("'neo.mjs/src/Neo.mjs'")
     });
 
     test('reports a specifier that escapes the runtime root instead of inventing a dependency', () => {

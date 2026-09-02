@@ -248,6 +248,10 @@ const ESM_SPECIFIER = /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(['"])(\.\.?\/[^'
  * unchanged and reported, because silently rewriting it would invent a dependency the source never
  * declared.
  *
+ * That §2.3 reasoning holds for every target except the one where the dependency direction
+ * degenerates — the seat that *is* the package. {@link rewriteSelfPackageSpecifiers} handles that
+ * case separately rather than weakening the rule here.
+ *
  * **Why position and not merely shape.** Rewriting is correct for exactly one category: a binding
  * the *Brain runtime* must resolve, which cannot survive being read from a tree that does not
  * contain this repository. A hook's other relative literals are the opposite category — they are
@@ -286,6 +290,82 @@ export function rewriteSpecifiers(contents, sourceFile, runtimeRoot) {
 
         rewritten++;
         return `${prefix}${quote}${resolved}${quote}`
+    });
+
+    return {contents: next, escaped, rewritten}
+}
+
+/**
+ * @summary Reads a target checkout's own package manifest, or `null` when it has none.
+ *
+ * A target without a manifest, or with one Node itself would reject, is not an error here: it is a
+ * seat that simply cannot be the degenerate case below, and it takes the untouched path.
+ * @param {String} targetRepoRoot Absolute target repository root.
+ * @returns {Object|null}
+ */
+function readTargetManifest(targetRepoRoot) {
+    const manifest = path.join(targetRepoRoot, 'package.json');
+
+    if (!fs.existsSync(manifest)) return null;
+
+    try {
+        return JSON.parse(fs.readFileSync(manifest, 'utf8'))
+    } catch {
+        return null
+    }
+}
+
+/**
+ * @summary Resolves a package specifier inside the target when the target **is** that package.
+ *
+ * {@link rewriteSpecifiers} leaves package specifiers alone on purpose, and that is right for every
+ * seat but one. `await import('neo.mjs/src/Neo.mjs')` resolves from the importing file upward —
+ * `<engine>/.claude/hooks/` → `<engine>/node_modules/neo.mjs` — and the Engine checkout *is*
+ * `neo.mjs`, so that directory cannot exist: a package does not carry itself in its own
+ * `node_modules`. The specifier is not wrong and the rewriter is not at fault; the projector simply
+ * had no notion of the one target where §2.3's dependency direction degenerates into self-reference.
+ *
+ * Measured on `neomjs/neo-agent-brain#79`: all three Claude hooks threw
+ * `Cannot find package 'neo.mjs'` in the Engine seat and **exited 0**, so the fleet's only
+ * wake-arming path had been dead since 2026-08-24 with every surface green. Brain- and
+ * institution-resident seats carry `node_modules/neo.mjs` and were never affected — one `ls`
+ * discriminates, which is why this is target-aware rather than a change to the rule.
+ *
+ * **Why the `exports` refusal.** Without an `exports` map a subpath specifier *is* a file path
+ * beneath the package root, so `<name>/src/Neo.mjs` → `<targetRoot>/src/Neo.mjs` is the identical
+ * resolution. With one, the package chooses its own mapping and this rewrite would fabricate a path
+ * that merely looks plausible. Such a specifier is reported through the same `escaped` channel a
+ * runtime-root escapee uses — same meaning (the projection cannot bind it), same refusal in
+ * {@link projectHooks} — rather than being written out as a wrong answer nobody can see.
+ * @param {String} contents Source text, already relative-rewritten.
+ * @param {String} [targetRepoRoot] Absolute target repository root. Absent → no-op.
+ * @returns {{contents: String, escaped: String[], rewritten: Number}}
+ */
+export function rewriteSelfPackageSpecifiers(contents, targetRepoRoot) {
+    const manifest = targetRepoRoot ? readTargetManifest(targetRepoRoot) : null;
+
+    if (!manifest?.name) return {contents, escaped: [], rewritten: 0};
+
+    const
+        escaped = [],
+        mapped  = Boolean(manifest.exports),
+        pattern = new RegExp(
+            '(\\bfrom\\s*|\\bimport\\s*\\(\\s*|\\bimport\\s+)([\'"])' +
+            manifest.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+            '\\/([^\'"]+)\\2',
+            'g'
+        );
+
+    let rewritten = 0;
+
+    const next = contents.replace(pattern, (match, prefix, quote, subpath) => {
+        if (mapped) {
+            escaped.push(`${manifest.name}/${subpath}`);
+            return match
+        }
+
+        rewritten++;
+        return `${prefix}${quote}${path.join(targetRepoRoot, subpath)}${quote}`
     });
 
     return {contents: next, escaped, rewritten}
@@ -444,7 +524,7 @@ export function checkProjection({agentosRuntimeRoot, targetRepoRoot}) {
     enumerateProjection(agentosRuntimeRoot).forEach(({source, target}) => {
         const
             absTarget = path.join(targetRepoRoot, target),
-            expected  = renderProjection(source, agentosRuntimeRoot);
+            expected  = renderProjection(source, agentosRuntimeRoot, targetRepoRoot);
 
         if (expected.escaped.length) escapedSpecifiers.push({escaped: expected.escaped, target});
 
@@ -506,11 +586,17 @@ export function checkProjection({agentosRuntimeRoot, targetRepoRoot}) {
 
 /**
  * @summary Produces the exact bytes a projected hook must contain.
+ *
+ * Two rewrites, in order and never merged: {@link rewriteSpecifiers} binds Brain substrate to the
+ * runtime root, then {@link rewriteSelfPackageSpecifiers} resolves the target's *own* package
+ * specifiers against the target. They answer different questions about different roots, and the
+ * second is a no-op for every seat that is not the package it imports.
  * @param {String} source Absolute source path.
  * @param {String} runtimeRoot Absolute AgentOS runtime root.
+ * @param {String} [targetRepoRoot] Absolute target repository root. Absent → self-package pass skipped.
  * @returns {{contents: String, escaped: String[], rewritten: Number}}
  */
-export function renderProjection(source, runtimeRoot) {
+export function renderProjection(source, runtimeRoot, targetRepoRoot) {
     const
         extension = path.extname(source),
         raw       = fs.readFileSync(source, 'utf8'),
@@ -518,9 +604,17 @@ export function renderProjection(source, runtimeRoot) {
         // Only executables carry module specifiers. Running the rewriter over a config artifact
         // would rewrite any `../`-shaped *string value* it happened to contain — a path in a hook
         // command, say — into an absolute path to a file that does not exist.
-        result    = extension === '.mjs'
+        bound     = extension === '.mjs'
             ? rewriteSpecifiers(raw, source, runtimeRoot)
-            : {contents: raw, escaped: [], rewritten: 0};
+            : {contents: raw, escaped: [], rewritten: 0},
+        self      = extension === '.mjs'
+            ? rewriteSelfPackageSpecifiers(bound.contents, targetRepoRoot)
+            : {contents: bound.contents, escaped: [], rewritten: 0},
+        result    = {
+            contents : self.contents,
+            escaped  : [...bound.escaped, ...self.escaped],
+            rewritten: bound.rewritten + self.rewritten
+        };
 
     if (!banner) return result;
 
@@ -768,7 +862,7 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
     }
 
     const
-        rendered = hooks.map(hook => ({...hook, ...renderProjection(hook.source, agentosRuntimeRoot)})),
+        rendered = hooks.map(hook => ({...hook, ...renderProjection(hook.source, agentosRuntimeRoot, targetRepoRoot)})),
         escapees = rendered.filter(hook => hook.escaped.length);
 
     if (escapees.length) {
