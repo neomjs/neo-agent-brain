@@ -2018,10 +2018,21 @@ class ConfigBase extends ConfigProvider {
                     // Local profile may supervise a child Chroma process; cloud profile
                     // reaches the compose-owned `chroma` peer container instead.
                     chromaDaemonEnabled    : leaf(null, 'NEO_ORCHESTRATOR_CHROMA_DAEMON_ENABLED', 'boolean'),
-                    // Desktop wake-DELIVERY gate. Defaults OFF: the lane-state Stop hook forces turn
-                    // continuation, so wake interrupts are redundant duplicate-flood at multi-peer
-                    // scale (A2A messages still persist + surface on the next list_messages).
-                    // Set `true` (or `NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED=true`) to restore delivery.
+                    // Supervision gate for the orchestrator-owned wake-daemon lane
+                    // (`taskDefinitions.bridgeDaemon` → `ai/daemons/wake/daemon.mjs`; the lane id is
+                    // the pre-rename wire constant). Defaults OFF: the lane-state Stop hook forces
+                    // turn continuation, so wake interrupts are redundant duplicate-flood at
+                    // multi-peer scale (A2A messages still persist + surface on the next
+                    // list_messages). Set `true` (or `NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED=true`)
+                    // to let the orchestrator supervise the lane again.
+                    //
+                    // It is NOT a kill-switch for desktop wake DELIVERY, and must not be documented
+                    // as one: delivery runs in a second, launchd-owned process —
+                    // `ai/daemons/wake/receiver.mjs` under the `com.neomjs.agent-os-wake`
+                    // LaunchAgent, whose plist states it never starts a host Orchestrator. No leaf
+                    // in this file reaches it — `receiverDependencyClosure.spec.mjs` pins that the
+                    // receiver cannot so much as import this config — so the control for delivery is
+                    // `launchctl bootout gui/$UID/com.neomjs.agent-os-wake` (#68).
                     bridgeDaemonEnabled    : leaf(false, 'NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED', 'boolean'),
                     neuralLinkBridgeEnabled: leaf(null, 'NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED', 'boolean'),
                     // The embed daemon durably drains the add_memory WAL into the content store
@@ -2041,10 +2052,7 @@ class ConfigBase extends ConfigProvider {
                     // (GraphLog compaction, integrity sweep, embed/message daemons) runs via its own
                     // separate task toggles and is unaffected. Set `true` (or
                     // `NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED=true`) to restore.
-                    swarmHeartbeatEnabled          : leaf(false, 'NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED', 'boolean'),
-                    // Reserved policy placeholder: no runtime consumer yet.
-                    // `bridgeDaemonEnabled` is the active scheduler gate for desktop wake delivery.
-                    wakeDispatchEnabled            : leaf(null)
+                    swarmHeartbeatEnabled          : leaf(false, 'NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED', 'boolean')
                 },
                 /**
                  * Cloud-only maintenance lane switches (mirror of `localOnly` with inverted

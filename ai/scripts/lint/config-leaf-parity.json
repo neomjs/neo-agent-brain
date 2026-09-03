@@ -419,7 +419,6 @@
         "orchestrator.localOnly.neuralLinkBridgeEnabled",
         "orchestrator.localOnly.primaryDevSyncEnabled",
         "orchestrator.localOnly.swarmHeartbeatEnabled",
-        "orchestrator.localOnly.wakeDispatchEnabled",
         "orchestrator.memorySaturation",
         "orchestrator.memorySaturation.percent",
         "orchestrator.memorySaturation.storePercent",

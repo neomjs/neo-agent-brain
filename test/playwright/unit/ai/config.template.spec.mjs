@@ -435,8 +435,7 @@ test.describe('Tier 1 Config Immutability', () => {
             embedDaemonEnabled             : null,
             messageDaemonEnabled           : null,
             goldenPathRepoEnrichmentEnabled: null,
-            swarmHeartbeatEnabled          : false,
-            wakeDispatchEnabled            : null
+            swarmHeartbeatEnabled          : false
         });
         // Their new home. `null` here resolves the OPPOSITE way from `localOnly` — cloud enables,
         // local opts in — which is what puts them on the role that owns them.

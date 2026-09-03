@@ -5,12 +5,28 @@ import {fileURLToPath} from 'node:url';
 
 const REPO_ROOT       = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..');
 const ENTRY           = path.join(REPO_ROOT, 'ai/daemons/wake/receiver.mjs');
+/**
+ * The graph/SQLite entries keep the signed host receiver installable without the plane it talks to.
+ *
+ * The `ai/config*` entries are a different guarantee and were added by #68: the receiver is the
+ * process that actually delivers desktop wakes, and it is launchd-owned rather than
+ * orchestrator-supervised, so no `AiConfig` lane toggle governs it. That had been true in practice
+ * and undocumented, which let `configBase.mjs` acquire a comment naming `bridgeDaemonEnabled` as
+ * "the active scheduler gate for desktop wake delivery" — a kill-switch that would be reached for in
+ * an incident and would not stop a single wake. Forbidding the import makes the absence structural
+ * instead of incidental: a future leaf cannot claim to gate this process without reddening here
+ * first.
+ * @member {String[]} FORBIDDEN_PATHS
+ */
 const FORBIDDEN_PATHS = [
     '/ai/graph/',
     '/ai/daemons/wake/queries.mjs',
     '/ai/services/memory-core/GraphService.mjs',
     '/ai/mcp/server/memory-core/config.mjs',
-    '/ai/mcp/server/memory-core/config.template.mjs'
+    '/ai/mcp/server/memory-core/config.template.mjs',
+    '/ai/configBase.mjs',
+    '/ai/config.template.mjs',
+    '/ai/ConfigProvider.mjs'
 ];
 
 /**
@@ -42,7 +58,7 @@ async function resolveClosure(filePath, seen = new Set()) {
     return seen;
 }
 
-test('signed host receiver dependency closure is graphless and SQLite-free', async () => {
+test('signed host receiver dependency closure is graphless, SQLite-free and config-free', async () => {
     const closure    = await resolveClosure(ENTRY);
     const normalized = [...closure].map(value => value.replaceAll(path.sep, '/'));
 
