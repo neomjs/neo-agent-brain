@@ -759,11 +759,11 @@ class DatabaseService extends Base {
                 target   : {
                     collectionName,
                     chroma: {
-                        host: aiConfig.host,
-                        port: aiConfig.port,
-                        path: aiConfig.path
+                        host: aiConfig.engines.chroma.host,
+                        port: aiConfig.engines.chroma.port,
+                        path: aiConfig.engines.chroma.dataDir
                     },
-                    path    : aiConfig.path,
+                    path    : aiConfig.engines.chroma.dataDir,
                     repoRoot: aiConfig.neoRootDir
                 },
                 confirmation

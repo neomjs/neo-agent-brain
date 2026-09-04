@@ -82,9 +82,12 @@ class ChromaManager extends Base {
         // database, which is why a `unit/` spec could reach the live canonical collection — the
         // isolation Memory Core has had all along was simply absent here. The value is resolved by
         // the config's `chromaDatabase` formula, so this reads one value and carries no env ternary.
-        const {host, port, chromaDatabase: database} = aiConfig;
-
-        this.client = new ChromaClient({host, port, ssl: false, database});
+        this.client = new ChromaClient({
+            host    : aiConfig.engines.chroma.host,
+            port    : aiConfig.engines.chroma.port,
+            ssl     : false,
+            database: aiConfig.chromaDatabase
+        });
     }
 
     /**
@@ -119,8 +122,8 @@ class ChromaManager extends Base {
         // reintroduce the drift.
         if (this.connected && aiConfig.chromaDatabase === aiConfig.chromaDatabaseTest) {
             await ensureChromaTestDatabase({
-                host    : aiConfig.host,
-                port    : aiConfig.port,
+                host    : aiConfig.engines.chroma.host,
+                port    : aiConfig.engines.chroma.port,
                 database: aiConfig.chromaDatabase
             });
         }

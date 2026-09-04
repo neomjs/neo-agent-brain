@@ -240,7 +240,7 @@ class HealthService extends Base {
         } catch (e) {
             return {
                 running: false,
-                error  : `ChromaDB is not accessible at ${aiConfig.host}:${aiConfig.port}. Please start ChromaDB externally or update the configured host/port.`
+                error  : `ChromaDB is not accessible at ${aiConfig.engines.chroma.host}:${aiConfig.engines.chroma.port}. Please start ChromaDB externally or update the configured host/port.`
             };
         }
     }
