@@ -1237,6 +1237,117 @@ test.describe('#305 — deterministic LMS load failures have a terminal disposit
         expect(guard.snapshot({host, model: 'chat-model'})).toBeNull();
     });
 
+    test('a half-open admission reserves its next cooldown when the caller records no outcome', async () => {
+        let   currentTime = 0;
+        const guard       = createLmsLoadFailureGuard({
+            maxEquivalentFailures: 1,
+            halfOpenAfterMs      : 100,
+            now                  : () => currentTime,
+            fetchRuntimeRows     : async () => ['mlx-llm@1.11.0 ✓ MLX']
+        });
+        const options = {
+            host         : 'http://127.0.0.1:1234',
+            model        : 'chat-model',
+            contextLength: 262144,
+            parallel     : 1,
+            identifier   : 'chat-model',
+            timeoutMs    : 10
+        };
+
+        let attempt = await guard.beforeAttempt(options);
+
+        guard.recordFailure({attempt, error: new Error('backend abort')});
+        currentTime = 100;
+        const simultaneous = await Promise.all([
+            guard.beforeAttempt(options),
+            guard.beforeAttempt(options)
+        ]);
+        const admitted = simultaneous.filter(item => item.admitted),
+              blocked  = simultaneous.filter(item => !item.admitted);
+
+        expect(admitted).toHaveLength(1);
+        expect(admitted[0]).toMatchObject({admitted: true, halfOpen: true});
+        expect(blocked).toHaveLength(1);
+        expect(blocked[0]).toMatchObject({admitted: false, nextAttemptAt: 200, terminal: true});
+        expect(guard.snapshot({host: options.host, model: options.model})).toMatchObject({
+            nextAttemptAt: 200,
+            terminal     : true
+        });
+
+        // Model a caller path which terminates without `recordFailure()` or `clear()` — for example,
+        // a runtime-authority error that must escape. The guard, not every caller, owns one probe.
+        expect(await guard.beforeAttempt(options)).toMatchObject({
+            admitted     : false,
+            nextAttemptAt: 200,
+            terminal     : true
+        });
+
+        currentTime = 200;
+
+        expect(await guard.beforeAttempt(options)).toMatchObject({admitted: true, halfOpen: true})
+    });
+
+    test('a runtime-authority escape after half-open admission still rides out the reserved cooldown', async () => {
+        let   authorityHeld = true,
+              currentTime   = 0,
+              loadCalls     = 0;
+        const host  = 'http://127.0.0.1:1234',
+              model = 'chat-model',
+              guard = createLmsLoadFailureGuard({
+                  maxEquivalentFailures: 1,
+                  halfOpenAfterMs      : 100,
+                  now                  : () => currentTime,
+                  fetchRuntimeRows     : async () => ['mlx-llm@1.11.0 ✓ MLX']
+              });
+        const loadShape = {
+            host,
+            model,
+            contextLength: 262144,
+            parallel     : 1,
+            identifier   : model,
+            timeoutMs    : 10
+        };
+        const run = () => ensureLmsModelsLoaded({
+            host,
+            models           : [model],
+            contextLengths   : {[model]: loadShape.contextLength},
+            parallels        : {[model]: loadShape.parallel},
+            allowPartial     : true,
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 10,
+            fetchModelIds    : async () => [model],
+            fetchLoadedModels: async () => [],
+            loadFailureGuard : guard,
+            async loadModel() {
+                loadCalls++
+            },
+            isAuthorityHeld: () => authorityHeld,
+            log            : {info() {}, warn() {}}
+        });
+
+        const initial = await guard.beforeAttempt(loadShape);
+
+        guard.recordFailure({attempt: initial, error: new Error('backend abort')});
+        currentTime   = 100;
+        authorityHeld = false;
+
+        await expect(run()).rejects.toMatchObject({reason: 'runtime-authority-lost'});
+        expect(loadCalls).toBe(0);
+        expect(guard.snapshot({host, model})).toMatchObject({nextAttemptAt: 200, terminal: true});
+
+        authorityHeld = true;
+        const blocked = await run();
+
+        expect(blocked).toMatchObject({observationStatus: 'load-blocked'});
+        expect(blocked.blockedModels[0].loadFailureCircuit).toMatchObject({
+            admitted     : false,
+            nextAttemptAt: 200,
+            terminal     : true
+        });
+        expect(loadCalls).toBe(0)
+    });
+
     test('a changed failure after the half-open probe starts a new streak', async () => {
         let   currentTime = 0;
         const guard       = createLmsLoadFailureGuard({

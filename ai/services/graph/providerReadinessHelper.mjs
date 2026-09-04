@@ -1311,9 +1311,12 @@ export function fetchLmsSelectedRuntimeRows({execFileFn = execFile, timeoutMs} =
  * correctness key: only an observed-A → observed-B change re-arms immediately; an unavailable
  * vendor observation is represented explicitly as `unknown` and preserves the prior generation.
  * Terminal generations permit one half-open attempt after `halfOpenAfterMs`, so an unreadable or
- * format-drifted runtime surface cannot make recovery impossible. The vendor table cannot identify
- * which selected runtime owns one missing model, so any observed selected-row-set change grants one
- * fresh bounded generation; that safe-but-imprecise re-arm can never recreate an unbounded loop.
+ * format-drifted runtime surface cannot make recovery impossible. The guard reserves the NEXT
+ * half-open window when admitting that attempt — before caller code runs — so a caller which must
+ * throw without recording a load failure cannot leave the elapsed window open to every later cycle.
+ * The vendor table cannot identify which selected runtime owns one missing model, so any observed
+ * selected-row-set change grants one fresh bounded generation; that safe-but-imprecise re-arm can
+ * never recreate an unbounded loop.
  *
  * @param {Object} options
  * @param {Number} options.maxEquivalentFailures Consecutive equal-fingerprint budget.
@@ -1402,11 +1405,29 @@ export function createLmsLoadFailureGuard({
                 states.delete(stateKey);
                 return {admitted: true, generationKey, host, model, runtime, runtimeObservation: runtime, stateKey};
             }
-            if (!state.terminal || currentTime >= state.nextAttemptAt) {
+            if (!state.terminal) {
                 return {
                     admitted          : true,
                     generationKey,
-                    halfOpen          : state.terminal,
+                    halfOpen          : false,
+                    host,
+                    model,
+                    runtime           : effectiveRuntime,
+                    runtimeObservation: runtime,
+                    stateKey
+                };
+            }
+            if (currentTime >= state.nextAttemptAt) {
+                // Reserve before returning control to the caller. Some correct terminal paths
+                // (runtime-authority / runtime-effect failures) must rethrow without calling either
+                // `recordFailure()` or `clear()`. Without this write the elapsed window stays open
+                // and every subsequent readiness cycle becomes another "one" half-open probe.
+                state.nextAttemptAt = currentTime + state.halfOpenAfterMs;
+
+                return {
+                    admitted          : true,
+                    generationKey,
+                    halfOpen          : true,
                     host,
                     model,
                     runtime           : effectiveRuntime,
