@@ -88,6 +88,17 @@ class FleetControlBridge extends Base {
      */
     bootIdentitySource = null
     /**
+     * Deployment-state **read-observe** source — an injected collaborator exposing `produceDeploymentState()`
+     * that returns the bounded, redacted projection of the orchestrator's deployment-state snapshot
+     * (`projectDeploymentStateForFleet`: per-service status / memory pressure / restart churn /
+     * classification / diagnosis, the backup phase, the starvation posture — never `resolvedConfig`,
+     * `inspect`, logs or paths). A plain injectable field like `bootIdentitySource` (no static default — the
+     * fleet-server boot wires the file reader from the resolved leaves); unwired → an honest `unavailable`
+     * projection with a named reason, never a fabricated plane. OBSERVE-ONLY: no actuator rides it.
+     * @member {Object|null} deploymentStateSource=null
+     */
+    deploymentStateSource = null
+    /**
      * Activity-feed **read-observe** source — an injected collaborator exposing
      * `readActivitySnapshot(params)` that returns the bounded `{capability, events}` cockpit activity
      * snapshot (the composed A2A + PR/lane adapters). The mailbox / PR read paths — and with them the
@@ -469,6 +480,22 @@ class FleetControlBridge extends Base {
         return this.bootIdentitySource
             ? this.bootIdentitySource.produceBootIdentityFact()
             : {fact: null, classification: 'unknown', advisory: true, reason: 'no-boot-identity-source'};
+    }
+
+    /**
+     * @summary READ-OBSERVE: the bounded, redacted projection of the orchestrator's deployment-state
+     * snapshot — the plane cards' truth for the connected instance. Rides the authenticated
+     * `registryBridge` as a **read** verb; it carries NO lifecycle-write / restart authority (the R3
+     * read-observe ÷ lifecycle-write seam) and declares itself observe-only: nothing here can act on a
+     * plane. Accepts no params — a supplied object is ignored, never validated into an attack surface.
+     * An unwired {@link #deploymentStateSource} yields an honest `unavailable` projection with a named
+     * reason and no services, mirroring {@link #getBootIdentity}'s advisory-empty degrade.
+     * @returns {Promise<Object>|Object} `{state, reason, generatedAt, ageMs, services, maintenance}` — the projection.
+     */
+    fleetDeploymentState() {
+        return this.deploymentStateSource
+            ? this.deploymentStateSource.produceDeploymentState()
+            : {state: 'unavailable', reason: 'deployment-state-source-unwired', generatedAt: null, ageMs: null, services: [], maintenance: {backup: null, starvation: null}};
     }
 
     /**

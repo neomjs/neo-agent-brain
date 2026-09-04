@@ -67,6 +67,7 @@ import {readActiveWakeSubscriptionIdentities,
         readActiveWakeSubscriptionObservations}                          from '../memory-core/readActiveWakeSubscriptionIdentities.mjs';
 import {createTerminalDeliveryFailuresFileReader, resolveDaemonLiveness} from './fleetWakeStateAdapter.mjs';
 import {wireBootIdentityReadSource}                                      from './wireBootIdentityReadSource.mjs';
+import {wireDeploymentStateReadSource}                                   from './wireDeploymentStateReadSource.mjs';
 import {wireFleetActivityReadSource}                                     from './wireFleetActivityReadSource.mjs';
 import {wireFleetCatchUpSource}                                          from './wireFleetCatchUpSource.mjs';
 import {wireFleetTasksSource}                                            from './wireFleetTasksSource.mjs';
@@ -144,6 +145,21 @@ async function boot() {
     // orchestrator's advisory fact from the shared runtime-state dir (read at this use site), instead of
     // the advisory-unknown fallback. Fail-soft — an absent dir leaves the seam honestly unwired.
     wireBootIdentityReadSource({dir: AiConfig.orchestrator.dataDir});
+
+    // Wire the cross-process deployment-state reader the same way: fleetDeploymentState() then serves the
+    // bounded projection of the orchestrator's snapshot file instead of the honest unavailable fallback.
+    // The three leaves are read here because this entrypoint is where config resolution belongs; the
+    // wiring itself owns no default. Fail-soft — an empty path leaves the seam unwired, and the boot
+    // log says which.
+    const deploymentStateSource = wireDeploymentStateReadSource({
+        path        : AiConfig.orchestrator.deploymentStateBridge.snapshotPath,
+        staleAfterMs: AiConfig.orchestrator.deploymentStateBridge.staleAfterMs,
+        maxBytes    : AiConfig.orchestrator.deploymentStateBridge.maxSnapshotBytes
+    });
+
+    console.log(deploymentStateSource
+        ? `[fleet] deployment-state read-source wired (${AiConfig.orchestrator.deploymentStateBridge.snapshotPath})`
+        : '[fleet] deployment-state read-source unwired — fleetDeploymentState answers unavailable');
 
     // Wire the wake-telltale producer sources (the S2 axis). This entrypoint is where config
     // resolution belongs; the adapter itself never resolves it. Fail-soft by construction — a

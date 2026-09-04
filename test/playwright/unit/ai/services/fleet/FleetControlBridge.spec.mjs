@@ -67,6 +67,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         FleetControlBridge.registry           = null;
         FleetControlBridge.manager            = null;
         FleetControlBridge.bootIdentitySource = null;
+        FleetControlBridge.deploymentStateSource = null;
         FleetControlBridge.activitySource     = null;
         FleetControlBridge.historySource      = null;
         FleetControlBridge.mailboxMirrorSource = null;
@@ -246,6 +247,32 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         FleetControlBridge.bootIdentitySource = null;
 
         expect(FleetControlBridge.getBootIdentity()).toEqual({fact: null, classification: 'unknown', advisory: true, reason: 'no-boot-identity-source'});
+    });
+
+    // ---- read-observe: the deployment-state projection (#314; advisory read verb; observe-only) ----
+
+    test('fleetDeploymentState returns the injected source projection verbatim — read-observe, params ignored', async () => {
+        const projection = {state: 'ok', reason: null, generatedAt: 1000, ageMs: 5, services: [{serviceKey: 'mc-server'}], maintenance: {backup: null, starvation: null}};
+        FleetControlBridge.deploymentStateSource = {produceDeploymentState: async (...args) => { calls.push(['produceDeploymentState', ...args]); return projection; }};
+
+        const result = await FleetControlBridge.fleetDeploymentState({limit: 5});
+
+        expect(result).toBe(projection);
+        expect(calls).toEqual([['produceDeploymentState']]); // no params reach the source — nothing to validate into an attack surface
+        expect(result).not.toHaveProperty('restart');
+    });
+
+    test('fleetDeploymentState yields an honest unavailable projection when the source is unwired — never a fabricated plane', () => {
+        FleetControlBridge.deploymentStateSource = null;
+
+        expect(FleetControlBridge.fleetDeploymentState()).toEqual({
+            state      : 'unavailable',
+            reason     : 'deployment-state-source-unwired',
+            generatedAt: null,
+            ageMs      : null,
+            services   : [],
+            maintenance: {backup: null, starvation: null}
+        });
     });
 
     // ---- read-observe: the fleet activity snapshot (advisory read verb; carries no lifecycle-write) ----
