@@ -305,14 +305,31 @@ function buildOutputZodSchema(doc, operation) {
 
         // The listing and `BaseServer#formatToolResult` decide the `result` wrapper independently
         // and must decide it the same way: the envelope emits an object result unwrapped and wraps
-        // only a non-object. So only a DECLARED non-object type lists the wrapper. A schema with
-        // no top-level type — bare, or a `oneOf` / `anyOf` / `allOf` composition — promises
-        // nothing about the shape and therefore cannot promise the wrapper: it lists as an open
-        // object, which fits both envelopes the formatter can produce.
+        // only a non-object. So only a DECLARED non-object type lists the wrapper.
+        //
+        // A schema with no top-level type is one of two things. A composition (`oneOf` / `anyOf` /
+        // `allOf`) still declares its branches, so the listing keeps them: the root is an object —
+        // the MCP `outputSchema` contract requires `type: 'object'` at the root — and the compiled
+        // branches ride beneath it as JSON Schema (`.meta()` passes them through `toJSONSchema`
+        // untouched). `oneOf` is emitted as `anyOf`: the Zod union the input side compiles it to
+        // validates first-match, and branches without `required` lists would make an exclusive
+        // `oneOf` reject every value that satisfies both. A bare schema promises nothing about
+        // the shape and therefore cannot promise the wrapper: it lists as an open object, which
+        // fits both envelopes the formatter can produce.
         if (resolvedSchema.type === undefined) {
-            return z.object({})
-                .passthrough()
-                .describe(schema.description || '');
+            const composition = ['oneOf', 'anyOf', 'allOf'].find(key => Array.isArray(resolvedSchema[key]));
+
+            let listed = z.object({}).passthrough().describe(schema.description || '');
+
+            if (composition) {
+                const branches = resolvedSchema[composition].map(branch =>
+                    toOpenApiJsonSchema(buildZodSchemaFromNode(doc, branch, outputOpts))
+                );
+
+                listed = listed.meta({[composition === 'allOf' ? 'allOf' : 'anyOf']: branches});
+            }
+
+            return listed;
         }
 
         if (resolvedSchema.type !== 'object') {
