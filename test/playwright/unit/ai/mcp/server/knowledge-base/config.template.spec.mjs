@@ -107,12 +107,16 @@ test.describe('Knowledge Base Config Tier-1 defaults (#11963)', () => {
         // remain genuinely KB-owned.
         expect(tier1Template.engines.chroma.host).toBe(tier1Template.engines.chroma.hostTest);
         expect(tier1Template.engines.chroma.port).toBe(tier1Template.engines.chroma.portTest);
+        // The three collapsed children must be ABSENT, not merely equal to Tier-1. An
+        // `expect(config.path).toBe(tier1.engines.chroma.dataDir)` passes just as happily when the
+        // alias is still declared, which is what it asserted before — it witnessed agreement
+        // between two coordinates instead of the removal of one.
         expect(config.host).toBeUndefined();
         expect(config.port).toBeUndefined();
+        expect(config.path).toBeUndefined();
         expect(config.engines.chroma.host).toBe(tier1Template.engines.chroma.host);
         expect(config.engines.chroma.port).toBe(tier1Template.engines.chroma.port);
         expect(config.collectionName).toBe('neo-knowledge-base');
-        expect(config.path).toBe(tier1Template.engines.chroma.dataDir);
         expect(tier1Template.engines.chroma.dataDir).toBe(tier1Template.engines.chroma.dataDirTest);
         expect(config.collectionResolveRetry.maxAttempts).toBe(10);
         expect(config.collectionResolveRetry.initialDelayMs).toBe(500);

@@ -231,11 +231,19 @@ test.describe('defragChromaDB segment cleanup — unified-store-safe keep-set (#
     test('target adapters share one unified store path while scoping collections per group', () => {
         const unifiedPath = path.join(tmpRoot, 'chroma', 'unified');
 
+        // Both adapters now read the same Tier-1 shape: the Knowledge Base target lost its flat
+        // `host` / `port` / `path` children to `engines.chroma.*`, so the two mocks below are
+        // deliberately identical in shape and differ only in the collection set — which is the
+        // whole claim this arm makes.
         const kbConfig = TARGETS['knowledge-base'].adapt({
             collectionName: 'neo-knowledge-base',
-            host          : 'localhost',
-            path          : unifiedPath,
-            port          : 8000
+            engines       : {
+                chroma: {
+                    dataDir: unifiedPath,
+                    host   : 'localhost',
+                    port   : 8000
+                }
+            }
         });
 
         const mcConfig = TARGETS['memory-core'].adapt({

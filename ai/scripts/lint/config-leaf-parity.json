@@ -652,7 +652,6 @@
         "nResults",
         "neoRootDir",
         "openApiPath",
-        "path",
         "publicUrl",
         "queryCandidatePools",
         "queryScoreWeights",

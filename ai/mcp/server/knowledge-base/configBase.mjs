@@ -108,13 +108,13 @@ class ConfigBase extends ConfigProvider {
             // one environment. The operator surface is unchanged — Tier-1's `hostProd` / `portProd`
             // bind the identical variables, so `NEO_CHROMA_HOST` / `NEO_CHROMA_PORT` still reach the
             // Knowledge Base exactly as before.
-            /**
-             * The unified Chroma persist directory, read from the single source of truth
-             * `AiConfig.engines.chroma.dataDir`. MUST equal the orchestrator daemon's
-             * `--path` (kept literal there for daemon-launch resilience against a stale config.mjs).
-             * @type {string}
-             */
-            path: leaf(AiConfig.engines.chroma.dataDir),
+            // The persist directory is declared ONCE at Tier-1 (`engines.chroma.dataDir`) and read
+            // there. The child `path` leaf that used to sit here wrapped that same Tier-1 leaf and
+            // carried a docblock asserting it "MUST equal" the orchestrator's `--path` — which is
+            // the confession, not the safeguard: two declared coordinates that must be equal ARE
+            // one coordinate with two names, ADR-0019 §3 C4. The sanctioned form is one declared
+            // coordinate with its readers migrated, so `DatabaseService`, `VectorService`,
+            // `backup.mjs` and `defragChromaDB.mjs` now read the Tier-1 leaf at their use sites.
             /**
              * @summary Shared SQLite destination for Knowledge Base query telemetry.
              *

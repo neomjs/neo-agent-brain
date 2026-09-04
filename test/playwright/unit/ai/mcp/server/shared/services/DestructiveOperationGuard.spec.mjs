@@ -266,12 +266,21 @@ test.describe('DestructiveOperationGuard call-site wiring (#10845)', () => {
     });
 
     test('Knowledge Base VectorService stops before deleting the production collection', async () => {
+        // Flip the test-mode SELECTOR, not the resolved value — the same idiom the two arms above
+        // use. `dataDir` is `useTestDatabase ? dataDirTest : dataDirProd` and `useTestDatabase` is
+        // `useUnitTestDatabase || useTestHarness`, so clearing both resolves the production
+        // coordinate by construction. The previous version assigned a literal path to a KB-child
+        // `path` leaf; that leaf is gone, and writing a resolved value would have left this arm
+        // green while exercising nothing, since `VectorService` now reads the Tier-1 leaf.
         const
-            originalClient = KbChromaManager.client,
-            originalPath   = kbConfig.path;
+            originalClient              = KbChromaManager.client,
+            originalUseUnitTestDatabase = aiConfig.engines.chroma.useUnitTestDatabase,
+            originalUseTestHarness      = aiConfig.engines.chroma.useTestHarness;
         let deleteCalls = 0;
 
-        kbConfig.path          = path.join(repoRoot, '.neo-ai-data/chroma/unified');
+        aiConfig.engines.chroma.useUnitTestDatabase = false;
+        aiConfig.engines.chroma.useTestHarness      = false;
+
         KbChromaManager.client = {
             deleteCollection: async () => {
                 deleteCalls++;
@@ -284,8 +293,9 @@ test.describe('DestructiveOperationGuard call-site wiring (#10845)', () => {
             });
             expect(deleteCalls).toBe(0);
         } finally {
-            KbChromaManager.client = originalClient;
-            kbConfig.path          = originalPath;
+            KbChromaManager.client                      = originalClient;
+            aiConfig.engines.chroma.useUnitTestDatabase = originalUseUnitTestDatabase;
+            aiConfig.engines.chroma.useTestHarness      = originalUseTestHarness;
         }
     });
 
