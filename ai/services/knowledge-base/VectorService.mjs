@@ -275,8 +275,8 @@ class VectorService extends Base {
                 target   : {
                     collectionName,
                     chroma: {
-                        host: aiConfig.host,
-                        port: aiConfig.port,
+                        host: aiConfig.engines.chroma.host,
+                        port: aiConfig.engines.chroma.port,
                         path: aiConfig.path
                     },
                     path    : aiConfig.path,

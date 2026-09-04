@@ -100,13 +100,17 @@ test.describe('Knowledge Base Config Tier-1 defaults (#11963)', () => {
         expect(config.auth.trustProxyIdentity).toBe(tier1Config.auth.trustProxyIdentity);
         expect(config.backupPath).toBe(tier1Config.backupPath);
 
-        // KB-local leaves snapshot the active Tier-1 Chroma endpoint as top-level aliases
-        // (pending the S3/S4 consumer codemod to engines.chroma.*). Under UNIT_TEST_MODE that
-        // active endpoint is the isolated unit-test daemon; collection + path are genuinely KB-owned.
+        // The Chroma endpoint is declared ONCE, at Tier-1. The KB child holds no `host` / `port` of
+        // its own any more (#288 — ADR-0019 C4), so consumers read `engines.chroma.*` through the
+        // getParent() chain and there is no second name for the same coordinate to disagree with.
+        // Under UNIT_TEST_MODE that endpoint is the isolated unit-test daemon; collection + path
+        // remain genuinely KB-owned.
         expect(tier1Template.engines.chroma.host).toBe(tier1Template.engines.chroma.hostTest);
         expect(tier1Template.engines.chroma.port).toBe(tier1Template.engines.chroma.portTest);
-        expect(config.host).toBe(tier1Template.engines.chroma.host);
-        expect(config.port).toBe(tier1Template.engines.chroma.port);
+        expect(config.host).toBeUndefined();
+        expect(config.port).toBeUndefined();
+        expect(config.engines.chroma.host).toBe(tier1Template.engines.chroma.host);
+        expect(config.engines.chroma.port).toBe(tier1Template.engines.chroma.port);
         expect(config.collectionName).toBe('neo-knowledge-base');
         expect(config.path).toBe(tier1Template.engines.chroma.dataDir);
         expect(tier1Template.engines.chroma.dataDir).toBe(tier1Template.engines.chroma.dataDirTest);
@@ -128,7 +132,6 @@ test.describe('Knowledge Base Config Tier-1 defaults (#11963)', () => {
         process.env.NEO_BACKUP_PATH = '/tmp/neo-kb-backups';
         process.env.NEO_KB_EMBEDDING_RESUME_STATE_DIR = '/tmp/neo-kb-resume';
 
-        // KB-LOCAL leaves (Chroma host/port) — env applies at the CHILD instance directly.
         // Fresh isolated instance (not the module-cached singleton, whose reactive state is
         // contaminated by sibling specs). config._data carries the raw KB meta-leaf tree.
         const freshKB = createConfigProxy(Neo.create(ConfigProvider, {data: config._data}));
@@ -143,11 +146,56 @@ test.describe('Knowledge Base Config Tier-1 defaults (#11963)', () => {
 
         try {
             expect(freshKB.debug).toBe(true);                       // KB-local, env at child
-            expect(freshKB.host).toBe('chroma');                    // KB-local, env at child
-            expect(freshKB.port).toBe(8010);                        // KB-local, env at child
             expect(freshKB.embeddingResumeStateDir).toBe('/tmp/neo-kb-resume');
             expect(freshKB.auth.realm).toBe('tenant-realm');        // Tier-1-owned, env at owner → inherited
             expect(freshKB.backupPath).toBe('/tmp/neo-kb-backups'); // Tier-1-owned → inherited
+
+            // The Chroma coordinate is Tier-1-owned too, and this is the arm the duplicate used to
+            // get wrong. `NEO_CHROMA_HOST` is set AND the unit-test selector is on, so the owner
+            // deliberately resolves the TEST endpoint and ignores the production variable — that
+            // refusal IS the isolation. The retired child leaf re-bound the same variable with no
+            // selector behind it, so asking the KB for its Chroma host returned `'chroma'` while
+            // asking Tier-1 returned the test host: one coordinate, two answers, one process.
+            const freshRootCfg = createConfigProxy(freshRoot);
+
+            expect(freshRootCfg.engines.chroma.useTestDatabase).toBe(true);
+            expect(freshKB.engines.chroma.host).toBe(freshRootCfg.engines.chroma.hostTest);
+            expect(freshKB.engines.chroma.port).toBe(freshRootCfg.engines.chroma.portTest);
+            expect(freshKB.engines.chroma.host).not.toBe('chroma');
+            expect(freshKB.engines.chroma.port).not.toBe(8010);
+
+            // And there is no second name left to ask. A re-added child leaf turns these red.
+            expect(freshKB.host).toBeUndefined();
+            expect(freshKB.port).toBeUndefined();
+        } finally {
+            if (prevRoot === undefined) {delete Neo.ai.Config} else {Neo.ai.Config = prevRoot}
+            freshKB.destroy();
+            freshRoot.destroy();
+        }
+    });
+
+    test('operator surface survives the collapse — with no test selector the KB resolves NEO_CHROMA_HOST / NEO_CHROMA_PORT exactly as before', () => {
+        // The child leaf is gone, so this is the arm proving nothing was taken away with it:
+        // Tier-1's `hostProd` / `portProd` bind the identical variables, and with both test
+        // selectors off the KB inherits those values through the getParent() chain. An operator who
+        // sets these env vars sees no change at all; only an overlay writing the KB's own removed
+        // `host` / `port` keys does, which is the break the PR body states.
+        process.env.NEO_CHROMA_HOST = 'team-chroma.example.com';
+        process.env.NEO_CHROMA_PORT = '8010';
+        delete process.env.UNIT_TEST_MODE;
+        delete process.env.NEO_TEST_CONFIG_TEMPLATES;
+
+        const prevRoot = Neo.ai?.Config;
+        delete Neo.ai.Config;
+        const freshRoot = Neo.create(RootConfigBase);
+        Neo.ai.Config   = freshRoot;
+
+        const freshKB = createConfigProxy(Neo.create(ConfigProvider, {data: config._data}));
+
+        try {
+            expect(createConfigProxy(freshRoot).engines.chroma.useTestDatabase).toBe(false);
+            expect(freshKB.engines.chroma.host).toBe('team-chroma.example.com');
+            expect(freshKB.engines.chroma.port).toBe(8010);
         } finally {
             if (prevRoot === undefined) {delete Neo.ai.Config} else {Neo.ai.Config = prevRoot}
             freshKB.destroy();

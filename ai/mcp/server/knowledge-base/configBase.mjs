@@ -97,22 +97,17 @@ class ConfigBase extends ConfigProvider {
              * @type {Function|null}
              */
             authMiddleware: leaf(null),
-            /**
-             * The hostname of the ChromaDB server for the knowledge base.
-             *
-             * Operator env var: `NEO_CHROMA_HOST`. For shared cloud deployments where KB hosts the
-             * unified Chroma instance for both KB + MC, this points at the shared cloud-hosted Chroma.
-             * @type {string}
-             */
-            host: leaf(AiConfig.engines.chroma.host, 'NEO_CHROMA_HOST', 'string'),
-            /**
-             * The port the ChromaDB server for the knowledge base is listening on.
-             *
-             * Operator env var: `NEO_CHROMA_PORT`. Invalid values (non-integer / out-of-range)
-             * fall back to the default with a console warning per the resolver validity contract.
-             * @type {number}
-             */
-            port: leaf(AiConfig.engines.chroma.port, 'NEO_CHROMA_PORT', 'port'),
+            // The Chroma host and port are declared ONCE, at Tier-1 (`engines.chroma.{host,port}`),
+            // and consumers read them there through the getParent() chain. The child leaves that
+            // used to sit here re-bound `NEO_CHROMA_HOST` / `NEO_CHROMA_PORT` over a Tier-1 value
+            // captured as their default — ADR-0019 §3 C4 (two declared paths, one coordinate) with
+            // a B2 primitive-capture edge, against §2's "no layer holds a copy of another's data".
+            // The duplicate was not cosmetic: Tier-1 resolves the coordinate test-aware
+            // (`useTestDatabase ? hostTest : hostProd`), so with the production variable set under a
+            // test selector the two paths answered differently in one process, at one instant, from
+            // one environment. The operator surface is unchanged — Tier-1's `hostProd` / `portProd`
+            // bind the identical variables, so `NEO_CHROMA_HOST` / `NEO_CHROMA_PORT` still reach the
+            // Knowledge Base exactly as before.
             /**
              * The unified Chroma persist directory, read from the single source of truth
              * `AiConfig.engines.chroma.dataDir`. MUST equal the orchestrator daemon's

@@ -327,8 +327,8 @@ async function main() {
         await import('neo.mjs/src/Neo.mjs');
         await import('neo.mjs/src/core/_export.mjs');
         const {default: kbConfig} = await import('../../mcp/server/knowledge-base/config.mjs');
-        args.host ??= kbConfig.host;
-        args.port ??= kbConfig.port;
+        args.host ??= kbConfig.engines.chroma.host;
+        args.port ??= kbConfig.engines.chroma.port;
     }
 
     const targetMemory  = !args.sessionOnly;

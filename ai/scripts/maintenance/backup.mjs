@@ -987,9 +987,9 @@ function buildTopologyDescriptor() {
     return {
         shared_topology: true,
         kbChromaCoords : {
-            host: kbConfig.host    ?? null,
-            port: kbConfig.port    ?? null,
-            path: kbConfig.path    ?? null
+            host: kbConfig.engines.chroma.host ?? null,
+            port: kbConfig.engines.chroma.port ?? null,
+            path: kbConfig.path                ?? null
         },
         mcChromaCoords: {
             host   : mcConfig.engines?.chroma?.host    ?? null,

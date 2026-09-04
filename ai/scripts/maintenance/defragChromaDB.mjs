@@ -92,9 +92,9 @@ export const TARGETS = {
     'knowledge-base': {
         configPath: '../../mcp/server/knowledge-base/config.mjs',
         adapt     : (cfg) => ({
-            host       : cfg.host,
+            host       : cfg.engines.chroma.host,
             path       : cfg.path,
-            port       : cfg.port,
+            port       : cfg.engines.chroma.port,
             collections: [cfg.collectionName]
         })
     },
