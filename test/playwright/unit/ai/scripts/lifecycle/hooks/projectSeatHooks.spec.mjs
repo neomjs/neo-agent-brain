@@ -1275,13 +1275,29 @@ test.describe('the real Claude manifest — contract properties of the shipped f
 
         expect(commands.length).toBeGreaterThan(0);
 
+        // Widened for #317, which introduced a second custody kind: a runtime-resident entrypoint is
+        // wired into the seat but deliberately never projected into it, so it names the runtime root
+        // rather than `.claude/hooks`. The guarantee above is unchanged and now covers both kinds —
+        // every command must still resolve to a file this repository ships. The exclusive-or is new
+        // and makes this arm STRICTER than it was: a command matching neither shape (a typo, a
+        // renamed directory, a hand-edited entry) could not arise before and now cannot pass.
         commands.forEach(command => {
-            const match = command.match(/\.claude\/hooks\/([\w.-]+\.mjs)/);
+            const
+                projected = command.match(/\.claude\/hooks\/([\w.-]+\.mjs)/),
+                resident  = command.match(/<agentosRuntimeRoot>\/(ai\/[\w./-]+\.mjs)/);
 
-            expect(match, `command declares no .claude/hooks target: ${command}`).not.toBeNull();
             expect(
-                fs.existsSync(path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude', match[1])),
-                `${match[1]} is declared by the manifest but not shipped in hooks/claude/`
+                Boolean(projected) !== Boolean(resident),
+                `command matches neither custody kind exactly once — projected or runtime-resident: ${command}`
+            ).toBe(true);
+
+            const relPath = projected
+                ? path.join('ai/scripts/lifecycle/hooks/claude', projected[1])
+                : resident[1];
+
+            expect(
+                fs.existsSync(path.join(REPO_ROOT, relPath)),
+                `${relPath} is declared by the manifest but not shipped in this repository`
             ).toBe(true)
         })
     });
