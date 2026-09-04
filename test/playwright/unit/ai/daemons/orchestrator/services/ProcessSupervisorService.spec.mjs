@@ -613,9 +613,13 @@ test.describe('Neo.ai.daemons.services.ProcessSupervisorService', () => {
         let closeHandler;
 
         service.taskDefinitions.mockTask.postSpawn = async () => ({
-            ready        : false,
-            degraded     : true,
-            missingModels: ['chat-model']
+            ready             : false,
+            degraded          : true,
+            missingModels     : ['chat-model'],
+            operatorDiagnostic: {
+                code   : 'LMS_LOAD_FAILURE_CIRCUIT_OPEN',
+                summary: 'chat-model load blocked after three equal failures'
+            }
         });
         service.taskStateService.markReady = () => {
             readyMarked = true;
@@ -637,7 +641,7 @@ test.describe('Neo.ai.daemons.services.ProcessSupervisorService', () => {
         expect(readyMarked).toBe(false);
         expect(logEntries).toContainEqual(expect.objectContaining({
             level  : 'WARN',
-            message: expect.stringContaining('degraded readiness')
+            message: expect.stringContaining('degraded readiness — chat-model load blocked after three equal failures.')
         }));
         expect(taskOutcomes).toContainEqual(expect.objectContaining({
             status  : 'degraded',
@@ -708,25 +712,38 @@ test.describe('Neo.ai.daemons.services.ProcessSupervisorService', () => {
 
     test('#13954: liveness-readiness success logs again after degraded readiness recovers', async () => {
         const { service, logEntries } = createTestService();
+        let   onFailureCalls          = 0;
         const readinessResults        = [
             {ready: true},
             {ready: true},
-            {ready: false, degraded: true, missingModels: ['chat-model']},
+            {
+                ready             : false,
+                degraded          : true,
+                missingModels     : ['chat-model'],
+                operatorDiagnostic: {
+                    code   : 'LMS_LOAD_FAILURE_CIRCUIT_OPEN',
+                    summary: 'chat-model load blocked after three equal failures'
+                }
+            },
             {ready: true}
         ];
 
         service.taskDefinitions.mockTask.postSpawn = async () => readinessResults.shift();
 
-        await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed');
-        await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed');
-        await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed');
-        await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed');
+        const onFailure = () => { onFailureCalls++ };
+
+        await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed', onFailure);
+        await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed', onFailure);
+        await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed', onFailure);
+        await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed', onFailure);
 
         const successLogs  = logEntries.filter(entry => entry.message.includes('completed successfully after liveness confirmation'));
         const degradedLogs = logEntries.filter(entry => entry.message.includes('degraded readiness after liveness confirmation'));
 
         expect(successLogs.length).toBe(2);
         expect(degradedLogs.length).toBe(1);
+        expect(onFailureCalls).toBe(0);
+        expect(degradedLogs[0].message).toContain('chat-model load blocked after three equal failures.');
     });
 
     test('reconcileSingletonPort SIGKILLs extra listeners but keeps the canonical pid', () => {

@@ -1024,19 +1024,19 @@ test.describe('#29 — an identifier collision is adopted, not retried forever',
         let probes = 0;
 
         return ensureLmsModelsLoaded({
-            host          : 'http://127.0.0.1:1234',
-            models        : ['embedding-model'],
-            attempts      : 1,
-            delayMs       : 0,
-            timeoutMs     : 10,
-            allowPartial  : true,
-            contextLengths: {'embedding-model': requiredContext},
+            host             : 'http://127.0.0.1:1234',
+            models           : ['embedding-model'],
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 10,
+            allowPartial     : true,
+            contextLengths   : {'embedding-model': requiredContext},
             fetchModelIds    : async () => ['embedding-model'],
             fetchLoadedModels: async () => (probes++ < preLoadProbes ? [] : residentRows),
             // Real conduit, not a pre-composed Error: the ensure sees exactly the rejection
             // `loadLmsModel()` produces from a CLI failure plus stderr.
-            loadModel        : () => viaRealConduit(loadError),
-            log              : {info() {}, warn() {}}
+            loadModel: () => viaRealConduit(loadError),
+            log      : {info() {}, warn() {}}
         });
     };
 
@@ -1085,5 +1085,224 @@ test.describe('#29 — an identifier collision is adopted, not retried forever',
 
         expect(result.adoptedModels).toEqual([]);
         expect(result.failedModels.map(entry => entry.model)).toEqual(['embedding-model']);
+    });
+});
+
+test.describe('#305 — deterministic LMS load failures have a terminal disposition', () => {
+    let createLmsLoadFailureGuard, ensureLmsModelsLoaded, getLmsSelectedRuntimeRows;
+
+    test.beforeAll(async () => {
+        ({
+            createLmsLoadFailureGuard,
+            ensureLmsModelsLoaded,
+            getLmsSelectedRuntimeRows
+        } = await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
+    });
+
+    test('selected runtime rows are opaque, normalized evidence rather than a vendor-table schema', () => {
+        expect(getLmsSelectedRuntimeRows(`
+            LLM ENGINE                                      SELECTED  MODEL FORMAT
+            llama.cpp-mac-arm64-apple-metal@2.33.0             ✓       GGUF
+            mlx-llm-mac-arm64-apple-metal-nax@1.11.0           ✓       MLX
+            mlx-llm-mac-arm64-apple-metal-nax@1.10.1                   MLX
+        `)).toEqual([
+            'llama.cpp-mac-arm64-apple-metal@2.33.0 ✓ GGUF',
+            'mlx-llm-mac-arm64-apple-metal-nax@1.11.0 ✓ MLX'
+        ]);
+        expect(() => getLmsSelectedRuntimeRows(null)).toThrow('output must be a string');
+    });
+
+    test('three equal failures open the circuit; unknown runtime stays blocked; observed change rearms', async () => {
+        let   loadCalls       = 0;
+        let   runtimeRows     = ['mlx-llm@1.11.0 ✓ MLX'];
+        let   runtimeReadable = true;
+        const guard           = createLmsLoadFailureGuard({
+            maxEquivalentFailures: 3,
+            halfOpenAfterMs      : 900000,
+            now                  : () => 1000,
+            fetchRuntimeRows     : async () => {
+                if (!runtimeReadable) throw new Error('runtime table unavailable');
+                return runtimeRows
+            }
+        });
+        const run = () => ensureLmsModelsLoaded({
+            host             : 'http://127.0.0.1:1234',
+            models           : ['chat-model'],
+            contextLengths   : {'chat-model': 262144},
+            parallels        : {'chat-model': 1},
+            allowPartial     : true,
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 10,
+            fetchModelIds    : async () => ['chat-model'],
+            fetchLoadedModels: async () => [],
+            loadFailureGuard : guard,
+            async loadModel() {
+                loadCalls++;
+                const error = new Error(`${os.homedir()}/private/runtime ${'x'.repeat(1200)}`);
+
+                error.code   = 6;
+                error.signal = 'SIGABRT';
+                throw error
+            },
+            log: {info() {}, warn() {}}
+        });
+
+        await run();
+        await run();
+        const terminal = await run();
+
+        expect(loadCalls).toBe(3);
+        expect(terminal.loadFailureCircuits[0]).toMatchObject({
+            status       : 'open',
+            host         : 'http://127.0.0.1:1234',
+            model        : 'chat-model',
+            failureStreak: 3,
+            terminal     : true,
+            runtime      : {status: 'observed', selectedRows: runtimeRows}
+        });
+        expect(terminal.failedModels[0].error).not.toContain(os.homedir());
+        expect(terminal.failedModels[0].error.length).toBeLessThanOrEqual(1000);
+        expect(terminal.observationStatus).toBe('load-blocked');
+        expect(terminal.operatorDiagnostic).toMatchObject({code: 'LMS_LOAD_FAILURE_CIRCUIT_OPEN'});
+
+        runtimeReadable = false;
+        const unknownRuntime = await run();
+
+        expect(loadCalls).toBe(3);
+        expect(unknownRuntime.blockedModels[0].loadFailureCircuit).toMatchObject({
+            terminal          : true,
+            runtime           : {status: 'observed', selectedRows: runtimeRows},
+            runtimeObservation: {status: 'unknown', selectedRows: []}
+        });
+
+        runtimeReadable = true;
+        runtimeRows     = ['mlx-llm@1.10.1 ✓ MLX'];
+        const rearmed = await run();
+
+        expect(loadCalls).toBe(4);
+        expect(rearmed.loadFailureCircuits[0]).toMatchObject({
+            failureStreak: 1,
+            terminal     : false,
+            runtime      : {status: 'observed', selectedRows: runtimeRows}
+        });
+
+        const otherHost = await guard.beforeAttempt({
+            host         : 'http://127.0.0.1:4321',
+            model        : 'chat-model',
+            contextLength: 262144,
+            parallel     : 1,
+            identifier   : 'chat-model',
+            timeoutMs    : 10
+        });
+
+        expect(otherHost.admitted).toBe(true);
+    });
+
+    test('one transient failure recovers on the next scheduled attempt and clears the guard', async () => {
+        let   loadCalls = 0;
+        let   resident  = false;
+        const host      = 'http://127.0.0.1:1234';
+        const guard     = createLmsLoadFailureGuard({
+            maxEquivalentFailures: 3,
+            halfOpenAfterMs      : 900000,
+            fetchRuntimeRows     : async () => ['mlx-llm@1.11.0 ✓ MLX']
+        });
+        const run = () => ensureLmsModelsLoaded({
+            host,
+            models           : ['chat-model'],
+            contextLengths   : {'chat-model': 262144},
+            parallels        : {'chat-model': 1},
+            allowPartial     : true,
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 10,
+            fetchModelIds    : async () => ['chat-model'],
+            fetchLoadedModels: async () => resident ? [{id: 'chat-model', contextLength: 262144, parallel: 1}] : [],
+            loadFailureGuard : guard,
+            async loadModel() {
+                loadCalls++;
+                if (loadCalls === 1) throw new Error('one transient load failure');
+                resident = true
+            },
+            log: {info() {}, warn() {}}
+        });
+
+        const failed = await run();
+        const ready  = await run();
+
+        expect(failed).toMatchObject({ready: false, loadFailureCircuits: [{failureStreak: 1, terminal: false}]});
+        expect(ready).toMatchObject({ready: true, loadedModels: ['chat-model']});
+        expect(loadCalls).toBe(2);
+        expect(guard.snapshot({host, model: 'chat-model'})).toBeNull();
+    });
+
+    test('a changed failure after the half-open probe starts a new streak', async () => {
+        let   currentTime = 0;
+        const guard       = createLmsLoadFailureGuard({
+            maxEquivalentFailures: 2,
+            halfOpenAfterMs      : 100,
+            now                  : () => currentTime,
+            fetchRuntimeRows     : async () => ['mlx-llm@1.11.0 ✓ MLX']
+        });
+        const options = {
+            host         : 'http://127.0.0.1:1234',
+            model        : 'chat-model',
+            contextLength: 262144,
+            parallel     : 1,
+            identifier   : 'chat-model',
+            timeoutMs    : 10
+        };
+
+        let attempt = await guard.beforeAttempt(options);
+        guard.recordFailure({attempt, error: new Error('backend abort A')});
+        attempt = await guard.beforeAttempt(options);
+        const open = guard.recordFailure({attempt, error: new Error('backend abort A')});
+
+        expect(open).toMatchObject({terminal: true, failureStreak: 2, nextAttemptAt: 100});
+        expect((await guard.beforeAttempt(options)).admitted).toBe(false);
+
+        currentTime = 100;
+        attempt = await guard.beforeAttempt(options);
+        expect(attempt).toMatchObject({admitted: true, halfOpen: true});
+
+        const changed = guard.recordFailure({attempt, error: new Error('backend abort B')});
+
+        expect(changed).toMatchObject({terminal: false, failureStreak: 1, status: 'tracking'});
+
+        const changedShape = await guard.beforeAttempt({...options, contextLength: 131072});
+
+        expect(changedShape.admitted).toBe(true);
+    });
+
+    test('a sufficient identifier collision is adopted before the guard records a failure', async () => {
+        const guard = createLmsLoadFailureGuard({
+            maxEquivalentFailures: 2,
+            halfOpenAfterMs      : 100,
+            fetchRuntimeRows     : async () => ['mlx-llm@1.11.0 ✓ MLX']
+        });
+        let   probes = 0;
+        const result = await ensureLmsModelsLoaded({
+            host             : 'http://127.0.0.1:1234',
+            models           : ['embedding-model'],
+            contextLengths   : {'embedding-model': 32768},
+            allowPartial     : true,
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 10,
+            fetchModelIds    : async () => ['embedding-model'],
+            fetchLoadedModels: async () => probes++ < 3
+                ? []
+                : [{id: 'embedding-model', contextLength: 32768}],
+            loadFailureGuard: guard,
+            async loadModel() {
+                throw new Error('A model with identifier embedding-model already exists.')
+            },
+            log: {info() {}, warn() {}}
+        });
+
+        expect(result.adoptedModels.map(item => item.model)).toEqual(['embedding-model']);
+        expect(result.failedModels).toEqual([]);
+        expect(guard.snapshot({host: 'http://127.0.0.1:1234', model: 'embedding-model'})).toBeNull();
     });
 });

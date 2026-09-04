@@ -23,14 +23,17 @@ import {
 } from '../shared/providerActivityLedger.mjs';
 
 let openAiCompatibleEmbeddingServingProbeQueue = Promise.resolve(),
-    lmsResidencyMutationQueue                  = Promise.resolve();
+    lmsResidencyMutationQueue                  = Promise.resolve(),
+    defaultLmsLoadFailureGuard                 = null,
+    defaultLmsLoadFailureGuardPolicyKey        = null;
 
 const
-    providerDiscoveryCache         = new Map(),
-    providerDiscoveryForceInflight = new Map(),
-    ollamaWarmInflight             = new Map(),
-    PROVIDER_DISCOVERY_FORCE       = 'force',
-    PROVIDER_DISCOVERY_ROUTINE     = 'routine';
+    providerDiscoveryCache             = new Map(),
+    providerDiscoveryForceInflight     = new Map(),
+    ollamaWarmInflight                 = new Map(),
+    PROVIDER_DISCOVERY_FORCE           = 'force',
+    PROVIDER_DISCOVERY_ROUTINE         = 'routine',
+    LMS_LOAD_FAILURE_MESSAGE_MAX_CHARS = 1000;
 
 /**
  * @summary Stable code for a readiness caller whose Ollama warm wait ended before provider work.
@@ -1247,6 +1250,251 @@ export function loadLmsModel(model, {execFileFn = execFile, contextLength, paral
 }
 
 /**
+ * @summary Extracts the selected LM Studio runtime rows from `lms runtime ls` output.
+ *
+ * The CLI exposes no JSON mode, so these rows are deliberately opaque evidence rather than a parsed
+ * runtime schema. Whitespace is normalized to keep the fingerprint stable while the full selected
+ * row remains operator-readable. An empty array means the vendor surface was readable but did not
+ * expose a selected runtime.
+ *
+ * @param {String} output Human-readable `lms runtime ls` output.
+ * @returns {String[]} Selected runtime rows, sorted for stable fingerprinting.
+ */
+export function getLmsSelectedRuntimeRows(output) {
+    if (!Neo.isString(output)) {
+        throw new TypeError('getLmsSelectedRuntimeRows: output must be a string');
+    }
+
+    return output
+        .split(/\r?\n/)
+        .map(line => line.trim().replace(/\s+/g, ' '))
+        .filter(line => line.includes('✓'))
+        .sort()
+}
+
+/**
+ * @summary Observes LM Studio's selected runtime rows without interpreting the vendor table schema.
+ * @param {Object} [options]
+ * @param {Function} [options.execFileFn=execFile] Child-process seam for tests.
+ * @param {Number} options.timeoutMs Bounded child lifetime.
+ * @returns {Promise<String[]>}
+ */
+export function fetchLmsSelectedRuntimeRows({execFileFn = execFile, timeoutMs} = {}) {
+    if (!Neo.isNumber(timeoutMs) || timeoutMs <= 0) {
+        return Promise.reject(new TypeError('fetchLmsSelectedRuntimeRows: timeoutMs is required'));
+    }
+
+    return new Promise((resolve, reject) => {
+        execFileFn('lms', ['runtime', 'ls'], lmsExecOptions({timeout: timeoutMs, killSignal: 'SIGKILL'}),
+            (error, stdout = '', stderr = '') => {
+                if (error) {
+                    reject(createLmsCliError('lms runtime ls', error, stderr));
+                    return;
+                }
+
+                resolve(getLmsSelectedRuntimeRows(stdout));
+            });
+    });
+}
+
+/**
+ * @summary Creates a finite, same-fingerprint guard for LM Studio additive-load failures.
+ *
+ * This is intentionally narrower than `boundedRetryGate`: an LMS identifier collision becomes a
+ * failure only AFTER the residency re-probe declines to adopt it, and the stable error fingerprint
+ * exists only after the load settles. A pre-run generic failure gate would count the collision too
+ * early and cannot rotate on an error that changes during the run.
+ *
+ * The guard owns no scheduling and never invokes `lms load`. Callers ask `beforeAttempt()`, run the
+ * existing load/adoption flow when admitted, then call `recordFailure()` only for a failure that
+ * survived collision classification. Runtime rows are best-effort opaque evidence, never the sole
+ * correctness key: only an observed-A → observed-B change re-arms immediately; an unavailable
+ * vendor observation is represented explicitly as `unknown` and preserves the prior generation.
+ * Terminal generations permit one half-open attempt after `halfOpenAfterMs`, so an unreadable or
+ * format-drifted runtime surface cannot make recovery impossible. The vendor table cannot identify
+ * which selected runtime owns one missing model, so any observed selected-row-set change grants one
+ * fresh bounded generation; that safe-but-imprecise re-arm can never recreate an unbounded loop.
+ *
+ * @param {Object} options
+ * @param {Number} options.maxEquivalentFailures Consecutive equal-fingerprint budget.
+ * @param {Number} options.halfOpenAfterMs Delay before one terminal half-open attempt.
+ * @param {Function} [options.fetchRuntimeRows=fetchLmsSelectedRuntimeRows] Runtime observation seam.
+ * @param {Function} [options.now=Date.now] Clock seam.
+ * @returns {{beforeAttempt: Function, recordFailure: Function, clear: Function, snapshot: Function}}
+ */
+export function createLmsLoadFailureGuard({
+    maxEquivalentFailures,
+    halfOpenAfterMs,
+    fetchRuntimeRows = fetchLmsSelectedRuntimeRows,
+    now = Date.now
+} = {}) {
+    for (const [name, value] of Object.entries({maxEquivalentFailures, halfOpenAfterMs})) {
+        if (!Neo.isNumber(value) || value <= 0) {
+            throw new TypeError(`createLmsLoadFailureGuard: ${name} must be a positive number`);
+        }
+    }
+
+    const states          = new Map();
+    const sanitizeMessage = error => String(error?.message || error || 'unknown LM Studio load failure')
+        .replaceAll(os.homedir(), '~')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, LMS_LOAD_FAILURE_MESSAGE_MAX_CHARS);
+    const readRuntime = async timeoutMs => {
+        try {
+            const rows = await fetchRuntimeRows({timeoutMs});
+
+            return {
+                status      : rows.length ? 'observed' : 'unknown',
+                selectedRows: rows
+            }
+        } catch (error) {
+            return {
+                status      : 'unknown',
+                selectedRows: [],
+                error       : sanitizeMessage(error)
+            }
+        }
+    };
+    const buildStateKey      = ({host, model}) => JSON.stringify({host, model});
+    const buildGenerationKey = ({host, model, contextLength, parallel, identifier}) => JSON.stringify({
+        host,
+        model,
+        identifier   : identifier || model,
+        contextLength: Neo.isNumber(contextLength) ? contextLength : null,
+        parallel     : Neo.isNumber(parallel) ? parallel : null
+    });
+    const project = state => state ? structuredClone({
+        status            : state.terminal ? 'open' : 'tracking',
+        host              : state.host,
+        model             : state.model,
+        generationKey     : state.generationKey,
+        failureFingerprint: state.failureFingerprint,
+        failureStreak     : state.failureStreak,
+        failureBudget     : maxEquivalentFailures,
+        halfOpenAfterMs   : state.halfOpenAfterMs,
+        nextAttemptAt     : state.nextAttemptAt,
+        terminal          : state.terminal,
+        stopReason        : state.stopReason,
+        runtime           : state.runtime,
+        runtimeObservation: state.runtimeObservation,
+        failure           : state.failure,
+        retryDisposition  : state.terminal ? 'blocked-until-half-open-or-change' : 'retry-on-next-scheduled-cycle',
+        resumeVia         : 'observed runtime/model/load-shape change, resident observation, process restart, or half-open probe'
+    }) : null;
+
+    return {
+        async beforeAttempt({host, model, contextLength, parallel, identifier, timeoutMs}) {
+            const runtime          = await readRuntime(timeoutMs),
+                  stateKey         = buildStateKey({host, model}),
+                  generationKey    = buildGenerationKey({host, model, contextLength, parallel, identifier}),
+                  state            = states.get(stateKey),
+                  effectiveRuntime = runtime.status === 'unknown' && state?.runtime?.status === 'observed'
+                      ? state.runtime
+                      : runtime,
+                  currentTime   = now();
+
+            if (!state || state.generationKey !== generationKey) {
+                return {admitted: true, generationKey, host, model, runtime: effectiveRuntime, runtimeObservation: runtime, stateKey};
+            }
+            if (state.runtime.status === 'observed' && runtime.status === 'observed' &&
+                JSON.stringify(state.runtime.selectedRows) !== JSON.stringify(runtime.selectedRows)) {
+                states.delete(stateKey);
+                return {admitted: true, generationKey, host, model, runtime, runtimeObservation: runtime, stateKey};
+            }
+            if (!state.terminal || currentTime >= state.nextAttemptAt) {
+                return {
+                    admitted          : true,
+                    generationKey,
+                    halfOpen          : state.terminal,
+                    host,
+                    model,
+                    runtime           : effectiveRuntime,
+                    runtimeObservation: runtime,
+                    stateKey
+                };
+            }
+
+            return {
+                admitted: false,
+                ...project(state),
+                runtimeObservation: runtime
+            }
+        },
+
+        recordFailure({attempt, error}) {
+            const failure = {
+                message: sanitizeMessage(error),
+                ...(error?.code === undefined ? {} : {code: error.code}),
+                ...(error?.signal === undefined ? {} : {signal: error.signal}),
+                ...(error?.killed === undefined ? {} : {killed: error.killed === true})
+            };
+            const failureFingerprint = JSON.stringify(failure),
+                  prior              = states.get(attempt.stateKey),
+                  continues          = prior?.generationKey === attempt.generationKey &&
+                      prior.failureFingerprint === failureFingerprint,
+                  failureStreak      = continues ? prior.failureStreak + 1 : 1,
+                  terminal           = failureStreak >= maxEquivalentFailures,
+                  state              = {
+                      host         : attempt.host,
+                      model        : attempt.model,
+                      generationKey: attempt.generationKey,
+                      failureFingerprint,
+                      failureStreak,
+                      halfOpenAfterMs,
+                      nextAttemptAt: terminal ? now() + halfOpenAfterMs : now(),
+                      terminal,
+                      stopReason   : terminal
+                          ? `identical LM Studio load failure budget exhausted (${failureStreak}/${maxEquivalentFailures})`
+                          : null,
+                      runtime           : attempt.runtime,
+                      runtimeObservation: attempt.runtimeObservation,
+                      failure
+                  };
+
+            states.set(attempt.stateKey, state);
+            return project(state)
+        },
+
+        clear({host, model}) {
+            states.delete(buildStateKey({host, model}));
+        },
+
+        snapshot({host, model}) {
+            return project(states.get(buildStateKey({host, model})))
+        }
+    }
+}
+
+/**
+ * @summary Returns the process-shared LMS load-failure guard for the resolved AiConfig policy.
+ *
+ * The policy fingerprint makes reactive config changes replace the state holder instead of leaving
+ * an old attempt budget alive under new operator values. Tests that inject `loadModel` remain
+ * circuit-free unless they explicitly inject a guard; production callers share this one budget.
+ *
+ * @returns {Object}
+ * @private
+ */
+function getDefaultLmsLoadFailureGuard() {
+    const policy = aiConfig.orchestrator.lms.loadFailureCircuit,
+          key    = JSON.stringify({
+              maxEquivalentFailures: policy.maxEquivalentFailures,
+              halfOpenAfterMs      : policy.halfOpenAfterMs
+          });
+
+    if (!defaultLmsLoadFailureGuard || defaultLmsLoadFailureGuardPolicyKey !== key) {
+        defaultLmsLoadFailureGuard = createLmsLoadFailureGuard({
+            maxEquivalentFailures: policy.maxEquivalentFailures,
+            halfOpenAfterMs      : policy.halfOpenAfterMs
+        });
+        defaultLmsLoadFailureGuardPolicyKey = key;
+    }
+
+    return defaultLmsLoadFailureGuard
+}
+
+/**
  * @summary Builds the per-model `--context-length` override map for `ensureLmsModelsLoaded`.
  *
  * Composes the resolved chat + embedding model identifiers with their respective
@@ -1462,6 +1710,7 @@ export function buildOllamaReadinessConfig(config = aiConfig) {
  * @param {Function} [options.fetchModelIds] Injectable model-list probe.
  * @param {Function} [options.fetchLoadedModels] Injectable loaded-model metadata probe.
  * @param {Function} [options.loadModel] Injectable model-load function.
+ * @param {Object|null} [options.loadFailureGuard] Stateful LMS load-failure admission guard.
  * @param {Function} [options.embeddingServingProbe] Optional bounded embedding-serving canary seam.
  * @param {String} [options.modelDiscoveryFreshness='force'] Routine callers may use `routine`; post-mutation probes force-refresh.
  * @param {Number} [options.modelDiscoveryCacheTtlMs] Required when `modelDiscoveryFreshness` is `routine`.
@@ -1498,6 +1747,7 @@ async function ensureLmsModelsLoadedOnce({
     fetchModelIds     = opts => fetchOpenAiCompatibleModelIds(opts),
     fetchLoadedModels = opts => fetchLmsLoadedModels(opts),
     loadModel         = null,
+    loadFailureGuard,
     embeddingServingProbe,
     modelDiscoveryFreshness = PROVIDER_DISCOVERY_FORCE,
     modelDiscoveryCacheTtlMs,
@@ -1518,9 +1768,12 @@ async function ensureLmsModelsLoadedOnce({
     }
 
     const mutationTimeoutMs = Math.max(
-        timeoutMs,
-        attempts * timeoutMs + Math.max(0, attempts - 1) * delayMs
-    );
+          timeoutMs,
+          attempts * timeoutMs + Math.max(0, attempts - 1) * delayMs
+    ),
+          effectiveLoadFailureGuard = loadFailureGuard === undefined
+              ? loadModel ? null : getDefaultLmsLoadFailureGuard()
+              : loadFailureGuard;
     const invokeLoadModel = loadModel || ((model, options) => loadLmsModel(model, {
         ...options,
         timeoutMs: mutationTimeoutMs
@@ -1572,6 +1825,12 @@ async function ensureLmsModelsLoadedOnce({
             parallels
         }));
 
+        for (const observation of observations) {
+            if (observation.status === 'sufficient') {
+                effectiveLoadFailureGuard?.clear?.({host, model: observation.model});
+            }
+        }
+
         return {
             unknown     : observations.filter(item => item.status === 'unknown'),
             missing     : observations.filter(item => item.status === 'missing').map(item => item.model),
@@ -1618,7 +1877,9 @@ async function ensureLmsModelsLoadedOnce({
           // "I loaded it" from "someone else already had it" loses the only signal that would show
           // this collision race recurring.
           adoptedModels   = [],
-          failedModels    = [];
+          failedModels    = [],
+          blockedModels   = [],
+          loadFailureCircuits = [];
     const buildResult = ({
         ready,
         observationStatus,
@@ -1629,26 +1890,44 @@ async function ensureLmsModelsLoadedOnce({
         observedLoadError,
         attempt = 1,
         elapsedMs
-    }) => ({
-        ready,
-        degraded: !ready,
-        ...(observationStatus ? {observationStatus} : {}),
-        loadedModels,
-        adoptedModels,
-        attemptedModels,
-        failedModels,
-        cleanupFailedModels: [],
-        unloadedModels     : [],
-        missingModels,
-        unknownLoadedModels,
-        insufficientLoadedModels,
-        ...(observedLoadError ? {observedLoadError} : {}),
-        requiredModels,
-        availableModels,
-        ...loadedShape(rows),
-        attempts: attempt,
-        ...(elapsedMs === undefined ? {} : {elapsedMs})
-    });
+    }) => {
+        const activeLoadFailureCircuits = loadFailureCircuits
+                  .map(item => effectiveLoadFailureGuard?.snapshot?.({host, model: item.model}) ?? item)
+                  .filter(Boolean),
+              terminalCircuit    = activeLoadFailureCircuits.find(item => item.terminal),
+              operatorDiagnostic = terminalCircuit ? {
+                  code   : 'LMS_LOAD_FAILURE_CIRCUIT_OPEN',
+                  summary: (`LM Studio load circuit open for '${terminalCircuit.model}' after ` +
+                      `${terminalCircuit.failureStreak} identical failures; selected runtimes=` +
+                      `${terminalCircuit.runtime.selectedRows.join(', ') || 'unknown'}; ` +
+                      `resume via ${terminalCircuit.resumeVia}. Last failure: ${terminalCircuit.failure.message}`)
+                      .slice(0, 1600)
+              } : null;
+
+        return {
+            ready,
+            degraded: !ready,
+            ...(terminalCircuit ? {observationStatus: 'load-blocked'} : observationStatus ? {observationStatus} : {}),
+            loadedModels,
+            adoptedModels,
+            attemptedModels,
+            failedModels,
+            ...(blockedModels.length ? {blockedModels} : {}),
+            ...(activeLoadFailureCircuits.length ? {loadFailureCircuits: activeLoadFailureCircuits} : {}),
+            ...(operatorDiagnostic ? {operatorDiagnostic} : {}),
+            cleanupFailedModels: [],
+            unloadedModels     : [],
+            missingModels,
+            unknownLoadedModels,
+            insufficientLoadedModels,
+            ...(observedLoadError ? {observedLoadError} : {}),
+            requiredModels,
+            availableModels,
+            ...loadedShape(rows),
+            attempts: attempt,
+            ...(elapsedMs === undefined ? {} : {elapsedMs})
+        }
+    };
     const failObservation = ({
         status,
         warning,
@@ -1733,7 +2012,7 @@ async function ensureLmsModelsLoadedOnce({
     };
     const fetchResidency = async options => {
         try {
-            return await fetchLoadedModels(options);
+            return await fetchLoadedModels(options)
         } catch (error) {
             return failObservation({
                 status           : 'metadata-unknown',
@@ -1812,11 +2091,40 @@ async function ensureLmsModelsLoadedOnce({
         if (Neo.isNumber(contextLength)) loadOptions.contextLength = contextLength;
         if (Neo.isNumber(parallel)) loadOptions.parallel = parallel;
 
+        const loadAttempt = typeof effectiveLoadFailureGuard?.beforeAttempt === 'function'
+            ? await effectiveLoadFailureGuard.beforeAttempt({
+                host,
+                model,
+                contextLength,
+                parallel,
+                identifier: model,
+                timeoutMs
+            })
+            : {admitted: true};
+
+        if (loadAttempt.admitted === false) {
+            const blocked = {
+                model,
+                contextLength,
+                parallel,
+                error             : `LM Studio load suppressed: ${loadAttempt.stopReason || loadAttempt.status}`,
+                code              : 'LMS_LOAD_RETRY_BLOCKED',
+                loadFailureCircuit: loadAttempt
+            };
+
+            blockedModels.push(blocked);
+            failedModels.push(blocked);
+            loadFailureCircuits.push(loadAttempt);
+            log.warn?.(`[ProviderReadinessHelper] LM Studio model '${model}' preload suppressed by its load-failure circuit.`);
+            continue;
+        }
+
         try {
             assertMutationAdmitted({attemptedModels, loadedModels, failedModels, refusedModel: model});
             attemptedModels.push(model);
             await invokeLoadModel(model, loadOptions);
             loadedModels.push(model);
+            effectiveLoadFailureGuard?.clear?.({host, model});
         } catch (error) {
             if (error?.reason?.startsWith('runtime-authority-') || error?.reason?.startsWith('runtime-effect-')) {
                 throw error;
@@ -1857,6 +2165,7 @@ async function ensureLmsModelsLoadedOnce({
                         adoptedModels.push({model, contextLength, parallel, observed: observation.observed});
                         log.info?.(`[ProviderReadinessHelper] LM Studio model '${model}' already resident and sufficient; adopted instead of replaced.`);
                         activeLoadedModels = collisionRows;
+                        effectiveLoadFailureGuard?.clear?.({host, model});
                         continue;
                     }
 
@@ -1867,10 +2176,37 @@ async function ensureLmsModelsLoadedOnce({
                 }
             }
 
-            failedModels.push({model, contextLength, parallel, error: error.message});
-            log.warn?.(`[ProviderReadinessHelper] LM Studio model '${model}' preload failed: ${error.message}`);
+            const loadFailureCircuit = typeof effectiveLoadFailureGuard?.recordFailure === 'function'
+                ? effectiveLoadFailureGuard.recordFailure({attempt: loadAttempt, error})
+                : null;
+            const failed = {
+                model,
+                contextLength,
+                parallel,
+                error: loadFailureCircuit?.failure?.message || error.message,
+                ...(error?.code === undefined ? {} : {code: error.code}),
+                ...(error?.signal === undefined ? {} : {signal: error.signal}),
+                ...(error?.killed === undefined ? {} : {killed: error.killed === true}),
+                ...(loadFailureCircuit ? {loadFailureCircuit} : {})
+            };
+
+            failedModels.push(failed);
+            if (loadFailureCircuit) {
+                loadFailureCircuits.push(loadFailureCircuit);
+                error.lmsLoadFailureCircuit = loadFailureCircuit;
+            }
+            log.warn?.(`[ProviderReadinessHelper] LM Studio model '${model}' preload failed: ${failed.error}`);
 
             if (!allowPartial) {
+                if (loadFailureCircuit) {
+                    const guardedError = new Error(failed.error, {cause: error});
+
+                    guardedError.code                  = error.code;
+                    guardedError.killed                = error.killed;
+                    guardedError.signal                = error.signal;
+                    guardedError.lmsLoadFailureCircuit = loadFailureCircuit;
+                    throw guardedError
+                }
                 throw error;
             }
         }

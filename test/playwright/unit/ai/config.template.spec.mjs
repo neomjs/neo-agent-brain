@@ -568,6 +568,10 @@ test.describe('Tier 1 Config Immutability', () => {
             model  : process.env.NEO_ORCHESTRATOR_LMS_MODEL || 'qwen3-embedding-8b',
             port   : process.env.NEO_ORCHESTRATOR_LMS_PORT || '1234'
         });
+        expect(Config.orchestrator.lms.loadFailureCircuit).toEqual({
+            maxEquivalentFailures: Number(process.env.NEO_ORCHESTRATOR_LMS_LOAD_FAILURE_MAX_EQUIVALENT) || 3,
+            halfOpenAfterMs      : Number(process.env.NEO_ORCHESTRATOR_LMS_LOAD_FAILURE_HALF_OPEN_MS)    || 15 * 60 * 1000
+        });
 
         expect(Config.maintenance.backup).toEqual({
             intervalMs: 24 * 60 * 60 * 1000,
