@@ -660,6 +660,10 @@ services:
       # the deployment contract is one writer per path, which dissolves cross-process cache
       # contention structurally instead of locking.
       - auth-cache-data:/app/.neo-ai-data/auth
+      # Read-only half of the orchestrator -> Fleet deployment-state bridge: the composed
+      # `fleetDeploymentState` verb projects the orchestrator's snapshot from this mount — the same
+      # read-only share the public KB/MC containers consume. Still no graph/MC/KB private volume.
+      - shared-deployment-state-data:/app/.neo-ai-data/deployment-state:ro
     secrets:
       - mcp-auth-token
     networks:

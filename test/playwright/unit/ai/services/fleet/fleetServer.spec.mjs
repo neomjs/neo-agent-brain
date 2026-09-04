@@ -18,6 +18,11 @@ import os                              from 'node:os';
 import path                            from 'node:path';
 import RequestContextService           from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 import ConfigBase                      from '../../../../../../ai/configBase.mjs';
+import FleetControlBridge              from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
+import {
+    createDeploymentStateSnapshot,
+    writeDeploymentStateSnapshot
+}                                  from '../../../../../../ai/services/memory-core/helpers/deploymentStateBridgeStore.mjs';
 import {
     assertFleetPlaneReady,
     createFleetRequestContext,
@@ -882,10 +887,10 @@ test.describe('composed Fleet S1 server', () => {
 test.describe('Fleet S1 wire policy', () => {
     const PRINCIPAL_CONTEXT = Object.freeze({ownerPrincipal: 'principal:github:https%3A%2F%2Fapi.github.com:9'});
 
-    test('classifies every wire verb in BOTH ledgers — slice ownership and scope class — with getBootIdentity as the one served verb', () => {
+    test('classifies every wire verb in BOTH ledgers — slice ownership and scope class — with getBootIdentity and fleetDeploymentState as the served verbs', () => {
         expect(Object.keys(FLEET_S1_METHOD_POLICY).sort()).toEqual([...FLEET_WIRE_METHODS].sort());
         expect(Object.keys(FLEET_METHOD_SCOPE_CLASSES).sort()).toEqual([...FLEET_WIRE_METHODS].sort());
-        expect(FLEET_S1_READY_METHODS).toEqual(['getBootIdentity']);
+        expect(FLEET_S1_READY_METHODS).toEqual(['getBootIdentity', 'fleetDeploymentState']);
 
         for (const scopeClass of Object.values(FLEET_METHOD_SCOPE_CLASSES)) {
             expect(['read-observe', 'lifecycle-write']).toContain(scopeClass)
@@ -974,6 +979,109 @@ test.describe('Fleet S1 wire policy', () => {
                 ok   : false,
                 state: FLEET_WIRE_RESPONSE_STATES.unsupportedMethod
             })
+        }
+    })
+});
+
+test.describe('composed deployment-state path', () => {
+    const token = 'provider-secret-never-crosses-fleet';
+
+    const stubProviderIdentity = () => {
+        globalThis.fetch = async (input, init) => String(input) === 'https://api.github.test/user'
+            ? new Response(JSON.stringify({id: 280105177, login: 'neo-gpt', name: 'Euclid'}), {
+                status : 200,
+                headers: {'content-type': 'application/json', 'x-oauth-scopes': 'repo, read:org'}
+            })
+            : nativeFetch(input, init)
+    };
+
+    // The composed entrypoint's own config surface: no wake lane declared, and the three
+    // deployment-state leaves resolved the way the deployment resolves them.
+    const composedConfig = snapshotPath => {
+        const config = createConfig();
+
+        return {
+            ...config,
+            fleet       : {...config.fleet, wakeSelfBase: '', planeBase: '', planeInternalHosts: []},
+            orchestrator: {deploymentStateBridge: {snapshotPath, staleAfterMs: 120_000, maxSnapshotBytes: 256 * 1024}}
+        }
+    };
+
+    const bootComposed = async snapshotPath => {
+        const server = await startFleetServer({aiConfig: composedConfig(snapshotPath), logger, planeGuard() {}, host: '127.0.0.1', port: 0});
+
+        return {
+            call : () => nativeFetch(`http://127.0.0.1:${server.address().port}/fleet`, {
+                method : 'POST',
+                headers: {Authorization: `Bearer ${token}`, 'content-type': 'application/json'},
+                body   : wireBody('fleetDeploymentState', {})
+            }).then(response => response.json()),
+            close: () => new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+        }
+    };
+
+    test.afterEach(() => {
+        globalThis.fetch = nativeFetch;
+        FleetControlBridge.deploymentStateSource = null
+    });
+
+    test('the composed entrypoint serves a producer-derived projection from the resolved snapshot leaves, and answers unwired without them', async () => {
+        stubProviderIdentity();
+
+        const root = await mkdtemp(path.join(os.tmpdir(), 'neo-fleet-deployment-state-'));
+
+        try {
+            // control: no path resolves at boot → the seam stays unwired and the verb says so
+            const unwired = await bootComposed('');
+
+            try {
+                expect(await unwired.call()).toMatchObject({
+                    ok    : true,
+                    result: {state: 'unavailable', reason: 'deployment-state-source-unwired', services: []}
+                })
+            } finally {
+                await unwired.close()
+            }
+
+            // the orchestrator's own writer produces the file the composed service mounts read-only;
+            // nothing pre-populates the bridge — the boot wiring is what serves it
+            const snapshotPath = path.join(root, 'deployment-state', 'snapshot.json');
+
+            await mkdir(path.dirname(snapshotPath), {recursive: true});
+            await writeDeploymentStateSnapshot({
+                filePath: snapshotPath,
+                snapshot: createDeploymentStateSnapshot({
+                    services: [{
+                        schemaVersion : 1,
+                        recordType    : 'deployment-service-state',
+                        serviceKey    : 'mc-server',
+                        observedAt    : Date.now(),
+                        status        : {status: 'available', disposition: 'below'},
+                        memoryPressure: {disposition: 'below', reason: null, receipt: null},
+                        resolvedConfig: {dataDir: '/app/.neo-ai-data/private'},
+                        inspect       : {containerId: 'abc123'},
+                        restartChurn  : {baseline: 'available', detecting: true},
+                        classification: null,
+                        diagnosis     : null
+                    }]
+                })
+            });
+
+            const wired = await bootComposed(snapshotPath);
+
+            try {
+                const payload = await wired.call();
+
+                expect(payload.ok).toBe(true);
+                expect(payload.result.state).toBe('ok');
+                expect(payload.result.services.map(service => service.serviceKey)).toEqual(['mc-server']);
+                expect(JSON.stringify(payload)).not.toContain('/app/.neo-ai-data/private');
+                expect(JSON.stringify(payload)).not.toContain('abc123')
+            } finally {
+                await wired.close()
+            }
+        } finally {
+            await rm(root, {recursive: true, force: true})
         }
     })
 });
