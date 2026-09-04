@@ -88,6 +88,26 @@ const
     CLAUDE_EVENT_MANIFEST = 'ai/scripts/lifecycle/hooks/claude/events.manifest.json',
     CLAUDE_SETTINGS       = '.claude/settings.json',
     /**
+     * The token a manifest command uses to name the runtime root it must resolve against, and the
+     * closed census of entrypoints that are wired into a seat but never copied into it.
+     *
+     * Every other hook resolves through `$(git rev-parse --show-toplevel)` — the TARGET root — which
+     * is right for anything that ships into the seat. It is wrong for a verifier: a checker copied
+     * into the seat is subject to the staleness it reports, and, decisively, **cannot detect its own
+     * absence**. A peer seat audited on neomjs/neo-agent-brain#317 came back with all nine hook files
+     * gone; a verifier shipped as a tenth would have been gone with them and reported nothing.
+     *
+     * So these run from the runtime root, and the placeholder exists because that path is per-host:
+     * the manifest is a committed file and cannot hard-code it. ADR 0040 §2.5 independently mandates
+     * the same direction — seat hooks resolve Brain substrate only through `agentosRuntimeRoot`.
+     *
+     * The census is closed on purpose. It is the ownership key for these entries
+     * ({@link isProjectorOwnedCommand}), and a predicate matching a directory rather than a name
+     * would claim any Agent OS script a seat's settings happened to mention.
+     */
+    RUNTIME_ROOT_TOKEN           = '<agentosRuntimeRoot>',
+    RUNTIME_RESIDENT_ENTRYPOINTS = Object.freeze(['seatProjectionCheck.mjs']),
+    /**
      * Marks a generated artifact so a reader never mistakes a projection for an authored file,
      * keyed by the comment syntax each format actually has.
      *
@@ -646,6 +666,17 @@ export function renderProjection(source, runtimeRoot, targetRepoRoot) {
 export function isProjectorOwnedCommand(command, targetRepoRoot) {
     const dirs = Object.values(HARNESS_TARGETS);
 
+    // The second ownership arm, and it needs a different rule because it describes the opposite
+    // custody: a runtime-resident entrypoint is wired by the projector and deliberately NEVER
+    // projected, so it lives in no target directory and the path test below can never see it.
+    // Matching a basename against a closed census is the narrowest predicate that does; a path test
+    // keyed on the runtime root would claim any Agent OS script a seat happened to name.
+    //
+    // Getting this wrong fails silently and cumulatively rather than loudly: an unrecognized entry
+    // survives the retire pass, so every re-projection APPENDS another copy and the seat ends up
+    // running the same check N times and printing the same warning N times.
+    if (RUNTIME_RESIDENT_ENTRYPOINTS.some(name => command.includes(name))) return true;
+
     return dirs.some(dir => {
         // A command embeds its target as a path fragment (`…/.claude/hooks/x.mjs"` possibly followed
         // by arguments), so the reference is matched rather than parsed — the command grammar is the
@@ -658,6 +689,42 @@ export function isProjectorOwnedCommand(command, targetRepoRoot) {
 
         return !tracked(targetRepoRoot, path.posix.join(dir, match[1]))
     })
+}
+
+/**
+ * @summary Resolves {@link RUNTIME_ROOT_TOKEN} in every manifest command against the runtime root.
+ *
+ * Pure and total: a manifest with no token comes back structurally identical, so a deployment that
+ * wires only projected hooks pays nothing and reads unchanged.
+ *
+ * Substitution is textual and confined to `command` strings, which is deliberate. The command
+ * grammar belongs to the harness, not to us — {@link isProjectorOwnedCommand} already declines to
+ * parse it for the same reason — so this replaces a token it finds rather than composing a command
+ * it believes in.
+ * @param {Object} manifest Parsed event manifest.
+ * @param {String} agentosRuntimeRoot Absolute Agent OS runtime root.
+ * @returns {Object} Manifest with runtime-root-bound commands.
+ * @protected
+ */
+export function bindRuntimeRoot(manifest, agentosRuntimeRoot) {
+    const events = manifest?.events;
+
+    if (!events) return manifest;
+
+    return {
+        ...manifest,
+        events: Object.fromEntries(Object.entries(events).map(([event, buckets]) => [
+            event,
+            (buckets || []).map(bucket => ({
+                ...bucket,
+                hooks: (bucket.hooks || []).map(entry => (
+                    typeof entry?.command === 'string' && entry.command.includes(RUNTIME_ROOT_TOKEN)
+                        ? {...entry, command: entry.command.split(RUNTIME_ROOT_TOKEN).join(agentosRuntimeRoot)}
+                        : entry
+                ))
+            }))
+        ]))
+    }
 }
 
 /**
@@ -775,7 +842,11 @@ export function reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot, wri
     }
 
     const
-        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')),
+        // Bound here rather than inside the decision core, because this is the only layer that knows
+        // the runtime root. A committed manifest cannot hard-code a per-host absolute path, and the
+        // alternative — an env var read at hook time — was measured unset on a live seat, which
+        // would have produced a command that resolves to nothing and fails open in silence.
+        manifest = bindRuntimeRoot(JSON.parse(fs.readFileSync(manifestPath, 'utf8')), agentosRuntimeRoot),
         // The impure half lives here, in the function that already owns a filesystem and a target
         // repository. The decision core receives a yes/no and stays ignorant of both.
         isOwned  = command => isProjectorOwnedCommand(command, targetRepoRoot),
