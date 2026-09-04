@@ -101,7 +101,7 @@ class ComponentService extends Base {
                 method = 'get_vnode_tree';
                 break;
             case 'both':
-                method = 'get_vdom_and_vnode';
+                method = 'get_vdom_vnode';
                 break;
             default:
                 throw new Error(`Invalid type: ${type}`);
