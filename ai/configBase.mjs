@@ -2387,12 +2387,20 @@ class ConfigBase extends ConfigProvider {
                  *   `openAiCompatible` provider via `lms load <model>` after server spawn.
                  *   Distinct from the OpenAI-compatible API payload label (`NEO_OPENAI_COMPATIBLE_MODEL`).
                  * - `port`: OpenAI-compatible local-inference port (LM Studio CLI default `1234`).
+                 * - `loadFailureCircuit`: terminal disposition for repeated equivalent additive-load
+                 *   failures. The supervisor already owns attempt cadence; this policy adds no second
+                 *   exponential scheduler. After the finite budget, one half-open load is admitted per
+                 *   cooldown until config, residency, or an observed runtime selection changes.
                  * @type {Object}
                  */
                 lms: {
-                    enabled: leaf(false, 'NEO_ORCHESTRATOR_LMS_ENABLED', 'boolean'),
-                    model  : leaf('qwen3-embedding-8b', 'NEO_ORCHESTRATOR_LMS_MODEL', 'string'),
-                    port   : leaf('1234', 'NEO_ORCHESTRATOR_LMS_PORT', 'string')
+                    enabled           : leaf(false, 'NEO_ORCHESTRATOR_LMS_ENABLED', 'boolean'),
+                    model             : leaf('qwen3-embedding-8b', 'NEO_ORCHESTRATOR_LMS_MODEL', 'string'),
+                    port              : leaf('1234', 'NEO_ORCHESTRATOR_LMS_PORT', 'string'),
+                    loadFailureCircuit: {
+                        maxEquivalentFailures: leaf(3, 'NEO_ORCHESTRATOR_LMS_LOAD_FAILURE_MAX_EQUIVALENT', 'number'),
+                        halfOpenAfterMs      : leaf(15 * 60 * 1000, 'NEO_ORCHESTRATOR_LMS_LOAD_FAILURE_HALF_OPEN_MS', 'number')
+                    }
                 }
             },
             /**

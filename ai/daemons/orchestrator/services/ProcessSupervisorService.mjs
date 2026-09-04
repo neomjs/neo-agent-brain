@@ -489,6 +489,24 @@ export class ProcessSupervisorService extends Base {
     }
 
     /**
+     * @summary Returns one bounded operator diagnostic supplied by a task-owned readiness hook.
+     *
+     * The supervisor stays provider-agnostic: it does not interpret the code or nested readiness
+     * payload. It only gives a task's explicit summary a normal-log path, so a degraded hook does
+     * not reduce an actionable terminal reason to the generic words "degraded readiness".
+     *
+     * @param {Object} result Readiness result.
+     * @returns {String}
+     */
+    getReadinessOperatorSummary(result) {
+        const summary = result?.operatorDiagnostic?.summary;
+
+        return typeof summary === 'string'
+            ? summary.trim().replace(/[.\s]+$/, '').slice(0, 1600)
+            : ''
+    }
+
+    /**
      * Runs an optional post-spawn readiness hook for long-running child tasks.
      *
      * The child process can be alive before its provider surface is useful. LM Studio's
@@ -524,8 +542,11 @@ export class ProcessSupervisorService extends Base {
                     return;
                 }
                 if (result?.ready === false || result?.degraded === true) {
+                    const operatorSummary = this.getReadinessOperatorSummary(result);
+
                     onReadinessOutcome?.('degraded');
-                    this.writeLog?.('WARN', `[ProcessSupervisor] ${task.label} readiness hook completed with degraded readiness.`);
+                    this.writeLog?.('WARN', `[ProcessSupervisor] ${task.label} readiness hook completed with degraded readiness` +
+                        `${operatorSummary ? ` — ${operatorSummary}` : ''}.`);
                     this.recordTaskOutcome(taskName, 'degraded', {
                         reason,
                         pid      : child.pid || null,
@@ -585,8 +606,11 @@ export class ProcessSupervisorService extends Base {
             }))
             .then(result => {
                 if (result?.ready === false || result?.degraded === true) {
+                    const operatorSummary = this.getReadinessOperatorSummary(result);
+
                     this.clearReadinessSuccessLogState(taskName, 'liveness');
-                    this.writeLog?.('WARN', `[ProcessSupervisor] ${task.label} readiness hook completed with degraded readiness after liveness confirmation.`);
+                    this.writeLog?.('WARN', `[ProcessSupervisor] ${task.label} readiness hook completed with degraded readiness after liveness confirmation` +
+                        `${operatorSummary ? ` — ${operatorSummary}` : ''}.`);
                     this.recordTaskOutcome(taskName, 'degraded', {
                         reason,
                         pid      : null,
