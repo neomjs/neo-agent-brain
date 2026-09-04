@@ -100,11 +100,14 @@ test.describe('Knowledge Base Config Tier-1 defaults (#11963)', () => {
         expect(config.auth.trustProxyIdentity).toBe(tier1Config.auth.trustProxyIdentity);
         expect(config.backupPath).toBe(tier1Config.backupPath);
 
-        // The Chroma endpoint is declared ONCE, at Tier-1. The KB child holds no `host` / `port` of
-        // its own any more (#288 — ADR-0019 C4), so consumers read `engines.chroma.*` through the
-        // getParent() chain and there is no second name for the same coordinate to disagree with.
-        // Under UNIT_TEST_MODE that endpoint is the isolated unit-test daemon; collection + path
-        // remain genuinely KB-owned.
+        // The Chroma endpoint is declared ONCE, at Tier-1. The KB child holds no `host` / `port` /
+        // `path` of its own any more (#288 — ADR-0019 C4), so consumers read `engines.chroma.*`
+        // through the getParent() chain and there is no second name for the same coordinate to
+        // disagree with. Under UNIT_TEST_MODE that endpoint is the isolated unit-test daemon.
+        //
+        // `collectionName` is the KB-owned survivor — it names what this server stores, which no
+        // other layer decides. `path` is NOT: it is the Tier-1 client-process coordinate, and
+        // whether that path is also where Chroma physically stores data is deferred to #306.
         expect(tier1Template.engines.chroma.host).toBe(tier1Template.engines.chroma.hostTest);
         expect(tier1Template.engines.chroma.port).toBe(tier1Template.engines.chroma.portTest);
         // The three collapsed children must be ABSENT, not merely equal to Tier-1. An
