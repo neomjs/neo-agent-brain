@@ -1059,6 +1059,24 @@ class ConfigBase extends ConfigProvider {
              */
             engines: {
                 chroma: {
+                    // REALM BOUNDARY — these leaves are CLIENT ENDPOINT COORDINATES, not lifecycle
+                    // authority. Reading them tells a consumer where to connect; it never implies
+                    // this process may start, stop or own a Chroma server.
+                    //
+                    // - Production and local Agent OS Chroma is CONTAINER-PLANE-OWNED. Nothing that
+                    //   reads `hostProd` / `portProd` spawns it.
+                    // - The `host-edge` role disables the daemon outright:
+                    //   `src/composition/orchestrator/hostEdgeProfile.mjs` sets
+                    //   `NEO_ORCHESTRATOR_CHROMA_DAEMON_ENABLED: 'false'`.
+                    // - The ONE host-spawn exception is the run-scoped Playwright harness
+                    //   (`test/playwright/chromaProcess.mjs`), and it is deliberately not a
+                    //   fallback: it REFUSES to adopt an endpoint that already answers —
+                    //   `:205` throws "Refusing to reuse a Chroma server already listening at
+                    //   host:port". A test run owns the server it started or none at all.
+                    //
+                    // So a consumer that cannot reach the endpoint has a deployment problem, never
+                    // a licence to start one.
+                    //
                     // Env-bindable like its host/port siblings: a packaged harness ships the organism in a
                     // read-only(ish) resources dir and must move the persist dir to a per-user data root.
                     dataDirProd: leaf(path.resolve(planeDataRootDefault, 'chroma/unified'), 'NEO_CHROMA_DATA_DIR', 'string', {planeMember: true}),

@@ -50,6 +50,24 @@ Legacy full-snapshot overlays are the bounded transition exception. `migrateConf
 
 The one-line test: **if ordinary advancement parses or rewrites config *source* to reconcile a template and an overlay, stop.** You are re-implementing — by hand, and fragilely — inheritance and deep merge against a clone that should never have existed.
 
+### The one way an overlay *does* go stale: a key that is removed
+
+Inheritance protects an overlay against a base that **grows**. It cannot protect it against a base that **drops a key**, and that case is silent by construction: the overlay keeps its own value, nothing reads it any more, and no error is raised. An operator sees their setting present in the file and inert in the process.
+
+So a removed key is an operator break and belongs here, not only in a PR body.
+
+**2026-09-04 — the Knowledge Base child Chroma keys were removed.** `host`, `port` and `path` no longer exist on the KB config; they were same-meaning aliases of Tier-1 coordinates (ADR-0019 §3 C4) and the last of them wrapped `AiConfig.engines.chroma.dataDir` under a docblock asserting the two "MUST equal".
+
+| if your overlay sets | it now does nothing | set instead |
+|---|---|---|
+| KB `host` | ✗ inert | `NEO_CHROMA_HOST`, or Tier-1 `engines.chroma.hostProd` |
+| KB `port` | ✗ inert | `NEO_CHROMA_PORT`, or Tier-1 `engines.chroma.portProd` |
+| KB `path` | ✗ inert | `NEO_CHROMA_DATA_DIR`, or Tier-1 `engines.chroma.dataDirProd` |
+
+**This is a one-line move, not a capability loss** — every replacement above already worked before the removal, because Tier-1's leaves bind the identical environment variables. Nothing that was reachable became unreachable.
+
+**Not measurable from this repository.** Operator overlays live in deployments, so the affected set is a known-unmeasurable rather than an asserted-clean. Internal consumers were censused and migrated in the same change.
+
 ## Related
 
 - [examples/stateProvider/advanced](https://github.com/neomjs/neo/blob/dev/examples/stateProvider/advanced/MainContainer.mjs) — the canonical hierarchical-state illustration (read up, write-to-owner).
