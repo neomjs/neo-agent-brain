@@ -26,6 +26,10 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
  * create as `parent.add(config)`, remove as `component.destroy(true)` (the pinned `true` = `updateParentVdom`,
  * so the DOM node is detached, not orphaned). These tests mock `ConnectionService.call` so they assert the
  * server-side validation + the exact delegated dispatch, without a live App Worker.
+ *
+ * The same stub pins the wire name `inspectComponentRenderTree` sends per `type`: the engine is the
+ * authority for the names it answers, and a sender-side string has no engine witness — which is how the
+ * `both` case drifted to a name the engine never dispatched (brain#311).
  */
 test.describe('Neo.ai.services.neural-link.ComponentService — createComponent + removeComponent', () => {
     let ComponentService, ConnectionService, calls, originalCall, originalReady;
@@ -128,6 +132,24 @@ test.describe('Neo.ai.services.neural-link.ComponentService — createComponent 
             sessionId: 's1',
             op       : 'call_method',
             payload  : {id: 'dialog-1', method: 'destroy', args: [true], undoKind: 'remove_component'} // server-stamped undo-capture marker
+        });
+    });
+
+    test.describe('inspectComponentRenderTree sends the wire name the engine registers', () => {
+        // Engine `src/ai/client/ComponentService.mjs` registers exactly these three under the `get_`
+        // prefix, and its `resolveServiceMethod.spec.mjs` resolves each of them.
+        for (const [type, op] of [['vdom', 'get_vdom_tree'], ['vnode', 'get_vnode_tree'], ['both', 'get_vdom_vnode']]) {
+            test(`type '${type}' dispatches ${op} with the depth and root it was given`, async () => {
+                await ComponentService.inspectComponentRenderTree({depth: 2, rootId: 'r1', sessionId: 's1', type});
+
+                expect(calls).toEqual([{sessionId: 's1', op, payload: {depth: 2, rootId: 'r1'}}]);
+            });
+        }
+
+        test('an unknown type throws without dispatching', async () => {
+            await expect(ComponentService.inspectComponentRenderTree({sessionId: 's1', type: 'dom'}))
+                .rejects.toThrow(/Invalid type/);
+            expect(calls.length).toBe(0);
         });
     });
 });
