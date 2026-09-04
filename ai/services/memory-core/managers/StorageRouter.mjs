@@ -228,13 +228,18 @@ class StorageRouter extends Base {
             // Slice the requested top K
             const topK = rankedResults.slice(0, originalNResults);
 
-            // Re-pack into ChromaDB format
+            // Re-pack into ChromaDB format. `compositeScores` rides the same nested-array shape as
+            // its siblings so index-parallel filtering downstream stays uniform — it is the key the
+            // sort above used, and without it a caller can only see `distance`, whose derived
+            // `relevanceScore` is merely the FIRST factor of the composite and therefore contradicts
+            // the returned order whenever topology differs (#312).
             return {
-                ids      : [topK.map(r => r.id)],
-                distances: [topK.map(r => r.distance)],
-                metadatas: [topK.map(r => r.metadata)],
-                documents: searchResult.documents ? [topK.map(r => r.document)] : undefined,
-                _reRanked: true
+                ids            : [topK.map(r => r.id)],
+                distances      : [topK.map(r => r.distance)],
+                metadatas      : [topK.map(r => r.metadata)],
+                documents      : searchResult.documents ? [topK.map(r => r.document)] : undefined,
+                compositeScores: [topK.map(r => r.compositeScore)],
+                _reRanked      : true
             };
         };
     }

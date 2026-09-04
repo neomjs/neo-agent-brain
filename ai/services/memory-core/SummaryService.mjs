@@ -470,6 +470,10 @@ class SummaryService extends Base {
             let metadatas = searchResult.metadatas?.[0] || [];
             let documents = searchResult.documents?.[0] || [];
 
+            // The re-ranker's sort key (#312) — absent when Pass 2 did not run, and deliberately not
+            // defaulted to 0, which would sort a legitimate row last for any adopting consumer.
+            let compositeScores = searchResult.compositeScores?.[0] || [];
+
             if ((userId && additivePolicy) || minTrustTier) {
                 const filteredIndices = [];
                 for (let i = 0; i < metadatas.length; i++) {
@@ -486,6 +490,7 @@ class SummaryService extends Base {
                 distances = filteredIndices.map(i => distances[i]);
                 metadatas = filteredIndices.map(i => metadatas[i]);
                 documents = filteredIndices.map(i => documents[i]);
+                compositeScores = filteredIndices.map(i => compositeScores[i]);
             }
 
             let malformedTimestamps = 0;
@@ -521,7 +526,9 @@ class SummaryService extends Base {
                     sourceTrustTier      : metadata.sourceTrustTier,
                     provenancePolicy     : metadata.provenancePolicy,
                     distance,
-                    relevanceScore
+                    relevanceScore,
+                    // Omitted, never zeroed, when Pass 2 did not run — see MemoryService for the rationale.
+                    ...(Number.isFinite(compositeScores[index]) ? {compositeScore: compositeScores[index]} : {})
                 };
             });
 
@@ -531,7 +538,9 @@ class SummaryService extends Base {
                 count             : summaries.length,
                 results           : summaries,
                 // Present only when non-zero: absence means every returned row projected cleanly.
-                ...(malformedTimestamps > 0 && {malformedTimestamps})
+                ...(malformedTimestamps > 0 && {malformedTimestamps}),
+                // Whether Pass 2 ran (#312) — see MemoryService for why this marker needed a reader.
+                ...(searchResult?._reRanked ? {_reRanked: true} : {})
             };
         } catch (error) {
             logger.error('[SummaryService] Error querying summaries:', error);

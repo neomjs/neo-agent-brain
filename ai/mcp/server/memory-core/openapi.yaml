@@ -4569,6 +4569,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MemorySearchResult'
+        _reRanked:
+          type: boolean
+          description: "Present and true ONLY when the re-ranker's Pass 2 ran, so results are ordered by compositeScore. Absent means the rows are a raw Chroma slice ordered by distance — without this a caller cannot tell the two apart."
+          example: true
         degraded:
           type: boolean
           description: "Present and true ONLY when the query path is degraded (e.g. a corrupt/unqueryable collection whose vector segment throws). Lets callers distinguish a failed query path from a genuine no-match, which omits this field. When true, count is 0 and results is empty but it is NOT a no-match."
@@ -4624,8 +4628,12 @@ components:
               example: 0.1234
             relevanceScore:
               type: number
-              description: Normalized relevance score (0-1, higher is more relevant)
+              description: "Normalized SEMANTIC score (0-1) derived from distance alone. It is the first factor of compositeScore, NOT the ranking key — rows are ordered by compositeScore, so relevanceScore alone will appear to contradict the returned order."
               example: 0.8766
+            compositeScore:
+              type: number
+              description: "The key the re-ranker actually sorted by: semanticScore * topologyMultiplier. ABSENT (never 0) when Pass 2 did not run — a zero would sort a legitimate row last."
+              example: 0.9421
             via:
               type: string
               description: "Present only on a concept-walk-derived result — the retrieval-path marker 'concept-walk'. Absent on embedding results."
@@ -4798,6 +4806,10 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SummarySearchResult'
+        _reRanked:
+          type: boolean
+          description: "Present and true ONLY when the re-ranker's Pass 2 ran, so results are ordered by compositeScore. Absent means the rows are a raw Chroma slice ordered by distance — without this a caller cannot tell the two apart."
+          example: true
         degraded:
           type: boolean
           description: "Present and true ONLY when the query path is degraded (e.g. a corrupt/unqueryable collection whose vector segment throws). Lets callers distinguish a failed query path from a genuine no-match, which omits this field. When true, count is 0 and results is empty but it is NOT a no-match."
@@ -4829,8 +4841,12 @@ components:
               example: 0.0987
             relevanceScore:
               type: number
-              description: Normalized relevance score (0-1, higher is more relevant)
+              description: "Normalized SEMANTIC score (0-1) derived from distance alone. It is the first factor of compositeScore, NOT the ranking key — rows are ordered by compositeScore, so relevanceScore alone will appear to contradict the returned order."
               example: 0.9013
+            compositeScore:
+              type: number
+              description: "The key the re-ranker actually sorted by: semanticScore * topologyMultiplier. ABSENT (never 0) when Pass 2 did not run — a zero would sort a legitimate row last."
+              example: 0.9668
 
     SummarizeSessionRequest:
       type: object

@@ -2536,6 +2536,12 @@ class MemoryService extends Base {
             let distances = searchResult.distances?.[0] || [];
             let metadatas = searchResult.metadatas?.[0] || [];
 
+            // The re-ranker's sort key (#312). Absent whenever Pass 2 did not run, and it must STAY
+            // absent rather than default to 0 — a zero would sort a legitimate row last in any
+            // consumer that adopts the field. Index-parallel with the arrays above, so every filter
+            // below re-maps it identically or the rows desync.
+            let compositeScores = searchResult.compositeScores?.[0] || [];
+
             // Tombstone exclusion: archived rows (metadata.archivedAt set) are dropped from
             // recall. UNCONDITIONAL — the legacy/trust post-filter below only runs for some policies,
             // so the exclusion cannot live there. A dropped archived row reads as a genuine no-match.
@@ -2544,9 +2550,10 @@ class MemoryService extends Base {
                 for (let i = 0; i < metadatas.length; i++) {
                     if (!(metadatas[i] && metadatas[i].archivedAt)) live.push(i);
                 }
-                ids       = live.map(i => ids[i]);
-                distances = live.map(i => distances[i]);
-                metadatas = live.map(i => metadatas[i]);
+                ids             = live.map(i => ids[i]);
+                distances       = live.map(i => distances[i]);
+                metadatas       = live.map(i => metadatas[i]);
+                compositeScores = live.map(i => compositeScores[i]);
             }
 
             if ((userId && policy === 'legacy') || minTrustTier) {
@@ -2564,6 +2571,7 @@ class MemoryService extends Base {
                 ids = filteredIndices.map(i => ids[i]);
                 distances = filteredIndices.map(i => distances[i]);
                 metadatas = filteredIndices.map(i => metadatas[i]);
+                compositeScores = filteredIndices.map(i => compositeScores[i]);
             }
 
             let malformedTimestamps = 0;
@@ -2580,6 +2588,8 @@ class MemoryService extends Base {
                     malformedTimestamps++;
                 }
 
+                const compositeScore = compositeScores[index];
+
                 return {
                     id,
                     sessionId: metadata.sessionId,
@@ -2591,7 +2601,10 @@ class MemoryService extends Base {
                     agentIdentity,
                     trustTier,
                     distance,
-                    relevanceScore
+                    relevanceScore,
+                    // Spread rather than assign: an un-re-ranked row must omit the key entirely, so
+                    // `'compositeScore' in row` stays a truthful answer to "was this row ranked?".
+                    ...(Number.isFinite(compositeScore) ? {compositeScore} : {})
                 };
             });
 
@@ -2639,7 +2652,10 @@ class MemoryService extends Base {
                 count             : memories.length,
                 results           : memories,
                 // Present only when non-zero: absence means every projected row resolved cleanly.
-                ...(malformedTimestamps > 0 && {malformedTimestamps})
+                ...(malformedTimestamps > 0 && {malformedTimestamps}),
+                // Whether Pass 2 ran (#312). Until now this marker was set in StorageRouter and read
+                // by nobody, so a caller could not tell a re-ranked set from a raw Chroma slice.
+                ...(searchResult?._reRanked ? {_reRanked: true} : {})
             };
         } catch (error) {
             logger.error('[MemoryService] Error querying memories:', error);
