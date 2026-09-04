@@ -274,7 +274,9 @@ paths:
           content:
             application/json:
               schema:
-                description: The property values
+                type: object
+                additionalProperties: true
+                description: The property values, keyed by property name
         '400':
           description: Invalid request body
           content:

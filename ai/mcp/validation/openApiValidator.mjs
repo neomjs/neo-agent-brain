@@ -303,6 +303,18 @@ function buildOutputZodSchema(doc, operation) {
             resolvedSchema = resolveRef(doc, schema.$ref);
         }
 
+        // The listing and `BaseServer#formatToolResult` decide the `result` wrapper independently
+        // and must decide it the same way: the envelope emits an object result unwrapped and wraps
+        // only a non-object. So only a DECLARED non-object type lists the wrapper. A schema with
+        // no top-level type — bare, or a `oneOf` / `anyOf` / `allOf` composition — promises
+        // nothing about the shape and therefore cannot promise the wrapper: it lists as an open
+        // object, which fits both envelopes the formatter can produce.
+        if (resolvedSchema.type === undefined) {
+            return z.object({})
+                .passthrough()
+                .describe(schema.description || '');
+        }
+
         if (resolvedSchema.type !== 'object') {
             return z.object({ result: buildZodSchemaFromNode(doc, schema, outputOpts) })
                 .passthrough()
