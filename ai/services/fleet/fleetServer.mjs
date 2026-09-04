@@ -18,17 +18,18 @@ import {
     collectPlaneMembers,
     resolvePlaneDataRoot
 }                                          from '../../planeConfig.mjs';
-import AuthService                from '../../mcp/server/shared/services/AuthService.mjs';
-import RequestContextService      from '../../mcp/server/shared/services/RequestContextService.mjs';
-import TransportService           from '../../mcp/server/shared/services/TransportService.mjs';
-import FleetControlBridge         from './FleetControlBridge.mjs';
-import FleetManager               from './FleetManager.mjs';
-import {createFleetWakeFanout}    from './fleetWakeFanout.mjs';
-import {createFleetWakeReceiver}  from './fleetWakeReceiver.mjs';
-import {createPlaneMailboxClient} from './planeMailboxClient.mjs';
-import {normalizeAgentIdentity}   from './mcpWireParsing.mjs';
-import {resolveFleetViewerClaim}  from './fleetLaunchContract.mjs';
-import {dispatchFleetS1Request}   from './fleetServerPolicy.mjs';
+import AuthService                     from '../../mcp/server/shared/services/AuthService.mjs';
+import RequestContextService           from '../../mcp/server/shared/services/RequestContextService.mjs';
+import TransportService                from '../../mcp/server/shared/services/TransportService.mjs';
+import FleetControlBridge              from './FleetControlBridge.mjs';
+import FleetManager                    from './FleetManager.mjs';
+import {createFleetWakeFanout}         from './fleetWakeFanout.mjs';
+import {createFleetWakeReceiver}       from './fleetWakeReceiver.mjs';
+import {createPlaneMailboxClient}      from './planeMailboxClient.mjs';
+import {normalizeAgentIdentity}        from './mcpWireParsing.mjs';
+import {resolveFleetViewerClaim}       from './fleetLaunchContract.mjs';
+import {dispatchFleetS1Request}        from './fleetServerPolicy.mjs';
+import {wireDeploymentStateReadSource} from './wireDeploymentStateReadSource.mjs';
 import {
     createFleetWireResponse,
     FLEET_WIRE_RESPONSE_STATES,
@@ -1264,6 +1265,19 @@ export async function startFleetServer(options={}) {
     }
 
     const app = await createFleetServerApp({...options, aiConfig, logger});
+
+    // The composed service reads the orchestrator's deployment-state snapshot from the shared
+    // read-only plane mount: the three leaves resolve here, at the entrypoint, and the wiring owns
+    // no default. Fail-soft — an empty path leaves the seam unwired and the log says which.
+    const deploymentStateSource = wireDeploymentStateReadSource({
+        path        : aiConfig.orchestrator.deploymentStateBridge.snapshotPath,
+        staleAfterMs: aiConfig.orchestrator.deploymentStateBridge.staleAfterMs,
+        maxBytes    : aiConfig.orchestrator.deploymentStateBridge.maxSnapshotBytes
+    });
+
+    logger.info(deploymentStateSource
+        ? `[FleetServer] deployment-state read-source wired (${aiConfig.orchestrator.deploymentStateBridge.snapshotPath})`
+        : '[FleetServer] deployment-state read-source unwired — fleetDeploymentState answers unavailable');
 
     // The plane guard above has accepted the resolved Fleet member. Inject it only now, before the
     // listener can dispatch, so a refused composition never mutates the singleton's runtime root.

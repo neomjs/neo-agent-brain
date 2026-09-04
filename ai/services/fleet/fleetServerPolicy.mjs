@@ -30,6 +30,7 @@ export const FLEET_S1_METHOD_POLICY = Object.freeze({
     fleetStatus           : 'awaiting-s3',
     fleetRuntimeStatus    : 'awaiting-s3',
     getBootIdentity       : 'ready',
+    fleetDeploymentState  : 'ready',
     fleetActivity         : 'awaiting-s3',
     fleetHistory          : 'awaiting-s3',
     fleetMemories         : 'awaiting-s5',
@@ -74,6 +75,7 @@ export const FLEET_METHOD_SCOPE_CLASSES = Object.freeze({
     fleetStatus           : 'read-observe',
     fleetRuntimeStatus    : 'read-observe',
     getBootIdentity       : 'read-observe',
+    fleetDeploymentState  : 'read-observe',
     fleetActivity         : 'read-observe',
     fleetHistory          : 'read-observe',
     fleetMemories         : 'read-observe',
@@ -100,7 +102,9 @@ const SLICE_LABELS = Object.freeze({
 /**
  * @summary The exact Fleet wire operations the composed service currently serves. The S2
  * admission subject opened the first one: `getBootIdentity`, a read-observe advisory whose bridge
- * answer degrades honestly when no boot-identity source is wired.
+ * answer degrades honestly when no boot-identity source is wired. The deployment-state observation
+ * is the second: `fleetDeploymentState`, a read-observe projection of the orchestrator's snapshot,
+ * served once the composed boot wires its read-source and answering `unavailable` until then.
  * @type {ReadonlyArray<String>}
  */
 export const FLEET_S1_READY_METHODS = Object.freeze(

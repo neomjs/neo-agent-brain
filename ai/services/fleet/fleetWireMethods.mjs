@@ -14,12 +14,14 @@
  * request cannot reach a non-operation.
  *
  * `getBootIdentity`, `fleetActivity`, `fleetHistory`, `fleetMemories`, `fleetRoster`, `fleetMailboxMirror`,
- * `fleetWakeRoutes`, and `fleetTasks` are **read-observe** verbs — the advisory boot-identity fact, the bounded
- * fleet activity snapshot, one viewer-bound catch-up window, one page of an agent's session
- * summaries (the team-visible corpus; the wire carries the canonical target and paging only), the
- * assembled roster cockpit DTO, one agent's mailbox mirror, the decomposed per-seat wake-route
- * envelope, and the deployment's task picture (running / queued / recent rows reduced server-side
- * from the existing truth verbs): they carry NO lifecycle-write / restart authority. The
+ * `fleetWakeRoutes`, `fleetTasks`, and `fleetDeploymentState` are **read-observe** verbs — the advisory
+ * boot-identity fact, the bounded fleet activity snapshot, one viewer-bound catch-up window, one page of
+ * an agent's session summaries (the team-visible corpus; the wire carries the canonical target and paging
+ * only), the assembled roster cockpit DTO, one agent's mailbox mirror, the decomposed per-seat wake-route
+ * envelope, the deployment's task picture (running / queued / recent rows reduced server-side from the
+ * existing truth verbs), and the bounded, redacted projection of the orchestrator's deployment-state
+ * snapshot (the plane cards; observe-only, no paths, no config, no logs): they carry NO lifecycle-write /
+ * restart authority. The
  * R3 read-observe ÷ lifecycle-write seam keeps the daemon-core restart actuator physically OFF this
  * client wire — only advisory reads ride it.
  *
@@ -59,7 +61,8 @@ export const FLEET_WIRE_METHODS = Object.freeze([
     'defineAgent', 'configureAgent', 'setRepo', 'setAvatar', 'listAgents', 'getAgent',
     'startAgent', 'stopAgent', 'restartAgent', 'removeAgent', 'fleetStatus', 'fleetRuntimeStatus',
     'getBootIdentity', 'fleetActivity', 'fleetHistory', 'fleetMemories', 'fleetSessionMemories', 'fleetRoster', 'fleetMailboxMirror', 'connectTenant', 'listTenants',
-    'composeOperatorMessage', 'markFleetCaughtUp', 'resolveViewerIdentity', 'fleetWakeRoutes', 'fleetTasks'
+    'composeOperatorMessage', 'markFleetCaughtUp', 'resolveViewerIdentity', 'fleetWakeRoutes', 'fleetTasks',
+    'fleetDeploymentState'
 ]);
 
 /**
