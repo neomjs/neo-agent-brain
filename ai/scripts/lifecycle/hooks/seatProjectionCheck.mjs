@@ -137,9 +137,14 @@ export function formatReport(report, targetRepoRoot) {
     );
 
     lines.push('');
+    // Single-quoted for the same reason the manifest is: this line is meant to be COPIED INTO A
+    // SHELL, and a double-quoted path containing `$(…)` would execute rather than resolve. A repair
+    // instruction that runs something other than what it displays is worse than no instruction.
+    const sh = value => `'${String(value).split("'").join(`'\\''`)}'`;
+
     lines.push('REPAIR (writes only untracked, git-excluded seat artifacts):');
-    lines.push(`  node "${path.join(agentosRuntimeRoot, 'ai/scripts/lifecycle/hooks/projectSeatHooks.mjs')}" \\`);
-    lines.push(`    --runtime-root="${agentosRuntimeRoot}" --target-root="${targetRepoRoot}"`);
+    lines.push(`  node ${sh(path.join(agentosRuntimeRoot, 'ai/scripts/lifecycle/hooks/projectSeatHooks.mjs'))} \\`);
+    lines.push(`    --runtime-root=${sh(agentosRuntimeRoot)} --target-root=${sh(targetRepoRoot)}`);
     lines.push('');
     lines.push(
         'If your harness refuses that write — it touches .claude/settings.json, which some permission ' +

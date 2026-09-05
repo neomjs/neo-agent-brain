@@ -23,7 +23,7 @@
           },
           {
             "type": "command",
-            "command": "/usr/bin/env node \"<agentosRuntimeRoot>/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs\"",
+            "command": "/usr/bin/env node '<agentosRuntimeRoot>/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs'",
             "timeout": 10
           }
         ]

@@ -72,6 +72,29 @@ test.describe('seatProjectionCheck — runtime-root binding', () => {
         expect(commands[1]).toBe('node "$(git rev-parse --show-toplevel)/.claude/hooks/y.mjs"')
     });
 
+    test('the bound path is SHELL-LITERAL, not shell source', () => {
+        // @neo-gpt-emmy bound the real manifest with this runtime root and the probe received
+        // `/tmp/neoPROBE/...` — the declared executable was not the executed one. Double quotes do
+        // not stop command substitution; single quotes do.
+        const bound = bindRuntimeRoot({
+            events: {SessionStart: [{hooks: [
+                {type: 'command', command: `/usr/bin/env node '<agentosRuntimeRoot>/ai/x.mjs'`}
+            ]}]}
+        }, '/tmp/neo$(printf PROBE)').events.SessionStart[0].hooks[0].command;
+
+        expect(bound).toBe(`/usr/bin/env node '/tmp/neo$(printf PROBE)/ai/x.mjs'`);
+    });
+
+    test('a single quote inside the runtime root cannot escape its own quoting', () => {
+        // The escape the fix depends on. Without `'\\''` the substituted value would close the
+        // quoting the manifest opened and everything after it would become shell source.
+        const bound = bindRuntimeRoot({
+            events: {Stop: [{hooks: [{type: 'command', command: `node '<agentosRuntimeRoot>/a.mjs'`}]}]}
+        }, `/tmp/it's`).events.Stop[0].hooks[0].command;
+
+        expect(bound).toBe(`node '/tmp/it'\\''s/a.mjs'`);
+    });
+
     test('a manifest without the token comes back unchanged', () => {
         const manifest = {events: {Stop: [{hooks: [{type: 'command', command: 'node "./a.mjs"'}]}]}};
 
@@ -95,6 +118,41 @@ test.describe('seatProjectionCheck — ownership, the idempotence key', () => {
         expect(isProjectorOwnedCommand(
             'node "/opt/brain/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs"', target
         )).toBe(true)
+    });
+
+    test('an OPERATOR command that merely NAMES the checker is not ours', () => {
+        const target = scratchRepo();
+
+        // @neo-gpt-emmy executed exactly this against the first version and it was classified as
+        // ours and RETIRED. It invokes `/opt/company/audit.mjs`; our name is an argument. Deleting a
+        // foreign hook is the custody violation the tracked test protects the Engine from, and it is
+        // worse here because nothing in the target marks the entry as somebody else's.
+        expect(isProjectorOwnedCommand(
+            'node "/opt/company/audit.mjs" --watch seatProjectionCheck.mjs', target
+        )).toBe(false);
+    });
+
+    test('the checker named as an option VALUE rather than the executable is not ours either', () => {
+        const target = scratchRepo();
+
+        // One step beyond the reported case: here the FULL path appears, but as a `--config` value.
+        // A predicate keyed on the path alone would claim it; executable position is what decides.
+        expect(isProjectorOwnedCommand(
+            'node /opt/x.mjs --config /opt/brain/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs', target
+        )).toBe(false);
+    });
+
+    test('the canonical entry is recognized in either quoting style', () => {
+        const target = scratchRepo();
+
+        // The positive control both negatives need: rejecting foreign commands must not stop us
+        // retiring our own, or every re-projection appends a duplicate.
+        expect(isProjectorOwnedCommand(
+            `node "/opt/brain/${'ai/scripts/lifecycle/hooks'}/seatProjectionCheck.mjs"`, target
+        )).toBe(true);
+        expect(isProjectorOwnedCommand(
+            `/usr/bin/env node '/opt/brain/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs'`, target
+        )).toBe(true);
     });
 
     test('an unrelated runtime-root script is NOT claimed', () => {
@@ -178,7 +236,19 @@ test.describe('seatProjectionCheck — what the agent reads', () => {
         // follow, once per session, until it learns to ignore the warning — the reported-but-unread
         // failure this hook exists to end, one layer up.
         expect(context).toContain('projectSeatHooks.mjs');
-        expect(context).toContain('--target-root="/seat"');
+        // Single-quoted since the RA-2 repair: this line is meant to be pasted into a shell, and a
+        // double-quoted path containing `$(…)` would execute rather than resolve. A repair
+        // instruction that runs something other than what it displays is worse than none.
+        expect(context).toContain(`--target-root='/seat'`);
         expect(context).toContain('operator action, not a retry')
+    });
+
+    test('a repair line for a shell-hostile path stays inert when pasted', () => {
+        const context = formatReport({missing: ['.claude/hooks/x.mjs'], ok: false}, '/seat/$(printf PWNED)');
+
+        // The emitted instruction must carry the path as data. Asserting the quoted form rather than
+        // "does not contain PWNED" — the substitution would not have run here anyway, so only the
+        // quoting is evidence.
+        expect(context).toContain(`--target-root='/seat/$(printf PWNED)'`)
     })
 });

@@ -666,16 +666,30 @@ export function renderProjection(source, runtimeRoot, targetRepoRoot) {
 export function isProjectorOwnedCommand(command, targetRepoRoot) {
     const dirs = Object.values(HARNESS_TARGETS);
 
-    // The second ownership arm, and it needs a different rule because it describes the opposite
-    // custody: a runtime-resident entrypoint is wired by the projector and deliberately NEVER
-    // projected, so it lives in no target directory and the path test below can never see it.
-    // Matching a basename against a closed census is the narrowest predicate that does; a path test
-    // keyed on the runtime root would claim any Agent OS script a seat happened to name.
+    // The second ownership arm, for the opposite custody: a runtime-resident entrypoint is wired by
+    // the projector and deliberately NEVER projected, so it lives in no target directory and the
+    // path test below can never see it.
     //
-    // Getting this wrong fails silently and cumulatively rather than loudly: an unrecognized entry
-    // survives the retire pass, so every re-projection APPENDS another copy and the seat ends up
-    // running the same check N times and printing the same warning N times.
-    if (RUNTIME_RESIDENT_ENTRYPOINTS.some(name => command.includes(name))) return true;
+    // **It matches the EXECUTABLE, not the text.** A basename substring is not an ownership test —
+    // @neo-gpt-emmy executed this operator entry against the first version and it was classified as
+    // ours and retired:
+    //
+    //     node "/opt/company/audit.mjs" --watch seatProjectionCheck.mjs
+    //
+    // That command invokes *her* script and merely names ours as an argument. Deleting a foreign
+    // hook is the same custody violation the tracked test below exists to prevent for the Engine's
+    // `rgReplaceGuardHook`, and it is worse here because nothing in the target marks the entry as
+    // somebody else's. So the name must appear beneath our own source directory AND in executable
+    // position — the first path after the interpreter — which is checkable without parsing a command
+    // grammar we do not own.
+    //
+    // Erring toward NOT claiming is deliberate: an unrecognized entry of ours survives as a visible
+    // duplicate, while a wrongly-claimed entry of somebody else's is silently destroyed.
+    if (RUNTIME_RESIDENT_ENTRYPOINTS.some(name => {
+        const escaped = `${HOOK_SOURCE_DIR}/${name}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+        return new RegExp(`(?:^|\\s)node\\s+(?:-[^\\s]+\\s+)*["']?/[^"'\\s]*${escaped}(?=["'\\s]|$)`).test(command)
+    })) return true;
 
     return dirs.some(dir => {
         // A command embeds its target as a path fragment (`…/.claude/hooks/x.mjs"` possibly followed
@@ -711,6 +725,15 @@ export function bindRuntimeRoot(manifest, agentosRuntimeRoot) {
 
     if (!events) return manifest;
 
+    // The substituted root is SHELL DATA, not shell source. The harness runs these commands through a
+    // shell, and double quotes do not make an interpolated path literal — @neo-gpt-emmy bound the real
+    // manifest with a runtime root of `/tmp/neo$(printf PROBE)` and the probe received
+    // `/tmp/neoPROBE/...`, i.e. the declared executable was not the executed one. The manifest
+    // therefore single-quotes the token, and any `'` inside the root closes and reopens that quoting
+    // so the value cannot escape it. Nothing here is a guess about the path's contents: a runtime root
+    // is an operator-supplied absolute path and may legitimately contain characters a shell reads.
+    const quoted = String(agentosRuntimeRoot).split("'").join(`'\\''`);
+
     return {
         ...manifest,
         events: Object.fromEntries(Object.entries(events).map(([event, buckets]) => [
@@ -719,7 +742,7 @@ export function bindRuntimeRoot(manifest, agentosRuntimeRoot) {
                 ...bucket,
                 hooks: (bucket.hooks || []).map(entry => (
                     typeof entry?.command === 'string' && entry.command.includes(RUNTIME_ROOT_TOKEN)
-                        ? {...entry, command: entry.command.split(RUNTIME_ROOT_TOKEN).join(agentosRuntimeRoot)}
+                        ? {...entry, command: entry.command.split(RUNTIME_ROOT_TOKEN).join(quoted)}
                         : entry
                 ))
             }))
