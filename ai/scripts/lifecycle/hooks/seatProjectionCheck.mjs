@@ -24,7 +24,12 @@
  * ADR 0040 §2.5: seat hooks resolve Brain substrate only through `agentosRuntimeRoot`-provisioned
  * artifacts, never relatively from `targetRepoRoot`.
  *
- * **Report, never repair.** The seat is told what is wrong and given the command; it does not write.
+ * **Report, never repair.** The seat is told what is wrong and given the command; it never writes a
+ * REPAIR. It does make one diagnostic write — {@link recordTrace} appends a line to an untracked,
+ * git-excluded log on a non-green verdict — and the distinction is the whole contract: a diagnostic
+ * record changes nothing the harness executes, while a repair changes what runs next session. The
+ * trace refuses a tracked path for the same reason the projector does, so the write can never reach
+ * authored content either.
  * Auto-projection would push any Brain commit into every checkout unattended, with no review between
  * merge and execution, to save a single turn. It is also not the escape it appears to be: the write
  * touches `.claude/settings.json`, which is precisely what one peer's permission classifier already
@@ -41,7 +46,7 @@
 import fs                              from 'node:fs';
 import path                            from 'node:path';
 import {fileURLToPath, pathToFileURL}  from 'node:url';
-import {checkProjection}               from './projectSeatHooks.mjs';
+import {checkProjection, PROVENANCE_TRACE, readRuntimeProvenance, tracked} from './projectSeatHooks.mjs';
 
 const
     __filename         = fileURLToPath(import.meta.url),
@@ -113,11 +118,42 @@ export function resolveTargetRepoRoot(payload) {
 export function formatReport(report, targetRepoRoot) {
     if (report.ok) return null;
 
+    // Single-quoted for the same reason the manifest is: any path emitted here is meant to be COPIED
+    // INTO A SHELL, and a double-quoted path containing `$(…)` would execute rather than resolve. An
+    // instruction that runs something other than what it displays is worse than no instruction.
+    // Declared before the first verdict rather than beside the repair block: both arms quote paths.
     const
+        sh      = value => `'${String(value).split("'").join(`'\\''`)}'`,
         lines   = [],
         missing = report.missing ?? [],
         stale   = report.stale ?? [],
         orphans = report.orphans ?? [];
+
+    // Provenance is reported ALONE and without the repair line, because its remedy is the opposite of
+    // every other finding's. A stale seat re-projects; a wrong-provenance seat MUST NOT — re-projecting
+    // from a root parked off upstream is what put the unreviewed code in the seat, so prescribing it
+    // here would turn the report into the attack. Returning early also keeps the two verdicts from
+    // being read as one list of things to fix with one command.
+    if (report.provenance) {
+        const {commit, ref, upstream} = report.provenance;
+
+        return [
+            '⚠️ SEAT PROJECTION HAS THE WRONG PROVENANCE — your hooks may be current, and are still not trustworthy.',
+            '',
+            `This seat was projected from ${commit}${ref ? ` (${ref})` : ''}, which ${upstream} does NOT contain.`,
+            'The bytes can match the runtime root perfectly and still be code that no review has seen:',
+            'currency compares the seat to the root, and says nothing about where the root itself was pointing.',
+            '',
+            'DO NOT RE-PROJECT. Re-projecting is the action that installed this, and running it again',
+            'against the same root reinstalls it while making every downstream check agree.',
+            '',
+            `FIX THE ROOT FIRST — get ${sh(agentosRuntimeRoot)} onto a revision ${upstream} contains`,
+            '(its own branch work belongs in a worktree, so the shared root can stay on the integration',
+            'branch), and only then re-project. If the root is not yours to move, hand this to @tobiu.',
+            '',
+            `Context: ${REPAIR_DOC}`
+        ].join('\n')
+    }
 
     lines.push('⚠️ SEAT PROJECTION IS NOT CURRENT — your Agent OS hooks do not match this runtime root.');
     lines.push('');
@@ -137,11 +173,6 @@ export function formatReport(report, targetRepoRoot) {
     );
 
     lines.push('');
-    // Single-quoted for the same reason the manifest is: this line is meant to be COPIED INTO A
-    // SHELL, and a double-quoted path containing `$(…)` would execute rather than resolve. A repair
-    // instruction that runs something other than what it displays is worse than no instruction.
-    const sh = value => `'${String(value).split("'").join(`'\\''`)}'`;
-
     lines.push('REPAIR (writes only untracked, git-excluded seat artifacts):');
     lines.push(`  node ${sh(path.join(agentosRuntimeRoot, 'ai/scripts/lifecycle/hooks/projectSeatHooks.mjs'))} \\`);
     lines.push(`    --runtime-root=${sh(agentosRuntimeRoot)} --target-root=${sh(targetRepoRoot)}`);
@@ -156,6 +187,34 @@ export function formatReport(report, targetRepoRoot) {
 }
 
 /**
+ * @summary The verdict this hook returns about ITSELF, when its own runtime root is off upstream.
+ *
+ * Distinct from every seat verdict, and reported instead of them rather than beside them: with the
+ * root off upstream, the seat comparison is against unreviewed bytes, so listing which seat files
+ * "do not match" would rank findings derived from an authority this same message is disputing. One
+ * question at a time — fix the root, then ask about the seat.
+ * @param {Object} own {@link readRuntimeProvenance} result for `agentosRuntimeRoot`.
+ * @returns {String}
+ * @protected
+ */
+export function formatRuntimeRootWarning({commit, ref, upstream}) {
+    return [
+        '⚠️ THE RUNTIME ROOT ITSELF IS OFF UPSTREAM — this seat was NOT audited, because the authority to audit it against is unreviewed.',
+        '',
+        `${agentosRuntimeRoot} is on ${commit}${ref ? ` (${ref})` : ''}, which ${upstream} does NOT contain.`,
+        'Every seat verdict is measured against this root, so any answer right now — current or stale —',
+        'is a comparison with code no review has seen. Absence of a warning would not have meant a healthy seat.',
+        '',
+        'DO NOT RE-PROJECT while this holds; that is what copies the unreviewed revision into the seat.',
+        '',
+        'If the root is a shared checkout, someone parked it on their branch — branch work belongs in a',
+        `worktree so the shared root stays on ${upstream}. Move it back, or hand this to @tobiu.`,
+        '',
+        `Context: ${REPAIR_DOC}`
+    ].join('\n')
+}
+
+/**
  * @summary Emits SessionStart context, or nothing when the seat is current.
  * @param {String|null} context Agent-facing context.
  * @protected
@@ -167,11 +226,54 @@ function emit(context) {
 }
 
 /**
+ * @summary Appends one line per non-green verdict, so a sighting outlives the session that saw it.
+ *
+ * Before this the hook had exactly one output path — a string into the agent's own transcript — and
+ * exited 0 either way, so an unacted-on warning left no artifact any operator, peer or later session
+ * could find. Measured on a live seat 2026-09-05: zero `writeFile`/`appendFile`/`console` calls in
+ * the whole file.
+ *
+ * Green writes NOTHING. A healthy seat must stay byte-identical between sessions, or the trace
+ * becomes noise that the reader learns to skip — which is the failure it exists to end, one layer up.
+ *
+ * Never throws. An unwritable trace is a worse reason to disturb a boot than the condition it records,
+ * so a failed append is silently dropped: the transcript line has already been emitted regardless.
+ * @param {String} targetRepoRoot Absolute target repository root.
+ * @param {String|null} context The emitted verdict, or `null` when the seat is current.
+ * @returns {Boolean} Whether a line was appended.
+ * @protected
+ */
+export function recordTrace(targetRepoRoot, context) {
+    if (!context) return false;
+
+    try {
+        // Same custody contract the projector enforces, enforced here too because THIS is the writer.
+        // A trace path someone has committed is authored content, and a diagnostic append is still an
+        // overwrite of work nobody agreed to hand us. Reporting is never worth mutating a tracked file.
+        if (tracked(targetRepoRoot, PROVENANCE_TRACE)) return false;
+
+        const file = path.join(targetRepoRoot, PROVENANCE_TRACE);
+
+        fs.mkdirSync(path.dirname(file), {recursive: true});
+        // First line only: the verdict's headline is what a later reader scans for, and appending the
+        // full multi-line context once per session would bury it in its own remediation prose.
+        fs.appendFileSync(file, `${new Date().toISOString()}\t${context.split('\n')[0]}\n`, 'utf8');
+        return true
+    } catch {
+        return false
+    }
+}
+
+/**
  * @summary Hook entrypoint. Reports; never repairs, never throws, never blocks.
  * @protected
  */
-async function main() {
-    const targetRepoRoot = resolveTargetRepoRoot(await readPayload());
+export async function main(payload, runtimeRoot = agentosRuntimeRoot) {
+    // The payload is a parameter with a stdin default rather than a stdin read, so a spec can exercise
+    // the real routing — which verdict reaches which sink — instead of asserting on formatters and
+    // hoping the wiring matches. @neo-gpt-emmy's RA-3 landed precisely in the gap a formatter-only
+    // arm cannot see: the exception path emitted and recorded nothing, and every arm still passed.
+    const targetRepoRoot = resolveTargetRepoRoot(payload ?? await readPayload());
 
     if (!targetRepoRoot) {
         emit(
@@ -183,12 +285,35 @@ async function main() {
     }
 
     try {
-        emit(formatReport(checkProjection({agentosRuntimeRoot, targetRepoRoot}), targetRepoRoot))
+        // Asked BEFORE the seat is audited, because it decides whether this hook's own verdict is worth
+        // anything. Every finding below is measured against `agentosRuntimeRoot`; if that root is itself
+        // sitting on a revision upstream never saw, "your seat does not match this root" is a comparison
+        // against unreviewed code, and the repair line would install it. The checker audited a property
+        // it did not hold — this is that gap closed, and it is the only case where the hook reports on
+        // itself rather than on the seat.
+        const own = readRuntimeProvenance(runtimeRoot);
+
+        if (own.ancestorOfUpstream === false) {
+            const context = formatRuntimeRootWarning(own);
+
+            recordTrace(targetRepoRoot, context);
+            emit(context);
+            return
+        }
+
+        const context = formatReport(checkProjection({agentosRuntimeRoot: runtimeRoot, targetRepoRoot}), targetRepoRoot);
+
+        recordTrace(targetRepoRoot, context);
+        emit(context)
     } catch (error) {
-        emit(
-            `Seat projection was NOT verified this session — the check itself failed: ${error.message}. ` +
-            'Unknown, not current.'
-        )
+        // RA-3: this path emitted and recorded nothing, so "one line per non-green verdict" was false
+        // for the case a later reader most needs — the checker itself failing. A verdict that exists
+        // only in a transcript is the gap AC-5 closes, and an exception is still a verdict.
+        const context = `Seat projection was NOT verified this session — the check itself failed: ${error.message}. ` +
+                        'Unknown, not current.';
+
+        recordTrace(targetRepoRoot, context);
+        emit(context)
     }
 }
 

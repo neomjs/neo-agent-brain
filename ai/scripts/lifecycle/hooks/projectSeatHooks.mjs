@@ -88,6 +88,31 @@ const
     CLAUDE_EVENT_MANIFEST = 'ai/scripts/lifecycle/hooks/claude/events.manifest.json',
     CLAUDE_SETTINGS       = '.claude/settings.json',
     /**
+     * Where a projection records WHICH runtime-root revision produced it.
+     *
+     * Harness-neutral on purpose: this describes the projection, not any one harness's view of it,
+     * and a receipt living under `.claude/` would be absent for a Codex-only seat that has exactly
+     * the same provenance question. Written into the exclude block with the hooks it describes.
+     *
+     * Its absence is not a failure — every seat projected before this shipped has none, and a seat
+     * that cannot answer the provenance question must fall back to the currency answer rather than
+     * invent a verdict.
+     */
+    PROVENANCE_RECEIPT    = '.agents/seat-projection.json',
+    /**
+     * Where a non-green seat verdict is recorded so it outlives the session that saw it.
+     *
+     * Measured 2026-09-05: `seatProjectionCheck` had exactly one output path — a string into the
+     * agent's own transcript — and exited 0 either way. If that agent did not act on the string, the
+     * sighting was unrecoverable: no operator, no peer, and no later session could find that a seat
+     * had reported itself. This is the smallest thing that changes "an ambiguity nobody can check"
+     * into one they can.
+     *
+     * Deliberately not a logging subsystem: one appended line per non-green verdict, and nothing at
+     * all on a green one, so a healthy seat stays byte-identical between sessions.
+     */
+    PROVENANCE_TRACE      = '.agents/seat-projection.log',
+    /**
      * The token a manifest command uses to name the runtime root it must resolve against, and the
      * closed census of entrypoints that are wired into a seat but never copied into it.
      *
@@ -532,6 +557,75 @@ export function declaredHookCommands(runtimeRoot, targetRepoRoot) {
  * @param {String} options.targetRepoRoot
  * @returns {{escapedSpecifiers: Object[], missing: String[], ok: Boolean, orphans: String[], stale: String[], trackedConflicts: String[], unplacedCommands: Object[]}}
  */
+/**
+ * @summary Reads which revision a runtime root is currently on, and whether upstream contains it.
+ *
+ * The question `--check` cannot ask today. Its byte comparison is a CURRENCY test — seat bytes
+ * against what this root renders NOW — so a root parked on an unmerged branch produces a projection
+ * that is perfectly current and wrong, and every downstream check agrees with it because they all
+ * read the same root. Measured 2026-09-05: a shared checkout sat on an unmerged feature branch for
+ * ~12h; `merge-base --is-ancestor` against its own `origin/dev` returned false the whole time and
+ * nothing asked.
+ *
+ * **Unknown is never wrong.** No git, no remote, a detached CI checkout, an unfetched `origin/dev` —
+ * each yields `ancestorOfUpstream: null`, and callers must treat null as "not asked". Reporting a
+ * provenance failure because a probe could not run would red every offline seat, which is a worse
+ * defect than the one this closes.
+ * @param {String} agentosRuntimeRoot Absolute AgentOS runtime root.
+ * @param {String} [upstream='origin/dev'] The ref provenance is judged against.
+ * @returns {{ancestorOfUpstream: Boolean|null, commit: String|null, ref: String|null, upstream: String}}
+ */
+export function readRuntimeProvenance(agentosRuntimeRoot, upstream = 'origin/dev') {
+    const git = args => {
+        try {
+            return execFileSync('git', args, {
+                cwd: agentosRuntimeRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
+            }).trim() || null
+        } catch {
+            return null
+        }
+    };
+
+    const
+        commit = git(['rev-parse', 'HEAD']),
+        // `--symbolic-full-name` rather than `--abbrev-ref`: a detached HEAD answers the literal
+        // string "HEAD" under the latter, which reads like a branch name in a receipt and is not one.
+        ref    = commit ? git(['rev-parse', '--symbolic-full-name', 'HEAD']) : null;
+
+    let ancestorOfUpstream = null;
+
+    if (commit && git(['rev-parse', '--verify', '--quiet', upstream])) {
+        try {
+            execFileSync('git', ['merge-base', '--is-ancestor', commit, upstream], {
+                cwd: agentosRuntimeRoot, stdio: 'ignore'
+            });
+            ancestorOfUpstream = true
+        } catch (error) {
+            // ONLY exit 1 is a completed comparison that answered "no". Exit 128 is git refusing to
+            // compare at all — an unknown object, a corrupt ref, a receipt copied from another clone —
+            // and a spawn failure has no status. Treating those as `false` would turn "could not ask"
+            // into a factual negative, which is the one thing this function promises never to do.
+            // Verified: unknown object -> 128, genuine non-ancestor -> 1.
+            ancestorOfUpstream = error?.status === 1 ? false : null
+        }
+    }
+
+    return {ancestorOfUpstream, commit, ref, upstream}
+}
+
+/**
+ * @summary Reads a projection receipt from a target checkout.
+ * @param {String} targetRepoRoot Absolute target repository root.
+ * @returns {Object|null} The recorded provenance, or `null` when absent or unreadable.
+ */
+export function readProjectionReceipt(targetRepoRoot) {
+    try {
+        return JSON.parse(fs.readFileSync(path.join(targetRepoRoot, PROVENANCE_RECEIPT), 'utf8'))
+    } catch {
+        return null
+    }
+}
+
 export function checkProjection({agentosRuntimeRoot, targetRepoRoot}) {
     assertRuntimeRoot(agentosRuntimeRoot);
 
@@ -591,16 +685,62 @@ export function checkProjection({agentosRuntimeRoot, targetRepoRoot}) {
         })
     }
 
+    // Provenance is asked LAST and answered separately, because its remedy is the opposite of every
+    // other finding here. Everything above says "re-project"; this says "do NOT re-project — the root
+    // you would project from is the problem." Folding it into `stale` would hand the seat a repair
+    // command that makes it worse.
+    const
+        receipt    = readProjectionReceipt(targetRepoRoot),
+        provenance = receipt?.commit ? verifyReceiptProvenance(agentosRuntimeRoot, receipt) : null;
+
     return {
         escapedSpecifiers,
         missing,
         ok: !missing.length && !stale.length && !orphans.length && !trackedConflicts.length &&
-            !escapedSpecifiers.length && !unplacedCommands.length && !unreconciledEvents.length,
+            !escapedSpecifiers.length && !unplacedCommands.length && !unreconciledEvents.length &&
+            !provenance,
         orphans,
+        provenance,
         stale,
         trackedConflicts,
         unplacedCommands,
         unreconciledEvents
+    }
+}
+
+/**
+ * @summary Decides whether a receipt's recorded commit is still legitimate, or `null` when it is.
+ *
+ * Returns a finding only for the one case that is knowably wrong: the receipt names a commit, the
+ * runtime root can resolve upstream, and upstream does not contain that commit. Every other shape —
+ * no receipt, no git, no upstream, an unfetched remote — is UNKNOWN and returns null, because a
+ * verdict from a probe that could not run is indistinguishable from one that ran and found nothing.
+ * @param {String} agentosRuntimeRoot Absolute AgentOS runtime root.
+ * @param {Object} receipt The recorded provenance.
+ * @returns {{commit: String, ref: String|null, upstream: String}|null}
+ */
+function verifyReceiptProvenance(agentosRuntimeRoot, receipt) {
+    const upstream = receipt.upstream || 'origin/dev';
+
+    try {
+        execFileSync('git', ['rev-parse', '--verify', '--quiet', upstream], {
+            cwd: agentosRuntimeRoot, stdio: 'ignore'
+        })
+    } catch {
+        return null // upstream unresolvable here — not asked, not failed
+    }
+
+    try {
+        execFileSync('git', ['merge-base', '--is-ancestor', receipt.commit, upstream], {
+            cwd: agentosRuntimeRoot, stdio: 'ignore'
+        });
+        return null
+    } catch (error) {
+        // Same rule as `readRuntimeProvenance`, and it matters more here because this return value is
+        // what reds a seat: only a completed comparison may accuse. Anything git could not evaluate —
+        // exit 128 on an unknown object, a receipt whose commit belongs to a clone this root never
+        // fetched — stays unknown and reports nothing.
+        return error?.status === 1 ? {commit: receipt.commit, ref: receipt.ref ?? null, upstream} : null
     }
 }
 
@@ -1041,7 +1181,14 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
 
     const
         hooks     = enumerateProjection(agentosRuntimeRoot),
-        conflicts = hooks.filter(hook => tracked(targetRepoRoot, hook.target)).map(hook => hook.target);
+        // The generated sidecars belong to the SAME custody contract as the hooks they describe, and
+        // are checked in the same breath rather than at their own write sites. A refusal that fires
+        // after nine hook files have landed is not a refusal, it is a partial write with a message —
+        // and the receipt/trace are exactly as authored-content-shaped as any projection path.
+        // Found by @neo-gpt-emmy, who staged authored bytes at the receipt path and watched real
+        // `projectHooks` report success while replacing them (`git status` → `AM`).
+        conflicts = [...hooks.map(hook => hook.target), PROVENANCE_RECEIPT, PROVENANCE_TRACE]
+            .filter(target => tracked(targetRepoRoot, target));
 
     if (conflicts.length) {
         throw new Error(
@@ -1099,6 +1246,25 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
         written.push(target)
     });
 
+    // The receipt names the revision these bytes came from. Written with the hooks rather than
+    // derived later because the answer only exists NOW: the runtime root is a working checkout any
+    // seat or human can move, so a provenance read taken at check time reports where the root has
+    // ARRIVED, not where this projection came FROM. Recording it at projection is the whole point.
+    const
+        provenance  = readRuntimeProvenance(agentosRuntimeRoot),
+        receiptPath = path.join(targetRepoRoot, PROVENANCE_RECEIPT);
+
+    fs.mkdirSync(path.dirname(receiptPath), {recursive: true});
+    fs.writeFileSync(receiptPath, `${JSON.stringify({
+        agentosRuntimeRoot,
+        ancestorOfUpstreamAtProjection: provenance.ancestorOfUpstream,
+        commit                        : provenance.commit,
+        projectedAt                   : new Date().toISOString(),
+        ref                           : provenance.ref,
+        upstream                      : provenance.upstream
+    }, null, 4)}\n`, 'utf8');
+    written.push(PROVENANCE_RECEIPT);
+
     // Reconciled last, and deliberately: the settings file is what makes the harness *invoke* these
     // files, so pointing at them before they exist would open a window where the seat declares hooks
     // that are not there. The reverse order only ever leaves files nothing calls yet.
@@ -1108,7 +1274,10 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
     const reconciled = reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot});
 
     return {
-        excludeFile: writeLocalExclude({targetRepoRoot, targets: written}),
+        // The trace is excluded but NOT reported as written: the check writes it, this run did not,
+        // and a `written` list naming a file nobody created would be a small lie in a return value
+        // other code reads. Excluding a path before it exists is exactly what an exclude block is for.
+        excludeFile: writeLocalExclude({targetRepoRoot, targets: [...written, PROVENANCE_TRACE]}),
         pruned,
         reconciled,
         written
@@ -1224,4 +1393,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
     }
 }
 
-export {HARNESS_TARGETS};
+export {HARNESS_TARGETS, PROVENANCE_RECEIPT, PROVENANCE_TRACE};
