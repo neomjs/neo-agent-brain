@@ -41,7 +41,7 @@
 import fs                              from 'node:fs';
 import path                            from 'node:path';
 import {fileURLToPath, pathToFileURL}  from 'node:url';
-import {checkProjection}               from './projectSeatHooks.mjs';
+import {checkProjection, readRuntimeProvenance} from './projectSeatHooks.mjs';
 
 const
     __filename         = fileURLToPath(import.meta.url),
@@ -182,6 +182,34 @@ export function formatReport(report, targetRepoRoot) {
 }
 
 /**
+ * @summary The verdict this hook returns about ITSELF, when its own runtime root is off upstream.
+ *
+ * Distinct from every seat verdict, and reported instead of them rather than beside them: with the
+ * root off upstream, the seat comparison is against unreviewed bytes, so listing which seat files
+ * "do not match" would rank findings derived from an authority this same message is disputing. One
+ * question at a time — fix the root, then ask about the seat.
+ * @param {Object} own {@link readRuntimeProvenance} result for `agentosRuntimeRoot`.
+ * @returns {String}
+ * @protected
+ */
+export function formatRuntimeRootWarning({commit, ref, upstream}) {
+    return [
+        '⚠️ THE RUNTIME ROOT ITSELF IS OFF UPSTREAM — this seat was NOT audited, because the authority to audit it against is unreviewed.',
+        '',
+        `${agentosRuntimeRoot} is on ${commit}${ref ? ` (${ref})` : ''}, which ${upstream} does NOT contain.`,
+        'Every seat verdict is measured against this root, so any answer right now — current or stale —',
+        'is a comparison with code no review has seen. Absence of a warning would not have meant a healthy seat.',
+        '',
+        'DO NOT RE-PROJECT while this holds; that is what copies the unreviewed revision into the seat.',
+        '',
+        'If the root is a shared checkout, someone parked it on their branch — branch work belongs in a',
+        `worktree so the shared root stays on ${upstream}. Move it back, or hand this to @tobiu.`,
+        '',
+        `Context: ${REPAIR_DOC}`
+    ].join('\n')
+}
+
+/**
  * @summary Emits SessionStart context, or nothing when the seat is current.
  * @param {String|null} context Agent-facing context.
  * @protected
@@ -209,6 +237,19 @@ async function main() {
     }
 
     try {
+        // Asked BEFORE the seat is audited, because it decides whether this hook's own verdict is worth
+        // anything. Every finding below is measured against `agentosRuntimeRoot`; if that root is itself
+        // sitting on a revision upstream never saw, "your seat does not match this root" is a comparison
+        // against unreviewed code, and the repair line would install it. The checker audited a property
+        // it did not hold — this is that gap closed, and it is the only case where the hook reports on
+        // itself rather than on the seat.
+        const own = readRuntimeProvenance(agentosRuntimeRoot);
+
+        if (own.ancestorOfUpstream === false) {
+            emit(formatRuntimeRootWarning(own));
+            return
+        }
+
         emit(formatReport(checkProjection({agentosRuntimeRoot, targetRepoRoot}), targetRepoRoot))
     } catch (error) {
         emit(

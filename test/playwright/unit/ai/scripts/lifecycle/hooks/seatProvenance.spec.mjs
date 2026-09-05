@@ -21,7 +21,7 @@ import fs                     from 'node:fs';
 import os                     from 'node:os';
 import path                   from 'node:path';
 import {readRuntimeProvenance} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
-import {formatReport}          from '../../../../../../../ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs';
+import {formatReport, formatRuntimeRootWarning} from '../../../../../../../ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs';
 
 let scratchDirs = [];
 
@@ -132,5 +132,28 @@ test.describe('seat projection provenance', () => {
 
         expect(context, 'staleness is still reported as staleness').toContain('SEAT PROJECTION IS NOT CURRENT');
         expect(context, 'and still tells the seat how to repair').toContain('projectSeatHooks.mjs')
-    })
+    });
+
+    test('the hook reports on ITSELF when its own root is off upstream, and audits nothing', async () => {
+        // AC-4: the checker audited a property it did not hold. Every seat verdict is measured against
+        // the runtime root, so a root off upstream makes "your seat does not match this root" a
+        // comparison with unreviewed code — and the repair line would copy it into the seat.
+        const context = formatRuntimeRootWarning({
+            commit  : 'feedfacedead',
+            ref     : 'refs/heads/agent/317-seat-projection-check',
+            upstream: 'origin/dev'
+        });
+
+        expect(context, 'the subject is the ROOT, not the seat').toContain('RUNTIME ROOT ITSELF IS OFF UPSTREAM');
+        expect(context, 'and it names the revision').toContain('feedfacedead');
+        expect(context, 'and refuses the repair').toContain('DO NOT RE-PROJECT');
+
+        // The distinction that matters to a reader: this is NOT a seat verdict. Saying the seat is
+        // stale here would rank a finding derived from the very authority this message disputes.
+        expect(context, 'it does not claim the seat is stale').not.toContain('SEAT PROJECTION IS NOT CURRENT');
+        expect(context, 'and offers no repair command').not.toContain('projectSeatHooks.mjs');
+
+        // And the honest half: absence of a warning would not have meant a healthy seat.
+        expect(context, 'it says the seat was not audited at all').toContain('NOT audited')
+    });
 });
