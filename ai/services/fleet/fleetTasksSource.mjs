@@ -10,9 +10,11 @@
  * `progress` exists only where the wire reported a fraction or a backlog.
  *
  * The snapshot verb returns ~100 KB per read; only its task-shaped facts leave this module
- * (tenant repo sync, maintenance retry, recovery runs, self-heal freezes). Tenant and repository
- * NAMES never leave either — rows are labeled by the snapshot's identity hashes, so the cockpit's
- * own wire stays free of tenant identifiers by construction.
+ * (tenant repo sync, the backup lane, recovery runs, self-heal freezes, and the heavy-maintenance
+ * starvation receipt — every waiter starved behind the maintenance lease, with the lease itself as
+ * the queue's summary). Tenant and repository NAMES never leave either — rows are labeled by the
+ * snapshot's identity hashes, so the cockpit's own wire stays free of tenant identifiers by
+ * construction; nor do paths, bundle names, durability prose or residue figures.
  */
 
 import {redactReadFailure} from './redactReadFailure.mjs';
@@ -67,7 +69,18 @@ function toCount(value) {
 }
 
 /**
- * @summary Build one row. Every row carries the same grammar so the pane renders one shape.
+ * @summary A non-empty string as the wire sent it, or `null` — a word is never invented.
+ * @param {*} value
+ * @returns {String|null}
+ * @private
+ */
+function toWord(value) {
+    return typeof value === 'string' && value ? value : null
+}
+
+/**
+ * @summary Build one row. Every row carries the same grammar so the pane renders one shape;
+ * additive facts (a starved row's wait and cause fields) ride AFTER the eight grammar keys.
  * @param {Object} row
  * @param {String} row.id Stable, source-scoped identity (the Store key).
  * @param {'running'|'queued'|'recent'} row.section
@@ -80,8 +93,8 @@ function toCount(value) {
  * @returns {Object}
  * @private
  */
-function makeRow({id, section, name, source, state, at = null, progress = null, detail = null}) {
-    return {id, section, name, source, state, at, progress, detail}
+function makeRow({id, section, name, source, state, at = null, progress = null, detail = null, ...facts}) {
+    return {id, section, name, source, state, at, progress, detail, ...facts}
 }
 
 /**
@@ -109,10 +122,15 @@ function makeProgress(kind, done, total) {
  *   completion (recent row);
  * - `tenantRepoSync.repos[]` — one queued row per repository carrying a `nextDueAt`, labeled by
  *   identity hash, with a backlog gauge where `corpusOutstanding` reports outstanding work;
- * - `maintenance.retry` — the next maintenance attempt, rendered under its own phase word;
+ * - `maintenance` — the backup lane as ONE row under the writer's phase word: queued at its next
+ *   attempt, else recent at its last bundle; the health verdict's reason codes are its words;
  * - `recoveryRuns.entries[]` — actuator runs: in flight → running, otherwise recent;
  * - `selfHeal.summary.currentlyFrozen[]` — a frozen collection is a task the deployment is
- *   holding open, so it renders as running under the word "frozen".
+ *   holding open, so it renders as running under the word "frozen";
+ * - `heavyMaintenanceStarvation.breaches[]` — one queued row per waiter starved past the
+ *   watchdog's bound, its wait and its own cause riding the row as additive facts; the block's
+ *   check-time facts (lease holder, posture, the bound, the unreadable count) are the `scheduler`
+ *   summary beside the rows, never repeated per row. Absent or `disabled` → no rows, no summary.
  *
  * The reader (`ai/services/memory-core/helpers/deploymentStateBridgeStore.mjs`) answers four
  * envelopes: `{ok:true, status:'available', snapshot}`; `{ok:false, status:'stale', snapshot,
@@ -122,7 +140,7 @@ function makeProgress(kind, done, total) {
  * An `ok:false` envelope carrying a snapshot under any other status fails closed as unavailable.
  *
  * @param {Object|null} payload The verb's parsed result.
- * @returns {{rows: Object[], state: String, reason: String|null, observedAt: String|null}}
+ * @returns {{rows: Object[], state: String, reason: String|null, observedAt: String|null, scheduler: Object|null}}
  */
 export function extractDeploymentRows(payload) {
     const
@@ -136,7 +154,8 @@ export function extractDeploymentRows(payload) {
             rows      : [],
             state     : 'unavailable',
             reason    : typeof payload?.reason === 'string' ? payload.reason : 'deployment-snapshot-unavailable',
-            observedAt: null
+            observedAt: null,
+            scheduler : null
         }
     }
 
@@ -145,7 +164,11 @@ export function extractDeploymentRows(payload) {
         sync        = snapshot.tenantRepoSync && typeof snapshot.tenantRepoSync === 'object' ? snapshot.tenantRepoSync : null,
         task        = sync?.task && typeof sync.task === 'object' ? sync.task : null,
         repos       = Array.isArray(sync?.repos) ? sync.repos : [],
-        retry       = snapshot.maintenance?.retry && typeof snapshot.maintenance.retry === 'object' ? snapshot.maintenance.retry : null,
+        maintenance = snapshot.maintenance && typeof snapshot.maintenance === 'object' ? snapshot.maintenance : null,
+        retry       = maintenance?.retry && typeof maintenance.retry === 'object' ? maintenance.retry : null,
+        health      = maintenance?.health && typeof maintenance.health === 'object' ? maintenance.health : null,
+        lastBackup  = maintenance?.lastBackup && typeof maintenance.lastBackup === 'object' ? maintenance.lastBackup : null,
+        starvation  = snapshot.heavyMaintenanceStarvation && typeof snapshot.heavyMaintenanceStarvation === 'object' ? snapshot.heavyMaintenanceStarvation : null,
         recoveries  = Array.isArray(snapshot.recoveryRuns?.entries) ? snapshot.recoveryRuns.entries : [],
         frozen      = Array.isArray(snapshot.selfHeal?.summary?.currentlyFrozen) ? snapshot.selfHeal.summary.currentlyFrozen : [],
         rows        = [];
@@ -220,18 +243,31 @@ export function extractDeploymentRows(payload) {
         }))
     }
 
-    if (retry && toMsOrNull(retry.nextAttemptAtMs) !== null) {
-        const remainingRetries = toCount(retry.retriesRemaining);
+    // the backup lane is ONE row: the writer's phase word, its instant the next attempt (queued)
+    // or, with nothing scheduled, the last bundle (recent); the health verdict's reason codes are
+    // its words — never the durability prose, the bundle name or the staging residue
+    if (retry || health) {
+        const
+            nextAttempt      = toIso(retry?.nextAttemptAtMs),
+            finishedAt       = toIso(lastBackup?.finishedAt),
+            remainingRetries = toCount(retry?.retriesRemaining),
+            codes            = Array.isArray(health?.reasonCodes) ? health.reasonCodes.filter(code => typeof code === 'string' && code) : [],
+            detailBits       = [
+                codes.length > 0 ? codes.map(code => code.replaceAll('-', ' ')).join(' · ') : null,
+                remainingRetries !== null ? `${remainingRetries} retries remaining` : null
+            ].filter(Boolean);
 
-        rows.push(makeRow({
-            id     : 'orchestrator:maintenance:retry',
-            section: 'queued',
-            name   : 'Maintenance retry',
-            source : 'orchestrator',
-            state  : typeof retry.phase === 'string' && retry.phase ? retry.phase : 'scheduled',
-            at     : toIso(retry.nextAttemptAtMs),
-            detail : remainingRetries !== null ? `${remainingRetries} retries remaining` : null
-        }))
+        if (nextAttempt || finishedAt) {
+            rows.push(makeRow({
+                id     : 'orchestrator:maintenance:backup',
+                section: nextAttempt ? 'queued' : 'recent',
+                name   : 'Backup lane',
+                source : 'orchestrator',
+                state  : toWord(retry?.phase) ?? toWord(health?.status) ?? 'scheduled',
+                at     : nextAttempt ?? finishedAt,
+                detail : detailBits.length > 0 ? detailBits.join(' · ') : null
+            }))
+        }
     }
 
     for (const entry of recoveries) {
@@ -266,7 +302,67 @@ export function extractDeploymentRows(payload) {
         }))
     }
 
-    return {rows, state, reason: null, observedAt}
+    // the heavy-maintenance starvation receipt: one queued row per breach, the wait and the row's
+    // own cause riding the row as additive facts, the lease as the section's summary — the
+    // watchdog's verdict verbatim, its two clocks kept apart (`deferredSince` is the row's instant,
+    // `checkedAt` the summary's). A cause is worded only from the row's own reason code; the
+    // check-time lease holder cannot say why one waiter waits, so it never becomes a row's cause.
+    let scheduler = null;
+
+    if (starvation && starvation.posture !== 'disabled') {
+        const
+            breaches       = (Array.isArray(starvation.breaches) ? starvation.breaches : [])
+                .filter(breach => breach && typeof breach === 'object' && typeof breach.taskName === 'string' && breach.taskName),
+            checkedAt      = toIso(starvation.checkedAt),
+            degradeAfterMs = toCount(starvation.degradeAfterMs);
+
+        for (const breach of breaches) {
+            const
+                reasonCode       = toWord(breach.reasonCode),
+                blockingTaskName = toWord(breach.blockingTaskName),
+                leaseOwner       = toWord(breach.leaseOwner),
+                cause            = reasonCode === null
+                    ? null
+                    : [reasonCode, leaseOwner ? `lease owner ${leaseOwner}` : null, blockingTaskName ? `behind ${blockingTaskName}` : null].filter(Boolean).join(' · '),
+                detailBits       = [
+                    cause,
+                    breach.priorityZero === true ? 'priority zero' : null,
+                    breach.bootstrapCritical === true ? 'bootstrap critical' : null
+                ].filter(Boolean);
+
+            rows.push(makeRow({
+                id      : `orchestrator:starvation:${breach.taskName}`,
+                section : 'queued',
+                name    : breach.taskName,
+                source  : 'orchestrator',
+                state   : 'starved',
+                at      : toIso(breach.deferredSince),
+                progress: null,
+                detail  : detailBits.length > 0 ? detailBits.join(' · ') : null,
+                // additive facts: the wait is text in the pane, never a clamped progress track
+                waitMs           : toCount(breach.starvedForMs),
+                thresholdMs      : degradeAfterMs,
+                checkedAt,
+                reasonCode,
+                blockingTaskName,
+                leaseOwner,
+                priorityZero     : breach.priorityZero === true,
+                bootstrapCritical: breach.bootstrapCritical === true
+            }))
+        }
+
+        scheduler = {
+            leaseHolder    : toWord(starvation.leaseHolder),
+            leaseStatus    : toWord(starvation.leaseStatus),
+            checkedAt,
+            degradeAfterMs,
+            posture        : toWord(starvation.posture),
+            starvedTotal   : breaches.length,
+            unreadableCount: toCount(starvation.unreadableCount)
+        }
+    }
+
+    return {rows, state, reason: null, observedAt, scheduler}
 }
 
 /**
@@ -377,7 +473,9 @@ export function extractIngestionRows(progress) {
 
 /**
  * @summary Order one section and cap it: running and recent newest-first, queued soonest-first;
- * rows without an instant sink to the end of their section.
+ * rows without an instant sink to the end of their section, equal instants order by name. A
+ * starved row's instant is its `deferredSince`, so the queue leads with the longest wait — display
+ * order, never the scheduler's own.
  * @param {Object[]} rows
  * @param {'running'|'queued'|'recent'} section
  * @returns {Object[]}
@@ -392,11 +490,11 @@ function orderSection(rows, section) {
             const am = toMsOrNull(a.at),
                   bm = toMsOrNull(b.at);
 
-            if (am === null && bm === null) return 0;
+            if (am === null && bm === null) return a.name.localeCompare(b.name);
             if (am === null) return 1;
             if (bm === null) return -1;
 
-            return (am - bm) * direction
+            return (am - bm) * direction || a.name.localeCompare(b.name)
         })
         .slice(0, MAX_ROWS)
 }
@@ -473,7 +571,9 @@ export function createFleetTasksSource({
          * `wired` when every wired axis answered (`wired`, `stale` or `degraded` — the snapshot
          * reader's retained-snapshot statuses still measure), `partial` when some did,
          * `unavailable` when none. Sections are ordered and capped here so the wire carries a
-         * glance, not a dump.
+         * glance, not a dump — `counts.queuedKnown` is the queue before the cap, every producer
+         * counted, so the pane can say known · shown; `scheduler` is the deployment axis's
+         * heavy-maintenance summary, present only when the snapshot carried the receipt.
          * @param {Object} [params] Reserved; the verb takes no caller input today.
          * @returns {Promise<Object>}
          */
@@ -500,10 +600,11 @@ export function createFleetTasksSource({
                 answered = axes.filter(axis => ANSWERED_STATES.has(axis.state)).length,
                 wiredAxes= axes.filter(axis => axis.state !== 'unwired').length,
                 state    = answered === 0 ? 'unavailable' : answered === wiredAxes ? 'wired' : 'partial',
-                rows     = [...deployment.rows, ...rem.rows, ...ingestion.rows],
-                running  = orderSection(rows, 'running'),
-                queued   = orderSection(rows, 'queued'),
-                recent   = orderSection(rows, 'recent');
+                rows        = [...deployment.rows, ...rem.rows, ...ingestion.rows],
+                running     = orderSection(rows, 'running'),
+                queued      = orderSection(rows, 'queued'),
+                recent      = orderSection(rows, 'recent'),
+                queuedKnown = rows.filter(row => row.section === 'queued').length;
 
             return {
                 capability: {
@@ -517,10 +618,11 @@ export function createFleetTasksSource({
                     rem       : {state: rem.state,        reason: rem.reason        ?? null, ...(rem.detail        ? {detail: rem.detail}        : {})},
                     ingestion : {state: ingestion.state,  reason: ingestion.reason  ?? null, ...(ingestion.detail  ? {detail: ingestion.detail}  : {}), scope: ingestion.scope ?? null}
                 },
+                ...(deployment.scheduler ? {scheduler: deployment.scheduler} : {}),
                 running,
                 queued,
                 recent,
-                counts: {running: running.length, queued: queued.length, recent: recent.length}
+                counts: {running: running.length, queued: queued.length, recent: recent.length, queuedKnown}
             }
         }
     }
