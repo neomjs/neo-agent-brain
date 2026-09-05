@@ -1,4 +1,4 @@
-import {HARNESS_TYPES} from "../../../src/fleet/contract/harnessTypes.mjs";
+import {HARNESS_TYPES} from '../../../src/fleet/contract/harnessTypes.mjs';
 import path            from 'node:path';
 
 // Per-family launch contracts — ONE entry per LAUNCHABLE family, keyed by the durable harness-type

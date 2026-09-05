@@ -1,5 +1,5 @@
 import {test, expect}                                                          from '@playwright/test';
-import {HARNESS_TYPES}                                                         from "../../../../../../src/fleet/contract/harnessTypes.mjs";
+import {HARNESS_TYPES}                                                         from '../../../../../../src/fleet/contract/harnessTypes.mjs';
 import {LAUNCHABLE_HARNESS_TYPES, deriveHarnessLaunchSpec, getHarnessAuthMode} from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 
 // Pure function — imported directly (no fs / spawn / env / Neo runtime), so the suite has no

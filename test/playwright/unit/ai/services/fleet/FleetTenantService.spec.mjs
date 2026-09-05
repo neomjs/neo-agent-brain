@@ -33,7 +33,7 @@ import {
     createFleetWireRequest,
     FLEET_WIRE_METHODS,
     FLEET_WIRE_RESPONSE_STATES
-} from "../../../../../../src/fleet/contract/wire.mjs"
+} from '../../../../../../src/fleet/contract/wire.mjs'
 
 const PAT = 'glpat-SUPER-SECRET-tenant-credential-42'
 

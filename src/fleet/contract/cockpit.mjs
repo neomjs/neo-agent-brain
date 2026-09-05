@@ -23,7 +23,6 @@ export const FLEET_COCKPIT_SOURCES = Object.freeze({
     });
 
 /** @type {ReadonlyArray<string>} */
-
 export const FLEET_COCKPIT_EVENT_TYPES = Object.freeze([
     'lifecycle-request',
     'lifecycle-success',

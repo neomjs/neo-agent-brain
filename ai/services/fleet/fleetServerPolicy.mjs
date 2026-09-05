@@ -4,7 +4,7 @@ import {
     FLEET_WIRE_METHODS,
     FLEET_WIRE_RESPONSE_STATES,
     selectFleetWireContract
-} from "../../../src/fleet/contract/wire.mjs";
+} from '../../../src/fleet/contract/wire.mjs';
 
 /**
  * @summary The complete S1 wire policy for the composed Fleet service. Authentication makes the

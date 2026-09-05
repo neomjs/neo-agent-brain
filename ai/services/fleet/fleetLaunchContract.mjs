@@ -1,10 +1,19 @@
 import {generateLocalBearerToken, isLocalBearerToken} from '../../mcp/server/shared/helpers/localBearer.mjs';
 import {normalizeAgentIdentityNodeId}                 from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {FLEET_WIRE_METHODS}                           from '../../../src/fleet/contract/wire.mjs';
+
+/**
+ * @summary Credential-bearing verbs handled by the trusted launcher, never exposed to client code.
+ * @type {ReadonlyArray<String>}
+ */
+export const FLEET_CREDENTIAL_METHODS = Object.freeze(
+    FLEET_WIRE_METHODS.filter(method => method === 'defineAgent' || method === 'connectTenant')
+);
 
 /**
  * @module ai/services/fleet/fleetLaunchContract
- * @summary The Fleet launch path's three trust decisions — viewer binding, bearer intake, and
- * existing-process probing — as injectable, unit-testable seams the `devFleetServer` entry composes.
+ * @summary Fleet launcher trust inputs: credential-bearing verbs, viewer binding, bearer intake,
+ * and existing-process probing through injectable seams the `devFleetServer` entry composes.
  *
  * The contract this module enforces: Fleet startup fails CLOSED unless the server-side viewer
  * resolves to one canonical, seeded `AgentIdentity` node (a bare login tag is not enough — an

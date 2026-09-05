@@ -1,7 +1,7 @@
 /**
  * @module src/fleet/contract/harnessTypes
  * @summary Canonical harness keys and operator labels, shared without loading Fleet services.
- * Display order is deliberate; returned records are caller-owned and unknown keys resolve null.
+ * Codex leads the display order as the add-form default; returned records are caller-owned and unknown keys resolve null.
  */
 
 /**
