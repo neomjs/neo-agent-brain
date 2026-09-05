@@ -21,7 +21,13 @@ import fs                     from 'node:fs';
 import os                     from 'node:os';
 import path                   from 'node:path';
 import {readRuntimeProvenance} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
-import {formatReport, formatRuntimeRootWarning} from '../../../../../../../ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs';
+import {formatReport, formatRuntimeRootWarning, recordTrace} from '../../../../../../../ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs';
+import {
+    checkProjection,
+    PROVENANCE_RECEIPT,
+    PROVENANCE_TRACE,
+    projectHooks
+} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
 
 let scratchDirs = [];
 
@@ -155,5 +161,102 @@ test.describe('seat projection provenance', () => {
 
         // And the honest half: absence of a warning would not have meant a healthy seat.
         expect(context, 'it says the seat was not audited at all').toContain('NOT audited')
+    });
+    test('a non-green verdict leaves a durable line, and a green one leaves the seat untouched', async () => {
+        // AC-5. Measured on a live seat this morning: the hook had ONE output path — a string into the
+        // agent's transcript — and exited 0 either way, so an unacted-on warning was unrecoverable
+        // afterwards by any operator, peer, or later session.
+        const
+            {dir} = runtimeRoot({parked: false}),
+            trace = path.join(dir, PROVENANCE_TRACE);
+
+        expect(recordTrace(dir, 'x SEAT PROJECTION IS NOT CURRENT — first line\nremediation prose'), 'a verdict is recorded').toBe(true);
+
+        const written = fs.readFileSync(trace, 'utf8');
+
+        expect(written, 'the headline survives').toContain('SEAT PROJECTION IS NOT CURRENT');
+        expect(written, 'the remediation prose does not bury it').not.toContain('remediation prose');
+        expect(written.trimEnd().split('\n'), 'one line per verdict').toHaveLength(1);
+
+        // The half that keeps it from becoming noise: a healthy seat must stay byte-identical between
+        // sessions, or a reader learns to skip the file — the reported-but-unread failure one layer up.
+        expect(recordTrace(dir, null), 'a green verdict records nothing').toBe(false);
+        expect(fs.readFileSync(trace, 'utf8'), 'and appends nothing').toBe(written);
+    });
+
+    test('an unwritable trace never disturbs the boot', async () => {
+        // The hook must never block a session. A trace it cannot write is a worse reason to fail a boot
+        // than the condition it was recording, and the transcript line is emitted regardless.
+        expect(recordTrace('/proc/definitely-not-writable-by-this-test', 'x verdict'), 'it reports failure').toBe(false)
+    });
+    test('INTEGRATION: a seat projected from a parked root is byte-CURRENT and provenance-WRONG', async () => {
+        // AC-3, and the control is the whole point. `stale`/`missing` empty is not incidental — it is
+        // the proof that a currency-only check PASSES this seat. Without that assertion the arm would
+        // show provenance firing and say nothing about the gap it exists to close.
+        const
+            runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-provenance-rt-')),
+            seat    = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-provenance-seat-')),
+            rtGit   = (...args) => execFileSync('git', args, {cwd: runtime, encoding: 'utf8'}).trim();
+
+        scratchDirs.push(runtime, seat);
+
+        // A REAL runtime root: the actual hook sources, so `assertRuntimeRoot` and the enumerators see
+        // what they see in production. A hand-built stub would test the stub.
+        fs.cpSync(
+            path.join(process.cwd(), 'ai/scripts/lifecycle/hooks'),
+            path.join(runtime, 'ai/scripts/lifecycle/hooks'),
+            {recursive: true}
+        );
+
+        rtGit('init', '-q', '-b', 'dev', '.');
+        rtGit('config', 'user.email', 'unit@test.invalid');
+        rtGit('config', 'user.name', 'unit');
+        rtGit('add', '.');
+        rtGit('commit', '-qm', 'hooks on dev');
+        rtGit('update-ref', 'refs/remotes/origin/dev', rtGit('rev-parse', 'HEAD'));
+
+        // The incident: the shared root is parked on someone's unmerged branch. No hook BYTES change —
+        // an empty commit — so the projection this produces is byte-identical to the upstream one.
+        rtGit('checkout', '-q', '-b', 'feature/unmerged');
+        rtGit('commit', '-q', '--allow-empty', '-m', 'unmerged work, no hook changes');
+
+        const parkedCommit = rtGit('rev-parse', 'HEAD');
+
+        execFileSync('git', ['init', '-q', '-b', 'dev', '.'], {cwd: seat});
+
+        // The Engine hydrates this; the projector reconciles into it and refuses to write hooks it
+        // could not wire. A seat without it is a different failure than the one under test.
+        fs.mkdirSync(path.join(seat, '.claude'), {recursive: true});
+        fs.writeFileSync(path.join(seat, '.claude/settings.json'), '{}\n', 'utf8');
+
+        projectHooks({agentosRuntimeRoot: runtime, targetRepoRoot: seat});
+        // Twice on purpose. The first run reconciles `.claude/settings.json` from `{}`, which leaves
+        // `unreconciledEvents` non-empty and would make `ok: false` true for a reason that has nothing
+        // to do with provenance — an assertion passing for the wrong cause.
+        projectHooks({agentosRuntimeRoot: runtime, targetRepoRoot: seat});
+
+        const receipt = JSON.parse(fs.readFileSync(path.join(seat, PROVENANCE_RECEIPT), 'utf8'));
+
+        expect(receipt.commit, 'the receipt records the parked revision').toBe(parkedCommit);
+        expect(receipt.ancestorOfUpstreamAtProjection, 'and knew it was off upstream when it wrote').toBe(false);
+
+        const report = checkProjection({agentosRuntimeRoot: runtime, targetRepoRoot: seat});
+
+        // THE CONTROL: currency is clean. Every byte the seat holds matches what this root renders.
+        expect(report.stale,   'no stale files — a currency-only check passes this seat').toEqual([]);
+        expect(report.missing, 'and nothing is missing').toEqual([]);
+
+        // Every other axis empty, so `ok: false` below is attributable to provenance and nothing else.
+        // Asserted individually rather than trusted: a single contaminated field would otherwise let
+        // the verdict pass while provenance did no work at all.
+        expect(report.orphans,           'no orphans').toEqual([]);
+        expect(report.unplacedCommands,  'no unplaced commands').toEqual([]);
+        expect(report.unreconciledEvents,'settings reconciled').toEqual([]);
+        expect(report.trackedConflicts,  'no tracked conflicts').toEqual([]);
+        expect(report.escapedSpecifiers, 'no escaped specifiers').toEqual([]);
+
+        // THE PROPERTY: and it is still wrong, for a reason currency cannot express.
+        expect(report.provenance, 'provenance reports the parked commit').toMatchObject({commit: parkedCommit});
+        expect(report.ok, 'so the seat is NOT ok — and provenance is the only field saying so').toBe(false)
     });
 });

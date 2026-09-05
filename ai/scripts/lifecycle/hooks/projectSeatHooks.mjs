@@ -100,6 +100,19 @@ const
      */
     PROVENANCE_RECEIPT    = '.agents/seat-projection.json',
     /**
+     * Where a non-green seat verdict is recorded so it outlives the session that saw it.
+     *
+     * Measured 2026-09-05: `seatProjectionCheck` had exactly one output path — a string into the
+     * agent's own transcript — and exited 0 either way. If that agent did not act on the string, the
+     * sighting was unrecoverable: no operator, no peer, and no later session could find that a seat
+     * had reported itself. This is the smallest thing that changes "an ambiguity nobody can check"
+     * into one they can.
+     *
+     * Deliberately not a logging subsystem: one appended line per non-green verdict, and nothing at
+     * all on a green one, so a healthy seat stays byte-identical between sessions.
+     */
+    PROVENANCE_TRACE      = '.agents/seat-projection.log',
+    /**
      * The token a manifest command uses to name the runtime root it must resolve against, and the
      * closed census of entrypoints that are wired into a seat but never copied into it.
      *
@@ -1247,7 +1260,10 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
     const reconciled = reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot});
 
     return {
-        excludeFile: writeLocalExclude({targetRepoRoot, targets: written}),
+        // The trace is excluded but NOT reported as written: the check writes it, this run did not,
+        // and a `written` list naming a file nobody created would be a small lie in a return value
+        // other code reads. Excluding a path before it exists is exactly what an exclude block is for.
+        excludeFile: writeLocalExclude({targetRepoRoot, targets: [...written, PROVENANCE_TRACE]}),
         pruned,
         reconciled,
         written
@@ -1363,4 +1379,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(fs.realpathSync(process
     }
 }
 
-export {HARNESS_TARGETS};
+export {HARNESS_TARGETS, PROVENANCE_RECEIPT, PROVENANCE_TRACE};

@@ -41,7 +41,7 @@
 import fs                              from 'node:fs';
 import path                            from 'node:path';
 import {fileURLToPath, pathToFileURL}  from 'node:url';
-import {checkProjection, readRuntimeProvenance} from './projectSeatHooks.mjs';
+import {checkProjection, PROVENANCE_TRACE, readRuntimeProvenance} from './projectSeatHooks.mjs';
 
 const
     __filename         = fileURLToPath(import.meta.url),
@@ -221,6 +221,40 @@ function emit(context) {
 }
 
 /**
+ * @summary Appends one line per non-green verdict, so a sighting outlives the session that saw it.
+ *
+ * Before this the hook had exactly one output path — a string into the agent's own transcript — and
+ * exited 0 either way, so an unacted-on warning left no artifact any operator, peer or later session
+ * could find. Measured on a live seat 2026-09-05: zero `writeFile`/`appendFile`/`console` calls in
+ * the whole file.
+ *
+ * Green writes NOTHING. A healthy seat must stay byte-identical between sessions, or the trace
+ * becomes noise that the reader learns to skip — which is the failure it exists to end, one layer up.
+ *
+ * Never throws. An unwritable trace is a worse reason to disturb a boot than the condition it records,
+ * so a failed append is silently dropped: the transcript line has already been emitted regardless.
+ * @param {String} targetRepoRoot Absolute target repository root.
+ * @param {String|null} context The emitted verdict, or `null` when the seat is current.
+ * @returns {Boolean} Whether a line was appended.
+ * @protected
+ */
+export function recordTrace(targetRepoRoot, context) {
+    if (!context) return false;
+
+    try {
+        const file = path.join(targetRepoRoot, PROVENANCE_TRACE);
+
+        fs.mkdirSync(path.dirname(file), {recursive: true});
+        // First line only: the verdict's headline is what a later reader scans for, and appending the
+        // full multi-line context once per session would bury it in its own remediation prose.
+        fs.appendFileSync(file, `${new Date().toISOString()}\t${context.split('\n')[0]}\n`, 'utf8');
+        return true
+    } catch {
+        return false
+    }
+}
+
+/**
  * @summary Hook entrypoint. Reports; never repairs, never throws, never blocks.
  * @protected
  */
@@ -246,11 +280,17 @@ async function main() {
         const own = readRuntimeProvenance(agentosRuntimeRoot);
 
         if (own.ancestorOfUpstream === false) {
-            emit(formatRuntimeRootWarning(own));
+            const context = formatRuntimeRootWarning(own);
+
+            recordTrace(targetRepoRoot, context);
+            emit(context);
             return
         }
 
-        emit(formatReport(checkProjection({agentosRuntimeRoot, targetRepoRoot}), targetRepoRoot))
+        const context = formatReport(checkProjection({agentosRuntimeRoot, targetRepoRoot}), targetRepoRoot);
+
+        recordTrace(targetRepoRoot, context);
+        emit(context)
     } catch (error) {
         emit(
             `Seat projection was NOT verified this session — the check itself failed: ${error.message}. ` +
