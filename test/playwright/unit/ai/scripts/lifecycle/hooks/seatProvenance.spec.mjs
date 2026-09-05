@@ -21,7 +21,12 @@ import fs                     from 'node:fs';
 import os                     from 'node:os';
 import path                   from 'node:path';
 import {readRuntimeProvenance} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
-import {formatReport, formatRuntimeRootWarning, recordTrace} from '../../../../../../../ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs';
+import {
+    formatReport,
+    formatRuntimeRootWarning,
+    main,
+    recordTrace
+} from '../../../../../../../ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs';
 import {
     checkProjection,
     PROVENANCE_RECEIPT,
@@ -39,7 +44,7 @@ let scratchDirs = [];
  * @param {Boolean} parked `true` leaves HEAD on a commit upstream does not contain.
  * @returns {{dir: String, upstreamCommit: String, headCommit: String}}
  */
-function runtimeRoot({parked}) {
+function runtimeRoot({parked, withHooks = false}) {
     const
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-provenance-')),
         git = (...args) => execFileSync('git', args, {cwd: dir, encoding: 'utf8'}).trim();
@@ -49,6 +54,14 @@ function runtimeRoot({parked}) {
     git('init', '-q', '-b', 'dev', '.');
     git('config', 'user.email', 'unit@test.invalid');
     git('config', 'user.name', 'unit');
+
+    // The real hook sources when a caller needs a root `assertRuntimeRoot` will accept. A stub tree
+    // would satisfy the guard and test the stub.
+    withHooks && fs.cpSync(
+        path.join(process.cwd(), 'ai/scripts/lifecycle/hooks'),
+        path.join(dir, 'ai/scripts/lifecycle/hooks'),
+        {recursive: true}
+    );
 
     fs.writeFileSync(path.join(dir, 'a.txt'), 'upstream\n');
     git('add', '.');
@@ -258,5 +271,140 @@ test.describe('seat projection provenance', () => {
         // THE PROPERTY: and it is still wrong, for a reason currency cannot express.
         expect(report.provenance, 'provenance reports the parked commit').toMatchObject({commit: parkedCommit});
         expect(report.ok, 'so the seat is NOT ok — and provenance is the only field saying so').toBe(false)
+    });
+    test('RA-2: a git error is UNKNOWN, only a completed comparison may accuse', async () => {
+        // Emmy executed this: `merge-base --is-ancestor` returns 128 on an unknown object, not 1, and
+        // the old code classified EVERY failure as non-ancestor. A receipt copied from another clone
+        // became a factual accusation. My own JSDoc said "unknown is never wrong" while the code did
+        // exactly that — the guarantee was in prose and nowhere else.
+        const {dir} = runtimeRoot({parked: false});
+
+        // Positive control: a real non-ancestor still answers false, or the fix is just suppression.
+        const parked = runtimeRoot({parked: true, withHooks: true});
+
+        expect(readRuntimeProvenance(parked.dir).ancestorOfUpstream, 'a genuine non-ancestor still reports false').toBe(false);
+
+        // The error control: git cannot evaluate an object it does not have. Verified upstream of this
+        // arm that the status is 128 and a genuine non-ancestor is 1 — different exits, different meanings.
+        const absent = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+
+        expect(readRuntimeProvenance(dir, absent).ancestorOfUpstream, 'an unresolvable upstream stays unknown').toBe(null);
+
+        // And through the REAL consumer: a receipt naming an object this root never fetched must
+        // accuse nobody. Exercised via checkProjection rather than the private helper, so the arm
+        // covers the path a seat actually takes.
+        const seat = fs.mkdtempSync(path.join(os.tmpdir(), 'ra2-seat-'));
+
+        scratchDirs.push(seat);
+        execFileSync('git', ['init', '-q', '-b', 'dev', '.'], {cwd: seat});
+        fs.mkdirSync(path.join(seat, '.agents'), {recursive: true});
+        fs.writeFileSync(path.join(seat, PROVENANCE_RECEIPT), JSON.stringify({
+            commit: absent, ref: 'refs/heads/gone', upstream: 'origin/dev'
+        }));
+
+        expect(checkProjection({agentosRuntimeRoot: parked.dir, targetRepoRoot: seat}).provenance,
+            'an unfetchable receipt commit accuses nobody').toBe(null)
+    });
+
+    test('RA-1: a TRACKED receipt or trace is refused, and the untracked path still works', async () => {
+        const
+            runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'ra1-rt-')),
+            seat    = fs.mkdtempSync(path.join(os.tmpdir(), 'ra1-seat-')),
+            rtGit   = (...a) => execFileSync('git', a, {cwd: runtime, encoding: 'utf8'}).trim();
+
+        scratchDirs.push(runtime, seat);
+
+        fs.cpSync(path.join(process.cwd(), 'ai/scripts/lifecycle/hooks'), path.join(runtime, 'ai/scripts/lifecycle/hooks'), {recursive: true});
+        rtGit('init', '-q', '-b', 'dev', '.');
+        rtGit('config', 'user.email', 'unit@test.invalid');
+        rtGit('config', 'user.name', 'unit');
+        rtGit('add', '.'); rtGit('commit', '-qm', 'hooks');
+        rtGit('update-ref', 'refs/remotes/origin/dev', rtGit('rev-parse', 'HEAD'));
+
+        const seatGit = (...a) => execFileSync('git', a, {cwd: seat, encoding: 'utf8'}).trim();
+
+        seatGit('init', '-q', '-b', 'dev', '.');
+        seatGit('config', 'user.email', 'unit@test.invalid');
+        seatGit('config', 'user.name', 'unit');
+        fs.mkdirSync(path.join(seat, '.claude'), {recursive: true});
+        fs.writeFileSync(path.join(seat, '.claude/settings.json'), '{}\n');
+
+        // Authored bytes at the receipt path, COMMITTED — the exact fixture Emmy used to watch the old
+        // code report success while replacing them.
+        fs.mkdirSync(path.join(seat, '.agents'), {recursive: true});
+        fs.writeFileSync(path.join(seat, PROVENANCE_RECEIPT), 'AUTHORED, NOT OURS\n');
+        seatGit('add', PROVENANCE_RECEIPT); seatGit('commit', '-qm', 'authored receipt');
+
+        expect(() => projectHooks({agentosRuntimeRoot: runtime, targetRepoRoot: seat}))
+            .toThrow(/refusing to overwrite tracked path/);
+
+        // The refusal must be TOTAL, not partial: a projector that refuses after writing nine hooks is
+        // a partial write with a message. Nothing may have landed.
+        expect(fs.readFileSync(path.join(seat, PROVENANCE_RECEIPT), 'utf8'), 'authored bytes untouched').toBe('AUTHORED, NOT OURS\n');
+        expect(fs.existsSync(path.join(seat, '.claude/hooks')), 'and no hook landed either').toBe(false);
+
+        // A tracked TRACE is refused by the writer, since the check is what appends to it.
+        fs.writeFileSync(path.join(seat, PROVENANCE_TRACE), 'AUTHORED LOG\n');
+        seatGit('add', PROVENANCE_TRACE); seatGit('commit', '-qm', 'authored trace');
+
+        expect(recordTrace(seat, 'x a verdict'), 'a tracked trace is refused').toBe(false);
+        expect(fs.readFileSync(path.join(seat, PROVENANCE_TRACE), 'utf8'), 'and preserved').toBe('AUTHORED LOG\n');
+
+        // The retained positive: untracked still writes, or the fix is indistinguishable from breaking it.
+        seatGit('rm', '-q', '--cached', PROVENANCE_TRACE);
+        expect(recordTrace(seat, 'x a verdict'), 'an untracked trace still records').toBe(true)
+    });
+
+    test('RA-3: a checker exception is traced through the real entrypoint', async () => {
+        // Exercises main() ROUTING, which is what Emmy's falsifier showed a formatter-only arm cannot
+        // see: the exception path emitted and recorded nothing while every arm still passed.
+        //
+        // The exception is real — a runtime root with no `ai/scripts/lifecycle/hooks` makes
+        // `assertRuntimeRoot` throw inside `checkProjection`. Two earlier fixtures for this arm were
+        // wrong and are worth recording: the real worktree tripped AC-4's own guard first (the feature
+        // working on me), and malformed `.claude/settings.json` does not throw at all — the reconciler
+        // degrades to an ordinary ABSENT report.
+        //
+        // The root is ON upstream so the AC-4 guard does not fire, and carries NO hooks so the checker
+        // does throw.
+        const
+            rootNoHooks = runtimeRoot({parked: false}),
+            seat        = runtimeRoot({parked: false}),
+            trace       = path.join(seat.dir, PROVENANCE_TRACE),
+            originalOut = process.stdout.write.bind(process.stdout);
+
+        let emitted = '';
+
+        process.stdout.write = chunk => { emitted += chunk; return true };
+
+        try {
+            await main({cwd: seat.dir}, rootNoHooks.dir)
+        } finally {
+            process.stdout.write = originalOut
+        }
+
+        expect(emitted, 'the seat is still told, on the transcript').toContain('NOT verified');
+        expect(fs.existsSync(trace), 'AND the verdict reached the durable trace').toBe(true);
+        expect(fs.readFileSync(trace, 'utf8'), 'naming the failure').toContain('NOT verified');
+
+        // Silent green must survive the change, and a GREEN seat has to be one that was actually
+        // projected — an unprojected checkout reports ABSENT(9) and is not the case under test. That
+        // mis-fixture is why this assertion failed once before.
+        const
+            greenRoot = runtimeRoot({parked: false, withHooks: true}),
+            greenSeat = runtimeRoot({parked: false});
+
+        fs.mkdirSync(path.join(greenSeat.dir, '.claude'), {recursive: true});
+        fs.writeFileSync(path.join(greenSeat.dir, '.claude/settings.json'), '{}\n');
+        projectHooks({agentosRuntimeRoot: greenRoot.dir, targetRepoRoot: greenSeat.dir});
+        projectHooks({agentosRuntimeRoot: greenRoot.dir, targetRepoRoot: greenSeat.dir});
+
+        expect(checkProjection({agentosRuntimeRoot: greenRoot.dir, targetRepoRoot: greenSeat.dir}).ok,
+            'the fixture really is green before the silence is asserted').toBe(true);
+
+        process.stdout.write = () => true;
+        try { await main({cwd: greenSeat.dir}, greenRoot.dir) } finally { process.stdout.write = originalOut }
+
+        expect(fs.existsSync(path.join(greenSeat.dir, PROVENANCE_TRACE)), 'a healthy seat stays untouched').toBe(false)
     });
 });

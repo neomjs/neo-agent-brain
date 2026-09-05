@@ -600,10 +600,13 @@ export function readRuntimeProvenance(agentosRuntimeRoot, upstream = 'origin/dev
                 cwd: agentosRuntimeRoot, stdio: 'ignore'
             });
             ancestorOfUpstream = true
-        } catch {
-            // Exit 1 is the honest "not an ancestor". Any other failure would also land here, which is
-            // why the upstream ref is verified above rather than inferred from this call failing.
-            ancestorOfUpstream = false
+        } catch (error) {
+            // ONLY exit 1 is a completed comparison that answered "no". Exit 128 is git refusing to
+            // compare at all — an unknown object, a corrupt ref, a receipt copied from another clone —
+            // and a spawn failure has no status. Treating those as `false` would turn "could not ask"
+            // into a factual negative, which is the one thing this function promises never to do.
+            // Verified: unknown object -> 128, genuine non-ancestor -> 1.
+            ancestorOfUpstream = error?.status === 1 ? false : null
         }
     }
 
@@ -732,8 +735,12 @@ function verifyReceiptProvenance(agentosRuntimeRoot, receipt) {
             cwd: agentosRuntimeRoot, stdio: 'ignore'
         });
         return null
-    } catch {
-        return {commit: receipt.commit, ref: receipt.ref ?? null, upstream}
+    } catch (error) {
+        // Same rule as `readRuntimeProvenance`, and it matters more here because this return value is
+        // what reds a seat: only a completed comparison may accuse. Anything git could not evaluate —
+        // exit 128 on an unknown object, a receipt whose commit belongs to a clone this root never
+        // fetched — stays unknown and reports nothing.
+        return error?.status === 1 ? {commit: receipt.commit, ref: receipt.ref ?? null, upstream} : null
     }
 }
 
@@ -1174,7 +1181,14 @@ export function projectHooks({agentosRuntimeRoot, targetRepoRoot}) {
 
     const
         hooks     = enumerateProjection(agentosRuntimeRoot),
-        conflicts = hooks.filter(hook => tracked(targetRepoRoot, hook.target)).map(hook => hook.target);
+        // The generated sidecars belong to the SAME custody contract as the hooks they describe, and
+        // are checked in the same breath rather than at their own write sites. A refusal that fires
+        // after nine hook files have landed is not a refusal, it is a partial write with a message —
+        // and the receipt/trace are exactly as authored-content-shaped as any projection path.
+        // Found by @neo-gpt-emmy, who staged authored bytes at the receipt path and watched real
+        // `projectHooks` report success while replacing them (`git status` → `AM`).
+        conflicts = [...hooks.map(hook => hook.target), PROVENANCE_RECEIPT, PROVENANCE_TRACE]
+            .filter(target => tracked(targetRepoRoot, target));
 
     if (conflicts.length) {
         throw new Error(

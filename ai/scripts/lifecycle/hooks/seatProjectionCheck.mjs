@@ -24,7 +24,12 @@
  * ADR 0040 §2.5: seat hooks resolve Brain substrate only through `agentosRuntimeRoot`-provisioned
  * artifacts, never relatively from `targetRepoRoot`.
  *
- * **Report, never repair.** The seat is told what is wrong and given the command; it does not write.
+ * **Report, never repair.** The seat is told what is wrong and given the command; it never writes a
+ * REPAIR. It does make one diagnostic write — {@link recordTrace} appends a line to an untracked,
+ * git-excluded log on a non-green verdict — and the distinction is the whole contract: a diagnostic
+ * record changes nothing the harness executes, while a repair changes what runs next session. The
+ * trace refuses a tracked path for the same reason the projector does, so the write can never reach
+ * authored content either.
  * Auto-projection would push any Brain commit into every checkout unattended, with no review between
  * merge and execution, to save a single turn. It is also not the escape it appears to be: the write
  * touches `.claude/settings.json`, which is precisely what one peer's permission classifier already
@@ -41,7 +46,7 @@
 import fs                              from 'node:fs';
 import path                            from 'node:path';
 import {fileURLToPath, pathToFileURL}  from 'node:url';
-import {checkProjection, PROVENANCE_TRACE, readRuntimeProvenance} from './projectSeatHooks.mjs';
+import {checkProjection, PROVENANCE_TRACE, readRuntimeProvenance, tracked} from './projectSeatHooks.mjs';
 
 const
     __filename         = fileURLToPath(import.meta.url),
@@ -242,6 +247,11 @@ export function recordTrace(targetRepoRoot, context) {
     if (!context) return false;
 
     try {
+        // Same custody contract the projector enforces, enforced here too because THIS is the writer.
+        // A trace path someone has committed is authored content, and a diagnostic append is still an
+        // overwrite of work nobody agreed to hand us. Reporting is never worth mutating a tracked file.
+        if (tracked(targetRepoRoot, PROVENANCE_TRACE)) return false;
+
         const file = path.join(targetRepoRoot, PROVENANCE_TRACE);
 
         fs.mkdirSync(path.dirname(file), {recursive: true});
@@ -258,8 +268,12 @@ export function recordTrace(targetRepoRoot, context) {
  * @summary Hook entrypoint. Reports; never repairs, never throws, never blocks.
  * @protected
  */
-async function main() {
-    const targetRepoRoot = resolveTargetRepoRoot(await readPayload());
+export async function main(payload, runtimeRoot = agentosRuntimeRoot) {
+    // The payload is a parameter with a stdin default rather than a stdin read, so a spec can exercise
+    // the real routing — which verdict reaches which sink — instead of asserting on formatters and
+    // hoping the wiring matches. @neo-gpt-emmy's RA-3 landed precisely in the gap a formatter-only
+    // arm cannot see: the exception path emitted and recorded nothing, and every arm still passed.
+    const targetRepoRoot = resolveTargetRepoRoot(payload ?? await readPayload());
 
     if (!targetRepoRoot) {
         emit(
@@ -277,7 +291,7 @@ async function main() {
         // against unreviewed code, and the repair line would install it. The checker audited a property
         // it did not hold — this is that gap closed, and it is the only case where the hook reports on
         // itself rather than on the seat.
-        const own = readRuntimeProvenance(agentosRuntimeRoot);
+        const own = readRuntimeProvenance(runtimeRoot);
 
         if (own.ancestorOfUpstream === false) {
             const context = formatRuntimeRootWarning(own);
@@ -287,15 +301,19 @@ async function main() {
             return
         }
 
-        const context = formatReport(checkProjection({agentosRuntimeRoot, targetRepoRoot}), targetRepoRoot);
+        const context = formatReport(checkProjection({agentosRuntimeRoot: runtimeRoot, targetRepoRoot}), targetRepoRoot);
 
         recordTrace(targetRepoRoot, context);
         emit(context)
     } catch (error) {
-        emit(
-            `Seat projection was NOT verified this session — the check itself failed: ${error.message}. ` +
-            'Unknown, not current.'
-        )
+        // RA-3: this path emitted and recorded nothing, so "one line per non-green verdict" was false
+        // for the case a later reader most needs — the checker itself failing. A verdict that exists
+        // only in a transcript is the gap AC-5 closes, and an exception is still a verdict.
+        const context = `Seat projection was NOT verified this session — the check itself failed: ${error.message}. ` +
+                        'Unknown, not current.';
+
+        recordTrace(targetRepoRoot, context);
+        emit(context)
     }
 }
 
