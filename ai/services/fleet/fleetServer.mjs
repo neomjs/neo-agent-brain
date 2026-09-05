@@ -34,7 +34,7 @@ import {
     createFleetWireResponse,
     FLEET_WIRE_RESPONSE_STATES,
     inspectFleetWireResponse
-} from './fleetWireMethods.mjs';
+} from '../../../src/fleet/contract/wire.mjs';
 
 const
     REPO_ROOT             = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),

@@ -191,6 +191,21 @@ is the Agent Institution application in `neo-agent-institution`. This repository
 services that application operates. Maintainers can still run individual services from the root
 package while the Agent Institution cutover is in progress.
 
+## Fleet client contract
+
+Clients share Fleet vocabulary through the installed package's pure contract entry:
+
+```js
+import {createFleetWireOffer, listHarnessTypes} from 'neo-agent-brain/fleet-contract';
+```
+
+The entry exports harness and MCP catalogs, sparse-override helpers, wire negotiation/envelopes,
+and cockpit source identifiers from [`src/fleet/contract`](src/fleet/contract/). Its module graph
+loads no Node builtin, Neo class, service, credential policy, or configuration. Authorization and
+credential/target handling remain server-owned; clients must still use the authenticated Fleet wire.
+Trusted launchers read `FLEET_CREDENTIAL_METHODS` from the private
+`ai/services/fleet/fleetLaunchContract.mjs` runtime contract; it is not a browser export.
+
 ## Operating modes
 
 | Mode | Purpose | Current door |

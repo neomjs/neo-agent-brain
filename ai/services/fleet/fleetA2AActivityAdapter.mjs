@@ -1,10 +1,7 @@
-import {
-    createFleetCockpitEvent,
-    createFleetCockpitEventId,
-    FLEET_COCKPIT_SOURCES
-} from './fleetCockpitStatus.mjs'
-import {collisionPreventionTag} from '../shared/a2aCollisionTags.mjs'
-import {redactCredentials}      from './redactCredentials.mjs'
+import {createFleetCockpitEvent, createFleetCockpitEventId} from './fleetCockpitStatus.mjs';
+import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
+import {collisionPreventionTag}                             from '../shared/a2aCollisionTags.mjs'
+import {redactCredentials}                                  from './redactCredentials.mjs'
 
 /**
  * @module ai/services/fleet/fleetA2AActivityAdapter

@@ -50,3 +50,4 @@ jobs:
                   test/playwright/unit/ai/Env.spec.mjs
                   test/playwright/unit/harness/terminateDaemon.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/pipeline.spec.mjs
+                  test/playwright/unit/src/fleet/contract/fleetContract.spec.mjs

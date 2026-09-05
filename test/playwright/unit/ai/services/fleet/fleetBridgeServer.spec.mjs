@@ -22,7 +22,7 @@ import {startFleetBridgeServer} from '../../../../../../ai/services/fleet/fleetB
 import {
     createFleetWireResponse,
     FLEET_WIRE_RESPONSE_STATES
-} from '../../../../../../ai/services/fleet/fleetWireMethods.mjs';
+} from '../../../../../../src/fleet/contract/wire.mjs';
 import {generateLocalBearerToken} from '../../../../../../ai/mcp/server/shared/helpers/localBearer.mjs';
 
 /**

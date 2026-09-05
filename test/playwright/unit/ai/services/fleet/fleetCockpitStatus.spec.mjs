@@ -17,13 +17,8 @@ import {test, expect} from '@playwright/test'
 import Neo            from 'neo.mjs/src/Neo.mjs'
 import * as core      from 'neo.mjs/src/core/_export.mjs'
 
-import {
-    createFleetCockpitEvent,
-    createFleetCockpitEventId,
-    createFleetCockpitStatus,
-    FLEET_COCKPIT_EVENT_TYPES,
-    FLEET_COCKPIT_SOURCES
-} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs'
+import {createFleetCockpitEvent, createFleetCockpitEventId, createFleetCockpitStatus} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
+import {FLEET_COCKPIT_EVENT_TYPES, FLEET_COCKPIT_SOURCES}                             from '../../../../../../src/fleet/contract/cockpit.mjs';
 
 // Brain-side producer constants, imported HERE only: the module under test is a pure Body map that
 // must never import `ai/`. The spec is the one place both sides may meet — which is what lets it

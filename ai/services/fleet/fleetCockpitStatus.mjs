@@ -1,41 +1,4 @@
-const WIRE_SOURCES = Object.freeze({
-        activity   : 'fleet:activity-adapters',
-        a2a        : 'memory-core:mailbox',
-        githubPr   : 'github-workflow:pull-requests',
-        githubIssue: 'github-workflow:issues',
-        commentLane: 'github-workflow:issue-comments',
-        graphLane  : 'graph:lane-state',
-        graphStall : 'graph:work-stall',
-        repoStatus : 'fleet:fleetStatus',
-        roster     : 'fleet:listAgents',
-        runtime    : 'fleet:runtimeStatus',
-        lifecycle  : 'fleet:lifecycle',
-        wake       : 'fleet:wakeState',
-        throttle   : 'fleet:throttleState',
-        presence   : 'fleet:presenceState'
-    })
-
-export const FLEET_COCKPIT_EVENT_TYPES = Object.freeze([
-    'lifecycle-request',
-    'lifecycle-success',
-    'lifecycle-failure',
-    'bridge-unavailable',
-    'bridge-gated',
-    'a2a-activity',
-    'pr-activity',
-    'issue-activity',
-    'lane-claim',
-    'work-stall',
-    'source-degraded'
-])
-
-/**
- * @summary Source labels for the Fleet Manager cockpit DTO — the AUTHORITY. These labels are
- * deliberately stable and transport-agnostic: Agent Institution consumes the serializable contract
- * through its explicit Brain boundary and never imports this Node-side module chain.
- * @type {Object}
- */
-export const FLEET_COCKPIT_SOURCES = Object.freeze({...WIRE_SOURCES})
+import {FLEET_COCKPIT_EVENT_TYPES, FLEET_COCKPIT_SOURCES} from '../../../src/fleet/contract/cockpit.mjs';
 
 const GITHUB_AVATAR_SIZE = 80 // small cockpit-appropriate size (~2x the 40px card avatar); GitHub serves it via the `size` param
 

@@ -1,15 +1,12 @@
-import crypto                from 'crypto';
-import fs                    from 'fs';
-import path                  from 'path';
-import aiConfig              from '../../config.mjs';
-import Base                  from 'neo.mjs/src/core/Base.mjs';
-import {HARNESS_TYPES}       from './harnessTypes.mjs';
-import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
-import {
-    normalizeMcpOverrides,
-    normalizeMcpTarget,
-    supportsTenantMcpTarget
-} from './mcpServers.mjs';
+import crypto                                        from 'crypto';
+import fs                                            from 'fs';
+import path                                          from 'path';
+import aiConfig                                      from '../../config.mjs';
+import Base                                          from 'neo.mjs/src/core/Base.mjs';
+import {HARNESS_TYPES}                               from '../../../src/fleet/contract/harnessTypes.mjs';
+import {writeFileAtomicSync}                         from '../shared/atomicFileWrite.mjs';
+import {normalizeMcpOverrides}                       from '../../../src/fleet/contract/mcpServers.mjs';
+import {normalizeMcpTarget, supportsTenantMcpTarget} from './mcpServers.mjs';
 
 const
     RETIRED_TARGET_FIELD    = ['mcp', 'Transport'].join(''),
@@ -218,8 +215,8 @@ class FleetRegistryService extends Base {
 
     /**
      * Whitelist of supported harness types an agent definition may declare — derived from the ONE
-     * harness-type authority (`./harnessTypes.mjs`, app twin lint-bound): adding a harness there updates
-     * this validation set AND every Body picker/label in the same registration.
+     * client contract (`src/fleet/contract/harnessTypes.mjs`): adding a harness there updates this
+     * validation set and the catalog exposed to installed-package consumers.
      * @member {String[]} harnessTypes
      * @protected
      */
