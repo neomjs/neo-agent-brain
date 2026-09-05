@@ -54,7 +54,7 @@ test.describe('installed Fleet client contract', () => {
         expect(modules).toContain(path.join(contractRoot, 'wire.mjs'));
         expect(modules).toContain(path.join(contractRoot, 'mcpServers.mjs'));
         for (const name of ['REMOTE_MCP_CREDENTIAL_ENV_VAR', 'normalizeMcpTarget',
-            'supportsTenantMcpTarget', 'FLEET_CREDENTIAL_METHODS', 'resolveFleetBearer']) {
+            'FLEET_CREDENTIAL_METHODS', 'resolveFleetBearer']) {
             expect(contract).not.toHaveProperty(name);
         }
     });
@@ -69,6 +69,21 @@ test.describe('installed Fleet client contract', () => {
         expect(() => contract.normalizeMcpOverrides({'memory-core': 'yes'})).toThrow(/must be boolean/);
         expect(contract.normalizeMcpOverrides(contract.defaultMcpMatrix())).toBeNull();
         expect(contract.resolveMcpMatrix({'memory-core': 'yes'})['memory-core']).toBe(false);
+    });
+
+    test('public harness capabilities preserve tenant support without exposing target policy', () => {
+        const supported = ['codex', 'codex-desktop', 'claude-code', 'claude-desktop', 'opencode', 'kimi-code'];
+        for (const entry of contract.listHarnessTypes()) {
+            expect(entry.tenantMcpTarget).toBe(supported.includes(entry.type));
+            expect(contract.supportsTenantMcpTarget(entry.type)).toBe(entry.tenantMcpTarget);
+        }
+        for (const type of ['unknown', 'constructor', null, undefined]) {
+            expect(contract.supportsTenantMcpTarget(type)).toBe(false);
+        }
+        const copy = contract.resolveHarnessType('codex');
+        copy.tenantMcpTarget = false;
+        expect(contract.supportsTenantMcpTarget('codex')).toBe(true);
+        expect(contract.resolveHarnessType('codex').tenantMcpTarget).toBe(true);
     });
 
     test('preserves fail-closed negotiation and response validation', () => {
