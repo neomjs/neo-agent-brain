@@ -88,6 +88,26 @@ const
     CLAUDE_EVENT_MANIFEST = 'ai/scripts/lifecycle/hooks/claude/events.manifest.json',
     CLAUDE_SETTINGS       = '.claude/settings.json',
     /**
+     * The token a manifest command uses to name the runtime root it must resolve against, and the
+     * closed census of entrypoints that are wired into a seat but never copied into it.
+     *
+     * Every other hook resolves through `$(git rev-parse --show-toplevel)` — the TARGET root — which
+     * is right for anything that ships into the seat. It is wrong for a verifier: a checker copied
+     * into the seat is subject to the staleness it reports, and, decisively, **cannot detect its own
+     * absence**. A peer seat audited on neomjs/neo-agent-brain#317 came back with all nine hook files
+     * gone; a verifier shipped as a tenth would have been gone with them and reported nothing.
+     *
+     * So these run from the runtime root, and the placeholder exists because that path is per-host:
+     * the manifest is a committed file and cannot hard-code it. ADR 0040 §2.5 independently mandates
+     * the same direction — seat hooks resolve Brain substrate only through `agentosRuntimeRoot`.
+     *
+     * The census is closed on purpose. It is the ownership key for these entries
+     * ({@link isProjectorOwnedCommand}), and a predicate matching a directory rather than a name
+     * would claim any Agent OS script a seat's settings happened to mention.
+     */
+    RUNTIME_ROOT_TOKEN           = '<agentosRuntimeRoot>',
+    RUNTIME_RESIDENT_ENTRYPOINTS = Object.freeze(['seatProjectionCheck.mjs']),
+    /**
      * Marks a generated artifact so a reader never mistakes a projection for an authored file,
      * keyed by the comment syntax each format actually has.
      *
@@ -643,8 +663,128 @@ export function renderProjection(source, runtimeRoot, targetRepoRoot) {
  * @param {String} targetRepoRoot Absolute target repository root.
  * @returns {Boolean}
  */
+/**
+ * @summary Splits a command into shell words, honouring the quoting this projector emits.
+ *
+ * Deliberately a tokenizer and not a regex. `isProjectorOwnedCommand` has to answer *which executable
+ * does this invoke*, and that question is not answerable over raw text: a path may legally contain
+ * spaces, apostrophes and backslashes, and the binder itself single-quotes precisely so it can. A
+ * matcher that excluded those characters rejected the very commands this projector writes — measured
+ * by @neo-gpt-emmy, who reconciled twice under `/tmp/brain with space` and `/tmp/it's` and got **two**
+ * checker entries, the duplication the ownership arm exists to prevent.
+ *
+ * Scope is the POSIX subset these commands use — single quotes (literal), double quotes (backslash
+ * escapes honoured) and backslash outside quotes. Expansion is explicitly NOT modelled: this reads
+ * the command's shape, never its meaning, so a `$(…)` stays an opaque character run.
+ * @param {String} command Command string from a settings hook entry.
+ * @returns {String[]} Shell words.
+ * @protected
+ */
+export function shellWords(command) {
+    const words = [];
+
+    let word = '', quote = null, started = false;
+
+    for (let i = 0; i < command.length; i++) {
+        const char = command[i];
+
+        if (quote === "'") {
+            char === "'" ? quote = null : word += char;
+            continue
+        }
+
+        if (quote === '"') {
+            if (char === '\\' && i + 1 < command.length) { word += command[++i]; continue }
+            char === '"' ? quote = null : word += char;
+            continue
+        }
+
+        if (char === "'" || char === '"') { quote = char; started = true; continue }
+        if (char === '\\' && i + 1 < command.length) { word += command[++i]; started = true; continue }
+
+        if (/\s/.test(char)) {
+            (word || started) && words.push(word);
+            word = ''; started = false;
+            continue
+        }
+
+        word += char; started = true
+    }
+
+    (word || started) && words.push(word);
+
+    return words
+}
+
+/**
+ * @summary The path a command actually invokes, or `null` when no interpreter is recognised.
+ *
+ * Skips an `env` prefix and leading interpreter flags. Returning the executable rather than testing
+ * for a substring is the whole point: a command may *name* a path in an argument without invoking it.
+ *
+ * **Any interpreter flag makes this decline.** An earlier version skipped leading flags and read the
+ * next word, with a JSDoc claiming the miss failed safe. @neo-gpt-emmy falsified that claim by
+ * execution:
+ *
+ *     node -r "…/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs" "/opt/company/audit.mjs"
+ *
+ * A value-taking flag puts *its value* in executable position, so the operator's `audit.mjs` was
+ * classified as ours and deleted — the failure ran in the **unsafe** direction, precisely opposite
+ * to what the comment asserted.
+ *
+ * The repair is to decline rather than to model node's flag arity, which is a moving target this
+ * projector has no business tracking, and getting it wrong deletes somebody else's hook. Declining
+ * costs only what the safe direction always costs: an unrecognised entry of ours survives as a
+ * visible duplicate, while a foreign entry is never silently destroyed. The projector emits
+ * `/usr/bin/env node '<path>'` and never flags, so nothing we generate reaches this bound.
+ * @param {String} command Command string from a settings hook entry.
+ * @returns {String|null}
+ * @protected
+ */
+export function invokedScript(command) {
+    const words = shellWords(command);
+
+    let index = 0;
+
+    if (path.posix.basename(words[index] || '') === 'env') index++;
+
+    if (path.posix.basename(words[index] || '') !== 'node') return null;
+
+    index++;
+
+    // Not `skip the flags` — a value-taking flag would hand us its VALUE as the executable.
+    if ((words[index] || '').startsWith('-')) return null;
+
+    return words[index] ?? null
+}
+
 export function isProjectorOwnedCommand(command, targetRepoRoot) {
     const dirs = Object.values(HARNESS_TARGETS);
+
+    // The second ownership arm, for the opposite custody: a runtime-resident entrypoint is wired by
+    // the projector and deliberately NEVER projected, so it lives in no target directory and the
+    // path test below can never see it.
+    //
+    // **It matches the EXECUTABLE, not the text.** A basename substring is not an ownership test —
+    // @neo-gpt-emmy executed this operator entry against the first version and it was classified as
+    // ours and retired:
+    //
+    //     node "/opt/company/audit.mjs" --watch seatProjectionCheck.mjs
+    //
+    // That command invokes *her* script and merely names ours as an argument. Deleting a foreign
+    // hook is the same custody violation the tracked test below exists to prevent for the Engine's
+    // `rgReplaceGuardHook`, and it is worse here because nothing in the target marks the entry as
+    // somebody else's. So the name must appear beneath our own source directory AND in executable
+    // position — the first path after the interpreter — which is checkable without parsing a command
+    // grammar we do not own.
+    //
+    // Erring toward NOT claiming is deliberate: an unrecognized entry of ours survives as a visible
+    // duplicate, while a wrongly-claimed entry of somebody else's is silently destroyed.
+    const invoked = invokedScript(command);
+
+    if (invoked && RUNTIME_RESIDENT_ENTRYPOINTS.some(name => invoked.endsWith(`${HOOK_SOURCE_DIR}/${name}`))) {
+        return true
+    }
 
     return dirs.some(dir => {
         // A command embeds its target as a path fragment (`…/.claude/hooks/x.mjs"` possibly followed
@@ -658,6 +798,51 @@ export function isProjectorOwnedCommand(command, targetRepoRoot) {
 
         return !tracked(targetRepoRoot, path.posix.join(dir, match[1]))
     })
+}
+
+/**
+ * @summary Resolves {@link RUNTIME_ROOT_TOKEN} in every manifest command against the runtime root.
+ *
+ * Pure and total: a manifest with no token comes back structurally identical, so a deployment that
+ * wires only projected hooks pays nothing and reads unchanged.
+ *
+ * Substitution is textual and confined to `command` strings, which is deliberate. The command
+ * grammar belongs to the harness, not to us — {@link isProjectorOwnedCommand} already declines to
+ * parse it for the same reason — so this replaces a token it finds rather than composing a command
+ * it believes in.
+ * @param {Object} manifest Parsed event manifest.
+ * @param {String} agentosRuntimeRoot Absolute Agent OS runtime root.
+ * @returns {Object} Manifest with runtime-root-bound commands.
+ * @protected
+ */
+export function bindRuntimeRoot(manifest, agentosRuntimeRoot) {
+    const events = manifest?.events;
+
+    if (!events) return manifest;
+
+    // The substituted root is SHELL DATA, not shell source. The harness runs these commands through a
+    // shell, and double quotes do not make an interpolated path literal — @neo-gpt-emmy bound the real
+    // manifest with a runtime root of `/tmp/neo$(printf PROBE)` and the probe received
+    // `/tmp/neoPROBE/...`, i.e. the declared executable was not the executed one. The manifest
+    // therefore single-quotes the token, and any `'` inside the root closes and reopens that quoting
+    // so the value cannot escape it. Nothing here is a guess about the path's contents: a runtime root
+    // is an operator-supplied absolute path and may legitimately contain characters a shell reads.
+    const quoted = String(agentosRuntimeRoot).split("'").join(`'\\''`);
+
+    return {
+        ...manifest,
+        events: Object.fromEntries(Object.entries(events).map(([event, buckets]) => [
+            event,
+            (buckets || []).map(bucket => ({
+                ...bucket,
+                hooks: (bucket.hooks || []).map(entry => (
+                    typeof entry?.command === 'string' && entry.command.includes(RUNTIME_ROOT_TOKEN)
+                        ? {...entry, command: entry.command.split(RUNTIME_ROOT_TOKEN).join(quoted)}
+                        : entry
+                ))
+            }))
+        ]))
+    }
 }
 
 /**
@@ -775,7 +960,11 @@ export function reconcileClaudeSettings({agentosRuntimeRoot, targetRepoRoot, wri
     }
 
     const
-        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')),
+        // Bound here rather than inside the decision core, because this is the only layer that knows
+        // the runtime root. A committed manifest cannot hard-code a per-host absolute path, and the
+        // alternative — an env var read at hook time — was measured unset on a live seat, which
+        // would have produced a command that resolves to nothing and fails open in silence.
+        manifest = bindRuntimeRoot(JSON.parse(fs.readFileSync(manifestPath, 'utf8')), agentosRuntimeRoot),
         // The impure half lives here, in the function that already owns a filesystem and a target
         // repository. The decision core receives a yes/no and stays ignorant of both.
         isOwned  = command => isProjectorOwnedCommand(command, targetRepoRoot),
