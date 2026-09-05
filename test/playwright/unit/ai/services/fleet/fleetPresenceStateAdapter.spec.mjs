@@ -18,9 +18,11 @@ import Neo            from 'neo.mjs/src/Neo.mjs'
 import * as core      from 'neo.mjs/src/core/_export.mjs'
 
 import {
+    beaconFacetAtBound,
     beaconFreshAtBound,
     gradePresenceBand,
     PRESENCE_BANDS,
+    PRESENCE_BEACON_FACETS,
     PRESENCE_CAPABILITY_REASON_CODES,
     PRESENCE_SOURCE_LABEL,
     PRESENCE_STATES,
@@ -160,6 +162,8 @@ test.describe('fleetPresenceStateAdapter — healthy report (band join)', () => 
         expect(states[0]).toEqual({
             agentId   : 'neo-fable-clio',
             presence  : 'fresh',
+            // the row carried no turnPresence: the grade folds that in, the facet keeps it
+            beacon    : 'absent',
             lastSeenAt: '2026-08-09T11:00:00.000Z',
             confidence: 'observed',
             source    : PRESENCE_SOURCE_LABEL
@@ -194,6 +198,7 @@ test.describe('fleetPresenceStateAdapter — healthy report (band join)', () => 
         expect(states[1]).toEqual({
             agentId   : 'neo-gpt',
             presence  : 'recent',
+            beacon    : 'absent',
             lastSeenAt: null,
             confidence: 'observed',
             source    : PRESENCE_SOURCE_LABEL
@@ -406,5 +411,79 @@ test.describe('fleetPresenceStateAdapter — beacon horizons (the vouched-bound 
 
         expect(expired.states[0].presence).toBe('fresh')
         expect(expired.capability.capturedAt).toBe('2026-08-11T01:30:00.000Z')
+    })
+})
+
+test.describe('fleetPresenceStateAdapter — the beacon facet (#318)', () => {
+    const boundAt = '2026-08-11T00:15:00.000Z'
+
+    test('beaconFacetAtBound is pure and total: absent without an observation, fresh exactly when the grade says fresh, stale otherwise — the expired veto included', () => {
+        const bound = Date.parse(boundAt)
+
+        expect(beaconFacetAtBound({})).toBe('absent')
+        expect(beaconFacetAtBound({turnPresence: null, boundAt: bound})).toBe('absent')
+        expect(beaconFacetAtBound({turnPresence: 'not-an-object', boundAt: bound})).toBe('absent')
+        expect(beaconFacetAtBound({turnPresence: {fresh: true,  freshUntil: '2026-08-11T00:30:00.000Z'}, boundAt: bound})).toBe('fresh')
+        expect(beaconFacetAtBound({turnPresence: {fresh: true,  freshUntil: '2026-08-10T23:59:00.000Z'}, boundAt: bound})).toBe('stale')
+        expect(beaconFacetAtBound({turnPresence: {fresh: true,  freshUntil: '2026-08-11T00:30:00.000Z', expiresAt: '2026-08-11T00:00:00.000Z'}, boundAt: bound})).toBe('stale')
+        expect(beaconFacetAtBound({turnPresence: {fresh: false}, boundAt: bound})).toBe('stale')
+        expect(beaconFacetAtBound({turnPresence: {fresh: true},  boundAt: bound})).toBe('fresh')
+
+        // the facet and the grade's boolean are ONE decision: every shape agrees
+        for (const turnPresence of [null, {fresh: true}, {fresh: false}, {fresh: true, freshUntil: '2026-08-10T00:00:00.000Z'}, {fresh: true, expiresAt: '2026-08-10T00:00:00.000Z'}, {fresh: true, freshUntil: 'not-a-date'}]) {
+            const facet = beaconFacetAtBound({turnPresence, boundAt: bound})
+
+            expect(PRESENCE_BEACON_FACETS).toContain(facet)
+            expect(facet === 'fresh').toBe(beaconFreshAtBound({turnPresence, boundAt: bound}))
+        }
+    })
+
+    test('absent versus stale: two seats the band cannot tell apart — online with no beacon, online with a beacon past its horizon — carry different facets, and the bands stay what they were', async () => {
+        const {states} = await readFleetPresenceSnapshot({
+            agents      : [{id: 'no-hooks', githubUsername: 'no-hooks'}, {id: 'turn-over', githubUsername: 'turn-over'}, {id: 'mid-turn', githubUsername: 'mid-turn'}],
+            readPresence: () => ({agents: [
+                {identity: '@no-hooks',  state: 'online', signals: {activityRecency: {lastActivityAt: '2026-08-11T00:10:00.000Z'}}},
+                {identity: '@turn-over', state: 'online', signals: {turnPresence: {fresh: true, freshUntil: '2026-08-10T23:59:00.000Z'}}},
+                {identity: '@mid-turn',  state: 'online', signals: {turnPresence: {fresh: true, freshUntil: '2026-08-11T00:30:00.000Z'}}}
+            ]}),
+            capturedAt: boundAt
+        })
+
+        expect(states.map(row => [row.agentId, row.presence, row.beacon])).toEqual([
+            ['no-hooks',  'fresh',       'absent'],
+            ['turn-over', 'fresh',       'stale'],
+            ['mid-turn',  'active-turn', 'fresh']
+        ])
+    })
+
+    test('unobserved is the read-level fact: a failed read, no reader, and a seat the answered report carries no row for — never inferred from the band, never confused with absent', async () => {
+        const throwing = await readFleetPresenceSnapshot({agents, readPresence: () => { throw new Error('plane down') }})
+
+        expect(throwing.states.map(row => row.beacon)).toEqual(['unobserved', 'unobserved'])
+        expect(throwing.states.map(row => row.presence)).toEqual(['unknown', 'unknown'])
+
+        const noReader = await readFleetPresenceSnapshot({agents})
+
+        expect(noReader.states.map(row => row.beacon)).toEqual(['unobserved', 'unobserved'])
+
+        const {states} = await readFleetPresenceSnapshot({
+            agents      : [...agents, {id: 'neo-kimi-iris', githubUsername: 'neo-kimi-iris'}],
+            readPresence: () => healthyPayload
+        })
+
+        expect(states.find(row => row.agentId === 'neo-kimi-iris').beacon).toBe('unobserved')
+        expect(states.find(row => row.agentId === 'neo-fable-clio').beacon, 'a reported row with no turnPresence is absent, never unobserved').toBe('absent')
+        states.forEach(row => expect(PRESENCE_BEACON_FACETS).toContain(row.beacon))
+    })
+
+    test('the facet moves with the bound exactly as the grade does — one payload, three bounds', async () => {
+        const
+            roster  = [{id: 'seat', githubUsername: 'seat'}],
+            payload = {agents: [{identity: '@seat', state: 'online', signals: {turnPresence: {fresh: true, freshUntil: '2026-08-11T00:30:00.000Z', expiresAt: '2026-08-11T01:00:00.000Z'}}}]},
+            at      = capturedAt => readFleetPresenceSnapshot({agents: roster, readPresence: () => payload, capturedAt}).then(({states}) => [states[0].presence, states[0].beacon])
+
+        expect(await at('2026-08-11T00:15:00.000Z')).toEqual(['active-turn', 'fresh'])
+        expect(await at('2026-08-11T00:45:00.000Z')).toEqual(['fresh', 'stale'])
+        expect(await at('2026-08-11T01:30:00.000Z')).toEqual(['fresh', 'stale'])
     })
 })

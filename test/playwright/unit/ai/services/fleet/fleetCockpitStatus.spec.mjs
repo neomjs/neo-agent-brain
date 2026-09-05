@@ -389,6 +389,25 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.capabilities.presence).toMatchObject({state: 'wired'})
     })
 
+    test('the beacon facet rides the presence axis untouched when it is one of the closed facets; an older producer without it leaves the row without it; an out-of-set word is dropped, never admitted (#318)', () => {
+        const row = beacon => ({agentId: 'clio', presence: 'fresh', lastSeenAt: null, confidence: 'observed', source: FLEET_COCKPIT_SOURCES.presence, ...(beacon !== undefined && {beacon})})
+        const presenceOf = beacon => createFleetCockpitStatus({
+            agents        : [{id: 'clio', githubUsername: 'neo-fable-clio'}],
+            presenceStatus: [row(beacon)],
+            capabilities  : {presence: {source: FLEET_COCKPIT_SOURCES.presence, state: 'wired', confidence: 'observed'}}
+        }).rows[0].presence
+
+        for (const facet of ['fresh', 'stale', 'absent', 'unobserved']) {
+            expect(presenceOf(facet)).toEqual({source: FLEET_COCKPIT_SOURCES.presence, state: 'fresh', confidence: 'observed', lastSeenAt: null, beacon: facet})
+        }
+
+        // an older Brain sends no facet: the row carries none — the consumer keeps its fallback
+        expect(presenceOf(undefined)).not.toHaveProperty('beacon')
+        // an open enum never leaks to every consumer
+        expect(presenceOf('glowing')).not.toHaveProperty('beacon')
+        expect(presenceOf(null)).not.toHaveProperty('beacon')
+    })
+
     test('a degraded presence capability carries its typed reasonCode to the DTO intact — supplied object wins whole', () => {
         const snapshot = createFleetCockpitStatus({
             agents      : [{id: 'clio', githubUsername: 'neo-fable-clio'}],
