@@ -350,6 +350,64 @@ test.describe('fleetTasksSource — the heavy-maintenance queue (#322)', () => {
         })
     });
 
+    test('the backup lane is visible without an instant: a never-anchored lane and an unreachable receipt keep their state and reasons under the queue with a null instant — no next attempt or completion is invented', () => {
+        const unanchored = starvedPlane();
+
+        // the writer's shape for a lane that never succeeded: no retry window open, no success to anchor to
+        unanchored.snapshot.maintenance = {
+            retry : {interruptedAt: null, lastSuccessAgeMs: null, lastSuccessAt: null, nextAttemptAtMs: null, retriesRemaining: null, streakStartedAtMs: null, windowEndsAtMs: null, phase: 'unanchored'},
+            health: {observationStatus: 'observed', reasonCodes: ['backup-never-succeeded'], staleAfterMs: 90000000, status: 'pending'}
+        };
+
+        expect(byId(extractDeploymentRows(unanchored).rows)['orchestrator:maintenance:backup']).toEqual({
+            id: 'orchestrator:maintenance:backup', section: 'queued', name: 'Backup lane', source: 'orchestrator',
+            state: 'unanchored', at: null, progress: null, detail: 'backup never succeeded'
+        });
+
+        // the observer could not reach the receipt: the writer's own shape carries no instant at all
+        const unreachable = starvedPlane();
+
+        unreachable.snapshot.maintenance = {
+            lastBackup: {finishedAt: null, kind: 'enoent', status: 'unreachable'},
+            health    : {observationStatus: 'partial', reasonCodes: ['backup-receipt-unreachable'], staleAfterMs: null, status: 'degraded'}
+        };
+
+        expect(byId(extractDeploymentRows(unreachable).rows)['orchestrator:maintenance:backup']).toEqual({
+            id: 'orchestrator:maintenance:backup', section: 'queued', name: 'Backup lane', source: 'orchestrator',
+            state: 'degraded', at: null, progress: null, detail: 'backup receipt unreachable'
+        });
+
+        // a receipt alone, with neither a phase nor a verdict: the receipt's own word is the state
+        const receiptOnly = starvedPlane();
+
+        receiptOnly.snapshot.maintenance = {lastBackup: {finishedAt: null, kind: 'eacces', status: 'unreachable'}};
+
+        expect(byId(extractDeploymentRows(receiptOnly).rows)['orchestrator:maintenance:backup']).toMatchObject({section: 'queued', state: 'unreachable', at: null, detail: null})
+    });
+
+    test('controls: absent maintenance → no backup row; a dated success with nothing scheduled → ONE recent row at the bundle\'s instant', () => {
+        const absent = starvedPlane();
+
+        delete absent.snapshot.maintenance;
+        expect(byId(extractDeploymentRows(absent).rows)['orchestrator:maintenance:backup']).toBeUndefined();
+
+        const healthy = starvedPlane();
+
+        healthy.snapshot.maintenance = {
+            retry     : {interruptedAt: null, lastSuccessAgeMs: 3600000, lastSuccessAt: '2026-09-05T11:49:36.362Z', nextAttemptAtMs: null, retriesRemaining: null, streakStartedAtMs: null, windowEndsAtMs: null, phase: 'healthy'},
+            lastBackup: {backup: {durationMs: 149102, error: null, status: 'success'}, bundleCompletedAt: '2026-09-05T11:49:36.100Z', bundleName: 'backup-2026-09-05T11-47-07.000Z', finishedAt: '2026-09-05T11:49:36.362Z', schemaVersion: 1},
+            health    : {observationStatus: 'observed', reasonCodes: [], staleAfterMs: 90000000, status: 'healthy'}
+        };
+
+        const {rows} = extractDeploymentRows(healthy);
+
+        expect(rows.filter(row => row.id === 'orchestrator:maintenance:backup')).toHaveLength(1);
+        expect(byId(rows)['orchestrator:maintenance:backup']).toEqual({
+            id: 'orchestrator:maintenance:backup', section: 'recent', name: 'Backup lane', source: 'orchestrator',
+            state: 'healthy', at: '2026-09-05T11:49:36.362Z', progress: null, detail: null
+        })
+    });
+
     test('no path, prose, bundle name, residue figure or tenant identifier crosses the wire', () => {
         const text = JSON.stringify(extractDeploymentRows(starvedPlane()));
 
@@ -632,6 +690,28 @@ test.describe('fleetTasksSource — createFleetTasksSource', () => {
         expect(envelope.queued.at(-1).id).toBe('orchestrator:starvation:starved-11');
         expect(envelope.scheduler.starvedTotal, 'the summary counts before the cap').toBe(15);
         expect(envelope.queued.every(row => ['orchestrator', 'mc', 'kb'].includes(row.source))).toBe(true)
+    });
+
+    test('blocked-first is display priority, never chronology: one waiter deferred AFTER twelve older due repos still leads the queue and survives the cap', async () => {
+        const payload = starvedPlane();
+
+        // twelve ordinary rows, every one of them due BEFORE the waiter's own instant
+        payload.snapshot.tenantRepoSync = {repos: Array.from({length: 12}, (_, index) => ({
+            identityHash: `${String(index).padStart(2, '0')}cafe0000ab`, disabled: false, due: true, nextDueAt: '2026-09-05T09:00:00.000Z'
+        }))};
+        payload.snapshot.heavyMaintenanceStarvation.breaches = [
+            {taskName: 'dream', priorityZero: false, bootstrapCritical: false, deferredSince: '2026-09-05T10:00:00.000Z', starvedForMs: 7200000, leaseHolder: 'summary'}
+        ];
+        delete payload.snapshot.maintenance;
+
+        const {source} = harness({deployment: () => payload}),
+              envelope = await source.readTasks();
+
+        // twelve repos + the waiter + the REM backlog = 14 known, 12 shown — the waiter is never the one cut
+        expect(envelope.counts).toEqual({running: 0, queued: 12, recent: 0, queuedKnown: 14});
+        expect(envelope.scheduler.starvedTotal).toBe(1);
+        expect(envelope.queued[0].id, 'the blocked row leads although every repo row is older').toBe('orchestrator:starvation:dream');
+        expect(envelope.queued.slice(1).every(row => row.state === 'due'), 'the ordinary rows follow, soonest first').toBe(true)
     });
 
     test('an ingress that bound no canonical viewer is refused, never defaulted', async () => {

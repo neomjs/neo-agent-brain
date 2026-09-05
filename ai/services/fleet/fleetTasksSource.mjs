@@ -243,13 +243,18 @@ export function extractDeploymentRows(payload) {
         }))
     }
 
-    // the backup lane is ONE row: the writer's phase word, its instant the next attempt (queued)
-    // or, with nothing scheduled, the last bundle (recent); the health verdict's reason codes are
-    // its words — never the durability prose, the bundle name or the staging residue
-    if (retry || health) {
+    // the backup lane is ONE row whenever the plane observed it (a retry state, a health verdict
+    // or a receipt): the writer's phase word, its instant the next attempt (queued) or, with
+    // nothing scheduled, the last bundle (recent). A lane carrying neither instant — never
+    // anchored, or a receipt the observer could not reach — stays visible under the queue with a
+    // null instant: its state and its reason codes are the facts, no attempt or completion is
+    // invented. The health verdict's reason codes are its words — never the durability prose,
+    // the bundle name or the staging residue
+    if (retry || health || lastBackup) {
         const
             nextAttempt      = toIso(retry?.nextAttemptAtMs),
             finishedAt       = toIso(lastBackup?.finishedAt),
+            receipt          = toWord(lastBackup?.status) ?? toWord(lastBackup?.backup?.status),
             remainingRetries = toCount(retry?.retriesRemaining),
             codes            = Array.isArray(health?.reasonCodes) ? health.reasonCodes.filter(code => typeof code === 'string' && code) : [],
             detailBits       = [
@@ -257,17 +262,15 @@ export function extractDeploymentRows(payload) {
                 remainingRetries !== null ? `${remainingRetries} retries remaining` : null
             ].filter(Boolean);
 
-        if (nextAttempt || finishedAt) {
-            rows.push(makeRow({
-                id     : 'orchestrator:maintenance:backup',
-                section: nextAttempt ? 'queued' : 'recent',
-                name   : 'Backup lane',
-                source : 'orchestrator',
-                state  : toWord(retry?.phase) ?? toWord(health?.status) ?? 'scheduled',
-                at     : nextAttempt ?? finishedAt,
-                detail : detailBits.length > 0 ? detailBits.join(' · ') : null
-            }))
-        }
+        rows.push(makeRow({
+            id     : 'orchestrator:maintenance:backup',
+            section: !nextAttempt && finishedAt ? 'recent' : 'queued',
+            name   : 'Backup lane',
+            source : 'orchestrator',
+            state  : toWord(retry?.phase) ?? toWord(health?.status) ?? receipt ?? 'observed',
+            at     : nextAttempt ?? finishedAt ?? null,
+            detail : detailBits.length > 0 ? detailBits.join(' · ') : null
+        }))
     }
 
     for (const entry of recoveries) {
@@ -473,9 +476,10 @@ export function extractIngestionRows(progress) {
 
 /**
  * @summary Order one section and cap it: running and recent newest-first, queued soonest-first;
- * rows without an instant sink to the end of their section, equal instants order by name. A
- * starved row's instant is its `deferredSince`, so the queue leads with the longest wait — display
- * order, never the scheduler's own.
+ * rows without an instant sink to the end of their section, equal instants order by name. The
+ * queue leads with operationally blocked work BEFORE any chronology: a starved row ranks first,
+ * longest wait first (`waitMs`, then name), so the cap can never cut a waiter in favor of older
+ * ordinary rows — display order, never the scheduler's own.
  * @param {Object[]} rows
  * @param {'running'|'queued'|'recent'} section
  * @returns {Object[]}
@@ -487,6 +491,12 @@ function orderSection(rows, section) {
     return rows
         .filter(row => row.section === section)
         .sort((a, b) => {
+            const aBlocked = a.state === 'starved',
+                  bBlocked = b.state === 'starved';
+
+            if (aBlocked !== bBlocked) return aBlocked ? -1 : 1;
+            if (aBlocked) return ((b.waitMs ?? -1) - (a.waitMs ?? -1)) || a.name.localeCompare(b.name);
+
             const am = toMsOrNull(a.at),
                   bm = toMsOrNull(b.at);
 
