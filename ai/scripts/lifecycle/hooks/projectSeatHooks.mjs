@@ -663,6 +663,92 @@ export function renderProjection(source, runtimeRoot, targetRepoRoot) {
  * @param {String} targetRepoRoot Absolute target repository root.
  * @returns {Boolean}
  */
+/**
+ * @summary Splits a command into shell words, honouring the quoting this projector emits.
+ *
+ * Deliberately a tokenizer and not a regex. `isProjectorOwnedCommand` has to answer *which executable
+ * does this invoke*, and that question is not answerable over raw text: a path may legally contain
+ * spaces, apostrophes and backslashes, and the binder itself single-quotes precisely so it can. A
+ * matcher that excluded those characters rejected the very commands this projector writes — measured
+ * by @neo-gpt-emmy, who reconciled twice under `/tmp/brain with space` and `/tmp/it's` and got **two**
+ * checker entries, the duplication the ownership arm exists to prevent.
+ *
+ * Scope is the POSIX subset these commands use — single quotes (literal), double quotes (backslash
+ * escapes honoured) and backslash outside quotes. Expansion is explicitly NOT modelled: this reads
+ * the command's shape, never its meaning, so a `$(…)` stays an opaque character run.
+ * @param {String} command Command string from a settings hook entry.
+ * @returns {String[]} Shell words.
+ * @protected
+ */
+export function shellWords(command) {
+    const words = [];
+
+    let word = '', quote = null, started = false;
+
+    for (let i = 0; i < command.length; i++) {
+        const char = command[i];
+
+        if (quote === "'") {
+            char === "'" ? quote = null : word += char;
+            continue
+        }
+
+        if (quote === '"') {
+            if (char === '\\' && i + 1 < command.length) { word += command[++i]; continue }
+            char === '"' ? quote = null : word += char;
+            continue
+        }
+
+        if (char === "'" || char === '"') { quote = char; started = true; continue }
+        if (char === '\\' && i + 1 < command.length) { word += command[++i]; started = true; continue }
+
+        if (/\s/.test(char)) {
+            (word || started) && words.push(word);
+            word = ''; started = false;
+            continue
+        }
+
+        word += char; started = true
+    }
+
+    (word || started) && words.push(word);
+
+    return words
+}
+
+/**
+ * @summary The path a command actually invokes, or `null` when no interpreter is recognised.
+ *
+ * Skips an `env` prefix and leading interpreter flags. Returning the executable rather than testing
+ * for a substring is the whole point: a command may *name* a path in an argument without invoking it.
+ *
+ * **Bounded, and the bound is chosen rather than overlooked.** Value-taking interpreter flags are not
+ * modelled — `node -r hook script.mjs` resolves to `hook`, not `script.mjs` — because modelling
+ * node's flag arity is a moving target this projector has no business tracking. The projector emits
+ * `/usr/bin/env node '<path>'` and never flags, so the miss requires a hand-edited entry, and it
+ * fails in the **safe** direction: an unrecognised entry of ours survives as a visible duplicate,
+ * whereas a wrongly-claimed foreign entry is silently destroyed. That asymmetry is the whole reason
+ * this predicate is conservative, and it is why the miss is documented instead of guessed around.
+ * @param {String} command Command string from a settings hook entry.
+ * @returns {String|null}
+ * @protected
+ */
+export function invokedScript(command) {
+    const words = shellWords(command);
+
+    let index = 0;
+
+    if (path.posix.basename(words[index] || '') === 'env') index++;
+
+    if (path.posix.basename(words[index] || '') !== 'node') return null;
+
+    index++;
+
+    while (index < words.length && words[index].startsWith('-')) index++;
+
+    return words[index] ?? null
+}
+
 export function isProjectorOwnedCommand(command, targetRepoRoot) {
     const dirs = Object.values(HARNESS_TARGETS);
 
@@ -685,11 +771,11 @@ export function isProjectorOwnedCommand(command, targetRepoRoot) {
     //
     // Erring toward NOT claiming is deliberate: an unrecognized entry of ours survives as a visible
     // duplicate, while a wrongly-claimed entry of somebody else's is silently destroyed.
-    if (RUNTIME_RESIDENT_ENTRYPOINTS.some(name => {
-        const escaped = `${HOOK_SOURCE_DIR}/${name}`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const invoked = invokedScript(command);
 
-        return new RegExp(`(?:^|\\s)node\\s+(?:-[^\\s]+\\s+)*["']?/[^"'\\s]*${escaped}(?=["'\\s]|$)`).test(command)
-    })) return true;
+    if (invoked && RUNTIME_RESIDENT_ENTRYPOINTS.some(name => invoked.endsWith(`${HOOK_SOURCE_DIR}/${name}`))) {
+        return true
+    }
 
     return dirs.some(dir => {
         // A command embeds its target as a path fragment (`…/.claude/hooks/x.mjs"` possibly followed

@@ -22,7 +22,9 @@ import os                from 'node:os';
 import path              from 'node:path';
 import {
     bindRuntimeRoot,
-    isProjectorOwnedCommand
+    invokedScript,
+    isProjectorOwnedCommand,
+    reconcileClaudeEvents
 } from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
 import {
     formatReport,
@@ -153,6 +155,60 @@ test.describe('seatProjectionCheck — ownership, the idempotence key', () => {
         expect(isProjectorOwnedCommand(
             `/usr/bin/env node '/opt/brain/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs'`, target
         )).toBe(true);
+    });
+
+    test('RA-1: ownership survives a runtime root containing spaces, quotes and backslashes', () => {
+        const target = scratchRepo(),
+              tpl    = {events: {SessionStart: [{hooks: [{
+                  type   : 'command',
+                  command: `/usr/bin/env node '<agentosRuntimeRoot>/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs'`
+              }]}]}};
+
+        // @neo-gpt-emmy reconciled twice under these roots against the first fix and got TWO checker
+        // entries. The matcher excluded spaces and quotes from the path while the binder — changed in
+        // the same commit — single-quoted precisely so the path could contain them. Two halves of one
+        // change disagreeing: the projector emitted commands its own predicate could not recognise.
+        ['/opt/brain', '/tmp/brain with space', `/tmp/it's`, '/tmp/back\\slash', '/tmp/neo$(printf X)'].forEach(root => {
+            const command = bindRuntimeRoot(tpl, root).events.SessionStart[0].hooks[0].command;
+
+            expect(isProjectorOwnedCommand(command, target), `unowned under root ${root}`).toBe(true)
+        })
+    });
+
+    test('RA-1: two reconciliations leave one entry under a hostile root, operator entry intact', () => {
+        const target   = scratchRepo(),
+              operator = 'node "/opt/company/audit.mjs" --watch seatProjectionCheck.mjs',
+              tpl      = {events: {SessionStart: [{hooks: [{
+                  type   : 'command',
+                  command: `/usr/bin/env node '<agentosRuntimeRoot>/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs'`
+              }]}]}};
+
+        // Both properties in one arm on purpose. Tightening ownership to protect the operator entry
+        // is what broke idempotence the first time; asserting them separately would let the next
+        // change trade one for the other again without a red.
+        [`/tmp/it's`, '/tmp/brain with space'].forEach(root => {
+            const manifest = bindRuntimeRoot(tpl, root),
+                  isOwned  = command => isProjectorOwnedCommand(command, target);
+
+            let settings = {hooks: {SessionStart: [{hooks: [{type: 'command', command: operator, timeout: 5}]}]}};
+
+            settings = reconcileClaudeEvents({isOwned, manifest, settings}).settings;
+            settings = reconcileClaudeEvents({isOwned, manifest, settings}).settings;
+
+            const commands = settings.hooks.SessionStart.flatMap(bucket => bucket.hooks).map(entry => entry.command);
+
+            expect(commands.filter(command => invokedScript(command)?.endsWith('seatProjectionCheck.mjs')).length,
+                `duplicate under root ${root}`).toBe(1);
+            expect(commands.some(command => command.includes('audit.mjs')), `operator lost under root ${root}`).toBe(true)
+        })
+    });
+
+    test('invokedScript reads the executable, not the first path it finds', () => {
+        expect(invokedScript(`/usr/bin/env node '/a b/x.mjs'`)).toBe('/a b/x.mjs');
+        expect(invokedScript('node "/opt/company/audit.mjs" --watch seatProjectionCheck.mjs')).toBe('/opt/company/audit.mjs');
+        expect(invokedScript('node /opt/x.mjs --config /opt/brain/ai/x.mjs')).toBe('/opt/x.mjs');
+        // Not an interpreter we recognise ⇒ no claim, rather than a guess.
+        expect(invokedScript('/bin/sh -c "something"')).toBe(null)
     });
 
     test('an unrelated runtime-root script is NOT claimed', () => {
