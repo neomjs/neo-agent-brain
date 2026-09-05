@@ -5,23 +5,6 @@
  */
 
 /**
- * Harness families whose installed configuration grammar can represent remote HTTP MCP servers.
- * For Fleet-owned local/private endpoints, Claude Desktop uses Neo's local stdio↔Streamable-HTTP
- * bridge rather than a direct HTTP entry; account-level public connectors are outside this generated
- * artifact. Antigravity and Native stay local: presenting a tenant choice for a harness whose
- * artifact cannot encode it would turn a product selection into a late boot failure.
- * @type {ReadonlyArray<String>}
- */
-export const TENANT_MCP_HARNESS_TYPES = Object.freeze([
-    'codex',
-    'codex-desktop',
-    'claude-code',
-    'claude-desktop',
-    'opencode',
-    'kimi-code'
-]);
-
-/**
  * The fixed child-environment slot every remote MC/KB adapter references. Repository credentials
  * occupy a different authority and may never be substituted here.
  * @type {String}
@@ -69,13 +52,4 @@ export function normalizeMcpTarget(target) {
     }
 
     return {kind: 'tenant', tenantId: target.tenantId.trim()}
-}
-
-/**
- * @summary Whether a registered harness family can consume a connected tenant MCP target.
- * @param {String} harnessType
- * @returns {Boolean}
- */
-export function supportsTenantMcpTarget(harnessType) {
-    return TENANT_MCP_HARNESS_TYPES.includes(harnessType)
 }

@@ -205,6 +205,8 @@ loads no Node builtin, Neo class, service, credential policy, or configuration. 
 credential/target handling remain server-owned; clients must still use the authenticated Fleet wire.
 Trusted launchers read `FLEET_CREDENTIAL_METHODS` from the private
 `ai/services/fleet/fleetLaunchContract.mjs` runtime contract; it is not a browser export.
+Harness records expose `tenantMcpTarget`, queried by `supportsTenantMcpTarget(type)`,
+to describe configuration support. This grants no tenant access and performs no target validation.
 
 ## Operating modes
 
