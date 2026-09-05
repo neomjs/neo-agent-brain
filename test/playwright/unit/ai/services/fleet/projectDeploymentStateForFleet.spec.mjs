@@ -58,11 +58,21 @@ const leakingSnapshot = () => ({
     recoveryRuns     : [{id: 'run-1'}],
     selfHeal         : {events: []},
     tenantRepoSync   : {repos: [{path: '/Users/operator/repos/private'}]},
+    // the writer's maintenance shape (`collectMaintenanceSnapshot`): the retry phase and its success
+    // anchor on `retry`, the verdict and reason codes on `health`, the receipt on `lastBackup`
     maintenance      : {
-        stagingResidue: {bytes: 0},
-        retry         : {attempts: 1},
-        lastBackup    : {finishedAt: 1699990000000, kind: 'full', status: 'ok', archivePath: '/Users/operator/.neo-ai/backups/b.tgz'},
-        health        : {phase: 'healthy', lastSuccessAt: 1699990000000, lastSuccessAgeMs: 10000000, nextAttemptAtMs: 1700003600000, retriesRemaining: 3}
+        durability    : {posture: 'off-host-required', targetPath: '/Users/operator/.neo-ai/off-host'},
+        stagingResidue: {bytes: 0, root: '/Users/operator/.neo-ai/backups/staging'},
+        retry         : {phase: 'healthy', retriesRemaining: 3, windowEndsAtMs: null, streakStartedAtMs: 1699990000000, interruptedAt: null, lastSuccessAt: '2023-11-14T19:26:40.000Z', lastSuccessAgeMs: 10000000, nextAttemptAtMs: 1700003600000},
+        health        : {status: 'degraded', observationStatus: 'observed', reasonCodes: ['off-host-durability-unmet'], staleAfterMs: 90000000},
+        lastBackup    : {
+            schemaVersion    : 1,
+            bundleName       : 'backup-2023-11-14T19-24-00.000Z',
+            bundleCompletedAt: '2023-11-14T19:26:40.000Z',
+            finishedAt       : '2023-11-14T19:26:40.657Z',
+            backup           : {status: 'success', durationMs: 149102, error: null},
+            offHostSync      : {status: 'disabled', completionScope: 'direct-child', descendants: 'unknown', durationMs: null, exitCode: null, signal: null, stderrTail: 'rsync: /Users/operator/.neo-ai/off-host', terminatedVia: null}
+        }
     },
     heavyMaintenanceStarvation: {
         taskName: 'heavy-maintenance-starvation-watchdog',
@@ -99,7 +109,7 @@ const liveChromaRow = () => ({
     }
 });
 
-const LEAK_MARKERS = ['/Users/', '/var/run', 'docker', 'sk-live', 'bearer-secret', 'pid-4242', 'archivePath', 'mounts', 'evidenceFacts', 'proofs', 'resolvedConfig', 'inspect', 'logs', 'stats', 'heapObservation', 'receipt', 'facts', 'targetIdentity', 'diagnosisId'];
+const LEAK_MARKERS = ['/Users/', '/var/run', 'docker', 'sk-live', 'bearer-secret', 'pid-4242', 'mounts', 'evidenceFacts', 'proofs', 'resolvedConfig', 'inspect', 'logs', 'stats', 'heapObservation', 'receipt', 'facts', 'targetIdentity', 'diagnosisId', '"durability":', 'stagingResidue', 'stderrTail', 'bundleName', 'targetPath'];
 
 test.describe('projectDeploymentStateForFleet — the bounded, redacted wire shape of the deployment snapshot (#314)', () => {
     test('RED-FIRST on the leak: nothing a card must not carry survives projection', () => {
@@ -129,11 +139,32 @@ test.describe('projectDeploymentStateForFleet — the bounded, redacted wire sha
         expect(projection.maintenance).toEqual({
             backup    : {
                 phase           : 'healthy',
-                lastSuccessAt   : 1699990000000,
+                lastSuccessAt   : '2023-11-14T19:26:40.000Z',
                 lastSuccessAgeMs: 10000000,
-                lastBackup      : {finishedAt: 1699990000000, kind: 'full', status: 'ok'}
+                health          : {status: 'degraded', reasonCodes: ['off-host-durability-unmet']},
+                lastBackup      : {finishedAt: '2023-11-14T19:26:40.657Z', status: 'success', offHostSync: 'disabled'}
             },
             starvation: {posture: 'degraded', breachCount: 2}
+        });
+    });
+
+    // #323, the maintenance half: the live plane writes no `retry` block until the lane has task state,
+    // the verdict rides `health`, and an unreadable receipt carries its status at the root
+    test('a maintenance block without retry state projects a null phase, keeps the health verdict, and reads an unreadable receipt at its root', () => {
+        expect(projectDeploymentMaintenanceForFleet({
+            maintenance: {
+                health    : {status: 'degraded', observationStatus: 'observed', reasonCodes: ['backup-never-succeeded', 'backup-retry-exhausted', 7], staleAfterMs: 90000000},
+                lastBackup: {finishedAt: null, kind: 'corrupt', status: 'unreadable'}
+            }
+        })).toEqual({
+            backup    : {
+                phase           : null,
+                lastSuccessAt   : null,
+                lastSuccessAgeMs: null,
+                health          : {status: 'degraded', reasonCodes: ['backup-never-succeeded', 'backup-retry-exhausted']},
+                lastBackup      : {finishedAt: null, status: 'unreadable', offHostSync: null}
+            },
+            starvation: null
         });
     });
 
@@ -188,7 +219,7 @@ test.describe('projectDeploymentStateForFleet — the bounded, redacted wire sha
         // a status that is not the writer's word — the pre-#323 block shape included — is unknown, never a guess
         expect(projectDeploymentServiceForFleet({serviceKey: 'kb-server', status: {status: 'degraded', disposition: 'at-cap'}}).status).toBeNull();
         expect(projectDeploymentMaintenanceForFleet({maintenance: {}})).toEqual({
-            backup    : {phase: null, lastSuccessAt: null, lastSuccessAgeMs: null, lastBackup: null},
+            backup    : {phase: null, lastSuccessAt: null, lastSuccessAgeMs: null, health: null, lastBackup: null},
             starvation: null
         });
         expect(projectDeploymentMaintenanceForFleet({})).toEqual({backup: null, starvation: null});

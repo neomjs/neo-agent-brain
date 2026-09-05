@@ -79,29 +79,41 @@ export function projectDeploymentServiceForFleet(row) {
 }
 
 /**
- * @summary Project the snapshot's maintenance blocks: the backup lane's health phase and last receipt, and
- * the heavy-maintenance starvation posture with its breach count — the receipts themselves (waiters,
- * lease holders) stay inside the plane.
+ * @summary Project the snapshot's maintenance blocks: the backup lane's retry phase, health verdict and
+ * last receipt (`DeploymentStateBridgeService#collectMaintenanceSnapshot` — `retry`, `health`,
+ * `lastBackup`), and the heavy-maintenance starvation posture with its breach count — the receipts
+ * themselves (waiters, lease holders, staging residue, durability paths) stay inside the plane.
  * @param {Object} snapshot
  * @returns {{backup: Object|null, starvation: Object|null}}
  */
 export function projectDeploymentMaintenanceForFleet(snapshot) {
     const
         maintenance = nestedOf(snapshot, 'maintenance'),
+        retry       = nestedOf(maintenance, 'retry'),
         health      = nestedOf(maintenance, 'health'),
         lastBackup  = nestedOf(maintenance, 'lastBackup'),
+        reasonCodes = health && Array.isArray(health.reasonCodes) ? health.reasonCodes.filter(code => typeof code === 'string') : [],
         starvation  = nestedOf(snapshot, 'heavyMaintenanceStarvation'),
         breaches    = starvation && Array.isArray(starvation.breaches) ? starvation.breaches : null;
 
     return {
         backup    : maintenance && {
-            phase           : fieldOf(health, 'phase'),
-            lastSuccessAt   : fieldOf(health, 'lastSuccessAt'),
-            lastSuccessAgeMs: fieldOf(health, 'lastSuccessAgeMs'),
+            // the lane's retry phase (`healthy` | `unanchored` | `retrying` | `exhausted`) and its
+            // success anchor ride `maintenance.retry` (`describeBackupRetryState`), present once the
+            // lane has task state; the health verdict and its reason codes ride `maintenance.health`
+            phase           : fieldOf(retry, 'phase'),
+            lastSuccessAt   : fieldOf(retry, 'lastSuccessAt'),
+            lastSuccessAgeMs: fieldOf(retry, 'lastSuccessAgeMs'),
+            health          : health && {
+                status: fieldOf(health, 'status'),
+                reasonCodes
+            },
+            // the receipt: its finish instant, the bundle's own status, the off-host sync's status —
+            // an unreadable or unreachable receipt carries `status` at its root instead
             lastBackup      : lastBackup && {
-                finishedAt: fieldOf(lastBackup, 'finishedAt'),
-                kind      : fieldOf(lastBackup, 'kind'),
-                status    : fieldOf(lastBackup, 'status')
+                finishedAt : fieldOf(lastBackup, 'finishedAt'),
+                status     : fieldOf(nestedOf(lastBackup, 'backup'), 'status') ?? fieldOf(lastBackup, 'status'),
+                offHostSync: fieldOf(nestedOf(lastBackup, 'offHostSync'), 'status')
             }
         },
         starvation: starvation && {
