@@ -296,6 +296,30 @@ const taskRegistry = [
         }
     },
     {
+        // The defect ledger's machine producer: a periodic read of the repository's completed CI
+        // runs that files one `defect-note:` per failing test, and one `[recovered]` note when a
+        // later run of the same job is green. Lightweight like the digest it feeds: bounded GitHub
+        // reads (a receipt remembers the runs this host already read), at most a handful of quiet
+        // low-priority broadcasts per red run, and nothing at all when CI was green.
+        taskName        : 'ci-failure-ingest',
+        executionKind   : 'supervised-child-process',
+        maintenanceClass: 'lightweight-signal',
+        backpressure    : 'none',
+        dependencies    : [],
+        getDueTask({state, now, intervals}) {
+            const lastRunAt  = state['ci-failure-ingest']?.lastRunAt ?? 0;
+            const intervalMs = intervals.ciFailureIngest;
+            if (intervalMs > 0 && now - lastRunAt >= intervalMs) {
+                return {
+                    taskName: 'ci-failure-ingest',
+                    source  : 'periodic-ci-failure-ingest',
+                    reason  : `periodic-ci-failure-ingest:${intervalMs}`
+                };
+            }
+            return null;
+        }
+    },
+    {
         taskName        : 'swarm-heartbeat',
         executionKind   : 'in-process-async',
         maintenanceClass: 'lightweight-signal',

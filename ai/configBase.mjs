@@ -1397,6 +1397,28 @@ class ConfigBase extends ConfigProvider {
                     fullRematerializeIntervalMs: leaf(7 * DAY_MS, 'NEO_ORCHESTRATOR_CORPUS_FULL_REMATERIALIZE_INTERVAL_MS', 'number')
                 },
                 /**
+                 * The defect ledger's machine producer: which repository's completed CI runs are
+                 * read for failing tests, how far back one tick looks, and where its receipt lives.
+                 * The receipt only bounds API reads (which runs this host has already read); the
+                 * mailbox thread per run and job is what keeps N orchestrators from double-filing,
+                 * so a lost receipt costs re-reads, never duplicate observations. The receipt
+                 * derives beside the deployment-state bridge snapshot like the corpus projection's.
+                 * @type {Object}
+                 */
+                ciFailureIngest: {
+                    repoSlug  : leaf('neomjs/neo', 'NEO_ORCHESTRATOR_CI_FAILURE_INGEST_REPO', 'string'),
+                    lookbackMs: leaf(DAY_MS, 'NEO_ORCHESTRATOR_CI_FAILURE_INGEST_LOOKBACK_MS', 'number'),
+                    /**
+                     * How long a CI-filed record must go without a sighting before a green run of
+                     * its job recovers it. The first green run is not a fix — a flake passes most
+                     * of the time, and recovering on its first pass would close every flake before
+                     * the digest saw it open. A day of silence with the suite green is a fixed test.
+                     */
+                    recoveryAfterMs    : leaf(DAY_MS, 'NEO_ORCHESTRATOR_CI_FAILURE_INGEST_RECOVERY_AFTER_MS', 'number'),
+                    mailboxLimit       : leaf(500, 'NEO_ORCHESTRATOR_CI_FAILURE_INGEST_MAILBOX_LIMIT', 'number'),
+                    receiptPathOverride: leaf(null, 'NEO_ORCHESTRATOR_CI_FAILURE_INGEST_RECEIPT_PATH', 'string')
+                },
+                /**
                  * Provider-readiness probe parameters consumed by the orchestrator dream task
                  * and the standalone Sandman CLI runner. The probe issues an HTTP GET against
                  * the resolved graph provider's `/api/tags` (Ollama) or `/v1/models`
@@ -1739,6 +1761,14 @@ class ConfigBase extends ConfigProvider {
                      * suppression ledger, so a quiet ledger costs no A2A traffic. `<= 0` disables.
                      */
                     defectLedgerDigestMs  : leaf(6 * HOUR_MS, 'NEO_ORCHESTRATOR_DEFECT_LEDGER_DIGEST_INTERVAL_MS', 'number'),
+                    /**
+                     * Cadence of the CI failure ingest: the producer tick that reads the repository's
+                     * completed CI runs since its receipt and files one `defect-note:` per failing
+                     * test (and one `[recovered]` note when a later run of the same job is green),
+                     * so the digest above has something nobody typed. Hourly keeps the ledger within
+                     * a working session of CI; the reads are bounded by the receipt. `<= 0` disables.
+                     */
+                    ciFailureIngestMs     : leaf(HOUR_MS, 'NEO_ORCHESTRATOR_CI_FAILURE_INGEST_INTERVAL_MS', 'number'),
                     /**
                      * Fraction of `dreamMs` runtime that triggers completion-time cooldown for the
                      * next dream cycle. This is intentionally below the cycle-overflow telemetry
@@ -2649,6 +2679,9 @@ class ConfigBase extends ConfigProvider {
             'orchestrator.corpusProjection.receiptPath': data =>
                 data.orchestrator.corpusProjection.receiptPathOverride ??
                 path.resolve(path.dirname(data.orchestrator.deploymentStateBridge.snapshotPath), 'core-corpus-projection.json'),
+            'orchestrator.ciFailureIngest.receiptPath': data =>
+                data.orchestrator.ciFailureIngest.receiptPathOverride ??
+                path.resolve(path.dirname(data.orchestrator.deploymentStateBridge.snapshotPath), 'ci-failure-ingest.json'),
             'orchestrator.corpusProjection.freshnessSlaMs': data =>
                 data.orchestrator.corpusProjection.freshnessSlaMsOverride ??
                 data.orchestrator.intervals.corpusProjectionMs * 2,

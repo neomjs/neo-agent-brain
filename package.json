@@ -78,6 +78,7 @@
         "ai:post-release-sync": "node ./ai/scripts/lifecycle/postReleaseSync.mjs",
         "ai:wake-manifest": "node ./ai/daemons/wake/buildReceiverManifest.mjs",
         "ai:wake-receiver": "node ./ai/daemons/wake/receiver.mjs",
+        "ai:ingest-ci-failures": "node ./ai/scripts/maintenance/ingestCiFailures.mjs",
         "ai:revalidation-sweep": "node ./ai/scripts/lifecycle/revalidationSweep.mjs",
         "ai:server-neural-link": "node ./ai/mcp/server/neural-link/run-bridge.mjs",
         "ai:structure-map": "node ./ai/scripts/diagnostics/structureMap.mjs",

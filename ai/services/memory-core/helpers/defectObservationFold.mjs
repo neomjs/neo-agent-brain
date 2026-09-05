@@ -102,7 +102,12 @@ export function parseDefectNote(line) {
  * latest transition) → `red` again if a fresh sighting lands after recovery. `quiet` is the
  * aging overlay: no note of any kind within `quietAfterMs` of `now`, regardless of state.
  *
- * @param {Object[]} rows Message-like rows (`{subject, from, sentAt}`).
+ * `threads` are the distinct `partOfThread` values the sightings arrived under. A machine
+ * producer files every note as one identity, so the thread — one per CI run and job — is the
+ * coordinate that tells two independent observations from one re-read; the digest's promotion
+ * trigger reads it beside `reporters`. A hand-filed note carries no thread and records none.
+ *
+ * @param {Object[]} rows Message-like rows (`{subject, from, sentAt, partOfThread?}`).
  * @param {Object}     [options]
  * @param {Number}     [options.now=Date.now()]            Fold instant (epoch ms).
  * @param {Number}     [options.quietAfterMs=604800000]    Aging window — default 7 days.
@@ -123,7 +128,8 @@ export function foldDefectObservations(rows, {now = Date.now(), quietAfterMs = 7
 
         const fingerprint = defectNoteFingerprint(text),
               parsed      = parseDefectNote(text),
-              existing    = records.get(fingerprint);
+              existing    = records.get(fingerprint),
+              thread      = typeof row.partOfThread === 'string' && row.partOfThread.trim() ? row.partOfThread : null;
 
         if (!existing) {
             records.set(fingerprint, {
@@ -133,6 +139,7 @@ export function foldDefectObservations(rows, {now = Date.now(), quietAfterMs = 7
                 parseable  : parsed.parseable,
                 count      : 1,
                 reporters  : [...new Set([row.from].filter(Boolean))],
+                threads    : thread ? [thread] : [],
                 firstSeenAt: new Date(at).toISOString(),
                 lastSeenAt : new Date(at).toISOString(),
                 state      : parsed.recovered ? 'recovered' : 'red'
@@ -142,6 +149,7 @@ export function foldDefectObservations(rows, {now = Date.now(), quietAfterMs = 7
 
         existing.count++;
         if (row.from && !existing.reporters.includes(row.from)) existing.reporters.push(row.from);
+        if (thread && !existing.threads.includes(thread)) existing.threads.push(thread);
         if (at < Date.parse(existing.firstSeenAt)) existing.firstSeenAt = new Date(at).toISOString();
         if (at > Date.parse(existing.lastSeenAt)) {
             existing.lastSeenAt = new Date(at).toISOString();

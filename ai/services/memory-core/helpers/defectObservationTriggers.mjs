@@ -29,17 +29,21 @@ const PROMOTED_MARKER_PATTERN  = /^\s*\[promoted\b([^\]]*)\]\s*/i;
 const DISMISSED_MARKER_PATTERN = /^\s*\[dismissed\b[^\]]*\]\s*/i;
 
 /**
- * @summary The one fold-decidable promotion trigger: two or more sightings from two or more
- * distinct reporters. A single reporter re-confirming their own note is one observation's echo,
- * not independent corroboration.
+ * @summary The one fold-decidable promotion trigger: two or more sightings that are independent
+ * of each other — from two distinct reporters, or from one reporter under two distinct threads.
+ * A single reporter re-confirming their own note is one observation's echo, not corroboration;
+ * a machine producer is one reporter by construction, so for it the thread (one per CI run and
+ * job) is what makes a second sighting independent.
  * @param {Object} record One standing observation record from the fold.
  * @returns {Boolean}
  */
 export function independentSecondOccurrence(record) {
     return Boolean(record)
         && record.count >= 2
-        && Array.isArray(record.reporters)
-        && record.reporters.length >= 2;
+        && (
+            (Array.isArray(record.reporters) && record.reporters.length >= 2)
+            || (Array.isArray(record.threads) && record.threads.length >= 2)
+        );
 }
 
 /**

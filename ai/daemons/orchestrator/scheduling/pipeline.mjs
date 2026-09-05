@@ -136,6 +136,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
                 dream                                  : config.orchestrator.intervals.dreamMs,
                 messageConceptHarvest                  : config.orchestrator.intervals.messageConceptHarvestMs,
                 defectLedgerDigest                     : config.orchestrator.intervals.defectLedgerDigestMs,
+                ciFailureIngest                        : config.orchestrator.intervals.ciFailureIngestMs,
                 dreamOverflowThreshold                 : config.orchestrator.intervals.dreamOverflowThreshold,
                 dreamBreathingGap                      : config.orchestrator.intervals.dreamBreathingGapMs,
                 dreamIdleBacklogCadenceMultiplier      : config.orchestrator.intervals.dreamIdleBacklogCadenceMultiplier,
@@ -188,8 +189,8 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             dataIntegrityDiagnosisService          : orchestrator.dataIntegrityDiagnosisService
         },
         runtime: {
-            goldenPathRepoEnrichmentEnabled         : orchestrator.goldenPathRepoEnrichmentEnabled,
-            primaryDevSyncRootsConfig               : orchestrator.primaryDevSyncRootsConfig,
+            goldenPathRepoEnrichmentEnabled: orchestrator.goldenPathRepoEnrichmentEnabled,
+            primaryDevSyncRootsConfig      : orchestrator.primaryDevSyncRootsConfig,
             // Same resolution that feeds `enables.kbSync` above. The scheduled task and the
             // `primary-dev-sync` cascade are two convergent routes to one destructive-by-default
             // rebuild; before #251 only the scheduled one was gated. Note this is deliberately
