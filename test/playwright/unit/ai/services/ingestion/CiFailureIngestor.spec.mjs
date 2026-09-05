@@ -2,13 +2,16 @@ import {test, expect} from '@playwright/test';
 import {
     buildCiThreadId,
     buildDefectNotes,
+    buildRecoveryNote,
     buildSurface,
     isCanonicalNote,
     isSuiteRunGreen,
     normalizeSymptom,
     parseCiThreadId,
     parsePlaywrightFailures,
-    selectRecoveries
+    parsePlaywrightReport,
+    selectRecoveryCandidates,
+    specPathOf
 } from '../../../../../../ai/services/ingestion/CiFailureIngestor.mjs';
 import {
     defectNoteFingerprint,
@@ -53,7 +56,8 @@ const DRAG_C     = 'THE OVERLAP FALSIFIER: three overlapping windows, one gestur
 
 // The `github` reporter of the `unit` job of run 33887831112: `::error` annotations, `##[error]`
 // block headers whose continuation lines carry no timestamp, retry blocks, then the same epilogue.
-// Three failing tests, one of which (C) has no block at all — a truncated read.
+// Three failing tests, one of which (C) has no block at all — a truncated read. The real run
+// declared 19; this fixture keeps three of its rows and declares three, so the set is complete.
 const UNIT_LOG = [
     `2026-09-04T15:10:59.2214461Z ···×··×····································F::error file=test/playwright/unit/manager/DragCoordinator.spec.mjs,title=[unit-engine] › test/playwright/unit/manager/DragCoordinator.spec.mjs:979:5 › ${DRAG_SUITE} › ${DRAG_A},line=1000,col=79::Error: expect(received).toEqual(expected) // deep equality`,
     `2026-09-04T15:10:59.2267203Z ##[error]  1) [unit-engine] › test/playwright/unit/manager/DragCoordinator.spec.mjs:979:5 › ${DRAG_SUITE} › ${DRAG_A} `,
@@ -74,7 +78,7 @@ const UNIT_LOG = [
     '',
     '    - Expected  - 2',
     '    + Received  +  2',
-    '2026-09-04T15:11:26.6169837Z   19 failed',
+    '2026-09-04T15:11:26.6169837Z   3 failed',
     `2026-09-04T15:11:26.6171145Z     [unit-engine] › test/playwright/unit/manager/DragCoordinator.spec.mjs:635:5 › ${DRAG_SUITE} › ${DRAG_C} `,
     `2026-09-04T15:11:26.6172184Z     [unit-engine] › test/playwright/unit/manager/DragCoordinator.spec.mjs:979:5 › ${DRAG_SUITE} › ${DRAG_A} `,
     `2026-09-04T15:11:26.6173351Z     [unit-engine] › test/playwright/unit/manager/DragCoordinator.spec.mjs:2082:5 › ${DRAG_SUITE} › ${DRAG_B} `,
@@ -163,7 +167,61 @@ test.describe('CiFailureIngestor — the defect ledger\'s machine producer', () 
         // Truncated before the epilogue: the ✘ progress line and the block are echoes, not the set.
         const truncated = COMPONENTS_LOG.split('\n').slice(0, 12).join('\n');
         expect(parsePlaywrightFailures(truncated)).toEqual([]);
+        expect(parsePlaywrightReport(truncated)).toEqual({failures: [], declared: 0, complete: false});
         expect(buildDefectNotes({failures: parsePlaywrightFailures(truncated), run: RUN, job: JOB, repoSlug: 'neomjs/neo'}).notes).toEqual([]);
+    });
+
+    test('an epilogue cut short of its own count is incomplete: the rows read are reported, none is filed (RA-4)', () => {
+        // The real run declared 19 failures; a read that kept three rows must not file three notes as the set.
+        const cut    = UNIT_LOG.replace('  3 failed', '  19 failed'),
+              report = parsePlaywrightReport(cut);
+
+        expect(report.declared).toBe(19);
+        expect(report.failures).toHaveLength(3);
+        expect(report.complete).toBe(false);
+        expect(parsePlaywrightFailures(cut)).toEqual([]);
+        expect(parsePlaywrightReport(UNIT_LOG)).toMatchObject({declared: 3, complete: true});
+    });
+
+    test('blocks are matched by the full test identity: two tests on one line keep their own errors, and so do two projects of one test (RA-4)', () => {
+        const suite = 'grid › selection',
+              a     = 'selects A',
+              b     = 'selects B',
+              log   = [
+                  `2026-09-05T01:00:51.2109221Z   1) [chromium] › test/playwright/unit/grid/Selection.spec.mjs:10:5 › ${suite} › ${a} `,
+                  '2026-09-05T01:00:51.2111226Z     Error: expected A',
+                  `2026-09-05T01:00:51.2109221Z   2) [chromium] › test/playwright/unit/grid/Selection.spec.mjs:10:5 › ${suite} › ${b} `,
+                  '2026-09-05T01:00:51.2111226Z     Error: expected B',
+                  `2026-09-05T01:00:51.2109221Z   3) [firefox] › test/playwright/unit/grid/Selection.spec.mjs:10:5 › ${suite} › ${a} `,
+                  '2026-09-05T01:00:51.2111226Z     Error: expected A on firefox',
+                  '2026-09-05T01:00:51.2134944Z   3 failed',
+                  `2026-09-05T01:00:51.2136612Z     [chromium] › test/playwright/unit/grid/Selection.spec.mjs:10:5 › ${suite} › ${a} `,
+                  `2026-09-05T01:00:51.2136612Z     [chromium] › test/playwright/unit/grid/Selection.spec.mjs:10:5 › ${suite} › ${b} `,
+                  `2026-09-05T01:00:51.2136612Z     [firefox] › test/playwright/unit/grid/Selection.spec.mjs:10:5 › ${suite} › ${a} `
+              ].join('\n');
+
+        const failures = parsePlaywrightFailures(log);
+
+        expect(failures.map(failure => [failure.project, failure.titlePath.at(-1), failure.symptom])).toEqual([
+            ['chromium', a, 'expected A'],
+            ['chromium', b, 'expected B'],
+            ['firefox',  a, 'expected A on firefox']
+        ]);
+
+        // The note's identity is the test and its symptom: B is its own observation, and A on firefox —
+        // a different symptom — is a distinct observation of the same test, never folded into chromium's.
+        const {notes} = buildDefectNotes({failures, run: RUN, job: JOB, repoSlug: 'neomjs/neo'});
+
+        expect(notes.map(note => note.subject)).toEqual([
+            `defect-note: test/playwright/unit/grid/Selection.spec.mjs › ${suite} › ${a} broke expected A`,
+            `defect-note: test/playwright/unit/grid/Selection.spec.mjs › ${suite} › ${b} broke expected B`,
+            `defect-note: test/playwright/unit/grid/Selection.spec.mjs › ${suite} › ${a} broke expected A on firefox`
+        ]);
+        expect(new Set(notes.map(note => note.fingerprint)).size).toBe(3);
+
+        // A lone block at a location still serves an epilogue row whose title the reporter reshaped.
+        const reshaped = log.replace(`     [chromium] › test/playwright/unit/grid/Selection.spec.mjs:10:5 › ${suite} › ${b} `, `     [chromium] › test/playwright/unit/grid/Selection.spec.mjs:10:5 › ${suite} › ${b}   `);
+        expect(parsePlaywrightFailures(reshaped)[1].symptom).toBe('expected B');
     });
 
     test('the same test failing in two runs folds to ONE record with two independent sightings (AC-2)', () => {
@@ -191,44 +249,61 @@ test.describe('CiFailureIngestor — the defect ledger\'s machine producer', () 
         expect(independentSecondOccurrence(records[0])).toBe(true);
     });
 
-    test('a green run of the same job recovers a record that has been quiet for the window; a fresh flake, a skipped suite, an older run, or another job does not (AC-4)', () => {
+    test('a green run of the same job is a recovery candidate once the record has been quiet for the window; a fresh flake, a skipped suite, an older run, or another job is not (AC-4)', () => {
         const DAY  = 24 * 60 * 60 * 1000,
               note = buildDefectNotes({failures: parsePlaywrightFailures(COMPONENTS_LOG), run: RUN, job: JOB, repoSlug: 'neomjs/neo'}).notes[0],
               rows = [
                   {from: '@neo-fable', sentAt: '2026-09-05T01:05:00Z', subject: note.subject, partOfThread: note.partOfThread},
                   {from: '@tobiu',     sentAt: '2026-09-05T01:06:00Z', subject: 'defect-note: hand-filed surface broke something CI never saw'}
               ],
-              greenComponents = {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: 33940000000},
-              olderComponents = {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: 33900000000},
-              greenUnit       = {workflowPath: '.github/workflows/test.yml', jobName: 'unit',       runId: 33950000000};
+              greenComponents = {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: 33940000000, headSha: 'green-sha', headBranch: 'dev'},
+              olderComponents = {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: 33900000000, headSha: 'old-sha',   headBranch: 'dev'},
+              greenUnit       = {workflowPath: '.github/workflows/test.yml', jobName: 'unit',       runId: 33950000000, headSha: 'unit-sha',  headBranch: 'dev'};
 
         // Three hours after the sighting the suite is green — that is a flake passing, not a fix.
         const fresh = foldDefectObservations(rows, {now: Date.parse('2026-09-05T04:00:00Z')});
-        expect(selectRecoveries({records: fresh, greenJobs: [greenComponents], now: Date.parse('2026-09-05T04:00:00Z'), recoveryAfterMs: DAY})).toEqual([]);
+        expect(selectRecoveryCandidates({records: fresh, greenJobs: [greenComponents], now: Date.parse('2026-09-05T04:00:00Z'), recoveryAfterMs: DAY})).toEqual([]);
 
-        // A day without a sighting, and green since: recovered — by the newest green run of ITS job.
+        // A day without a sighting, and green since: a candidate — against the newest green run of ITS job.
         const later    = Date.parse('2026-09-06T02:00:00Z'),
               quietDay = foldDefectObservations(rows, {now: later});
 
-        expect(selectRecoveries({records: quietDay, greenJobs: [olderComponents, greenUnit], now: later, recoveryAfterMs: DAY})).toEqual([]);
+        expect(selectRecoveryCandidates({records: quietDay, greenJobs: [olderComponents, greenUnit], now: later, recoveryAfterMs: DAY})).toEqual([]);
 
-        const recoveries = selectRecoveries({records: quietDay, greenJobs: [olderComponents, greenUnit, greenComponents], now: later, recoveryAfterMs: DAY});
+        const candidates = selectRecoveryCandidates({records: quietDay, greenJobs: [olderComponents, greenUnit, greenComponents], now: later, recoveryAfterMs: DAY});
 
-        expect(recoveries).toHaveLength(1);
-        expect(recoveries[0].subject).toBe(note.subject.replace('defect-note: ', 'defect-note: [recovered] '));
-        // The recovery keys to the SAME observation the fold already holds.
-        expect(recoveries[0].fingerprint).toBe(note.fingerprint);
-        expect(recoveries[0].partOfThread).toBe('ci:.github%2Fworkflows%2Ftest.yml:components:33940000000');
+        expect(candidates).toHaveLength(1);
+        expect(candidates[0]).toMatchObject({
+            evidence: greenComponents,
+            newest  : {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: RUN.id},
+            specPath: 'test/playwright/component/tab/OverflowAction.spec.mjs'
+        });
+        expect(candidates[0].record.fingerprint).toBe(note.fingerprint);
+        // The hand-filed record has no CI thread and is never a candidate; a path-less surface has no spec to prove.
+        expect(specPathOf('hand-filed surface')).toBeNull();
+        expect(specPathOf('test/playwright/component/tab/OverflowAction.spec.mjs › a › b')).toBe('test/playwright/component/tab/OverflowAction.spec.mjs');
+        expect(specPathOf(null)).toBeNull();
+
+        // Once the caller has proven the spec at the evidence head, the note re-joins the record's own
+        // surface and symptom: it fingerprints to the SAME observation the fold already holds.
+        const recovery = buildRecoveryNote(candidates[0]);
+
+        expect(recovery.subject).toBe(note.subject.replace('defect-note: ', 'defect-note: [recovered] '));
+        expect(recovery.fingerprint).toBe(note.fingerprint);
+        expect(recovery.partOfThread).toBe('ci:.github%2Fworkflows%2Ftest.yml:components:33940000000');
+        expect(recovery.body).toContain('run 33940000000, job components (.github/workflows/test.yml) on `dev` @ green-sha');
+        expect(recovery.body).toContain('spec present at that head: `test/playwright/component/tab/OverflowAction.spec.mjs`');
+        expect(isCanonicalNote(recovery.subject)).toBe(true);
 
         const afterRecovery = foldDefectObservations([
             ...rows,
-            {from: '@neo-fable', sentAt: '2026-09-06T02:05:00Z', subject: recoveries[0].subject, partOfThread: recoveries[0].partOfThread}
+            {from: '@neo-fable', sentAt: '2026-09-06T02:05:00Z', subject: recovery.subject, partOfThread: recovery.partOfThread}
         ], {now: Date.parse('2026-09-07T05:00:00Z')});
 
         expect(afterRecovery[0].state).toBe('recovered');
         // Recovered is terminal for this producer until a fresh sighting — nothing to re-emit.
-        expect(selectRecoveries({records: afterRecovery, greenJobs: [greenComponents], now: Date.parse('2026-09-07T05:00:00Z'), recoveryAfterMs: DAY})).toEqual([]);
-        expect(() => selectRecoveries({records: afterRecovery, greenJobs: [], now: NaN, recoveryAfterMs: DAY})).toThrow(/now/);
+        expect(selectRecoveryCandidates({records: afterRecovery, greenJobs: [greenComponents], now: Date.parse('2026-09-07T05:00:00Z'), recoveryAfterMs: DAY})).toEqual([]);
+        expect(() => selectRecoveryCandidates({records: afterRecovery, greenJobs: [], now: NaN, recoveryAfterMs: DAY})).toThrow(/now/);
 
         // The evidence rule: success with the suite step run, never a skipped suite's no-op success.
         expect(isSuiteRunGreen({conclusion: 'success', steps: [{name: 'Skip components tests', conclusion: 'skipped'}, {name: 'Run components tests', conclusion: 'success'}]})).toBe(true);

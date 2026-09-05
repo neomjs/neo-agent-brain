@@ -3,7 +3,7 @@ import {defectNoteFingerprint, parseDefectNote} from '../memory-core/helpers/def
 /**
  * @summary The defect ledger's machine producer: turns a completed CI job's Playwright log into
  * canonical `defect-note:` observations, one per failing test, and turns a later green run of the
- * same job into the matching `[recovered]` notes.
+ * same job — whose head still contains the test — into the matching `[recovered]` notes.
  *
  * Deliberately PURE — no fetch, no mailbox, no clock. The GitHub reads and the A2A writes belong to
  * `ai/scripts/maintenance/ingestCiFailures.mjs`; this module is the mapping the fold is asserted
@@ -12,19 +12,26 @@ import {defectNoteFingerprint, parseDefectNote} from '../memory-core/helpers/def
  * Identity: the surface is the TEST — `<spec path> › <title path>` — never the job (one job colour
  * standing in for three defects is the failure this producer exists to end) and never the line
  * number (an unrelated edit above the test would fork the record). The symptom is the first
- * `Error:` line of the failure block. Both reporters CI runs (`list` for components, `github` for
- * unit) print the same epilogue — `N failed`, then one `[project] › path:line:col › titles` line per
- * failing test — and the same numbered failure blocks, so there is one grammar to parse.
+ * `Error:` line of the failure block that carries the same project, location AND title path: two
+ * tests declared on one line share a location, and a location-only match would hand both the first
+ * one's error. Both reporters CI runs (`list` for components, `github` for unit) print the same
+ * epilogue — `N failed`, then one `[project] › path:line:col › titles` line per failing test — and
+ * the same numbered failure blocks, so there is one grammar to parse.
  *
- * Non-vacuity: a log without that epilogue yields no notes, and a failing test whose block carries
- * no `Error:` line yields no note either — silence over a fingerprint derived from a truncated
+ * Non-vacuity: a log without that epilogue yields no notes; an epilogue whose declared count exceeds
+ * the rows that follow it is incomplete and yields no notes either; and a failing test whose block
+ * carries no `Error:` line yields no note — silence over a fingerprint derived from a truncated
  * read. The producer's own breakage is never filed as a defect in the code under test.
  *
  * Independence: every note travels under `partOfThread = ci:<workflow>:<job>:<run>`. The fold
  * records distinct threads per fingerprint, and the promotion trigger counts two threads from one
  * reporter as independent — a machine producer is one identity, so the run is its independence.
- * The same thread is the idempotence key: a run and job already filed by any orchestrator is
- * skipped on a thread lookup, so N orchestrators cannot double-count a sighting.
+ * The same thread is the admission key, at observation granularity: a note whose fingerprint the
+ * run-and-job thread already holds is not sent again, whichever orchestrator sent it.
+ *
+ * Recovery evidence: a green job is a candidate's evidence, never its proof — the caller must show
+ * the record's spec exists at the evidence run's head before filing, because a job's colour on a
+ * branch where the test does not exist says nothing about the test.
  *
  * @module ai/services/ingestion/CiFailureIngestor
  */
@@ -38,13 +45,14 @@ const EPILOGUE_LINE_PATTERN = /^\s+\[([^\]]+)\] › (\S+?):(\d+):(\d+) › (.+?)
 const HEADER_LINE_PATTERN   = /^(?:##\[error\])?\s*\d+\) \[([^\]]+)\] › (\S+?):(\d+):(\d+) › (.+?)\s*(?:─+\s*)?$/;
 const ERROR_LINE_PATTERN    = /^\s*Error: (.+?)\s*$/;
 const SUITE_RUN_STEP        = /^Run .+ tests$/;
+const SPEC_PATH_PATTERN     = /^[\w./-]+\/[\w.-]+\.[cm]?[jt]s$/;
 
 const SYMPTOM_MAX_LENGTH = 160;
 const DETAIL_MAX_LINES   = 12;
 
 /**
  * @summary The thread every note of one CI job travels under — the fold's independence coordinate
- * and the ingestor's idempotence key.
+ * and the ingestor's admission key.
  * @param {Object} options
  * @param {String} options.workflowPath e.g. `.github/workflows/test.yml`
  * @param {String} options.jobName      e.g. `components`
@@ -105,44 +113,60 @@ export function normalizeSymptom(text) {
 }
 
 /**
- * @summary Reads the failing tests out of one Playwright job log.
+ * @summary Reads one Playwright job log into its failed set, with the completeness the epilogue
+ * declares.
  *
  * The failed set comes from the epilogue only — the `✘` progress lines and the `::error`
  * annotations are reporter-specific echoes of the same tests. Each test's symptom is the first
- * `Error:` line of its first numbered failure block (retries repeat the block; the first attempt
- * is the observation). A log with no epilogue — not a Playwright job, or truncated before the
- * summary — yields an empty array.
+ * `Error:` line of its own first numbered failure block (retries repeat the block; the first
+ * attempt is the observation), matched on the full identity — project, location and title path. A
+ * block is matched by location alone only when it is the single block at that location. A log with
+ * no epilogue — not a Playwright job, or truncated before the summary — declares nothing; an
+ * epilogue whose `N failed` count exceeds the rows read after it is incomplete.
  *
  * @param {String} logText The raw job log as the Actions API serves it (timestamps included).
- * @returns {Array<{project: String, file: String, line: Number, column: Number, titlePath: String[], symptom: String|null, detail: String[]}>}
+ * @returns {{failures: Array<{project: String, file: String, line: Number, column: Number, titlePath: String[], symptom: String|null, detail: String[]}>, declared: Number, complete: Boolean}}
+ *   `declared` is the epilogue's count (`0` without an epilogue); `complete` is whether every declared row was read.
  */
-export function parsePlaywrightFailures(logText) {
-    if (typeof logText !== 'string' || !logText) return [];
+export function parsePlaywrightReport(logText) {
+    if (typeof logText !== 'string' || !logText) return {failures: [], declared: 0, complete: false};
 
-    const lines   = logText.split('\n').map(cleanLine),
-          blocks  = new Map(),
-          failing = [];
+    const lines      = logText.split('\n').map(cleanLine),
+          byIdentity = new Map(),
+          byLocation = new Map(),
+          failures   = [];
 
-    let epilogueAt = -1;
+    let epilogueAt = -1,
+        declared   = 0;
 
     for (let index = 0; index < lines.length; index++) {
         const header = lines[index].match(HEADER_LINE_PATTERN);
 
         if (header) {
-            const key = `${header[2]}:${header[3]}:${header[4]}`;
+            const [, project, file, line, column, titles] = header,
+                  location                                = `${file}:${line}:${column}`,
+                  identity                                = `${project}|${location}|${titles.trim()}`;
 
-            if (!blocks.has(key)) {
-                blocks.set(key, collectBlock(lines, index + 1));
+            if (!byIdentity.has(identity)) {
+                const block = collectBlock(lines, index + 1);
+
+                byIdentity.set(identity, block);
+                byLocation.set(location, [...(byLocation.get(location) || []), block]);
             }
             continue;
         }
 
-        if (epilogueAt === -1 && FAILED_COUNT_PATTERN.test(lines[index])) {
-            epilogueAt = index;
+        if (epilogueAt === -1) {
+            const count = lines[index].match(FAILED_COUNT_PATTERN);
+
+            if (count) {
+                epilogueAt = index;
+                declared   = Number(count[1]);
+            }
         }
     }
 
-    if (epilogueAt === -1) return [];
+    if (epilogueAt === -1) return {failures, declared: 0, complete: false};
 
     for (let index = epilogueAt + 1; index < lines.length; index++) {
         const entry = lines[index].match(EPILOGUE_LINE_PATTERN);
@@ -150,9 +174,13 @@ export function parsePlaywrightFailures(logText) {
         if (!entry) break;
 
         const [, project, file, line, column, titles] = entry,
-              block                                   = blocks.get(`${file}:${line}:${column}`) || {symptom: null, detail: []};
+              location                                = `${file}:${line}:${column}`,
+              siblings                                = byLocation.get(location) || [],
+              block                                   = byIdentity.get(`${project}|${location}|${titles.trim()}`)
+                  || (siblings.length === 1 ? siblings[0] : null)
+                  || {symptom: null, detail: []};
 
-        failing.push({
+        failures.push({
             project,
             file,
             line     : Number(line),
@@ -163,7 +191,18 @@ export function parsePlaywrightFailures(logText) {
         });
     }
 
-    return failing;
+    return {failures, declared, complete: failures.length === declared};
+}
+
+/**
+ * @summary The failed set of a complete report; an absent or incomplete epilogue yields none.
+ * @param {String} logText
+ * @returns {Array<{project: String, file: String, line: Number, column: Number, titlePath: String[], symptom: String|null, detail: String[]}>}
+ */
+export function parsePlaywrightFailures(logText) {
+    const report = parsePlaywrightReport(logText);
+
+    return report.complete ? report.failures : [];
 }
 
 /**
@@ -204,6 +243,18 @@ export function buildSurface({file, titlePath}) {
 }
 
 /**
+ * @summary The spec file a CI-filed record names — the first arm of its surface — or `null` when
+ * the surface is not a repository path (a hand-filed record).
+ * @param {String} surface
+ * @returns {String|null}
+ */
+export function specPathOf(surface) {
+    const [first] = String(surface ?? '').split(' › ');
+
+    return SPEC_PATH_PATTERN.test(first) ? first : null;
+}
+
+/**
  * @summary Maps one failed job's failures to the notes the ledger accepts.
  *
  * A failure without a symptom is dropped and reported in `skipped` — the test is known to fail,
@@ -211,7 +262,7 @@ export function buildSurface({file, titlePath}) {
  * sighting creates. Duplicate fingerprints within one job collapse to one note.
  *
  * @param {Object}   options
- * @param {Object[]} options.failures Output of {@link parsePlaywrightFailures}.
+ * @param {Object[]} options.failures Output of {@link parsePlaywrightReport}.
  * @param {Object}   options.run      `{id, name, path, headBranch, headSha, htmlUrl, event}`
  * @param {Object}   options.job      `{id, name, htmlUrl}`
  * @param {String}   options.repoSlug e.g. `neomjs/neo`
@@ -285,40 +336,44 @@ export function isSuiteRunGreen(job) {
 }
 
 /**
- * @summary Picks the open CI-filed records a later green run of their own job recovers.
+ * @summary Picks the open CI-filed records a newer green run of their own job MAY recover, each
+ * with the evidence run the caller must prove it against.
  *
  * A record belongs to the workflow and job of its newest CI thread; a green job of that identity
- * from a NEWER run (by run id) recovers it — but only once the record has been quiet for
- * `recoveryAfterMs`. The first green run is not the evidence: a flake passes most of the time,
+ * from a NEWER run (by run id) is its candidate evidence — but only once the record has been quiet
+ * for `recoveryAfterMs`. The first green run is not the evidence: a flake passes most of the time,
  * and recovering on its first pass would flip every flake to `recovered` before the digest ever
  * saw it red. A day without a sighting, with the suite green since, is a fixed test; a day with
  * one is a flake the ledger keeps open and counts. Records with no CI thread are the human
  * channel's and stay untouched; `quiet` records are already silent and re-open on their own next
- * sighting. The recovery note re-joins the record's own surface and symptom, so it fingerprints
- * to the same observation the fold already holds.
+ * sighting.
+ *
+ * The evidence is a candidate's, not a proof: the caller files the recovery only after showing
+ * the record's spec ({@link specPathOf}) exists at the evidence run's head, so a green job on a
+ * branch that never had the test cannot recover it.
  *
  * @param {Object}   options
  * @param {Object[]} options.records         Fold output (with `threads`).
- * @param {Object[]} options.greenJobs       `{workflowPath, jobName, runId}` per suite-green job.
+ * @param {Object[]} options.greenJobs       `{workflowPath, jobName, runId, headSha, headBranch}` per suite-green job.
  * @param {Number}   options.now             Epoch ms.
  * @param {Number}   options.recoveryAfterMs Quiet time a record needs before green counts.
- * @returns {Object[]} Recovery notes: `{subject, fingerprint, partOfThread, body}`.
+ * @returns {Array<{record: Object, evidence: Object, newest: Object, specPath: String|null}>}
  */
-export function selectRecoveries({records, greenJobs, now, recoveryAfterMs}) {
+export function selectRecoveryCandidates({records, greenJobs, now, recoveryAfterMs}) {
     if (!Number.isFinite(now) || !Number.isFinite(recoveryAfterMs) || recoveryAfterMs < 0) {
-        throw new Error('selectRecoveries: now and a non-negative recoveryAfterMs are required');
+        throw new Error('selectRecoveryCandidates: now and a non-negative recoveryAfterMs are required');
     }
 
     const green = new Map();
 
     for (const job of Array.isArray(greenJobs) ? greenJobs : []) {
-        const key      = `${job.workflowPath} ${job.jobName}`,
+        const key      = `${job.workflowPath} ${job.jobName}`,
               existing = green.get(key);
 
         if (!existing || job.runId > existing.runId) green.set(key, job);
     }
 
-    const recoveries = [];
+    const candidates = [];
 
     for (const record of Array.isArray(records) ? records : []) {
         if (record.state !== 'red' || !record.parseable) continue;
@@ -331,26 +386,38 @@ export function selectRecoveries({records, greenJobs, now, recoveryAfterMs}) {
 
         if (!newest) continue;
 
-        const evidence = green.get(`${newest.workflowPath} ${newest.jobName}`);
+        const evidence = green.get(`${newest.workflowPath} ${newest.jobName}`);
 
         if (!evidence || evidence.runId <= newest.runId) continue;
 
-        const subject = `defect-note: [recovered] ${record.surface} broke ${record.symptom}`;
-
-        recoveries.push({
-            subject,
-            fingerprint : defectNoteFingerprint(subject),
-            partOfThread: buildCiThreadId({workflowPath: evidence.workflowPath, jobName: evidence.jobName, runId: evidence.runId}),
-            body        : [
-                'Filed by the CI failure ingestor: no sighting for the recovery window, and the job that last sighted this test ran its suite green in a newer run.',
-                '',
-                `- recovered by run ${evidence.runId}, job ${evidence.jobName} (${evidence.workflowPath})`,
-                `- last red sighting: run ${newest.runId} at ${record.lastSeenAt}`
-            ].join('\n')
-        });
+        candidates.push({record, evidence, newest, specPath: specPathOf(record.surface)});
     }
 
-    return recoveries;
+    return candidates;
+}
+
+/**
+ * @summary The `[recovered]` note for a candidate whose evidence was proven. It re-joins the
+ * record's own surface and symptom, so it fingerprints to the observation the fold already holds;
+ * the evidence run, its head and the proof ride the body.
+ * @param {{record: Object, evidence: Object, newest: Object, specPath: String}} candidate
+ * @returns {{subject: String, fingerprint: String, partOfThread: String, body: String}}
+ */
+export function buildRecoveryNote({record, evidence, newest, specPath}) {
+    const subject = `defect-note: [recovered] ${record.surface} broke ${record.symptom}`;
+
+    return {
+        subject,
+        fingerprint : defectNoteFingerprint(subject),
+        partOfThread: buildCiThreadId({workflowPath: evidence.workflowPath, jobName: evidence.jobName, runId: evidence.runId}),
+        body        : [
+            'Filed by the CI failure ingestor: no sighting for the recovery window, and the job that last sighted this test ran its suite green in a newer run whose head contains the spec.',
+            '',
+            `- recovered by run ${evidence.runId}, job ${evidence.jobName} (${evidence.workflowPath}) on \`${evidence.headBranch || '?'}\` @ ${String(evidence.headSha || '').slice(0, 10)}`,
+            `- spec present at that head: \`${specPath}\``,
+            `- last red sighting: run ${newest.runId} at ${record.lastSeenAt}`
+        ].join('\n')
+    };
 }
 
 /**

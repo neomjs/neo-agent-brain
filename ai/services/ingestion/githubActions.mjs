@@ -1,6 +1,7 @@
 /**
- * @summary The three GitHub Actions REST reads the CI failure ingestor needs — completed runs,
- * a run's jobs, a job's log — behind an injectable `fetch`.
+ * @summary The GitHub Actions REST reads the CI failure ingestor needs — runs in a window, one run by
+ * id, a run's jobs, a job's log — and the one Contents read that proves a spec exists at a run's
+ * head, behind an injectable `fetch`.
  *
  * The Actions surface is REST-only (workflow runs, jobs and logs have no GraphQL projection), so
  * this is a sibling of `Neo.ai.services.github-workflow.GraphqlService`, not a replacement. The
@@ -34,6 +35,27 @@ export function resolveGithubToken({override = null, env = process.env} = {}) {
 }
 
 /**
+ * @summary Projects one API run into the shape the ingestor reads.
+ * @param {Object} run A `workflow_runs` entry.
+ * @returns {{id: Number, name: String, path: String, event: String, headBranch: String, headSha: String, htmlUrl: String, createdAt: String, updatedAt: String, status: String, conclusion: String|null}}
+ */
+function mapRun(run) {
+    return {
+        id        : run.id,
+        name      : run.name,
+        path      : run.path,
+        event     : run.event,
+        headBranch: run.head_branch,
+        headSha   : run.head_sha,
+        htmlUrl   : run.html_url,
+        createdAt : run.created_at,
+        updatedAt : run.updated_at,
+        status    : run.status,
+        conclusion: run.conclusion
+    };
+}
+
+/**
  * @summary Builds a bounded Actions REST client for one repository.
  * @param {Object}   options
  * @param {String}   options.repoSlug  e.g. `neomjs/neo`
@@ -41,7 +63,7 @@ export function resolveGithubToken({override = null, env = process.env} = {}) {
  * @param {Function} [options.fetchImpl=globalThis.fetch]
  * @param {String}   [options.apiBase='https://api.github.com']
  * @param {Number}   [options.timeoutMs=30000] Per-request bound — a supervised child must not hang on one read.
- * @returns {{listCompletedRuns: Function, listJobs: Function, fetchJobLog: Function}}
+ * @returns {{listRuns: Function, getRun: Function, listJobs: Function, fetchJobLog: Function, fileExists: Function}}
  */
 export function createGithubActionsClient({repoSlug, token, fetchImpl = globalThis.fetch, apiBase = 'https://api.github.com', timeoutMs = 30000}) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(String(repoSlug || ''))) {
@@ -59,8 +81,12 @@ export function createGithubActionsClient({repoSlug, token, fetchImpl = globalTh
               'X-GitHub-Api-Version': API_VERSION
           };
 
-    async function request(url, {text = false} = {}) {
+    async function request(url, {text = false, allow404 = false} = {}) {
         const response = await fetchImpl(url, {headers, redirect: 'follow', signal: AbortSignal.timeout(timeoutMs)});
+
+        if (allow404 && response.status === 404) {
+            return null;
+        }
 
         if (!response.ok) {
             throw new Error(`githubActions: ${response.status} ${response.statusText || ''} for ${url.replace(apiBase, '')}`.trim());
@@ -71,18 +97,20 @@ export function createGithubActionsClient({repoSlug, token, fetchImpl = globalTh
 
     return {
         /**
-         * @summary Completed runs created at or after `since`, oldest first, across every workflow.
+         * @summary Runs created at or after `since`, oldest first, across every workflow and every
+         * status — the caller keeps the ones still running as pending and finishes them by id later,
+         * because the API filters on creation time and a run can complete hours after it was created.
          * @param {Object} options
          * @param {String} options.since  ISO-8601 instant.
          * @param {Number} [options.perPage=100]
          * @param {Number} [options.maxPages=5]
-         * @returns {Promise<Object[]>} `{id, name, path, event, headBranch, headSha, htmlUrl, createdAt, updatedAt, conclusion}`
+         * @returns {Promise<Object[]>} See {@link mapRun}.
          */
-        async listCompletedRuns({since, perPage = 100, maxPages = 5}) {
+        async listRuns({since, perPage = 100, maxPages = 5}) {
             const runs = [];
 
             for (let page = 1; page <= maxPages; page++) {
-                const query = new URLSearchParams({status: 'completed', per_page: String(perPage), page: String(page), created: `>=${since}`}),
+                const query = new URLSearchParams({per_page: String(perPage), page: String(page), created: `>=${since}`}),
                       data  = await request(`${base}/actions/runs?${query}`);
 
                 const pageRuns = data.workflow_runs || [];
@@ -90,18 +118,7 @@ export function createGithubActionsClient({repoSlug, token, fetchImpl = globalTh
                 for (const run of pageRuns) {
                     if (Date.parse(run.created_at) < Date.parse(since)) continue;
 
-                    runs.push({
-                        id        : run.id,
-                        name      : run.name,
-                        path      : run.path,
-                        event     : run.event,
-                        headBranch: run.head_branch,
-                        headSha   : run.head_sha,
-                        htmlUrl   : run.html_url,
-                        createdAt : run.created_at,
-                        updatedAt : run.updated_at,
-                        conclusion: run.conclusion
-                    });
+                    runs.push(mapRun(run));
                 }
 
                 // Pages come newest first: a page whose oldest run predates the window ends the read,
@@ -110,6 +127,16 @@ export function createGithubActionsClient({repoSlug, token, fetchImpl = globalTh
             }
 
             return runs.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+        },
+
+        /**
+         * @summary One run by id — how a run that was still running when its window was read is
+         * finished on a later tick.
+         * @param {Number} runId
+         * @returns {Promise<Object>} See {@link mapRun}.
+         */
+        async getRun(runId) {
+            return mapRun(await request(`${base}/actions/runs/${runId}`));
         },
 
         /**
@@ -136,6 +163,22 @@ export function createGithubActionsClient({repoSlug, token, fetchImpl = globalTh
          */
         fetchJobLog(jobId) {
             return request(`${base}/actions/jobs/${jobId}/logs`, {text: true});
+        },
+
+        /**
+         * @summary Whether a file exists in the repository at a ref — the proof that a test could have
+         * run in the job whose green colour is offered as recovery evidence. A 404 is `false`; any
+         * other failure throws, so an unreadable answer is never mistaken for an absent file.
+         * @param {Object} options
+         * @param {String} options.path Repository-relative file path.
+         * @param {String} options.ref  A commit SHA or ref name.
+         * @returns {Promise<Boolean>}
+         */
+        async fileExists({path, ref}) {
+            const encoded = String(path).split('/').map(encodeURIComponent).join('/'),
+                  data    = await request(`${base}/contents/${encoded}?ref=${encodeURIComponent(ref)}`, {allow404: true});
+
+            return data !== null;
         }
     };
 }

@@ -12,14 +12,15 @@ import {writeFileAtomic}          from '../../services/shared/atomicFileWrite.mj
 import {
     buildCiThreadId,
     buildDefectNotes,
+    buildRecoveryNote,
     isCanonicalNote,
     isSuiteRunGreen,
     parseCiThreadId,
-    parsePlaywrightFailures,
-    selectRecoveries
+    parsePlaywrightReport,
+    selectRecoveryCandidates
 } from '../../services/ingestion/CiFailureIngestor.mjs';
-import {createGithubActionsClient, resolveGithubToken} from '../../services/ingestion/githubActions.mjs';
-import {foldDefectObservations}                        from '../../services/memory-core/helpers/defectObservationFold.mjs';
+import {createGithubActionsClient, resolveGithubToken}   from '../../services/ingestion/githubActions.mjs';
+import {defectNoteFingerprint, foldDefectObservations} from '../../services/memory-core/helpers/defectObservationFold.mjs';
 
 /**
  * @module ai/scripts/maintenance/ingestCiFailures
@@ -27,33 +28,47 @@ import {foldDefectObservations}                        from '../../services/memo
  * @summary The defect ledger's machine producer — the supervised one-shot behind the orchestrator's
  * `ci-failure-ingest` task (`npm run ai:ingest-ci-failures` by hand).
  *
- * One tick: read the repository's completed CI runs since the receipt, and for every failed job
- * whose run and job are not yet a thread on the mailbox, parse the job log and broadcast one
- * `defect-note:` per failing test — quiet, low priority, the run and job as the thread. Every job
- * that ran its suite green is recovery evidence: an open CI-filed record whose job went green in a
- * newer run gets its `[recovered]` note. The fold, the triggers, the digest and its task are
- * unchanged; this adds the producer the ledger never had.
+ * One tick: read the repository's runs since the receipt, and for every failed job parse the job
+ * log and broadcast one `defect-note:` per failing test the run-and-job thread does not hold yet —
+ * quiet, low priority, the run and job as the thread. Every job that ran its suite green is
+ * candidate recovery evidence: an open CI-filed record whose job went green in a newer run, on a
+ * head that still contains the record's spec, gets its `[recovered]` note. The fold records the
+ * threads a record was sighted under and the promotion trigger reads them as independence; the
+ * digest is unchanged; the orchestrator gains this task.
  *
- * Two idempotence layers, deliberately unequal: the mailbox thread is correctness (N orchestrators
- * cannot double-file a run and job), the local receipt is cost (this host does not re-read runs it
- * already read). Losing the receipt re-reads a window; it never duplicates an observation.
+ * Admission is per observation, and the receipt is cost, not correctness. A failed job's thread is
+ * read in full and only the notes whose fingerprints it lacks are sent, so a write interrupted after
+ * its first note resumes with the second — not with a skipped job. The local receipt holds the runs
+ * this host has finished reading and the runs it saw still running; those are finished by id on a
+ * later tick whatever window they were created in, because the API filters on creation time and a
+ * run can complete hours after it was created. Losing the receipt re-reads a window; it never
+ * duplicates an observation.
+ *
+ * Completeness is stated, never assumed: the mailbox is read page by page up to the configured cap,
+ * and a tick that hit the cap files sightings but certifies no recovery, because a record on an
+ * unread page could be fresher than the read ones say.
  *
  * The fleet's mailbox lives on the PLANE, so the plane client is the default; `--local` uses this
  * checkout's in-process store (test/isolated planes). `--dry-run` reads GitHub and the mailbox and
  * prints what it would send, sending nothing and writing no receipt.
+ *
+ * Retirement: if the runner gains first-class flake reporting the fold can consume directly, this
+ * producer retires with it — the mapping in `CiFailureIngestor.mjs` and this tick are all it adds.
  *
  * Usage:
  *   node ai/scripts/maintenance/ingestCiFailures.mjs                       # orchestrator child
  *   node ai/scripts/maintenance/ingestCiFailures.mjs --dry-run --local     # an operator box
  *   node ai/scripts/maintenance/ingestCiFailures.mjs --plane-base http://127.0.0.1:3102 --dry-run
  *
- * `parseArgs` and `runIngest` are pure, dependency-injected units; the CLI auto-runs only when
- * invoked directly, so the module is importable substrate-free by unit tests.
+ * `parseArgs`, `listAllMessages` and `runIngest` are pure, dependency-injected units; the CLI
+ * auto-runs only when invoked directly, so the module is importable substrate-free by unit tests.
  */
 
-const RECEIPT_VERSION      = 1;
+const RECEIPT_VERSION      = 2;
 const RECEIPT_RUN_CAPACITY = 2000;
 const OVERLAP_MS           = 2 * 60 * 60 * 1000;
+const MAILBOX_PAGE_SIZE    = 100;
+const THREAD_READ_CAP      = 500;
 
 /**
  * @summary Builds the Commander program; a fresh instance per call keeps parser tests isolated.
@@ -70,7 +85,7 @@ function createArgParser() {
         .allowExcessArguments(false)
         .option('--repo <slug>', 'Repository to read, owner/name (default: the configured leaf)')
         .option('--lookback-hours <n>', 'How far back one tick looks when the receipt is absent or older')
-        .option('--limit <n>', 'How many broadcast messages to fold for recovery and idempotence')
+        .option('--limit <n>', 'How many broadcast messages to read for recovery, across pages')
         .option('--plane-base <url>', 'Plane base URL (default: AiConfig.fleet.planeBase)')
         .option('--receipt <path>', 'Receipt file (default: the configured leaf)')
         .option('--local', 'Use this checkout\'s in-process mailbox store instead of the plane')
@@ -123,27 +138,35 @@ export function parseArgs(argv) {
 }
 
 /**
- * @summary Reads the receipt; an absent or unreadable receipt is an empty one (cost, not correctness).
+ * @summary Reads the receipt; an absent or unreadable receipt is an empty one (cost, not
+ * correctness). A version-1 receipt is read as version 2 with no pending runs.
  * @param {String} filePath
- * @returns {Promise<{version: Number, lastCreatedAt: String|null, runIds: Number[]}>}
+ * @returns {Promise<{version: Number, lastCreatedAt: String|null, runIds: Number[], pendingRunIds: Number[]}>}
  */
 export async function readReceipt(filePath) {
     try {
         const parsed = JSON.parse(await readFile(filePath, 'utf8'));
 
-        if (parsed?.version === RECEIPT_VERSION && Array.isArray(parsed.runIds)) {
-            return {version: RECEIPT_VERSION, lastCreatedAt: parsed.lastCreatedAt || null, runIds: parsed.runIds.filter(Number.isFinite)};
+        if ((parsed?.version === 1 || parsed?.version === RECEIPT_VERSION) && Array.isArray(parsed.runIds)) {
+            return {
+                version      : RECEIPT_VERSION,
+                lastCreatedAt: parsed.lastCreatedAt || null,
+                runIds       : parsed.runIds.filter(Number.isFinite),
+                pendingRunIds: Array.isArray(parsed.pendingRunIds) ? parsed.pendingRunIds.filter(Number.isFinite) : []
+            };
         }
     } catch {
-        // absent or malformed: re-read the window; the mailbox thread keeps that idempotent
+        // absent or malformed: re-read the window; per-observation admission keeps that idempotent
     }
 
-    return {version: RECEIPT_VERSION, lastCreatedAt: null, runIds: []};
+    return {version: RECEIPT_VERSION, lastCreatedAt: null, runIds: [], pendingRunIds: []};
 }
 
 /**
- * @summary The instant one tick reads from: the receipt's newest run minus an overlap (runs
- * complete out of order), floored by the lookback so a stale receipt never opens an unbounded read.
+ * @summary The instant one tick lists from: the receipt's newest run minus an overlap (runs are
+ * listed by creation time and complete out of order), floored by the lookback so a stale receipt
+ * never opens an unbounded read. Runs still running at a tick are not lost when the window moves
+ * past their creation: the receipt carries them as pending and they are read by id.
  * @param {Object} options
  * @param {Object} options.receipt
  * @param {Number} options.now
@@ -159,18 +182,45 @@ export function resolveSince({receipt, now, lookbackMs}) {
 }
 
 /**
+ * @summary Walks mailbox pages until the last page or the cap; `complete` says which. A page
+ * without `truncated` (an adapter that hands everything back at once) is the last page.
+ * @param {{listMessages: Function}} mailbox
+ * @param {Object} args The filter — `to`, `status`, `threadId`; `limit` and `offset` are this walk's.
+ * @param {Number} cap The most rows one walk reads.
+ * @returns {Promise<{messages: Object[], complete: Boolean}>}
+ */
+export async function listAllMessages(mailbox, args, cap) {
+    const messages = [];
+    let   offset   = 0;
+
+    while (messages.length < cap) {
+        const page = await mailbox.listMessages({...args, limit: Math.min(MAILBOX_PAGE_SIZE, cap - messages.length), offset});
+
+        messages.push(...(page.messages || []));
+
+        if (!page.truncated || page.nextOffset === null || page.nextOffset === undefined) {
+            return {messages, complete: true};
+        }
+
+        offset = page.nextOffset;
+    }
+
+    return {messages, complete: false};
+}
+
+/**
  * @summary One producer tick over injected reads and writes.
  *
  * @param {Object}   options
- * @param {Object}   options.github        `{listCompletedRuns, listJobs, fetchJobLog}`
+ * @param {Object}   options.github        `{listRuns, getRun, listJobs, fetchJobLog, fileExists}`
  * @param {Object}   options.mailbox       `{listMessages, addMessage}` — plane client or in-process adapter
  * @param {String}   options.repoSlug
  * @param {Object}   options.receipt       From {@link readReceipt}.
  * @param {Function} options.writeReceipt  `(receipt) => Promise`
  * @param {Number}   [options.now=Date.now()]
  * @param {Number}   [options.lookbackMs]
- * @param {Number}   [options.recoveryAfterMs] Quiet time before a green job recovers a record.
- * @param {Number}   [options.mailboxLimit]
+ * @param {Number}   [options.recoveryAfterMs] Quiet time before a green job may recover a record.
+ * @param {Number}   [options.mailboxLimit]    The most broadcast rows read for recovery, across pages.
  * @param {Boolean}  [options.dryRun=false]
  * @param {Function} [options.log=console.error]
  * @returns {Promise<Object>} The tick summary.
@@ -189,14 +239,53 @@ export async function runIngest({
     log             = message => console.error(message)
 }) {
     const since   = resolveSince({receipt, now, lookbackMs}),
-          runs    = await github.listCompletedRuns({since}),
+          listed  = await github.listRuns({since}),
           seen    = new Set(receipt.runIds),
-          summary = {since, runsRead: 0, jobsRead: 0, filedJobs: [], skippedJobs: [], notes: [], recoveries: [], skippedTests: []};
+          pending = new Set(receipt.pendingRunIds || []),
+          summary = {
+              since,
+              runsRead           : 0,
+              jobsRead           : 0,
+              pendingRuns        : [],
+              filedJobs          : [],
+              skippedJobs        : [],
+              notes              : [],
+              skippedNotes       : [],
+              recoveries         : [],
+              skippedRecoveries  : [],
+              skippedTests       : [],
+              mailboxScanComplete: true
+          };
 
-    const {messages} = await mailbox.listMessages({to: 'AGENT:*', status: 'all', limit: mailboxLimit}),
-          rows       = messages.filter(message => typeof message.subject === 'string' && message.subject.startsWith('defect-note:')),
-          greenJobs  = [],
-          sentRows   = [];
+    // A run still running when its window was read is finished by id, whatever window it was
+    // created in. A run the API no longer knows is dropped; any other failure keeps it pending.
+    const runs      = [...listed],
+          listedIds = new Set(listed.map(run => run.id));
+
+    for (const runId of [...pending]) {
+        if (listedIds.has(runId) || seen.has(runId)) continue;
+
+        try {
+            runs.push(await github.getRun(runId));
+        } catch (error) {
+            const message = error?.message || String(error);
+
+            if (/\b404\b/.test(message)) {
+                pending.delete(runId);
+            }
+
+            log(`ci-failure-ingest: pending run ${runId} could not be read (${message})`);
+        }
+    }
+
+    runs.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+
+    const {messages, complete} = await listAllMessages(mailbox, {to: 'AGENT:*', status: 'all'}, mailboxLimit),
+          rows                 = messages.filter(message => typeof message.subject === 'string' && message.subject.startsWith('defect-note:')),
+          greenJobs            = [],
+          sentRows             = [];
+
+    summary.mailboxScanComplete = complete;
 
     // A green run's jobs are read only when an open CI-filed record could recover from them: the
     // workflows of the open records on the mailbox, plus any workflow this tick files under. At
@@ -220,6 +309,13 @@ export async function runIngest({
     for (const run of runs) {
         if (seen.has(run.id)) continue;
 
+        if (run.status !== 'completed') {
+            pending.add(run.id);
+            summary.pendingRuns.push(run.id);
+            continue;
+        }
+
+        pending.delete(run.id);
         summary.runsRead++;
 
         const failed = run.conclusion === 'failure' || run.conclusion === 'timed_out',
@@ -230,68 +326,132 @@ export async function runIngest({
             continue;
         }
 
-        const jobs = await github.listJobs(run.id);
+        const jobs        = await github.listJobs(run.id);
+        let   runComplete = true;
 
         for (const job of jobs) {
             summary.jobsRead++;
 
             if (isSuiteRunGreen(job)) {
-                greenJobs.push({workflowPath: run.path, jobName: job.name, runId: run.id});
+                greenJobs.push({workflowPath: run.path, jobName: job.name, runId: run.id, headSha: run.headSha, headBranch: run.headBranch});
                 continue;
             }
             if (job.conclusion !== 'failure') continue;
 
             const thread = buildCiThreadId({workflowPath: run.path, jobName: job.name, runId: run.id}),
-                  filed  = await mailbox.listMessages({to: 'AGENT:*', status: 'all', threadId: thread, limit: 1});
+                  filed  = await listAllMessages(mailbox, {to: 'AGENT:*', status: 'all', threadId: thread}, THREAD_READ_CAP);
 
-            if ((filed.messages || []).length > 0) {
-                summary.skippedJobs.push({runId: run.id, job: job.name, reason: 'already-filed'});
+            if (!filed.complete) {
+                // A thread this long cannot be read to the end: nothing is filed and the run stays
+                // unreceipted, so the next tick tries again instead of double-filing.
+                summary.skippedJobs.push({runId: run.id, job: job.name, reason: 'thread-read-incomplete'});
+                runComplete = false;
                 continue;
             }
 
-            const failures         = parsePlaywrightFailures(await github.fetchJobLog(job.id)),
-                  {notes, skipped} = buildDefectNotes({failures, run, job, repoSlug});
+            const filedFingerprints = new Set(
+                filed.messages.filter(message => isCanonicalNote(message.subject)).map(message => defectNoteFingerprint(message.subject))
+            );
+
+            const report = parsePlaywrightReport(await github.fetchJobLog(job.id));
+
+            if (!report.complete) {
+                summary.skippedJobs.push({
+                    runId   : run.id,
+                    job     : job.name,
+                    reason  : report.declared ? 'epilogue-incomplete' : 'no-playwright-epilogue',
+                    declared: report.declared,
+                    read    : report.failures.length
+                });
+                continue;
+            }
+
+            const {notes, skipped} = buildDefectNotes({failures: report.failures, run, job, repoSlug});
 
             summary.skippedTests.push(...skipped.map(entry => ({runId: run.id, job: job.name, ...entry})));
 
             if (notes.length === 0) {
-                summary.skippedJobs.push({runId: run.id, job: job.name, reason: failures.length ? 'no-symptoms' : 'no-playwright-epilogue'});
+                summary.skippedJobs.push({runId: run.id, job: job.name, reason: 'no-symptoms'});
                 continue;
             }
 
+            const toSend = notes.filter(note => !filedFingerprints.has(note.fingerprint));
+
             for (const note of notes) {
+                if (filedFingerprints.has(note.fingerprint)) {
+                    summary.skippedNotes.push({runId: run.id, job: job.name, fingerprint: note.fingerprint, reason: 'already-filed'});
+                }
+            }
+
+            if (toSend.length === 0) {
+                summary.skippedJobs.push({runId: run.id, job: job.name, reason: 'already-filed', notes: notes.length});
+                continue;
+            }
+
+            for (const note of toSend) {
                 await send(note);
                 summary.notes.push({runId: run.id, job: job.name, fingerprint: note.fingerprint, subject: note.subject, thread});
             }
 
-            summary.filedJobs.push({runId: run.id, job: job.name, notes: notes.length});
+            summary.filedJobs.push({runId: run.id, job: job.name, notes: toSend.length, alreadyFiled: notes.length - toSend.length});
             openWorkflowPaths.add(run.path);
         }
 
-        seen.add(run.id);
+        if (runComplete) {
+            seen.add(run.id);
+        }
     }
 
     // Recovery sees this tick's own sightings, so a record sighted in this window is fresh — a
-    // flake that just fired stays open however green the suite is now.
-    const records    = foldDefectObservations([...rows, ...sentRows], {now}),
-          recoveries = selectRecoveries({records, greenJobs, now, recoveryAfterMs});
+    // flake that just fired stays open however green the suite is now. An incomplete mailbox scan
+    // certifies no recovery: a record on an unread page could be fresher than the read ones say.
+    if (!complete) {
+        summary.skippedRecoveries.push({reason: 'mailbox-scan-incomplete', read: messages.length, cap: mailboxLimit});
+    } else {
+        const records    = foldDefectObservations([...rows, ...sentRows], {now}),
+              candidates = selectRecoveryCandidates({records, greenJobs, now, recoveryAfterMs});
 
-    for (const recovery of recoveries) {
-        await send(recovery);
-        summary.recoveries.push({fingerprint: recovery.fingerprint, subject: recovery.subject, thread: recovery.partOfThread});
+        for (const candidate of candidates) {
+            const {record, evidence, specPath} = candidate;
+
+            if (!specPath) {
+                summary.skippedRecoveries.push({fingerprint: record.fingerprint, reason: 'surface-not-a-spec-path'});
+                continue;
+            }
+
+            let exists;
+
+            try {
+                exists = await github.fileExists({path: specPath, ref: evidence.headSha});
+            } catch (error) {
+                summary.skippedRecoveries.push({fingerprint: record.fingerprint, reason: 'evidence-check-failed', runId: evidence.runId, error: error?.message || String(error)});
+                continue;
+            }
+
+            if (!exists) {
+                summary.skippedRecoveries.push({fingerprint: record.fingerprint, reason: 'spec-absent-at-evidence', runId: evidence.runId, specPath});
+                continue;
+            }
+
+            const recovery = buildRecoveryNote(candidate);
+
+            await send(recovery);
+            summary.recoveries.push({fingerprint: recovery.fingerprint, subject: recovery.subject, thread: recovery.partOfThread, evidenceRunId: evidence.runId});
+        }
     }
 
     if (!dryRun) {
-        const newest = runs.reduce((max, run) => Date.parse(run.createdAt) > Date.parse(max) ? run.createdAt : max, receipt.lastCreatedAt || since);
+        const newest = listed.reduce((max, run) => Date.parse(run.createdAt) > Date.parse(max) ? run.createdAt : max, receipt.lastCreatedAt || since);
 
         await writeReceipt({
             version      : RECEIPT_VERSION,
             lastCreatedAt: newest,
-            runIds       : [...seen].slice(-RECEIPT_RUN_CAPACITY)
+            runIds       : [...seen].slice(-RECEIPT_RUN_CAPACITY),
+            pendingRunIds: [...pending]
         });
     }
 
-    log(`ci-failure-ingest: ${summary.runsRead} run(s) since ${since}, ${summary.notes.length} note(s), ${summary.recoveries.length} recovery(ies)${dryRun ? ' — dry run, nothing sent' : ''}`);
+    log(`ci-failure-ingest: ${summary.runsRead} run(s) since ${since}, ${summary.pendingRuns.length} pending, ${summary.notes.length} note(s), ${summary.recoveries.length} recovery(ies)${complete ? '' : ' — mailbox scan incomplete, no recovery certified'}${dryRun ? ' — dry run, nothing sent' : ''}`);
 
     return summary;
 }
