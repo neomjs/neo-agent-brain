@@ -106,9 +106,9 @@ test.describe('fleetTasksSource — extractDeploymentRows', () => {
         expect(map['orchestrator:tenant-sync:d15ab1ed0000'], 'a disabled repo is not scheduled').toBeUndefined();
         expect(map['orchestrator:tenant-sync:n0due0000000'], 'no nextDueAt → no queued claim').toBeUndefined();
 
-        // the maintenance retry renders under its own phase word
-        expect(map['orchestrator:maintenance:retry']).toEqual({
-            id: 'orchestrator:maintenance:retry', section: 'queued', name: 'Maintenance retry', source: 'orchestrator',
+        // the backup lane is one queued row under the writer's phase word, at its next attempt
+        expect(map['orchestrator:maintenance:backup']).toEqual({
+            id: 'orchestrator:maintenance:backup', section: 'queued', name: 'Backup lane', source: 'orchestrator',
             state: 'exhausted', at: '2026-08-22T12:36:55.189Z', progress: null, detail: '0 retries remaining'
         });
 
@@ -148,9 +148,9 @@ test.describe('fleetTasksSource — extractDeploymentRows', () => {
     });
 
     test('an unusable payload is the typed unavailable axis — with the producer reason when it gave one', () => {
-        expect(extractDeploymentRows(null)).toEqual({rows: [], state: 'unavailable', reason: 'deployment-snapshot-unavailable', observedAt: null});
+        expect(extractDeploymentRows(null)).toEqual({rows: [], state: 'unavailable', reason: 'deployment-snapshot-unavailable', observedAt: null, scheduler: null});
         // the reader's own unavailable envelope: ok:false, snapshot:null, a named reason
-        expect(extractDeploymentRows({ok: false, status: 'unavailable', snapshot: null, reason: 'snapshot-missing'})).toEqual({rows: [], state: 'unavailable', reason: 'snapshot-missing', observedAt: null});
+        expect(extractDeploymentRows({ok: false, status: 'unavailable', snapshot: null, reason: 'snapshot-missing'})).toEqual({rows: [], state: 'unavailable', reason: 'snapshot-missing', observedAt: null, scheduler: null});
         expect(extractDeploymentRows({ok: true, status: 'available'}), 'ok without a snapshot is still nothing').toMatchObject({state: 'unavailable'});
         expect(extractDeploymentRows({ok: false, status: 'mystery', snapshot: deploymentPayload().snapshot, reason: 'x'}), 'ok:false with a snapshot under an unknown status fails closed').toMatchObject({state: 'unavailable', reason: 'x'})
     });
@@ -200,7 +200,220 @@ test.describe('fleetTasksSource — extractDeploymentRows', () => {
     });
 
     test('an empty-but-valid snapshot yields zero rows, not a failure', () => {
-        expect(extractDeploymentRows({ok: true, status: 'available', snapshot: {generatedAt: NOW_MS}})).toEqual({rows: [], state: 'wired', reason: null, observedAt: NOW})
+        expect(extractDeploymentRows({ok: true, status: 'available', snapshot: {generatedAt: NOW_MS}})).toEqual({rows: [], state: 'wired', reason: null, observedAt: NOW, scheduler: null})
+    })
+});
+
+/**
+ * @summary The live plane read at 2026-09-05T12:49:36Z, verbatim: three heavy-maintenance waiters
+ * starved behind the `summary` lease (this plane's writer predates the per-waiter reason fields, so
+ * they are absent and the reducer must not invent them), the backup lane exhausted with no success
+ * on record, and the maintenance block's leak bait (durability prose, bundle name, staging residue).
+ * One tenant repo is queued beside them so the queue counts across producers.
+ * @returns {Object}
+ */
+function starvedPlane() {
+    return {
+        ok: true, status: 'available', ageMs: 28159, staleAfterMs: 120000,
+        snapshot: {
+            generatedAt: 1788612875668,
+            heavyMaintenanceStarvation: {
+                taskName: 'heavy-maintenance-starvation-watchdog', posture: 'degraded', checkedAt: '2026-09-05T12:49:36.362Z',
+                degradeAfterMs: 3600000, waiterCount: 5, unreadableCount: 0, leaseHolder: 'summary',
+                breaches: [
+                    {taskName: 'dream',                   priorityZero: false, bootstrapCritical: false, deferredSince: '2026-09-05T10:05:51.967Z', starvedForMs: 9824395,  leaseHolder: 'summary'},
+                    {taskName: 'kbSync',                  priorityZero: false, bootstrapCritical: false, deferredSince: '2026-09-05T11:29:12.439Z', starvedForMs: 4823923,  leaseHolder: 'summary'},
+                    {taskName: 'message-concept-harvest', priorityZero: false, bootstrapCritical: false, deferredSince: '2026-09-05T06:13:43.059Z', starvedForMs: 23753303, leaseHolder: 'summary'}
+                ]
+            },
+            maintenance: {
+                durability    : {cloudDeployment: true, configErrorCode: null, offHostBackupRequired: true, offHostSyncConfigured: false, offHostSyncConfigValid: true, posture: 'unmet', reason: 'This cloud deployment requires an off-host copy of the backup bundle, but no off-host sync command is configured. The bundle and the data it protects share one failure domain.'},
+                stagingResidue: {status: 'ok', count: 2, bytes: 2289510815, oldestMtimeMs: 1785792866107.185, errorCode: null},
+                retry         : {interruptedAt: null, lastSuccessAgeMs: null, lastSuccessAt: null, nextAttemptAtMs: 1788626336430, retriesRemaining: 0, streakStartedAtMs: 1785831744707, windowEndsAtMs: 1785835344707, phase: 'exhausted'},
+                lastBackup    : {backup: {durationMs: 149102, error: null, status: 'success'}, bundleCompletedAt: '2026-09-04T16:41:27.461Z', bundleName: 'backup-2026-09-04T16-38-58.555Z', finishedAt: '2026-09-04T16:41:27.657Z', offHostSync: {completionScope: 'direct-child', descendants: 'unknown', durationMs: null, exitCode: null, signal: null, status: 'disabled', stderrTail: '', terminatedVia: null}, schemaVersion: 1},
+                health        : {observationStatus: 'observed', reasonCodes: ['off-host-durability-unmet', 'backup-retry-exhausted', 'backup-never-succeeded'], staleAfterMs: 90000000, status: 'degraded'}
+            },
+            tenantRepoSync: {repos: [{identityHash: 'cbff435fe549', tenantHash: 'cf744f16ee7f', disabled: false, due: false, nextDueAt: '2026-09-05T13:10:00.000Z'}]}
+        }
+    }
+}
+
+const NEXT_BACKUP_ATTEMPT = new Date(1788626336430).toISOString();
+
+test.describe('fleetTasksSource — the heavy-maintenance queue (#322)', () => {
+    test('the live receipt reduces to one starved row per breach — the wait and the cause ride the row, the lease is the section\'s summary, the backup lane is one row', () => {
+        const {rows, scheduler} = extractDeploymentRows(starvedPlane()),
+              map = byId(rows);
+
+        expect(map['orchestrator:starvation:dream']).toEqual({
+            id: 'orchestrator:starvation:dream', section: 'queued', name: 'dream', source: 'orchestrator', state: 'starved',
+            at: '2026-09-05T10:05:51.967Z', progress: null, detail: null,
+            waitMs: 9824395, thresholdMs: 3600000, checkedAt: '2026-09-05T12:49:36.362Z',
+            reasonCode: null, blockingTaskName: null, leaseOwner: null, priorityZero: false, bootstrapCritical: false
+        });
+        expect(map['orchestrator:starvation:message-concept-harvest']).toMatchObject({state: 'starved', at: '2026-09-05T06:13:43.059Z', waitMs: 23753303});
+        expect(map['orchestrator:starvation:kbSync']).toMatchObject({state: 'starved', waitMs: 4823923});
+
+        // the check-time facts live ONCE, on the summary — the older writer sends no leaseStatus, so none is invented
+        expect(scheduler).toEqual({
+            leaseHolder: 'summary', leaseStatus: null, checkedAt: '2026-09-05T12:49:36.362Z', degradeAfterMs: 3600000,
+            posture: 'degraded', starvedTotal: 3, unreadableCount: 0
+        });
+
+        // the backup lane: the writer's phase word, the next attempt as its instant, the health codes as its words
+        expect(map['orchestrator:maintenance:backup']).toEqual({
+            id: 'orchestrator:maintenance:backup', section: 'queued', name: 'Backup lane', source: 'orchestrator',
+            state: 'exhausted', at: NEXT_BACKUP_ATTEMPT, progress: null,
+            detail: 'off host durability unmet · backup retry exhausted · backup never succeeded · 0 retries remaining'
+        });
+
+        expect(rows, 'three starved + the backup lane + one repo').toHaveLength(5)
+    });
+
+    test('a breach with a reason code words its own cause from its own fields; the flags ride as words; a nameless breach is skipped', () => {
+        const payload = starvedPlane();
+
+        payload.snapshot.heavyMaintenanceStarvation.breaches = [
+            {taskName: 'graphlog-compaction', reasonCode: 'heavy-maintenance-backpressure', blockingTaskName: 'core-corpus-projection', leaseOwner: null, priorityZero: true, deferredSince: '2026-09-05T12:05:50.000Z', starvedForMs: 3610000},
+            {taskName: 'kbSync', reasonCode: 'heavy-maintenance-lease-held', leaseOwner: 'summary', bootstrapCritical: true, deferredSince: '2026-09-05T11:29:12.439Z', starvedForMs: 4823923, leaseStatus: 'active'},
+            {reasonCode: 'heavy-maintenance-lease-held', deferredSince: '2026-09-05T11:00:00.000Z', starvedForMs: 1}
+        ];
+
+        const {rows, scheduler} = extractDeploymentRows(payload),
+              map = byId(rows);
+
+        expect(map['orchestrator:starvation:graphlog-compaction']).toMatchObject({
+            detail: 'heavy-maintenance-backpressure · behind core-corpus-projection · priority zero',
+            reasonCode: 'heavy-maintenance-backpressure', blockingTaskName: 'core-corpus-projection', leaseOwner: null, priorityZero: true, bootstrapCritical: false
+        });
+        expect(map['orchestrator:starvation:kbSync']).toMatchObject({
+            detail: 'heavy-maintenance-lease-held · lease owner summary · bootstrap critical',
+            reasonCode: 'heavy-maintenance-lease-held', leaseOwner: 'summary', blockingTaskName: null, bootstrapCritical: true
+        });
+        expect(rows.filter(row => row.state === 'starved')).toHaveLength(2);
+        expect(scheduler.starvedTotal, 'the nameless entry is not a breach the pane can name').toBe(2)
+    });
+
+    test('no receipt → no starved rows and no summary; a disabled watchdog reduces to none even with breaches on the wire', () => {
+        const absent = starvedPlane();
+
+        delete absent.snapshot.heavyMaintenanceStarvation;
+
+        const withoutBlock = extractDeploymentRows(absent);
+
+        expect(withoutBlock.rows.filter(row => row.state === 'starved')).toHaveLength(0);
+        expect(withoutBlock.scheduler).toBeNull();
+
+        const disabled = starvedPlane();
+
+        disabled.snapshot.heavyMaintenanceStarvation.posture = 'disabled';
+
+        const off = extractDeploymentRows(disabled);
+
+        expect(off.rows.filter(row => row.state === 'starved')).toHaveLength(0);
+        expect(off.scheduler).toBeNull()
+    });
+
+    test('control (a): a fresh envelope with the same watchdog stamp reduces to identical rows, summary and counts — only the snapshot\'s own instant moved', () => {
+        const later = starvedPlane();
+
+        later.snapshot.generatedAt += 60_000;
+
+        const first  = extractDeploymentRows(starvedPlane()),
+              second = extractDeploymentRows(later);
+
+        expect(second.rows).toEqual(first.rows);
+        expect(second.scheduler).toEqual(first.scheduler);
+        expect(second.observedAt).not.toBe(first.observedAt)
+    });
+
+    test('control (b): no active holder keeps the readable breaches and says so; an unknown posture with unreadable entries is a summary that says exactly that, never an empty queue', () => {
+        const holderless = starvedPlane();
+
+        holderless.snapshot.heavyMaintenanceStarvation.leaseHolder = null;
+
+        const degraded = extractDeploymentRows(holderless);
+
+        expect(degraded.rows.filter(row => row.state === 'starved')).toHaveLength(3);
+        expect(degraded.scheduler).toMatchObject({leaseHolder: null, posture: 'degraded', starvedTotal: 3});
+
+        const unreadable = starvedPlane();
+
+        Object.assign(unreadable.snapshot.heavyMaintenanceStarvation, {posture: 'unknown', breaches: [], unreadableCount: 2, leaseHolder: null});
+
+        const unknown = extractDeploymentRows(unreadable);
+
+        expect(unknown.rows.filter(row => row.state === 'starved')).toHaveLength(0);
+        expect(unknown.scheduler).toEqual({
+            leaseHolder: null, leaseStatus: null, checkedAt: '2026-09-05T12:49:36.362Z', degradeAfterMs: 3600000,
+            posture: 'unknown', starvedTotal: 0, unreadableCount: 2
+        })
+    });
+
+    test('the backup lane is visible without an instant: a never-anchored lane and an unreachable receipt keep their state and reasons under the queue with a null instant — no next attempt or completion is invented', () => {
+        const unanchored = starvedPlane();
+
+        // the writer's shape for a lane that never succeeded: no retry window open, no success to anchor to
+        unanchored.snapshot.maintenance = {
+            retry : {interruptedAt: null, lastSuccessAgeMs: null, lastSuccessAt: null, nextAttemptAtMs: null, retriesRemaining: null, streakStartedAtMs: null, windowEndsAtMs: null, phase: 'unanchored'},
+            health: {observationStatus: 'observed', reasonCodes: ['backup-never-succeeded'], staleAfterMs: 90000000, status: 'pending'}
+        };
+
+        expect(byId(extractDeploymentRows(unanchored).rows)['orchestrator:maintenance:backup']).toEqual({
+            id: 'orchestrator:maintenance:backup', section: 'queued', name: 'Backup lane', source: 'orchestrator',
+            state: 'unanchored', at: null, progress: null, detail: 'backup never succeeded'
+        });
+
+        // the observer could not reach the receipt: the writer's own shape carries no instant at all
+        const unreachable = starvedPlane();
+
+        unreachable.snapshot.maintenance = {
+            lastBackup: {finishedAt: null, kind: 'enoent', status: 'unreachable'},
+            health    : {observationStatus: 'partial', reasonCodes: ['backup-receipt-unreachable'], staleAfterMs: null, status: 'degraded'}
+        };
+
+        expect(byId(extractDeploymentRows(unreachable).rows)['orchestrator:maintenance:backup']).toEqual({
+            id: 'orchestrator:maintenance:backup', section: 'queued', name: 'Backup lane', source: 'orchestrator',
+            state: 'degraded', at: null, progress: null, detail: 'backup receipt unreachable'
+        });
+
+        // a receipt alone, with neither a phase nor a verdict: the receipt's own word is the state
+        const receiptOnly = starvedPlane();
+
+        receiptOnly.snapshot.maintenance = {lastBackup: {finishedAt: null, kind: 'eacces', status: 'unreachable'}};
+
+        expect(byId(extractDeploymentRows(receiptOnly).rows)['orchestrator:maintenance:backup']).toMatchObject({section: 'queued', state: 'unreachable', at: null, detail: null})
+    });
+
+    test('controls: absent maintenance → no backup row; a dated success with nothing scheduled → ONE recent row at the bundle\'s instant', () => {
+        const absent = starvedPlane();
+
+        delete absent.snapshot.maintenance;
+        expect(byId(extractDeploymentRows(absent).rows)['orchestrator:maintenance:backup']).toBeUndefined();
+
+        const healthy = starvedPlane();
+
+        healthy.snapshot.maintenance = {
+            retry     : {interruptedAt: null, lastSuccessAgeMs: 3600000, lastSuccessAt: '2026-09-05T11:49:36.362Z', nextAttemptAtMs: null, retriesRemaining: null, streakStartedAtMs: null, windowEndsAtMs: null, phase: 'healthy'},
+            lastBackup: {backup: {durationMs: 149102, error: null, status: 'success'}, bundleCompletedAt: '2026-09-05T11:49:36.100Z', bundleName: 'backup-2026-09-05T11-47-07.000Z', finishedAt: '2026-09-05T11:49:36.362Z', schemaVersion: 1},
+            health    : {observationStatus: 'observed', reasonCodes: [], staleAfterMs: 90000000, status: 'healthy'}
+        };
+
+        const {rows} = extractDeploymentRows(healthy);
+
+        expect(rows.filter(row => row.id === 'orchestrator:maintenance:backup')).toHaveLength(1);
+        expect(byId(rows)['orchestrator:maintenance:backup']).toEqual({
+            id: 'orchestrator:maintenance:backup', section: 'recent', name: 'Backup lane', source: 'orchestrator',
+            state: 'healthy', at: '2026-09-05T11:49:36.362Z', progress: null, detail: null
+        })
+    });
+
+    test('no path, prose, bundle name, residue figure or tenant identifier crosses the wire', () => {
+        const text = JSON.stringify(extractDeploymentRows(starvedPlane()));
+
+        for (const bait of ['This cloud deployment', 'backup-2026-09-04', 'stagingResidue', 'stderrTail', '2289510815', 'cf744f16ee7f', 'tenantHash', '/app']) {
+            expect(text, bait).not.toContain(bait)
+        }
     })
 });
 
@@ -355,11 +568,11 @@ test.describe('fleetTasksSource — createFleetTasksSource', () => {
             ingestion : {state: 'wired', reason: null, scope: 'this-process-only'}
         });
 
-        // queued soonest-first: the due repo, the maintenance retry, the later repo, then the
-        // instant-less backlog gauge sinks to the end
+        // queued soonest-first: the due repo, the backup lane at its next attempt, the later repo,
+        // then the instant-less backlog gauge sinks to the end
         expect(envelope.queued.map(row => row.id)).toEqual([
             'orchestrator:tenant-sync:cbff435fe549',
-            'orchestrator:maintenance:retry',
+            'orchestrator:maintenance:backup',
             'orchestrator:tenant-sync:ba41470c1d2e',
             'mc:rem:digest'
         ]);
@@ -374,7 +587,7 @@ test.describe('fleetTasksSource — createFleetTasksSource', () => {
             'orchestrator:tenant-sync:last',
             'orchestrator:recovery:recovery-actuator:backup:record:2026-08-21T12:58:37.764Z'
         ]);
-        expect(envelope.counts).toEqual({running: 2, queued: 4, recent: 3});
+        expect(envelope.counts).toEqual({running: 2, queued: 4, recent: 3, queuedKnown: 4});
 
         // the operations receive no viewer claim — an empty argument object each
         expect(calls).toEqual([['deployment', {}], ['rem', {}], ['ingestion', {}]])
@@ -419,7 +632,8 @@ test.describe('fleetTasksSource — createFleetTasksSource', () => {
         expect(envelope.running).toEqual([]);
         expect(envelope.queued).toEqual([]);
         expect(envelope.recent).toEqual([]);
-        expect(envelope.counts).toEqual({running: 0, queued: 0, recent: 0})
+        expect(envelope.counts).toEqual({running: 0, queued: 0, recent: 0, queuedKnown: 0});
+        expect(envelope.scheduler, 'no receipt answered → no summary key at all').toBeUndefined()
     });
 
     test('a section is capped at twelve rows — a glance, not a dump', async () => {
@@ -439,6 +653,65 @@ test.describe('fleetTasksSource — createFleetTasksSource', () => {
         expect(envelope.recent[0].id, 'newest first').toBe('orchestrator:tenant-sync:last');
         expect(envelope.recent[1].id).toBe('orchestrator:recovery:run-14');
         expect(envelope.recent.at(-1).id, 'the oldest survivors are cut').toBe('orchestrator:recovery:run-4')
+    });
+
+    test('the queue counts say known and shown, the scheduler summary rides the envelope, and starved rows lead the queue longest-wait-first', async () => {
+        const {source}  = harness({deployment: () => starvedPlane()}),
+              envelope  = await source.readTasks();
+
+        expect(envelope.scheduler).toMatchObject({leaseHolder: 'summary', posture: 'degraded', starvedTotal: 3});
+        // three starved + the backup lane + one repo + the REM digest backlog: all known, all shown
+        expect(envelope.counts).toEqual({running: 0, queued: 6, recent: 0, queuedKnown: 6});
+        expect(envelope.queued.slice(0, 3).map(row => row.id)).toEqual([
+            'orchestrator:starvation:message-concept-harvest',
+            'orchestrator:starvation:dream',
+            'orchestrator:starvation:kbSync'
+        ]);
+        expect(envelope.queued[3].id, 'the due repo follows the waiters').toBe('orchestrator:tenant-sync:cbff435fe549');
+        expect(envelope.queued[4].id, 'the backup lane at its next attempt').toBe('orchestrator:maintenance:backup')
+    });
+
+    test('the per-section cap keeps the longest-starved rows and the counts name the omission: queuedKnown − queued', async () => {
+        const payload = starvedPlane();
+
+        payload.snapshot.heavyMaintenanceStarvation.breaches = Array.from({length: 15}, (_, index) => ({
+            taskName: `starved-${String(index).padStart(2, '0')}`, priorityZero: false, bootstrapCritical: false,
+            deferredSince: new Date(Date.parse('2026-09-05T00:00:00.000Z') + index * 60_000).toISOString(), starvedForMs: (15 - index) * 3_600_000
+        }));
+
+        const {source} = harness({deployment: () => payload}),
+              envelope = await source.readTasks();
+
+        // 15 breaches + the backup lane + one repo + the REM backlog = 18 known, 12 shown
+        expect(envelope.counts).toEqual({running: 0, queued: 12, recent: 0, queuedKnown: 18});
+        expect(envelope.counts.queuedKnown - envelope.counts.queued, 'the omission is readable from the counts').toBe(6);
+        expect(envelope.queued.every(row => row.state === 'starved'), 'the blocked rows take the glance').toBe(true);
+        expect(envelope.queued[0].id, 'longest wait first').toBe('orchestrator:starvation:starved-00');
+        expect(envelope.queued.at(-1).id).toBe('orchestrator:starvation:starved-11');
+        expect(envelope.scheduler.starvedTotal, 'the summary counts before the cap').toBe(15);
+        expect(envelope.queued.every(row => ['orchestrator', 'mc', 'kb'].includes(row.source))).toBe(true)
+    });
+
+    test('blocked-first is display priority, never chronology: one waiter deferred AFTER twelve older due repos still leads the queue and survives the cap', async () => {
+        const payload = starvedPlane();
+
+        // twelve ordinary rows, every one of them due BEFORE the waiter's own instant
+        payload.snapshot.tenantRepoSync = {repos: Array.from({length: 12}, (_, index) => ({
+            identityHash: `${String(index).padStart(2, '0')}cafe0000ab`, disabled: false, due: true, nextDueAt: '2026-09-05T09:00:00.000Z'
+        }))};
+        payload.snapshot.heavyMaintenanceStarvation.breaches = [
+            {taskName: 'dream', priorityZero: false, bootstrapCritical: false, deferredSince: '2026-09-05T10:00:00.000Z', starvedForMs: 7200000, leaseHolder: 'summary'}
+        ];
+        delete payload.snapshot.maintenance;
+
+        const {source} = harness({deployment: () => payload}),
+              envelope = await source.readTasks();
+
+        // twelve repos + the waiter + the REM backlog = 14 known, 12 shown — the waiter is never the one cut
+        expect(envelope.counts).toEqual({running: 0, queued: 12, recent: 0, queuedKnown: 14});
+        expect(envelope.scheduler.starvedTotal).toBe(1);
+        expect(envelope.queued[0].id, 'the blocked row leads although every repo row is older').toBe('orchestrator:starvation:dream');
+        expect(envelope.queued.slice(1).every(row => row.state === 'due'), 'the ordinary rows follow, soonest first').toBe(true)
     });
 
     test('an ingress that bound no canonical viewer is refused, never defaulted', async () => {
