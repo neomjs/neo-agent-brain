@@ -311,7 +311,10 @@ test.describe('FleetServerComposition - per-viewer ownership through the real se
                     publicUrl    : 'http://127.0.0.1:3102/fleet',
                     mcpHttpHost  : '127.0.0.1',
                     mcpListenHost: '127.0.0.1',
-                    fleet        : {
+                    // the deployment-state read seam startFleetServer wires: an empty path leaves
+                    // it unwired, fail-soft — the resolved config tree always carries the section, so the read stays loud
+                    orchestrator: {deploymentStateBridge: {snapshotPath: '', staleAfterMs: 120_000, maxSnapshotBytes: 256 * 1024}},
+                    fleet       : {
                         port              : 0,
                         dataDir           : '/unused',
                         wakeSelfBase      : 'http://fleet-server:8083',
@@ -485,7 +488,10 @@ test.describe('FleetServerComposition - the brokered digest poll on the events o
                 publicUrl    : 'http://127.0.0.1:3102/fleet',
                 mcpHttpHost  : '127.0.0.1',
                 mcpListenHost: '127.0.0.1',
-                fleet        : {
+                // the deployment-state read seam startFleetServer wires: an empty path leaves
+                // it unwired, fail-soft — the resolved config tree always carries the section, so the read stays loud
+                orchestrator: {deploymentStateBridge: {snapshotPath: '', staleAfterMs: 120_000, maxSnapshotBytes: 256 * 1024}},
+                fleet       : {
                     port              : 0,
                     dataDir           : '/unused',
                     wakeSelfBase      : 'http://fleet-server:8083',
@@ -617,7 +623,10 @@ test.describe('FleetServerComposition - the relay stream consumer against the co
                 publicUrl    : 'http://127.0.0.1:3102/fleet',
                 mcpHttpHost  : '127.0.0.1',
                 mcpListenHost: '127.0.0.1',
-                fleet        : {
+                // the deployment-state read seam startFleetServer wires: an empty path leaves
+                // it unwired, fail-soft — the resolved config tree always carries the section, so the read stays loud
+                orchestrator: {deploymentStateBridge: {snapshotPath: '', staleAfterMs: 120_000, maxSnapshotBytes: 256 * 1024}},
+                fleet       : {
                     port              : 0,
                     dataDir           : '/unused',
                     wakeSelfBase      : 'http://fleet-server:8083',
