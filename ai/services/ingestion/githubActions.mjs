@@ -1,15 +1,15 @@
 /**
- * @summary The GitHub Actions REST reads the CI failure ingestor needs — runs in a window, one run by
- * id, a run's jobs, a job's log — and the one Contents read that proves a spec exists at a run's
- * head, behind an injectable `fetch`.
+ * @summary The GitHub Actions REST reads the CI failure ingestor needs — runs in a creation window
+ * (optionally bounded above, so an unfinished window can be drained slice by slice), one run by id,
+ * a run's jobs, a job's log — behind an injectable `fetch`.
  *
  * The Actions surface is REST-only (workflow runs, jobs and logs have no GraphQL projection), so
  * this is a sibling of `Neo.ai.services.github-workflow.GraphqlService`, not a replacement. The
  * credential is the same env pair that service reads first (`GH_TOKEN`, then `GITHUB_TOKEN`);
  * its `gh auth token` fallback is deliberately absent here, because this module sits in the
  * closure of a container-plane orchestrator task and a shell-out would pin that task to the host.
- * Pagination is bounded by the caller's window; a log fetch follows the API's redirect to blob
- * storage and returns text.
+ * A listing is bounded by pages and SAYS when it hit the bound; a log fetch follows the API's
+ * redirect to blob storage and returns text.
  *
  * @module ai/services/ingestion/githubActions
  */
@@ -63,7 +63,7 @@ function mapRun(run) {
  * @param {Function} [options.fetchImpl=globalThis.fetch]
  * @param {String}   [options.apiBase='https://api.github.com']
  * @param {Number}   [options.timeoutMs=30000] Per-request bound — a supervised child must not hang on one read.
- * @returns {{listRuns: Function, getRun: Function, listJobs: Function, fetchJobLog: Function, fileExists: Function}}
+ * @returns {{listRuns: Function, getRun: Function, listJobs: Function, fetchJobLog: Function}}
  */
 export function createGithubActionsClient({repoSlug, token, fetchImpl = globalThis.fetch, apiBase = 'https://api.github.com', timeoutMs = 30000}) {
     if (!/^[\w.-]+\/[\w.-]+$/.test(String(repoSlug || ''))) {
@@ -81,12 +81,8 @@ export function createGithubActionsClient({repoSlug, token, fetchImpl = globalTh
               'X-GitHub-Api-Version': API_VERSION
           };
 
-    async function request(url, {text = false, allow404 = false} = {}) {
+    async function request(url, {text = false} = {}) {
         const response = await fetchImpl(url, {headers, redirect: 'follow', signal: AbortSignal.timeout(timeoutMs)});
-
-        if (allow404 && response.status === 404) {
-            return null;
-        }
 
         if (!response.ok) {
             throw new Error(`githubActions: ${response.status} ${response.statusText || ''} for ${url.replace(apiBase, '')}`.trim());
@@ -97,36 +93,46 @@ export function createGithubActionsClient({repoSlug, token, fetchImpl = globalTh
 
     return {
         /**
-         * @summary Runs created at or after `since`, oldest first, across every workflow and every
-         * status — the caller keeps the ones still running as pending and finishes them by id later,
-         * because the API filters on creation time and a run can complete hours after it was created.
+         * @summary Runs created inside a window, oldest first, across every workflow and every status —
+         * the caller keeps the ones still running as pending and finishes them by id later, because the
+         * API filters on creation time and a run can complete hours after it was created.
+         *
+         * Pages arrive newest first and the read is bounded by `maxPages`; `complete` says whether the
+         * window was read to its start. An incomplete read hands back the newest runs and the caller
+         * keeps the older remainder as a slice (`since` .. the oldest run read) to drain on a later tick.
          * @param {Object} options
-         * @param {String} options.since  ISO-8601 instant.
+         * @param {String} options.since  ISO-8601 instant, inclusive.
+         * @param {String} [options.until] ISO-8601 instant, inclusive; bounds the window from above.
          * @param {Number} [options.perPage=100]
          * @param {Number} [options.maxPages=5]
-         * @returns {Promise<Object[]>} See {@link mapRun}.
+         * @returns {Promise<{runs: Object[], complete: Boolean}>} Runs per {@link mapRun}.
          */
-        async listRuns({since, perPage = 100, maxPages = 5}) {
-            const runs = [];
+        async listRuns({since, until = null, perPage = 100, maxPages = 5}) {
+            const runs      = [],
+                  sinceMs   = Date.parse(since),
+                  created   = until ? `${since}..${until}` : `>=${since}`;
+            let   complete  = false;
 
             for (let page = 1; page <= maxPages; page++) {
-                const query = new URLSearchParams({per_page: String(perPage), page: String(page), created: `>=${since}`}),
-                      data  = await request(`${base}/actions/runs?${query}`);
-
-                const pageRuns = data.workflow_runs || [];
+                const query    = new URLSearchParams({per_page: String(perPage), page: String(page), created}),
+                      data     = await request(`${base}/actions/runs?${query}`),
+                      pageRuns = data.workflow_runs || [];
 
                 for (const run of pageRuns) {
-                    if (Date.parse(run.created_at) < Date.parse(since)) continue;
+                    if (Date.parse(run.created_at) < sinceMs) continue;
 
                     runs.push(mapRun(run));
                 }
 
-                // Pages come newest first: a page whose oldest run predates the window ends the read,
+                // A short page, or a page whose oldest run predates the window, is the window's start —
                 // whatever the server made of the `created` filter.
-                if (pageRuns.length < perPage || Date.parse(pageRuns[pageRuns.length - 1].created_at) < Date.parse(since)) break;
+                if (pageRuns.length < perPage || Date.parse(pageRuns[pageRuns.length - 1].created_at) < sinceMs) {
+                    complete = true;
+                    break;
+                }
             }
 
-            return runs.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+            return {runs: runs.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)), complete};
         },
 
         /**
@@ -157,28 +163,13 @@ export function createGithubActionsClient({repoSlug, token, fetchImpl = globalTh
         },
 
         /**
-         * @summary The job's plain-text log, timestamps included.
+         * @summary The job's plain-text log, timestamps included — the failing set of a red job, and the
+         * per-test pass marks of a green one.
          * @param {Number} jobId
          * @returns {Promise<String>}
          */
         fetchJobLog(jobId) {
             return request(`${base}/actions/jobs/${jobId}/logs`, {text: true});
-        },
-
-        /**
-         * @summary Whether a file exists in the repository at a ref — the proof that a test could have
-         * run in the job whose green colour is offered as recovery evidence. A 404 is `false`; any
-         * other failure throws, so an unreadable answer is never mistaken for an absent file.
-         * @param {Object} options
-         * @param {String} options.path Repository-relative file path.
-         * @param {String} options.ref  A commit SHA or ref name.
-         * @returns {Promise<Boolean>}
-         */
-        async fileExists({path, ref}) {
-            const encoded = String(path).split('/').map(encodeURIComponent).join('/'),
-                  data    = await request(`${base}/contents/${encoded}?ref=${encodeURIComponent(ref)}`, {allow404: true});
-
-            return data !== null;
         }
     };
 }

@@ -38,9 +38,10 @@ test.describe('githubActions — the bounded Actions REST reads', () => {
             return jsonResponse({workflow_runs: []});
         };
 
-        const client = createGithubActionsClient({repoSlug: 'neomjs/neo', token: 'secret', fetchImpl}),
-              runs   = await client.listRuns({since: '2026-09-04T00:00:00Z', perPage: 2});
+        const client           = createGithubActionsClient({repoSlug: 'neomjs/neo', token: 'secret', fetchImpl}),
+              {runs, complete} = await client.listRuns({since: '2026-09-04T00:00:00Z', perPage: 2});
 
+        expect(complete, 'the short second page is the window\'s start').toBe(true);
         expect(runs.map(run => run.id)).toEqual([1, 2]);
         expect(runs[1]).toEqual({
             id     : 2, name: 'Engine Tests', path: '.github/workflows/test.yml', event: 'push', headBranch: 'dev', headSha: 'b',
@@ -53,26 +54,43 @@ test.describe('githubActions — the bounded Actions REST reads', () => {
         expect(calls[0].init.headers).toMatchObject({Authorization: 'Bearer secret', 'X-GitHub-Api-Version': '2022-11-28'});
     });
 
-    test('getRun reads one run by id; fileExists answers a Contents read, 404 as absent, anything else as an error', async () => {
+    test('a listing that exhausts its page bound says so and hands back the newest runs; an upper bound becomes a created range', async () => {
+        const calls     = [];
+        const fetchImpl = async url => {
+            calls.push(url);
+            const page = Number(new URL(url).searchParams.get('page'));
+            // Every page full: 2 runs a page, 2 pages allowed — the window is not read to its start.
+            return jsonResponse({workflow_runs: [
+                {id: 100 - page * 2, name: 'Engine Tests', path: '.github/workflows/test.yml', event: 'push', head_branch: 'dev', head_sha: 'a', html_url: '', created_at: `2026-09-05T0${9 - page}:30:00Z`, updated_at: '', status: 'completed', conclusion: 'failure'},
+                {id: 99 - page * 2,  name: 'Engine Tests', path: '.github/workflows/test.yml', event: 'push', head_branch: 'dev', head_sha: 'a', html_url: '', created_at: `2026-09-05T0${9 - page}:00:00Z`, updated_at: '', status: 'completed', conclusion: 'success'}
+            ]});
+        };
+
+        const client           = createGithubActionsClient({repoSlug: 'neomjs/neo', token: 'secret', fetchImpl}),
+              {runs, complete} = await client.listRuns({since: '2026-09-05T00:00:00Z', perPage: 2, maxPages: 2});
+
+        expect(complete).toBe(false);
+        expect(runs).toHaveLength(4);
+        expect(runs[0].createdAt, 'oldest first; the caller keeps since..this as the slice to drain').toBe('2026-09-05T07:00:00Z');
+        expect(calls).toHaveLength(2);
+
+        await client.listRuns({since: '2026-09-05T00:00:00Z', until: '2026-09-05T07:00:00Z', perPage: 2, maxPages: 1});
+
+        expect(calls[2]).toBe('https://api.github.com/repos/neomjs/neo/actions/runs?per_page=2&page=1&created=2026-09-05T00%3A00%3A00Z..2026-09-05T07%3A00%3A00Z');
+    });
+
+    test('getRun reads one run by id', async () => {
         const fetchImpl = async url => {
             if (url.endsWith('/actions/runs/20')) {
                 return jsonResponse({id: 20, name: 'Engine Tests', path: '.github/workflows/test.yml', event: 'push', head_branch: 'dev', head_sha: 'c', html_url: 'https://github.com/neomjs/neo/actions/runs/20', created_at: '2026-09-05T00:30:00Z', updated_at: '2026-09-05T02:00:00Z', status: 'completed', conclusion: 'failure'});
             }
-            if (url === 'https://api.github.com/repos/neomjs/neo/contents/test/playwright/component/tab/OverflowAction.spec.mjs?ref=green-sha') {
-                return jsonResponse({name: 'OverflowAction.spec.mjs', sha: 'blob'});
-            }
-            if (url.includes('/contents/') && url.endsWith('?ref=gone-sha')) {
-                return jsonResponse({message: 'Not Found'}, {status: 404});
-            }
-            return jsonResponse({message: 'Bad Gateway'}, {status: 502});
+            return jsonResponse({message: 'Not Found'}, {status: 404});
         };
 
         const client = createGithubActionsClient({repoSlug: 'neomjs/neo', token: 'secret', fetchImpl});
 
         expect(await client.getRun(20)).toMatchObject({id: 20, status: 'completed', conclusion: 'failure', headSha: 'c'});
-        expect(await client.fileExists({path: 'test/playwright/component/tab/OverflowAction.spec.mjs', ref: 'green-sha'})).toBe(true);
-        expect(await client.fileExists({path: 'test/playwright/component/tab/OverflowAction.spec.mjs', ref: 'gone-sha'})).toBe(false);
-        await expect(client.fileExists({path: 'test/playwright/component/tab/OverflowAction.spec.mjs', ref: 'flaky-sha'})).rejects.toThrow(/502/);
+        await expect(client.getRun(21)).rejects.toThrow(/404/);
     });
 
     test('listJobs keeps the step conclusions and fetchJobLog returns the redirected text', async () => {

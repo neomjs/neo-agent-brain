@@ -9,9 +9,9 @@ import {
     normalizeSymptom,
     parseCiThreadId,
     parsePlaywrightFailures,
+    parsePlaywrightPasses,
     parsePlaywrightReport,
-    selectRecoveryCandidates,
-    specPathOf
+    selectRecoveryCandidates
 } from '../../../../../../ai/services/ingestion/CiFailureIngestor.mjs';
 import {
     defectNoteFingerprint,
@@ -256,9 +256,9 @@ test.describe('CiFailureIngestor — the defect ledger\'s machine producer', () 
                   {from: '@neo-fable', sentAt: '2026-09-05T01:05:00Z', subject: note.subject, partOfThread: note.partOfThread},
                   {from: '@tobiu',     sentAt: '2026-09-05T01:06:00Z', subject: 'defect-note: hand-filed surface broke something CI never saw'}
               ],
-              greenComponents = {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: 33940000000, headSha: 'green-sha', headBranch: 'dev'},
-              olderComponents = {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: 33900000000, headSha: 'old-sha',   headBranch: 'dev'},
-              greenUnit       = {workflowPath: '.github/workflows/test.yml', jobName: 'unit',       runId: 33950000000, headSha: 'unit-sha',  headBranch: 'dev'};
+              greenComponents = {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: 33940000000, jobId: 1214, headSha: 'green-sha', headBranch: 'dev'},
+              olderComponents = {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: 33900000000, jobId: 1213, headSha: 'old-sha',   headBranch: 'dev'},
+              greenUnit       = {workflowPath: '.github/workflows/test.yml', jobName: 'unit',       runId: 33950000000, jobId: 1215, headSha: 'unit-sha',  headBranch: 'dev'};
 
         // Three hours after the sighting the suite is green — that is a flake passing, not a fix.
         const fresh = foldDefectObservations(rows, {now: Date.parse('2026-09-05T04:00:00Z')});
@@ -275,24 +275,21 @@ test.describe('CiFailureIngestor — the defect ledger\'s machine producer', () 
         expect(candidates).toHaveLength(1);
         expect(candidates[0]).toMatchObject({
             evidence: greenComponents,
-            newest  : {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: RUN.id},
-            specPath: 'test/playwright/component/tab/OverflowAction.spec.mjs'
+            newest  : {workflowPath: '.github/workflows/test.yml', jobName: 'components', runId: RUN.id}
         });
         expect(candidates[0].record.fingerprint).toBe(note.fingerprint);
-        // The hand-filed record has no CI thread and is never a candidate; a path-less surface has no spec to prove.
-        expect(specPathOf('hand-filed surface')).toBeNull();
-        expect(specPathOf('test/playwright/component/tab/OverflowAction.spec.mjs › a › b')).toBe('test/playwright/component/tab/OverflowAction.spec.mjs');
-        expect(specPathOf(null)).toBeNull();
+        // The hand-filed record has no CI thread and is never a candidate.
+        expect(candidates.some(candidate => candidate.record.surface === 'hand-filed surface')).toBe(false);
 
-        // Once the caller has proven the spec at the evidence head, the note re-joins the record's own
-        // surface and symptom: it fingerprints to the SAME observation the fold already holds.
+        // Once the caller has seen the evidence job's log name the test passing, the note re-joins the
+        // record's own surface and symptom: it fingerprints to the SAME observation the fold already holds.
         const recovery = buildRecoveryNote(candidates[0]);
 
         expect(recovery.subject).toBe(note.subject.replace('defect-note: ', 'defect-note: [recovered] '));
         expect(recovery.fingerprint).toBe(note.fingerprint);
         expect(recovery.partOfThread).toBe('ci:.github%2Fworkflows%2Ftest.yml:components:33940000000');
         expect(recovery.body).toContain('run 33940000000, job components (.github/workflows/test.yml) on `dev` @ green-sha');
-        expect(recovery.body).toContain('spec present at that head: `test/playwright/component/tab/OverflowAction.spec.mjs`');
+        expect(recovery.body).toContain(`observed passing in that job's log: \`test/playwright/component/tab/OverflowAction.spec.mjs › ${OVERFLOW_TITLE}\``);
         expect(isCanonicalNote(recovery.subject)).toBe(true);
 
         const afterRecovery = foldDefectObservations([
@@ -310,6 +307,36 @@ test.describe('CiFailureIngestor — the defect ledger\'s machine producer', () 
         expect(isSuiteRunGreen({conclusion: 'success', steps: [{name: 'Skip components tests', conclusion: 'success'}, {name: 'Run components tests', conclusion: 'skipped'}]})).toBe(false);
         expect(isSuiteRunGreen({conclusion: 'failure', steps: [{name: 'Run components tests', conclusion: 'failure'}]})).toBe(false);
         expect(isSuiteRunGreen(null)).toBe(false);
+    });
+
+    test('a green job\'s log names the tests that passed — by surface, whatever the project, line or retry; a dot reporter names none (RA-2)', () => {
+        const title = 'Neo.tooltip.Base — a theme-root projection outranks the engine value sheet › control: a token the host does not project still comes from the engine sheet',
+              log   = [
+                  `2026-09-05T01:00:51.1405342Z   ✓  241 [chromium] › test/playwright/component/tooltip/ThemeProjection.spec.mjs:50:5 › ${title} (738ms)`,
+                  `2026-09-05T01:00:52.1405342Z   ✓  242 [firefox] › test/playwright/component/tooltip/ThemeProjection.spec.mjs:50:5 › ${title} (1.2s)`,
+                  `2026-09-05T01:00:53.1405342Z   ✓  243 [chromium] › test/playwright/component/tab/OverflowAction.spec.mjs:140:5 › ${OVERFLOW_TITLE} (retry #1) (2.0s)`,
+                  '2026-09-05T01:00:54.1405342Z   -  244 [chromium] › test/playwright/component/tab/Skipped.spec.mjs:10:5 › skipped suite › a skipped test',
+                  '2026-09-05T01:00:55.1405342Z   ✘  245 [chromium] › test/playwright/component/tab/Red.spec.mjs:10:5 › red suite › a failing test (30.0s)',
+                  '2026-09-05T01:00:56.1405342Z   ✓  246 [chromium] › test/playwright/component/tab/Paren.spec.mjs:12:5 › paren suite › a title that ends with (control) (12ms)',
+                  '2026-09-05T01:00:57.1405342Z   1 failed'
+              ].join('\n'),
+              passes = parsePlaywrightPasses(log);
+
+        expect([...passes]).toEqual([
+            `test/playwright/component/tooltip/ThemeProjection.spec.mjs › ${title}`,
+            `test/playwright/component/tab/OverflowAction.spec.mjs › ${OVERFLOW_TITLE}`,
+            'test/playwright/component/tab/Paren.spec.mjs › paren suite › a title that ends with (control)'
+        ]);
+        // The pass mark is the evidence: a skipped or failed line is not, and the OverflowAction pass
+        // at line 140 (moved since the sighting at 134) still names the SAME surface the record holds.
+        expect(passes.has(buildDefectNotes({failures: parsePlaywrightFailures(COMPONENTS_LOG), run: RUN, job: JOB, repoSlug: 'neomjs/neo'}).notes[0].surface)).toBe(true);
+        expect(passes.has('test/playwright/component/tab/Red.spec.mjs › red suite › a failing test')).toBe(false);
+        expect(passes.has('test/playwright/component/tab/Skipped.spec.mjs › skipped suite › a skipped test')).toBe(false);
+
+        // The github reporter prints dots for passes: nothing is named, nothing can be proven.
+        expect(parsePlaywrightPasses(UNIT_LOG).size).toBe(0);
+        expect(parsePlaywrightPasses('').size).toBe(0);
+        expect(parsePlaywrightPasses(null).size).toBe(0);
     });
 
     test('the thread id round-trips through the fold\'s summary projection and encodes its separators', () => {

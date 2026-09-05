@@ -3,7 +3,7 @@ import {defectNoteFingerprint, parseDefectNote} from '../memory-core/helpers/def
 /**
  * @summary The defect ledger's machine producer: turns a completed CI job's Playwright log into
  * canonical `defect-note:` observations, one per failing test, and turns a later green run of the
- * same job — whose head still contains the test — into the matching `[recovered]` notes.
+ * same job — whose log names the test passing — into the matching `[recovered]` notes.
  *
  * Deliberately PURE — no fetch, no mailbox, no clock. The GitHub reads and the A2A writes belong to
  * `ai/scripts/maintenance/ingestCiFailures.mjs`; this module is the mapping the fold is asserted
@@ -29,9 +29,10 @@ import {defectNoteFingerprint, parseDefectNote} from '../memory-core/helpers/def
  * The same thread is the admission key, at observation granularity: a note whose fingerprint the
  * run-and-job thread already holds is not sent again, whichever orchestrator sent it.
  *
- * Recovery evidence: a green job is a candidate's evidence, never its proof — the caller must show
- * the record's spec exists at the evidence run's head before filing, because a job's colour on a
- * branch where the test does not exist says nothing about the test.
+ * Recovery evidence: a green job is a candidate's evidence, never its proof — the caller files the
+ * recovery only when that job's log names the affected test with a pass mark
+ * ({@link parsePlaywrightPasses}). A job's colour says nothing about one test; a reporter that
+ * names no passing tests (the `github` reporter's dots) can prove nothing, and the record stays red.
  *
  * @module ai/services/ingestion/CiFailureIngestor
  */
@@ -43,9 +44,10 @@ const ANSI_PATTERN          = /\x1b\[[0-9;]*[A-Za-z]/g;
 const FAILED_COUNT_PATTERN  = /^\s*(\d+) failed\s*$/;
 const EPILOGUE_LINE_PATTERN = /^\s+\[([^\]]+)\] › (\S+?):(\d+):(\d+) › (.+?)\s*$/;
 const HEADER_LINE_PATTERN   = /^(?:##\[error\])?\s*\d+\) \[([^\]]+)\] › (\S+?):(\d+):(\d+) › (.+?)\s*(?:─+\s*)?$/;
+const PASS_LINE_PATTERN     = /^\s*✓\s+\d+\s+\[([^\]]+)\] › (\S+?):(\d+):(\d+) › (.+?)\s*$/;
+const PASS_SUFFIX_PATTERN   = /\s*\((?:\d+(?:\.\d+)?(?:ms|s|m)|retry #\d+)\)$/;
 const ERROR_LINE_PATTERN    = /^\s*Error: (.+?)\s*$/;
 const SUITE_RUN_STEP        = /^Run .+ tests$/;
-const SPEC_PATH_PATTERN     = /^[\w./-]+\/[\w.-]+\.[cm]?[jt]s$/;
 
 const SYMPTOM_MAX_LENGTH = 160;
 const DETAIL_MAX_LINES   = 12;
@@ -206,6 +208,39 @@ export function parsePlaywrightFailures(logText) {
 }
 
 /**
+ * @summary The tests a Playwright job log names as PASSED — the `list` reporter's `✓ N [project] ›
+ * path:line:col › titles (duration)` lines — keyed by the surface a note carries (`<spec path> ›
+ * <title path>`), whatever project ran them and whatever line they were declared on. A duration or
+ * `(retry #n)` suffix is not part of the title; a flaky test that passed on a retry did pass. A log
+ * from a reporter that names no passing tests (the `github` reporter's dots) yields an empty set —
+ * evidence about no test at all.
+ * @param {String} logText The raw job log as the Actions API serves it.
+ * @returns {Set<String>} Surfaces observed passing.
+ */
+export function parsePlaywrightPasses(logText) {
+    const passes = new Set();
+
+    if (typeof logText !== 'string' || !logText) return passes;
+
+    for (const raw of logText.split('\n')) {
+        const match = cleanLine(raw).match(PASS_LINE_PATTERN);
+
+        if (!match) continue;
+
+        let titles = match[5].trim(),
+            stripped;
+
+        while ((stripped = titles.replace(PASS_SUFFIX_PATTERN, '')) !== titles) {
+            titles = stripped;
+        }
+
+        passes.add(buildSurface({file: match[2], titlePath: titles.split(' › ').map(title => title.trim()).filter(Boolean)}));
+    }
+
+    return passes;
+}
+
+/**
  * @summary Walks one numbered failure block: the first `Error:` line is the symptom, the lines up
  * to and past it (bounded) are the human-facing detail for the note body.
  * @param {String[]} lines
@@ -240,18 +275,6 @@ function collectBlock(lines, start) {
  */
 export function buildSurface({file, titlePath}) {
     return [file, ...titlePath].join(' › ');
-}
-
-/**
- * @summary The spec file a CI-filed record names — the first arm of its surface — or `null` when
- * the surface is not a repository path (a hand-filed record).
- * @param {String} surface
- * @returns {String|null}
- */
-export function specPathOf(surface) {
-    const [first] = String(surface ?? '').split(' › ');
-
-    return SPEC_PATH_PATTERN.test(first) ? first : null;
 }
 
 /**
@@ -337,7 +360,7 @@ export function isSuiteRunGreen(job) {
 
 /**
  * @summary Picks the open CI-filed records a newer green run of their own job MAY recover, each
- * with the evidence run the caller must prove it against.
+ * with the evidence job the caller must prove it against.
  *
  * A record belongs to the workflow and job of its newest CI thread; a green job of that identity
  * from a NEWER run (by run id) is its candidate evidence — but only once the record has been quiet
@@ -348,16 +371,15 @@ export function isSuiteRunGreen(job) {
  * channel's and stay untouched; `quiet` records are already silent and re-open on their own next
  * sighting.
  *
- * The evidence is a candidate's, not a proof: the caller files the recovery only after showing
- * the record's spec ({@link specPathOf}) exists at the evidence run's head, so a green job on a
- * branch that never had the test cannot recover it.
+ * The evidence is a candidate's, not a proof: the caller files the recovery only after the
+ * evidence job's log names the record's surface with a pass mark ({@link parsePlaywrightPasses}).
  *
  * @param {Object}   options
  * @param {Object[]} options.records         Fold output (with `threads`).
- * @param {Object[]} options.greenJobs       `{workflowPath, jobName, runId, headSha, headBranch}` per suite-green job.
+ * @param {Object[]} options.greenJobs       `{workflowPath, jobName, runId, jobId, headSha, headBranch}` per suite-green job.
  * @param {Number}   options.now             Epoch ms.
  * @param {Number}   options.recoveryAfterMs Quiet time a record needs before green counts.
- * @returns {Array<{record: Object, evidence: Object, newest: Object, specPath: String|null}>}
+ * @returns {Array<{record: Object, evidence: Object, newest: Object}>}
  */
 export function selectRecoveryCandidates({records, greenJobs, now, recoveryAfterMs}) {
     if (!Number.isFinite(now) || !Number.isFinite(recoveryAfterMs) || recoveryAfterMs < 0) {
@@ -390,7 +412,7 @@ export function selectRecoveryCandidates({records, greenJobs, now, recoveryAfter
 
         if (!evidence || evidence.runId <= newest.runId) continue;
 
-        candidates.push({record, evidence, newest, specPath: specPathOf(record.surface)});
+        candidates.push({record, evidence, newest});
     }
 
     return candidates;
@@ -400,10 +422,10 @@ export function selectRecoveryCandidates({records, greenJobs, now, recoveryAfter
  * @summary The `[recovered]` note for a candidate whose evidence was proven. It re-joins the
  * record's own surface and symptom, so it fingerprints to the observation the fold already holds;
  * the evidence run, its head and the proof ride the body.
- * @param {{record: Object, evidence: Object, newest: Object, specPath: String}} candidate
+ * @param {{record: Object, evidence: Object, newest: Object}} candidate
  * @returns {{subject: String, fingerprint: String, partOfThread: String, body: String}}
  */
-export function buildRecoveryNote({record, evidence, newest, specPath}) {
+export function buildRecoveryNote({record, evidence, newest}) {
     const subject = `defect-note: [recovered] ${record.surface} broke ${record.symptom}`;
 
     return {
@@ -411,10 +433,10 @@ export function buildRecoveryNote({record, evidence, newest, specPath}) {
         fingerprint : defectNoteFingerprint(subject),
         partOfThread: buildCiThreadId({workflowPath: evidence.workflowPath, jobName: evidence.jobName, runId: evidence.runId}),
         body        : [
-            'Filed by the CI failure ingestor: no sighting for the recovery window, and the job that last sighted this test ran its suite green in a newer run whose head contains the spec.',
+            'Filed by the CI failure ingestor: no sighting for the recovery window, and the job that last sighted this test ran its suite green in a newer run whose log names the test passing.',
             '',
             `- recovered by run ${evidence.runId}, job ${evidence.jobName} (${evidence.workflowPath}) on \`${evidence.headBranch || '?'}\` @ ${String(evidence.headSha || '').slice(0, 10)}`,
-            `- spec present at that head: \`${specPath}\``,
+            `- observed passing in that job's log: \`${record.surface}\``,
             `- last red sighting: run ${newest.runId} at ${record.lastSeenAt}`
         ].join('\n')
     };

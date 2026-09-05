@@ -16,6 +16,7 @@ import {
     isCanonicalNote,
     isSuiteRunGreen,
     parseCiThreadId,
+    parsePlaywrightPasses,
     parsePlaywrightReport,
     selectRecoveryCandidates
 } from '../../services/ingestion/CiFailureIngestor.mjs';
@@ -31,22 +32,30 @@ import {defectNoteFingerprint, foldDefectObservations} from '../../services/memo
  * One tick: read the repository's runs since the receipt, and for every failed job parse the job
  * log and broadcast one `defect-note:` per failing test the run-and-job thread does not hold yet —
  * quiet, low priority, the run and job as the thread. Every job that ran its suite green is
- * candidate recovery evidence: an open CI-filed record whose job went green in a newer run, on a
- * head that still contains the record's spec, gets its `[recovered]` note. The fold records the
+ * candidate recovery evidence: an open CI-filed record whose job went green in a newer run, whose
+ * log names the record's test with a pass mark, gets its `[recovered]` note. The fold records the
  * threads a record was sighted under and the promotion trigger reads them as independence; the
  * digest is unchanged; the orchestrator gains this task.
  *
  * Admission is per observation, and the receipt is cost, not correctness. A failed job's thread is
  * read in full and only the notes whose fingerprints it lacks are sent, so a write interrupted after
  * its first note resumes with the second — not with a skipped job. The local receipt holds the runs
- * this host has finished reading and the runs it saw still running; those are finished by id on a
- * later tick whatever window they were created in, because the API filters on creation time and a
- * run can complete hours after it was created. Losing the receipt re-reads a window; it never
- * duplicates an observation.
+ * this host has finished reading, the runs it saw still running (finished by id on a later tick,
+ * whatever window they were created in — the API filters on creation time and a run can complete
+ * hours after it was created), and the slices of a window a bounded listing did not reach (drained,
+ * oldest first, before the next window). Losing the receipt re-reads a window; it never duplicates
+ * an observation.
  *
  * Completeness is stated, never assumed: the mailbox is read page by page up to the configured cap,
- * and a tick that hit the cap files sightings but certifies no recovery, because a record on an
- * unread page could be fresher than the read ones say.
+ * a run listing that exhausted its page bound leaves its unread remainder as a continuation slice,
+ * and a tick that hit either bound files sightings but certifies no recovery — a record on an unread
+ * page, or a sighting in an unread run, could be fresher than the read ones say.
+ *
+ * Recovery needs the test, not the job: a green job's colour on a head where the test was renamed,
+ * removed or never existed proves nothing about it, so the evidence job's log must name the record's
+ * surface with a pass mark. A reporter that names no passing tests — the `unit` job's `github`
+ * reporter today — cannot recover a record; those stay red until a human recovers them or the
+ * reporter names passes.
  *
  * The fleet's mailbox lives on the PLANE, so the plane client is the default; `--local` uses this
  * checkout's in-process store (test/isolated planes). `--dry-run` reads GitHub and the mailbox and
@@ -139,9 +148,9 @@ export function parseArgs(argv) {
 
 /**
  * @summary Reads the receipt; an absent or unreadable receipt is an empty one (cost, not
- * correctness). A version-1 receipt is read as version 2 with no pending runs.
+ * correctness). A version-1 receipt is read as version 2 with no pending runs and no continuation.
  * @param {String} filePath
- * @returns {Promise<{version: Number, lastCreatedAt: String|null, runIds: Number[], pendingRunIds: Number[]}>}
+ * @returns {Promise<{version: Number, lastCreatedAt: String|null, runIds: Number[], pendingRunIds: Number[], continuations: Array<{since: String, until: String}>}>}
  */
 export async function readReceipt(filePath) {
     try {
@@ -152,21 +161,23 @@ export async function readReceipt(filePath) {
                 version      : RECEIPT_VERSION,
                 lastCreatedAt: parsed.lastCreatedAt || null,
                 runIds       : parsed.runIds.filter(Number.isFinite),
-                pendingRunIds: Array.isArray(parsed.pendingRunIds) ? parsed.pendingRunIds.filter(Number.isFinite) : []
+                pendingRunIds: Array.isArray(parsed.pendingRunIds) ? parsed.pendingRunIds.filter(Number.isFinite) : [],
+                continuations: Array.isArray(parsed.continuations) ? parsed.continuations.filter(slice => slice?.since && slice?.until) : []
             };
         }
     } catch {
         // absent or malformed: re-read the window; per-observation admission keeps that idempotent
     }
 
-    return {version: RECEIPT_VERSION, lastCreatedAt: null, runIds: [], pendingRunIds: []};
+    return {version: RECEIPT_VERSION, lastCreatedAt: null, runIds: [], pendingRunIds: [], continuations: []};
 }
 
 /**
  * @summary The instant one tick lists from: the receipt's newest run minus an overlap (runs are
  * listed by creation time and complete out of order), floored by the lookback so a stale receipt
  * never opens an unbounded read. Runs still running at a tick are not lost when the window moves
- * past their creation: the receipt carries them as pending and they are read by id.
+ * past their creation: the receipt carries them as pending and they are read by id. Runs a bounded
+ * listing did not reach are not lost either: their slice of the window rides the receipt.
  * @param {Object} options
  * @param {Object} options.receipt
  * @param {Number} options.now
@@ -209,10 +220,61 @@ export async function listAllMessages(mailbox, args, cap) {
 }
 
 /**
+ * @summary The oldest creation instant among runs, or `null` for none.
+ * @param {Object[]} runs
+ * @returns {String|null}
+ */
+function oldestCreatedAt(runs) {
+    return runs.reduce((oldest, run) => (!oldest || Date.parse(run.createdAt) < Date.parse(oldest)) ? run.createdAt : oldest, null);
+}
+
+/**
+ * @summary Lists the runs one tick works on: the oldest continuation slice the receipt carries
+ * (drained one per tick, so a tick stays bounded), then the current window. A listing that exhausted
+ * its page bound leaves the unread remainder — `since` up to the oldest run it did read — as a
+ * continuation for the next tick; the runs it did read are handled now.
+ * @param {Object} options
+ * @param {Object} options.github
+ * @param {Object} options.receipt
+ * @param {String} options.since The current window's start.
+ * @returns {Promise<{runs: Object[], continuations: Array<{since: String, until: String}>}>}
+ */
+async function listTickRuns({github, receipt, since}) {
+    const pending       = [...(receipt.continuations || [])],
+          continuations = [],
+          byId          = new Map();
+
+    const admit = (listing, sliceSince, sliceUntil) => {
+        listing.runs.forEach(run => byId.set(run.id, run));
+
+        if (!listing.complete) {
+            const oldest = oldestCreatedAt(listing.runs);
+
+            continuations.push({since: sliceSince, until: oldest && Date.parse(oldest) > Date.parse(sliceSince) ? oldest : sliceUntil ?? oldest});
+        }
+    };
+
+    if (pending.length) {
+        const slice = pending.shift();
+
+        admit(await github.listRuns({since: slice.since, until: slice.until}), slice.since, slice.until);
+    }
+
+    continuations.push(...pending);
+
+    admit(await github.listRuns({since}), since, null);
+
+    return {
+        runs         : [...byId.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
+        continuations: continuations.filter(slice => slice.since && slice.until)
+    };
+}
+
+/**
  * @summary One producer tick over injected reads and writes.
  *
  * @param {Object}   options
- * @param {Object}   options.github        `{listRuns, getRun, listJobs, fetchJobLog, fileExists}`
+ * @param {Object}   options.github        `{listRuns, getRun, listJobs, fetchJobLog}`
  * @param {Object}   options.mailbox       `{listMessages, addMessage}` — plane client or in-process adapter
  * @param {String}   options.repoSlug
  * @param {Object}   options.receipt       From {@link readReceipt}.
@@ -238,15 +300,17 @@ export async function runIngest({
     dryRun          = false,
     log             = message => console.error(message)
 }) {
-    const since   = resolveSince({receipt, now, lookbackMs}),
-          listed  = await github.listRuns({since}),
-          seen    = new Set(receipt.runIds),
-          pending = new Set(receipt.pendingRunIds || []),
-          summary = {
+    const since                  = resolveSince({receipt, now, lookbackMs}),
+          {runs, continuations}  = await listTickRuns({github, receipt, since}),
+          seen                   = new Set(receipt.runIds),
+          pending                = new Set(receipt.pendingRunIds || []),
+          summary                = {
               since,
               runsRead           : 0,
               jobsRead           : 0,
               pendingRuns        : [],
+              continuations,
+              listingComplete    : continuations.length === 0,
               filedJobs          : [],
               skippedJobs        : [],
               notes              : [],
@@ -259,8 +323,7 @@ export async function runIngest({
 
     // A run still running when its window was read is finished by id, whatever window it was
     // created in. A run the API no longer knows is dropped; any other failure keeps it pending.
-    const runs      = [...listed],
-          listedIds = new Set(listed.map(run => run.id));
+    const listedIds = new Set(runs.map(run => run.id));
 
     for (const runId of [...pending]) {
         if (listedIds.has(runId) || seen.has(runId)) continue;
@@ -333,7 +396,7 @@ export async function runIngest({
             summary.jobsRead++;
 
             if (isSuiteRunGreen(job)) {
-                greenJobs.push({workflowPath: run.path, jobName: job.name, runId: run.id, headSha: run.headSha, headBranch: run.headBranch});
+                greenJobs.push({workflowPath: run.path, jobName: job.name, runId: run.id, jobId: job.id, headSha: run.headSha, headBranch: run.headBranch});
                 continue;
             }
             if (job.conclusion !== 'failure') continue;
@@ -404,32 +467,40 @@ export async function runIngest({
 
     // Recovery sees this tick's own sightings, so a record sighted in this window is fresh — a
     // flake that just fired stays open however green the suite is now. An incomplete mailbox scan
-    // certifies no recovery: a record on an unread page could be fresher than the read ones say.
+    // or run listing certifies no recovery: a record on an unread page, or a sighting in an unread
+    // run, could be fresher than the read ones say.
     if (!complete) {
         summary.skippedRecoveries.push({reason: 'mailbox-scan-incomplete', read: messages.length, cap: mailboxLimit});
+    } else if (continuations.length) {
+        summary.skippedRecoveries.push({reason: 'run-listing-incomplete', continuations});
     } else {
-        const records    = foldDefectObservations([...rows, ...sentRows], {now}),
-              candidates = selectRecoveryCandidates({records, greenJobs, now, recoveryAfterMs});
+        const records     = foldDefectObservations([...rows, ...sentRows], {now}),
+              candidates  = selectRecoveryCandidates({records, greenJobs, now, recoveryAfterMs}),
+              passesByJob = new Map();
 
         for (const candidate of candidates) {
-            const {record, evidence, specPath} = candidate;
+            const {record, evidence} = candidate;
 
-            if (!specPath) {
-                summary.skippedRecoveries.push({fingerprint: record.fingerprint, reason: 'surface-not-a-spec-path'});
+            let passes = passesByJob.get(evidence.jobId);
+
+            if (!passes) {
+                try {
+                    passes = parsePlaywrightPasses(await github.fetchJobLog(evidence.jobId));
+                } catch (error) {
+                    summary.skippedRecoveries.push({fingerprint: record.fingerprint, reason: 'evidence-log-unreadable', runId: evidence.runId, error: error?.message || String(error)});
+                    continue;
+                }
+
+                passesByJob.set(evidence.jobId, passes);
+            }
+
+            if (passes.size === 0) {
+                summary.skippedRecoveries.push({fingerprint: record.fingerprint, reason: 'no-per-test-evidence', runId: evidence.runId, job: evidence.jobName});
                 continue;
             }
 
-            let exists;
-
-            try {
-                exists = await github.fileExists({path: specPath, ref: evidence.headSha});
-            } catch (error) {
-                summary.skippedRecoveries.push({fingerprint: record.fingerprint, reason: 'evidence-check-failed', runId: evidence.runId, error: error?.message || String(error)});
-                continue;
-            }
-
-            if (!exists) {
-                summary.skippedRecoveries.push({fingerprint: record.fingerprint, reason: 'spec-absent-at-evidence', runId: evidence.runId, specPath});
+            if (!passes.has(record.surface)) {
+                summary.skippedRecoveries.push({fingerprint: record.fingerprint, reason: 'test-not-observed-passing', runId: evidence.runId, job: evidence.jobName});
                 continue;
             }
 
@@ -441,17 +512,18 @@ export async function runIngest({
     }
 
     if (!dryRun) {
-        const newest = listed.reduce((max, run) => Date.parse(run.createdAt) > Date.parse(max) ? run.createdAt : max, receipt.lastCreatedAt || since);
+        const newest = runs.reduce((max, run) => Date.parse(run.createdAt) > Date.parse(max) ? run.createdAt : max, receipt.lastCreatedAt || since);
 
         await writeReceipt({
             version      : RECEIPT_VERSION,
             lastCreatedAt: newest,
             runIds       : [...seen].slice(-RECEIPT_RUN_CAPACITY),
-            pendingRunIds: [...pending]
+            pendingRunIds: [...pending],
+            continuations
         });
     }
 
-    log(`ci-failure-ingest: ${summary.runsRead} run(s) since ${since}, ${summary.pendingRuns.length} pending, ${summary.notes.length} note(s), ${summary.recoveries.length} recovery(ies)${complete ? '' : ' — mailbox scan incomplete, no recovery certified'}${dryRun ? ' — dry run, nothing sent' : ''}`);
+    log(`ci-failure-ingest: ${summary.runsRead} run(s) since ${since}, ${summary.pendingRuns.length} pending, ${continuations.length} continuation slice(s), ${summary.notes.length} note(s), ${summary.recoveries.length} recovery(ies)${complete && !continuations.length ? '' : ' — incomplete read, no recovery certified'}${dryRun ? ' — dry run, nothing sent' : ''}`);
 
     return summary;
 }
