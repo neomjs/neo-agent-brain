@@ -722,13 +722,21 @@ export function shellWords(command) {
  * Skips an `env` prefix and leading interpreter flags. Returning the executable rather than testing
  * for a substring is the whole point: a command may *name* a path in an argument without invoking it.
  *
- * **Bounded, and the bound is chosen rather than overlooked.** Value-taking interpreter flags are not
- * modelled — `node -r hook script.mjs` resolves to `hook`, not `script.mjs` — because modelling
- * node's flag arity is a moving target this projector has no business tracking. The projector emits
- * `/usr/bin/env node '<path>'` and never flags, so the miss requires a hand-edited entry, and it
- * fails in the **safe** direction: an unrecognised entry of ours survives as a visible duplicate,
- * whereas a wrongly-claimed foreign entry is silently destroyed. That asymmetry is the whole reason
- * this predicate is conservative, and it is why the miss is documented instead of guessed around.
+ * **Any interpreter flag makes this decline.** An earlier version skipped leading flags and read the
+ * next word, with a JSDoc claiming the miss failed safe. @neo-gpt-emmy falsified that claim by
+ * execution:
+ *
+ *     node -r "…/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs" "/opt/company/audit.mjs"
+ *
+ * A value-taking flag puts *its value* in executable position, so the operator's `audit.mjs` was
+ * classified as ours and deleted — the failure ran in the **unsafe** direction, precisely opposite
+ * to what the comment asserted.
+ *
+ * The repair is to decline rather than to model node's flag arity, which is a moving target this
+ * projector has no business tracking, and getting it wrong deletes somebody else's hook. Declining
+ * costs only what the safe direction always costs: an unrecognised entry of ours survives as a
+ * visible duplicate, while a foreign entry is never silently destroyed. The projector emits
+ * `/usr/bin/env node '<path>'` and never flags, so nothing we generate reaches this bound.
  * @param {String} command Command string from a settings hook entry.
  * @returns {String|null}
  * @protected
@@ -744,7 +752,8 @@ export function invokedScript(command) {
 
     index++;
 
-    while (index < words.length && words[index].startsWith('-')) index++;
+    // Not `skip the flags` — a value-taking flag would hand us its VALUE as the executable.
+    if ((words[index] || '').startsWith('-')) return null;
 
     return words[index] ?? null
 }

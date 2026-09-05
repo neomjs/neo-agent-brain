@@ -144,6 +144,31 @@ test.describe('seatProjectionCheck — ownership, the idempotence key', () => {
         )).toBe(false);
     });
 
+    // The two arms above both put the value AFTER the script, which is the easy half. @neo-gpt-emmy
+    // executed the hard half against `64de61b`: a value-taking flag BEFORE it hands its own value to
+    // whatever reads executable position, so the operator's script is the one that gets deleted.
+    // The version that skipped leading flags carried a JSDoc claiming this failed toward NOT
+    // claiming; it failed the other way, which is the direction that destroys somebody else's hook.
+    // Modelling node's flag arity is the wrong repair — it is a moving target, and being wrong about
+    // it is exactly this bug again. Declining on any flag is what this pins.
+    test('a value-taking flag cannot hand its VALUE to executable position', () => {
+        const
+            checker = '/opt/brain/ai/scripts/lifecycle/hooks/seatProjectionCheck.mjs',
+            target  = scratchRepo();
+
+        [
+            `node -r "${checker}" "/opt/company/audit.mjs"`,
+            `node --require "${checker}" /opt/company/audit.mjs`,
+            `node --import "${checker}" /opt/company/audit.mjs`,
+            `node -e "${checker}"`
+        ].forEach(command => expect(isProjectorOwnedCommand(command, target)).toBe(false));
+
+        // The bound is a decline, not a miss: our own emitted form carries no flags, so nothing the
+        // projector generates reaches it. Without this the arm above would pass on a predicate that
+        // simply never claims anything.
+        expect(isProjectorOwnedCommand(`/usr/bin/env node '${checker}'`, target)).toBe(true)
+    });
+
     test('the canonical entry is recognized in either quoting style', () => {
         const target = scratchRepo();
 
@@ -208,7 +233,10 @@ test.describe('seatProjectionCheck — ownership, the idempotence key', () => {
         expect(invokedScript('node "/opt/company/audit.mjs" --watch seatProjectionCheck.mjs')).toBe('/opt/company/audit.mjs');
         expect(invokedScript('node /opt/x.mjs --config /opt/brain/ai/x.mjs')).toBe('/opt/x.mjs');
         // Not an interpreter we recognise ⇒ no claim, rather than a guess.
-        expect(invokedScript('/bin/sh -c "something"')).toBe(null)
+        expect(invokedScript('/bin/sh -c "something"')).toBe(null);
+        // Nor a recognised interpreter carrying a flag: the flag's value is not the script, and
+        // guessing which flags take one is how a foreign entry gets deleted.
+        expect(invokedScript('node -r /opt/hook.mjs /opt/company/audit.mjs')).toBe(null)
     });
 
     test('an unrelated runtime-root script is NOT claimed', () => {
