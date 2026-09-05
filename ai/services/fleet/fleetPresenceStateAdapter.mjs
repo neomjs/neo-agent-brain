@@ -123,6 +123,36 @@ export function beaconFreshAtBound({turnPresence, boundAt = null} = {}) {
     return freshUntil > boundAt
 }
 
+/**
+ * The closed set of beacon facets a presence observation carries — the fact the band grading
+ * folds in and would otherwise drop: `fresh` / `stale` are the vouched horizons at the snapshot
+ * bound (the same evaluation the grade uses), `absent` is a row carrying no `turnPresence` at all
+ * (a seat whose hooks never beaconed — invisible on every band while `add_memory` keeps it
+ * green), `unobserved` is no observation for the seat: the presence read did not answer, or the
+ * answered report carries no row for it. Never inferred from the band.
+ * @type {String[]}
+ */
+export const PRESENCE_BEACON_FACETS = Object.freeze(['fresh', 'stale', 'absent', 'unobserved'])
+
+/**
+ * @summary The row-level beacon facet at the snapshot bound — pure and total, the grade's own
+ * freshness decision seen from the other side: `fresh` exactly when {@link beaconFreshAtBound}
+ * says so, `stale` when an observation exists but does not vouch at the bound (expired, past its
+ * `freshUntil`, or a degraded tier whose boolean says not fresh), `absent` when the row carries
+ * no observation.
+ * @param {Object} options
+ * @param {Object|null} [options.turnPresence] The row's vouched beacon observation, or `null`.
+ * @param {Number|null} [options.boundAt] The snapshot's observation bound as epoch ms.
+ * @returns {'fresh'|'stale'|'absent'}
+ */
+export function beaconFacetAtBound({turnPresence, boundAt = null} = {}) {
+    if (!turnPresence || typeof turnPresence !== 'object') {
+        return 'absent'
+    }
+
+    return beaconFreshAtBound({turnPresence, boundAt}) ? 'fresh' : 'stale'
+}
+
 export const PRESENCE_SOURCE_LABEL = 'fleet:presenceState'
 
 /**
@@ -165,8 +195,9 @@ export const PRESENCE_CAPABILITY_REASON_CODES = Object.freeze(['viewer-binding-u
  *     answered plane row is never converted into a fabricated `seat absent` by spelling alone.
  * @param {Date|String} [options.capturedAt] Capture timestamp — the observation-time bound above.
  * @returns {Promise<{capability: Object, states: Object[]}>} `states` rows:
- *     `{agentId, presence, lastSeenAt, confidence, source}` (+ `reason` when `presence` is
- *     `unknown`, or `{validationState, since}` when the plane vouched stale validation).
+ *     `{agentId, presence, beacon, lastSeenAt, confidence, source}` (+ `reason` when `presence`
+ *     is `unknown`, or `{validationState, since}` when the plane vouched stale validation);
+ *     `beacon` is one of {@link PRESENCE_BEACON_FACETS}, evaluated at the same bound as the grade.
  */
 export async function readFleetPresenceSnapshot({
     agents = [],
@@ -203,12 +234,16 @@ export async function readFleetPresenceSnapshot({
                     // the affected seat answers `unknown` via the absent-row path below instead.
                     if (typeof row?.identity !== 'string' || !PRESENCE_STATES.includes(row.state)) continue
 
+                    // the vouched beacon observation (horizons + boolean): the ONLY input the
+                    // recency grade adds over the plane's own verdict — evaluated at the snapshot
+                    // bound, never trusted at the producer's clock; the facet keeps on the wire the
+                    // fact the grade folds in (an absent beacon and a stale one grade alike)
+                    const beacon = beaconFacetAtBound({turnPresence: row.signals?.turnPresence, boundAt: capturedAtMs})
+
                     byIdentity.set(row.identity, {
                         state          : row.state,
-                        // the vouched beacon observation (horizons + boolean): the ONLY input the
-                        // recency grade adds over the plane's own verdict — evaluated at the
-                        // snapshot bound below, never trusted at the producer's clock
-                        beaconFresh    : beaconFreshAtBound({turnPresence: row.signals?.turnPresence, boundAt: capturedAtMs}),
+                        beacon,
+                        beaconFresh    : beacon === 'fresh',
                         lastSeenAt     : row.signals?.activityRecency?.lastActivityAt ?? null,
                         reason         : typeof row.reason === 'string' ? redactReason(row.reason) : null,
                         validationState: row.validationState === 'stale-validated' ? row.validationState : null,
@@ -231,6 +266,8 @@ export async function readFleetPresenceSnapshot({
         if (!agentId) continue
 
         let presence        = 'unknown',
+            // no observation for this seat until an answered report carries its row
+            beacon          = 'unobserved',
             lastSeenAt      = null,
             rowReason       = readReason,
             validationState = null,
@@ -244,6 +281,7 @@ export async function readFleetPresenceSnapshot({
                 // vouched beacon (a fresh beacon grades active-turn even over stale add_memory —
                 // the long-turn flap falsifier), membership facts passing through untouched
                 presence        = gradePresenceBand({state: row.state, beaconFresh: row.beaconFresh})
+                beacon          = row.beacon
                 lastSeenAt      = row.lastSeenAt
                 rowReason       = row.reason
                 validationState = row.validationState
@@ -256,6 +294,7 @@ export async function readFleetPresenceSnapshot({
         const entry = {
             agentId,
             presence,
+            beacon,
             lastSeenAt,
             confidence: presence === 'unknown' ? 'none' : 'observed',
             source    : PRESENCE_SOURCE_LABEL

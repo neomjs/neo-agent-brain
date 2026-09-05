@@ -1,4 +1,5 @@
 import {FLEET_COCKPIT_EVENT_TYPES, FLEET_COCKPIT_SOURCES} from '../../../src/fleet/contract/cockpit.mjs';
+import {PRESENCE_BEACON_FACETS}                           from './fleetPresenceStateAdapter.mjs';
 
 const GITHUB_AVATAR_SIZE = 80 // small cockpit-appropriate size (~2x the 40px card avatar); GitHub serves it via the `size` param
 
@@ -205,12 +206,16 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 // `state` never leaves the plane's band embryo + `unknown`, absence of a producer
                 // included. `lastSeenAt` carries the producer's per-seat recency verbatim — the
                 // tier-degradation contract forbids deriving a finer band here than was emitted.
+                // `beacon` rides through untouched when the producer emitted one of its closed
+                // facets (fresh · stale · absent · unobserved); an older producer sends none and
+                // the row carries none — the consumer keeps its fallback, nothing is inferred.
                 presence: presence
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.presence,
                         state     : presence.presence ?? 'unknown',
                         confidence: presence.confidence ?? 'none',
                         lastSeenAt: presence.lastSeenAt ?? null,
+                        ...(PRESENCE_BEACON_FACETS.includes(presence.beacon) && {beacon: presence.beacon}),
                         ...(presence.reason != null && {reason: presence.reason})
                     }
                     : {
