@@ -5,7 +5,7 @@ import path                                        from 'node:path';
 import crypto                                      from 'node:crypto';
 import {isDeepStrictEqual}                         from 'node:util';
 import {hydrateCurrentWorktree}                    from '../../scripts/migrations/bootstrapWorktree.mjs';
-import {MCP_SERVERS, resolveMcpMatrix}             from './mcpServers.mjs';
+import {MCP_SERVERS, resolveMcpMatrix}             from '../../../src/fleet/contract/mcpServers.mjs';
 import {deriveAgentInstanceHome}                   from './deriveAgentInstanceHome.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig} from './generateKimiSeatConfig.mjs';
 import {

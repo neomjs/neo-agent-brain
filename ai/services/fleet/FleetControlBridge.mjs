@@ -11,11 +11,8 @@ import {
     DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT
 } from './fleetMailboxMirrorAdapter.mjs';
 
-import {
-    createFleetCockpitStatus,
-    createNotWiredCapability,
-    FLEET_COCKPIT_SOURCES
-} from './fleetCockpitStatus.mjs';
+import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpitStatus.mjs';
+import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
 
 /**
  * @class Neo.ai.services.fleet.FleetControlBridge

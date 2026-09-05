@@ -23,7 +23,7 @@ import {
     createFleetWireRequest,
     FLEET_WIRE_CAPABILITIES,
     FLEET_WIRE_RESPONSE_STATES
-} from '../../../../../../ai/services/fleet/fleetWireMethods.mjs';
+} from "../../../../../../src/fleet/contract/wire.mjs";
 
 // dispatchFleetRequest is the pure app↔fleet wire choke-point: it selects a client-offered contract
 // before method policy, forwards to an injected bridge stub, and emits one finite response state.

@@ -1,62 +1,13 @@
 /**
- * @summary The dependency-free app↔fleet client-contract AUTHORITY — the exact operation names,
- * envelope schema, protocol versions, capability vocabulary, and finite response states a
- * transport may carry between the agentos pane and {@link Neo.ai.services.fleet.FleetControlBridge}.
- * The Node side binds it directly: `dispatchFleetRequest` rejects anything off this list, and
- * `createFleetRegistryBridge` (the Node-side client factory) generates exactly these methods. The
- * browser binds its product-side transport instead of importing across the realm boundary; Agent
- * Institution's explicit Brain contract
- * compares every constant and pure helper outcome, so the ends of the wire cannot drift.
+ * @module src/fleet/contract/wire
+ * @summary Canonical Fleet wire vocabulary, negotiation and finite request/response envelopes.
  *
- * Deliberately **narrower than FleetControlBridge's class surface**: it excludes the `getRegistry` /
- * `getManager` resolver seams (which return the lifecycle-powerful singletons) and every inherited
- * `Object` / `Neo.core.Base` member, so a crafted `{method:'getManager'}` / `{method:'constructor'}`
- * request cannot reach a non-operation.
- *
- * `getBootIdentity`, `fleetActivity`, `fleetHistory`, `fleetMemories`, `fleetRoster`, `fleetMailboxMirror`,
- * `fleetWakeRoutes`, `fleetTasks`, and `fleetDeploymentState` are **read-observe** verbs — the advisory
- * boot-identity fact, the bounded fleet activity snapshot, one viewer-bound catch-up window, one page of
- * an agent's session summaries (the team-visible corpus; the wire carries the canonical target and paging
- * only), the assembled roster cockpit DTO, one agent's mailbox mirror, the decomposed per-seat wake-route
- * envelope, the deployment's task picture (running / queued / recent rows reduced server-side from the
- * existing truth verbs), and the bounded, redacted projection of the orchestrator's deployment-state
- * snapshot (the plane cards; observe-only, no paths, no config, no logs): they carry NO lifecycle-write /
- * restart authority. The
- * R3 read-observe ÷ lifecycle-write seam keeps the daemon-core restart actuator physically OFF this
- * client wire — only advisory reads ride it.
- *
- * `fleetMailboxMirror` carries no mutation verb and its snapshot is body-free. The transport it
- * rides is authenticated (Host/Origin/process-bearer gates) and every admitted request executes
- * under a SERVER-stamped viewer identity — the launch entry wires the source to resolve the bound
- * viewer from the request context per read, and admission stays the Memory Core primitive's own
- * fail-closed decision. An entry that has not composed the launch contract leaves the source
- * unwired, and every call answers an honest `unavailable`. Being on this list is what makes the
- * seam REAL rather than a Node-side method the browser can never name — an allowlist omission
- * fails closed and SILENT, which reads exactly like a wired-but-empty mailbox from the pane's side.
- *
- * `resolveViewerIdentity` is the **identity-bootstrap** read verb — whoami: it returns the
- * SERVER-stamped viewer identity (`{agentIdentityNodeId}`) from the authenticated request context,
- * never a caller claim. It exists because the mirror's explicit-subject contract is deliberate
- * (no self-defaulting at a trust boundary) while `admission.viewerIdentity` only arrives IN a read
- * result — circular for the FIRST own-inbox read. Whoami is the missing bootstrap leg of
- * "the client SAYS self, and the admission stamp proves it": cockpit calls whoami → passes the
- * returned @-id EXPLICITLY as `subjectAgentId` → the mirror re-stamps and proves it. An unwired
- * source (no composed launch contract) answers an honest `unavailable`; an admitted-but-unbound
- * context answers a named refusal — never a fallback identity.
- *
- * `markFleetCaughtUp` is a runtime-only write: it advances only the authenticated viewer's
- * process-lifetime `lastSeen` through an exact rendered window. It writes no graph, browser storage,
- * or durable digest. `composeOperatorMessage` is the wire's first durable **write** verb — the operator-mailbox steering
- * surface: compose a DM or an `AGENT:*` broadcast through the bridge's injected writer. It rides
- * ONLY the authenticated transport: the ingress stamps the server-resolved viewer into the request
- * context, and the mailbox primitive resolves the author + its principal class from that ambient
- * binding — the sender is never wire-carried, and caller-supplied identity fields never leave the
- * verb's payload whitelist.
- *
- * **Dependency-free by design** — it MUST NOT pull in the Node-only FleetControlBridge / crypto /
- * fs chain, so the client factory and every spec can load it without the server graph.
- * @type {String[]}
+ * These helpers describe transport mechanics, not authorization. Servers still validate the
+ * authenticated viewer and method-specific input before dispatching. Unknown methods, incompatible
+ * protocol offers and malformed responses fail closed. No service, credential or runtime is imported.
  */
+
+/** @type {ReadonlyArray<String>} */
 export const FLEET_WIRE_METHODS = Object.freeze([
     'defineAgent', 'configureAgent', 'setRepo', 'setAvatar', 'listAgents', 'getAgent',
     'startAgent', 'stopAgent', 'restartAgent', 'removeAgent', 'fleetStatus', 'fleetRuntimeStatus',
@@ -64,18 +15,6 @@ export const FLEET_WIRE_METHODS = Object.freeze([
     'composeOperatorMessage', 'markFleetCaughtUp', 'resolveViewerIdentity', 'fleetWakeRoutes', 'fleetTasks',
     'fleetDeploymentState'
 ]);
-
-/**
- * @summary The wire verbs whose normal payload includes credential bytes. Direct-browser development
- * may carry these through its authenticated in-memory bearer transport, but the packaged Electron
- * shell replaces them with named preload-owned ingress so a Body/App-Worker request never supplies
- * the secret. Keeping this classification beside {@link FLEET_WIRE_METHODS} prevents Electron main
- * and the App Worker from inventing independent, drifting lists.
- * @type {String[]}
- */
-export const FLEET_CREDENTIAL_METHODS = Object.freeze(
-    FLEET_WIRE_METHODS.filter(method => method === 'defineAgent' || method === 'connectTenant')
-);
 
 /**
  * @summary Protocol versions this Fleet service can select, newest first. A client offers one or

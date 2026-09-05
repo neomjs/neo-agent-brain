@@ -42,7 +42,7 @@ import {
     createFleetWireRequest,
     FLEET_WIRE_METHODS,
     FLEET_WIRE_RESPONSE_STATES
-}                                  from '../../../../../../ai/services/fleet/fleetWireMethods.mjs';
+}                                  from "../../../../../../src/fleet/contract/wire.mjs";
 
 const
     nativeFetch = globalThis.fetch,

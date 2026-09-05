@@ -4,7 +4,7 @@ import {
     FLEET_WIRE_METHODS,
     FLEET_WIRE_RESPONSE_STATES,
     inspectFleetWireResponse
-} from './fleetWireMethods.mjs';
+} from "../../../src/fleet/contract/wire.mjs";
 
 /**
  * @summary Build the pane-facing fleet registry bridge from a transport `send`. Given a request

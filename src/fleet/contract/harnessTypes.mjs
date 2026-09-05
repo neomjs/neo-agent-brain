@@ -1,14 +1,7 @@
 /**
- * The harness-type AUTHORITY (Brain-side) — the durable key set AND the product-language labels:
- * `FleetRegistryService` validates `defineAgent`/`configureAgent` input against these keys, and
- * `deriveHarnessLaunchSpec` binds its launch vocabulary to them. Adding a harness IS one
- * registration here, mirrored into the cockpit's operable-cold twin
- * through the Agent Institution dependency contract; its CI exercises entries and helper behavior, so
- * a second DRIFTING list cannot exist. The Body never imports this module.
- *
- * Entry order is the DISPLAY order (product decision: Codex first = the add-form default);
- * validation is order-blind. Dependency-free by design — pure data + pure functions only.
- * @summary The harness-type authority: durable keys + product labels.
+ * @module src/fleet/contract/harnessTypes
+ * @summary Canonical harness keys and operator labels, shared without loading Fleet services.
+ * Display order is deliberate; returned records are caller-owned and unknown keys resolve null.
  */
 
 /**
@@ -45,5 +38,3 @@ export function resolveHarnessType(type) {
 
     return entry ? {...entry} : null
 }
-
-export default {HARNESS_TYPES, listHarnessTypes, resolveHarnessType};

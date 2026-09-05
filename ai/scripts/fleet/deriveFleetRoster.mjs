@@ -1,7 +1,7 @@
 import path                    from 'node:path';
 import {fileURLToPath}         from 'node:url';
 import {IDENTITIES}            from '../../graph/identityRoots.mjs';
-import {FLEET_COCKPIT_SOURCES} from '../../services/fleet/fleetCockpitStatus.mjs';
+import {FLEET_COCKPIT_SOURCES} from '../../../src/fleet/contract/cockpit.mjs';
 
 /**
  * @summary Derives a presentation-neutral Fleet roster snapshot from the authoritative identity

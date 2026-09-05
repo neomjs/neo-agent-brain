@@ -23,7 +23,7 @@ import {
     createFleetA2AActivitySnapshot,
     readFleetA2AActivitySnapshot
 } from '../../../../../../ai/services/fleet/fleetA2AActivityAdapter.mjs'
-import {FLEET_COCKPIT_SOURCES} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs'
+import {FLEET_COCKPIT_SOURCES} from '../../../../../../src/fleet/contract/cockpit.mjs';
 
 test.describe('fleetA2AActivityAdapter - Memory Core A2A activity mapping', () => {
     test('maps mailbox summaries without exposing bodies or task inputs — the recipient id rides deliberately', () => {

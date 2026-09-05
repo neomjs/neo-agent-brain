@@ -24,7 +24,7 @@ import {
     FLEET_WIRE_CAPABILITIES,
     FLEET_WIRE_METHODS,
     FLEET_WIRE_RESPONSE_STATES
-} from '../../../../../../ai/services/fleet/fleetWireMethods.mjs';
+} from "../../../../../../src/fleet/contract/wire.mjs";
 
 // createFleetRegistryBridge is the browser-side (App-Worker) factory: given a transport `send`, it
 // returns the object the agentos pane resolves at globalThis.AgentOS.fleet.registryBridge. No live

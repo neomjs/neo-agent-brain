@@ -4,7 +4,7 @@ import {
     FLEET_WIRE_METHODS,
     FLEET_WIRE_RESPONSE_STATES,
     selectFleetWireContract
-} from './fleetWireMethods.mjs';
+} from "../../../src/fleet/contract/wire.mjs";
 
 /**
  * @summary Negotiate one transport-delivered Fleet request, then route it through the

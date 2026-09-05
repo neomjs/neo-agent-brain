@@ -1,8 +1,5 @@
-import {
-    createFleetCockpitEvent,
-    createFleetCockpitEventId,
-    FLEET_COCKPIT_SOURCES
-} from './fleetCockpitStatus.mjs'
+import {createFleetCockpitEvent, createFleetCockpitEventId} from './fleetCockpitStatus.mjs';
+import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
 import {
     extractIssueCommentBlocks,
     getPrDeferDisposition,

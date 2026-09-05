@@ -4,7 +4,7 @@ import {createFleetIngressGuard} from './fleetIngressAuth.mjs';
 import {
     createFleetWireResponse,
     FLEET_WIRE_RESPONSE_STATES
-} from './fleetWireMethods.mjs';
+} from "../../../src/fleet/contract/wire.mjs";
 import {isLocalBearerToken}      from '../../mcp/server/shared/helpers/localBearer.mjs';
 
 /**

@@ -23,7 +23,7 @@ import {
     createPrActivityEvents,
     createStallActivityEvents
 } from '../../../../../../ai/services/fleet/fleetPrLaneActivityAdapter.mjs'
-import {FLEET_COCKPIT_SOURCES} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs'
+import {FLEET_COCKPIT_SOURCES} from '../../../../../../src/fleet/contract/cockpit.mjs';
 
 test.describe('fleetPrLaneActivityAdapter - PR/lane activity mapping', () => {
     test('maps PR facts without exposing the PR body', () => {
