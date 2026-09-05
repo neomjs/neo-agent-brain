@@ -1,0 +1,131 @@
+# Restores the GitHub corpus emission that `c623b2f63c` removed from the Engine's pipeline when
+# `syncGithubWorkflow.mjs` moved to this repository in the split.
+#
+# The Engine's `data-sync-pipeline.yml` still owns DERIVE + PUBLISH: it rebuilds the Portal indexes
+# and SEO artifacts from the corpus and copies them into `neomjs/pages`. Only the EMISSION stage went
+# missing, and its absence is why `resources/content/{issues,pulls,discussions}` froze on 2026-08-26
+# while the pipeline kept exiting 0 over a stale corpus — until #18346's freshness guard turned that
+# silence into a loud red.
+#
+# Direction: Brain → Engine. ADR 0040 §2.3 forbids the Engine importing from here, so the producer
+# publishes INTO `neomjs/neo` rather than the Engine calling out. Re-adding the deleted
+# `emissionCommands` entry would have re-created exactly the dependency the split removed.
+name: Corpus emission
+
+on:
+  # Offset from the Engine pipeline's own cadence so emission lands before a derive run rather than
+  # racing one. Neither job takes a lock on the other; the offset is the only coordination, and it is
+  # sufficient because a derive over a slightly-old corpus is correct-but-stale, never wrong.
+  schedule:
+    - cron: '25 * * * *'
+  workflow_dispatch:
+
+# Serialized rather than cancelled: a half-finished emission leaves the corpus mid-advance, and
+# `SyncService` reports per-facet outcomes on the assumption that a run completes or throws.
+concurrency:
+  group: corpus-emission
+  cancel-in-progress: false
+
+jobs:
+  emit:
+    runs-on: ubuntu-latest
+    # This repository is only ever READ here. Every write goes to `neomjs/neo` through the Publisher
+    # App token below, so the implicit token needs no write authority and does not get it.
+    permissions:
+      contents: read
+
+    steps:
+      # Two identities, deliberately. The Intake token READS the GitHub objects being mirrored; the
+      # Publisher token WRITES the mirror. Splitting them means the credential that can commit to the
+      # Engine is absent from the process that talks to the GitHub API, which is the same separation
+      # the Engine's pipeline maintains between its collection and publish stages.
+      - name: Mint Intake installation token (read neomjs/neo)
+        id: intake-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.DATA_SYNC_INTAKE_APP_ID }}
+          private-key: ${{ secrets.DATA_SYNC_INTAKE_PRIVATE_KEY }}
+          # Cross-repository: without `owner`/`repositories` the action scopes the token to THIS
+          # repository, and the emitter would read an empty corpus from a repo that has none.
+          owner: neomjs
+          repositories: neo
+
+      - name: Mint Publisher installation token (write neomjs/neo)
+        id: publisher-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.DATA_SYNC_PUBLISHER_APP_ID }}
+          private-key: ${{ secrets.DATA_SYNC_PUBLISHER_PRIVATE_KEY }}
+          owner: neomjs
+          repositories: neo
+          # Requested explicitly for the reason the Engine's pipeline states: v3 otherwise mints a
+          # token carrying every permission the installation holds, which puts the least-privilege
+          # property in a setting nobody reads at review time.
+          permission-contents: write
+
+      - name: Checkout the emitter (this repository)
+        uses: actions/checkout@v7
+        with:
+          path: brain
+          persist-credentials: false
+
+      # The emission target. `GH_Config.projectRoot` resolves from `process.cwd()`, and every content
+      # path resolves from it — so running the emitter with this checkout as CWD is what makes the
+      # facets land here rather than in the Brain. No emitter change is needed for that.
+      - name: Checkout the corpus target (neomjs/neo @ dev)
+        uses: actions/checkout@v7
+        with:
+          repository: neomjs/neo
+          ref: dev
+          path: target
+          fetch-depth: 0
+          token: ${{ steps.publisher-token.outputs.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install emitter dependencies
+        working-directory: brain
+        run: npm ci
+
+      # ESM resolves this script's own imports from its module URL, not from CWD, so the emitter
+      # loads Brain modules while writing into `target/resources/content`.
+      #
+      # `--emit-only` selects `emitGeneratedContentAndDerive({pushLocalChanges: false})`: the run stays
+      # read-only at the GitHub API boundary and never pushes locally-authored issue changes back.
+      - name: Emit the GitHub corpus into the target checkout
+        working-directory: target
+        env:
+          GH_TOKEN: ${{ steps.intake-token.outputs.token }}
+        run: node "$GITHUB_WORKSPACE/brain/ai/scripts/maintenance/syncGithubWorkflow.mjs" --emit-only
+
+      # Scoped to `resources/content/` ON PURPOSE. `emitGeneratedContentAndDerive` also rebuilds the
+      # Portal indexes and SEO artifacts, but those already have an owner — the Engine pipeline's
+      # `content indexes and SEO` stage — and two schedulers committing the same derived files would
+      # produce churn neither could attribute. This job publishes the CORPUS and lets the Engine
+      # derive from it, which is also what keeps this a one-stage restoration rather than a second
+      # pipeline.
+      #
+      # ADR 0004 §1.3: the corpus is a fully-regeneratable cache, not a source of truth. A run that
+      # re-emits more than it needed to is wasteful, never lossy.
+      - name: Publish the corpus
+        working-directory: target
+        run: |
+          git config user.name  'neo-data-sync[bot]'
+          git config user.email 'neo-data-sync[bot]@users.noreply.github.com'
+
+          git add -- resources/content
+
+          if git diff --cached --quiet; then
+            echo 'corpus-emission: no facet changes to publish'
+            exit 0
+          fi
+
+          git commit -m 'chore(data): GitHub corpus emission [skip ci]'
+
+          # `--force-with-lease` is deliberately ABSENT: this pushes to a shared `dev` that other
+          # jobs and humans also advance, so a rejected push must be re-emitted on the next run
+          # rather than resolved by overwriting somebody else's commit. A failed publish is a red run
+          # with a stale corpus, which the Engine's freshness guard already reports.
+          git push origin HEAD:dev
