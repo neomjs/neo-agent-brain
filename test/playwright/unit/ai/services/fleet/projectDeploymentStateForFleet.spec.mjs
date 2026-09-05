@@ -8,7 +8,13 @@ import {
     projectDeploymentStateForFleet
 } from '../../../../../../ai/services/fleet/projectDeploymentStateForFleet.mjs';
 
-/** A snapshot shaped like `DeploymentStateBridgeService#collectSnapshot`, deliberately LEAKING everything a card must not carry. */
+/**
+ * A snapshot shaped like `DeploymentStateBridgeService#collectSnapshot`, deliberately LEAKING everything a
+ * card must not carry. The row's shape is the WRITER's (#323): `status` is the folded string
+ * (`foldMemoryPressureIntoStatus`), `classification` carries the class word beside its declared flag, and
+ * `diagnosis` is a `container-health-diagnosis-decision` record whose inner `diagnosis` block holds the
+ * recovery class and confidence.
+ */
 const leakingSnapshot = () => ({
     generatedAt: 1700000000000,
     services   : [{
@@ -17,7 +23,7 @@ const leakingSnapshot = () => ({
         serviceKey       : 'mc-server',
         targetIdentity   : {kind: 'compose-service', id: 'mc-server'},
         observedAt       : 1700000000000,
-        status           : {status: 'degraded', disposition: 'at-cap'},
+        status           : 'degraded',
         memoryPressure   : {disposition: 'at-cap', reason: 'sustained-saturation', receipt: {samples: [1, 2, 3], windowMs: 60000}},
         inspect          : {containerId: 'a1b2c3', image: 'neo-agent-brain:dev', mounts: ['/Users/operator/.neo-ai/data:/app/.neo-ai-data']},
         stats            : {cpuPercent: 400, memoryBytes: 1073741824},
@@ -26,14 +32,24 @@ const leakingSnapshot = () => ({
         heapObservation  : {heapUsed: 12345},
         resolvedConfig   : {dataDir: '/Users/operator/.neo-ai/data', env: {NEO_MC_BEARER: 'bearer-secret'}},
         restartChurn     : {baseline: 'available', baselineWrite: 'ok', plannedRestarts: {reason: null, status: 'available'}, detecting: true},
-        classification   : {serviceClassDeclared: 'store', appliedMemoryThreshold: 0.9, requiredWindowMs: 60000, sampleCount: 12, stampCoverage: 1},
+        classification   : {serviceKey: 'mc-server', serviceClass: 'store', serviceClassDeclared: true, appliedMemoryThreshold: 90, requiredWindowMs: 60000, sampleCount: 12, stampCoverage: 1, memoryScope: 'container'},
         diagnosis        : {
-            diagnosisId  : 'diag-1',
-            recoveryClass: 'restart-recoverable',
-            confidence   : 0.8,
-            evidenceFacts: [{type: 'runtime-read-failed', details: {operation: 'inspect', path: '/var/run/docker.sock'}}],
-            source       : 'container-health-diagnostics',
-            details      : {actionClass: 'observe', classificationReason: 'memory-saturation', sampleWindowMs: 60000}
+            schemaVersion : 1,
+            recordType    : 'container-health-diagnosis-decision',
+            serviceKey    : 'mc-server',
+            targetIdentity: {kind: 'compose-service', id: 'mc-server'},
+            observedAt    : 1700000000000,
+            status        : 'degraded',
+            actionClass   : 'restart',
+            diagnosis     : {
+                diagnosisId  : 'container-health:mc-server:exhaustion:1700000000000',
+                recoveryClass: 'exhaustion',
+                confidence   : 0.95,
+                evidenceFacts: [{type: 'runtime-read-failed', details: {operation: 'inspect', path: '/var/run/docker.sock'}}],
+                source       : 'container-health-diagnostics',
+                details      : {classificationReason: 'memory-saturation', sampleWindowMs: 60000}
+            },
+            facts: [{type: 'memory-saturation', details: {path: '/Users/operator/.neo-ai/data'}}]
         },
         proofs: [{kind: 'exec', command: 'docker inspect'}],
         errors: []
@@ -55,7 +71,35 @@ const leakingSnapshot = () => ({
     }
 });
 
-const LEAK_MARKERS = ['/Users/', '/var/run', 'docker', 'sk-live', 'bearer-secret', 'pid-4242', 'archivePath', 'mounts', 'evidenceFacts', 'proofs', 'resolvedConfig', 'inspect', 'logs', 'stats', 'heapObservation', 'receipt'];
+/**
+ * One service row VERBATIM from the live plane (snapshot `generatedAt` 1788568958677, read 2026-09-05T00:42Z),
+ * bounded to the fields the projection reads plus the record envelope — the shape the writer actually
+ * emits, which the guessed fixture above never was (#323).
+ */
+const liveChromaRow = () => ({
+    schemaVersion : 1,
+    recordType    : 'deployment-service-state',
+    serviceKey    : 'chroma',
+    targetIdentity: {kind: 'compose-service', id: 'chroma'},
+    observedAt    : 1788568959783,
+    status        : 'available',
+    memoryPressure: {disposition: 'below', reason: null, receipt: null},
+    restartChurn  : {baseline: 'available', baselineWrite: 'written', plannedRestarts: {reason: null, status: 'available'}, detecting: true},
+    classification: {serviceKey: 'chroma', serviceClass: 'store', serviceClassDeclared: true, appliedMemoryThreshold: 80, observedWindowMs: 33695, requiredWindowMs: 30000, sampleCount: 2, stampCoverage: 1, memoryScope: 'container', memoryObservedWindowMs: 33695, memoryStampCoverage: 1},
+    diagnosis     : {
+        schemaVersion : 1,
+        recordType    : 'container-health-diagnosis-decision',
+        serviceKey    : 'chroma',
+        targetIdentity: {kind: 'compose-service', id: 'chroma'},
+        observedAt    : 1788568959783,
+        status        : 'healthy',
+        actionClass   : null,
+        diagnosis     : null,
+        facts         : []
+    }
+});
+
+const LEAK_MARKERS = ['/Users/', '/var/run', 'docker', 'sk-live', 'bearer-secret', 'pid-4242', 'archivePath', 'mounts', 'evidenceFacts', 'proofs', 'resolvedConfig', 'inspect', 'logs', 'stats', 'heapObservation', 'receipt', 'facts', 'targetIdentity', 'diagnosisId'];
 
 test.describe('projectDeploymentStateForFleet — the bounded, redacted wire shape of the deployment snapshot (#314)', () => {
     test('RED-FIRST on the leak: nothing a card must not carry survives projection', () => {
@@ -76,11 +120,11 @@ test.describe('projectDeploymentStateForFleet — the bounded, redacted wire sha
         expect(projection.services).toEqual([{
             serviceKey    : 'mc-server',
             observedAt    : 1700000000000,
-            status        : {status: 'degraded', disposition: 'at-cap'},
+            status        : 'degraded',
             memoryPressure: {disposition: 'at-cap', reason: 'sustained-saturation'},
             restartChurn  : {baseline: 'available', detecting: true},
-            classification: {serviceClassDeclared: 'store', appliedMemoryThreshold: 0.9, sampleCount: 12},
-            diagnosis     : {recoveryClass: 'restart-recoverable', confidence: 0.8, actionClass: 'observe', classificationReason: 'memory-saturation'}
+            classification: {serviceClass: 'store', serviceClassDeclared: true, appliedMemoryThreshold: 90, sampleCount: 12},
+            diagnosis     : {status: 'degraded', actionClass: 'restart', recoveryClass: 'exhaustion', confidence: 0.95}
         }]);
         expect(projection.maintenance).toEqual({
             backup    : {
@@ -90,6 +134,20 @@ test.describe('projectDeploymentStateForFleet — the bounded, redacted wire sha
                 lastBackup      : {finishedAt: 1699990000000, kind: 'full', status: 'ok'}
             },
             starvation: {posture: 'degraded', breachCount: 2}
+        });
+    });
+
+    // #323 RED-FIRST: the writer folds the status into ONE word and wraps the diagnosis in a decision
+    // record; a projection written to a guessed block shape read every live service as unobserved
+    test('a VERBATIM live row projects its folded status word, its class word and its healthy decision (#323)', () => {
+        expect(projectDeploymentServiceForFleet(liveChromaRow())).toEqual({
+            serviceKey    : 'chroma',
+            observedAt    : 1788568959783,
+            status        : 'available',
+            memoryPressure: {disposition: 'below', reason: null},
+            restartChurn  : {baseline: 'available', detecting: true},
+            classification: {serviceClass: 'store', serviceClassDeclared: true, appliedMemoryThreshold: 80, sampleCount: 2},
+            diagnosis     : {status: 'healthy', actionClass: null, recoveryClass: null, confidence: null}
         });
     });
 
@@ -124,8 +182,11 @@ test.describe('projectDeploymentStateForFleet — the bounded, redacted wire sha
             classification: null,
             diagnosis     : null
         });
-        expect(projectDeploymentServiceForFleet({serviceKey: 'kb-server', diagnosis: {recoveryClass: 'none'}}).diagnosis)
-            .toEqual({recoveryClass: 'none', confidence: null, actionClass: null, classificationReason: null});
+        // a decision without an inner diagnosis (the healthy arm) keeps its own status and action class
+        expect(projectDeploymentServiceForFleet({serviceKey: 'kb-server', diagnosis: {status: 'healthy'}}).diagnosis)
+            .toEqual({status: 'healthy', actionClass: null, recoveryClass: null, confidence: null});
+        // a status that is not the writer's word — the pre-#323 block shape included — is unknown, never a guess
+        expect(projectDeploymentServiceForFleet({serviceKey: 'kb-server', status: {status: 'degraded', disposition: 'at-cap'}}).status).toBeNull();
         expect(projectDeploymentMaintenanceForFleet({maintenance: {}})).toEqual({
             backup    : {phase: null, lastSuccessAt: null, lastSuccessAgeMs: null, lastBackup: null},
             starvation: null

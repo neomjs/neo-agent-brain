@@ -32,26 +32,29 @@ const
 
 /**
  * @summary Project one per-service record (`recordType: 'deployment-service-state'`) to its card fields.
+ * The shape authority is the WRITER, not a guess (#323): `DeploymentStateBridgeService#collectSnapshot`
+ * folds errors and memory pressure into ONE status word (`foldMemoryPressureIntoStatus`: `available` |
+ * `degraded`), `classification` carries the class word beside its declared flag, and `diagnosis` is a
+ * `container-health-diagnosis-decision` record — `{status, actionClass, diagnosis: {recoveryClass,
+ * confidence} | null}` (`ContainerHealthDiagnosisService#createDecision`), the inner block absent on a
+ * healthy service.
  * @param {Object} row The snapshot's service record.
  * @returns {Object} `{serviceKey, observedAt, status, memoryPressure, restartChurn, classification, diagnosis}`
  *     — each nested block bounded to its named fields, `null` when the record lacks it.
  */
 export function projectDeploymentServiceForFleet(row) {
     const
-        status         = nestedOf(row, 'status'),
+        status         = fieldOf(row, 'status'),
         memoryPressure = nestedOf(row, 'memoryPressure'),
         restartChurn   = nestedOf(row, 'restartChurn'),
         classification = nestedOf(row, 'classification'),
-        diagnosis      = nestedOf(row, 'diagnosis'),
-        details        = nestedOf(diagnosis, 'details');
+        decision       = nestedOf(row, 'diagnosis'),
+        diagnosis      = nestedOf(decision, 'diagnosis');
 
     return {
-        serviceKey: typeof row?.serviceKey === 'string' ? row.serviceKey : null,
-        observedAt: fieldOf(row, 'observedAt'),
-        status    : status && {
-            status     : fieldOf(status, 'status'),
-            disposition: fieldOf(status, 'disposition')
-        },
+        serviceKey    : typeof row?.serviceKey === 'string' ? row.serviceKey : null,
+        observedAt    : fieldOf(row, 'observedAt'),
+        status        : typeof status === 'string' ? status : null,
         memoryPressure: memoryPressure && {
             disposition: fieldOf(memoryPressure, 'disposition'),
             reason     : fieldOf(memoryPressure, 'reason')
@@ -61,15 +64,16 @@ export function projectDeploymentServiceForFleet(row) {
             detecting: fieldOf(restartChurn, 'detecting')
         },
         classification: classification && {
+            serviceClass          : fieldOf(classification, 'serviceClass'),
             serviceClassDeclared  : fieldOf(classification, 'serviceClassDeclared'),
             appliedMemoryThreshold: fieldOf(classification, 'appliedMemoryThreshold'),
             sampleCount           : fieldOf(classification, 'sampleCount')
         },
-        diagnosis     : diagnosis && {
-            recoveryClass       : fieldOf(diagnosis, 'recoveryClass'),
-            confidence          : fieldOf(diagnosis, 'confidence'),
-            actionClass         : fieldOf(details, 'actionClass'),
-            classificationReason: fieldOf(details, 'classificationReason')
+        diagnosis     : decision && {
+            status       : fieldOf(decision, 'status'),
+            actionClass  : fieldOf(decision, 'actionClass'),
+            recoveryClass: fieldOf(diagnosis, 'recoveryClass'),
+            confidence   : fieldOf(diagnosis, 'confidence')
         }
     };
 }
