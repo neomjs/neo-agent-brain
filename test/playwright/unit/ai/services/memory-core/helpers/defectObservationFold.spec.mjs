@@ -67,6 +67,23 @@ test.describe('defectObservationFold — the defect-channel read model', () => {
         });
     });
 
+    test('the fold records the distinct threads a fingerprint was sighted in; a threadless row records none', () => {
+        const records = foldDefectObservations([
+            {from: '@ci', sentAt: '2026-08-15T08:00:00Z', subject: NOTE, partOfThread: 'ci:.github/workflows/test.yml:components:1'},
+            {from: '@ci', sentAt: '2026-08-15T09:00:00Z', subject: NOTE, partOfThread: 'ci:.github/workflows/test.yml:components:2'},
+            {from: '@ci', sentAt: '2026-08-15T09:30:00Z', subject: NOTE, partOfThread: 'ci:.github/workflows/test.yml:components:2'},
+            {from: '@a',  sentAt: '2026-08-15T10:00:00Z', subject: NOTE}
+        ], {now: Date.parse('2026-08-15T11:00:00Z')});
+
+        expect(records).toHaveLength(1);
+        expect(records[0]).toMatchObject({
+            count    : 4,
+            reporters: ['@ci', '@a'],
+            // Two runs are two threads; the same run twice is one; a hand-filed note adds none.
+            threads  : ['ci:.github/workflows/test.yml:components:1', 'ci:.github/workflows/test.yml:components:2']
+        });
+    });
+
     test('recovery is idempotent and a fresh sighting re-opens — newest transition wins', () => {
         const recovered = NOTE.replace('defect-note:', 'defect-note: [recovered]'),
               records   = foldDefectObservations([

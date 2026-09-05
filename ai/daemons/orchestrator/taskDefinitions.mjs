@@ -447,6 +447,17 @@ export function buildTaskDefinitions({
             expectedCommand  : 'defectObservations.mjs',
             captureStdoutJson: true
         },
+        // Supervised one-shot: the orchestrator owns the cadence; each due tick spawns this child
+        // to read the completed CI runs since its receipt and file the ledger's `defect-note:`
+        // observations (one per failing test, one recovery per job that went green), then exit.
+        'ci-failure-ingest': {
+            label            : 'CI failure ingest',
+            command          : nodeBin,
+            args             : [path.join(scriptDir, 'maintenance', 'ingestCiFailures.mjs'), '--json'],
+            pidFileName      : 'ci-failure-ingest.pid',
+            expectedCommand  : 'ingestCiFailures.mjs',
+            captureStdoutJson: true
+        },
         // One-shot KB defrag spawned by the chroma max-runtime recycle once the
         // freshly-restarted daemon is connection-ready. Unified-store-safe (rebuilds the KB
         // collection, preserves Memory Core segment dirs). NOT a continuousTask.

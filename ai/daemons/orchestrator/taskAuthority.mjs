@@ -109,6 +109,7 @@ export const TASK_AUTHORITY_BY_NAME = Object.freeze({
     dream                                  : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'message-concept-harvest'              : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'defect-ledger-digest'                 : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
+    'ci-failure-ingest'                    : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'golden-path'                          : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'swarm-heartbeat'                      : ORCHESTRATOR_AUTHORITY_CLASS.hostEdge,
     'embed-drain-liveness-watchdog'        : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,

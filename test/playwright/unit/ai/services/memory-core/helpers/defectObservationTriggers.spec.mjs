@@ -41,6 +41,11 @@ test.describe('defectObservationTriggers — the defect-ledger observer layer', 
         expect(independentSecondOccurrence(record({reporters: ['@a']}))).toBe(false);
         expect(independentSecondOccurrence(record({count: 1, reporters: ['@a']}))).toBe(false);
         expect(independentSecondOccurrence(null)).toBe(false);
+        // A machine producer is one identity, so its independence is the run: two sightings from
+        // two CI runs corroborate each other; the same run re-read is still one observation.
+        expect(independentSecondOccurrence(record({reporters: ['@ci'], threads: ['ci:wf:job:1', 'ci:wf:job:2']}))).toBe(true);
+        expect(independentSecondOccurrence(record({reporters: ['@ci'], threads: ['ci:wf:job:1']}))).toBe(false);
+        expect(independentSecondOccurrence(record({count: 1, reporters: ['@ci'], threads: ['ci:wf:job:1', 'ci:wf:job:2']}))).toBe(false);
     });
 
     test('selectDigestRecords keeps only open, qualifying, unsuppressed, unreported records', () => {
