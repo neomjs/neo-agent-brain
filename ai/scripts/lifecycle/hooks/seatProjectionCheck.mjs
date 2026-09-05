@@ -113,11 +113,42 @@ export function resolveTargetRepoRoot(payload) {
 export function formatReport(report, targetRepoRoot) {
     if (report.ok) return null;
 
+    // Single-quoted for the same reason the manifest is: any path emitted here is meant to be COPIED
+    // INTO A SHELL, and a double-quoted path containing `$(…)` would execute rather than resolve. An
+    // instruction that runs something other than what it displays is worse than no instruction.
+    // Declared before the first verdict rather than beside the repair block: both arms quote paths.
     const
+        sh      = value => `'${String(value).split("'").join(`'\\''`)}'`,
         lines   = [],
         missing = report.missing ?? [],
         stale   = report.stale ?? [],
         orphans = report.orphans ?? [];
+
+    // Provenance is reported ALONE and without the repair line, because its remedy is the opposite of
+    // every other finding's. A stale seat re-projects; a wrong-provenance seat MUST NOT — re-projecting
+    // from a root parked off upstream is what put the unreviewed code in the seat, so prescribing it
+    // here would turn the report into the attack. Returning early also keeps the two verdicts from
+    // being read as one list of things to fix with one command.
+    if (report.provenance) {
+        const {commit, ref, upstream} = report.provenance;
+
+        return [
+            '⚠️ SEAT PROJECTION HAS THE WRONG PROVENANCE — your hooks may be current, and are still not trustworthy.',
+            '',
+            `This seat was projected from ${commit}${ref ? ` (${ref})` : ''}, which ${upstream} does NOT contain.`,
+            'The bytes can match the runtime root perfectly and still be code that no review has seen:',
+            'currency compares the seat to the root, and says nothing about where the root itself was pointing.',
+            '',
+            'DO NOT RE-PROJECT. Re-projecting is the action that installed this, and running it again',
+            'against the same root reinstalls it while making every downstream check agree.',
+            '',
+            `FIX THE ROOT FIRST — get ${sh(agentosRuntimeRoot)} onto a revision ${upstream} contains`,
+            '(its own branch work belongs in a worktree, so the shared root can stay on the integration',
+            'branch), and only then re-project. If the root is not yours to move, hand this to @tobiu.',
+            '',
+            `Context: ${REPAIR_DOC}`
+        ].join('\n')
+    }
 
     lines.push('⚠️ SEAT PROJECTION IS NOT CURRENT — your Agent OS hooks do not match this runtime root.');
     lines.push('');
@@ -137,11 +168,6 @@ export function formatReport(report, targetRepoRoot) {
     );
 
     lines.push('');
-    // Single-quoted for the same reason the manifest is: this line is meant to be COPIED INTO A
-    // SHELL, and a double-quoted path containing `$(…)` would execute rather than resolve. A repair
-    // instruction that runs something other than what it displays is worse than no instruction.
-    const sh = value => `'${String(value).split("'").join(`'\\''`)}'`;
-
     lines.push('REPAIR (writes only untracked, git-excluded seat artifacts):');
     lines.push(`  node ${sh(path.join(agentosRuntimeRoot, 'ai/scripts/lifecycle/hooks/projectSeatHooks.mjs'))} \\`);
     lines.push(`    --runtime-root=${sh(agentosRuntimeRoot)} --target-root=${sh(targetRepoRoot)}`);
