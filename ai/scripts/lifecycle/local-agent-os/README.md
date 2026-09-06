@@ -267,7 +267,7 @@ supervised root, because nothing here said there should be a second one.
 
 If a run genuinely needs the daemons' own root — to exercise the live host plane rather than a
 provisioned copy — sequence it with whoever owns the LaunchAgents: stop both agents, run, restart,
-then confirm with `npm run ai:check-runtime-root`. Do not do that half of it unattended.
+then confirm both came back. Do not do that half of it unattended.
 
 When you restart an agent, **do not chain `bootout` and `bootstrap` on one line**. `bootout`
 returns before launchd has released the label, so an immediately following `bootstrap` fails
@@ -285,8 +285,25 @@ launchctl print gui/$(id -u)/com.neomjs.agent-os-wake | grep -E 'state =|pid ='
 If a `bootstrap` does fail this way, the repair is simply to run it again once the label is gone —
 the plist is not damaged.
 
-Run the rest of this section from that root. `npm run ai:check-runtime-root` proves the property
-afterwards, and is worth running any time a daemon misbehaves:
+Run the rest of this section from that root. Two commands prove the root is sound afterwards, and
+are worth running any time a daemon misbehaves — the second is the one that matters, because a
+sound-looking layout is exactly what this machine had while it was crash-looping:
+
+```sh
+# 1. the root owns its closure — node_modules must be a real directory here, never a symlink
+ls -ld /Users/Shared/agent-os/neo-agent-brain/node_modules
+
+# 2. the entrypoints actually RESOLVE from it. Both gate their boot behind
+#    `import.meta.url === pathToFileURL(process.argv[1]).href`, so importing them
+#    resolves the real module graph and starts nothing.
+cd /Users/Shared/agent-os/neo-agent-brain
+for e in ai/daemons/orchestrator/hostEdge.mjs ai/daemons/wake/receiver.mjs; do
+  node --input-type=module -e "await import('$PWD/$e')" && echo "ok  $e" || echo "RED $e"
+done
+```
+
+A `Cannot find package '…'` from step 2 is the failure this section exists to prevent, and it is
+invisible to step 1 alone.
 
 ```sh
 export AGENTOS_RUNTIME_ROOT="$(pwd -P)"
