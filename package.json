@@ -62,6 +62,7 @@
         "ai:analyze-nl-telemetry": "node ./ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
         "ai:check-backup-integrity": "node ./ai/scripts/maintenance/backupCorruptionTimeline.mjs",
         "ai:check-retired-primitives": "node ./ai/scripts/diagnostics/check-retired-primitives.mjs",
+        "ai:emit-seat-routing": "node ./ai/scripts/lifecycle/local-agent-os/seatCredentialRouting.mjs",
         "ai:kb-push-client": "node ./ai/scripts/maintenance/kbPushClient.mjs",
         "ai:community-batch-push": "node ./ai/scripts/maintenance/communityBatchPushClient.mjs",
         "ai:mcp-healthcheck": "node ./ai/scripts/diagnostics/mcpHealthcheck.mjs",

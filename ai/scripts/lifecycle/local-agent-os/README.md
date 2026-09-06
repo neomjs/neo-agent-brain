@@ -194,6 +194,48 @@ reports the boot failure; it never falls through to a host-native organism.
 Leave the base empty only on a machine intentionally using the host-native
 fresh-install path.
 
+## Route seat credentials (which `.env`, and therefore which GitHub identity)
+
+A host running several agent seats needs each shell to load that seat's `.env` — and only that
+one. The variable that matters most is `GH_TOKEN`, because **`gh` does not fail without it**: it
+falls back to the keyring account and every artifact it writes is authored by the machine's owner.
+Git authorship is configured separately and stays correct, so nothing looks wrong locally. The
+only symptom is the author on the finished issue or PR, and GitHub authorship is immutable
+(neomjs/neo-agent-brain#244).
+
+The mapping is **generated from a reviewed source**, `seatCredentialRouting.mjs` in this folder,
+never hand-written on the host. Adding a seat is a pull request against `TRACKED_SEATS`, which is
+the point: the previous arrangement lived only in an untracked dotfile, so a change to how every
+agent authenticates got no diff and no second reader.
+
+```sh
+# --base is the absolute directory holding the seat roots.
+npm run ai:emit-seat-routing -- --base /Users/Shared > ~/.config/neo/seat-routing.zsh
+
+# Then source it once from ~/.zshenv (not .zshrc — agent tool subshells are non-interactive):
+#   [[ -f ~/.config/neo/seat-routing.zsh ]] && source ~/.config/neo/seat-routing.zsh
+```
+
+**A host may route paths that must never be tracked** — a private client workspace, say. Those go
+in an untracked JSON merged after the tracked seats, so a public repository never learns they
+exist:
+
+```sh
+npm run ai:emit-seat-routing -- --base /Users/Shared --local-seats ~/.config/neo/local-seats.json
+```
+```json
+{"seats": [{"prefix": "/absolute/private/root", "envFile": "/absolute/private/root/.env"}]}
+```
+
+Two properties worth knowing before you debug this:
+
+- **Each seat routes its whole root**, not `<seat>/neomjs/neo` alone. The narrower form is what
+  broke: it excluded every sibling repository, and the Agent OS then moved into one.
+- **`NEO_SEAT_ENV_FILE` reports what resolved.** `echo $NEO_SEAT_ENV_FILE` answers "which seat am I
+  authenticated as?" from inside any shell, including one where the file is missing. Empty means
+  the path is unmapped, and the emitted `gh` guard will refuse artifact-creating verbs in an agent
+  shell rather than let them succeed under the wrong identity.
+
 ## Install the host edge (macOS, supervised)
 
 This section is macOS-only: `launchctl` and `plutil` do not exist elsewhere. It

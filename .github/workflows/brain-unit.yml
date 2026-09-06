@@ -48,6 +48,7 @@ jobs:
                   npm run test-unit --
                   test/playwright/unit/ai/AgentOrchestrator.spec.mjs
                   test/playwright/unit/ai/Env.spec.mjs
+                  test/playwright/unit/harness/seatCredentialRouting.spec.mjs
                   test/playwright/unit/harness/terminateDaemon.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/pipeline.spec.mjs
                   test/playwright/unit/src/fleet/contract/fleetContract.spec.mjs
