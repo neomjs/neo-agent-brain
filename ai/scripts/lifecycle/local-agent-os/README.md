@@ -241,6 +241,34 @@ Treat that clone as **installed software, not a workspace**: a live daemon execu
 editing or rebasing it mutates a running host process. Refresh it deliberately — `git pull`, then
 `npm ci`, then restart both agents — never as a side effect of development.
 
+### A machine can need more than one runtime root
+
+ADR 0040 §2.5 names `agentosRuntimeRoot` in the singular, and it is easy to read that as *one per
+machine*. It is not. The supervised root above is the one the LaunchAgents execute from and must
+stay untouched while they run. A **second, separate** provisioned root is what ADR 0040 §2.3's
+cross-repository whitebox tier asks for — *"Engine-owned Neural Link contract/client code talks to
+an externally provisioned Agent OS runtime whose package-owned executable/Bridge is pinned by CI or
+Fleet provisioning through `agentosRuntimeRoot`"*. That tier runs from the **Engine** repo: this
+repository has no e2e tier at all, only `unit`, `integration` and `integration-parity`.
+
+Provision it beside the supervised one, never as the supervised one:
+
+```sh
+git clone https://github.com/neomjs/neo-agent-brain.git /Users/Shared/agent-os/e2e-runtime
+cd /Users/Shared/agent-os/e2e-runtime && npm ci
+```
+
+**Why this needs saying out loud:** the two roots differ only by intent, and the supervised one is
+the more discoverable — it is the path an operator hands you. Pointing a cross-repo whitebox run at
+it means an `npm ci` or a branch switch under two live daemons, which is neomjs/neo-agent-brain#335's exact mechanism
+with a person's hand on it rather than a three-week delay. A near-miss on 2026-09-06 is why this
+paragraph exists: a maintainer was correctly following the ADR and had been pointed at the
+supervised root, because nothing here said there should be a second one.
+
+If a run genuinely needs the daemons' own root — to exercise the live host plane rather than a
+provisioned copy — sequence it with whoever owns the LaunchAgents: stop both agents, run, restart,
+then confirm with `npm run ai:check-runtime-root`. Do not do that half of it unattended.
+
 When you restart an agent, **do not chain `bootout` and `bootstrap` on one line**. `bootout`
 returns before launchd has released the label, so an immediately following `bootstrap` fails
 `5: Input/output error` — and because the `bootout` half already succeeded, the agent is left
