@@ -210,42 +210,39 @@ class InstanceService extends Base {
     }
 
     /**
-     * Reverts the requester's most-recent committed Neural Link mutation transaction — forwards the `undo` tool to
-     * the connected App Worker, which pops the requester's last committed transaction and re-dispatches its captured
-     * reverse-op(s) under live enforcement. See {@link Neo.ai.client.InstanceService#undo}.
+     * @summary Reverts the explicit dock Group cursor, or the requester's non-dock stack.
      * @param {Object} opts
-     * @param {String} opts.sessionId
+     * @param {String} [opts.sessionId]
+     * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
-    async undo({sessionId}) {
-        return await ConnectionService.call(sessionId, 'undo', {})
+    async undo({sessionId, groupId}) {
+        return this.forwardTransaction('undo', {sessionId, groupId})
     }
 
     /**
-     * Re-applies the requester's most-recently undone Neural Link mutation transaction — forwards the `redo` tool to
-     * the connected App Worker, which pops the requester's redo branch and re-dispatches its captured forward-op(s)
-     * under live enforcement. See {@link Neo.ai.client.InstanceService#redo}.
+     * @summary Reapplies the explicit dock Group cursor, or the requester's non-dock stack.
      * @param {Object} opts
-     * @param {String} opts.sessionId
+     * @param {String} [opts.sessionId]
+     * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
-    async redo({sessionId}) {
-        return await ConnectionService.call(sessionId, 'redo', {})
+    async redo({sessionId, groupId}) {
+        return this.forwardTransaction('redo', {sessionId, groupId})
     }
 
     /**
-     * Archives one committed Neural Link transaction for later replay after the App Worker session disconnects.
-     * The App Worker returns the writer-scoped transaction snapshot; the Brain side persists it in the Memory Core
-     * archive so replay does not depend on the live heap.
+     * @summary Archives a committed Group snapshot or non-dock transaction without changing the live cursor.
      * @param {Object} opts
-     * @param {String} opts.sessionId
-     * @param {String} opts.txId
+     * @param {String} [opts.sessionId]
+     * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
+     * @param {String} [opts.txId]
      * @param {String} [opts.name]
      * @returns {Promise<Object>}
      */
-    async saveTransaction({sessionId, txId, name}) {
+    async saveTransaction({sessionId, groupId, txId, name}) {
         const appSessionId = sessionId ?? ConnectionService.getDefaultSessionId();
-        const snapshot     = await ConnectionService.call(sessionId, 'save_transaction', {txId});
+        const snapshot     = await this.forwardTransaction('save_transaction', {sessionId, groupId, txId});
 
         if (!snapshot?.saved) {
             return snapshot
@@ -259,15 +256,14 @@ class InstanceService extends Base {
     }
 
     /**
-     * Replays an archived transaction's forward ops into the target App Worker session as a new undoable transaction.
-     * The archived ops are passed back through the standard App Worker dispatch path, so write locks, target
-     * resolution, and per-writer transaction capture remain authoritative.
+     * @summary Replays an archive into the explicit Group or legacy non-dock command path under current-caller enforcement.
      * @param {Object} opts
-     * @param {String} opts.sessionId
-     * @param {String} opts.archiveId
+     * @param {String} [opts.sessionId]
+     * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
+     * @param {String} [opts.archiveId]
      * @returns {Promise<Object>}
      */
-    async replayTransaction({sessionId, archiveId}) {
+    async replayTransaction({sessionId, groupId, archiveId}) {
         const archive = await RecorderService.getTransactionArchive({archiveId});
 
         // UNREACHABLE IS NOT ABSENT. Both used to answer `archive-not-found`, which told the caller a
@@ -281,7 +277,8 @@ class InstanceService extends Base {
             return {replayed: false, reason: 'archive-not-found'}
         }
 
-        const result = await ConnectionService.call(sessionId, 'replay_transaction', {
+        const result = await this.forwardTransaction('replay_transaction', {
+            sessionId, groupId,
             archiveId,
             ops               : archive.ops,
             sourceCommittedAt : archive.committedAt,
@@ -305,51 +302,65 @@ class InstanceService extends Base {
     }
 
     /**
-     * Lists the requester's Neural Link transaction history — forwards the `list_transactions` tool to the
-     * connected App Worker, which returns a read-only audit summary of the writer's undo stack + redo branch.
-     * See {@link Neo.ai.client.InstanceService#listTransactions}.
+     * @summary Reads the explicit Group's shared history, or the requester's non-dock history.
      * @param {Object} opts
-     * @param {String} opts.sessionId
+     * @param {String} [opts.sessionId]
+     * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
-    async listTransactions({sessionId}) {
-        return await ConnectionService.call(sessionId, 'list_transactions', {})
+    async listTransactions({sessionId, groupId}) {
+        return this.forwardTransaction('list_transactions', {sessionId, groupId})
     }
 
     /**
-     * Aborts the requester's open named transaction — forwards the `abort_transaction` tool to the connected App
-     * Worker, discarding the open batch without committing. See {@link Neo.ai.client.InstanceService#abortTransaction}.
+     * @summary Discards pending Group inputs, or aborts the requester's non-dock record.
      * @param {Object} opts
-     * @param {String} opts.sessionId
+     * @param {String} [opts.sessionId]
+     * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
-    async abortTransaction({sessionId}) {
-        return await ConnectionService.call(sessionId, 'abort_transaction', {})
+    async abortTransaction({sessionId, groupId}) {
+        return this.forwardTransaction('abort_transaction', {sessionId, groupId})
     }
 
     /**
-     * Opens a named transaction for the requester — forwards the `begin_transaction` tool to the connected App Worker,
-     * which captures subsequent mutations into one batch until `commit_transaction`. See
-     * {@link Neo.ai.client.InstanceService#beginTransaction}.
+     * @summary Opens a bounded Group preparation batch, or a legacy non-dock batch.
      * @param {Object} opts
-     * @param {String} opts.sessionId
-     * @param {String} opts.name
+     * @param {String} [opts.sessionId]
+     * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
+     * @param {String} [opts.name]
      * @returns {Promise<Object>}
      */
-    async beginTransaction({sessionId, name}) {
-        return await ConnectionService.call(sessionId, 'begin_transaction', {name})
+    async beginTransaction({sessionId, groupId, name}) {
+        return this.forwardTransaction('begin_transaction', {sessionId, groupId, name})
     }
 
     /**
-     * Commits the requester's open named transaction — forwards the `commit_transaction` tool to the connected App
-     * Worker, folding its accumulated mutations into a single undoable unit. See
-     * {@link Neo.ai.client.InstanceService#commitTransaction}.
+     * @summary Commits pending Group inputs atomically, or commits the requester's non-dock record.
      * @param {Object} opts
-     * @param {String} opts.sessionId
+     * @param {String} [opts.sessionId]
+     * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
-    async commitTransaction({sessionId}) {
-        return await ConnectionService.call(sessionId, 'commit_transaction', {})
+    async commitTransaction({sessionId, groupId}) {
+        return this.forwardTransaction('commit_transaction', {sessionId, groupId})
+    }
+
+    /**
+     * @summary Refuses an old worker that ignores Group selection before forwarding a mutating command.
+     * @param {String} method
+     * @param {Object} opts App Worker session, optional Group and command payload.
+     * @returns {Promise<Object>}
+     */
+    async forwardTransaction(method, {sessionId, groupId, ...payload}) {
+        if (groupId !== undefined) {
+            sessionId ??= ConnectionService.getDefaultSessionId();
+            payload.groupId = groupId;
+            const selected = await ConnectionService.call(sessionId, 'list_transactions', {groupId});
+            if (selected?.groupId !== groupId) throw new Error('The target App Worker does not support explicit Group transactions.');
+            if (method === 'list_transactions') return selected
+        }
+        return ConnectionService.call(sessionId, method, payload)
     }
 
     /**

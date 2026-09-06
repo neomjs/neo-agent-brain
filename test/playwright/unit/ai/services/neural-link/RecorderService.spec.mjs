@@ -80,6 +80,17 @@ test.describe('Neo.ai.services.neural-link.RecorderService', () => {
         expect(RecorderService.db).toBeUndefined();
     });
 
+    test('a human Group snapshot crosses archive admission without inventing an agent writer', async () => {
+        const {refuseTransaction} = await import('../../../../../../ai/services/memory-core/helpers/nlTransactionArchiveStore.mjs');
+        const transaction = {domain: 'dock', txId: 'group-row', status: 'committed', originWriter: null,
+            ops: [{workspaceKey: 'popup', before: {x: 1}, after: {x: 2}, provenance: {origin: 'human'}}]};
+        stubTransport({save_nl_transaction: ({transaction: value}) => ({saved: refuseTransaction(value) === null})});
+        expect(await RecorderService.saveTransactionArchive({appSessionId: 'app', transaction})).toEqual({saved: true});
+        expect(calls[0].args.transaction).toEqual(transaction);
+        expect(refuseTransaction({...transaction, domain: 'non-dock'})).toBe('missing-origin-writer');
+        expect(refuseTransaction({...transaction, ops: [{workspaceKey: 'popup'}]})).toBe('missing-origin-writer')
+    });
+
     test('a logged tool invocation admits the DECIDED record set, and drops everything else', async () => {
         stubTransport({admit_nl_actions: {admitted: 1, refused: 0}});
 
