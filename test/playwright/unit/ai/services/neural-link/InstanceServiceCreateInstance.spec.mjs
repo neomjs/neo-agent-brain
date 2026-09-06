@@ -16,6 +16,9 @@ setup({
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+import fs             from 'node:fs';
+import YAML           from 'yaml';
+import {buildZodSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 
 /**
  * @summary Server-side validation and dispatch coverage for Neural Link instance service tools.
@@ -52,6 +55,9 @@ test.describe('Neo.ai.services.neural-link.InstanceService - server boundary', (
 
         ConnectionService.call = async (sessionId, op, payload) => {
             calls.push({sessionId, op, payload});
+            if (op === 'list_transactions' && payload.groupId !== undefined) {
+                return {groupId: payload.groupId, committed: [], redo: []}
+            }
             return {id: 'created-instance', className: payload.className || 'Neo.button.Base'}
         }
 
@@ -83,6 +89,37 @@ test.describe('Neo.ai.services.neural-link.InstanceService - server boundary', (
         RecorderService.saveTransactionArchive = originalSaveArchive;
         RecorderService.getTransactionArchive  = originalGetArchive;
         RecorderService.recordTransactionReplay = originalRecordReplay
+    });
+
+    test('every transaction tool carries explicit Group selection through its compiled wire and forwarder', async () => {
+        const doc = YAML.parse(fs.readFileSync(new URL('../../../../../../ai/mcp/server/neural-link/openapi.yaml', import.meta.url), 'utf8'));
+        const methods = {undo: 'undo', redo: 'redo', list_transactions: 'listTransactions',
+            begin_transaction: 'beginTransaction', commit_transaction: 'commitTransaction',
+            abort_transaction: 'abortTransaction', save_transaction: 'saveTransaction', replay_transaction: 'replayTransaction'};
+        for (const [operationId, methodName] of Object.entries(methods)) {
+            let operation;
+            for (const [path, item] of Object.entries(doc.paths)) {
+                for (const [method, entry] of Object.entries(item)) {
+                    if (entry.operationId === operationId) operation = {path, method, ...entry}
+                }
+            }
+            const request = buildZodSchema(doc, operation).parse({groupId: 'group-b', sessionId: 'app-session',
+                name: 'batch', txId: 'row', archiveId: 'archive-1'});
+            expect(request.groupId).toBe('group-b');
+            await InstanceService[methodName](request);
+            expect(calls.at(-1)).toMatchObject({sessionId: 'app-session', op: operationId,
+                payload: {groupId: 'group-b'}})
+        }
+    });
+
+    test('a worker that ignores Group selection cannot consume its legacy undo stack', async () => {
+        ConnectionService.call = async (sessionId, op, payload) => {
+            calls.push({sessionId, op, payload});
+            return {committed: [], redo: []}
+        };
+        await expect(InstanceService.undo({sessionId: 'old-worker', groupId: 'group-b'}))
+            .rejects.toThrow('does not support explicit Group transactions');
+        expect(calls.map(call => call.op)).toEqual(['list_transactions'])
     });
 
     test('rejects missing or ambiguous class identity before dispatch', async () => {

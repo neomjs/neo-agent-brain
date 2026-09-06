@@ -2788,7 +2788,7 @@ components:
       properties:
         transaction:
           type: object
-          description: "The committed transaction. Requires `status` of `committed`, a non-empty `ops` array, and an origin writer with agentId and sessionId."
+          description: "A committed transaction with non-empty ops. Non-dock commands require an attributed origin writer. Dock Group snapshots declare domain dock and carry workspaceKey, before, after and provenance per participant; human provenance does not invent an agent identity."
         appSessionId:
           type: string
           nullable: true

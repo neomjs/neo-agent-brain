@@ -2557,6 +2557,9 @@ components:
     UndoRequest:
       type: object
       properties:
+        groupId:
+          type: string
+          description: Explicit dock Group whose shared history is selected. Omit for non-dock requester history.
         sessionId:
           type: string
           description: The target App Worker Session ID
@@ -2564,6 +2567,9 @@ components:
     RedoRequest:
       type: object
       properties:
+        groupId:
+          type: string
+          description: Explicit dock Group whose shared history is selected. Omit for non-dock requester history.
         sessionId:
           type: string
           description: The target App Worker Session ID
@@ -2571,6 +2577,9 @@ components:
     ListTransactionsRequest:
       type: object
       properties:
+        groupId:
+          type: string
+          description: Explicit dock Group whose shared history is selected. Omit for non-dock requester history.
         sessionId:
           type: string
           description: The target App Worker Session ID
@@ -2580,6 +2589,9 @@ components:
       required:
         - txId
       properties:
+        groupId:
+          type: string
+          description: Explicit dock Group whose shared history is selected. Omit for non-dock requester history.
         sessionId:
           type: string
           description: The target App Worker Session ID
@@ -2595,6 +2607,9 @@ components:
       required:
         - archiveId
       properties:
+        groupId:
+          type: string
+          description: Explicit dock Group whose shared history is selected. Omit for non-dock requester history.
         sessionId:
           type: string
           description: The target App Worker Session ID
@@ -2605,6 +2620,9 @@ components:
     AbortTransactionRequest:
       type: object
       properties:
+        groupId:
+          type: string
+          description: Explicit dock Group whose shared history is selected. Omit for non-dock requester history.
         sessionId:
           type: string
           description: The target App Worker Session ID
@@ -2612,6 +2630,9 @@ components:
     BeginTransactionRequest:
       type: object
       properties:
+        groupId:
+          type: string
+          description: Explicit dock Group whose shared history is selected. Omit for non-dock requester history.
         sessionId:
           type: string
           description: The target App Worker Session ID
@@ -2622,6 +2643,9 @@ components:
     CommitTransactionRequest:
       type: object
       properties:
+        groupId:
+          type: string
+          description: Explicit dock Group whose shared history is selected. Omit for non-dock requester history.
         sessionId:
           type: string
           description: The target App Worker Session ID
