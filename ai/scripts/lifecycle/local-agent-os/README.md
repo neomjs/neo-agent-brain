@@ -213,11 +213,38 @@ so the cockpit's seat-arming axis observes exactly the manifest the receiver
 boots on. Leave it unset on a machine with no local wake lane and that axis
 reports typed-unobserved instead of guessing.
 
+### The runtime root is not "wherever you happen to be"
+
+ADR 0040 §2.5's `agentosRuntimeRoot` is where the Agent OS is **installed and runs**. Both plists
+invoke `ai/daemons/**` relative to it, and the Engine repo no longer carries an `ai/` tree — so an
+Engine clone here produces a plist that installs cleanly and never launches.
+
+**It must also be a checkout no agent seat owns**, with its own `npm ci`. This is the half that is
+easy to get wrong, because the wrong answer looks right: a seat's Brain checkout has the correct
+repo, the correct files and the correct relative paths. What it lacks is a dependency closure only
+this host can change. A seat that switches branches, reinstalls, or is cleaned up takes the
+machine's daemons with it — and the damage is **deferred**, so it never appears as an install
+error. On 2026-09-04 that cost this machine 4,648 crash-restarts over 42 hours and took inference
+down for every seat at the next reboot (neomjs/neo-agent-brain#335): the root had been launching
+correctly for weeks, then died when an unrelated repository dropped a package the root was
+borrowing through a symlinked `node_modules`.
+
+Pick a path outside every seat tree, clone the Brain there, and install it:
+
 ```sh
-# ADR 0040 §2.5's `agentosRuntimeRoot`: where the Agent OS is installed and runs.
-# Run this guide from the Brain checkout. Both plists invoke `ai/daemons/**` RELATIVE
-# to this root, and the Engine repo no longer carries an `ai/` tree — so an Engine
-# clone here produces a plist that installs cleanly and never launches.
+# Any host-owned path works; this guide uses /Users/Shared/agent-os by convention.
+git clone https://github.com/neomjs/neo-agent-brain.git /Users/Shared/agent-os/neo-agent-brain
+cd /Users/Shared/agent-os/neo-agent-brain && npm ci
+```
+
+Treat that clone as **installed software, not a workspace**: a live daemon executes from it, so
+editing or rebasing it mutates a running host process. Refresh it deliberately — `git pull`, then
+`npm ci`, then restart both agents — never as a side effect of development.
+
+Run the rest of this section from that root. `npm run ai:check-runtime-root` proves the property
+afterwards, and is worth running any time a daemon misbehaves:
+
+```sh
 export AGENTOS_RUNTIME_ROOT="$(pwd -P)"
 export NEO_AGENT_OS_HOST_ROOT="${HOME}/Library/Application Support/Neo/AgentOS"
 export NEO_WAKE_RECEIVER_ROOT="${NEO_AGENT_OS_HOST_ROOT}/wake"
