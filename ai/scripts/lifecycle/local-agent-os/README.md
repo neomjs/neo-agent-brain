@@ -241,6 +241,22 @@ Treat that clone as **installed software, not a workspace**: a live daemon execu
 editing or rebasing it mutates a running host process. Refresh it deliberately — `git pull`, then
 `npm ci`, then restart both agents — never as a side effect of development.
 
+When you restart an agent, **do not chain `bootout` and `bootstrap` on one line**. `bootout`
+returns before launchd has released the label, so an immediately following `bootstrap` fails
+`5: Input/output error` — and because the `bootout` half already succeeded, the agent is left
+**stopped**, not restarted. For the wake receiver that is a silent wake-delivery outage. Let the
+label release first, then verify the agent actually came back:
+
+```sh
+launchctl bootout gui/$(id -u)/com.neomjs.agent-os-wake
+sleep 2
+launchctl bootstrap gui/$(id -u) "${NEO_WAKE_PLIST}"
+launchctl print gui/$(id -u)/com.neomjs.agent-os-wake | grep -E 'state =|pid ='
+```
+
+If a `bootstrap` does fail this way, the repair is simply to run it again once the label is gone —
+the plist is not damaged.
+
 Run the rest of this section from that root. `npm run ai:check-runtime-root` proves the property
 afterwards, and is worth running any time a daemon misbehaves:
 
