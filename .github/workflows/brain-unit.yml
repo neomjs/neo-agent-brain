@@ -33,6 +33,13 @@ jobs:
             - name: Build the native SQLite binding
               run: npm rebuild better-sqlite3
 
+            # The seat-routing generator emits zsh, and its spec executes that output rather than a
+            # JavaScript model of it. ubuntu-latest ships no zsh, so without this the shell arms can
+            # only be skipped — which would leave the emitted `case` globs unverified everywhere
+            # except a maintainer's Mac.
+            - name: Install zsh, so the emitted shell is executed and not merely modelled
+              run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+
             - name: Materialize Brain-owned install projections
               run: |
                   npm run postinstall

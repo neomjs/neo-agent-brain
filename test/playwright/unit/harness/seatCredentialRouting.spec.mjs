@@ -204,8 +204,19 @@ test.describe('seatCredentialRouting', () => {
             const script = `cd ${JSON.stringify(cwd)} || exit 9; source ${JSON.stringify(file)}; ` +
                            'print -r -- "${NEO_SEAT_ENV_FILE:-<unmapped>}"';
 
-            return execFileSync('/bin/zsh', ['-c', script], {encoding: 'utf8'}).trim();
+            // Resolved through PATH, not `/bin/zsh`: that path is macOS's. On the Linux CI runner it
+            // is `/usr/bin/zsh`, and hardcoding the macOS location reds every arm here with an
+            // ENOENT that says nothing about the routing under test.
+            return execFileSync('zsh', ['-c', script], {encoding: 'utf8'}).trim();
         };
+
+        test('zsh is present — a missing shell is a RED here, never a skip', () => {
+            // These arms are the only ones that execute the artifact this module actually ships.
+            // Skipping them where zsh is absent would restore the exact gap they close: every other
+            // arm would stay green while the emitted `case` globs went unverified. So the
+            // prerequisite is asserted, and CI installs zsh rather than opting out of the check.
+            expect(() => execFileSync('zsh', ['-c', 'exit 0'])).not.toThrow();
+        });
 
         for (const [label, rel] of [
             ['a seat root',                 'claude/neomjs'],
