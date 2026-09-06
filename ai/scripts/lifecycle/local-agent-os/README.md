@@ -232,9 +232,12 @@ borrowing through a symlinked `node_modules`.
 Pick a path outside every seat tree, clone the Brain there, and install it:
 
 ```sh
-# Any host-owned path works; this guide uses /Users/Shared/agent-os by convention.
-git clone https://github.com/neomjs/neo-agent-brain.git /Users/Shared/agent-os/neo-agent-brain
-cd /Users/Shared/agent-os/neo-agent-brain && npm ci
+# Any host-owned path outside every agent seat tree. Nothing depends on the location,
+# only on who can write to it — so choose one no seat and no contributor checks out into.
+AGENTOS_INSTALL_PATH=<host-owned path>/neo-agent-brain
+
+git clone https://github.com/neomjs/neo-agent-brain.git "$AGENTOS_INSTALL_PATH"
+cd "$AGENTOS_INSTALL_PATH" && npm ci
 ```
 
 Treat that clone as **installed software, not a workspace**: a live daemon executes from it, so
@@ -254,8 +257,8 @@ repository has no e2e tier at all, only `unit`, `integration` and `integration-p
 Provision it beside the supervised one, never as the supervised one:
 
 ```sh
-git clone https://github.com/neomjs/neo-agent-brain.git /Users/Shared/agent-os/e2e-runtime
-cd /Users/Shared/agent-os/e2e-runtime && npm ci
+git clone https://github.com/neomjs/neo-agent-brain.git <host-owned path>/e2e-runtime
+cd <host-owned path>/e2e-runtime && npm ci
 ```
 
 **Why this needs saying out loud:** the two roots differ only by intent, and the supervised one is
@@ -287,16 +290,17 @@ the plist is not damaged.
 
 Run the rest of this section from that root. Two commands prove the root is sound afterwards, and
 are worth running any time a daemon misbehaves — the second is the one that matters, because a
-sound-looking layout is exactly what this machine had while it was crash-looping:
+sound-looking layout is exactly what a crash-looping host presents:
 
 ```sh
+cd "$AGENTOS_INSTALL_PATH"
+
 # 1. the root owns its closure — node_modules must be a real directory here, never a symlink
-ls -ld /Users/Shared/agent-os/neo-agent-brain/node_modules
+ls -ld node_modules
 
 # 2. the entrypoints actually RESOLVE from it. Both gate their boot behind
 #    `import.meta.url === pathToFileURL(process.argv[1]).href`, so importing them
 #    resolves the real module graph and starts nothing.
-cd /Users/Shared/agent-os/neo-agent-brain
 for e in ai/daemons/orchestrator/hostEdge.mjs ai/daemons/wake/receiver.mjs; do
   node --input-type=module -e "await import('$PWD/$e')" && echo "ok  $e" || echo "RED $e"
 done
