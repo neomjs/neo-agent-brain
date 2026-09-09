@@ -27,6 +27,7 @@ import {STALE_BRIDGE_ERROR_CODE} from '../../../../../../ai/mcp/server/neural-li
  * is what decides whether a stale shared Bridge is reused, spawned over, or failed loudly.
  */
 test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshness gate (#13299)', () => {
+    const rpcClients = [];
     let ConnectionService, getBridgeStdioLogPath, logBridgePayload,
         normalizeBridgePayloadDebugMaxChars, stringifyBridgePayloadForDebug,
         originalConnectToBridge, originalCwd, originalOpenBridgeLogFile,
@@ -52,6 +53,10 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
     });
 
     test.afterEach(() => {
+        rpcClients.splice(0).forEach(client => {
+            client.pendingRequests.forEach(pending => clearTimeout(pending.timeout));
+            client.pendingRequests.clear();
+        });
         ConnectionService.connectToBridge      = originalConnectToBridge;
         ConnectionService.cwd                  = originalCwd;
         ConnectionService.openBridgeLogFile    = originalOpenBridgeLogFile;
@@ -69,6 +74,88 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         });
 
         expect(url).toBe('ws://127.0.0.1:19081/?role=agent&id=agent-test&token=token+with+spaces');
+    });
+
+    /** @summary Exercises the real RPC methods with client-local state and captured outbound frames. */
+    function createRpcClient() {
+        const client = Object.create(ConnectionService);
+        Object.assign(client, {
+            pendingRequests: new Map(),
+            sessionData    : new Map([['app-a', {}], ['app-b', {}]]),
+            sent           : []
+        });
+        client.bridgeSocket = {send: payload => client.sent.push(JSON.parse(payload))};
+        rpcClients.push(client);
+        return client;
+    }
+
+    for (const peerTarget of ['app-a', 'app-b']) {
+        test(`broadcast replies stay with their caller when the peer targets ${peerTarget}`, async () => {
+            const owner     = createRpcClient(), peer = createRpcClient();
+            const ownerCall = owner.call('app-a', 'owner'), peerCall = peer.call(peerTarget, 'peer');
+            const ownerId   = owner.sent[0].message.id, peerId = peer.sent[0].message.id;
+
+            expect(ownerId).not.toBe(peerId);
+            owner.handleAppMessage(peerTarget, {id: peerId, result: 'peer-result'});
+            peer.handleAppMessage(peerTarget, {id: peerId, result: 'peer-result'});
+            expect(owner.pendingRequests.has(ownerId)).toBe(true);
+            owner.handleAppMessage('app-a', {id: ownerId, result: 'owner-result'});
+            peer.handleAppMessage('app-a', {id: ownerId, result: 'owner-result'});
+            await expect(ownerCall).resolves.toBe('owner-result');
+            await expect(peerCall).resolves.toBe('peer-result');
+            expect(owner.pendingRequests.size + peer.pendingRequests.size).toBe(0);
+        });
+    }
+
+    test('a foreign app cannot consume a matching request ID with a result or error', async () => {
+        const client = createRpcClient(), call = client.call('app-a', 'owned');
+        const id     = client.sent[0].message.id;
+
+        client.handleAppMessage('app-b', {id, result: 'foreign'});
+        expect(client.pendingRequests.has(id)).toBe(true);
+        client.handleAppMessage('app-b', {id, error: {message: 'foreign error'}});
+        expect(client.pendingRequests.has(id)).toBe(true);
+        const rejection = expect(call).rejects.toThrow('owned error');
+        client.handleAppMessage('app-a', {id, error: {message: 'owned error'}});
+        await rejection;
+        expect(client.pendingRequests.size).toBe(0);
+    });
+
+    test('notifications and late replies do not consume another live call', async () => {
+        const client = createRpcClient(), notifications = [];
+        client.handleNotification = (sessionId, message) => notifications.push({sessionId, message});
+        const first = client.call('app-a', 'first'), firstId = client.sent[0].message.id;
+        client.handleAppMessage('app-a', {id: firstId, result: 'first'});
+        await expect(first).resolves.toBe('first');
+        const second       = client.call('app-a', 'second'), secondId = client.sent[1].message.id;
+        const notification = {method: 'console_log', params: {message: 'observation'}};
+
+        client.handleAppMessage('app-a', {id: firstId, result: 'late'});
+        client.handleAppMessage('app-b', notification);
+        expect(notifications).toEqual([{sessionId: 'app-b', message: notification}]);
+        expect(client.pendingRequests.has(secondId)).toBe(true);
+        client.handleAppMessage('app-a', {id: secondId, result: 'second'});
+        await expect(second).resolves.toBe('second');
+    });
+
+    test('the existing timeout still rejects and cleans a call after disconnect', async () => {
+        const client = createRpcClient(), originalSetTimeout = globalThis.setTimeout;
+        let expire, timer, call;
+        try {
+            globalThis.setTimeout = (callback, delay) => {
+                expire = callback;
+                return timer = originalSetTimeout(() => {}, delay);
+            };
+            call = client.call('app-a', 'pending');
+        } finally {
+            globalThis.setTimeout = originalSetTimeout;
+        }
+        client.bridgeSocket = null;
+        const rejection = expect(call).rejects.toThrow('Request timed out');
+        expire();
+        clearTimeout(timer);
+        await rejection;
+        expect(client.pendingRequests.size).toBe(0);
     });
 
     test('resolves Bridge stdio logs only under the injected Neural Link log directory', () => {

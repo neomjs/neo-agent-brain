@@ -51,3 +51,5 @@ jobs:
                   test/playwright/unit/harness/terminateDaemon.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/pipeline.spec.mjs
                   test/playwright/unit/src/fleet/contract/fleetContract.spec.mjs
+                  test/playwright/unit/ai/services/neural-link/ConnectionService.spec.mjs
+                  test/playwright/unit/ai/mcp/server/neural-link/Bridge.spec.mjs
