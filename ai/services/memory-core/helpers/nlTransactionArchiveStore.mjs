@@ -67,6 +67,13 @@ export function refuseTransaction(transaction) {
 
     const originWriter = transaction.originWriter ?? transaction.ops[0]?.originWriter;
 
+    if (transaction.domain === 'dock' && transaction.ops.every(op =>
+        typeof op?.workspaceKey === 'string' && op.workspaceKey && Object.hasOwn(op, 'before') &&
+        Object.hasOwn(op, 'after') && op.provenance && typeof op.provenance === 'object' && !op.forward
+    )) {
+        return null;
+    }
+
     if (!originWriter?.agentId || !originWriter?.sessionId) {
         return 'missing-origin-writer';
     }
@@ -98,7 +105,7 @@ export function saveNlTransaction({appSessionId = null, name = null, transaction
     }
 
     const archiveId    = crypto.randomUUID(),
-          originWriter = transaction.originWriter ?? transaction.ops[0]?.originWriter,
+          originWriter = transaction.originWriter ?? transaction.ops[0]?.originWriter ?? null,
           trimmedName  = typeof name === 'string' && name.trim() ? name.trim() : null;
 
     try {

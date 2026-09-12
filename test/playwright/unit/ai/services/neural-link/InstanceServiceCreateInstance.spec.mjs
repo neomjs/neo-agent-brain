@@ -13,9 +13,12 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}   from '@playwright/test';
+import Neo              from 'neo.mjs/src/Neo.mjs';
+import * as core        from 'neo.mjs/src/core/_export.mjs';
+import fs               from 'node:fs';
+import YAML             from 'yaml';
+import {buildZodSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 
 /**
  * @summary Server-side validation and dispatch coverage for Neural Link instance service tools.
@@ -25,7 +28,8 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
  */
 test.describe('Neo.ai.services.neural-link.InstanceService - server boundary', () => {
     let ConnectionService, InstanceService, RecorderService, calls, recorderCalls,
-        originalCall, originalDefaultSession, originalGetArchive, originalRecordReplay, originalReady, originalSaveArchive;
+        originalCall, originalDefaultSession, originalGetArchive, originalRecordReplay, originalReady, originalSaveArchive,
+        originalSessionData, originalBridgeSocket;
 
     test.beforeAll(async () => {
         (await import('../../../../../../ai/mcp/server/neural-link/config.template.mjs')).default.data.autoConnect = false;
@@ -49,9 +53,15 @@ test.describe('Neo.ai.services.neural-link.InstanceService - server boundary', (
         originalGetArchive     = RecorderService.getTransactionArchive;
         originalRecordReplay   = RecorderService.recordTransactionReplay;
         originalSaveArchive    = RecorderService.saveTransactionArchive;
+        originalSessionData    = ConnectionService.sessionData;
+        originalBridgeSocket   = ConnectionService.bridgeSocket;
+        ConnectionService.sessionData = new Map([['default-session', {}]]);
 
         ConnectionService.call = async (sessionId, op, payload) => {
             calls.push({sessionId, op, payload});
+            if (op === 'list_transactions' && payload.groupId !== undefined) {
+                return {groupId: payload.groupId, committed: [], redo: []}
+            }
             return {id: 'created-instance', className: payload.className || 'Neo.button.Base'}
         }
 
@@ -82,7 +92,88 @@ test.describe('Neo.ai.services.neural-link.InstanceService - server boundary', (
         ConnectionService.getDefaultSessionId = originalDefaultSession;
         RecorderService.saveTransactionArchive = originalSaveArchive;
         RecorderService.getTransactionArchive  = originalGetArchive;
-        RecorderService.recordTransactionReplay = originalRecordReplay
+        RecorderService.recordTransactionReplay = originalRecordReplay;
+        ConnectionService.sessionData = originalSessionData;
+        ConnectionService.bridgeSocket = originalBridgeSocket
+    });
+
+    test('every transaction tool carries explicit Group selection through its compiled wire and forwarder', async () => {
+        const doc     = YAML.parse(fs.readFileSync(new URL('../../../../../../ai/mcp/server/neural-link/openapi.yaml', import.meta.url), 'utf8'));
+        const methods = {undo: 'undo', redo: 'redo', list_transactions: 'listTransactions',
+            begin_transaction: 'beginTransaction', commit_transaction: 'commitTransaction',
+            abort_transaction: 'abortTransaction', save_transaction: 'saveTransaction', replay_transaction: 'replayTransaction'};
+        for (const [operationId, methodName] of Object.entries(methods)) {
+            let operation;
+            for (const [path, item] of Object.entries(doc.paths)) {
+                for (const [method, entry] of Object.entries(item)) {
+                    if (entry.operationId === operationId) operation = {path, method, ...entry}
+                }
+            }
+            const request = buildZodSchema(doc, operation).parse({groupId: 'group-b', sessionId: 'app-session',
+                name: 'batch', txId: 'row', archiveId: 'archive-1'});
+            expect(request.groupId).toBe('group-b');
+            await InstanceService[methodName](request);
+            expect(calls.at(-1)).toMatchObject({sessionId: 'app-session', op: operationId,
+                payload: {groupId: 'group-b'}})
+        }
+    });
+
+    test('a worker that ignores Group selection cannot consume its legacy undo stack', async () => {
+        ConnectionService.call = async (sessionId, op, payload) => {
+            calls.push({sessionId, op, payload});
+            return {committed: [], redo: []}
+        };
+        await expect(InstanceService.undo({sessionId: 'old-worker', groupId: 'group-b'}))
+            .rejects.toThrow('does not support explicit Group transactions');
+        expect(calls.map(call => call.op)).toEqual(['list_transactions'])
+    });
+
+    /** @summary Exercises the real target resolver while a local transport returns worker replies. */
+    const useLocalTransport = sessionIds => {
+        ConnectionService.call = originalCall;
+        ConnectionService.getDefaultSessionId = originalDefaultSession;
+        ConnectionService.sessionData = new Map(sessionIds.map(id => [id, {}]));
+        ConnectionService.bridgeSocket = {send: raw => {
+            const {target, message} = JSON.parse(raw),
+                  pending           = ConnectionService.pendingRequests.get(message.id);
+            calls.push({sessionId: target, op: message.method, payload: message.params});
+            clearTimeout(pending.timeout);
+            ConnectionService.pendingRequests.delete(message.id);
+            if (message.method === 'list_transactions') {
+                ConnectionService.sessionData.set('arrived-during-probe', {});
+                pending.resolve({groupId: message.params.groupId, committed: [], redo: []})
+            } else {
+                pending.resolve({saved: true, undone: true, transaction: {txId: 'row', ops: []}})
+            }
+        }}
+    };
+
+    for (const method of ['undo', 'saveTransaction']) {
+        test(`${method} refuses an omitted session with two live workers before any Group call`, async () => {
+            useLocalTransport(['app-a', 'app-b']);
+            await expect(InstanceService[method]({groupId: 'group-b'}))
+                .rejects.toThrow('Auto-targeting is disabled with 2 live sessions');
+            expect(calls).toEqual([]);
+            expect(recorderCalls).toEqual([])
+        })
+    }
+
+    test('single-session Group save pins the probe, mutation and archive across a newly arriving worker', async () => {
+        useLocalTransport(['app-a']);
+        await InstanceService.saveTransaction({groupId: 'group-b'});
+        expect(calls.map(({sessionId, op}) => [sessionId, op])).toEqual([
+            ['app-a', 'list_transactions'], ['app-a', 'save_transaction']
+        ]);
+        expect(recorderCalls[0].payload.appSessionId).toBe('app-a')
+    });
+
+    test('an explicit Group target works with two workers while non-dock omission stays refused', async () => {
+        useLocalTransport(['app-a', 'app-b']);
+        await InstanceService.undo({sessionId: 'app-a', groupId: 'group-b'});
+        expect(calls.map(call => call.sessionId)).toEqual(['app-a', 'app-a']);
+        calls.length = 0;
+        await expect(InstanceService.undo({})).rejects.toThrow('Auto-targeting is disabled');
+        expect(calls).toEqual([])
     });
 
     test('rejects missing or ambiguous class identity before dispatch', async () => {
@@ -187,7 +278,7 @@ test.describe('Neo.ai.services.neural-link.InstanceService - server boundary', (
         });
 
         expect(result).toEqual({saved: true, archiveId: 'archive-1', sourceTxId: 'batch:add-grid'});
-        expect(calls).toEqual([{sessionId: undefined, op: 'save_transaction', payload: {txId: 'batch:add-grid'}}]);
+        expect(calls).toEqual([{sessionId: 'default-session', op: 'save_transaction', payload: {txId: 'batch:add-grid'}}]);
         expect(recorderCalls).toEqual([{
             type   : 'save',
             payload: {
