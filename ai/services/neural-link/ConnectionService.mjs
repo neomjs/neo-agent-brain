@@ -228,12 +228,8 @@ class ConnectionService extends Base {
      */
     bridgeSocket = null
     /**
-     * Message ID counter.
-     */
-    msgId = 0
-    /**
      * Pending RPC requests awaiting response from Browser.
-     * Map<messageId, {resolve, reject, timeout}>
+     * Map<messageId, {sessionId, resolve, reject, timeout}>
      */
     pendingRequests = new Map()
     /**
@@ -293,6 +289,7 @@ class ConnectionService extends Base {
 
     /**
      * Sends a JSON-RPC request to a specific session via the Bridge.
+     * @summary Uses requester-independent IDs because app replies are broadcast to every client.
      * @param {String} sessionId    The target session ID.
      * @param {String} method      The RPC method name.
      * @param {Object} [params={}] The RPC parameters.
@@ -306,7 +303,7 @@ class ConnectionService extends Base {
         // Resolve the target session (explicit target honored; silent multi-session auto-targeting denied).
         sessionId = resolveCallTarget(sessionId, Array.from(this.sessionData.keys()));
 
-        const id         = ++this.msgId;
+        const id         = crypto.randomUUID();
         const rpcMessage = {
             jsonrpc: '2.0',
             method,
@@ -331,7 +328,7 @@ class ConnectionService extends Base {
                 }
             }, aiConfig.rpcTimeout);
 
-            this.pendingRequests.set(id, {resolve, reject, timeout});
+            this.pendingRequests.set(id, {sessionId, resolve, reject, timeout});
 
             this.bridgeSocket.send(JSON.stringify(bridgePayload));
         });
@@ -624,8 +621,7 @@ class ConnectionService extends Base {
     handleAppMessage(sessionId, message) {
         // 1. Response to a pending request
         if (message.id && (message.result !== undefined || message.error !== undefined)) {
-            logger.info(`[ConnectionService] Received response for ${message.id} from ${sessionId}`);
-            this.resolveRequest(message);
+            this.resolveRequest(sessionId, message);
             return;
         }
 
@@ -768,11 +764,14 @@ class ConnectionService extends Base {
 
     /**
      * Resolves a pending RPC request.
+     * @summary Unrelated app replies leave the expected owner's request and timeout intact.
+     * @param {String} sessionId The App Worker that sent the response.
      * @param {Object} message
      */
-    resolveRequest(message) {
+    resolveRequest(sessionId, message) {
         const pending = this.pendingRequests.get(message.id);
-        if (pending) {
+        if (pending && pending.sessionId === sessionId) {
+            logger.info(`[ConnectionService] Received response for ${message.id} from ${sessionId}`);
             clearTimeout(pending.timeout);
             this.pendingRequests.delete(message.id);
 
