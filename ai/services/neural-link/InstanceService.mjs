@@ -1,6 +1,7 @@
-import Base              from 'neo.mjs/src/core/Base.mjs';
-import ConnectionService from './ConnectionService.mjs';
-import RecorderService   from './RecorderService.mjs';
+import Base                from 'neo.mjs/src/core/Base.mjs';
+import ConnectionService   from './ConnectionService.mjs';
+import RecorderService     from './RecorderService.mjs';
+import {resolveCallTarget} from './resolveCallTarget.mjs';
 
 /**
  * @summary Manages generic instance inspection and manipulation for the Neural Link MCP Server.
@@ -212,7 +213,7 @@ class InstanceService extends Base {
     /**
      * @summary Reverts the explicit dock Group cursor, or the requester's non-dock stack.
      * @param {Object} opts
-     * @param {String} [opts.sessionId]
+     * @param {String} [opts.sessionId] May be omitted only with exactly one live App Worker session.
      * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
@@ -223,7 +224,7 @@ class InstanceService extends Base {
     /**
      * @summary Reapplies the explicit dock Group cursor, or the requester's non-dock stack.
      * @param {Object} opts
-     * @param {String} [opts.sessionId]
+     * @param {String} [opts.sessionId] May be omitted only with exactly one live App Worker session.
      * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
@@ -234,22 +235,22 @@ class InstanceService extends Base {
     /**
      * @summary Archives a committed Group snapshot or non-dock transaction without changing the live cursor.
      * @param {Object} opts
-     * @param {String} [opts.sessionId]
+     * @param {String} [opts.sessionId] May be omitted only with exactly one live App Worker session.
      * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @param {String} [opts.txId]
      * @param {String} [opts.name]
      * @returns {Promise<Object>}
      */
     async saveTransaction({sessionId, groupId, txId, name}) {
-        const appSessionId = sessionId ?? ConnectionService.getDefaultSessionId();
-        const snapshot     = await this.forwardTransaction('save_transaction', {sessionId, groupId, txId});
+        sessionId = resolveCallTarget(sessionId, Array.from(ConnectionService.sessionData.keys()));
+        const snapshot = await this.forwardTransaction('save_transaction', {sessionId, groupId, txId});
 
         if (!snapshot?.saved) {
             return snapshot
         }
 
         return await RecorderService.saveTransactionArchive({
-            appSessionId,
+            appSessionId: sessionId,
             name,
             transaction : snapshot.transaction
         })
@@ -258,7 +259,7 @@ class InstanceService extends Base {
     /**
      * @summary Replays an archive into the explicit Group or legacy non-dock command path under current-caller enforcement.
      * @param {Object} opts
-     * @param {String} [opts.sessionId]
+     * @param {String} [opts.sessionId] May be omitted only with exactly one live App Worker session.
      * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @param {String} [opts.archiveId]
      * @returns {Promise<Object>}
@@ -304,7 +305,7 @@ class InstanceService extends Base {
     /**
      * @summary Reads the explicit Group's shared history, or the requester's non-dock history.
      * @param {Object} opts
-     * @param {String} [opts.sessionId]
+     * @param {String} [opts.sessionId] May be omitted only with exactly one live App Worker session.
      * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
@@ -315,7 +316,7 @@ class InstanceService extends Base {
     /**
      * @summary Discards pending Group inputs, or aborts the requester's non-dock record.
      * @param {Object} opts
-     * @param {String} [opts.sessionId]
+     * @param {String} [opts.sessionId] May be omitted only with exactly one live App Worker session.
      * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
@@ -326,7 +327,7 @@ class InstanceService extends Base {
     /**
      * @summary Opens a bounded Group preparation batch, or a legacy non-dock batch.
      * @param {Object} opts
-     * @param {String} [opts.sessionId]
+     * @param {String} [opts.sessionId] May be omitted only with exactly one live App Worker session.
      * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @param {String} [opts.name]
      * @returns {Promise<Object>}
@@ -338,7 +339,7 @@ class InstanceService extends Base {
     /**
      * @summary Commits pending Group inputs atomically, or commits the requester's non-dock record.
      * @param {Object} opts
-     * @param {String} [opts.sessionId]
+     * @param {String} [opts.sessionId] May be omitted only with exactly one live App Worker session.
      * @param {String} [opts.groupId] Explicit dock Group; omission selects the non-dock path.
      * @returns {Promise<Object>}
      */
@@ -348,13 +349,14 @@ class InstanceService extends Base {
 
     /**
      * @summary Refuses an old worker that ignores Group selection before forwarding a mutating command.
+     * Resolves once through the connection's fail-closed rule, pinning the probe and mutation to one worker.
      * @param {String} method
      * @param {Object} opts App Worker session, optional Group and command payload.
      * @returns {Promise<Object>}
      */
     async forwardTransaction(method, {sessionId, groupId, ...payload}) {
         if (groupId !== undefined) {
-            sessionId ??= ConnectionService.getDefaultSessionId();
+            sessionId = resolveCallTarget(sessionId, Array.from(ConnectionService.sessionData.keys()));
             payload.groupId = groupId;
             const selected = await ConnectionService.call(sessionId, 'list_transactions', {groupId});
             if (selected?.groupId !== groupId) throw new Error('The target App Worker does not support explicit Group transactions.');
