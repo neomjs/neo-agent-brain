@@ -14,8 +14,14 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
+import fs             from 'fs';
+import path           from 'path';
+import {fileURLToPath} from 'url';
+import * as yaml      from 'js-yaml';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+
+const openApiPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../../ai/mcp/server/neural-link/openapi.yaml');
 
 /**
  * @summary Right-hemisphere coverage for the perspective tool trio — `capture_perspective`,
@@ -101,5 +107,29 @@ test.describe('Neo.ai.services.neural-link.DockService — perspective tool pass
             payload  : {componentId: 'cockpit-1', name: 'Everything'},
             sessionId: 's-3'
         }])
+    });
+
+    test('the two tool descriptions carry the engine\'s declared-perspective contract: the declared list, the three published facts, the declared restore path and the tie refusal', () => {
+        const doc        = yaml.load(fs.readFileSync(openApiPath, 'utf8')),
+              operations = Object.fromEntries(Object.values(doc.paths).flatMap(pathItem =>
+                  Object.values(pathItem).filter(op => op?.operationId).map(op => [op.operationId, op]))),
+              list       = operations.list_perspectives,
+              restore    = operations.restore_perspective;
+
+        // list_perspectives: `declared` beside the stored summaries, the key as the discriminator, the facts by name
+        expect(list.description).toContain('`declared`');
+        expect(list.description).toContain('`perspective`');
+        for (const fact of ['active', 'modified', 'pending']) expect(list.description).toContain(fact);
+        expect(list.description).toContain('neither declared perspectives nor a perspective or topology store');
+        expect(list.description).toContain('invalid topology collection returns its validation errors');
+        expect(list.responses['200'].content['application/json'].schema).toEqual({type: 'object'});
+
+        // restore_perspective: resolved across three sources, a tie refused, a declared name on the accepted write with `source`
+        expect(restore.description).toContain('declared list');
+        expect(restore.description).toContain('refused with the sources named');
+        expect(restore.description).toContain('activePerspective write');
+        expect(restore.description).toContain("source 'declared'");
+        expect(restore.description).toContain('list_perspectives');
+        expect(restore.requestBody.content['application/json'].schema.required).toEqual(['componentId', 'name'])
     });
 });

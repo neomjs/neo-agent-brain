@@ -71,8 +71,12 @@ class DockService extends Base {
     }
 
     /**
-     * Lists a live workspace's stored perspectives — fail-closed structured errors when the
-     * holder exposes no perspective store.
+     * Lists a live workspace's declared perspectives beside its stored records: `declared` (the
+     * names `activePerspective` accepts) with the published `perspective` facts (`active`,
+     * `modified`, `pending`), plus the stored summaries and keyed topologies. The key is the
+     * discriminator. Refuses a holder with neither declared perspectives nor a perspective or
+     * topology store; an invalid topology collection returns its validation errors beside the
+     * stored summaries.
      * @param {Object} opts
      * @param {String} opts.componentId The dock workspace / document-holder component id
      * @param {String} [opts.sessionId]
@@ -85,11 +89,14 @@ class DockService extends Base {
     }
 
     /**
-     * Restores a stored perspective by name through the holder's switch seam (or the store's
-     * fail-closed load) and returns the post-restore document for one-call verification.
+     * Restores a perspective by name, resolved across the workspace's declared list and its
+     * stored layout and topology records (a tie is refused with the sources named). A declared
+     * name takes the workspace's accepted `activePerspective` write and reports
+     * `source: 'declared'`; stored records ride the holder's switch seam or the topology
+     * reconciler. Returns the post-restore document for one-call verification.
      * @param {Object} opts
      * @param {String} opts.componentId The dock workspace / document-holder component id
-     * @param {String} opts.name        The perspective's product name (or technical layoutId)
+     * @param {String} opts.name        A declared perspective name, a record's product name or its technical layoutId
      * @param {String} [opts.sessionId]
      * @returns {Promise<Object>}
      */

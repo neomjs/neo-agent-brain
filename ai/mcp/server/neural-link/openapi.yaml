@@ -944,7 +944,7 @@ paths:
       operationId: list_perspectives
       x-neo-tool-tier: read
       x-pass-as-object: true
-      description: Lists a live dock workspace's stored perspectives (summaries plus the active layout id). Fails closed with a structured error when the holder exposes no perspective store.
+      description: Lists a live dock workspace's declared perspectives beside its stored records - `declared`, the names the workspace's activePerspective accepts, with the published perspective facts (active, modified, pending) under `perspective`, plus the stored single-workspace perspective summaries, the keyed topologies and the two active layout ids. The key is the discriminator, since a declared name has no record to summarize. Refuses a holder with neither declared perspectives nor a perspective or topology store; an invalid topology collection returns its validation errors beside the stored summaries.
       tags: [Dock]
       requestBody:
         required: true
@@ -962,7 +962,7 @@ paths:
                   description: The dock workspace / document-holder component id
       responses:
         '200':
-          description: Perspective summaries and the active layout id
+          description: Declared names, the published perspective facts, stored summaries and the two active layout ids
           content:
             application/json:
               schema:
@@ -974,7 +974,7 @@ paths:
       operationId: restore_perspective
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
-      description: Restores a stored perspective by name, routed by the record's own captureScope - window records ride the holder's switch seam (or the store's fail-closed load); topology records reconcile onto the live windows and commit atomically through the holder's multi-document seam, reporting restored/unrestored/displaced. A refused restore leaves the live layout untouched with structured errors.
+      description: Restores a perspective by name, resolved across the workspace's declared list and its stored layout and topology records - a name found in more than one is refused with the sources named. A declared name takes the workspace's accepted activePerspective write, the same identity and provenance as a UI switch, and reports source 'declared' (the active name re-applies its baseline); read the published facts afterwards through list_perspectives. Stored records route by their own captureScope - window records ride the holder's switch seam (or the store's fail-closed load); topology records reconcile onto the live windows and commit atomically through the holder's multi-document seam, reporting restored/unrestored/displaced. A refused restore leaves the live layout untouched with structured errors.
       tags: [Dock]
       requestBody:
         required: true
@@ -995,7 +995,7 @@ paths:
                   description: The perspective's product name or technical layoutId
       responses:
         '200':
-          description: The restore verdict and post-restore document
+          description: The restore verdict (with source for a declared name) and the post-restore document
           content:
             application/json:
               schema:
