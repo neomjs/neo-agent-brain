@@ -120,7 +120,8 @@ test.describe('Neo.ai.services.neural-link.DockService — perspective tool pass
         expect(list.description).toContain('`declared`');
         expect(list.description).toContain('`perspective`');
         for (const fact of ['active', 'modified', 'pending']) expect(list.description).toContain(fact);
-        expect(list.description).toContain('declares nothing');
+        expect(list.description).toContain('neither declared perspectives nor a perspective or topology store');
+        expect(list.description).toContain('invalid topology collection returns its validation errors');
         expect(list.responses['200'].content['application/json'].schema).toEqual({type: 'object'});
 
         // restore_perspective: resolved across three sources, a tie refused, a declared name on the accepted write with `source`

@@ -74,8 +74,9 @@ class DockService extends Base {
      * Lists a live workspace's declared perspectives beside its stored records: `declared` (the
      * names `activePerspective` accepts) with the published `perspective` facts (`active`,
      * `modified`, `pending`), plus the stored summaries and keyed topologies. The key is the
-     * discriminator. Fail-closed structured errors only when the holder declares nothing and
-     * exposes no perspective or topology store.
+     * discriminator. Refuses a holder with neither declared perspectives nor a perspective or
+     * topology store; an invalid topology collection returns its validation errors beside the
+     * stored summaries.
      * @param {Object} opts
      * @param {String} opts.componentId The dock workspace / document-holder component id
      * @param {String} [opts.sessionId]
