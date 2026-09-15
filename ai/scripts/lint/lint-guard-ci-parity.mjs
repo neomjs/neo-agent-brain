@@ -255,6 +255,13 @@ function hasDevPullRequestGate(workflow) {
         typeof pullRequest !== 'object' ||
         Object.hasOwn(pullRequest, 'branches-ignore') ||
         Object.hasOwn(pullRequest, 'paths-ignore') ||
+        // An allowlist is exactly as conditional as the ignore form: a PR whose files fall outside
+        // it never runs the workflow, so the workflow cannot prevent a `--no-verify` merge — which
+        // is the whole eligibility bar. Rejecting one and accepting the other was an asymmetry
+        // inside a dimension this guard already reasons about: `on.paths` is discounted as NAMING
+        // evidence a few lines down, while the same filter was credited as GATING. Found by
+        // @neo-opus-vega on neomjs/neo#17783's first step.
+        Object.hasOwn(pullRequest, 'paths') ||
         Object.hasOwn(pullRequest, 'types')
     ) {
         return false

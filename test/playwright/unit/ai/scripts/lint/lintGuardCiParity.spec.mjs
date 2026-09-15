@@ -425,6 +425,25 @@ test.describe('lint-guard-ci-parity — npm script indirection', () => {
         expect(output).toMatch(/\[lint-guard-ci-parity\] OK/)
     });
 
+    test('RED: a `paths` allowlist is as conditional as `paths-ignore`, so it is not a mirror', () => {
+        const {code, output} = runFixture({
+            lintStaged: {
+                '*.mjs': [`node ./${SELF_REL}`],
+                '*.md'  : ['node ./buildScripts/util/check-links.mjs']
+            },
+            workflows: {
+                'guard-lint.yml': `jobs:\n  lint:\n    steps:\n      - run: node ./${SELF_REL}\n`,
+                'links-lint.yml': {
+                    source: 'on:\n  pull_request:\n    branches: [dev]\n    paths:\n      - "learn/**"\njobs:\n  lint:\n    steps:\n      - run: node ./buildScripts/util/check-links.mjs\n',
+                    defaultTrigger: false
+                }
+            }
+        });
+
+        expect(code, `a paths-filtered workflow does not run for every PR, so it cannot prevent a --no-verify merge.\n\n${output}`).toBe(1);
+        expect(output).toMatch(/check-links\.mjs/)
+    });
+
     test('a missing npm script credits nothing — the indirection must actually resolve', () => {
         const {code, output} = runFixture({
             lintStaged: {
