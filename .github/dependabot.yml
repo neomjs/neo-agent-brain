@@ -21,16 +21,24 @@ updates:
     groups:
       all-deps:
         patterns: ["*"]
-        # Excluded so its diff has to be read: a standalone PR is the only place that happens, and
-        # inside the bulk bump it gets skimmed.
+        # Excluded so their diffs have to be read: a standalone PR is the only place that happens,
+        # and inside the bulk bump they get skimmed. `exclude-patterns` removes a package from the
+        # GROUP, not from updates — each still gets a pull request, its own one.
         #
         # neo-agent-skills: `postinstall` runs `neo-agent-skills-materialize` and `substrate-sync`
         # re-checks it in CI, so a release rewrites the workflows every agent in this checkout obeys.
         # Which rules an agent reads is a reviewed fact or it is an accident.
         #
+        # better-sqlite3, chromadb, @chroma-core/default-embed: the Brain tier. Exact-pinned for
+        # reproducibility, and `playwright.config.unit` names these three as the set whose absence
+        # skips the whole Brain matrix — so one of them moving decides whether the tests run at all.
+        # The first grouped run proved the cost: thirteen dependencies in one pull request, a major
+        # native rebuild among twelve cosmetic bumps, and a tier failure nobody could attribute to a
+        # dependency. A reproducibility pin whose bump arrives camouflaged is not a pin.
+        #
         # The Engine's copy also excludes `monaco-editor`; this repository does not depend on it, and
         # a pattern naming an absent package reads as a governing rule while governing nothing.
-        exclude-patterns: ["neo-agent-skills"]
+        exclude-patterns: ["neo-agent-skills", "better-sqlite3", "chromadb", "@chroma-core/default-embed"]
 
   - package-ecosystem: github-actions
     directory: "/"
