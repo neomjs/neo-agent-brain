@@ -68,7 +68,10 @@ export const memoryCoreConfigTemplateTestMatch =
 // complete root install, Brain specs cannot even be COLLECTED — the gate therefore excludes every
 // Brain-dependent project locally (one named skip line) instead of crashing mid-collection, while
 // CI fails before collection. A normal `npm ci` restores the set. CI deliberately installs with
-// `--ignore-scripts`, so its workflow rebuilds better-sqlite3 explicitly before invoking this config.
+// `--ignore-scripts`, so its workflow rebuilds better-sqlite3 explicitly before invoking this config
+// — which does nothing on `better-sqlite3@13`+, whose `binding.gyp` short-circuits npm's implicit
+// node-gyp rebuild when the tarball already carries a prebuild for the host. The rebuild stays for
+// the versions and platforms that genuinely build locally.
 //
 // Two graph-fixture hook specs live outside the `ai/**` path seam yet statically import
 // `better-sqlite3`, so they are Brain-tier by function. Named here per this config's own
@@ -78,23 +81,74 @@ export const brainHookTestMatch = /[\\/]hooks[\\/](codexContextHook|kimiTurnPres
 
 /**
  * @summary Current recovery path for an absent or partial Brain dependency set.
+ *
+ * `npm ci` is the fix in both layouts and leads for that reason: on a version that ships prebuilt
+ * binaries the rebuild has nothing to do, so a reader whose tier is genuinely incomplete must not be
+ * pointed at it first.
  * @type {String}
  */
 export const BRAIN_TIER_SETUP_GUIDANCE =
-    'Run `npm ci`. When reproducing CI with `--ignore-scripts`, follow it with ' +
-    '`npm rebuild better-sqlite3`.';
+    'Run `npm ci`. When reproducing CI with `--ignore-scripts`, versions that build the binding ' +
+    'locally also need `npm rebuild better-sqlite3`.';
+
+/**
+ * @summary The host facts that decide WHICH native binary `better-sqlite3` will load.
+ *
+ * `glibcVersionRuntime` is absent on musl, which is how the package's own loader distinguishes the
+ * two Linux builds. Reading it costs a full diagnostic report, so this runs once per config load.
+ * @returns {{arch: String, isMusl: Boolean, platform: String}}
+ */
+export function sqliteHost() {
+    return {
+        arch    : process.arch,
+        isMusl  : process.platform === 'linux' && !process.report.getReport().header.glibcVersionRuntime,
+        platform: process.platform
+    }
+}
+
+/**
+ * @summary Every location `better-sqlite3` may hold its native binary, in the order its own loader
+ * tries them — so ONE of these existing is what "the binding is present" means.
+ *
+ * A single hardcoded path cannot express this, because the two majors produce disjoint layouts:
+ * `12.x` has an `install` script (`prebuild-install || node-gyp rebuild`) that DOWNLOADS or compiles
+ * the binary into `build/Release/`, and ships zero `.node` files in its tarball; `13.x` dropped the
+ * install script and `prebuild-install` entirely and ships eight prebuilt binaries under
+ * `prebuilds/<target>.node`, so `build/Release/` is never created. Probing only the latter reported a
+ * healthy `13.x` install as a partial tier and failed CI before collection (`#360`) — a gate whose
+ * whole purpose is refusing a silent skip, producing a silent false alarm instead.
+ *
+ * `linuxmusl` is a live third case rather than a hypothesis: it is a different filename on the same
+ * platform and arch, so a musl runner reads a glibc-shaped probe as an absent binary.
+ *
+ * Mirrors `better-sqlite3/lib/binding.js#getBinding`. That function is the authority; if upstream
+ * changes the convention this list is where it diverges, which is why the arms pin the target strings
+ * against literals instead of recomputing them.
+ * @param {Object} host As returned by {@link sqliteHost}.
+ * @param {String} host.arch
+ * @param {Boolean} host.isMusl
+ * @param {String} host.platform
+ * @returns {String[]} Package-relative paths; any one of them satisfies the requirement.
+ */
+export function nativeSqliteArtifacts({arch, isMusl, platform}) {
+    return [
+        path.join('prebuilds', `${isMusl ? 'linuxmusl' : platform}-${arch}.node`),
+        path.join('build', 'Release', 'better_sqlite3.node'),
+        path.join('build', 'Debug', 'better_sqlite3.node')
+    ]
+}
 
 /**
  * @summary Probes whether the Brain-tier set is installed AND consumable, as resolved from `rootDir`.
  * Directory names alone lie: a pruned or corrupt install can leave three empty husks that
  * false-green CI. The probe therefore checks each root's consumable entrypoint — for
- * `better-sqlite3` including the compiled native artifact (the thing a broken build actually
+ * `better-sqlite3` including the native binary (the thing a broken install actually
  * loses). It deliberately stops at artifact presence rather than `require()`: loading the
  * default embedder pulls `@huggingface/transformers` (seconds at every config load), while the
  * only artifact that realistically breaks without leaving a file-level trace is the native one.
  *
  * The husk check is why this cannot simply become `require.resolve`: resolution answers "is there an
- * entrypoint", never "did the native build produce its artifact", so it would report armed for
+ * entrypoint", never "is the native binary there", so it would report armed for
  * exactly the broken install this probe exists to catch. Resolution is used to find the package
  * DIRECTORY ({@link resolvePackageDir}); the file checks inside it are unchanged.
  *
@@ -103,18 +157,27 @@ export const BRAIN_TIER_SETUP_GUIDANCE =
  * this gate admits spawns {@link CHROMA_CLI_ENTRYPOINT}. Admitting on the first alone let a partial
  * install pass the gate and die at the heartbeat — an admission gate that proves a different
  * artifact from the one its dependent runs is not an admission gate.
+ *
+ * **A requirement is one string, or an array of interchangeable ones.** Every requirement must be
+ * met; an array is met by any single member. The distinction is load-bearing in both directions —
+ * `chromadb`'s two entrypoints are separate requirements because a dependent runs each, while
+ * {@link nativeSqliteArtifacts} is one requirement with several spellings because only one binary is
+ * ever loaded. Collapsing the first into an array would restore the partial install that died at the
+ * heartbeat.
  * @param {String} rootDir Directory to resolve `node_modules` from — a repo root or a worktree.
  * @returns {Boolean}
  */
 export function hasBrainTier(rootDir) {
     return [
-        ['better-sqlite3', 'lib/index.js', 'build/Release/better_sqlite3.node'],
+        ['better-sqlite3', 'lib/index.js', nativeSqliteArtifacts(sqliteHost())],
         ['chromadb', 'dist/chromadb.mjs', CHROMA_CLI_ENTRYPOINT],
         ['@chroma-core/default-embed', 'dist/default-embed.mjs']
-    ].every(([pkg, ...entrypoints]) => {
+    ].every(([pkg, ...requirements]) => {
         const packageDir = resolvePackageDir(rootDir, pkg);
 
-        return packageDir !== null && entrypoints.every(entry => existsSync(path.join(packageDir, entry)))
+        return packageDir !== null && requirements.every(
+            requirement => [requirement].flat().some(entry => existsSync(path.join(packageDir, entry)))
+        )
     })
 }
 
