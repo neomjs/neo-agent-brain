@@ -1,0 +1,41 @@
+# Version updates. Security updates are a separate surface that needs no config and already runs.
+#
+# MAJORS ARE INCLUDED BY NOT BEING EXCLUDED: Dependabot's default spans every SemVer level, and you
+# opt out with `ignore: [{update-types: ["version-update:semver-major"]}]`. The absence of that key
+# is deliberate — do not add one without changing the policy it encodes.
+#
+# GROUPED, because ungrouped daily updates open a PR per dependency and the queue stops being read.
+# `github-actions` is here because nothing else updates the pinned action versions, and this
+# repository carries ten workflows.
+#
+# NOT FULL COVERAGE, deliberately recorded: `neo.mjs` is a tarball URL pinned to a commit, and
+# Dependabot's npm ecosystem cannot bump that form. It stays a manual move; a reader who mistakes
+# this file for complete coverage stops checking it by hand.
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: daily
+    groups:
+      all-deps:
+        patterns: ["*"]
+        # Excluded so its diff has to be read: a standalone PR is the only place that happens, and
+        # inside the bulk bump it gets skimmed.
+        #
+        # neo-agent-skills: `postinstall` runs `neo-agent-skills-materialize` and `substrate-sync`
+        # re-checks it in CI, so a release rewrites the workflows every agent in this checkout obeys.
+        # Which rules an agent reads is a reviewed fact or it is an accident.
+        #
+        # The Engine's copy also excludes `monaco-editor`; this repository does not depend on it, and
+        # a pattern naming an absent package reads as a governing rule while governing nothing.
+        exclude-patterns: ["neo-agent-skills"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: daily
+    groups:
+      actions:
+        patterns: ["*"]
