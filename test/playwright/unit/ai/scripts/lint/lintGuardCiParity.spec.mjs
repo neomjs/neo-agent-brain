@@ -425,7 +425,16 @@ test.describe('lint-guard-ci-parity — npm script indirection', () => {
         expect(output).toMatch(/\[lint-guard-ci-parity\] OK/)
     });
 
-    test('RED: a `paths` allowlist is as conditional as `paths-ignore`, so it is not a mirror', () => {
+    // This arm asserted the opposite until `#364`: that a `paths` allowlist disqualifies a mirror.
+    // Measured against `neomjs/neo` that rule turned 0 unmirrored into 9, eight of them workflows
+    // gating `dev` pull requests whose headers declare them pre-commit mirrors. Kept — inverted —
+    // rather than deleted, so re-adding the presence check reds here instead of passing silently.
+    //
+    // PROVISIONAL, and the title says so: accepting EVERY allowlist is not the end state. An
+    // allowlist narrower than the guard's scan surface is a real partial bypass, and the predicate
+    // that can tell the two apart lands in `neomjs/neo#17783`. When it does, this arm splits into a
+    // covering allowlist (accepted) and a narrower one (rejected) — do not read it as settling that.
+    test('a `paths` allowlist still counts as a dev gate — provisionally, until alignment is checked', () => {
         const {code, output} = runFixture({
             lintStaged: {
                 '*.mjs': [`node ./${SELF_REL}`],
@@ -440,7 +449,26 @@ test.describe('lint-guard-ci-parity — npm script indirection', () => {
             }
         });
 
-        expect(code, `a paths-filtered workflow does not run for every PR, so it cannot prevent a --no-verify merge.\n\n${output}`).toBe(1);
+        expect(code, `a paths-filtered dev gate is a mirror; rejecting it reported 8 real neo gates as unmirrored (#364).\n\n${output}`).toBe(0);
+        expect(output).not.toMatch(/check-links\.mjs/)
+    });
+
+    test('`paths-ignore` is still rejected — the asymmetry argument survives #364', () => {
+        const {code, output} = runFixture({
+            lintStaged: {
+                '*.mjs': [`node ./${SELF_REL}`],
+                '*.md'  : ['node ./buildScripts/util/check-links.mjs']
+            },
+            workflows: {
+                'guard-lint.yml': `jobs:\n  lint:\n    steps:\n      - run: node ./${SELF_REL}\n`,
+                'links-lint.yml': {
+                    source: 'on:\n  pull_request:\n    branches: [dev]\n    paths-ignore:\n      - "docs/**"\njobs:\n  lint:\n    steps:\n      - run: node ./buildScripts/util/check-links.mjs\n',
+                    defaultTrigger: false
+                }
+            }
+        });
+
+        expect(code, `paths-ignore SUBTRACTS from an otherwise-total surface, so it cannot prevent a --no-verify merge.\n\n${output}`).toBe(1);
         expect(output).toMatch(/check-links\.mjs/)
     });
 

@@ -231,6 +231,21 @@ function hasLintStagedHookCarrier() {
  * they cannot prevent a no-verify change from merging. Complex branch patterns stay unclassified;
  * literal `dev` or an unfiltered pull-request trigger are the reviewable merge-gate shapes.
  *
+ * **A `paths` ALLOWLIST is accepted, and that is a known, unchecked risk — not an oversight (`#364`).**
+ * It was briefly rejected on the symmetry argument below, and measuring that rule against `neomjs/neo`
+ * turned 0 unmirrored into 9: eight of them workflows that gate `dev` pull requests and declare
+ * themselves pre-commit mirrors in their own headers, burying the single true positive. The argument
+ * was right about the concern and wrong about the discriminator. **An allowlist is a bypass only when
+ * it is NARROWER than what the guard would scan** — cover the scan surface and a PR outside the
+ * allowlist contains nothing the guard would have checked. `paths-ignore` is genuinely different: it
+ * subtracts from an otherwise-total surface, so it stays rejected.
+ *
+ * What is missing is the alignment predicate (`scan ⊆ paths`, resolved to files that EXIST — a stale
+ * scan root with no tracked files would otherwise red a correct mirror). It cannot live here: this
+ * guard is red in its own tree and only 3 of neo's 14 guards export a scan surface to compare against.
+ * It lands with the relocation in `neomjs/neo#17783`, and becomes the first real consumer of those
+ * exports. Until then a narrower-than-scan allowlist passes this check unnoticed.
+ *
  * @param {Object} workflow
  * @returns {Boolean}
  */
@@ -255,13 +270,6 @@ function hasDevPullRequestGate(workflow) {
         typeof pullRequest !== 'object' ||
         Object.hasOwn(pullRequest, 'branches-ignore') ||
         Object.hasOwn(pullRequest, 'paths-ignore') ||
-        // An allowlist is exactly as conditional as the ignore form: a PR whose files fall outside
-        // it never runs the workflow, so the workflow cannot prevent a `--no-verify` merge — which
-        // is the whole eligibility bar. Rejecting one and accepting the other was an asymmetry
-        // inside a dimension this guard already reasons about: `on.paths` is discounted as NAMING
-        // evidence a few lines down, while the same filter was credited as GATING. Found by
-        // @neo-opus-vega on neomjs/neo#17783's first step.
-        Object.hasOwn(pullRequest, 'paths') ||
         Object.hasOwn(pullRequest, 'types')
     ) {
         return false
