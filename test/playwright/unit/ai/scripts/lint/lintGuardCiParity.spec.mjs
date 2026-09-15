@@ -71,17 +71,19 @@ function runLint({mutate} = {}) {
  * under test; only its repo root is redirected to the bounded fixture.
  *
  * @param {Object} config
+ * @param {Object} config
  * @param {Object} config.lintStaged
  * @param {Object<String, String|Object>} config.workflows String source, or `{source, defaultTrigger}`
  * @param {Object} [config.clientOnly={}]
+ * @param {Object} [config.scripts={}] `package.json` scripts, so `npm run <name>` has something to resolve
  * @param {String} [config.preCommit='npx lint-staged\n']
  * @returns {Object} `{code, output}`
  */
-function runFixture({lintStaged, workflows, clientOnly = {}, preCommit = 'npx lint-staged\n'}) {
+function runFixture({lintStaged, workflows, clientOnly = {}, scripts = {}, preCommit = 'npx lint-staged\n'}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-guard-parity-root-'));
 
     try {
-        fs.writeJsonSync(path.join(dir, 'package.json'), {'lint-staged': lintStaged}, {spaces: 4});
+        fs.writeJsonSync(path.join(dir, 'package.json'), {'lint-staged': lintStaged, scripts}, {spaces: 4});
 
         fs.ensureDirSync(path.join(dir, '.husky'));
         fs.writeFileSync(path.join(dir, '.husky/pre-commit'), preCommit);
@@ -391,5 +393,104 @@ test.describe('every lint-staged guard has a CI mirror or a recorded reason', ()
             expect(code, `${label} must not certify a dev merge gate.\n\n${output}`).toBe(1);
             expect(output).toContain('tools/dead.mjs')
         })
+    })
+});
+
+/**
+ * A workflow that reaches a guard through `npm run <name>` mirrors it just as completely as one
+ * spelling out `node …`. Counting only the direct form made the npm idiom read as NO mirror at all
+ * — measured on `neomjs/neo`, where 1 of 13 lint-staged guards is mirrored that way and was the
+ * guard's entire output against a repository that is in fact at full parity.
+ *
+ * The strictness is not relaxed by following the indirection: the resolved command is classified by
+ * the same single-statement, unmasked, direct-`node` rule. An npm script that chains, masks or
+ * expands still counts as nothing, so the false-GREEN family the original note protects against
+ * stays closed.
+ */
+test.describe('lint-guard-ci-parity — npm script indirection', () => {
+    test('a guard mirrored through `npm run` is credited as mirrored', () => {
+        const {code, output} = runFixture({
+            lintStaged: {
+                '*.mjs': [`node ./${SELF_REL}`],
+                '*.md'  : ['node ./buildScripts/util/check-links.mjs']
+            },
+            scripts  : {'check-links': 'node ./buildScripts/util/check-links.mjs'},
+            workflows: {
+                'guard-lint.yml': `jobs:\n  lint:\n    steps:\n      - run: node ./${SELF_REL}\n`,
+                'links-lint.yml': 'jobs:\n  lint:\n    steps:\n      - run: npm run check-links\n'
+            }
+        });
+
+        expect(code, `an npm-run mirror should be credited.\n\n${output}`).toBe(0);
+        expect(output).toMatch(/\[lint-guard-ci-parity\] OK/)
+    });
+
+    test('RED: a `paths` allowlist is as conditional as `paths-ignore`, so it is not a mirror', () => {
+        const {code, output} = runFixture({
+            lintStaged: {
+                '*.mjs': [`node ./${SELF_REL}`],
+                '*.md'  : ['node ./buildScripts/util/check-links.mjs']
+            },
+            workflows: {
+                'guard-lint.yml': `jobs:\n  lint:\n    steps:\n      - run: node ./${SELF_REL}\n`,
+                'links-lint.yml': {
+                    source: 'on:\n  pull_request:\n    branches: [dev]\n    paths:\n      - "learn/**"\njobs:\n  lint:\n    steps:\n      - run: node ./buildScripts/util/check-links.mjs\n',
+                    defaultTrigger: false
+                }
+            }
+        });
+
+        expect(code, `a paths-filtered workflow does not run for every PR, so it cannot prevent a --no-verify merge.\n\n${output}`).toBe(1);
+        expect(output).toMatch(/check-links\.mjs/)
+    });
+
+    test('a missing npm script credits nothing — the indirection must actually resolve', () => {
+        const {code, output} = runFixture({
+            lintStaged: {
+                '*.mjs': [`node ./${SELF_REL}`],
+                '*.md'  : ['node ./buildScripts/util/check-links.mjs']
+            },
+            scripts  : {},
+            workflows: {
+                'guard-lint.yml': `jobs:\n  lint:\n    steps:\n      - run: node ./${SELF_REL}\n`,
+                'links-lint.yml': 'jobs:\n  lint:\n    steps:\n      - run: npm run check-links\n'
+            }
+        });
+
+        expect(code).toBe(1);
+        expect(output).toMatch(/check-links\.mjs/)
+    });
+
+    test('a mirror in a workflow not named *-lint.yml is still a mirror', () => {
+        const {code, output} = runFixture({
+            lintStaged: {
+                '*.mjs': [`node ./${SELF_REL}`],
+                '*.md'  : ['node ./buildScripts/util/check-links.mjs']
+            },
+            workflows: {
+                'guard-lint.yml'        : `jobs:\n  lint:\n    steps:\n      - run: node ./${SELF_REL}\n`,
+                'check-relative-links.yml': 'jobs:\n  links:\n    steps:\n      - run: node ./buildScripts/util/check-links.mjs\n'
+            }
+        });
+
+        expect(code, `filename is not eligibility — the dev-PR trigger decides.\n\n${output}`).toBe(0);
+        expect(output).toMatch(/\[lint-guard-ci-parity\] OK/)
+    });
+
+    test('following the indirection does not relax the classifier', () => {
+        const {code, output} = runFixture({
+            lintStaged: {
+                '*.mjs': [`node ./${SELF_REL}`],
+                '*.md'  : ['node ./buildScripts/util/check-links.mjs']
+            },
+            scripts  : {'check-links': 'node ./buildScripts/util/check-links.mjs && node ./other.mjs'},
+            workflows: {
+                'guard-lint.yml': `jobs:\n  lint:\n    steps:\n      - run: node ./${SELF_REL}\n`,
+                'links-lint.yml': 'jobs:\n  lint:\n    steps:\n      - run: npm run check-links\n'
+            }
+        });
+
+        expect(code, `a chained npm script must not be credited.\n\n${output}`).toBe(1);
+        expect(output).toMatch(/check-links\.mjs/)
     })
 });

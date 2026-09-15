@@ -27,7 +27,17 @@
  * ## Why only parsed `run:` commands count
  *
  * A workflow that merely *names* a guard in prose, `on.paths`, an environment value, or a shell
- * argument does not invoke it. Eligible `*-lint.yml/.yaml` workflows must gate `dev` pull requests;
+ * argument does not invoke it. `npm run <name>` IS invocation and is followed to its `package.json`
+ * command, because counting only the direct spelling produced a false RED on the idiom consumers
+ * actually use: measured on `neomjs/neo`, 1 of 13 lint-staged guards is mirrored that way, and it
+ * was this guard's entire output against a repository already at full parity. Following the
+ * indirection does not relax anything — the resolved command faces the same single-statement,
+ * unmasked, direct-`node` classifier, so the false-GREEN family stays closed. Every workflow that
+ * gates `dev` pull requests is eligible, regardless of filename: the `*-lint.yml` filter this
+ * carried was a PROXY for that trigger, and the trigger is already checked directly one line
+ * later — so the name was buying nothing and costing a false red on every correctly-mirrored
+ * guard whose workflow is named for its subject (`check-relative-links.yml`) rather than for its
+ * category. Eligible workflows must gate `dev` pull requests;
  * their YAML is parsed, then only unmasked `jobs.*.steps[].run` strings are inspected for direct
  * `node … <script>.mjs` commands. Counting any wider population would create a false green inside the
  * guard whose purpose is catching false greens.
@@ -120,6 +130,23 @@ function normalizeScriptPath(script, workingDirectory = '.') {
 }
 
 /**
+ * @summary The caller's `package.json` scripts, read once — the target of any `npm run <name>`.
+ * @returns {Object<String, String>}
+ */
+let packageScriptsCache;
+function packageScripts() {
+    if (!packageScriptsCache) {
+        try {
+            packageScriptsCache = JSON.parse(fs.readFileSync(PKG_PATH, 'utf8')).scripts || {}
+        } catch {
+            packageScriptsCache = {}
+        }
+    }
+
+    return packageScriptsCache
+}
+
+/**
  * @summary Extracts only scripts directly executed by standalone static `node … <script>.mjs` lines.
  *
  * Other `.mjs` tokens inside the shell body are arguments or prose, not execution evidence. Shell
@@ -131,7 +158,7 @@ function normalizeScriptPath(script, workingDirectory = '.') {
  * @param {String} [workingDirectory='.']
  * @returns {String[]}
  */
-function executedNodeScripts(command, workingDirectory = '.') {
+function executedNodeScripts(command, workingDirectory = '.', seen = new Set()) {
     const statements = `${command}`.split('\n')
         .map(line => line.trim())
         .filter(line => line && !line.startsWith('#'));
@@ -144,6 +171,22 @@ function executedNodeScripts(command, workingDirectory = '.') {
 
     if (classifiedStatement.includes('${{') || /&&|\|\||[;|&]/.test(classifiedStatement)) {
         return []
+    }
+
+    // `npm run <name>` is invocation, so it resolves to its package.json command and is classified
+    // by the same rules. `seen` stops a script that runs itself from recursing forever.
+    const npmRun = classifiedStatement.match(/^npm run\s+([\w:.-]+)\s*$/);
+
+    if (npmRun) {
+        const name = npmRun[1];
+
+        if (seen.has(name)) {
+            return []
+        }
+
+        const resolved = packageScripts()[name];
+
+        return resolved ? executedNodeScripts(resolved, workingDirectory, new Set([...seen, name])) : []
     }
 
     const match = classifiedStatement.match(
@@ -212,6 +255,13 @@ function hasDevPullRequestGate(workflow) {
         typeof pullRequest !== 'object' ||
         Object.hasOwn(pullRequest, 'branches-ignore') ||
         Object.hasOwn(pullRequest, 'paths-ignore') ||
+        // An allowlist is exactly as conditional as the ignore form: a PR whose files fall outside
+        // it never runs the workflow, so the workflow cannot prevent a `--no-verify` merge — which
+        // is the whole eligibility bar. Rejecting one and accepting the other was an asymmetry
+        // inside a dimension this guard already reasons about: `on.paths` is discounted as NAMING
+        // evidence a few lines down, while the same filter was credited as GATING. Found by
+        // @neo-opus-vega on neomjs/neo#17783's first step.
+        Object.hasOwn(pullRequest, 'paths') ||
         Object.hasOwn(pullRequest, 'types')
     ) {
         return false
@@ -279,7 +329,7 @@ function workflowExecutions() {
     }
 
     return fs.readdirSync(WORKFLOW_DIR)
-        .filter(file => /-lint\.ya?ml$/.test(file))
+        .filter(file => /\.ya?ml$/.test(file))
         .map(file => {
             const
                 workflow = yaml.load(fs.readFileSync(path.join(WORKFLOW_DIR, file), 'utf8')) || {},
