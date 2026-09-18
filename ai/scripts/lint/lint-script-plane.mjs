@@ -554,9 +554,8 @@ export function runLint({
     }
 }
 
-// Import-safe, as every lint here is: the workflow scan-root parity spec imports SCAN_SURFACE from
-// this module, and a bare `process.exit()` at module scope would terminate the test process on
-// import.
+// Import-safe: the workflow scan-root parity spec imports SCAN_SURFACE from this module, and a bare
+// `process.exit()` at module scope would terminate the test process on import.
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
     const
         planeResult = runLint(),
