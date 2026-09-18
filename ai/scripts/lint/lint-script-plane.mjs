@@ -242,9 +242,10 @@ export function readPackageScripts(projectRoot = PROJECT_ROOT) {
  * @summary `ai/scripts` modules a GitHub workflow invokes directly, without going through npm.
  *
  * The npm block is not the whole invocation surface. Several workflows run a script straight —
- * `run: node ./ai/scripts/lint/lint-guard-ci-parity.mjs` — so an npm-only census misses them, and the
- * omission was self-demonstrating: **this lint invokes itself from a workflow and did not score
- * itself.** A guard blind to its own execution path is the shape it exists to catch.
+ * `run: node ./ai/scripts/lint/lint-script-plane.mjs`, in `script-plane-lint.yml` — so an npm-only
+ * census misses them, and the omission was self-demonstrating: **this lint invokes itself from a
+ * workflow and did not score itself.** A guard blind to its own execution path is the shape it
+ * exists to catch.
  *
  * Steps are read through the YAML parser rather than by grepping the file, so a path inside a comment
  * or an unrelated key cannot be mistaken for an invocation. The command is then matched inside the
@@ -553,9 +554,8 @@ export function runLint({
     }
 }
 
-// Import-safe, per the house pattern in `lint-guard-ci-parity.mjs`: the workflow scan-root parity
-// spec imports SCAN_SURFACE from this module, and a bare `process.exit()` at module scope would
-// terminate the test process on import.
+// Import-safe: the workflow scan-root parity spec imports SCAN_SURFACE from this module, and a bare
+// `process.exit()` at module scope would terminate the test process on import.
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
     const
         planeResult = runLint(),
