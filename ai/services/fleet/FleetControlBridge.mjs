@@ -5,7 +5,7 @@ import FleetTenantService       from './FleetTenantService.mjs';
 import {resolveIdentityDisplay} from './resolveIdentityDisplay.mjs';
 
 import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from './deriveHarnessLaunchSpec.mjs';
-import {launchRefusalOf}                              from './FleetRegistryService.mjs';
+import {launchRefusalOf}                              from '../../../src/fleet/contract/launchAuthority.mjs';
 
 import {
     createFleetMailboxMirrorSnapshot,

@@ -1,5 +1,6 @@
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from './mcpServers.mjs';
 import {ensureAgentRepo}               from './ensureAgentRepo.mjs';
+import {launchRefusalOf}               from '../../../src/fleet/contract/launchAuthority.mjs';
 import {prepareManagedAgentWorkspace}  from './prepareManagedAgentWorkspace.mjs';
 import path                            from 'node:path';
 import {fileURLToPath}                 from 'node:url';
@@ -24,6 +25,34 @@ function expectedAgentIdentity(agent) {
     }
 
     return `@${login}`
+}
+
+/**
+ * @summary Spawn the harness, re-reading the seat's launch authority first.
+ *
+ * `FleetManager.startAgent` admits a start, but provisioning and preparation are asynchronous, so the
+ * authority admitted at entry can be released while they run — and the queued spawn would still land.
+ * Every spawn therefore goes through here rather than calling `start` directly: the refusal is read
+ * from the registry AT the spawn, not inherited from the entry check, so no await placed above it can
+ * reopen the window.
+ *
+ * @param {Object}   options
+ * @param {Object}   options.lifecycleService Supervisor supplying `getRegistry()` and `start()`.
+ * @param {Object}   options.registry         The lifecycle service's registry — re-read here.
+ * @param {String}   options.agentId          Registry agent id.
+ * @param {Object}  [options.startOptions]    Forwarded verbatim to `lifecycleService.start`.
+ * @returns {Promise<Object>} the agent's lifecycle status.
+ * @throws {Error} when the seat's launch authority was released while preparation ran.
+ * @private
+ */
+async function spawnPermitted({lifecycleService, registry, agentId, startOptions}) {
+    const refusal = launchRefusalOf(registry.getAgent(agentId));
+
+    if (refusal) {
+        throw new Error(`startAgentProvisioned: agent '${agentId}' was ${refusal}; it was released while its start was being prepared, so the harness is not spawned.`)
+    }
+
+    return startOptions ? lifecycleService.start(agentId, startOptions) : lifecycleService.start(agentId)
 }
 
 /**
@@ -77,7 +106,8 @@ function expectedAgentIdentity(agent) {
  * @returns {Promise<Object>} the agent's lifecycle status (see `FleetLifecycleService.status`).
  * @throws {Error} when `lifecycleService` / `agentId` is missing, the agent is unknown, `managedRoot`
  *   is absent for a repo-bearing agent, a repo-bearing raw launch override would bypass curated
- *   preparation, or provisioning/preparation fails (re-thrown — no spawn).
+ *   preparation, provisioning/preparation fails (re-thrown — no spawn), or the seat's launch authority
+ *   was released while preparation ran ({@link spawnPermitted}).
  */
 export async function startAgentProvisioned({
     lifecycleService,
@@ -113,7 +143,7 @@ export async function startAgentProvisioned({
             throw new Error(`startAgentProvisioned: tenant MCP agent '${agentId}' requires a managed repo.`)
         }
 
-        return lifecycleService.start(agentId);
+        return spawnPermitted({lifecycleService, registry, agentId});
     }
 
     // The managed-workspace contract is coupled to Fleet's curated harness launch. A repo-bearing
@@ -223,10 +253,15 @@ export async function startAgentProvisioned({
         })
     }
 
-    return lifecycleService.start(agentId, {
-        cwd: prepared.targetRepoRoot,
-        ...(target?.kind === 'tenant'
-            ? {resolvedCredential, resolvedMcpCredential, remoteMcpCapability: remoteCapability}
-            : {})
+    return spawnPermitted({
+        lifecycleService,
+        registry,
+        agentId,
+        startOptions: {
+            cwd: prepared.targetRepoRoot,
+            ...(target?.kind === 'tenant'
+                ? {resolvedCredential, resolvedMcpCredential, remoteMcpCapability: remoteCapability}
+                : {})
+        }
     });
 }

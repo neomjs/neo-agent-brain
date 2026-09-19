@@ -6,6 +6,7 @@
  * Server authorization and target/credential policy remain outside this source graph.
  */
 export * from './harnessTypes.mjs';
+export * from './launchAuthority.mjs';
 export * from './mcpServers.mjs';
 export * from './wire.mjs';
 export * from './cockpit.mjs';

@@ -17,7 +17,7 @@ import {test, expect}       from '@playwright/test';
 import Neo                  from 'neo.mjs/src/Neo.mjs';
 import * as core            from 'neo.mjs/src/core/_export.mjs';
 import FleetRegistryService from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
-import {launchRefusalOf}    from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {launchRefusalOf}    from '../../../../../../src/fleet/contract/launchAuthority.mjs';
 import fs                   from 'fs';
 import os                   from 'os';
 import path                 from 'path';

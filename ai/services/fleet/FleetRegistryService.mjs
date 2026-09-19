@@ -14,20 +14,6 @@ const
     PUBLIC_SENSITIVE_KEY_RE = /^(?:credentials?|secrets?|tokens?|(?:github)?pats?|passwords?|authorization|(?:api|client|private)(?:key|token|secret|credential|password)s?|personalaccess(?:key|token|secret|credential|password)s?|(?:access|auth|bearer|github|id|oauth|refresh|session)(?:key|token|secret|credential|password)s?|launch|command|args|argv|env|environment)$/;
 
 /**
- * @summary Why this fleet may not start a seat, or `null` when it may. A seat released to its own harness
- * by an explicit act (`external` with a `launchOwnerSince`) runs there, and a process record the fleet kept
- * from an earlier run is history, not permission to launch it again. A definition that never had an
- * ownership act answers `null`, so its process record stays its only start gate.
- * @param {Object|null} definition A registry definition, public or internal.
- * @returns {String|null}
- */
-export function launchRefusalOf(definition) {
-    return definition?.launchOwner === 'external' && definition.launchOwnerSince
-        ? 'released to its own harness: adopt it to start it here'
-        : null
-}
-
-/**
  * @summary Resolve the one AES-256 key shared by Fleet's repository-credential and remote-plane
  * credential stores. The canonical on-disk encoding is 32 raw bytes. The earlier tenant store wrote
  * the same logical key as 64 ASCII hex bytes; that legacy form is decoded and atomically migrated
