@@ -63,7 +63,7 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
     test('hoists assembler-stamped launch truth — tri-state null when un-stamped, never derived in this pure map', () => {
         const snapshot = createFleetCockpitStatus({
             agents: [
-                {id: 'desk', launchable: true, authMode: 'in-app'},
+                {id: 'desk', launchable: true, launchRefusal: 'released to its own harness: adopt it to start it here', authMode: 'in-app'},
                 {id: 'bare'}
             ]
         })
@@ -71,8 +71,8 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         // the Brain-side assembler (fleetRoster) is the ONLY deriver; this Body-pure map hoists
         // the stamped facts like the identity facts above — absent stays an honest null
         // ("not read back yet"), never a guessed boolean
-        expect(snapshot.rows[0]).toMatchObject({id: 'desk', launchable: true, authMode: 'in-app'})
-        expect(snapshot.rows[1]).toMatchObject({id: 'bare', launchable: null, authMode: null})
+        expect(snapshot.rows[0]).toMatchObject({id: 'desk', launchable: true, launchRefusal: 'released to its own harness: adopt it to start it here', authMode: 'in-app'})
+        expect(snapshot.rows[1]).toMatchObject({id: 'bare', launchable: null, launchRefusal: null, authMode: null})
     })
 
     test('hoists the assembler-stamped open-lane count — the roster DTO owns the field; un-stamped stays an honest null, never a fabricated zero', () => {

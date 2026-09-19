@@ -14,6 +14,20 @@ const
     PUBLIC_SENSITIVE_KEY_RE = /^(?:credentials?|secrets?|tokens?|(?:github)?pats?|passwords?|authorization|(?:api|client|private)(?:key|token|secret|credential|password)s?|personalaccess(?:key|token|secret|credential|password)s?|(?:access|auth|bearer|github|id|oauth|refresh|session)(?:key|token|secret|credential|password)s?|launch|command|args|argv|env|environment)$/;
 
 /**
+ * @summary Why this fleet may not start a seat, or `null` when it may. A seat released to its own harness
+ * by an explicit act (`external` with a `launchOwnerSince`) runs there, and a process record the fleet kept
+ * from an earlier run is history, not permission to launch it again. A definition that never had an
+ * ownership act answers `null`, so its process record stays its only start gate.
+ * @param {Object|null} definition A registry definition, public or internal.
+ * @returns {String|null}
+ */
+export function launchRefusalOf(definition) {
+    return definition?.launchOwner === 'external' && definition.launchOwnerSince
+        ? 'released to its own harness: adopt it to start it here'
+        : null
+}
+
+/**
  * @summary Resolve the one AES-256 key shared by Fleet's repository-credential and remote-plane
  * credential stores. The canonical on-disk encoding is 32 raw bytes. The earlier tenant store wrote
  * the same logical key as 64 ASCII hex bytes; that legacy form is decoded and atomically migrated
@@ -196,7 +210,8 @@ function normalizeStoredMcpTarget(target) {
  * launcher, `external` when it runs in a harness the fleet did not start. It decides whether a seat
  * with no process record may be read as stopped, so it enables a Brain-credentialed spawn and is kept
  * out of `metadata`: {@link defineAgent} takes it as creation intent, {@link setLaunchOwner} is the
- * one write after that, and a row without it reads `external`.
+ * one write after that, and a row without it reads `external`. A seat released by that write is never
+ * started by this fleet again until it is adopted, whatever process record it holds ({@link launchRefusalOf}).
  */
 class FleetRegistryService extends Base {
     static config = {
@@ -529,8 +544,9 @@ class FleetRegistryService extends Base {
     /**
      * @summary Records who launches a seat from now on — the one write of `launchOwner` after
      * {@link defineAgent}. `fleet` makes this fleet the seat's only sanctioned launcher, so a seat with no
-     * process record reads as stopped; `external` hands it back to a harness the fleet does not start.
-     * The change carries its own time, `launchOwnerSince`, beside `updatedAt`.
+     * process record reads as stopped; `external` hands it back to its own harness, and the fleet refuses
+     * to start it from then on ({@link launchRefusalOf}). The change carries its own time,
+     * `launchOwnerSince`, beside `updatedAt`.
      * @param {String} id    Registry agent id.
      * @param {String} owner `fleet` or `external`.
      * @returns {Object|null} The updated public definition, or `null` when the agent doesn't exist.

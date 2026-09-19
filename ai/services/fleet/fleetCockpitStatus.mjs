@@ -121,8 +121,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 // Launch-derived truth stamped by the Brain-side assembler (fleetRoster) — hoisted
                 // like the identity facts below, tri-state honest: null = not stamped/unknown
                 // ("not read back yet"), never a guessed boolean. This pure map derives nothing.
-                launchable: publicAgent.launchable ?? null,
-                authMode  : publicAgent.authMode ?? null,
+                launchable   : publicAgent.launchable ?? null,
+                launchRefusal: publicAgent.launchRefusal ?? null,
+                authMode     : publicAgent.authMode ?? null,
                 // Open assigned lanes for the resident, stamped by a Brain-side enricher when one
                 // exists — the roster DTO OWNS this field end-to-end (assembler → cockpit record →
                 // card badge). Same tri-state honesty as `launchable`: null = no enricher has

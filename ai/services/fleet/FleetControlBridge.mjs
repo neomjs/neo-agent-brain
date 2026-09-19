@@ -5,6 +5,7 @@ import FleetTenantService       from './FleetTenantService.mjs';
 import {resolveIdentityDisplay} from './resolveIdentityDisplay.mjs';
 
 import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from './deriveHarnessLaunchSpec.mjs';
+import {launchRefusalOf}                              from './FleetRegistryService.mjs';
 
 import {
     createFleetMailboxMirrorSnapshot,
@@ -779,7 +780,8 @@ class FleetControlBridge extends Base {
      * diff), stamps the launch-derived truth per agent (`launchable` = the family is in the
      * launch-templated subset; `authMode` = `'marker' | 'in-app' | 'env-key' | null` — both DERIVED at read
      * time from the launch seam, never a second hand-maintained list, so a family becomes
-     * cockpit-launchable exactly when its template lands), and hands the enriched agents to the
+     * cockpit-launchable exactly when its template lands; `launchRefusal` = why the start verb refuses the
+     * seat, or `null`, from the same {@link launchRefusalOf} the verb reads), and hands the enriched agents to the
      * Body-side pure map (`createFleetCockpitStatus` — which never imports `ai/graph` or the Brain
      * launch seam; the hemisphere boundary holds, the Body only hoists what arrives stamped).
      *
@@ -800,8 +802,9 @@ class FleetControlBridge extends Base {
         const agents = (registry.listAgents() ?? []).map(agent => ({
             ...agent,
             ...resolve(agent.githubUsername ?? agent.id),
-            launchable: LAUNCHABLE_HARNESS_TYPES.includes(agent.harnessType),
-            authMode  : getHarnessAuthMode(agent.harnessType)
+            launchable   : LAUNCHABLE_HARNESS_TYPES.includes(agent.harnessType),
+            launchRefusal: launchRefusalOf(agent),
+            authMode     : getHarnessAuthMode(agent.harnessType)
         }));
 
         // The S2 telltale axes join the roster here: each producer snapshot becomes per-row state +
