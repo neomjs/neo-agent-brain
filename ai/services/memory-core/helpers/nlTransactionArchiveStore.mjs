@@ -53,10 +53,10 @@ export function getNlTransactionArchiveNodeId(archiveId) {
 /**
  * @summary Validates the transaction against the archive contract's admission rules.
  *
- * These are the host's rules, preserved verbatim in effect: only a COMMITTED transaction with at least
- * one op and an identified origin writer is archivable. They are re-stated container-side because this is
- * now the writer, and a writer that trusts its caller's validation has no admission rule of its own —
- * the host's guard protects the host's caller, not the graph.
+ * A committed transaction needs non-empty ops and an identified origin writer. Only dock snapshots
+ * whose every op explicitly declares human origin are exempt: they have no agent writer to identify.
+ * Observed geometry is not a human-origin declaration and retains the writer requirement, as do unknown
+ * origins. Admission is enforced at the graph writer independently of the host's caller validation.
  * @param {Object|null} transaction
  * @returns {String|null} A refusal reason, or `null` when the transaction is admissible.
  */
@@ -69,7 +69,7 @@ export function refuseTransaction(transaction) {
 
     if (transaction.domain === 'dock' && transaction.ops.every(op =>
         typeof op?.workspaceKey === 'string' && op.workspaceKey && Object.hasOwn(op, 'before') &&
-        Object.hasOwn(op, 'after') && op.provenance && typeof op.provenance === 'object' && !op.forward
+        Object.hasOwn(op, 'after') && op.provenance?.origin === 'human' && !op.forward
     )) {
         return null;
     }
