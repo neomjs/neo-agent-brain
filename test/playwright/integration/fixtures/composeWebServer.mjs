@@ -10,6 +10,8 @@ const repoRoot    = path.resolve(__dirname, '../../../..');
 const composeFile = path.join(repoRoot, 'deploy/cloud/docker-compose.test.yml');
 const projectName = process.env.NEO_INTEGRATION_COMPOSE_PROJECT || 'neo-integration-test';
 const readyPort   = Number(process.env.NEO_INTEGRATION_READY_PORT || 13090);
+// CI builds images before Playwright starts its readiness timer; direct local runs still build here.
+const buildMode   = process.env.NEO_INTEGRATION_PREBUILT === 'true' ? '--no-build' : '--build';
 
 const state = {
     dockerAvailable: null,
@@ -164,7 +166,7 @@ server.listen(readyPort, '127.0.0.1', async () => {
         '-p', projectName,
         '-f', composeFile,
         'up',
-        '--build',
+        buildMode,
         '--remove-orphans'
     ], {
         cwd  : repoRoot,
