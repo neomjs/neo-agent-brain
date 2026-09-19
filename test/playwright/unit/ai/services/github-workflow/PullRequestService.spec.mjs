@@ -2427,6 +2427,61 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(failure.message).toContain('no submitted');
     });
 
+    /**
+     * The micro form (guide §6.4) has no Required Actions heading: a micro `CHANGES_REQUESTED` carries its actions as a
+     * checklist under a bold Findings label. The relation read none of them, so choosing the micro form for a
+     * mechanical PR silently removed that PR's ordinary Round 2.
+     */
+    const microRc = findings => ({
+        ...PRIOR_RC,
+        body: ['# PR Micro-Review', '', '**Class:** mechanical — test-only', '', '**Verdict:** Request Changes', '',
+               '**Glance:** the counter samples the DOM after the batch.', '', ...findings, '',
+               '- **Origin Session ID:** 4412eba5-6723-412d-a1c5-d9b2c22aff69'].join('\n')
+    });
+
+    const PRIOR_MICRO_RC = microRc(['**Findings:**', '- [ ] **P2 — make the oracle retain transient mounts.** Replay the records.']);
+
+    test('#378: a Round 2 over a micro review dispositions its Findings checklist', () => {
+        const failure = getRound2DispositionRelationFailure({
+            body   : round2With(['| RA-1 | **P2 — make the oracle retain transient mounts.** Replay the records. | ADDRESSED | replayed |']),
+            reviews: [PRIOR_MICRO_RC],
+            state  : 'APPROVED'
+        });
+
+        expect(failure, 'the micro checklist is the prior round\'s action packet').toBeNull();
+    });
+
+    test('#378: over a micro review, a reworded or invented action is still refused', () => {
+        const reworded = getRound2DispositionRelationFailure({
+            body   : round2With(['| RA-1 | make the oracle keep transient mounts | ADDRESSED | replayed |']),
+            reviews: [PRIOR_MICRO_RC],
+            state  : 'APPROVED'
+        });
+
+        expect(reworded?.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+        expect(reworded.message).toContain('carry it verbatim');
+
+        const invented = getRound2DispositionRelationFailure({
+            body   : round2With(['| RA-1 | **P2 — make the oracle retain transient mounts.** Replay the records. | ADDRESSED | replayed |',
+                                 '| RA-2 | an action no round raised | ADDRESSED | done |']),
+            reviews: [PRIOR_MICRO_RC],
+            state  : 'APPROVED'
+        });
+
+        expect(invented?.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+    });
+
+    test('#378: a micro review whose Findings are None still gives a Round 2 nothing to disposition', () => {
+        const failure = getRound2DispositionRelationFailure({
+            body   : round2With(['| RA-1 | make the tier semantic | ADDRESSED | done |']),
+            reviews: [microRc(['**Findings:** None.'])],
+            state  : 'APPROVED'
+        });
+
+        expect(failure?.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+        expect(failure.message).toContain('lists no Required Actions');
+    });
+
     test('#17178: the relation is REACHABLE through managePrReview for APPROVED and COMMENT', async () => {
         // The states a valid Round 2 can actually use. The relation first ran ahead of budget
         // validation (masking its fail-closed refusals), then inside the REQUEST_CHANGES branch —
