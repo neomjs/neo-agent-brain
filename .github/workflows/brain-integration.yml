@@ -60,10 +60,18 @@ jobs:
           npm run postinstall
           npm run prepare
 
+      # Image construction has its own budget; Playwright's webServer timer measures readiness.
+      - name: Build unified integration images
+        if: matrix.suite == 'integration-unified'
+        # Allow cold dependency downloads/native compilation half of the 30-minute job budget.
+        timeout-minutes: 15
+        run: docker compose -p neo-integration-test -f deploy/cloud/docker-compose.test.yml build
+
       - name: Run ${{ matrix.suite }}
         run: npm run test-${{ matrix.suite }}
         env:
           NEO_INTEGRATION_STACK_TIMEOUT_MS: '240000'
+          NEO_INTEGRATION_PREBUILT: ${{ matrix.suite == 'integration-unified' && 'true' || 'false' }}
 
       - name: Upload test artifacts on failure
         if: ${{ failure() }}
