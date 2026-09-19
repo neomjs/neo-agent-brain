@@ -452,6 +452,26 @@ test.describe('ai/daemons/orchestrator/daemon.mjs (#11006/#11009)', () => {
         }
     });
 
+    test('#373: the orchestrator probe imports only modules a Brain image carries, and PID 1 reaps its children', () => {
+        const compose      = yaml.load(fs.readFileSync(path.resolve(process.cwd(), 'deploy/cloud/docker-compose.yml'), 'utf8'));
+        const orchestrator = compose.services.orchestrator;
+        const probeSource  = orchestrator.healthcheck.test.at(-1);
+        const specifiers   = [...probeSource.matchAll(/import\('([^']+)'\)/g)].map(match => match[1]);
+        const appRoot      = new URL(`file://${process.cwd()}/`);
+
+        expect(specifiers.length, 'the probe imports modules').toBeGreaterThan(0);
+
+        // The probe runs as `node -e` from the image's /app, which is this checkout plus its node_modules:
+        // a relative specifier resolves against the app root, a bare one through node_modules
+        for (const specifier of specifiers) {
+            const resolved = specifier.startsWith('.') ? new URL(specifier, appRoot) : new URL(import.meta.resolve(specifier));
+
+            expect(fs.existsSync(resolved), `the probe's import '${specifier}' resolves in a Brain image`).toBe(true);
+        }
+
+        expect(orchestrator.init, 'Docker init reaps the git children that node, as PID 1, never would').toBe(true);
+    });
+
     test('#16283: cloud health follows the authority lease, not task completion', () => {
         const compose      = yaml.load(fs.readFileSync(path.resolve(process.cwd(), 'deploy/cloud/docker-compose.yml'), 'utf8'));
         const orchestrator = compose.services.orchestrator;
