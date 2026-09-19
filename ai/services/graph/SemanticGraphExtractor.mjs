@@ -23,6 +23,18 @@ import {buildGraphProvider, resolveGraphModelProvider} from './providerDispatch.
 import {chunkSession}                                  from './sessionChunker.mjs';
 import MemoryCoreRecorderService                       from '../memory-core/MemoryCoreRecorderService.mjs';
 
+/** Closed extraction vocabularies shared by the prompt, decode grammar and graph writer. */
+const TRI_VECTOR_NODE_TYPES = Object.freeze([
+    'SESSION', 'MEMORY', 'ARTIFACT_PLAN', 'ARTIFACT_TASK', 'ISSUE', 'STRATEGY', 'SYSTEM_ANCHOR',
+    'CONCEPT', 'CLASS', 'METHOD', 'FILE', 'GUIDE', 'BLOG', 'TEST'
+]);
+const TRI_VECTOR_LAYERS = Object.freeze(['Core', 'Build', 'UI', 'Docs', 'State', 'Network', 'Test', 'Unknown']);
+const TRI_VECTOR_STABILITIES = Object.freeze(['EXPERIMENTAL', 'STABLE', 'DEPRECATED', 'UNKNOWN']);
+const TRI_VECTOR_RELATIONSHIPS = Object.freeze([
+    'IMPLEMENTS', 'EXTENDS', 'DEPENDS_ON', 'BLOCKS', 'BLOCKED_BY', 'RELATES_TO', 'RESOLVES',
+    'CAUSES_ISSUE', 'MENTIONED_IN', 'DISCUSSED_IN', 'REFERENCED_BY'
+]);
+
 /**
  * @class Neo.ai.daemons.services.SemanticGraphExtractor
  * @extends Neo.core.Base
@@ -418,6 +430,7 @@ class SemanticGraphExtractor extends Base {
                         name,
                         tags: Array.isArray(node.tags) ? [...new Set(node.tags)] : []
                     };
+                    delete storedNode.confidence;
                     nodeByTuple.set(key, storedNode);
                     if (node.id) {
                         nodeIdRemap.set(node.id, storedNode.id);
@@ -439,12 +452,6 @@ class SemanticGraphExtractor extends Base {
                     storedNode.strategic_weight = Math.max(
                         typeof storedNode.strategic_weight === 'number' ? storedNode.strategic_weight : 0,
                         node.strategic_weight
-                    );
-                }
-                if (typeof node.confidence === 'number') {
-                    storedNode.confidence = Math.max(
-                        typeof storedNode.confidence === 'number' ? storedNode.confidence : 0,
-                        node.confidence
                     );
                 }
                 if (Array.isArray(node.tags)) {
@@ -805,6 +812,7 @@ class SemanticGraphExtractor extends Base {
      *
      * @summary Anchor & Echo: Chunked extraction completes every chunk before this method runs,
      * preserving the historical single graph-write phase and avoiding partial writes on chunk failure.
+     * Closed classifications use their catch-all values for legacy input; self-confidence is not written.
      *
      * @param {Object} payload Session-level Tri-Vector payload
      * @param {Object} session Wrapped session object
@@ -826,12 +834,10 @@ class SemanticGraphExtractor extends Base {
         // GraphService#upsertGlobalNode's own docs warn about for shared sentinels.
         GraphService.ensureGlobalBootSeedNode('frontier');
 
-        const VALID_TYPES = ['SESSION', 'MEMORY', 'ARTIFACT_PLAN', 'ARTIFACT_TASK', 'ISSUE', 'STRATEGY', 'SYSTEM_ANCHOR', 'CONCEPT', 'CLASS', 'METHOD', 'FILE', 'GUIDE', 'BLOG', 'TEST'];
-
         for (const node of artifact.graph.nodes) {
             if (node.id === 'frontier') continue;
 
-            let nodeType = node.type && VALID_TYPES.includes(node.type.toUpperCase()) ? node.type.toUpperCase() : 'CONCEPT';
+            let nodeType = node.type && TRI_VECTOR_NODE_TYPES.includes(node.type.toUpperCase()) ? node.type.toUpperCase() : 'CONCEPT';
             let nodeId   = node.id;
 
             if (excluded.has(nodeType)) {
@@ -853,11 +859,10 @@ class SemanticGraphExtractor extends Base {
                 description     : node.description || '',
                 semanticVectorId: session.id,
                 properties      : {
-                    logical_layer   : node.logical_layer || 'Unknown',
-                    stability       : node.stability || 'UNKNOWN',
+                    logical_layer   : TRI_VECTOR_LAYERS.includes(node.logical_layer) ? node.logical_layer : 'Unknown',
+                    stability       : TRI_VECTOR_STABILITIES.includes(node.stability) ? node.stability : 'UNKNOWN',
                     gravity_well    : node.gravity_well === true,
                     strategic_weight: typeof node.strategic_weight === 'number' ? node.strategic_weight : (node.gravity_well ? 1.0 : 0.1),
-                    confidence      : typeof node.confidence === 'number' ? node.confidence : 0.5,
                     tags            : Array.isArray(node.tags) ? node.tags : [],
                     context_source  : session.meta.sessionId
                 }
@@ -917,7 +922,7 @@ class SemanticGraphExtractor extends Base {
             GraphService.linkNodes(
                 resolvedSource,
                 resolvedTarget,
-                edge.relationship || 'RELATES_TO',
+                TRI_VECTOR_RELATIONSHIPS.includes(edge.relationship) ? edge.relationship : 'RELATES_TO',
                 edge.weight !== undefined ? parseFloat(edge.weight) : 1.0,
                 {
                     justification : edge.justification || '',
@@ -942,9 +947,9 @@ class SemanticGraphExtractor extends Base {
      * Executes the Tri-Vector Synthesis (Semantic Graph, Open Deltas, Roadmap Strategy)
      * from the session memory log via JSON schema extraction.
      *
-     * @summary Anchor & Echo: Employs a relaxed schema validation strategy. Missing or truncated
-     * `graph.nodes` and `graph.edges` default to empty arrays rather than triggering strict validation
-     * failures. This graceful degradation prevents token-exhaustion crash-loops under peak payload sizes.
+     * @summary Extracts a session graph with closed classification vocabularies and no model self-confidence.
+     * Missing or truncated `graph.nodes` and `graph.edges` still default to empty arrays, preserving
+     * graceful recovery from token-exhausted payloads.
      *
      * @param {Object} session Wrapped session object containing id, document, and meta
      * @param {Object} [options]
@@ -974,14 +979,13 @@ Enforce this STRICT JSON schema:
       "nodes": [
         {
           "id": "Type:Name",
-          "type": "String (MUST BE EXACTLY ONE OF: SESSION, MEMORY, ARTIFACT_PLAN, ARTIFACT_TASK, ISSUE, STRATEGY, SYSTEM_ANCHOR, CONCEPT, CLASS, METHOD, FILE, GUIDE, BLOG, TEST)",
+          "type": "String (MUST BE EXACTLY ONE OF: ${TRI_VECTOR_NODE_TYPES.join(', ')})",
           "name": "String",
           "description": "String",
-          "logical_layer": "String (e.g. UI, State, Network, Build, Docs, Core, Unknown)",
-          "stability": "String (EXPERIMENTAL, STABLE, DEPRECATED, UNKNOWN)",
+          "logical_layer": "String (MUST BE EXACTLY ONE OF: ${TRI_VECTOR_LAYERS.join(', ')})",
+          "stability": "String (MUST BE EXACTLY ONE OF: ${TRI_VECTOR_STABILITIES.join(', ')})",
           "gravity_well": "Boolean (Is this a long-term strategic anchor from roadmap/boardroom?)",
           "strategic_weight": 0.9,
-          "confidence": 0.9,
           "tags": ["Array", "of", "Strings"]
         }
       ],
@@ -989,7 +993,7 @@ Enforce this STRICT JSON schema:
         {
           "source": "String (must match a node id, or 'frontier')",
           "target": "String (must match a node id, or 'frontier')",
-          "relationship": "String (MUST BE EXACTLY ONE OF: IMPLEMENTS, EXTENDS, DEPENDS_ON, BLOCKS, BLOCKED_BY, RELATES_TO, RESOLVES, CAUSES_ISSUE, MENTIONED_IN, DISCUSSED_IN, REFERENCED_BY)",
+          "relationship": "String (MUST BE EXACTLY ONE OF: ${TRI_VECTOR_RELATIONSHIPS.join(', ')})",
           "weight": 1.0,
           "justification": "String (Brief reason for this edge's algorithmic relevance)"
         }
@@ -1057,14 +1061,13 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
                                         type      : 'object',
                                         properties: {
                                             id              : {type: 'string'},
-                                            type            : {type: 'string'},
+                                            type            : {type: 'string', enum: TRI_VECTOR_NODE_TYPES},
                                             name            : {type: 'string'},
                                             description     : {type: 'string'},
-                                            logical_layer   : {type: 'string'},
-                                            stability       : {type: 'string'},
+                                            logical_layer   : {type: 'string', enum: TRI_VECTOR_LAYERS},
+                                            stability       : {type: 'string', enum: TRI_VECTOR_STABILITIES},
                                             gravity_well    : {type: 'boolean'},
                                             strategic_weight: {type: 'number'},
-                                            confidence      : {type: 'number'},
                                             tags            : {type: 'array', items: {type: 'string'}}
                                         },
                                         required: ['id', 'type', 'name', 'description']
@@ -1074,7 +1077,7 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
                                         properties: {
                                             source       : {type: 'string'},
                                             target       : {type: 'string'},
-                                            relationship : {type: 'string'},
+                                            relationship : {type: 'string', enum: TRI_VECTOR_RELATIONSHIPS},
                                             weight       : {type: 'number'},
                                             justification: {type: 'string'}
                                         },

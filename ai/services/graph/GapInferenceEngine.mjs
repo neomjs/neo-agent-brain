@@ -84,8 +84,8 @@ class GapInferenceEngine extends Base {
     }
 
     /**
-     * Session-scoped TEST_GAP inference entry point. Iterates CLASS / METHOD / COMPONENT nodes
-     * from the session artifact and checks for precise matching test-file evidence.
+     * @summary Infers session-scoped TEST_GAPs from structural nodes and precise test-file evidence.
+     * Model self-confidence is not evidence and does not admit or suppress a candidate.
      * Internal-config lifecycle hooks (`beforeSet*`, `afterSet*`, `beforeGet*`) are excluded
      * since they're structurally shared and not individually testable.
      *
@@ -103,8 +103,7 @@ class GapInferenceEngine extends Base {
         if (!payload || !payload.session_artifact || !payload.session_artifact.graph || !payload.session_artifact.graph.nodes) return;
 
         const structuralNodes = payload.session_artifact.graph.nodes.filter(n =>
-            (n.type === 'CLASS' || n.type === 'METHOD' || n.type === 'COMPONENT') &&
-            (typeof n.confidence === 'number' ? n.confidence : 1.0) >= 0.6
+            n.type === 'CLASS' || n.type === 'METHOD' || n.type === 'COMPONENT'
         );
 
         if (structuralNodes.length === 0) return;

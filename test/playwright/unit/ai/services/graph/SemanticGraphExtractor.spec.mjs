@@ -14,8 +14,10 @@ setup({
 });
 
 import {test, expect}        from '@playwright/test';
+import Ajv                  from 'ajv';
 import Neo                   from 'neo.mjs/src/Neo.mjs';
 import * as core             from 'neo.mjs/src/core/_export.mjs';
+import                       'neo.mjs/src/manager/Instance.mjs';
 import fs                    from 'fs';
 import path                  from 'path';
 import {TestLifecycleHelper} from '../../services/memory-core/util.mjs';
@@ -53,7 +55,6 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
     const memoryCoreEnvNames = new Set([
         ENV.LAZY_EDGES_QUEUE_PATH,
         ENV.MEMORY_DB_PATH_TEST,
-        ENV.REM_RUN_STATE_DIR,
         ENV.UNIT_TEST_MODE
     ]);
 
@@ -146,6 +147,91 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
         if (suiteOverrides) {
             setConfigOverrides(suiteOverrides);
         }
+    });
+
+    test('the requested Tri-Vector schema closes its vocabularies without asking for self-confidence', async () => {
+        const baseGenerate = OpenAiCompatible.prototype.generate,
+              priorProvider = aiConfig.graphProvider,
+              payload = {
+                  a2a_version: '1.0',
+                  session_artifact: {
+                      feature_namespace: null,
+                      human_readable_summary: 'A schema vocabulary fixture.',
+                      graph: {
+                          nodes: [{id: 'CLASS:SchemaVocabularyFixture', type: 'CLASS', name: 'SchemaVocabularyFixture',
+                              description: 'A structural fixture.', logical_layer: 'Core', stability: 'STABLE'}],
+                          edges: [{source: 'CLASS:SchemaVocabularyFixture', target: 'frontier', relationship: 'RELATES_TO'}]
+                      }
+                  }
+              };
+
+        let captured;
+
+        try {
+            setConfigOverrides({[ENV.GRAPH_PROVIDER]: 'openAiCompatible'});
+            OpenAiCompatible.prototype.generate = async (messages, options) => {
+                captured = {messages, options};
+                return {content: JSON.stringify(payload)}
+            };
+
+            await SemanticGraphExtractor.executeTriVectorExtraction({
+                id: 'schema-vocabulary-vector', meta: {sessionId: 'schema-vocabulary-session'}, document: 'Describe the fixture.'
+            });
+
+            const schema = captured.options.responseSchema,
+                  validate = new Ajv({strict: false}).compile(schema),
+                  nodeProperties = schema.properties.session_artifact.properties.graph.properties.nodes.items.properties;
+
+            expect(validate(payload), 'the declared vocabulary validates').toBe(true);
+
+            for (const [field, invalid] of [['type', 'WIDGET'], ['stability', 'STABLE,'], ['logical_layer', 'UI Components']]) {
+                const candidate = structuredClone(payload);
+                candidate.session_artifact.graph.nodes[0][field] = invalid;
+                expect(validate(candidate), `${field} rejects values outside its vocabulary`).toBe(false)
+            }
+
+            const edgeCandidate = structuredClone(payload);
+            edgeCandidate.session_artifact.graph.edges[0].relationship = 'DEPENDS_UPON';
+            expect(validate(edgeCandidate), 'relationships use the declared vocabulary').toBe(false);
+            expect(nodeProperties).not.toHaveProperty('confidence');
+            expect(captured.messages[0].content).not.toContain('"confidence"')
+        } finally {
+            OpenAiCompatible.prototype.generate = baseGenerate;
+            setConfigOverrides({[ENV.GRAPH_PROVIDER]: priorProvider})
+        }
+    });
+
+    test('legacy extraction scores are not reduced or written onto new graph nodes', async () => {
+        const payloads = [0.1, 0.9].map(confidence => ({
+            a2a_version: '1.0',
+            session_artifact: {graph: {
+                nodes: [{id: 'CLASS:RetiredScoreFixture', type: 'CLASS', name: 'RetiredScoreFixture',
+                    description: 'A legacy payload.', confidence, strategic_weight: confidence,
+                    logical_layer: 'UI Components', stability: 'STABLE,'}],
+                edges: [{source: 'CLASS:RetiredScoreFixture', target: 'frontier', relationship: 'DEPENDS_UPON'}]
+            }}
+        }));
+        const reduced = SemanticGraphExtractor.reduceTriVectorPayloads(payloads, {
+            chunked: true, totalEstimatedTokens: 2, chunks: []
+        });
+
+        expect(reduced.session_artifact.graph.nodes[0]).not.toHaveProperty('confidence');
+        expect(reduced.session_artifact.graph.nodes[0].strategic_weight).toBe(0.9);
+
+        await SemanticGraphExtractor.commitTriVectorPayload(payloads[1], {
+            id: 'retired-score-vector', meta: {sessionId: 'retired-score-session'}
+        });
+        const node = GraphService.db.nodes.get(payloads[1].session_artifact.graph.nodes[0]._resolvedId);
+        expect(node.properties).not.toHaveProperty('confidence');
+        expect(node.properties).toMatchObject({logical_layer: 'Unknown', stability: 'UNKNOWN'});
+        expect(GraphService.db.edges.items.find(edge => edge.source === node.id && edge.target === 'frontier').type)
+            .toBe('RELATES_TO');
+
+        GraphService.upsertNode({id: node.id, type: 'CLASS', name: 'RetiredScoreFixture', properties: {confidence: 0.25}});
+        await SemanticGraphExtractor.commitTriVectorPayload(payloads[1], {
+            id: 'retired-score-vector', meta: {sessionId: 'retired-score-session'}
+        });
+        expect(GraphService.db.nodes.get(node.id).properties.confidence, 'retirement does not backfill historical values').toBe(0.25)
     });
 
     test('Sub 9 hypothesis 12: provenance Memory/Session edges are lazy-queued, not silently culled (#12617, #10172)', async () => {

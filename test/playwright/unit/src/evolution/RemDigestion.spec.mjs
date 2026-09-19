@@ -244,6 +244,32 @@ test.describe('Neo.brain.evolution.RemDigestion', () => {
         expect(updatedNode.properties.capabilityGap).toContain('[TEST_GAP]');
     });
 
+    test('equal structural evidence yields the same test-gap outcome at any self-confidence', async () => {
+        const nodes = [0.1, 0.9, undefined].map((confidence, index) => {
+            const node = {id: `confidence-invariant-${index}`, type: 'CLASS', name: 'ConfidenceInvariant',
+                ...(confidence === undefined ? {} : {confidence})};
+            GraphService.upsertNode({...node, properties: {}});
+            return node
+        });
+        const payload = {session_artifact: {graph: {nodes, edges: []}}};
+
+        await RemDigestion.inferTestGapsFromSession(payload);
+
+        const gaps = nodes.map(node => GraphService.db.nodes.get(node.id).properties.capabilityGap);
+        expect(gaps[0]).toContain('[TEST_GAP]');
+        expect(gaps).toEqual([gaps[0], gaps[0], gaps[0]]);
+
+        GraphService.upsertNode({id: 'confidence-invariant-test-file', type: 'FILE', name: 'ConfidenceInvariant.spec.mjs',
+            properties: {path: 'test/playwright/unit/ConfidenceInvariant.spec.mjs'}});
+        await RemDigestion.inferTestGapsFromSession(payload);
+
+        for (const node of nodes) {
+            expect(GraphService.db.nodes.get(node.id).properties.capabilityGap).toBeUndefined();
+            expect(GraphService.db.edges.items.some(edge =>
+                edge.source === 'confidence-invariant-test-file' && edge.target === node.id && edge.type === 'VALIDATES')).toBe(true)
+        }
+    });
+
     test('inferTestGapsFromSession links matching test files via VALIDATES edges (#9906)', async () => {
         GraphService.upsertNode({
             id        : 'covered-class',
