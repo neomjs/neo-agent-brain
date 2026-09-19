@@ -835,7 +835,7 @@ paths:
       operationId: execute_dock_operation
       x-neo-tool-tier: write-locked
       x-pass-as-object: true
-      description: Applies one dockZone.v1 semantic operation (addTab, moveItem, splitNode, resizeSplit, detachItem, closeItem, setItemPinned, setItemAutoHidden) to a live dock workspace and returns the post-operation document plus executor errors. Unknown operations are rejected with the vocabulary enumerated.
+      description: Applies one dockZone.v1 semantic operation to a live dock workspace and returns the post-operation document plus executor errors. The workspace owns the vocabulary - read it from get_dock_topology's `operations`, which lists what THIS workspace accepts. Unknown operations are rejected with the vocabulary enumerated.
       tags: [Dock]
       requestBody:
         required: true
@@ -1340,7 +1340,8 @@ paths:
                   count:
                     type: integer
                   windowId:
-                    type: integer
+                    type: string
+                    description: The window's id, a UUID string like every other windowId in this document
                   history:
                     type: array
                     items:
@@ -2358,6 +2359,12 @@ components:
               type: string
             port:
               type: integer
+            spawnFailure:
+              type: string
+              description: Present only when this server's Bridge spawn failed - a code (ENOENT, BRIDGE_EXIT_1), never a path
+            cwdFinding:
+              type: string
+              description: Present only when the assigned --cwd cannot run the Bridge script (BRIDGE_CWD_MISSING_SCRIPT). Known before any spawn - --cwd names the Agent OS runtime root, never the target workspace
         sessions:
           type: array
           items:

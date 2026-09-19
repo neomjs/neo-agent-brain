@@ -28,7 +28,7 @@ import {STALE_BRIDGE_ERROR_CODE} from '../../../../../../ai/mcp/server/neural-li
  */
 test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshness gate (#13299)', () => {
     const rpcClients = [];
-    let ConnectionService, getBridgeStdioLogPath, logBridgePayload,
+    let BRIDGE_CWD_MISSING_SCRIPT, BRIDGE_NPM_SCRIPT, ConnectionService, getBridgeStdioLogPath, logBridgePayload,
         normalizeBridgePayloadDebugMaxChars, stringifyBridgePayloadForDebug,
         originalConnectToBridge, originalCwd, originalOpenBridgeLogFile,
         originalSpawnBridge, originalSpawnBridgeProcess;
@@ -36,6 +36,8 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
     test.beforeAll(async () => {
         const module = await import('../../../../../../ai/services/neural-link/ConnectionService.mjs');
 
+        BRIDGE_CWD_MISSING_SCRIPT            = module.BRIDGE_CWD_MISSING_SCRIPT;
+        BRIDGE_NPM_SCRIPT                    = module.BRIDGE_NPM_SCRIPT;
         ConnectionService                    = module.default;
         getBridgeStdioLogPath                = module.getBridgeStdioLogPath;
         logBridgePayload                     = module.logBridgePayload;
@@ -412,5 +414,96 @@ test.describe('Neo.ai.services.neural-link.ConnectionService — bridge freshnes
         await expect(ConnectionService.ensureBridgeAndConnect()).rejects.toThrow(/Stale Neural Link Bridge/);
 
         expect(spawned).toBe(false);
+    });
+
+    /**
+     * A start whose spawn died answered with the socket: `connect ECONNREFUSED 127.0.0.1:8081`. The cause the `exit`
+     * listener had recorded (`BRIDGE_EXIT_1`, from `npm run` finding no script) reached `healthcheck` only, so
+     * `manage_connection start` pointed an agent at a port instead of at its `--cwd`.
+     */
+    test('a start whose spawn recorded a failure reports it, with the refused socket as the cause', async () => {
+        const refused = new Error('connect ECONNREFUSED 127.0.0.1:8081');
+
+        ConnectionService.cwd             = '/some/workspace';
+        ConnectionService.connectToBridge = async () => { throw refused };
+        ConnectionService.spawnBridge     = async () => { ConnectionService.lastSpawnFailure = 'BRIDGE_EXIT_1' };
+
+        try {
+            const error = await ConnectionService.ensureBridgeAndConnect().catch(caught => caught);
+
+            expect(error.code, 'the recorded code, not the socket\'s').toBe('BRIDGE_EXIT_1');
+            expect(error.message).toContain('BRIDGE_EXIT_1');
+            expect(error.message, 'the script that ran').toContain(`npm run ${BRIDGE_NPM_SCRIPT}`);
+            expect(error.message, 'where it ran').toContain('/some/workspace');
+            expect(error.message, 'the rule --cwd has to meet').toContain('ADR-0040');
+            expect(error.cause, 'the socket error stays reachable').toBe(refused)
+        } finally {
+            ConnectionService.lastSpawnFailure = null
+        }
+    });
+
+    test('with no recorded spawn failure, a start passes the connection error through untouched', async () => {
+        const refused = new Error('connect ECONNREFUSED 127.0.0.1:8081');
+
+        ConnectionService.lastSpawnFailure = null;
+        ConnectionService.connectToBridge  = async () => { throw refused };
+        ConnectionService.spawnBridge      = async () => {};
+
+        await expect(ConnectionService.ensureBridgeAndConnect()).rejects.toBe(refused)
+    });
+
+    /**
+     * `--cwd` names the Agent OS runtime root. Handed a target workspace instead, `npm run` exits 1 there with
+     * `Missing script`. The manifest says so before anything is spawned.
+     */
+    test('a cwd whose package.json lacks the Bridge script is a finding before any spawn, and the spawn refuses', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nl-cwd-workspace-'));
+
+        let spawned = false;
+
+        fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({scripts: {start: 'node .'}}));
+
+        ConnectionService.openBridgeLogFile  = () => 42;
+        ConnectionService.spawnBridgeProcess = () => { spawned = true };
+        ConnectionService.cwd                = root;
+
+        try {
+            expect(ConnectionService.getCwdFinding()).toBe(BRIDGE_CWD_MISSING_SCRIPT);
+            expect(ConnectionService.getStatus().cwdFinding, 'on the status, with no spawn attempted').toBe(BRIDGE_CWD_MISSING_SCRIPT);
+
+            const {default: HealthService} = await import('../../../../../../ai/services/neural-link/HealthService.mjs'),
+                  health                   = await HealthService.healthcheck();
+
+            expect(health.bridge.cwdFinding, 'healthcheck names it before anything failed').toBe(BRIDGE_CWD_MISSING_SCRIPT);
+            expect(JSON.stringify(health.bridge), 'a code, never the path').not.toContain(root);
+
+            await expect(ConnectionService.spawnBridge({logPath: root, startupDelayMs: 0}))
+                .rejects.toThrow(new RegExp(`defines no \`${BRIDGE_NPM_SCRIPT}\` script[\\s\\S]*ADR-0040`));
+
+            expect(spawned, 'no process is launched where the script cannot run').toBe(false)
+        } finally {
+            fs.rmSync(root, {force: true, recursive: true})
+        }
+    });
+
+    test('a cwd that defines the script, an unassigned one and an unreadable one are no finding', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nl-cwd-runtime-root-'));
+
+        fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({scripts: {[BRIDGE_NPM_SCRIPT]: 'node bridge.mjs'}}));
+
+        try {
+            ConnectionService.cwd = root;
+            expect(ConnectionService.getCwdFinding(), 'the runtime root').toBeNull();
+
+            ConnectionService.cwd = null;
+            expect(ConnectionService.getCwdFinding(), 'the ordinary boot order').toBeNull();
+
+            // Its spawn fails with ENOENT, and that attribution stays the spawn's
+            ConnectionService.cwd = path.join(root, 'absent');
+            expect(ConnectionService.getCwdFinding(), 'no manifest was read').toBeNull();
+            expect(ConnectionService.getStatus().cwdFinding).toBeNull()
+        } finally {
+            fs.rmSync(root, {force: true, recursive: true})
+        }
     });
 });

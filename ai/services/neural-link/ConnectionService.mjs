@@ -16,6 +16,19 @@ import logger    from '../../mcp/server/neural-link/logger.mjs';
 export const BRIDGE_NPM_SCRIPT = 'ai:server-neural-link';
 
 /**
+ * The finding `getCwdFinding()` reports for a `cwd` whose `package.json` cannot run the Bridge. A code and no path:
+ * it travels on the healthcheck payload, which carries no host paths.
+ * @type {String}
+ */
+export const BRIDGE_CWD_MISSING_SCRIPT = 'BRIDGE_CWD_MISSING_SCRIPT';
+
+/**
+ * What `--cwd` has to be. One sentence, shared by the spawn refusal and the start error so the two cannot drift.
+ * @type {String}
+ */
+const BRIDGE_CWD_RULE = `\`--cwd\` names the Agent OS runtime root, whose package.json defines \`${BRIDGE_NPM_SCRIPT}\` - never the target workspace (ADR-0040).`;
+
+/**
  * @summary Decides what `initAsync()` may do about the Bridge at construction time.
  *
  * Exported as a plain function so specs drive the production decision rather than a mirror of it:
@@ -210,6 +223,15 @@ class ConnectionService extends Base {
         singleton: true
     }
 
+    /**
+     * The `cwd` {@link #getCwdFinding} last read, so one assigned `cwd` costs one `package.json` read.
+     * @member {String|null} #cwdChecked=null
+     */
+    #cwdChecked = null
+    /**
+     * @member {String|null} #cwdFinding=null
+     */
+    #cwdFinding = null
     /**
      * Active Agents connected to the Bridge.
      * Set<agentId>
@@ -453,8 +475,68 @@ class ConnectionService extends Base {
         // 2. Spawn if missing
         if (!connected) {
             await this.spawnBridge();
-            await this.connectToBridge();
+
+            try {
+                await this.connectToBridge()
+            } catch (error) {
+                // The refused socket is the symptom. A spawn that recorded why it died is the cause, and it used to
+                // reach `healthcheck` only, so `manage_connection start` answered ECONNREFUSED for a missing script.
+                throw this.lastSpawnFailure ? this.createSpawnFailureError(error) : error
+            }
         }
+    }
+
+    /**
+     * The error a start reports when its own spawn recorded a failure: the code, the script and where it ran, with
+     * the refused connection kept as `cause`.
+     * @param {Error} cause The connection error that followed the failed spawn
+     * @returns {Error}
+     * @protected
+     */
+    createSpawnFailureError(cause) {
+        const error = new Error(
+            `The Neural Link Bridge did not start: \`npm run ${BRIDGE_NPM_SCRIPT}\` in ${this.cwd} ended with ` +
+            `${this.lastSpawnFailure}. ${BRIDGE_CWD_RULE}`,
+            {cause}
+        );
+
+        error.code = this.lastSpawnFailure;
+
+        return error
+    }
+
+    /**
+     * Says whether the assigned `cwd` can run the Bridge at all: its `package.json` has to define
+     * {@link BRIDGE_NPM_SCRIPT}. A target workspace passed as `--cwd` does not, `npm run` exits 1 there with
+     * `Missing script`, and the only trace was a refused socket. Read once per assigned `cwd`.
+     *
+     * An unassigned `cwd` is no finding: that is the ordinary boot order, and {@link #spawnBridge} names it itself.
+     * Neither is a `package.json` that cannot be read: a finding needs a manifest that WAS read and lacks the script,
+     * and a directory that does not exist keeps the attribution its spawn already has (`ENOENT`).
+     * @returns {String|null} {@link BRIDGE_CWD_MISSING_SCRIPT}, or null
+     */
+    getCwdFinding() {
+        const me    = this,
+              {cwd} = me;
+
+        if (!cwd) {
+            return null
+        }
+
+        if (me.#cwdChecked !== cwd) {
+            let scripts;
+
+            try {
+                scripts = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')).scripts ?? {}
+            } catch (error) {
+                scripts = null
+            }
+
+            me.#cwdChecked = cwd;
+            me.#cwdFinding = scripts && !scripts[BRIDGE_NPM_SCRIPT] ? BRIDGE_CWD_MISSING_SCRIPT : null
+        }
+
+        return me.#cwdFinding
     }
 
     /**
@@ -566,7 +648,9 @@ class ConnectionService extends Base {
             port           : aiConfig.port,
             // Sanitized on capture, not here: an operator needs to know the Bridge failed to spawn
             // and why, without the payload carrying host paths or argv.
-            lastSpawnFailure: this.lastSpawnFailure
+            lastSpawnFailure: this.lastSpawnFailure,
+            // Known before any spawn is attempted, and a code for the same reason
+            cwdFinding      : this.getCwdFinding()
         }
     }
 
@@ -839,6 +923,15 @@ class ConnectionService extends Base {
                     'Link MCP entrypoint (`--cwd`) and must be assigned before a spawn. Refusing to ' +
                     'substitute process.cwd() — on a GUI-launched server that is `/`, and the Bridge ' +
                     'cannot start there.'
+                );
+            }
+
+            // An assigned cwd that cannot run the script is refused here rather than spawned: `npm run` would
+            // exit 1 a moment later, and the caller would hear about a socket.
+            if (this.getCwdFinding()) {
+                throw new Error(
+                    `ConnectionService.spawnBridge: ${this.cwd} defines no \`${BRIDGE_NPM_SCRIPT}\` script, so ` +
+                    `no Bridge can start there. ${BRIDGE_CWD_RULE}`
                 );
             }
 
