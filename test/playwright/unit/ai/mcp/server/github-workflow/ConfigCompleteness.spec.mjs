@@ -50,9 +50,10 @@ async function importTemplateConfig() {
 }
 
 test.describe('GitHub Workflow MCP Server Config Completeness', () => {
-    let ConfigProvider, originalEnv;
+    let ConfigBase, ConfigProvider, originalEnv;
 
     test.beforeAll(async () => {
+        ConfigBase      = (await import('../../../../../../../ai/mcp/server/github-workflow/configBase.mjs')).default;
         ConfigProvider  = (await import('../../../../../../../ai/ConfigProvider.mjs')).default;
         originalEnv = {...process.env};
     });
@@ -108,21 +109,58 @@ test.describe('GitHub Workflow MCP Server Config Completeness', () => {
         expect(missingKeys, `Missing keys in config.template.mjs: ${missingKeys.join(', ')}`).toEqual([]);
     });
 
-    test('NEO_MCP_GITHUB_ARCHIVE_ROOT overrides config.issueSync.archiveRoot', async () => {
-        // The env layer is applied AT CONSTRUCTION from each leaf's `env` var, so the
-        // override must be present before the instance is built. The template singleton is
-        // constructed (and env-bound) at import time, so we build a fresh raw instance from
-        // the template's meta-leaf tree to exercise boot-time env binding deterministically.
-        const {_data} = (await importTemplateConfig()).default;
-
+    test('corpus destination resolves all children from the declared root and requires it in corpus-only mode', () => {
         process.env.NEO_MCP_GITHUB_ARCHIVE_ROOT = '/custom/archive/path';
+        process.env.NEO_MCP_GITHUB_CONTENT_ROOT = '/custom/corpus';
 
-        const config = Neo.create(ConfigProvider, {data: _data});
+        const parentRoot = Neo.ai.Config.getData('projectRoot'),
+              config = Neo.create(ConfigBase);
 
         try {
             expect(config.getDataConfig('issueSync.archiveRoot').get()).toBe('/custom/archive/path');
+            expect(config.getData('issueSync.metadataBaseRoot')).toBe('/custom/corpus');
+            expect(Neo.ai.Config.getData('projectRoot')).toBe(parentRoot);
+            expect(config.getOwnerOfDataProperty('projectRoot').owner).toBe(config);
+            expect(config.getData('issueSync.contentRoot')).toBe('/custom/corpus');
+            expect(config.getData('issueSync.corpusLeaseFile')).toBe('/custom/corpus/.corpus-sync.lock');
+            expect(config.getData('issueSync.originRoot')).toBe('/custom/corpus/neo');
+            expect(config.getData('issueSync.issuesDir')).toBe('/custom/corpus/neo/issues');
+            expect(config.getData('issueSync.metadataFile')).toBe('/custom/corpus/neo/.sync-metadata.json');
+            expect(config.validateRequiredEnv({
+                entrypoint: 'sync-github-workflow',
+                mode      : 'corpus-only'
+            })).toEqual({findings: [], ok: true});
+            config.setData('issueSync.contentRootOverride', '/second/corpus');
+            expect(config.getData('issueSync.contentRoot')).toBe('/second/corpus');
+            expect(config.getData('issueSync.originRoot')).toBe('/second/corpus/neo');
+            expect(config.getData('issueSync.issuesDir')).toBe('/second/corpus/neo/issues');
+            expect(Neo.ai.Config.getData('projectRoot')).toBe(parentRoot);
         } finally {
             config.destroy();
+        }
+
+        delete process.env.NEO_MCP_GITHUB_CONTENT_ROOT;
+
+        const missingDestination = Neo.create(ConfigBase);
+
+        try {
+            expect(missingDestination.validateRequiredEnv({
+                entrypoint: 'sync-github-workflow',
+                mode      : 'corpus-only'
+            })).toMatchObject({
+                ok: false,
+                findings: [{
+                    env        : 'NEO_MCP_GITHUB_CONTENT_ROOT',
+                    leafPath   : 'issueSync.contentRootOverride',
+                    valueState : 'absent',
+                    disposition: 'fail-closed'
+                }]
+            });
+            expect(missingDestination.getData('issueSync.originRoot')).toBe(
+                missingDestination.getData('issueSync.contentRoot')
+            );
+        } finally {
+            missingDestination.destroy();
         }
     });
 
@@ -231,11 +269,11 @@ test.describe('GitHub Workflow MCP Server Config Completeness', () => {
         }
     });
 
-    test('syncGithubWorkflow CLI selects info by default and debug for --verbose', async () => {
+    test('syncGithubWorkflow CLI does not mutate resolved config for --verbose', async () => {
         const content = await fs.promises.readFile(cliScriptPath, 'utf8');
 
         expect(content).not.toContain('GH_Config.data.debug = true');
-        expect(content).toContain("GH_Config.data.logLevel = verbose ? 'debug' : 'info'");
+        expect(content).not.toContain('GH_Config.data.logLevel =');
         expect(content).toContain("process.argv.includes('--verbose')");
     });
 });

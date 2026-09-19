@@ -7,27 +7,15 @@ export const CONTENT_INDEX_FILENAME = '_index.json';
 /**
  * @summary Resolves the root directory that owns `resources/content/_index.json`.
  *
- * The index is a sibling of the active type directories and the archive root. The GitHub workflow
- * config currently exposes per-type paths, so this helper derives the common root from `issuesDir`
- * without adding another config surface.
+ * The index is rooted at the shared corpus root. Per-origin directories cannot derive that root: their
+ * parent is an origin, not the shared corpus that owns one `_index.json` for every producer.
  *
  * @param {Object} issueSyncConfig GitHub workflow `issueSync` config block
  * @returns {String}
  */
 export function contentRootFor(issueSyncConfig = {}) {
-    if (issueSyncConfig.contentRoot) {
-        return issueSyncConfig.contentRoot;
-    }
-
-    if (issueSyncConfig.issuesDir) {
-        return path.dirname(issueSyncConfig.issuesDir);
-    }
-
-    if (issueSyncConfig.archiveRoot) {
-        return path.dirname(issueSyncConfig.archiveRoot);
-    }
-
-    throw new TypeError('issueSyncConfig must define issuesDir, archiveRoot, or contentRoot');
+    validateSegment(issueSyncConfig.contentRoot, 'issueSyncConfig.contentRoot', {allowPath: true});
+    return issueSyncConfig.contentRoot;
 }
 
 /**
@@ -61,7 +49,21 @@ export async function readContentIndex(issueSyncConfig = {}) {
         throw new TypeError(`${CONTENT_INDEX_FILENAME} must contain an array`);
     }
 
-    return entries;
+    const {legacyRepoSlug} = issueSyncConfig;
+
+    if (legacyRepoSlug !== undefined && legacyRepoSlug !== null) {
+        validateSegment(legacyRepoSlug, 'issueSyncConfig.legacyRepoSlug');
+    }
+
+    return entries.map(entry => {
+        if (entry.repoSlug !== undefined && entry.repoSlug !== null) {
+            return normalizeContentIndexEntry(entry);
+        }
+
+        // Legacy ownership is an explicit bootstrap fact. The current producer and the row's path
+        // cannot establish it: a shared root can contain a foreign row with either familiar shape.
+        return legacyRepoSlug ? normalizeContentIndexEntry({...entry, repoSlug: legacyRepoSlug}) : entry;
+    });
 }
 
 /**
@@ -80,7 +82,7 @@ export async function writeContentIndex(issueSyncConfig = {}, entries = []) {
 /**
  * @summary Applies upsert/remove mutations to the content index in one read/write pass.
  *
- * Syncers call this after determining their final target paths. Entries are keyed by `{type, id}`
+ * Syncers call this after determining their final target paths. Entries are keyed by `{repoSlug, type, id}`
  * because each GitHub item has exactly one current lookup target — an upsert for an id therefore
  * replaces its predecessor rather than accumulating a second entry.
  *
@@ -103,22 +105,24 @@ export async function updateContentIndex(issueSyncConfig = {}, mutations = {}) {
 }
 
 /**
- * @summary Finds an index entry by type and id.
+ * @summary Finds an index entry by repository origin, type and id.
  * @param {Array<Object>} entries Content index entries
  * @param {Object} query
+ * @param {String} query.repoSlug Bare repository provenance
  * @param {String} query.type Content type
  * @param {Number|String} query.id GitHub identifier
  * @returns {Object|null}
  */
 export function findContentIndexEntry(entries = [], query = {}) {
     const key = indexKey(query);
-    return entries.find(entry => indexKey(entry) === key) || null;
+    return entries.find(entry => entry.repoSlug !== undefined && entry.repoSlug !== null && indexKey(entry) === key) || null;
 }
 
 /**
  * @summary Creates a normalized content index entry for a resolved output path.
  * @param {Object} config
  * @param {Object} config.issueSyncConfig GitHub workflow `issueSync` config block
+ * @param {String} config.repoSlug Bare repository provenance
  * @param {'issues'|'pulls'|'discussions'|'release-notes'} config.type Content type
  * @param {Number|String} config.id GitHub ID or semver identifier
  * @param {String} config.filePath Absolute output file path
@@ -131,6 +135,7 @@ export function findContentIndexEntry(entries = [], query = {}) {
 export function createContentIndexEntry(config = {}) {
     const {
         issueSyncConfig,
+        repoSlug,
         type,
         id,
         filePath,
@@ -144,6 +149,7 @@ export function createContentIndexEntry(config = {}) {
     const relativePath = path.relative(contentRoot, filePath);
 
     return normalizeContentIndexEntry({
+        repoSlug,
         type,
         id,
         version,
@@ -173,6 +179,7 @@ export function createContentIndexEntry(config = {}) {
  *
  * @param {Object} config
  * @param {Object} config.issueSyncConfig GitHub workflow `issueSync` config block
+ * @param {String} config.repoSlug Bare repository provenance
  * @param {'issues'|'pulls'|'discussions'|'release-notes'} config.type Content type
  * @param {Number|String} config.id GitHub ID or semver identifier
  * @param {String} config.filePath Absolute path the file now occupies
@@ -180,15 +187,16 @@ export function createContentIndexEntry(config = {}) {
  * @throws {TypeError} When `filePath` is not a chunked content path under the content root
  */
 export function createContentIndexEntryFromPath(config = {}) {
-    const {issueSyncConfig, type, id, filePath} = config,
+    const {issueSyncConfig, repoSlug, type, id, filePath} = config,
           contentRoot                           = contentRootFor(issueSyncConfig),
-          parsed                                = parseContentPath({contentRoot, filePath, ...pathSegmentOptionsFor(issueSyncConfig)});
+          parsed                                = parseContentPath({contentRoot, repoSlug, filePath, ...pathSegmentOptionsFor(issueSyncConfig)});
 
     if (!parsed) {
         throw new TypeError(`filePath is not a chunked content path under the content root: ${filePath}`);
     }
 
     const entry = {
+        repoSlug,
         type,
         id,
         version    : parsed.version,
@@ -208,7 +216,7 @@ export function createContentIndexEntryFromPath(config = {}) {
  * @returns {String}
  */
 export function resolveIndexedPath(issueSyncConfig = {}, entry = {}) {
-    validateSegment(entry.path, 'path', {allowPath: true});
+    normalizeContentIndexEntry(entry);
 
     const contentRoot  = path.resolve(contentRootFor(issueSyncConfig));
     const absolutePath = path.resolve(contentRoot, entry.path);
@@ -222,16 +230,18 @@ export function resolveIndexedPath(issueSyncConfig = {}, entry = {}) {
 }
 
 function indexKey(entry = {}) {
+    validateSegment(entry.repoSlug, 'repoSlug');
     validateSegment(entry.type, 'type');
 
     if (entry.id === undefined || entry.id === null || `${entry.id}`.length === 0) {
         throw new TypeError('id must be a non-empty value');
     }
 
-    return `${entry.type}:${entry.id}`;
+    return JSON.stringify([entry.repoSlug, entry.type, String(entry.id)]);
 }
 
 function normalizeContentIndexEntry(entry = {}) {
+    validateSegment(entry.repoSlug, 'repoSlug');
     validateSegment(entry.type, 'type');
     validateSegment(entry.path, 'path', {allowPath: true});
 
@@ -244,6 +254,7 @@ function normalizeContentIndexEntry(entry = {}) {
     }
 
     const normalized = {
+        repoSlug   : entry.repoSlug,
         type       : entry.type,
         id         : entry.id,
         version    : entry.version ?? null,
@@ -263,6 +274,9 @@ function sortContentIndex(entries = []) {
     return entries
         .map(entry => normalizeContentIndexEntry(entry))
         .sort((a, b) => {
+            const repoCompare = a.repoSlug.localeCompare(b.repoSlug);
+            if (repoCompare) return repoCompare;
+
             const typeCompare = a.type.localeCompare(b.type);
             if (typeCompare) return typeCompare;
 

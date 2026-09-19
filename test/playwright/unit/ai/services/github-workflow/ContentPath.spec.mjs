@@ -16,9 +16,9 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
 import os             from 'os';
 import path           from 'path';
 
-import contentPath, {
+import resolveContentPath, {
     chunkNumberFor,
-    contentBucketDir,
+    contentBucketDir as resolveContentBucketDir,
     DEFAULT_CHUNK_PREFIX,
     DEFAULT_ITEMS_PER_CHUNK,
     validateBucketXor,
@@ -37,15 +37,37 @@ import {
 } from '../../../../../../ai/services/github-workflow/shared/contentIndex.mjs';
 
 test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â§3.1 / #11379 Lane A)', () => {
-    const contentRoot = path.join('resources', 'content');
+    const contentRoot = path.join('resources', 'content'),
+          repoSlug    = 'neo',
+          contentPath = config => resolveContentPath({repoSlug, ...config}),
+          contentBucketDir = config => resolveContentBucketDir({repoSlug, ...config});
 
     test.describe('active tier (no version/bucket)', () => {
+        test('requires an explicit bare repository provenance', () => {
+            expect(() => resolveContentPath({
+                contentRoot,
+                type     : 'issues',
+                filename : 'issue-1.md',
+                itemIndex: 0
+            })).toThrow(/repoSlug must be a non-empty string/);
+        });
+
         test('routes itemIndex 0 to chunk-1', () => {
             expect(contentPath({
                 contentRoot,
                 type     : 'issues',
                 filename : 'issue-1.md',
                 itemIndex: 0
+            })).toBe(path.join(contentRoot, repoSlug, 'issues', 'chunk-1', 'issue-1.md'));
+        });
+
+        test('keeps an explicit ordinary origin root at legacy paths while retaining repo provenance', () => {
+            expect(contentPath({
+                contentRoot,
+                originRoot: contentRoot,
+                type      : 'issues',
+                filename  : 'issue-1.md',
+                itemIndex : 0
             })).toBe(path.join(contentRoot, 'issues', 'chunk-1', 'issue-1.md'));
         });
 
@@ -55,7 +77,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 type     : 'pulls',
                 filename : 'pr-100.md',
                 itemIndex: 99
-            })).toBe(path.join(contentRoot, 'pulls', 'chunk-1', 'pr-100.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'pulls', 'chunk-1', 'pr-100.md'));
         });
 
         test('routes itemIndex 100 (first of chunk-2) to chunk-2', () => {
@@ -64,7 +86,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 type     : 'discussions',
                 filename : 'discussion-101.md',
                 itemIndex: 100
-            })).toBe(path.join(contentRoot, 'discussions', 'chunk-2', 'discussion-101.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'discussions', 'chunk-2', 'discussion-101.md'));
         });
 
         test('routes itemIndex 250 (mid chunk-3) to chunk-3', () => {
@@ -73,7 +95,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 type     : 'issues',
                 filename : 'issue-251.md',
                 itemIndex: 250
-            })).toBe(path.join(contentRoot, 'issues', 'chunk-3', 'issue-251.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'issues', 'chunk-3', 'issue-251.md'));
         });
 
         test('routes itemIndex 999 to chunk-10 (boundary at itemsPerChunk * 10)', () => {
@@ -82,7 +104,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 type     : 'issues',
                 filename : 'issue-1000.md',
                 itemIndex: 999
-            })).toBe(path.join(contentRoot, 'issues', 'chunk-10', 'issue-1000.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'issues', 'chunk-10', 'issue-1000.md'));
         });
 
         test('routes itemIndex 1000 to chunk-11 (first item past chunk-10 boundary)', () => {
@@ -91,7 +113,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 type     : 'issues',
                 filename : 'issue-1001.md',
                 itemIndex: 1000
-            })).toBe(path.join(contentRoot, 'issues', 'chunk-11', 'issue-1001.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'issues', 'chunk-11', 'issue-1001.md'));
         });
 
         test('handles release-notes type with semver-derived filename', () => {
@@ -100,7 +122,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 type     : 'release-notes',
                 filename : 'release-12.1.0.md',
                 itemIndex: 42
-            })).toBe(path.join(contentRoot, 'release-notes', 'chunk-1', 'release-12.1.0.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'release-notes', 'chunk-1', 'release-12.1.0.md'));
         });
     });
 
@@ -112,7 +134,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 version  : 'v13.0.0',
                 filename : 'issue-11000.md',
                 itemIndex: 0
-            })).toBe(path.join(contentRoot, 'archive', 'issues', 'v13.0.0', 'chunk-1', 'issue-11000.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'archive', 'issues', 'v13.0.0', 'chunk-1', 'issue-11000.md'));
         });
 
         test('routes itemIndex 250 to chunk-3 under archive/pulls/v12.1.0', () => {
@@ -122,7 +144,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 version  : 'v12.1.0',
                 filename : 'pr-999.md',
                 itemIndex: 250
-            })).toBe(path.join(contentRoot, 'archive', 'pulls', 'v12.1.0', 'chunk-3', 'pr-999.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'archive', 'pulls', 'v12.1.0', 'chunk-3', 'pr-999.md'));
         });
 
         test('supports discussions in archive tier', () => {
@@ -132,7 +154,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 version  : 'v13.0.0',
                 filename : 'discussion-555.md',
                 itemIndex: 50
-            })).toBe(path.join(contentRoot, 'archive', 'discussions', 'v13.0.0', 'chunk-1', 'discussion-555.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'archive', 'discussions', 'v13.0.0', 'chunk-1', 'discussion-555.md'));
         });
     });
 
@@ -144,7 +166,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 bucket   : 'rejected',
                 filename : 'pr-11174.md',
                 itemIndex: 0
-            })).toBe(path.join(contentRoot, 'archive', 'pulls', 'rejected', 'chunk-1', 'pr-11174.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'archive', 'pulls', 'rejected', 'chunk-1', 'pr-11174.md'));
         });
 
         test('chunks within bucket at itemsPerChunk boundary', () => {
@@ -154,7 +176,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 bucket   : 'rejected',
                 filename : 'pr-9999.md',
                 itemIndex: 100
-            })).toBe(path.join(contentRoot, 'archive', 'pulls', 'rejected', 'chunk-2', 'pr-9999.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'archive', 'pulls', 'rejected', 'chunk-2', 'pr-9999.md'));
         });
     });
 
@@ -166,7 +188,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 filename   : 'issue-1.md',
                 itemIndex  : 100,
                 chunkPrefix: 'bucket-'
-            })).toBe(path.join(contentRoot, 'issues', 'bucket-2', 'issue-1.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'issues', 'bucket-2', 'issue-1.md'));
         });
 
         test('honors non-default itemsPerChunk (50 â†’ chunks earlier)', () => {
@@ -176,7 +198,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 filename     : 'issue-1.md',
                 itemIndex    : 50,
                 itemsPerChunk: 50
-            })).toBe(path.join(contentRoot, 'issues', 'chunk-2', 'issue-1.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'issues', 'chunk-2', 'issue-1.md'));
         });
 
         test('honors non-default itemsPerChunk (200 â†’ chunks later)', () => {
@@ -186,7 +208,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 filename     : 'issue-1.md',
                 itemIndex    : 150,
                 itemsPerChunk: 200
-            })).toBe(path.join(contentRoot, 'issues', 'chunk-1', 'issue-1.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'issues', 'chunk-1', 'issue-1.md'));
         });
     });
 
@@ -385,7 +407,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 bucket   : null,
                 filename : 'issue-1.md',
                 itemIndex: 0
-            })).toBe(path.join(contentRoot, 'issues', 'chunk-1', 'issue-1.md'));
+            })).toBe(path.join(contentRoot, repoSlug, 'issues', 'chunk-1', 'issue-1.md'));
         });
     });
 
@@ -423,7 +445,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
             expect(contentBucketDir({
                 contentRoot,
                 type: 'issues'
-            })).toBe(path.join(contentRoot, 'issues'));
+            })).toBe(path.join(contentRoot, repoSlug, 'issues'));
         });
 
         test('returns archive-tier version bucket dir', () => {
@@ -431,7 +453,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 contentRoot,
                 type   : 'pulls',
                 version: 'v12.1.0'
-            })).toBe(path.join(contentRoot, 'archive', 'pulls', 'v12.1.0'));
+            })).toBe(path.join(contentRoot, repoSlug, 'archive', 'pulls', 'v12.1.0'));
         });
 
         test('returns archive-tier non-release bucket dir', () => {
@@ -439,7 +461,7 @@ test.describe('contentPath â€” universal ordinal-100 path resolution (ADR 0004 Â
                 contentRoot,
                 type  : 'pulls',
                 bucket: 'rejected'
-            })).toBe(path.join(contentRoot, 'archive', 'pulls', 'rejected'));
+            })).toBe(path.join(contentRoot, repoSlug, 'archive', 'pulls', 'rejected'));
         });
 
         test('rejects supplying both version and bucket', () => {
@@ -507,28 +529,30 @@ test.describe('contentIndex â€” ADR 0004 _index.json maintenance (#11390 Lane B)
     test.beforeEach(async () => {
         tmpRoot = path.join(os.tmpdir(), `neo-content-index-test-${process.pid}-${Date.now()}`);
         issueSyncConfig = {
-            issuesDir: path.join(tmpRoot, 'issues')
+            contentRoot: tmpRoot
         };
-        await fs.ensureDir(issueSyncConfig.issuesDir);
+        await fs.ensureDir(issueSyncConfig.contentRoot);
     });
 
     test.afterEach(async () => {
         await fs.remove(tmpRoot).catch(() => {});
     });
 
-    test('derives the content root and index path from issuesDir', () => {
+    test('requires the shared content root for its root index', () => {
         expect(contentRootFor(issueSyncConfig)).toBe(tmpRoot);
         expect(contentIndexPath(issueSyncConfig)).toBe(path.join(tmpRoot, '_index.json'));
+        expect(() => contentRootFor({issuesDir: path.join(tmpRoot, 'neo', 'issues')})).toThrow(/contentRoot/);
     });
 
-    test('upserts, sorts, finds, and removes entries', async () => {
-        const issuePath = path.join(tmpRoot, 'issues', 'chunk-1', 'issue-5.md');
-        const prPath    = path.join(tmpRoot, 'pulls', 'chunk-1', 'pr-2.md');
+    test('upserts, sorts, finds, and removes origin-qualified entries', async () => {
+        const issuePath = path.join(tmpRoot, 'neo', 'issues', 'chunk-1', 'issue-5.md');
+        const otherPath = path.join(tmpRoot, 'neo-agent-brain', 'issues', 'chunk-1', 'issue-5.md');
 
         await updateContentIndex(issueSyncConfig, {
             upsert: [
                 createContentIndexEntry({
                     issueSyncConfig,
+                    repoSlug : 'neo',
                     type     : 'issues',
                     id       : 5,
                     filePath : issuePath,
@@ -536,34 +560,80 @@ test.describe('contentIndex â€” ADR 0004 _index.json maintenance (#11390 Lane B)
                 }),
                 createContentIndexEntry({
                     issueSyncConfig,
-                    type     : 'pulls',
-                    id       : 2,
-                    filePath : prPath,
+                    repoSlug : 'neo-agent-brain',
+                    type     : 'issues',
+                    id       : 5,
+                    filePath : otherPath,
                     itemIndex: 0
                 })
             ]
         });
 
         let index = await readContentIndex(issueSyncConfig);
-        expect(index.map(entry => `${entry.type}:${entry.id}`)).toEqual(['issues:5', 'pulls:2']);
-        expect(findContentIndexEntry(index, {type: 'issues', id: '5'}).path).toBe(path.join('issues', 'chunk-1', 'issue-5.md'));
+        expect(index.map(entry => `${entry.repoSlug}:${entry.type}:${entry.id}`)).toEqual(['neo:issues:5', 'neo-agent-brain:issues:5']);
+        expect(findContentIndexEntry(index, {repoSlug: 'neo', type: 'issues', id: '5'}).path).toBe(path.join('neo', 'issues', 'chunk-1', 'issue-5.md'));
+        expect(() => findContentIndexEntry(index, {type: 'issues', id: '5'})).toThrow(/repoSlug/);
+        expect(findContentIndexEntry(index, {repoSlug: 'neo', type: 'issues', id: 999})).toBeNull();
+        expect(() => findContentIndexEntry({find: () => { throw new Error('lookup started') }}, {type: 'issues', id: 5})).toThrow(/repoSlug/);
 
         await updateContentIndex(issueSyncConfig, {
-            remove: [{type: 'issues', id: 5}]
+            upsert: [createContentIndexEntry({
+                issueSyncConfig, repoSlug: 'neo', type: 'issues', id: 5,
+                filePath: path.join(tmpRoot, 'neo', 'issues', 'chunk-2', 'issue-5.md'), itemIndex: 100
+            })]
+        });
+        index = await readContentIndex(issueSyncConfig);
+        expect(findContentIndexEntry(index, {repoSlug: 'neo', type: 'issues', id: 5}).chunkNumber).toBe(2);
+        expect(findContentIndexEntry(index, {repoSlug: 'neo-agent-brain', type: 'issues', id: 5}).chunkNumber).toBe(1);
+
+        await updateContentIndex(issueSyncConfig, {
+            remove: [{repoSlug: 'neo', type: 'issues', id: 5}]
         });
 
         index = await readContentIndex(issueSyncConfig);
-        expect(findContentIndexEntry(index, {type: 'issues', id: 5})).toBeNull();
-        expect(index.map(entry => `${entry.type}:${entry.id}`)).toEqual(['pulls:2']);
+        expect(findContentIndexEntry(index, {repoSlug: 'neo', type: 'issues', id: 5})).toBeNull();
+        expect(index.map(entry => `${entry.repoSlug}:${entry.type}:${entry.id}`)).toEqual(['neo-agent-brain:issues:5']);
+    });
+
+    test('records an ordinary-root location with an explicit repository identity', () => {
+        const entry = createContentIndexEntry({
+            issueSyncConfig,
+            repoSlug : 'neo',
+            type     : 'issues',
+            id       : 5,
+            filePath : path.join(tmpRoot, 'issues', 'chunk-1', 'issue-5.md'),
+            itemIndex: 0
+        });
+
+        expect(entry).toMatchObject({repoSlug: 'neo', type: 'issues', id: 5, path: path.join('issues', 'chunk-1', 'issue-5.md')});
     });
 
     test('resolves indexed paths inside the content root and rejects escapes', () => {
         expect(resolveIndexedPath(issueSyncConfig, {
-            type: 'issues', id: 1, version: null, chunkNumber: 1, path: path.join('issues', 'chunk-1', 'issue-1.md')
-        })).toBe(path.join(tmpRoot, 'issues', 'chunk-1', 'issue-1.md'));
+            repoSlug: 'neo', type: 'issues', id: 1, version: null, chunkNumber: 1, path: path.join('neo', 'issues', 'chunk-1', 'issue-1.md')
+        })).toBe(path.join(tmpRoot, 'neo', 'issues', 'chunk-1', 'issue-1.md'));
 
         expect(() => resolveIndexedPath(issueSyncConfig, {
-            type: 'issues', id: 1, version: null, chunkNumber: 1, path: '../outside.md'
+            repoSlug: 'neo', type: 'issues', id: 1, version: null, chunkNumber: 1, path: '../outside.md'
         })).toThrow(/content root/);
+    });
+
+    test('qualifies a legacy row only with explicit bootstrap ownership', async () => {
+        await fs.writeJson(contentIndexPath(issueSyncConfig), [{
+            type: 'issues', id: 5, version: null, chunkNumber: 1, path: path.join('neo', 'issues', 'chunk-1', 'issue-5.md')
+        }]);
+
+        expect((await readContentIndex(issueSyncConfig))[0].repoSlug).toBeUndefined();
+        expect((await readContentIndex({...issueSyncConfig, legacyRepoSlug: 'neo'}))[0].repoSlug).toBe('neo');
+        await expect(updateContentIndex(issueSyncConfig, {upsert: []})).rejects.toThrow(/repoSlug/);
+        await updateContentIndex({...issueSyncConfig, legacyRepoSlug: 'neo'}, {upsert: [
+            createContentIndexEntry({
+                issueSyncConfig, repoSlug: 'neo-agent-brain', type: 'issues', id: 5,
+                filePath: path.join(tmpRoot, 'neo-agent-brain', 'issues', 'chunk-1', 'issue-5.md'), itemIndex: 0
+            })
+        ]});
+        const written = await readContentIndex(issueSyncConfig);
+        expect(written.map(entry => entry.repoSlug)).toEqual(['neo', 'neo-agent-brain']);
+        expect(written.every(entry => entry.id === 5 && entry.type === 'issues')).toBe(true);
     });
 });

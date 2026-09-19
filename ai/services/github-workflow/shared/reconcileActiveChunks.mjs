@@ -34,10 +34,11 @@ import {createContentIndexEntry, updateContentIndex} from './contentIndex.mjs';
  * @see ai/services/github-workflow/shared/contentPath.mjs
  * @see learn/agentos/decisions/0004-github-content-architecture.md
  */
-export default async function reconcileActiveChunks(issueSyncConfig = {}, {type, filePrefix, itemsPerChunk = 100} = {}) {
+export default async function reconcileActiveChunks(issueSyncConfig = {}, {repoSlug, type, filePrefix, itemsPerChunk = 100} = {}) {
     const
         contentRoot = issueSyncConfig.contentRoot,
-        activeDir   = path.join(contentRoot, type);
+        originRoot  = issueSyncConfig.originRoot || path.join(contentRoot, repoSlug),
+        activeDir   = path.join(originRoot, type);
 
     if (!existsSync(activeDir)) {
         return {type, total: 0, moved: 0};
@@ -80,7 +81,7 @@ export default async function reconcileActiveChunks(issueSyncConfig = {}, {type,
         const
             {id, absPath} = unique[itemIndex],
             filename      = `${filePrefix}${id}.md`,
-            targetPath    = contentPath({contentRoot, type, filename, itemIndex, itemsPerChunk});
+            targetPath    = contentPath({contentRoot, repoSlug, originRoot, type, filename, itemIndex, itemsPerChunk});
 
         if (absPath !== targetPath) {
             await fs.mkdir(path.dirname(targetPath), {recursive: true});
@@ -91,7 +92,7 @@ export default async function reconcileActiveChunks(issueSyncConfig = {}, {type,
         // Realign the deep-link index entry to the (possibly new) chunk so `getIssueById` / KB
         // ingestion never resolve a stale path after a relocation.
         upsert.push(createContentIndexEntry({
-            issueSyncConfig, type, id, filePath: targetPath, itemIndex, version: null, bucket: null, itemsPerChunk
+            issueSyncConfig, repoSlug, type, id, filePath: targetPath, itemIndex, version: null, bucket: null, itemsPerChunk
         }))
     }
 

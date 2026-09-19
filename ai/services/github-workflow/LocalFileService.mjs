@@ -51,7 +51,7 @@ class LocalFileService extends Base {
 
         try {
             const index = await readContentIndex(aiConfig.issueSync);
-            const entry = findContentIndexEntry(index, {type, id: normalizedId});
+            const entry = findContentIndexEntry(index, {repoSlug: aiConfig.repo, type, id: normalizedId});
 
             if (!entry) {
                 logger.warn(`[LocalFileService] ${label} index entry not found for #${normalizedId}`);

@@ -34,7 +34,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
     let originalArchiveRoot;
     let originalDiscussionsDir;
     let originalIssuesDir;
-    let originalContentRoot;
+    let originalContentRootOverride;
     let originalQuery;
     let originalSortedReleases;
     let originalDiscussionDenylist;
@@ -50,7 +50,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
         originalArchiveRoot    = aiConfig.issueSync.archiveRoot;
         originalDiscussionsDir = aiConfig.issueSync.discussionsDir;
         originalIssuesDir      = aiConfig.issueSync.issuesDir;
-        originalContentRoot    = aiConfig.issueSync.contentRoot;
+        originalContentRootOverride = aiConfig.issueSync.contentRootOverride;
         originalQuery          = GraphqlService.query.bind(GraphqlService);
         originalSortedReleases = ReleaseNotesSyncer.sortedReleases;
         originalDiscussionDenylist = aiConfig.issueSync.discussionDenylist;
@@ -61,10 +61,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
         tmpRoot = path.resolve(process.cwd(), 'tmp', `discussion-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
-        aiConfig.issueSync.archiveRoot    = path.join(tmpRoot, 'archive');
-        aiConfig.issueSync.discussionsDir = path.join(tmpRoot, 'discussions');
-        aiConfig.issueSync.issuesDir      = path.join(tmpRoot, 'issues');
-        aiConfig.issueSync.contentRoot    = tmpRoot;
+        aiConfig.issueSync.contentRootOverride = tmpRoot;
         ReleaseNotesSyncer.sortedReleases      = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
         aiConfig.issueSync.discussionDenylist  = {numbers: [], authors: []};
     });
@@ -72,10 +69,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
     test.afterEach(async () => {
         GraphqlService.query               = originalQuery;
         ReleaseNotesSyncer.sortedReleases       = originalSortedReleases;
-        aiConfig.issueSync.archiveRoot     = originalArchiveRoot;
-        aiConfig.issueSync.discussionsDir  = originalDiscussionsDir;
-        aiConfig.issueSync.issuesDir       = originalIssuesDir;
-        aiConfig.issueSync.contentRoot     = originalContentRoot;
+        aiConfig.issueSync.contentRootOverride = originalContentRootOverride;
         aiConfig.issueSync.discussionDenylist = originalDiscussionDenylist;
         aiConfig.issueSync.discussionOuterPageSize = originalDiscussionOuterPageSize;
 
@@ -101,13 +95,14 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
 
         expect(stats.synced).toEqual([24001]);
         await expect(fs.pathExists(targetPath)).resolves.toBe(true);
-        expect(metadata.discussions[24001].path).toBe(path.relative(aiConfig.projectRoot, targetPath));
+        expect(metadata.discussions[24001].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, targetPath));
         expect(index).toContainEqual({
+            repoSlug   : aiConfig.repo,
             type       : 'discussions',
             id         : 24001,
             version    : null,
             chunkNumber: 1,
-            path       : path.join('discussions', 'chunk-1', 'discussion-24001.md')
+            path       : path.join(aiConfig.repo, 'discussions', 'chunk-1', 'discussion-24001.md')
         });
 
         const content = await fs.readFile(targetPath, 'utf8');
@@ -601,18 +596,31 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
 
         expect(stats.synced).toEqual([24002]);
         await expect(fs.pathExists(targetPath)).resolves.toBe(true);
-        expect(metadata.discussions[24002].path).toBe(path.relative(aiConfig.projectRoot, targetPath));
+        expect(metadata.discussions[24002].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, targetPath));
         expect(index).toContainEqual({
+            repoSlug   : aiConfig.repo,
             type       : 'discussions',
             id         : 24002,
             version    : 'v13.0.0',
             chunkNumber: 1,
-            path       : path.join('archive', 'discussions', 'v13.0.0', 'chunk-1', 'discussion-24002.md')
+            path       : path.join(aiConfig.repo, 'archive', 'discussions', 'v13.0.0', 'chunk-1', 'discussion-24002.md')
         });
 
         const content = await fs.readFile(targetPath, 'utf8');
         expect(content).toMatch(/^closed: true$/m);
         expect(content).toMatch(/^closedAt: '2026-05-01T00:00:00Z'$/m);
+    });
+
+    test('propagates a root-index write failure instead of reporting a successful sync', async () => {
+        const discussion = buildDiscussion(24003, {closed: false});
+
+        GraphqlService.query = async () => ({
+            repository: {discussions: {nodes: [discussion], pageInfo: {hasNextPage: false, endCursor: null}}}
+        });
+        await fs.ensureDir(path.join(tmpRoot, '_index.json'));
+
+        await expect(DiscussionSyncer.syncDiscussions({discussions: {}})).rejects.toThrow();
+        await expect(fs.pathExists(path.join(aiConfig.issueSync.discussionsDir, 'chunk-1', 'discussion-24003.md'))).resolves.toBe(true);
     });
 
     test('syncDiscussions prunes emptied active chunk directories after archive moves (#13002)', async () => {
@@ -621,7 +629,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
             closedAt: '2026-05-01T00:00:00Z'
         });
         const oldPath = path.join(aiConfig.issueSync.discussionsDir, 'chunk-77', 'discussion-24006.md');
-        const oldRel  = path.relative(aiConfig.projectRoot, oldPath);
+        const oldRel  = path.relative(aiConfig.issueSync.metadataBaseRoot, oldPath);
 
         await fs.ensureDir(path.dirname(oldPath));
         await fs.writeFile(oldPath, 'OLD DISCUSSION CONTENT', 'utf8');
@@ -654,7 +662,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
         await expect(fs.pathExists(oldPath)).resolves.toBe(false);
         await expect(fs.pathExists(path.dirname(oldPath))).resolves.toBe(false);
         await expect(fs.pathExists(aiConfig.issueSync.discussionsDir)).resolves.toBe(true);
-        expect(metadata.discussions[24006].path).toBe(path.relative(aiConfig.projectRoot, targetPath));
+        expect(metadata.discussions[24006].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, targetPath));
     });
 
     test('delta cutoff stops discussion pagination once a batch predates the cached high-water mark (#12190)', async () => {
@@ -961,7 +969,7 @@ test.describe('Neo.ai.services.github-workflow.sync.DiscussionSyncer', () => {
 
         // Metadata refreshed with the live hash (no longer the stale one) + the resolved path.
         expect(metadata.discussions[discussionNumber].contentHash).not.toBe('STALE-HASH');
-        expect(metadata.discussions[discussionNumber].path).toBe(path.relative(aiConfig.projectRoot, targetPath));
+        expect(metadata.discussions[discussionNumber].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, targetPath));
 
         // This write OVERWRITES the row, so the high-water field has to be re-emitted or recovery
         // strips it. The delta cutoff is computed from `updatedAt` across cached entries: a repair pass

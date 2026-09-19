@@ -13,8 +13,8 @@ import path from 'path';
  *   1. `itemIndex` = zero-based ordinal within a collection bucket (active = ascending GitHub ID;
  *      archive = ascending GitHub ID within version-folder bucket; release-notes = ascending semver)
  *   2. `chunkNumber = Math.floor(itemIndex / itemsPerChunk) + 1` (1-based)
- *   3. Active tier path:  `{contentRoot}/{type}/chunk-{N}/{filename}`
- *   4. Archive tier path: `{contentRoot}/archive/{type}/{version|bucket}/chunk-{N}/{filename}`
+ *   3. Active tier path:  `{originRoot}/{type}/chunk-{N}/{filename}`
+ *   4. Archive tier path: `{originRoot}/archive/{type}/{version|bucket}/chunk-{N}/{filename}`
  *
  * No flat-vs-chunked branching. No ID-range math. No `<NNN>xx/` folders. ONE primitive applied
  * universally under a single path-resolution contract.
@@ -44,6 +44,7 @@ export const DEFAULT_VERSION_PREFIX  = 'v';
 
 /**
  * @typedef {Object} ContentIndexEntry
+ * @property {String} repoSlug Bare repository provenance (e.g. `'neo'`)
  * @property {'issues'|'pulls'|'discussions'|'release-notes'} type Content type segment
  * @property {Number|String} id GitHub ID for issues/pulls/discussions; semver string for release-notes
  * @property {String|null} version Release version `'v<X.Y.Z>'` for archive tier; `null` for active tier
@@ -70,16 +71,19 @@ export const DEFAULT_VERSION_PREFIX  = 'v';
  * @summary Resolves the on-disk path for a content item under the universal ordinal-100 rule.
  *
  * Active tier (omit both `version` and `bucket`):
- *   `{contentRoot}/{type}/{chunkPrefix}{N}/{filename}`
+ *   `{originRoot}/{type}/{chunkPrefix}{N}/{filename}`
  *
  * Archive tier (supply exactly one of `version` or `bucket`):
- *   `{contentRoot}/archive/{type}/{version|bucket}/{chunkPrefix}{N}/{filename}`
+ *   `{originRoot}/archive/{type}/{version|bucket}/{chunkPrefix}{N}/{filename}`
  *
  * The helper performs path math only — it does NOT inspect the filesystem, plan migrations, or
  * maintain the `_index.json` substrate. Callers own those concerns.
  *
  * @param {Object} config
  * @param {String} config.contentRoot Repository-relative or absolute root, e.g. `'resources/content'`
+ * @param {String} config.repoSlug Bare repository provenance, e.g. `'neo'`
+ * @param {String} [config.originRoot] Placement root. Defaults to `{contentRoot}/{repoSlug}`;
+ *     ordinary local sync explicitly uses `contentRoot` to retain its legacy directories.
  * @param {String} config.type Single-segment type identifier (e.g. `'issues'`, `'pulls'`, `'discussions'`, `'release-notes'`)
  * @param {String} [config.version] Release-bucket segment (e.g. `'v13.0.0'`). Mutually exclusive with `bucket`.
  * @param {String} [config.bucket] Non-release-bucket segment (e.g. `'rejected'`). Mutually exclusive with `version`.
@@ -92,20 +96,22 @@ export const DEFAULT_VERSION_PREFIX  = 'v';
  *
  * @example
  *   // Active tier — issue 1234 at ordinal index 42 (chunk 1)
- *   contentPath({contentRoot: 'resources/content', type: 'issues', filename: 'issue-1234.md', itemIndex: 42})
- *   // → 'resources/content/issues/chunk-1/issue-1234.md'
+ *   contentPath({contentRoot: 'resources/content', repoSlug: 'neo', type: 'issues', filename: 'issue-1234.md', itemIndex: 42})
+ *   // → 'resources/content/neo/issues/chunk-1/issue-1234.md'
  *
  * @example
  *   // Archive tier — pull 999 at ordinal index 250 in v12.1.0 (chunk 3)
  *   contentPath({
- *     contentRoot: 'resources/content', type: 'pulls', version: 'v12.1.0',
+ *     contentRoot: 'resources/content', repoSlug: 'neo', type: 'pulls', version: 'v12.1.0',
  *     filename: 'pr-999.md', itemIndex: 250
  *   })
- *   // → 'resources/content/archive/pulls/v12.1.0/chunk-3/pr-999.md'
+ *   // → 'resources/content/neo/archive/pulls/v12.1.0/chunk-3/pr-999.md'
  */
 export default function contentPath(config = {}) {
     const {
         contentRoot,
+        repoSlug,
+        originRoot = path.join(contentRoot || '', repoSlug || ''),
         type,
         version,
         bucket,
@@ -116,6 +122,8 @@ export default function contentPath(config = {}) {
     } = config;
 
     validateSegment(contentRoot, 'contentRoot', {allowPath: true});
+    validateSegment(repoSlug,    'repoSlug');
+    validateSegment(originRoot,  'originRoot', {allowPath: true});
     validateSegment(type,        'type');
     validateSegment(filename,    'filename');
     validateSegment(chunkPrefix, 'chunkPrefix');
@@ -133,8 +141,8 @@ export default function contentPath(config = {}) {
     const chunkDir    = `${chunkPrefix}${chunkNumber}`;
     const archiveTier = (version !== undefined && version !== null) || (bucket !== undefined && bucket !== null);
     const bucketDir   = archiveTier
-        ? path.join(contentRoot, 'archive', type, version || bucket)
-        : path.join(contentRoot, type);
+        ? path.join(originRoot, 'archive', type, version || bucket)
+        : path.join(originRoot, type);
 
     return path.join(bucketDir, chunkDir, filename);
 }
@@ -155,18 +163,11 @@ export default function contentPath(config = {}) {
  * Returns `null` for anything that is not a chunked content path, so callers can treat "not ours"
  * as data rather than as an exception.
  *
- * **`filePath` must be absolute or contentRoot-relative — NOT projectRoot-relative.** This subsystem
- * carries three path conventions, and two of them are bare relative strings distinguishable only by
- * a leading `resources/content/`:
- *
- *   - absolute                          — `/…/resources/content/pulls/chunk-1/pr-9537.md`
- *   - contentRoot-relative              — `pulls/chunk-1/pr-9537.md`            (`_index.json` entries)
- *   - projectRoot-relative              — `resources/content/pulls/chunk-1/pr-9537.md` (`metadata.{type}[].path`)
- *
- * Passing the third against a `contentRoot` of `resources/content` resolves to
- * `resources/content/resources/content/…` and parses as `null`. Nothing in the string itself reveals
- * which convention produced it, so the caller must know; resolve metadata paths against the project
- * root before handing them here.
+ * **`filePath` must be absolute or contentRoot-relative.** Index entries use paths such as
+ * `neo/pulls/chunk-1/pr-9537.md`. Metadata paths instead belong to `issueSync.metadataBaseRoot`:
+ * the ordinary checkout root, or the declared corpus root in corpus mode. Resolve metadata paths
+ * against that configured base before passing them here; otherwise ordinary checkout-relative
+ * paths duplicate the `resources/content/` prefix and parse as `null`.
  *
  * **Both segment vocabularies are configured, not universal.** `chunkPrefix` and `versionPrefix`
  * default to the values the shipped config happens to use (`chunk-` / `v`), which is exactly why a
@@ -177,6 +178,8 @@ export default function contentPath(config = {}) {
  *
  * @param {Object} config
  * @param {String} config.contentRoot Repository-relative or absolute root, e.g. `'resources/content'`
+ * @param {String} config.repoSlug Bare repository provenance expected in `filePath`
+ * @param {String} [config.originRoot] Placement root. Defaults to `{contentRoot}/{repoSlug}`.
  * @param {String} config.filePath Absolute or contentRoot-relative path to a content file
  * @param {String} [config.chunkPrefix='chunk-'] Chunk-subdirectory prefix; pass `archiveChunkPrefix`
  * @param {String} [config.versionPrefix='v'] Release-bucket prefix; pass `versionDirectoryPrefix`
@@ -184,33 +187,38 @@ export default function contentPath(config = {}) {
  *
  * @example
  *   // Absolute
- *   parseContentPath({contentRoot: '/repo/resources/content', filePath: '/repo/resources/content/archive/pulls/v13.0.0/chunk-2/pr-10124.md'})
+ *   parseContentPath({contentRoot: '/repo/resources/content', repoSlug: 'neo', filePath: '/repo/resources/content/neo/archive/pulls/v13.0.0/chunk-2/pr-10124.md'})
  *   // → {type: 'pulls', version: 'v13.0.0', bucket: null, chunkNumber: 2, filename: 'pr-10124.md'}
  *
  * @example
  *   // contentRoot-relative — the `_index.json` entry shape
- *   parseContentPath({contentRoot: 'resources/content', filePath: 'pulls/chunk-1/pr-9537.md'})
+ *   parseContentPath({contentRoot: 'resources/content', repoSlug: 'neo', filePath: 'neo/pulls/chunk-1/pr-9537.md'})
  *   // → {type: 'pulls', version: null, bucket: null, chunkNumber: 1, filename: 'pr-9537.md'}
  */
 export function parseContentPath(config = {}) {
     const {
         contentRoot,
+        repoSlug,
+        originRoot = path.join(contentRoot || '', repoSlug || ''),
         filePath,
         chunkPrefix   = DEFAULT_CHUNK_PREFIX,
         versionPrefix = DEFAULT_VERSION_PREFIX
     } = config;
 
     validateSegment(contentRoot, 'contentRoot', {allowPath: true});
+    validateSegment(repoSlug,    'repoSlug');
+    validateSegment(originRoot,  'originRoot', {allowPath: true});
     validateSegment(filePath,    'filePath',    {allowPath: true});
 
-    const relative = path.relative(path.resolve(contentRoot), path.resolve(contentRoot, filePath));
+    const absolutePath = path.resolve(contentRoot, filePath),
+          relative     = path.relative(path.resolve(originRoot), absolutePath);
 
     // Escapes the content root — not ours to describe.
     if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
 
     const segments = relative.split(path.sep).filter(Boolean);
 
-    // Active: {type}/{chunk-N}/{filename}          → 3 segments
+    // Active: {type}/{chunk-N}/{filename}                 → 3 segments
     // Archive: archive/{type}/{version}/{chunk-N}/{filename} → 5 segments
     const archiveTier = segments[0] === 'archive';
     const expected    = archiveTier ? 5 : 3;
@@ -259,10 +267,14 @@ export function parseContentPath(config = {}) {
  * @returns {{chunkPrefix: String, versionPrefix: String}}
  */
 export function pathSegmentOptionsFor(issueSyncConfig = {}) {
-    return {
+    const options = {
         chunkPrefix  : issueSyncConfig.archiveChunkPrefix     || DEFAULT_CHUNK_PREFIX,
         versionPrefix: issueSyncConfig.versionDirectoryPrefix || DEFAULT_VERSION_PREFIX
     };
+
+    if (issueSyncConfig.originRoot) options.originRoot = issueSyncConfig.originRoot;
+
+    return options;
 }
 
 /**
@@ -274,15 +286,25 @@ export function pathSegmentOptionsFor(issueSyncConfig = {}) {
  *
  * @param {Object} config
  * @param {String} config.contentRoot Repository-relative or absolute root
+ * @param {String} config.repoSlug Bare repository provenance
  * @param {String} config.type Single-segment type identifier
  * @param {String} [config.version] Release-bucket segment; mutually exclusive with `bucket`
  * @param {String} [config.bucket] Non-release-bucket segment; mutually exclusive with `version`
  * @returns {String}
  */
 export function contentBucketDir(config = {}) {
-    const {contentRoot, type, version, bucket} = config;
+    const {
+        contentRoot,
+        repoSlug,
+        originRoot = path.join(contentRoot || '', repoSlug || ''),
+        type,
+        version,
+        bucket
+    } = config;
 
     validateSegment(contentRoot, 'contentRoot', {allowPath: true});
+    validateSegment(repoSlug,    'repoSlug');
+    validateSegment(originRoot,  'originRoot', {allowPath: true});
     validateSegment(type,        'type');
     validateBucketXor({version, bucket});
 
@@ -293,8 +315,8 @@ export function contentBucketDir(config = {}) {
 
     const archiveTier = (version !== undefined && version !== null) || (bucket !== undefined && bucket !== null);
     return archiveTier
-        ? path.join(contentRoot, 'archive', type, version || bucket)
-        : path.join(contentRoot, type);
+        ? path.join(originRoot, 'archive', type, version || bucket)
+        : path.join(originRoot, type);
 }
 
 /**

@@ -25,20 +25,20 @@ test.describe('Neo.ai.services.github-workflow.sync.MetadataManager', () => {
 
     let MetadataManager;
     let aiConfig;
-    let originalMetadataFile;
+    let originalMetadataFileOverride;
     let testMetadataFile;
 
     test.beforeAll(async () => {
         aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
-        originalMetadataFile = aiConfig.issueSync.metadataFile;
+        originalMetadataFileOverride = aiConfig.issueSync.metadataFileOverride;
         testMetadataFile = path.join(os.tmpdir(), `neo-metadata-manager-test-${Date.now()}.json`);
-        aiConfig.issueSync.metadataFile = testMetadataFile;
+        aiConfig.issueSync.metadataFileOverride = testMetadataFile;
 
         MetadataManager = (await import('../../../../../../ai/services/github-workflow/sync/MetadataManager.mjs')).default;
     });
 
     test.afterAll(async () => {
-        aiConfig.issueSync.metadataFile = originalMetadataFile;
+        aiConfig.issueSync.metadataFileOverride = originalMetadataFileOverride;
         try {
             await fs.unlink(testMetadataFile);
         } catch (e) {

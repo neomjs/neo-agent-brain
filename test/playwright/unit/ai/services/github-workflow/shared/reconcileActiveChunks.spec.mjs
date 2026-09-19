@@ -13,6 +13,7 @@ import reconcileActiveChunks from '../../../../../../../ai/services/github-workf
  */
 test.describe('Neo.ai.services.github-workflow.shared.reconcileActiveChunks', () => {
     let tmpDir, contentRoot;
+    const repoSlug = 'neo';
 
     test.beforeEach(async () => {
         tmpDir      = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-rechunk-'));
@@ -25,18 +26,24 @@ test.describe('Neo.ai.services.github-workflow.shared.reconcileActiveChunks', ()
     });
 
     const writePr = async (chunk, id) => {
-        const dir = path.join(contentRoot, 'pulls', `chunk-${chunk}`);
+        const dir = path.join(contentRoot, repoSlug, 'pulls', `chunk-${chunk}`);
         await fs.mkdir(dir, {recursive: true});
         await fs.writeFile(path.join(dir, `pr-${id}.md`), `# pr ${id}\n`, 'utf8')
     };
 
     const idsInChunk = async chunk => {
         try {
-            return (await fs.readdir(path.join(contentRoot, 'pulls', `chunk-${chunk}`)))
+            return (await fs.readdir(path.join(contentRoot, repoSlug, 'pulls', `chunk-${chunk}`)))
                 .map(f => parseInt(f.match(/(\d+)/)[1], 10)).sort((a, b) => a - b)
         } catch {
             return []
         }
+    };
+
+    const writeOrdinaryPr = async (chunk, id) => {
+        const dir = path.join(contentRoot, 'pulls', `chunk-${chunk}`);
+        await fs.mkdir(dir, {recursive: true});
+        await fs.writeFile(path.join(dir, `pr-${id}.md`), `# pr ${id}\n`, 'utf8')
     };
 
     test('re-ranks a drifted active tier into ascending-id ordinal chunks, idempotently', async () => {
@@ -45,7 +52,7 @@ test.describe('Neo.ai.services.github-workflow.shared.reconcileActiveChunks', ()
         await writePr(1, 40); await writePr(5, 30); await writePr(9, 60);
 
         const config = {contentRoot};
-        const first  = await reconcileActiveChunks(config, {type: 'pulls', filePrefix: 'pr-', itemsPerChunk: 3});
+        const first  = await reconcileActiveChunks(config, {repoSlug, type: 'pulls', filePrefix: 'pr-', itemsPerChunk: 3});
 
         expect(first.total).toBe(7);
         expect(first.moved).toBeGreaterThan(0);
@@ -60,13 +67,13 @@ test.describe('Neo.ai.services.github-workflow.shared.reconcileActiveChunks', ()
 
         // _index.json deep-link entries realign to the new chunk numbers.
         const index = JSON.parse(await fs.readFile(path.join(contentRoot, '_index.json'), 'utf8'));
-        const entry = id => index.find(e => e.type === 'pulls' && String(e.id) === String(id));
+        const entry = id => index.find(e => e.repoSlug === repoSlug && e.type === 'pulls' && String(e.id) === String(id));
         expect(entry(10).chunkNumber).toBe(1);
         expect(entry(40).chunkNumber).toBe(2);
         expect(entry(70).chunkNumber).toBe(3);
 
         // Idempotent: a second run relocates nothing.
-        const second = await reconcileActiveChunks(config, {type: 'pulls', filePrefix: 'pr-', itemsPerChunk: 3});
+        const second = await reconcileActiveChunks(config, {repoSlug, type: 'pulls', filePrefix: 'pr-', itemsPerChunk: 3});
         expect(second.moved).toBe(0);
         expect(await idsInChunk(1)).toEqual([10, 20, 30])
     });
@@ -76,7 +83,7 @@ test.describe('Neo.ai.services.github-workflow.shared.reconcileActiveChunks', ()
         await writePr(5, 30); // duplicate of pr-30 in another chunk — the drift shape this fixes
         await writePr(9, 40);
 
-        const result = await reconcileActiveChunks({contentRoot}, {type: 'pulls', filePrefix: 'pr-', itemsPerChunk: 3});
+        const result = await reconcileActiveChunks({contentRoot}, {repoSlug, type: 'pulls', filePrefix: 'pr-', itemsPerChunk: 3});
 
         expect(result.deduped).toBe(1);
         expect(result.total).toBe(4); // 4 unique ids, NOT 5 — the duplicate must not consume an ordinal slot.
@@ -86,7 +93,27 @@ test.describe('Neo.ai.services.github-workflow.shared.reconcileActiveChunks', ()
         expect(await idsInChunk(2)).toEqual([40]);
 
         // Exactly one pr-30 survives across the whole tier.
-        const survivors = (await fs.readdir(path.join(contentRoot, 'pulls'), {recursive: true})).filter(f => /pr-30\.md$/.test(f));
+        const survivors = (await fs.readdir(path.join(contentRoot, repoSlug, 'pulls'), {recursive: true})).filter(f => /pr-30\.md$/.test(f));
         expect(survivors).toHaveLength(1)
+    })
+
+    test('re-chunks an explicit ordinary origin root without dropping the row provenance', async () => {
+        await writeOrdinaryPr(5, 20);
+        await writeOrdinaryPr(9, 10);
+
+        await reconcileActiveChunks(
+            {contentRoot, originRoot: contentRoot},
+            {repoSlug, type: 'pulls', filePrefix: 'pr-', itemsPerChunk: 3}
+        );
+
+        await expect(fs.readFile(path.join(contentRoot, 'pulls', 'chunk-1', 'pr-10.md'), 'utf8')).resolves.toBe('# pr 10\n');
+        const index = JSON.parse(await fs.readFile(path.join(contentRoot, '_index.json'), 'utf8'));
+
+        expect(index).toContainEqual(expect.objectContaining({
+            repoSlug,
+            type: 'pulls',
+            id  : 10,
+            path: path.join('pulls', 'chunk-1', 'pr-10.md')
+        }));
     })
 });

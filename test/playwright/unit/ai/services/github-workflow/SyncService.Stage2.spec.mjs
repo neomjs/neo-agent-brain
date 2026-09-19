@@ -251,6 +251,40 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         })
     });
 
+    test('conversation corpus emits only the three conversation facets after release bucketing', async () => {
+        let releaseNoteCalls = 0,
+            pushCalls        = 0,
+            deriveCalls      = 0;
+
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
+        ReleaseNotesSyncer.syncNotes = async () => { releaseNoteCalls++ };
+        IssueSyncer.pushToGitHub = async () => { pushCalls++ };
+        SyncService.rebuildContentIndexesAndSeo = async () => { deriveCalls++ };
+
+        const result = await SyncService.emitConversationCorpus();
+
+        expect(result.facetOutcomes.map(({name}) => name)).toEqual(['releases', 'issues', 'discussions', 'pulls']);
+        expect(releaseNoteCalls).toBe(0);
+        expect(pushCalls).toBe(0);
+        expect(deriveCalls).toBe(0);
+    });
+
+    test('conversation corpus retains successful facet progress and rejects its failed facet', async () => {
+        const saved = [];
+
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
+        MetadataManager.save = async metadata => saved.push(structuredClone(metadata));
+        DiscussionSyncer.syncDiscussions = async metadata => {
+            metadata.discussions[1] = {number: 1, contentHash: 'partial'};
+            throw new Error('discussion index write failed');
+        };
+
+        await expect(SyncService.emitConversationCorpus()).rejects.toThrow(/discussions \(discussion index write failed\)/);
+
+        expect(saved.some(metadata => metadata.releasesLastFetched)).toBe(true);
+        expect(saved.every(metadata => !metadata.discussions[1])).toBe(true);
+    });
+
     test('runFullSync never invokes Native Graph projection — the container-plane owner is exclusive (#17627)', async () => {
         const result = await SyncService.runFullSync();
 

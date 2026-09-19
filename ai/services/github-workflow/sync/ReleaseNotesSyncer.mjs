@@ -189,6 +189,8 @@ class ReleaseNotesSyncer extends Base {
         const baseDir    = issueSyncConfig.contentRoot;
         const releaseDir = contentBucketDir({
             contentRoot: baseDir,
+            repoSlug   : aiConfig.repo,
+            originRoot : issueSyncConfig.originRoot,
             type       : 'release-notes'
         });
 
@@ -229,6 +231,8 @@ class ReleaseNotesSyncer extends Base {
 
                 const filePath = contentPath({
                     contentRoot: baseDir,
+                    repoSlug   : aiConfig.repo,
+                    originRoot : issueSyncConfig.originRoot,
                     type       : 'release-notes',
                     filename   : `${filename}.md`,
                     itemIndex
