@@ -91,6 +91,32 @@ test.describe('Neo.ai.services.neural-link.RecorderService', () => {
         expect(refuseTransaction({...transaction, ops: [{workspaceKey: 'popup'}]})).toBe('missing-origin-writer')
     });
 
+    test('non-human dock snapshots retain the origin-writer requirement', async () => {
+        const {refuseTransaction, saveNlTransaction} =
+            await import('../../../../../../ai/services/memory-core/helpers/nlTransactionArchiveStore.mjs');
+        const originWriter = {agentId: 'agent-a', sessionId: 'session-a'},
+              humanOp = {workspaceKey: 'popup', before: {x: 1}, after: {x: 2}, provenance: {origin: 'human'}};
+
+        for (const origin of ['observed-geometry', 'main', 'agent', 'future-origin', undefined]) {
+            const op = {...humanOp, provenance: {origin}};
+
+            for (const ops of [[op], [humanOp, op]]) {
+                const transaction = {domain: 'dock', status: 'committed', ops};
+
+                expect(refuseTransaction(transaction), String(origin)).toBe('missing-origin-writer');
+                expect(saveNlTransaction({transaction}), String(origin)).toEqual({
+                    saved: false, reason: 'missing-origin-writer'
+                });
+                expect(refuseTransaction({...transaction, originWriter})).toBeNull();
+                expect(refuseTransaction({...transaction, originWriter: {agentId: 'agent-a'}}))
+                    .toBe('missing-origin-writer');
+            }
+
+            expect(refuseTransaction({domain: 'dock', status: 'committed', ops: [{...op, originWriter}]}))
+                .toBeNull();
+        }
+    });
+
     test('a logged tool invocation admits the DECIDED record set, and drops everything else', async () => {
         stubTransport({admit_nl_actions: {admitted: 1, refused: 0}});
 
