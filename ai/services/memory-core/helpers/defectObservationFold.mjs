@@ -67,34 +67,30 @@ function hasDefectNoteTag(taggedConcepts) {
 }
 
 /**
- * @summary Finds the first structural defect delimiter outside quoted literals.
+ * @summary Finds a structural delimiter outside complete quoted spans; unmatched quotes remain literal.
  * @param {String} body Prefix-free defect-note text.
  * @returns {{index: Number, length: Number}|null} Delimiter coordinates, if parseable.
  */
 function findDefectNoteDelimiter(body) {
-    let quote = null,
-        escaped = false;
-
     for (let index = 0; index < body.length; index++) {
-        const character = body[index];
-
-        if (quote) {
-            if (escaped) {
-                escaped = false;
-            } else if (character === '\\') {
-                escaped = true;
-            } else if (character === quote) {
-                quote = null;
-            }
-            continue;
-        }
-
-        const previous = body[index - 1],
-              apostropheStartsQuote = character === "'" && (!previous || !/[\p{L}\p{N}_]/u.test(previous));
+        const character = body[index],
+              previous = body[index - 1],
+              apostropheStartsQuote = character === "'" && (!previous || !/[\p{L}\p{N}_`"\])}]/u.test(previous));
 
         if (character === '"' || character === '`' || apostropheStartsQuote) {
-            quote = character;
-            continue;
+            let end = index + 1,
+                escaped = false;
+
+            for (; end < body.length; end++) {
+                if (escaped) escaped = false;
+                else if (body[end] === '\\') escaped = true;
+                else if (body[end] === character) break;
+            }
+
+            if (end < body.length) {
+                index = end;
+                continue;
+            }
         }
 
         if (/\s/.test(character)) {
