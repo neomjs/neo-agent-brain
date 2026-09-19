@@ -18,6 +18,7 @@ import {createHash} from 'node:crypto';
  * The note format (ticket-create's defect-channel exemption):
  *
  *     defect-note: <surface> broke <observed symptom>
+ *     defect-note: <surface> is wrong <observed symptom>
  *     defect-note: [recovered] <surface> broke <observed symptom>   ← same fingerprint, recovery arm
  *
  * The `[recovered]` marker flips the observation to `recovered`; a later plain note re-opens it
@@ -40,6 +41,71 @@ import {createHash} from 'node:crypto';
 const ID_NOUN_DIGIT_PATTERN = /\b(repo|id|pid|port|issue|pr|ticket|message|session|run|job|worker|shard|row|line|epoch)(s?\s*[:#-]?\s*)\d+/gi;
 const LONG_HEX_PATTERN      = /[0-9a-f]{8,}/gi;
 const LONG_DIGIT_PATTERN    = /\d{6,}/g;
+const DEFECT_NOTE_SUBJECT_PATTERN = /^\s*defect-note:\s*/i;
+const DEFECT_NOTE_MENTION_PATTERN = /^\s*defect-note\b|\bdefect-note\s*(?=:|[×x]\s*\d|\[)|\[\s*defect-note\b/i;
+
+/**
+ * @summary Whether a subject is a canonical defect-note capture subject.
+ * @param {*} subject Message subject to classify.
+ * @returns {Boolean} True only for the anchored `defect-note:` form.
+ */
+export function isDefectNoteSubject(subject) {
+    return DEFECT_NOTE_SUBJECT_PATTERN.test(String(subject ?? ''));
+}
+
+/**
+ * @summary Detects an explicit defect-note concept tag.
+ * @param {*} taggedConcepts Candidate concept tags.
+ * @returns {Boolean} Whether a canonical defect-note tag is present.
+ */
+function hasDefectNoteTag(taggedConcepts) {
+    return Array.isArray(taggedConcepts) && taggedConcepts.some(tag => {
+        const concept = String(tag ?? '').trim().replace(/^concept:/i, '');
+
+        return concept.toLowerCase() === 'defect-note';
+    });
+}
+
+/**
+ * @summary Finds the first structural defect delimiter outside quoted literals.
+ * @param {String} body Prefix-free defect-note text.
+ * @returns {{index: Number, length: Number}|null} Delimiter coordinates, if parseable.
+ */
+function findDefectNoteDelimiter(body) {
+    let quote = null,
+        escaped = false;
+
+    for (let index = 0; index < body.length; index++) {
+        const character = body[index];
+
+        if (quote) {
+            if (escaped) {
+                escaped = false;
+            } else if (character === '\\') {
+                escaped = true;
+            } else if (character === quote) {
+                quote = null;
+            }
+            continue;
+        }
+
+        const previous = body[index - 1],
+              apostropheStartsQuote = character === "'" && (!previous || !/[\p{L}\p{N}_]/u.test(previous));
+
+        if (character === '"' || character === '`' || apostropheStartsQuote) {
+            quote = character;
+            continue;
+        }
+
+        if (/\s/.test(character)) {
+            const match = body.slice(index).match(/^\s+(?:broke|is\s+wrong)\s+/i);
+
+            if (match) return {index, length: match[0].length};
+        }
+    }
+
+    return null;
+}
 
 /**
  * @summary The deterministic observation identity for one defect-note line.
@@ -53,7 +119,7 @@ const LONG_DIGIT_PATTERN    = /\d{6,}/g;
  */
 export function defectNoteFingerprint(line) {
     const normalized = String(line ?? '')
-        .replace(/^\s*defect-note:\s*/i, '')
+        .replace(DEFECT_NOTE_SUBJECT_PATTERN, '')
         .replace(/^\s*\[recovered\]\s*/i, '')
         .toLowerCase()
         .replace(ID_NOUN_DIGIT_PATTERN, '$1$2#')
@@ -66,33 +132,98 @@ export function defectNoteFingerprint(line) {
 }
 
 /**
- * @summary Parses one note line into its surface/symptom arms.
+ * @summary Parses one note line into its surface/symptom arms, ignoring quoted delimiter literals.
  * @param {String} line
  * @returns {{surface: String, symptom: String, recovered: Boolean, parseable: Boolean}}
  */
 export function parseDefectNote(line) {
-    const text       = String(line ?? '').replace(/^\s*defect-note:\s*/i, '').trim(),
+    const text       = String(line ?? '').replace(DEFECT_NOTE_SUBJECT_PATTERN, '').trim(),
           recovered  = /^\[recovered\]\s*/i.test(text),
           body       = text.replace(/^\[recovered\]\s*/i, ''),
-          brokeIndex = body.indexOf(' broke ');
+          delimiter  = findDefectNoteDelimiter(body);
 
-    if (brokeIndex === -1) {
+    if (!delimiter) {
+        return {parseable: false, recovered, surface: body, symptom: ''};
+    }
+
+    const surface = body.slice(0, delimiter.index).trim(),
+          symptom = body.slice(delimiter.index + delimiter.length).trim();
+
+    if (!surface || !symptom) {
         return {parseable: false, recovered, surface: body, symptom: ''};
     }
 
     return {
         parseable: true,
         recovered,
-        surface  : body.slice(0, brokeIndex).trim(),
-        symptom  : body.slice(brokeIndex + 7).trim()
+        surface,
+        symptom
     };
+}
+
+/**
+ * @summary Classifies a proposed defect-note capture without reading its body or mutating its identity.
+ * @param {Object} args Subject-only mailbox write properties.
+ * @returns {Object|undefined} Admission metadata for defect-note candidates, otherwise undefined.
+ */
+export function inspectDefectNoteCapture({subject, to, taggedConcepts = []} = {}) {
+    const text      = String(subject ?? ''),
+          candidate = DEFECT_NOTE_MENTION_PATTERN.test(text) || hasDefectNoteTag(taggedConcepts);
+
+    if (!candidate) return undefined;
+
+    if (!isDefectNoteSubject(text)) {
+        return {
+            admitted: false,
+            reason  : /defect-note\s*[×x]\s*\d+/i.test(text)
+                ? 'Body-only batches are not captured; send one defect-note subject per observation.'
+                : 'Use `defect-note:` as the complete subject prefix, with one observation in the subject.'
+        };
+    }
+
+    if (to !== 'AGENT:*') {
+        return {admitted: false, reason: 'Send defect notes to `AGENT:*`.'};
+    }
+
+    const parsed = parseDefectNote(text);
+
+    return {
+        admitted   : true,
+        parseable  : parsed.parseable,
+        fingerprint: defectNoteFingerprint(text),
+        ...(parsed.parseable ? {} : {reason: 'No unambiguous surface/symptom split; raw note retained.'})
+    };
+}
+
+/**
+ * @summary Counts capture and parsing outcomes over a supplied message window.
+ * @param {Object[]} rows Message rows; an omitted recipient denotes a broadcast-summary input.
+ * @returns {Object} Row, candidate, admitted, dropped, parseable and raw counts.
+ */
+export function censusDefectNoteCaptures(rows) {
+    const result = {rows: 0, candidates: 0, admitted: 0, dropped: 0, parseable: 0, raw: 0};
+
+    for (const row of rows) {
+        result.rows++;
+        const capture = inspectDefectNoteCapture({subject: row?.subject, taggedConcepts: row?.taggedConcepts, to: row?.to ?? 'AGENT:*'});
+        if (!capture) continue;
+
+        result.candidates++;
+        if (!capture.admitted) result.dropped++;
+        else {
+            result.admitted++;
+            result[capture.parseable ? 'parseable' : 'raw']++;
+        }
+    }
+
+    return result;
 }
 
 /**
  * @summary Folds `defect-note:` rows into one standing observation record per fingerprint.
  *
  * Input rows need only `{subject, from, sentAt}` — the note text IS the subject, deliberately:
- * both production callers filter on `subject.startsWith('defect-note:')`, and `listMessages`
+ * production callers use the shared anchored subject predicate, and `listMessages`
  * returns a summary projection that carries no `body` at all. Reading `body` would couple the
  * fold to a field no caller produces — and if the projection ever grew one, every standing
  * fingerprint would silently re-identify. Pure: no I/O, no clock — `now` is passed in so aging

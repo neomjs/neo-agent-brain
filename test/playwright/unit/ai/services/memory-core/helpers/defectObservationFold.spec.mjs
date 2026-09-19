@@ -1,11 +1,17 @@
 import {test, expect} from '@playwright/test';
+import {readFileSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {
+    censusDefectNoteCaptures,
     defectNoteFingerprint,
     foldDefectObservations,
+    inspectDefectNoteCapture,
+    isDefectNoteSubject,
     parseDefectNote
 } from '../../../../../../../ai/services/memory-core/helpers/defectObservationFold.mjs';
 
-// Pure module — no Neo runtime, no fs, no clock (the fold takes `now` as a parameter).
+// The production helper is pure; fixture reads and CLI subprocesses stay local.
 
 const NOTE = 'defect-note: query_summaries broke returns zero-content rows for populated sessions';
 
@@ -31,12 +37,31 @@ test.describe('defectObservationFold — the defect-channel read model', () => {
         expect(c).not.toBe(a); // a different symptom is a different observation
     });
 
-    test('parseDefectNote: the " broke " split is the structure; unparseable notes stay foldable', () => {
+    test('parseDefectNote: quoted delimiters stay literal, while broke and is wrong split the note', () => {
         expect(parseDefectNote(NOTE)).toEqual({
             parseable: true,
             recovered: false,
             surface  : 'query_summaries',
             symptom  : 'returns zero-content rows for populated sessions'
+        });
+        expect(parseDefectNote('defect-note: parser is wrong emits malformed envelopes')).toMatchObject({
+            parseable: true,
+            surface  : 'parser',
+            symptom  : 'emits malformed envelopes'
+        });
+        expect(parseDefectNote("defect-note: `parseDefectNote` splits on the literal ' broke ', so notes fail")).toMatchObject({
+            parseable: false,
+            surface  : "`parseDefectNote` splits on the literal ' broke ', so notes fail"
+        });
+        expect(parseDefectNote("defect-note: 'query_summaries broke helper' broke returns empty rows")).toMatchObject({
+            parseable: true,
+            surface  : "'query_summaries broke helper'",
+            symptom  : 'returns empty rows'
+        });
+        expect(parseDefectNote("defect-note: parser's output broke returns empty rows")).toMatchObject({
+            parseable: true,
+            surface  : "parser's output",
+            symptom  : 'returns empty rows'
         });
         expect(parseDefectNote('defect-note: [recovered] kb broke embed stall').recovered).toBe(true);
 
@@ -44,6 +69,75 @@ test.describe('defectObservationFold — the defect-channel read model', () => {
 
         expect(malformed.parseable).toBe(false);
         expect(malformed.surface).toBe('something vague happened');
+        expect(parseDefectNote('defect-note:  broke symptom').parseable).toBe(false);
+        expect(parseDefectNote('defect-note: surface broke ').parseable).toBe(false);
+    });
+
+    test('inspectDefectNoteCapture admits only canonical broadcast captures and preserves raw notes', () => {
+        const subject = '  DeFeCt-NoTe: query_summaries broke returns zero-content rows';
+
+        expect(isDefectNoteSubject(subject)).toBe(true);
+        expect(isDefectNoteSubject('[defect-note] query_summaries broke rows')).toBe(false);
+        expect(inspectDefectNoteCapture({subject, to: 'AGENT:*'})).toEqual({
+            admitted   : true,
+            parseable  : true,
+            fingerprint: defectNoteFingerprint(subject)
+        });
+        expect(inspectDefectNoteCapture({
+            subject       : 'defect-note: something vague happened',
+            to            : 'AGENT:*',
+            taggedConcepts: ['defect-note']
+        })).toEqual({
+            admitted   : true,
+            parseable  : false,
+            fingerprint: defectNoteFingerprint('defect-note: something vague happened'),
+            reason     : 'No unambiguous surface/symptom split; raw note retained.'
+        });
+        expect(inspectDefectNoteCapture({
+            subject       : '[lane-claim] defect-note: query broke rows',
+            to            : 'AGENT:*',
+            taggedConcepts: ['defect-note']
+        })).toMatchObject({admitted: false, reason: expect.stringMatching(/complete subject prefix/i)});
+        const quotedPrefix = 'defect-note: parser broke reports `defect-note:` literally';
+
+        expect(isDefectNoteSubject(quotedPrefix)).toBe(true);
+        expect(inspectDefectNoteCapture({subject: quotedPrefix, to: 'AGENT:*'})).toEqual({
+            admitted   : true,
+            parseable  : true,
+            fingerprint: defectNoteFingerprint(quotedPrefix)
+        });
+        expect(inspectDefectNoteCapture({subject: 'defect-note: query broke rows', to: '@neo-gpt-emmy'}))
+            .toMatchObject({admitted: false, reason: expect.stringMatching(/AGENT:\*/)});
+        expect(inspectDefectNoteCapture({subject: 'ordinary project update', to: 'AGENT:*'})).toBeUndefined();
+    });
+
+    test('the historical nine-note cohort retains six observations and no quoted-separator false positive', () => {
+        const {messages} = JSON.parse(readFileSync(new URL('./defect-note-census.json', import.meta.url), 'utf8'));
+        expect(censusDefectNoteCaptures(messages)).toEqual({rows: 9, candidates: 9, admitted: 6, dropped: 3, parseable: 0, raw: 6});
+        expect(inspectDefectNoteCapture({subject: 'Review: the defect-note channel needs a fix', to: 'AGENT:*'})).toBeUndefined();
+        expect(inspectDefectNoteCapture({subject: 'defect-note ×3: notes in body', to: 'AGENT:*'}))
+            .toMatchObject({admitted: false, reason: expect.stringMatching(/batches.*one defect-note subject/i)});
+
+        const row = {subject: 'defect-note: the grid is wrong after resize'};
+        Object.defineProperty(row, 'body', {enumerable: true, get() { throw new Error('body must not be read'); }});
+        expect(censusDefectNoteCaptures([row])).toMatchObject({admitted: 1, parseable: 1});
+        expect(censusDefectNoteCaptures([{subject: row.subject, to: '@someone'}])).toMatchObject({admitted: 0, dropped: 1});
+    });
+
+    test('the census CLI replays a file without a plane and refuses digest or missing-file arguments', () => {
+        const script = fileURLToPath(new URL('../../../../../../../ai/scripts/diagnostics/defectObservations.mjs', import.meta.url)),
+              fixture = fileURLToPath(new URL('./defect-note-census.json', import.meta.url)),
+              run = args => spawnSync(process.execPath, [script, ...args], {encoding: 'utf8', timeout: 10000});
+        const census = run(['--census', '--input-file', fixture]);
+
+        expect(census.status, census.stderr).toBe(0);
+        expect(JSON.parse(census.stdout)).toEqual({rows: 9, candidates: 9, admitted: 6, dropped: 3, parseable: 0, raw: 6});
+        const digest = run(['--digest', '--census', '--input-file', fixture]);
+        expect(digest.status).toBe(1);
+        expect(digest.stderr).toContain('read-only and cannot send a digest');
+        const missing = run(['--census', '--input-file']);
+        expect(missing.status).toBe(1);
+        expect(missing.stderr).toContain('requires a JSON file path');
     });
 
     test('the fold aggregates one record per fingerprint with count, reporters, and sighting bounds', () => {

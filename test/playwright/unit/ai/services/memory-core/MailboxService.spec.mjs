@@ -14,6 +14,8 @@ setup({
 });
 
 import {test, expect} from '@playwright/test';
+import {AjvJsonSchemaValidator} from '@modelcontextprotocol/sdk/validation/ajv-provider.js';
+import * as yaml      from 'js-yaml';
 import fs             from 'fs-extra';
 import fsPromises     from 'fs/promises';
 import path           from 'path';
@@ -21,6 +23,8 @@ import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 import                            'neo.mjs/src/manager/Instance.mjs';
 import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import BaseServer from '../../../../../../ai/mcp/server/BaseServer.mjs';
+import {buildOutputZodSchema, toOpenApiJsonSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 // Static import is safe: a pure classifier with no imports of its own, so it pulls in no Neo graph.
 import {collisionPreventionTag} from '../../../../../../ai/services/shared/a2aCollisionTags.mjs';
 
@@ -358,6 +362,65 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
             MailboxService._projectMessageWalRecord = originalProject;
         }
     });
+
+    for (const deferred of [false, true]) {
+        test(`defect-note capture feedback accompanies the durable receipt (deferred=${deferred})`, async () => {
+            const originalSchedule = MailboxService._scheduleMessageGraphProjection,
+                  subjects = [
+                      '  DeFeCt-NoTe: Grid is wrong after resize',
+                      'defect-note: Grid clips its last glyph',
+                      'FYI: defect-note: Grid broke layout',
+                      'defect-note ×2: observations are in the body',
+                      'ordinary progress update'
+                  ];
+
+            if (deferred) MailboxService._scheduleMessageGraphProjection = () => {};
+
+            try {
+                const receipts = await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+                    const result = [];
+
+                    for (const subject of subjects) {
+                        const message = {to: 'AGENT:*', subject, body: 'The message body is retained verbatim.'};
+                        result.push(await (deferred
+                            ? callMemoryCoreTool('add_message', message)
+                            : MailboxService.addMessage(message)));
+                    }
+
+                    return result
+                });
+
+                expect(receipts[0].defectNote).toMatchObject({admitted: true, parseable: true});
+                expect(receipts[0].defectNote.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+                expect(receipts[1].defectNote).toMatchObject({admitted: true, parseable: false});
+                expect(receipts[1].defectNote.reason).toBeTruthy();
+                expect(receipts[2].defectNote).toMatchObject({admitted: false});
+                expect(receipts[3].defectNote).toMatchObject({admitted: false});
+                expect(receipts[4]).not.toHaveProperty('defectNote');
+                expect(receipts.every(receipt => receipt.status === 'sent')).toBe(true);
+
+                if (deferred) {
+                    const document = yaml.load(fs.readFileSync(new URL('../../../../../../ai/mcp/server/memory-core/openapi.yaml', import.meta.url), 'utf8')),
+                          schema = toOpenApiJsonSchema(buildOutputZodSchema(document, document.paths['/mailbox/messages'].post)),
+                          validate = new AjvJsonSchemaValidator().getValidator(schema);
+
+                    for (const receipt of receipts) {
+                        const content = BaseServer.prototype.formatToolResult.call({}, receipt).structuredContent;
+                        expect(content).toEqual(receipt);
+                        expect(validate(content).valid).toBe(true);
+                    }
+                    expect(validate({...receipts[0], defectNote: {admitted: 'yes'}}).valid).toBe(false);
+                }
+
+                const records = await readWalMessages({dir: messageWalDir});
+                expect(records.map(record => record.message.properties.subject)).toEqual(subjects);
+                expect(records.every(record => record.message.properties.bodyText === 'The message body is retained verbatim.')).toBe(true);
+                if (deferred) expect(receipts.every(receipt => receipt.projectionStatus === 'pending')).toBe(true);
+            } finally {
+                MailboxService._scheduleMessageGraphProjection = originalSchedule;
+            }
+        });
+    }
 
     test('#16086: inspectReadState reads the owner SQLite without normal mailbox reads, repair, or mutation', async () => {
         const messageId = 'MESSAGE:inspect-read-state-direct';
