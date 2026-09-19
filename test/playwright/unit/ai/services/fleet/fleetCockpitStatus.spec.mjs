@@ -175,6 +175,20 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows[0].lifecycle).toMatchObject({state: 'stopped', confidence: 'observed'})
     })
 
+    test('an inferred stop — a fleet-launched seat with no record — stamps lifecycle and runtime source as one pair', () => {
+        const snapshot = createFleetCockpitStatus({
+            agents       : [{id: 'cockpit'}],
+            runtimeStatus: [{agentId: 'cockpit', state: 'stopped', running: false, confidence: 'inferred', reason: 'no fleet process record: this fleet is the seat\'s only launcher, so it is stopped'}]
+        })
+
+        const {lifecycle, sources} = snapshot.rows[0]
+
+        // The cockpit reads the two as one fact and marks the runtime invalid when their source or
+        // confidence differ, so an inferred stop must reach both, never the lifecycle alone
+        expect(lifecycle).toEqual({source: FLEET_COCKPIT_SOURCES.runtime, state: 'stopped', confidence: 'inferred'})
+        expect(sources.runtime).toMatchObject({source: lifecycle.source, state: 'wired', confidence: lifecycle.confidence})
+    })
+
     test('composes roster and repo status with explicit source labels', () => {
         const snapshot = createFleetCockpitStatus({
             agents: [{

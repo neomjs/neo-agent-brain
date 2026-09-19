@@ -189,6 +189,11 @@ class FleetManager extends Base {
      * invented. A record the fleet does own keeps `running` / `stopped` verbatim: that IS the
      * operator-benched fact, and it stays observable.
      *
+     * One seat is the exception: `launchOwner: 'fleet'` makes this fleet its only sanctioned launcher,
+     * so with no record it is not running under the fleet's own contract. It reports `stopped` with
+     * `confidence: 'inferred'` — a policy inference, labelled as one — which lets the operator start it
+     * the first time. A process record, once there, wins as `observed`.
+     *
      * **`running: false` on an unmanaged row is a KNOWN residual assertion, kept deliberately — not
      * inherited by oversight.** The sentence above is honest about `state` and `confidence` and only
      * approximately honest here: if never-launched is not stopped, then no-record is equally not
@@ -200,26 +205,31 @@ class FleetManager extends Base {
      * means it would behave identically either way. Widen it when a consumer actually needs to
      * distinguish "not running" from "we do not know" — and delete this paragraph when you do.
      * @returns {Object[]} one `{agentId, state, running, confidence, source}` entry per registered agent;
-     *     unmanaged rows additionally carry `reason`.
+     *     rows without a process record additionally carry `reason`.
      */
     fleetRuntimeStatus() {
         const lifecycle = this.getLifecycleService();
 
         return lifecycle.getRegistry().listAgents().map(agent => {
             const status   = lifecycle.status(agent.id),
-                  observed = status.state !== 'stopped' || status.pid != null || status.startedAt != null || status.exitCode != null;
+                  observed = status.state !== 'stopped' || status.pid != null || status.startedAt != null || status.exitCode != null,
+                  inferred = !observed && agent.launchOwner === 'fleet';
 
             const row = {
                 agentId   : agent.id,
-                state     : observed ? status.state : 'unmanaged',
+                state     : observed ? status.state : inferred ? 'stopped' : 'unmanaged',
                 running   : status.running,
-                confidence: observed ? 'observed' : 'none',
+                confidence: observed ? 'observed' : inferred ? 'inferred' : 'none',
                 source    : 'fleet:runtimeStatus'
             };
 
             // The cause travels with the fact: downstream normalization keeps a producer's reason
             // verbatim and is forbidden from inventing one, so the honest "why" has to originate here.
-            if (!observed) row.reason = 'no fleet process record: this agent runs outside fleet supervision';
+            if (inferred) {
+                row.reason = 'no fleet process record: this fleet is the seat\'s only launcher, so it is stopped'
+            } else if (!observed) {
+                row.reason = 'no fleet process record: this agent runs outside fleet supervision'
+            }
 
             if (status.failureReason != null) row.failureReason = status.failureReason;
 
@@ -393,6 +403,30 @@ class FleetManager extends Base {
         if (avatarUrl != null) metadata.avatarUrl = avatarUrl;
 
         return this.getLifecycleService().getRegistry().updateAgent(id, {metadata});
+    }
+
+    /**
+     * @summary The operator's recorded act that makes this fleet a seat's only launcher: from here on a
+     * seat with no process record reads `stopped` in {@link fleetRuntimeStatus}, and the cockpit can
+     * start it. The fleet cannot see a session running elsewhere, so adopting a seat that also runs by
+     * hand launches it twice — the promise is the operator's. Single `{id}` payload, like `setRepo`.
+     * @param {Object} payload
+     * @param {String} payload.id Registry agent id.
+     * @returns {Object|null} The updated public definition, or `null` if the agent doesn't exist.
+     */
+    adoptAgent({id} = {}) {
+        return this.getLifecycleService().getRegistry().setLaunchOwner(id, 'fleet');
+    }
+
+    /**
+     * @summary Hands a seat back to a harness the fleet does not start: with no process record it reads
+     * `unmanaged` again. The reverse of {@link adoptAgent}; a running supervised process is not stopped.
+     * @param {Object} payload
+     * @param {String} payload.id Registry agent id.
+     * @returns {Object|null} The updated public definition, or `null` if the agent doesn't exist.
+     */
+    releaseAgent({id} = {}) {
+        return this.getLifecycleService().getRegistry().setLaunchOwner(id, 'external');
     }
 }
 

@@ -446,6 +446,25 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @summary Make this fleet a seat's only launcher, so the cockpit can start it the first time (fleet
+     * authority, the operator's recorded act). A single-`params` payload, pane-reachable over the wire.
+     * @param {Object} payload `{id}` — the agent id.
+     * @returns {Object|null} the updated public definition, or `null` if the agent doesn't exist.
+     */
+    adoptAgent(payload) {
+        return this.getManager().adoptAgent(payload);
+    }
+
+    /**
+     * @summary Hand a seat back to a harness the fleet does not start (the reverse of {@link adoptAgent}).
+     * @param {Object} payload `{id}` — the agent id.
+     * @returns {Object|null} the updated public definition, or `null` if the agent doesn't exist.
+     */
+    releaseAgent(payload) {
+        return this.getManager().releaseAgent(payload);
+    }
+
+    /**
      * @summary The *observe* half of the MVP loop: the per-agent repo-provisioning state across the
      * whole fleet, at the resolved managed root. Read-only.
      * @returns {Object[]} one status entry per registered agent.

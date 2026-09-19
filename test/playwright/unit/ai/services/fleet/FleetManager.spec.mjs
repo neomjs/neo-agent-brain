@@ -77,6 +77,14 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleet-authority definition
 
         expect(calls).toEqual([['updateAgent', 'alice', {metadata: {}}]]);
     });
+
+    test('adoptAgent / releaseAgent write launch ownership through the registry\'s one write — never a metadata patch', () => {
+        registryStub.setLaunchOwner = (id, owner) => { calls.push(['setLaunchOwner', id, owner]); return {id, launchOwner: owner}; };
+
+        expect(FleetManager.adoptAgent({id: 'alice'}).launchOwner).toBe('fleet');
+        expect(FleetManager.releaseAgent({id: 'alice'}).launchOwner).toBe('external');
+        expect(calls).toEqual([['setLaunchOwner', 'alice', 'fleet'], ['setLaunchOwner', 'alice', 'external']]);
+    });
 });
 
 test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster × lifecycle status)', () => {
@@ -139,6 +147,44 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
 
         expect(FleetManager.fleetRuntimeStatus()).toEqual([
             {agentId: 'alice', state: 'stopped', running: false, confidence: 'observed', source: 'fleet:runtimeStatus'}
+        ]);
+    });
+
+    test('a fleet-launched seat with no process record reads stopped, labelled inferred — an external one stays unmanaged', () => {
+        const registryStub = {listAgents: () => [{id: 'cockpit', launchOwner: 'fleet'}, {id: 'grace', launchOwner: 'external'}]};
+
+        FleetManager.lifecycleService = {
+            getRegistry: () => registryStub,
+            status     : id => ({id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null})
+        };
+
+        expect(FleetManager.fleetRuntimeStatus()).toEqual([{
+            agentId   : 'cockpit',
+            state     : 'stopped',
+            running   : false,
+            confidence: 'inferred',
+            reason    : 'no fleet process record: this fleet is the seat\'s only launcher, so it is stopped',
+            source    : 'fleet:runtimeStatus'
+        }, {
+            agentId   : 'grace',
+            state     : 'unmanaged',
+            running   : false,
+            confidence: 'none',
+            reason    : 'no fleet process record: this agent runs outside fleet supervision',
+            source    : 'fleet:runtimeStatus'
+        }]);
+    });
+
+    test('a process record wins over the inference: a fleet-launched seat that ran reads observed', () => {
+        const registryStub = {listAgents: () => [{id: 'cockpit', launchOwner: 'fleet'}]};
+
+        FleetManager.lifecycleService = {
+            getRegistry: () => registryStub,
+            status     : id => ({id, state: 'running', running: true, pid: 4242, startedAt: '2026-09-19T00:00:00Z', exitCode: null})
+        };
+
+        expect(FleetManager.fleetRuntimeStatus()).toEqual([
+            {agentId: 'cockpit', state: 'running', running: true, confidence: 'observed', source: 'fleet:runtimeStatus'}
         ]);
     });
 

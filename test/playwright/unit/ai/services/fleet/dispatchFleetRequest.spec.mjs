@@ -175,8 +175,8 @@ test.describe('dispatchFleetRequest — the app↔fleet wire allowlist + routing
             // assembled roster DTO + viewer-bound catch-up history + one page of an agent's
             // session summaries + one agent's mailbox mirror + the whoami identity-bootstrap) plus
             // the two explicit write verbs. Catch-up mark is process-local only; compose persists
-            // payload while the server stamps identity.
-            ['composeOperatorMessage', 'configureAgent', 'connectTenant', 'defineAgent', 'fleetActivity', 'fleetDeploymentState', 'fleetHistory', 'fleetMailboxMirror', 'fleetMemories', 'fleetRoster', 'fleetRuntimeStatus', 'fleetSessionMemories', 'fleetStatus', 'fleetTasks', 'fleetWakeRoutes', 'getAgent', 'getBootIdentity', 'listAgents', 'listTenants', 'markFleetCaughtUp', 'removeAgent', 'resolveViewerIdentity', 'restartAgent', 'setAvatar', 'setRepo', 'startAgent', 'stopAgent'].sort()
+            // payload while the server stamps identity. Adopt / release record who launches a seat.
+            ['adoptAgent', 'composeOperatorMessage', 'configureAgent', 'connectTenant', 'defineAgent', 'fleetActivity', 'fleetDeploymentState', 'fleetHistory', 'fleetMailboxMirror', 'fleetMemories', 'fleetRoster', 'fleetRuntimeStatus', 'fleetSessionMemories', 'fleetStatus', 'fleetTasks', 'fleetWakeRoutes', 'getAgent', 'getBootIdentity', 'listAgents', 'listTenants', 'markFleetCaughtUp', 'releaseAgent', 'removeAgent', 'resolveViewerIdentity', 'restartAgent', 'setAvatar', 'setRepo', 'startAgent', 'stopAgent'].sort()
         );
         // the deployment's task picture — bounded read-observe over the existing truth verbs, no resolver seam
         expect(FLEET_WIRE_METHODS).toContain('fleetTasks');

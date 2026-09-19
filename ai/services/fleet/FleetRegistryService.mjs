@@ -9,6 +9,7 @@ import {normalizeMcpOverrides}                  from '../../../src/fleet/contrac
 import {normalizeMcpTarget}                     from './mcpServers.mjs';
 
 const
+    LAUNCH_OWNERS           = Object.freeze(['external', 'fleet']),
     RETIRED_TARGET_FIELD    = ['mcp', 'Transport'].join(''),
     PUBLIC_SENSITIVE_KEY_RE = /^(?:credentials?|secrets?|tokens?|(?:github)?pats?|passwords?|authorization|(?:api|client|private)(?:key|token|secret|credential|password)s?|personalaccess(?:key|token|secret|credential|password)s?|(?:access|auth|bearer|github|id|oauth|refresh|session)(?:key|token|secret|credential|password)s?|launch|command|args|argv|env|environment)$/;
 
@@ -157,7 +158,7 @@ function normalizeStoredMcpTarget(target) {
  * *define agents → start/stop → repos managed under the hood*.
  *
  * An **agent definition** is `{id, githubUsername, harnessType, modelProvider, mcpServers,
- * mcpTarget, metadata, createdAt, updatedAt}` —
+ * mcpTarget, launchOwner, metadata, createdAt, updatedAt}` —
  * never a secret. `modelProvider` (the agent's model-provider login) resolves via the AiConfig
  * `modelProvider` SSOT leaf when not supplied — read-only, no service-local default shadow. The associated **credential** (a GitHub PAT) is stored separately, encrypted at
  * rest, and is the load-bearing security boundary of this service:
@@ -190,6 +191,12 @@ function normalizeStoredMcpTarget(target) {
  *
  * **Fail-closed:** an absent / locked / corrupt credential store never throws into the define/list
  * path and never surfaces plaintext — {@link resolveCredential} returns `null`.
+ *
+ * **Launch ownership** (`launchOwner`) says who starts a seat: `fleet` when this fleet is its only
+ * launcher, `external` when it runs in a harness the fleet did not start. It decides whether a seat
+ * with no process record may be read as stopped, so it enables a Brain-credentialed spawn and is kept
+ * out of `metadata`: {@link defineAgent} takes it as creation intent, {@link setLaunchOwner} is the
+ * one write after that, and a row without it reads `external`.
  */
 class FleetRegistryService extends Base {
     static config = {
@@ -261,6 +268,7 @@ class FleetRegistryService extends Base {
      * @param {Object|null} [opts.mcpServers]   Sparse MCP overrides shared with configureAgent; omitted/null follows defaults.
      * @param {Object|null} [opts.mcpTarget] Resident (`null` / `{kind:'resident'}`) or
      *     `{kind:'tenant', tenantId}`. No transport, URL, header, env, command, or credential bag.
+     * @param {String} [opts.launchOwner='external'] `fleet` for a seat this fleet launches from birth.
      * @returns {Object} The public agent definition (no credential).
      */
     defineAgent(options={}) {
@@ -275,6 +283,7 @@ class FleetRegistryService extends Base {
             harnessType,
             credential,
             id,
+            launchOwner='external',
             metadata={},
             modelProvider,
             mcpServers,
@@ -283,6 +292,10 @@ class FleetRegistryService extends Base {
 
         if (!githubUsername) throw new Error("FleetRegistryService.defineAgent: 'githubUsername' is required.");
         if (!harnessType)    throw new Error("FleetRegistryService.defineAgent: 'harnessType' is required.");
+
+        if (!LAUNCH_OWNERS.includes(launchOwner)) {
+            throw new Error(`FleetRegistryService.defineAgent: invalid launchOwner '${launchOwner}'. Must be one of: ${LAUNCH_OWNERS.join(', ')}.`)
+        }
 
         if (!this.harnessTypes.includes(harnessType)) {
             throw new Error(`FleetRegistryService.defineAgent: invalid harnessType '${harnessType}'. Must be one of: ${this.harnessTypes.join(', ')}.`);
@@ -340,6 +353,7 @@ class FleetRegistryService extends Base {
                 metadata,
                 mcpServers   : matrix,
                 mcpTarget    : target,
+                launchOwner,
                 createdAt    : now,
                 updatedAt    : now
             },
@@ -505,6 +519,37 @@ class FleetRegistryService extends Base {
         };
 
         const nextAgents = new Map(this.agents);
+        nextAgents.set(id, def);
+        this.writeRegistry(nextAgents);
+        this.agents = nextAgents;
+
+        return this.toPublic(def);
+    }
+
+    /**
+     * @summary Records who launches a seat from now on — the one write of `launchOwner` after
+     * {@link defineAgent}. `fleet` makes this fleet the seat's only sanctioned launcher, so a seat with no
+     * process record reads as stopped; `external` hands it back to a harness the fleet does not start.
+     * The change carries its own time, `launchOwnerSince`, beside `updatedAt`.
+     * @param {String} id    Registry agent id.
+     * @param {String} owner `fleet` or `external`.
+     * @returns {Object|null} The updated public definition, or `null` when the agent doesn't exist.
+     */
+    setLaunchOwner(id, owner) {
+        if (!LAUNCH_OWNERS.includes(owner)) {
+            throw new Error(`FleetRegistryService.setLaunchOwner: invalid launchOwner '${owner}'. Must be one of: ${LAUNCH_OWNERS.join(', ')}.`)
+        }
+
+        this.ensureLoaded();
+
+        const existing = this.agents.get(id);
+        if (!existing) return null;
+
+        const
+            now        = new Date().toISOString(),
+            def        = {...existing, launchOwner: owner, launchOwnerSince: now, updatedAt: now},
+            nextAgents = new Map(this.agents);
+
         nextAgents.set(id, def);
         this.writeRegistry(nextAgents);
         this.agents = nextAgents;
@@ -692,7 +737,8 @@ class FleetRegistryService extends Base {
     toPublic(def) {
         return redactPublicFields(structuredClone({
             ...def,
-            mcpTarget: normalizeStoredMcpTarget(def.mcpTarget)
+            launchOwner: def.launchOwner || 'external',
+            mcpTarget  : normalizeStoredMcpTarget(def.mcpTarget)
         }))
     }
 
