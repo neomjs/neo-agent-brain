@@ -69,14 +69,16 @@ async function runCorpusGuardChild({contentRoot, env = {}} = {}) {
  * @param {String[]} [options.args] CLI arguments.
  * @param {String|undefined} [options.contentRoot] Corpus root value; omitted means absent.
  * @param {String} [options.preload] Data URL installing acquisition and forbidden-effect controls.
+ * @param {Object} [options.env] Additional child-only environment overrides.
  * @returns {Promise<{code: Number, stdout: String, stderr: String}>}
  */
-async function runCliChild({args = [], contentRoot, preload} = {}) {
+async function runCliChild({args = [], contentRoot, preload, env = {}} = {}) {
     const childEnv = {
         ...process.env,
         NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${configResolverPath}`, preload && `--import=${preload}`]
             .filter(Boolean)
-            .join(' ')
+            .join(' '),
+        ...env
     };
 
     if (contentRoot === undefined) delete childEnv.NEO_MCP_GITHUB_CONTENT_ROOT;
@@ -372,6 +374,7 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
             });
 
             expect(result.code, result.stderr).toBe(0);
+            expect((await fs.readdir(corpusRoot)).sort()).toEqual(['_index.json', 'neo']);
             const origin = path.join(corpusRoot, 'neo');
             for (const file of ['issues/chunk-1/issue-101.md', 'discussions/chunk-1/discussion-102.md', 'pulls/chunk-1/pr-103.md']) {
                 await expect(fs.readFile(path.join(origin, file), 'utf8')).resolves.not.toHaveLength(0);
@@ -385,6 +388,19 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
             const metadata = JSON.parse(await fs.readFile(path.join(origin, '.sync-metadata.json'), 'utf8'));
             expect(metadata.issues['101'].path).toBe('neo/issues/chunk-1/issue-101.md');
             await expect(fs.access(path.join(origin, 'release-notes'))).rejects.toThrow();
+
+            const second = await runCliChild({
+                args: ['--corpus-only'], contentRoot: corpusRoot,
+                preload: corpusAcquisitionPreload(), env: {NEO_MCP_GITHUB_REPO: 'neo-agent-brain'}
+            });
+            expect(second.code, second.stderr).toBe(0);
+            expect(JSON.parse(await fs.readFile(path.join(origin, '.sync-metadata.json'), 'utf8'))).toEqual(metadata);
+            const otherMetadata = JSON.parse(await fs.readFile(path.join(corpusRoot, 'neo-agent-brain', '.sync-metadata.json'), 'utf8'));
+            expect(otherMetadata.issues['101'].path).toBe('neo-agent-brain/issues/chunk-1/issue-101.md');
+            const combined = JSON.parse(await fs.readFile(path.join(corpusRoot, '_index.json'), 'utf8'));
+            expect(combined).toHaveLength(6);
+            expect(combined.filter(entry => entry.repoSlug === 'neo')).toEqual(index);
+            expect(combined.filter(entry => entry.repoSlug === 'neo-agent-brain')).toHaveLength(3);
         });
     });
 
