@@ -2161,9 +2161,10 @@ function getRound2PrReviewTemplateValidationFailure(body) {
         defects.push(`omits its structural anchors — missing: ${missing.join(', ')}`)
     }
 
-    // The anchor must POINT somewhere. A Round 2 that cannot name the round it dispositions is a
-    // first review, and the template's bracketed placeholders must not survive into a posted body.
-    if (!/\*\*Round-1 Review ID:\*\*\s*(?!\[)\S/.test(body)) {
+    // The anchor must POINT somewhere, on its own line. A Round 2 that cannot name the round it dispositions
+    // is a first review, and the template's bracketed placeholders must not survive into a posted body: a
+    // placeholder is a `[…]` no `(` follows (a Markdown link has one), and `·` separates, it is never a value.
+    if (!/\*\*Round-1 Review ID:\*\*[ \t]*(?!\[[^\]\n]*\](?!\())[^\s·]/.test(body)) {
         defects.push('names no Round-1 review to disposition — `**Round-1 Review ID:**` is absent, empty, or still the template placeholder')
     }
 
