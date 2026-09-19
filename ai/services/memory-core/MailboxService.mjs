@@ -6,6 +6,7 @@ import {canonicalizeTaggedConceptIds}           from '../graph/conceptSpineCanon
 import GraphService                             from './GraphService.mjs';
 import PermissionService                        from './PermissionService.mjs';
 import WakeSubscriptionService                  from './WakeSubscriptionService.mjs';
+import {inspectDefectNoteCapture}                from './helpers/defectObservationFold.mjs';
 import {
     TASK_ASSIGNMENT_AUTHORITY,
     TASK_STATES,
@@ -2352,7 +2353,8 @@ class MailboxService extends Base {
     }
 
     /**
-     * Adds a new message to the mailbox system.
+     * @summary Accepts a durable mailbox message, with subject-only defect capture feedback for note candidates.
+     * `defectNote` reports read-model eligibility separately from graph projection and message delivery.
      * @param {Object} args
      * @param {String} args.to The agent identity, role, or broadcast to send to
      * @param {String} args.subject The subject of the message
@@ -2653,6 +2655,7 @@ class MailboxService extends Base {
             throw new Error(`message WAL config leaves missing: ${missingLeaves.join(', ')} — sync the memoryWal/messageWal blocks from config.template.mjs into the local config.mjs (node ai/scripts/setup/initServerConfigs.mjs --migrate-config) and restart memory-core.`);
         }
 
+        const defectNote = inspectDefectNoteCapture({subject, to, taggedConcepts});
         const walRecord = buildMessageWalRecord({
             messageId,
             messageProperties,
@@ -2680,7 +2683,8 @@ class MailboxService extends Base {
                 sentAt          : timestamp,
                 priority,
                 status          : 'sent',
-                projectionStatus: 'pending'
+                projectionStatus: 'pending',
+                ...(defectNote ? {defectNote} : {})
             }
         }
 
@@ -2701,6 +2705,7 @@ class MailboxService extends Base {
             sentAt: timestamp,
             priority,
             status: 'sent',
+            ...(defectNote ? {defectNote} : {}),
             ...(projectionStatus === 'pending' ? {projectionStatus} : {})
         };
     }

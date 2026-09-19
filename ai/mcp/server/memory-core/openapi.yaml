@@ -2100,6 +2100,8 @@ paths:
         completed by the WAL-backed projection drain. Wake delivery is best-effort after projection
         and is not part of the durable receipt guarantee. Task assignment is server-owned, and
         broadcasts remain unassigned until an eligible send-time recipient claims them.
+        Defect-note candidates also return defectNote admission/parsing feedback; unparsed admitted
+        notes retain their raw text, and non-admission does not reject the ordinary message.
       tags: [Mailbox]
       requestBody:
         required: true
@@ -2188,6 +2190,20 @@ paths:
                   projectionStatus:
                     type: string
                     enum: [pending]
+                  defectNote:
+                    type: object
+                    description: Subject eligibility for the broadcast defect read model, separate from graph projection.
+                    required: [admitted]
+                    properties:
+                      admitted:
+                        type: boolean
+                      parseable:
+                        type: boolean
+                      fingerprint:
+                        type: string
+                        pattern: '^[0-9a-f]{16}$'
+                      reason:
+                        type: string
         '500':
           description: Error
           content:

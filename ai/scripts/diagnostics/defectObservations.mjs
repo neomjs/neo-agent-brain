@@ -1,7 +1,8 @@
 import Neo                        from 'neo.mjs/src/Neo.mjs';
 import * as core                  from 'neo.mjs/src/core/_export.mjs';
+import {readFile}                 from 'node:fs/promises';
 import {createPlaneMailboxClient} from '../../services/fleet/planeMailboxClient.mjs';
-import {foldDefectObservations}   from '../../services/memory-core/helpers/defectObservationFold.mjs';
+import {censusDefectNoteCaptures, foldDefectObservations, isDefectNoteSubject} from '../../services/memory-core/helpers/defectObservationFold.mjs';
 import {
     buildDigestBody,
     collectSuppressedFingerprints,
@@ -32,6 +33,7 @@ import {
  * Usage:
  *   node ai/scripts/diagnostics/defectObservations.mjs [--limit 500] [--quiet-after-days 7] [--json] [--local]
  *   node ai/scripts/diagnostics/defectObservations.mjs --digest [--dry-run]
+ *   node ai/scripts/diagnostics/defectObservations.mjs --census [--input-file messages.json]
  *   node ai/scripts/diagnostics/defectObservations.mjs --plane-base http://127.0.0.1:3102   # operator boxes
  *
  * Plane coordinates resolve from `AiConfig.fleet.planeBase`/`planeBearer`; `--plane-base` overrides
@@ -50,7 +52,17 @@ const limit        = Number(readArgValue('--limit', 500)),
       quietAfterMs = Number(readArgValue('--quiet-after-days', 7)) * 24 * 60 * 60 * 1000,
       useLocal     = args.includes('--local'),
       useDigest    = args.includes('--digest'),
+      useCensus    = args.includes('--census'),
+      inputFile    = readArgValue('--input-file', null),
       dryRun       = args.includes('--dry-run');
+
+if (args.includes('--input-file') && (!inputFile || inputFile.startsWith('--'))) {
+    throw new Error('defectObservations: --input-file requires a JSON file path');
+}
+
+if (useDigest && (useCensus || inputFile)) {
+    throw new Error('defectObservations: census and input-file modes are read-only and cannot send a digest');
+}
 
 if (!Number.isInteger(limit) || limit < 1) {
     throw new Error(`defectObservations: --limit must be a positive integer, got "${readArgValue('--limit', undefined)}"`);
@@ -90,7 +102,7 @@ async function runDigest() {
 
         for (const message of messages) {
             if (typeof message.subject !== 'string') continue;
-            if (message.subject.startsWith('defect-note:')) defectRows.push(message);
+            if (isDefectNoteSubject(message.subject)) defectRows.push(message);
             else if (message.subject.startsWith(DIGEST_SUBJECT_PREFIX)) digestRows.push(message);
         }
 
@@ -143,10 +155,10 @@ if (useDigest) {
 }
 
 /**
- * Folds the plane mailbox (the fleet's canonical A2A store) via the single-viewer client.
+ * @summary Reads the plane mailbox's requested message window via the single-viewer client.
  * @returns {Promise<Array<Object>>}
  */
-async function readPlaneObservations() {
+async function readPlaneMessages() {
     const {default: AiConfig} = await import('../../config.mjs'),
           planeBase           = (readArgValue('--plane-base', null) ?? AiConfig.fleet.planeBase).trim().replace(/\/+$/, '');
 
@@ -169,20 +181,17 @@ async function readPlaneObservations() {
 
         const {messages} = await client.listMessages({to: 'AGENT:*', status: 'all', limit});
 
-        return foldDefectObservations(
-            messages.filter(message => typeof message.subject === 'string' && message.subject.startsWith('defect-note:')),
-            {quietAfterMs}
-        );
+        return messages;
     } finally {
         await client.close();
     }
 }
 
 /**
- * Folds this checkout's own mailbox store (isolated/test planes).
+ * @summary Reads this checkout's own mailbox window (isolated/test planes).
  * @returns {Promise<Array<Object>>}
  */
-async function readLocalObservations() {
+async function readLocalMessages() {
     const {default: LifecycleService}      = await import('../../services/memory-core/lifecycle/SystemLifecycleService.mjs'),
           {default: GraphService}          = await import('../../services/memory-core/GraphService.mjs'),
           {default: MailboxService}        = await import('../../services/memory-core/MailboxService.mjs'),
@@ -194,14 +203,22 @@ async function readLocalObservations() {
     return RequestContextService.run({agentIdentityNodeId: process.env.NEO_AGENT_IDENTITY || '@system'}, async () => {
         const {messages} = await MailboxService.listMessages({to: 'AGENT:*', status: 'all', limit});
 
-        return foldDefectObservations(
-            messages.filter(message => typeof message.subject === 'string' && message.subject.startsWith('defect-note:')),
-            {quietAfterMs}
-        );
+        return messages;
     });
 }
 
-const observations = useLocal ? await readLocalObservations() : await readPlaneObservations();
+const input = inputFile ? JSON.parse(await readFile(inputFile, 'utf8')) : null,
+      messages = inputFile ? (Array.isArray(input) ? input : input?.messages)
+          : useLocal ? await readLocalMessages() : await readPlaneMessages();
+
+if (!Array.isArray(messages)) throw new Error('defectObservations: input must contain an array of message rows');
+
+if (useCensus) {
+    console.log(JSON.stringify(censusDefectNoteCaptures(messages), null, 2));
+    process.exit(0);
+}
+
+const observations = foldDefectObservations(messages.filter(message => isDefectNoteSubject(message.subject)), {quietAfterMs});
 
 if (args.includes('--json')) {
     console.log(JSON.stringify(observations, null, 2));
