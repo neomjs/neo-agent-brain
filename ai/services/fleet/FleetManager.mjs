@@ -1,6 +1,7 @@
 import Base                             from 'neo.mjs/src/core/Base.mjs';
 import FleetLifecycleService            from './FleetLifecycleService.mjs';
 import {inspectFleetRepos}              from './inspectFleetRepos.mjs';
+import {launchRefusalOf}                from '../../../src/fleet/contract/launchAuthority.mjs';
 import {readFleetPresenceSnapshot}      from './fleetPresenceStateAdapter.mjs';
 import {readFleetThrottleStateSnapshot} from './fleetThrottleStateAdapter.mjs';
 import {readFleetWakeStateSnapshot}     from './fleetWakeStateAdapter.mjs';
@@ -142,11 +143,14 @@ class FleetManager extends Base {
     /**
      * @summary Turnkey provision-then-start: ensure the agent's repo (at the resolved managed root)
      * exists, then start its harness inside it. Delegates to `startAgentProvisioned` — fail-closed on a
-     * provisioning failure (the harness is not spawned).
+     * provisioning failure (the harness is not spawned). A seat released to its own harness is refused
+     * before anything runs ({@link launchRefusalOf}).
      * @param {String} agentId Registry agent id.
      * @returns {Promise<Object>} the agent's lifecycle status.
      */
     async startAgent(agentId) {
+        this.assertStartPermitted('startAgent', agentId);
+
         return this.getProvisionAndStartFn()({
             lifecycleService: this.getLifecycleService(),
             managedRoot     : this.getManagedRoot(),
@@ -323,11 +327,14 @@ class FleetManager extends Base {
      * not the Fleet Manager's own directory. Deliberately NOT a delegation to the lifecycle service's own
      * `restart`, which re-starts with no `cwd`: that would re-spawn a provisioned agent in the wrong
      * directory, and the checkout-path-keyed auto-memory would silently fork (the exact failure the
-     * provisioned start path prevents). Restarting a non-running agent is just a provisioned start.
+     * provisioned start path prevents). Restarting a non-running agent is just a provisioned start. A
+     * seat the start would refuse is refused before the stop, so a restart never ends half done.
      * @param {String} agentId Registry agent id.
      * @returns {Promise<Object>} the agent's lifecycle status (see {@link startAgent}).
      */
     async restartAgent(agentId) {
+        this.assertStartPermitted('restartAgent', agentId);
+
         const stopped = await this.stopAgent(agentId);
 
         if (stopped.cleanupUnresolved) {
@@ -335,6 +342,20 @@ class FleetManager extends Base {
         }
 
         return this.startAgent(agentId);
+    }
+
+    /**
+     * @summary Throws when the registry says this fleet may not start the seat ({@link launchRefusalOf}).
+     * @param {String} method  The refusing verb, for the error's origin.
+     * @param {String} agentId Registry agent id.
+     * @private
+     */
+    assertStartPermitted(method, agentId) {
+        const refusal = launchRefusalOf(this.getLifecycleService().getRegistry().getAgent(agentId));
+
+        if (refusal) {
+            throw new Error(`FleetManager.${method}: agent '${agentId}' was ${refusal}.`)
+        }
     }
 
     /**

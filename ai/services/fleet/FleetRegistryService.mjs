@@ -196,7 +196,8 @@ function normalizeStoredMcpTarget(target) {
  * launcher, `external` when it runs in a harness the fleet did not start. It decides whether a seat
  * with no process record may be read as stopped, so it enables a Brain-credentialed spawn and is kept
  * out of `metadata`: {@link defineAgent} takes it as creation intent, {@link setLaunchOwner} is the
- * one write after that, and a row without it reads `external`.
+ * one write after that, and a row without it reads `external`. A seat released by that write is never
+ * started by this fleet again until it is adopted, whatever process record it holds ({@link launchRefusalOf}).
  */
 class FleetRegistryService extends Base {
     static config = {
@@ -529,8 +530,9 @@ class FleetRegistryService extends Base {
     /**
      * @summary Records who launches a seat from now on — the one write of `launchOwner` after
      * {@link defineAgent}. `fleet` makes this fleet the seat's only sanctioned launcher, so a seat with no
-     * process record reads as stopped; `external` hands it back to a harness the fleet does not start.
-     * The change carries its own time, `launchOwnerSince`, beside `updatedAt`.
+     * process record reads as stopped; `external` hands it back to its own harness, and the fleet refuses
+     * to start it from then on ({@link launchRefusalOf}). The change carries its own time,
+     * `launchOwnerSince`, beside `updatedAt`.
      * @param {String} id    Registry agent id.
      * @param {String} owner `fleet` or `external`.
      * @returns {Object|null} The updated public definition, or `null` when the agent doesn't exist.

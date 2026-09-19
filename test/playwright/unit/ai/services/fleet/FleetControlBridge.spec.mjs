@@ -490,6 +490,25 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(row.engineTag).toBeNull();
     });
 
+    test('fleetRoster stamps the start verb\'s own refusal: a released seat carries its words, every other seat null', async () => {
+        registryStub.listAgents = () => [
+            {id: 'default',  githubUsername: 'default-gh',  harnessType: 'codex', launchOwner: 'external'},
+            {id: 'adopted',  githubUsername: 'adopted-gh',  harnessType: 'codex', launchOwner: 'fleet',    launchOwnerSince: '2026-09-19T17:00:00.000Z'},
+            {id: 'released', githubUsername: 'released-gh', harnessType: 'codex', launchOwner: 'external', launchOwnerSince: '2026-09-19T17:05:00.000Z'}
+        ];
+        managerStub.fleetRepoStatus    = () => [];
+        managerStub.fleetRuntimeStatus = () => [];
+        FleetControlBridge.identityResolver = () => ({family: null, engineTag: null});
+
+        const rows = (await FleetControlBridge.fleetRoster()).rows;
+
+        expect(rows.map(({id, launchRefusal}) => [id, launchRefusal])).toEqual([
+            ['default',  null],
+            ['adopted',  null],
+            ['released', 'released to its own harness: adopt it to start it here']
+        ]);
+    });
+
     test('fleetRoster stamps launch-derived truth per row — templated families carry their auth mode, native-neo stays honestly unlaunchable', async () => {
         registryStub.listAgents = () => [
             {id: 'desk',   githubUsername: 'desk-gh',   harnessType: 'claude-desktop'},

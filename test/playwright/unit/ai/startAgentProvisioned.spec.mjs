@@ -640,4 +640,57 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         expect(lifecycle.calls.start).toHaveLength(0);
     });
+
+    // Admission at the manager's entry cannot speak for the spawn: provisioning and preparation are
+    // asynchronous, so the authority admitted at entry may be released while they run. These two arms
+    // drive the release and the adoption THROUGH the real composer — the refusal has to come from a
+    // registry read at the spawn, not from state captured on the way in.
+    test('a release published while preparation runs refuses the spawn', async () => {
+        const
+            agents      = repoAgent('a'),
+            events      = [],
+            lifecycle   = makeLifecycle({agents, events}),
+            ensureRepo  = makeEnsureRepo('/managed/a/neomjs-neo', events),
+            basePrepare = makePrepareWorkspace(events);
+
+        await expect(startAgentProvisioned({
+            lifecycleService: lifecycle,
+            agentId         : 'a',
+            managedRoot     : '/managed',
+            ensureRepo,
+            prepareWorkspace: async args => {
+                Object.assign(agents.a, {launchOwner: 'external', launchOwnerSince: '2026-09-19T18:00:00.000Z'});
+                events.push('release');
+
+                return basePrepare(args)
+            }
+        })).rejects.toThrow(/released while its start was being prepared/);
+
+        expect(events).toEqual(['ensure', 'release', 'prepare']);
+        expect(lifecycle.calls.start).toEqual([])
+    });
+
+    test('a seat adopted back while preparation runs spawns', async () => {
+        const
+            agents    = repoAgent('a'),
+            lifecycle = makeLifecycle({agents});
+
+        Object.assign(agents.a, {launchOwner: 'external', launchOwnerSince: '2026-09-19T18:00:00.000Z'});
+
+        const status = await startAgentProvisioned({
+            lifecycleService: lifecycle,
+            agentId         : 'a',
+            managedRoot     : '/managed',
+            ensureRepo      : makeEnsureRepo('/managed/a/neomjs-neo'),
+            prepareWorkspace: async args => {
+                Object.assign(agents.a, {launchOwner: 'fleet', launchOwnerSince: null});
+
+                return makePrepareWorkspace()(args)
+            }
+        });
+
+        expect(status.running).toBe(true);
+        expect(lifecycle.calls.start).toHaveLength(1);
+        expect(lifecycle.calls.start[0].opts.cwd).toBe('/managed/a/neomjs-neo')
+    });
 });

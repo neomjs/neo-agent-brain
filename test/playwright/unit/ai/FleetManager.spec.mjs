@@ -57,7 +57,7 @@ test.describe('Neo.ai.services.fleet.FleetManager', () => {
     });
 
     test('startAgent provisions+starts via the composer with the resolved root + lifecycle service', async () => {
-        const lifecycle = {getRegistry: () => ({}), isRunning: () => false, status: () => ({}), start: () => ({})},
+        const lifecycle = {getRegistry: () => ({getAgent: () => null}), isRunning: () => false, status: () => ({}), start: () => ({})},
               calls     = [];
 
         FleetManager.managedRoot         = '/managed/root';
@@ -101,7 +101,10 @@ test.describe('Neo.ai.services.fleet.FleetManager', () => {
 
     test('restartAgent stops then re-starts via the PROVISIONED path (preserving the repo cwd)', async () => {
         const order     = [],
-              lifecycle = {stop: id => { order.push(`stop:${id}`); return Promise.resolve({success: true, id, state: 'stopped'}); }};
+              lifecycle = {
+                  getRegistry: () => ({getAgent: () => null}),
+                  stop       : id => { order.push(`stop:${id}`); return Promise.resolve({success: true, id, state: 'stopped'}); }
+              };
 
         FleetManager.managedRoot         = '/managed/root';
         FleetManager.lifecycleService    = lifecycle;

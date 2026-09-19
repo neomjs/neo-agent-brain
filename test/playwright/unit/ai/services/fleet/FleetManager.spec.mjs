@@ -221,6 +221,7 @@ test.describe('Neo.ai.services.fleet.FleetManager — Codex Desktop cleanup fail
     test.beforeEach(() => {
         calls = [];
         registryStub = {
+            getAgent   : () => null,
             removeAgent: id => { calls.push(['removeAgent', id]); return {success: true, id}; }
         };
 
@@ -260,6 +261,56 @@ test.describe('Neo.ai.services.fleet.FleetManager — Codex Desktop cleanup fail
         await expect(FleetManager.removeAgent('cli')).resolves.toEqual({success: true, id: 'cli'});
 
         expect(calls).toEqual([['start', 'cli'], ['removeAgent', 'cli']]);
+    });
+});
+
+test.describe('Neo.ai.services.fleet.FleetManager — an explicit release is start authority', () => {
+    let calls, definitions;
+
+    test.beforeEach(() => {
+        calls       = [];
+        definitions = {
+            adopted : {id: 'adopted',  launchOwner: 'fleet',    launchOwnerSince: '2026-09-19T17:00:00.000Z'},
+            default : {id: 'default',  launchOwner: 'external'},
+            released: {id: 'released', launchOwner: 'external', launchOwnerSince: '2026-09-19T17:05:00.000Z'}
+        };
+
+        FleetManager.lifecycleService = {
+            getRegistry: () => ({getAgent: id => definitions[id] ?? null}),
+            stop       : async id => { calls.push(['stop', id]); return {success: true, id, state: 'stopped'}; }
+        };
+        FleetManager.managedRoot         = '/managed/root';
+        FleetManager.provisionAndStartFn = async options => {
+            calls.push(['start', options.agentId]);
+            return {id: options.agentId, state: 'running'};
+        };
+    });
+
+    test.afterEach(() => {
+        FleetManager.lifecycleService    = null;
+        FleetManager.managedRoot         = null;
+        FleetManager.provisionAndStartFn = null;
+    });
+
+    test('a released seat is refused in the registry\'s words, before anything is spawned', async () => {
+        await expect(FleetManager.startAgent('released'))
+            .rejects.toThrow("FleetManager.startAgent: agent 'released' was released to its own harness: adopt it to start it here.");
+
+        expect(calls).toEqual([]);
+    });
+
+    test('a restart of a released seat is refused before the stop, so it never ends half done', async () => {
+        await expect(FleetManager.restartAgent('released')).rejects.toThrow(/FleetManager\.restartAgent: agent 'released' was released/);
+
+        expect(calls).toEqual([]);
+    });
+
+    test('a seat with no ownership act, an adopted seat, and an id the registry does not know start as before', async () => {
+        await FleetManager.startAgent('default');
+        await FleetManager.restartAgent('adopted');
+        await FleetManager.startAgent('ghost');
+
+        expect(calls).toEqual([['start', 'default'], ['stop', 'adopted'], ['start', 'adopted'], ['start', 'ghost']]);
     });
 });
 

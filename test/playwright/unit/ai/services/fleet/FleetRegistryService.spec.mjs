@@ -17,6 +17,7 @@ import {test, expect}       from '@playwright/test';
 import Neo                  from 'neo.mjs/src/Neo.mjs';
 import * as core            from 'neo.mjs/src/core/_export.mjs';
 import FleetRegistryService from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {launchRefusalOf}    from '../../../../../../src/fleet/contract/launchAuthority.mjs';
 import fs                   from 'fs';
 import os                   from 'os';
 import path                 from 'path';
@@ -587,6 +588,26 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
         expect(FleetRegistryService.setLaunchOwner('seat', 'external').launchOwner).toBe('external');
         expect(FleetRegistryService.setLaunchOwner('ghost', 'fleet')).toBeNull();
         expect(() => FleetRegistryService.setLaunchOwner('seat', 'everyone')).toThrow(/invalid launchOwner 'everyone'/)
+    });
+
+    test('launchRefusalOf: only a release through setLaunchOwner refuses a start, and an adoption lifts it', () => {
+        FleetRegistryService.dataDir = tmpDir;
+        FleetRegistryService.defineAgent({githubUsername: 'default', harnessType: 'codex'});
+        FleetRegistryService.defineAgent({githubUsername: 'born',    harnessType: 'codex', launchOwner: 'fleet'});
+        FleetRegistryService.defineAgent({githubUsername: 'seat',    harnessType: 'codex', launchOwner: 'fleet'});
+
+        const refusalOf = id => launchRefusalOf(FleetRegistryService.getAgent(id));
+
+        // no ownership act: the seat's process record stays its only start gate
+        expect(refusalOf('default')).toBeNull();
+        expect(refusalOf('born')).toBeNull();
+
+        FleetRegistryService.setLaunchOwner('seat', 'external');
+        expect(refusalOf('seat')).toBe('released to its own harness: adopt it to start it here');
+
+        FleetRegistryService.setLaunchOwner('seat', 'fleet');
+        expect(refusalOf('seat')).toBeNull();
+        expect(launchRefusalOf(null)).toBeNull()
     });
 
     test('no other write surface changes launchOwner', () => {
