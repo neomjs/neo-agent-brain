@@ -1627,17 +1627,20 @@ function round2StateCoherenceFailure(lines) {
  *
  * The canonical and follow-up templates both carry actions as a `- [ ]` checklist under a Required
  * Actions heading, so the checklist IS the action packet. Everything after the heading up to the next
- * one is in scope, because an action's text can wrap.
+ * one is in scope, because an action's text can wrap. The micro form has no such heading: its checklist
+ * sits under the bold `**Findings:**` label and ends at the next bold label.
  * @param {String} body A prior review body.
  * @returns {String[]} Action texts, in the order the round raised them.
  */
 function extractRequiredActions(body) {
-    const section = String(body || '').split(/^#{1,6}[ \t].*Required Actions.*$/im)[1];
+    const
+        text    = String(body || ''),
+        section = text.split(/^#{1,6}[ \t].*Required Actions.*$/im)[1]?.split(/^#{1,6}[ \t]/m)[0] ??
+            text.split(/^\*\*Findings:\*\*.*$/im)[1]?.split(/^#{1,6}[ \t]|^\*\*[^*\n]+:\*\*/m)[0];
 
     if (!section) return [];
 
     return section
-        .split(/^#{1,6}[ \t]/m)[0]
         .split('\n')
         .filter(line => /^[ \t]*[-*][ \t]+\[[ x]\]/i.test(line))
         .map(line => line.replace(/^[ \t]*[-*][ \t]+\[[ x]\][ \t]*/i, '').trim())
