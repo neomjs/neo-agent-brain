@@ -54,7 +54,6 @@ const
         'ai:check-chroma-integrity',
         'ai:community-source-operator',
         'ai:compact-graphlog',
-        'ai:defrag-kb',
         'ai:download-kb',
         'ai:fleet-healthcheck',
         'ai:fleet-server',

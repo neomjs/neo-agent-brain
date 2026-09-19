@@ -44,8 +44,8 @@ const ROWS_PAGE_SIZE = 2000;
  *
  * **Scope boundary** — this daemon owns retention-policy chunk expiration plus
  * `defrag-recommended` telemetry. Config-orphan detection belongs to
- * `KbReconciliationService`; per-tenant retention overrides and automatic `ai:defrag-kb`
- * spawning are intentionally outside this daemon's current contract. The implementation is
+ * `KbReconciliationService`; per-tenant retention overrides and physical compaction
+ * are intentionally outside this daemon's current contract. The implementation is
  * additive and reuses the documented `where: {tenantId}` Chroma read idiom.
  *
  * @class Neo.ai.daemons.KbGarbageCollectionService
@@ -201,7 +201,7 @@ class KbGarbageCollectionService extends Base {
             }
 
             if (defragRecommended) {
-                logger.warn(`[KbGarbageCollectionService] defrag-recommended — cumulative deletion ${totalDeleted}/${collectionCount} exceeded gcDefragThreshold ${defragGate}; an operator should run \`npm run ai:defrag-kb\``)
+                logger.warn(`[KbGarbageCollectionService] defrag-recommended — cumulative deletion ${totalDeleted}/${collectionCount} exceeded gcDefragThreshold ${defragGate}; physical compaction requires server-owned storage access and is unavailable from endpoint-only clients`)
             }
 
             logger.debug(`[KbGarbageCollectionService] Pulse complete — ${tenants.length} tenant(s), ${totalDeleted} chunk(s) deleted (autoDelete=${autoDelete})`)

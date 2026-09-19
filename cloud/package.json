@@ -14,7 +14,6 @@
         "ai:check-backup-integrity"         : "node ./node_modules/neo-agent-brain/ai/scripts/maintenance/backupCorruptionTimeline.mjs",
         "ai:check-chroma-integrity"         : "node ./node_modules/neo-agent-brain/ai/scripts/maintenance/checkChromaIntegrity.mjs",
         "ai:compact-graphlog"               : "node ./node_modules/neo-agent-brain/ai/scripts/maintenance/compactGraphLog.mjs",
-        "ai:defrag-kb"                      : "node ./node_modules/neo-agent-brain/ai/scripts/maintenance/defragChromaDB.mjs --target knowledge-base",
         "ai:download-kb"                    : "node ./node_modules/neo-agent-brain/ai/scripts/maintenance/downloadKnowledgeBase.mjs",
         "ai:fleet-healthcheck"              : "node ./node_modules/neo-agent-brain/ai/scripts/diagnostics/fleetHealthcheck.mjs",
         "ai:fleet-server"                   : "node ./node_modules/neo-agent-brain/ai/services/fleet/devFleetServer.mjs",

@@ -62,12 +62,6 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
             heldExitPattern: /process\.exit\(0\)/
         },
         {
-            file           : 'maintenance/defragChromaDB.mjs',
-            owner          : 'defrag',
-            invocation     : 'withLease(',
-            heldExitPattern: /exit\(0\)/
-        },
-        {
             file           : 'maintenance/backup.mjs',
             owner          : 'backup',
             invocation     : 'withLeaseImpl ?? withHeavyMaintenanceLease',
@@ -77,6 +71,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
             file           : 'maintenance/syncGithubWorkflow.mjs',
             owner          : 'syncGithubWorkflow',
             invocation     : 'withHeavyMaintenanceLease(',
+            leasePathPrefix: String.raw`corpusOnly\s*\?\s*GH_Config\.issueSync\.corpusLeaseFile\s*:\s*`,
             heldExitPattern: /process\.exit\(0\)/
         },
         {
@@ -104,6 +99,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
         reason = 'manual-cli',
         invocation,
         heldExitPattern,
+        leasePathPrefix = '',
         heldDiagnosticPattern = /Deferred:.*lease held by/i
     } of SCRIPTS) {
         test(`${file}: imports withHeavyMaintenanceLease`, async () => {
@@ -123,7 +119,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
 
             // Scope all wiring assertions to the actual wrapper-options object. A leasePath
             // occurrence elsewhere in the file must not self-confirm this caller contract.
-            const leasePathMatch = /leasePath\s*:\s*resolveHeavyMaintenanceLeasePath\(\{dataDir\s*:\s*AiConfig\.orchestrator\.dataDir\}\)/g;
+            const leasePathMatch = new RegExp(String.raw`leasePath\s*:\s*${leasePathPrefix}resolveHeavyMaintenanceLeasePath\(\{dataDir\s*:\s*AiConfig\.orchestrator\.dataDir\}\)`, 'g');
             leasePathMatch.lastIndex = invocationIndex;
             const leasePathWiring = leasePathMatch.exec(source);
             expect(leasePathWiring, `${file}: configured leasePath must follow the wrapper invocation`).not.toBeNull();
@@ -146,7 +142,7 @@ test.describe('Manual heavy-maintenance script lease adoption', () => {
                 : reasonLit;
 
             expect(wrapperOptions).toMatch(new RegExp(
-                `^\\{\\s*leasePath\\s*:\\s*resolveHeavyMaintenanceLeasePath\\(\\{dataDir\\s*:\\s*AiConfig\\.orchestrator\\.dataDir\\}\\)\\s*,` +
+                `^\\{\\s*leasePath\\s*:\\s*${leasePathPrefix}resolveHeavyMaintenanceLeasePath\\(\\{dataDir\\s*:\\s*AiConfig\\.orchestrator\\.dataDir\\}\\)\\s*,` +
                 `\\s*owner\\s*:\\s*['"]${owner}['"]\\s*,\\s*reason\\s*:\\s*${reasonMatch}`
             ));
         });

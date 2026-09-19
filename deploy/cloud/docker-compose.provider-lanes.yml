@@ -119,7 +119,7 @@ x-provider-lane-contract:
       lane: embedding
       provider: openAiCompatible
       model: qwen3-embedding-8b
-      consumers: [kb-query, kb-tenant-ingestion, kb-health-canary, mc-vector-collections, mc-health-canary, golden-path-frontier, orchestrator-recovery, tenant-repo-recovery, vector-maintenance]
+      consumers: [kb-query, kb-tenant-ingestion, kb-health-canary, mc-vector-collections, mc-health-canary, golden-path-frontier, orchestrator-recovery, tenant-repo-recovery]
 
 # SOME KEYS BELOW RESTATE THEIR CONFIG DEFAULT, AND THAT IS A DECISION RATHER THAN AN OVERSIGHT.
 # `configBase.mjs` is the single source of defaults, and a second declaration site can silently drift

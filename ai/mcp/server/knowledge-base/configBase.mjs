@@ -97,24 +97,9 @@ class ConfigBase extends ConfigProvider {
              * @type {Function|null}
              */
             authMiddleware: leaf(null),
-            // The Chroma host and port are declared ONCE, at Tier-1 (`engines.chroma.{host,port}`),
-            // and consumers read them there through the getParent() chain. The child leaves that
-            // used to sit here re-bound `NEO_CHROMA_HOST` / `NEO_CHROMA_PORT` over a Tier-1 value
-            // captured as their default — ADR-0019 §3 C4 (two declared paths, one coordinate) with
-            // a B2 primitive-capture edge, against §2's "no layer holds a copy of another's data".
-            // The duplicate was not cosmetic: Tier-1 resolves the coordinate test-aware
-            // (`useTestDatabase ? hostTest : hostProd`), so with the production variable set under a
-            // test selector the two paths answered differently in one process, at one instant, from
-            // one environment. The operator surface is unchanged — Tier-1's `hostProd` / `portProd`
-            // bind the identical variables, so `NEO_CHROMA_HOST` / `NEO_CHROMA_PORT` still reach the
-            // Knowledge Base exactly as before.
-            // The persist directory is declared ONCE at Tier-1 (`engines.chroma.dataDir`) and read
-            // there. The child `path` leaf that used to sit here wrapped that same Tier-1 leaf and
-            // carried a docblock asserting it "MUST equal" the orchestrator's `--path` — which is
-            // the confession, not the safeguard: two declared coordinates that must be equal ARE
-            // one coordinate with two names, ADR-0019 §3 C4. The sanctioned form is one declared
-            // coordinate with its readers migrated, so `DatabaseService`, `VectorService`,
-            // `backup.mjs` and `defragChromaDB.mjs` now read the Tier-1 leaf at their use sites.
+            // Chroma client coordinates are inherited from Tier-1 through getParent(), including
+            // its test-aware resolution. Redeclaring them here would create a competing value.
+            // A declared dataDir does not prove that this client can reach the server's physical store.
             /**
              * @summary Shared SQLite destination for Knowledge Base query telemetry.
              *

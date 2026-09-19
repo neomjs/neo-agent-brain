@@ -156,7 +156,6 @@ export const PROVIDER_LANE_CONSUMER_CENSUS = Object.freeze([
     {id: 'golden-path-frontier', role: 'embedding', source: 'ai/services/graph/GoldenPathSynthesizer.mjs', anchor: 'TextEmbeddingService.embedText(frontierText, aiConfig.embeddingProvider)'},
     {id: 'orchestrator-recovery', role: 'embedding', source: 'ai/daemons/orchestrator/Orchestrator.mjs', anchor: 'TextEmbeddingService.embedTexts(documents, AiConfig.embeddingProvider)'},
     {id: 'tenant-repo-recovery', role: 'embedding', source: 'ai/daemons/orchestrator/services/TenantRepoSyncService.mjs', anchor: 'TextEmbeddingService.embedText(text, explicitProvider, options)'},
-    {id: 'vector-maintenance', role: 'embedding', source: 'ai/scripts/maintenance/defragChromaDB.mjs', anchor: 'TextEmbeddingService.embedTexts(docs.map'}
 ]);
 
 function numberAboveZero(value) {

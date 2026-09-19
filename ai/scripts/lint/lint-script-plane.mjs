@@ -126,7 +126,6 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::buildConfigEnvDefaultsForTemplate',
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::collectConfigPathKindsFromTemplate',
     'ai/scripts/lint/lint-config-template-ssot.mjs::dynamic-import::withTier1ConfigForLint',
-    'ai/scripts/maintenance/defragChromaDB.mjs::dynamic-import::loadConfig'
 ]);
 
 /**

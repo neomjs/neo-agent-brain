@@ -232,8 +232,8 @@ as a substitute for SQLite FTS5 repair.
    ```
 
 **Boundaries:**
-- `ai/scripts/maintenance/defragChromaDB.mjs` compacts collection storage; it is
-  not an FTS5 integrity repair tool.
+- `ai/scripts/maintenance/defragChromaDB.mjs` refuses physical maintenance from
+  endpoint-only clients; it is not an FTS5 integrity repair tool.
 - KB rebuild (`npm run ai:sync-kb`) repairs the cache collection, not the shared
   SQLite full-text index.
 - MC backup import restores collection rows, but it is not required when the
@@ -277,36 +277,21 @@ The RLAIF trajectories capture interaction feedback and metadata for offline RL 
    ```
 
 ### 7. Memory Core Stored-Embedding Export Repair
-A distinct failure from §3 (FTS5) and from a full restore (§2): `npm run ai:check-chroma-integrity` reports `get embedding by id: Error finding id` (stored-embedding export fails) for `neo-agent-memory` / `neo-agent-sessions` / `neo-native-graph` **while the query canary stays healthy** — Chroma metadata rows are present but many ids are missing from the persisted HNSW vector index (#13496 / #13467). Backup/export silently skips the missing-vector ids, so it is **not** a safe substitute. The repair re-embeds the missing vectors into a shadow collection and promotes copy-first (`defragChromaDB.mjs` `repairMemoryCoreCollectionsViaFullEnumeration`, #13635), behind the `--allow-memory-core` opt-in (default fails closed).
 
-**Procedure:**
-1. Confirm the diagnosis (read-only — a healthy query canary plus a failing exportability sample is the signature):
-   ```bash
-   node ai/scripts/maintenance/probeCollectionQueryHealth.mjs
-   npm run ai:check-chroma-integrity -- --exportability-sample-size 2 --json
-   ```
-2. Quiesce every **competing writer** — but **leave the Chroma server running** (both the backup and the repair use its API; unlike §3's file-level FTS5 repair, this does **not** stop Chroma). Stop the Orchestrator, Memory Core, Knowledge Base, wake daemons, and harness MCP server instances (the `npm run ai:server` processes) so nothing else mutates the collections during the repair.
-3. With the writers stopped (store quiescent, Chroma still up), capture the canonical SDK backup and a coarse physical rollback copy:
-   ```bash
-   npm run ai:backup
-   cp -R .neo-ai-data/chroma/unified .neo-ai-data/chroma/unified.pre-mc-repair-<timestamp>
-   ```
-   (`ai:backup` reads through Chroma's API, so Chroma must be up; the physical copy is a coarse rollback taken while no writers are active. `defragChromaDB` additionally takes its own private pre-promote snapshot.)
-4. Run the repair with Chroma running and no competing writers (the repair is the exclusive collection writer; opt-in — it shadow-extracts intact vectors, re-embeds the missing ids, validates the shadow collection, then promotes copy-first):
-   ```bash
-   node ai/scripts/maintenance/defragChromaDB.mjs --target memory-core --allow-memory-core
-   ```
-   A clean run clears its repair state-marker; a partial run rewrites an explicit `memory-core-repair-aborted` marker and exits non-zero — investigate before re-running.
-5. Verify export and query health are both green, then restart the AI services (see Verification below):
-   ```bash
-   npm run ai:check-chroma-integrity -- --json
-   node ai/scripts/maintenance/probeCollectionQueryHealth.mjs
-   ```
+Stored-embedding export can fail with `get embedding by id: Error finding id` while the query canary remains healthy. These are different read paths: a healthy query does not prove every stored vector can be exported. A JSONL backup that skips missing-vector rows is not a complete recovery source for those rows.
 
-**Boundaries:**
-- This repairs stored-embedding export (re-embed missing vectors); it is **not** the §3 FTS5 SQLite repair and **not** the §2 backup-restore — use those for their respective failures.
-- The repair is gated behind `--allow-memory-core` (default fails closed) and promotes copy-first; it never deletes/recreates the live collection in place.
-- The heavier exportability probe (`get embedding by id`) stays **on-demand** (the maintenance scripts above); the routine bounded healthcheck remains query-path only.
+Diagnose the condition with the read-only probes:
+
+```bash
+node ai/scripts/maintenance/probeCollectionQueryHealth.mjs
+npm run ai:check-chroma-integrity -- --exportability-sample-size 2 --json
+```
+
+The former `defragChromaDB.mjs --target memory-core --allow-memory-core` procedure is unavailable to endpoint-only clients. Its pre-promote snapshot depended on a client-local directory being the serving Chroma process's physical store. Under the container topology, Chroma owns `chroma-data:/data`; an API client can connect without receiving that volume. Neither localhost nor a directory with the same name proves physical access.
+
+The CLI now exits nonzero with `CHROMA_PHYSICAL_STORAGE_UNAVAILABLE` before maintenance. Its legacy opt-in and dry-run flags do not grant storage ownership. The exported repair primitives remain available to explicitly owned callers, but there is no supported endpoint-only physical repair runner. Do not copy a client-local `.neo-ai-data/chroma/unified` directory and treat it as the server's rollback snapshot.
+
+Keep the failed-export evidence and the available logical backup separate. A physical repair requires an owner-bound maintenance path and its own rollback proof; a configuration-path override cannot establish that boundary.
 
 ## Verification
 After restoration, restart the subsystem and verify health.

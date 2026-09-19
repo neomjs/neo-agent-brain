@@ -1,11 +1,12 @@
 import {test, expect}          from '@playwright/test';
-import {mkdtemp, readFile, rm} from 'fs/promises';
+import {mkdtemp, mkdir, readFile, readdir, rm, writeFile} from 'fs/promises';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import os                      from 'os';
 import path                    from 'path';
 import {
     anyRepairNonClean,
     applyAutonomousSettlement,
-    assertDefragTargetSupported,
     assertNoIncompleteDefragState,
     createUnrecoverablePreview,
     formatMemoryCoreRepairProgress,
@@ -542,86 +543,60 @@ test.describe('repairMemoryCoreCollectionViaResumableShadow (#14020)', () => {
     });
 });
 
-test.describe('runDefragChromaDBCli (#14020)', () => {
-    test('runs standalone defrag inside the shared heavy-maintenance lease', async () => {
-        const calls = {
-            lease: [],
-            run  : 0,
-            exit : []
-        };
+test.describe('runDefragChromaDBCli — endpoint-only refusal', () => {
+    test('real CLI refuses container and loopback clients without touching their declared directory', async () => {
+        const root = await mkdtemp(path.join(os.tmpdir(), 'defrag-client-only-')),
+              storage = path.join(root, 'unrelated-store'),
+              script = fileURLToPath(new URL('../../../../../../ai/scripts/maintenance/defragChromaDB.mjs', import.meta.url));
+        await mkdir(storage);
+        await writeFile(path.join(storage, 'chroma.sqlite3'), 'another-store-sentinel');
 
-        await runDefragChromaDBCli({
-            runDefrag: async () => {
-                calls.run++;
-            },
-            withLease: async (task, options) => {
-                calls.lease.push(options);
-                await task();
-                return {status: 'acquired', result: undefined};
-            },
-            output: {
-                log  : () => {},
-                error: () => {}
-            },
-            exit: code => calls.exit.push(code)
-        });
+        try {
+            const help = spawnSync(process.execPath, [script, '--help'], {encoding: 'utf8', timeout: 10000});
+            expect(help.status, help.stderr).toBe(0);
+            expect(help.stdout).toContain('endpoint-only execution is unavailable');
 
-        expect(calls.run).toBe(1);
-        expect(calls.lease).toEqual([{
-            leasePath   : path.join(AiConfig.orchestrator.dataDir, 'heavy-maintenance-lease.json'),
-            owner       : 'defrag',
-            reason      : 'manual-cli',
-            staleAfterMs: AiConfig.orchestrator.heavyMaintenanceLease.staleAfterMs,
-            metadata    : {script: 'ai/scripts/maintenance/defragChromaDB.mjs'}
-        }]);
-        expect(calls.exit).toEqual([0]);
-    });
-
-    test('defers without running defrag when another heavy task holds the lease', async () => {
-        const logs  = [];
-        const calls = {
-            run : 0,
-            exit: []
-        };
-
-        await runDefragChromaDBCli({
-            runDefrag: async () => {
-                calls.run++;
-            },
-            withLease: async () => ({
-                status: 'held',
-                lease : {
-                    owner     : 'sandman',
-                    reason    : 'manual-cli',
-                    pid       : 123,
-                    acquiredAt: '2026-06-25T21:00:00.000Z'
+            for (const host of ['chroma', '127.0.0.1']) {
+                for (const target of ['knowledge-base', 'memory-core']) {
+                    const result = spawnSync(process.execPath, [script, '--target', target, '--allow-memory-core', '--dry-run'], {
+                        cwd: root, encoding: 'utf8', timeout: 10000,
+                        env: {...process.env, NEO_CHROMA_HOST_TEST: host, NEO_CHROMA_PORT_TEST: '1', NEO_CHROMA_DATA_DIR_TEST: storage}
+                    });
+                    expect(result.status, result.stderr).toBe(1);
+                    expect(result.stderr).toContain('CHROMA_PHYSICAL_STORAGE_UNAVAILABLE');
+                    expect(result.stdout).not.toContain('snapshot');
                 }
-            }),
-            output: {
-                log  : message => logs.push(message),
-                error: () => {}
-            },
-            exit: code => calls.exit.push(code)
+            }
+            expect(await readdir(root)).toEqual(['unrelated-store']);
+            expect(await readdir(storage)).toEqual(['chroma.sqlite3']);
+            expect(await readFile(path.join(storage, 'chroma.sqlite3'), 'utf8')).toBe('another-store-sentinel');
+        } finally {
+            await rm(root, {recursive: true, force: true});
+        }
+    });
+
+    for (const target of ['knowledge-base', 'memory-core']) {
+        test(`refuses ${target} before legacy lease or mutation seams`, async () => {
+            const calls = {lease: 0, run: 0, exit: [], errors: []};
+
+            await runDefragChromaDBCli({
+                argv: ['node', 'defragChromaDB.mjs', '--target', target, '--allow-memory-core'],
+                runDefrag: async () => { calls.run++; },
+                withLease: async task => {
+                    calls.lease++;
+                    await task();
+                    return {status: 'acquired'};
+                },
+                output: {error: (...args) => calls.errors.push(args.join(' ')), log: () => {}},
+                exit: code => calls.exit.push(code)
+            });
+
+            expect(calls.exit).toEqual([1]);
+            expect(calls.lease).toBe(0);
+            expect(calls.run).toBe(0);
+            expect(calls.errors.join('\n')).toContain('CHROMA_PHYSICAL_STORAGE_UNAVAILABLE');
         });
-
-        expect(calls.run).toBe(0);
-        expect(calls.exit).toEqual([0]);
-        expect(logs.some(message => message.includes("Deferred: heavy-maintenance lease held by 'sandman'"))).toBe(true);
-    });
-});
-
-test.describe('assertDefragTargetSupported — Memory Core opt-in gate (#14020)', () => {
-    test('fails closed for memory-core by default (no opt-in)', () => {
-        expect(() => assertDefragTargetSupported({targetName: 'memory-core'})).toThrow(/Memory Core defrag is disabled/);
-    });
-
-    test('allows memory-core only with the explicit allowMemoryCore opt-in', () => {
-        expect(() => assertDefragTargetSupported({targetName: 'memory-core', allowMemoryCore: true})).not.toThrow();
-    });
-
-    test('knowledge-base is always allowed', () => {
-        expect(() => assertDefragTargetSupported({targetName: 'knowledge-base'})).not.toThrow();
-    });
+    }
 });
 
 test.describe('promoteLoadedShadowCollection — retained-parking lifecycle (#14068)', () => {

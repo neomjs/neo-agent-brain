@@ -1,7 +1,6 @@
 // Class bootstrap belongs to `daemon.mjs`; this consumed class relies on global Neo.
 import fs              from 'fs-extra';
 import {spawn}         from 'child_process';
-import net             from 'net';
 import path            from 'path';
 import Base            from 'neo.mjs/src/core/Base.mjs';
 import ClassSystemUtil from 'neo.mjs/src/util/ClassSystem.mjs';
@@ -1426,8 +1425,7 @@ export class Orchestrator extends Base {
      * supervise or recover.
      *
      * Scheduled definitions follow authority directly. Continuous children additionally
-     * honor their enable gate; the auxiliary Chroma-defrag child follows Chroma's actual
-     * supervision eligibility. This keeps PID recovery from crossing the authority split
+     * honor their enable gate. This keeps PID recovery from crossing the authority split
      * before the first poll.
      *
      * @param {Object} [taskDefinitions=this.taskDefinitions] Full task table.
@@ -1447,9 +1445,6 @@ export class Orchestrator extends Base {
             }
             if (continuousNames.has(taskName)) {
                 return enabledContinuousNames.has(taskName);
-            }
-            if (taskName === 'chromaDefrag') {
-                return enabledContinuousNames.has('chroma');
             }
             return true;
         }));
@@ -1634,8 +1629,6 @@ export class Orchestrator extends Base {
             ? options.primaryDevSyncRootsConfig
             : AiConfig.orchestrator.devSyncRoots;
         this.maintenanceDeferralLogKeys = new Set();
-        this._chromaDefragPending  = false;
-        this._chromaDefragInFlight = false;
 
         fs.ensureDirSync(this.dataDir);
 
@@ -1962,18 +1955,6 @@ export class Orchestrator extends Base {
         }
     }
 
-    /** @summary Resolves true when Chroma's TCP port accepts a connection. */
-    probeChromaReady({timeoutMs = 2000} = {}) {
-        return new Promise(resolve => {
-            const socket = net.connect({host: 'localhost', port: AiConfig.engines.chroma.port});
-            const finish = result => { socket.destroy(); resolve(result); };
-            socket.setTimeout(timeoutMs);
-            socket.once('connect', () => finish(true));
-            socket.once('timeout', () => finish(false));
-            socket.once('error',   () => finish(false));
-        });
-    }
-
     /**
      * Executes a sweep and schedules the next poll when the daemon remains active.
      * @returns {void}
@@ -1994,8 +1975,7 @@ export class Orchestrator extends Base {
             return;
         }
 
-        const now         = Date.now();
-        const executeTask = this.processSupervisorService.runTask.bind(this.processSupervisorService);
+        const now = Date.now();
 
         const continuousTasks     = this.getEnabledContinuousTaskNames();
         const RESTART_COOLDOWN_MS = 15000;
@@ -2011,37 +1991,10 @@ export class Orchestrator extends Base {
                 }
 
                 this.processSupervisorService.killTask('chroma', `max-runtime:${now - (state.lastRunAt || 0)}ms>${AiConfig.orchestrator.chroma.maxRuntimeMs}ms`);
-                this._chromaDefragPending = true;
                 continue;
             }
 
             this.processSupervisorService.superviseTask(taskName, now, RESTART_COOLDOWN_MS);
-
-            if (
-                taskName === 'chroma' &&
-                state?.running &&
-                this._chromaDefragPending &&
-                !this._chromaDefragInFlight &&
-                !this.isHeavyMaintenanceLeaseActive(now)
-            ) {
-                this._chromaDefragInFlight = true;
-                this.probeChromaReady()
-                    .then(ready => {
-                        // Deferred continuations re-fence on arrival: a lease lost after this
-                        // poll scheduled us must not produce a mutating effect. Latched flag —
-                        // prototypes without a lease wired are unaffected.
-                        if (this.authorityLeaseLost) {
-                            return;
-                        }
-
-                        if (ready && this._chromaDefragPending) {
-                            this._chromaDefragPending = false;
-                            executeTask('chromaDefrag', 'chroma-recycle-defrag');
-                        }
-                    })
-                    .catch(() => {})
-                    .finally(() => { this._chromaDefragInFlight = false; });
-            }
         }
 
         runSchedulingPipeline({

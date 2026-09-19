@@ -103,7 +103,6 @@ export const TASK_AUTHORITY_BY_NAME = Object.freeze({
     backup                                 : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'graphlog-compaction'                  : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'temporal-summary'                     : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
-    chromaDefrag                           : ORCHESTRATOR_AUTHORITY_CLASS.sharedPrimitive,
     'primary-dev-sync'                     : ORCHESTRATOR_AUTHORITY_CLASS.hostEdge,
     'tenant-repo-sync'                     : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     dream                                  : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
@@ -162,16 +161,12 @@ export const INTERNAL_TASK_REGISTRY = Object.freeze([
 
 /**
  * On-demand supervised children which are not continuous processes or cadence-picked
- * tasks. Chroma defrag follows Chroma's shared-primitive authority and enablement.
+ * tasks. The registry remains exported as a stable inventory seam when no auxiliary
+ * child is currently admitted.
  *
  * @type {ReadonlyArray<Object>}
  */
-export const AUXILIARY_TASK_REGISTRY = Object.freeze([
-    {taskName: 'chromaDefrag'}
-].map(descriptor => Object.freeze({
-    ...descriptor,
-    authorityClass: getTaskAuthorityClass(descriptor.taskName)
-})));
+export const AUXILIARY_TASK_REGISTRY = Object.freeze([]);
 
 /**
  * @summary Returns the canonical authority class for one orchestrator task and fails

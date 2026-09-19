@@ -2516,10 +2516,8 @@ class ConfigBase extends ConfigProvider {
                     }
                 },
                 /**
-                 * Chroma defrag policy. Cadence here is operator policy only — no daemon
-                 * auto-spawns defrag from THIS value. The orchestrator's max-runtime recycle
-                 * path can auto-spawn `ai:defrag-kb`, driven by `orchestrator.chroma.maxRuntimeMs`;
-                 * that is a distinct config, not this cadence.
+                 * Legacy physical-snapshot retention policy for explicit archive callers.
+                 * Neither this cadence nor Chroma recycling authorizes endpoint-only physical maintenance.
                  * @type {Object}
                  */
                 defrag: {
@@ -2620,8 +2618,8 @@ class ConfigBase extends ConfigProvider {
                 gcAutoDelete: false,
                 /**
                  * Cumulative-deletion fraction above which a GC tick emits a
-                 * `defrag-recommended` signal (operators should then run `ai:defrag-kb`). `0`
-                 * disables the signal. V1 emits the signal only — it does not spawn defrag.
+                 * `defrag-recommended` signal. Physical compaction requires server-owned storage access;
+                 * endpoint-only clients cannot perform it. `0` disables the telemetry signal.
                  * @type {Number}
                  */
                 gcDefragThreshold: 0.10

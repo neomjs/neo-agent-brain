@@ -42,7 +42,6 @@ test.describe.configure({mode: 'serial'});
 
 test.describe('defragChromaDB segment cleanup — unified-store-safe keep-set (#12140)', () => {
     let TARGETS;
-    let assertDefragTargetSupported;
     let assertNoIncompleteDefragState;
     let clearDefragState;
     let createSwapCollectionName;
@@ -57,7 +56,6 @@ test.describe('defragChromaDB segment cleanup — unified-store-safe keep-set (#
     test.beforeAll(async () => {
         const mod = await import('../../../../../../ai/scripts/maintenance/defragChromaDB.mjs');
         TARGETS                             = mod.TARGETS;
-        assertDefragTargetSupported         = mod.assertDefragTargetSupported;
         assertNoIncompleteDefragState       = mod.assertNoIncompleteDefragState;
         clearDefragState                    = mod.clearDefragState;
         createSwapCollectionName            = mod.createSwapCollectionName;
@@ -228,7 +226,7 @@ test.describe('defragChromaDB segment cleanup — unified-store-safe keep-set (#
         expect(removed).toEqual([trueOrphan]);
     });
 
-    test('target adapters share one unified store path while scoping collections per group', () => {
+    test('target adapters expose client endpoints without promoting a declared path to storage authority', () => {
         const unifiedPath = path.join(tmpRoot, 'chroma', 'unified');
 
         // Both adapters now read the same Tier-1 shape: the Knowledge Base target lost its flat
@@ -261,26 +259,14 @@ test.describe('defragChromaDB segment cleanup — unified-store-safe keep-set (#
             }
         });
 
-        expect(kbConfig.path).toBe(unifiedPath);
-        expect(mcConfig.path).toBe(unifiedPath);
+        expect(kbConfig).not.toHaveProperty('path');
+        expect(mcConfig).not.toHaveProperty('path');
         expect(kbConfig.collections).toEqual(['neo-knowledge-base']);
         expect(mcConfig.collections).toEqual([
             'neo-agent-memory',
             'neo-agent-sessions',
             'neo-native-graph'
         ]);
-    });
-
-    test('fails closed for Memory Core until safe multi-collection promotion exists', () => {
-        expect(() => assertDefragTargetSupported({targetName: 'memory-core'}))
-            .toThrow(/Memory Core defrag is disabled/);
-        try {
-            assertDefragTargetSupported({targetName: 'memory-core'});
-        } catch (error) {
-            expect(error.code).toBe('DEFRAG_MEMORY_CORE_UNSAFE');
-        }
-
-        expect(() => assertDefragTargetSupported({targetName: 'knowledge-base'})).not.toThrow();
     });
 
     test('durable phase markers block reruns until an incomplete defrag is cleared', async () => {

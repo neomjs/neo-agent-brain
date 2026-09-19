@@ -563,7 +563,7 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
             neuralLinkBridgeLivenessTimeoutMs: 50
         }));
 
-        expect(Object.keys(state)).toEqual(['chroma', 'bridgeDaemon', 'neuralLinkBridge', 'embedDaemon', 'messageDaemon', 'summary', 'memory-summary-backfill', 'kbSync', 'core-corpus-projection', 'backup', 'graphlog-compaction', 'temporal-summary', 'defect-ledger-digest', 'ci-failure-ingest', 'chromaDefrag', 'primary-dev-sync', 'tenant-repo-sync', 'dream', 'message-concept-harvest', 'golden-path', 'swarm-heartbeat', 'embed-drain-liveness-watchdog', 'rem-consolidation-liveness-watchdog', 'heavy-maintenance-starvation-watchdog']);
+        expect(Object.keys(state)).toEqual(['chroma', 'bridgeDaemon', 'neuralLinkBridge', 'embedDaemon', 'messageDaemon', 'summary', 'memory-summary-backfill', 'kbSync', 'core-corpus-projection', 'backup', 'graphlog-compaction', 'temporal-summary', 'defect-ledger-digest', 'ci-failure-ingest', 'primary-dev-sync', 'tenant-repo-sync', 'dream', 'message-concept-harvest', 'golden-path', 'swarm-heartbeat', 'embed-drain-liveness-watchdog', 'rem-consolidation-liveness-watchdog', 'heavy-maintenance-starvation-watchdog']);
         expect(state.mlx).toBeUndefined();
         expect(state.memoryCoreChroma).toBeUndefined();
         expect(state.summary).toMatchObject({
@@ -2637,7 +2637,6 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
         orchestrator.poll();
 
         expect(sink.killed).toEqual([]);
-        expect(orchestrator._chromaDefragPending).toBeFalsy();
     });
 
     test('isChromaRecycleDue: false when the ceiling is 0 (recycling disabled)', () => {
@@ -2648,7 +2647,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
         expect(orchestrator.isChromaRecycleDue({running: true, lastRunAt: now - 999999}, now)).toBe(false);
     });
 
-    test('recycles an over-age chroma daemon: kills it and flags a pending defrag', () => {
+    test('recycles an over-age chroma daemon without scheduling a defrag child', () => {
         AiConfig.orchestrator.chroma = {maxRuntimeMs: 1000};
         const sink         = {killed: [], started: []};
         const orchestrator = createTestOrchestrator();
@@ -2662,7 +2661,7 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
         expect(sink.killed).toHaveLength(1);
         expect(sink.killed[0].taskName).toBe('chroma');
         expect(sink.killed[0].reason).toContain('max-runtime');
-        expect(orchestrator._chromaDefragPending).toBe(true);
+        expect(sink.started.some(({taskName}) => taskName === 'chromaDefrag')).toBe(false);
     });
 
     test('defers an over-age chroma recycle while the heavy-maintenance lease is active', () => {
@@ -2690,7 +2689,6 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
 
         expect(sink.killed).toEqual([]);
         expect(sink.supervised).toContain('chroma');
-        expect(orchestrator._chromaDefragPending).toBeFalsy();
 
         fs.removeSync(orchestrator.heavyMaintenanceLeasePath);
 
@@ -2698,7 +2696,6 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
 
         expect(sink.killed).toHaveLength(1);
         expect(sink.killed[0].taskName).toBe('chroma');
-        expect(orchestrator._chromaDefragPending).toBe(true);
     });
 
     test('does not recycle a chroma daemon within its max-runtime ceiling', () => {
@@ -2713,7 +2710,6 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
         orchestrator.poll();
 
         expect(sink.killed).toEqual([]);
-        expect(orchestrator._chromaDefragPending).toBeFalsy();
     });
 
     test('does not recycle chroma in cloud mode (daemon lane disabled)', () => {
@@ -2728,76 +2724,6 @@ test.describe('Neo.ai.daemons.Orchestrator — chroma max-runtime recycle (#1213
         orchestrator.poll();
 
         expect(sink.killed).toEqual([]);
-        expect(orchestrator._chromaDefragPending).toBeFalsy();
-    });
-
-    test('spawns the KB defrag once the restarted chroma is connection-ready', async () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 60000};
-        const sink         = {killed: [], started: []};
-        const orchestrator = createTestOrchestrator();
-
-        // Post-kill state: chroma restarted + running (fresh lastRunAt → not recycle-due), defrag pending.
-        TaskStateService.taskState.chroma.running   = true;
-        TaskStateService.taskState.chroma.lastRunAt = Date.now();
-        orchestrator._chromaDefragPending = true;
-        orchestrator.probeChromaReady     = () => Promise.resolve(true);
-        orchestrator.processSupervisorService = recycleMock(sink);
-
-        orchestrator.poll();
-        await new Promise(resolve => setTimeout(resolve, 10));
-
-        expect(sink.started).toContainEqual({taskName: 'chromaDefrag', reason: 'chroma-recycle-defrag'});
-        expect(orchestrator._chromaDefragPending).toBe(false);
-    });
-
-    test('does not start pending chroma defrag while the heavy-maintenance lease is active', async () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 60000};
-        const sink         = {killed: [], started: []};
-        const orchestrator = createTestOrchestrator();
-        const now          = Date.now();
-
-        fs.ensureDirSync(path.dirname(orchestrator.heavyMaintenanceLeasePath));
-        fs.writeJsonSync(orchestrator.heavyMaintenanceLeasePath, {
-            owner       : 'kbSync',
-            reason      : 'scheduled',
-            pid         : process.pid,
-            token       : 'test-token',
-            acquiredAt  : new Date(now).toISOString(),
-            staleAfterMs: 600000,
-            expiresAt   : new Date(now + 600000).toISOString()
-        });
-
-        TaskStateService.taskState.chroma.running   = true;
-        TaskStateService.taskState.chroma.lastRunAt = now;
-        orchestrator._chromaDefragPending = true;
-        orchestrator.probeChromaReady     = () => Promise.resolve(true);
-        orchestrator.processSupervisorService = recycleMock(sink);
-
-        orchestrator.poll();
-        await new Promise(resolve => setTimeout(resolve, 10));
-
-        expect(sink.started.find(s => s.taskName === 'chromaDefrag')).toBeUndefined();
-        expect(orchestrator._chromaDefragPending).toBe(true);
-
-        fs.removeSync(orchestrator.heavyMaintenanceLeasePath);
-    });
-
-    test('does not spawn the defrag while the restarted chroma is not yet connection-ready', async () => {
-        AiConfig.orchestrator.chroma = {maxRuntimeMs: 60000};
-        const sink         = {killed: [], started: []};
-        const orchestrator = createTestOrchestrator();
-
-        TaskStateService.taskState.chroma.running   = true;
-        TaskStateService.taskState.chroma.lastRunAt = Date.now();
-        orchestrator._chromaDefragPending = true;
-        orchestrator.probeChromaReady     = () => Promise.resolve(false);
-        orchestrator.processSupervisorService = recycleMock(sink);
-
-        orchestrator.poll();
-        await new Promise(resolve => setTimeout(resolve, 10));
-
-        expect(sink.started.find(s => s.taskName === 'chromaDefrag')).toBeUndefined();
-        expect(orchestrator._chromaDefragPending).toBe(true);
     });
 });
 

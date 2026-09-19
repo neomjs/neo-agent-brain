@@ -55,6 +55,15 @@ jobs:
                   test/playwright/unit/ai/services/graph/SemanticGraphExtractor.spec.mjs
                   test/playwright/unit/ai/services/memory-core/MailboxService.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/defectObservationFold.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/Orchestrator.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/scheduling/registry.spec.mjs
+                  test/playwright/unit/ai/daemons/kb-gc/KbGarbageCollectionService.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/defragMemoryCoreRepair.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/defrag-segment-cleanup.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/manualHeavyMaintenanceScriptLeaseAdoption.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/backup.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/restore.spec.mjs
+                  test/playwright/unit/ai/scripts/diagnostics/providerLaneComposition.spec.mjs
                   test/playwright/unit/src/evolution/RemDigestion.spec.mjs
                   test/playwright/unit/ai/mcp/server/neural-link/Bridge.spec.mjs
                   test/playwright/unit/playwrightConfigUnit.spec.mjs

@@ -210,6 +210,25 @@ test.describe('restore.mjs orchestrator — bundle-aware substrate restore (#108
         expect(calls.guard).toHaveLength(0);
     });
 
+    test('null physical storage coordinates preserve JSONL restore topology', async () => {
+        const bundleRoot = buildSyntheticBundle({bundleName: 'unobserved-storage', shared_topology: true}),
+              metaPath = path.join(bundleRoot, 'bundle-meta.json'),
+              meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        meta.topology.kbChromaCoords = {host: 'chroma', port: 8000, path: null, storageReason: 'physical-storage-not-observed'};
+        meta.topology.mcChromaCoords = {host: 'chroma', port: 8000, dataDir: null, storageReason: 'physical-storage-not-observed'};
+        fs.writeFileSync(metaPath, JSON.stringify(meta));
+
+        const result = await runRestore({
+            expectedDimension: 1, bundleRoot, logger: silentLogger,
+            conceptsTargetDir: path.join(workRoot, 'unobserved-targets', 'concepts'),
+            trajectoriesTargetFile: path.join(workRoot, 'unobserved-targets', 'trajectories.jsonl'),
+            sentToCullTargetFile: path.join(workRoot, 'unobserved-targets', 'sent-to-cull.jsonl')
+        });
+        expect(result.topology.match).toBe(true);
+        expect(calls.kb).toHaveLength(1);
+        expect(calls.mc).toHaveLength(2);
+    });
+
     test('integrity-failure refusal: missing required subdir throws BEFORE any service call', async () => {
         const bundleRoot = buildSyntheticBundle({bundleName: 'corrupt-missing-mc', omitSubdirs: ['mc']});
 
@@ -430,12 +449,12 @@ test.describe('restore.mjs orchestrator — bundle-aware substrate restore (#108
         expect(() => parseArgs(['/x', '--unknown-flag'])).toThrow(/Unknown flag/);
     });
 
-    // Reads the REAL `ai:reseed` string out of package.json and feeds it through the real parser, so
+    // Reads the Cloud package's real `ai:reseed` alias and feeds it through the real parser, so
     // the alias is itself reachability-tested: break the script entry and this goes red. Asserting a
     // hand-written copy of the alias would only prove the copy.
     test('the ai:reseed npm alias resolves to the operational-re-seed policy', () => {
         const
-            pkg   = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8')),
+            pkg   = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'cloud/package.json'), 'utf8')),
             alias = pkg.scripts['ai:reseed'];
 
         expect(alias).toBeTruthy();

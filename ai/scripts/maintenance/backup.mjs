@@ -62,9 +62,8 @@ const execFileAsync = promisify(execFile);
  * ```
  *
  * This script does NOT defrag; it captures the current state whatever shape it is in.
- * `defragChromaDB.mjs` retains its private pre-nuke helper and does not call this
- * orchestrator. Operators who want compacted backups chain commands at the shell layer:
- * `npm run ai:defrag-kb && npm run ai:backup`.
+ * Physical compaction requires access to the server-owned store; endpoint-only
+ * clients cannot authorize it. This JSONL backup remains independent of physical maintenance.
  *
  * Persistent-substrate service calls route through `ai/services.mjs`, which applies Zod
  * validation at the SDK boundary via `makeSafe()`. MCP config singletons are imported
@@ -86,8 +85,8 @@ const execFileAsync = promisify(execFile);
  *   `graph-backup-*.jsonl`) — preserved as-is for archive / restore use. New bundles land in
  *   `backup-<ISO-ts>/` subfolders alongside them.
  * - Physical-copy directories at `dist/chromadb-backups/<target>/backup-<numeric-ts>/` — these
- *   remain **defrag-exclusive pre-nuke snapshots** under the defrag physical-copy
- *   contract. They are orthogonal to this script's output.
+ *   are legacy pre-nuke snapshots. They are orthogonal to this script's output;
+ *   the endpoint-only defrag CLI no longer creates them.
  *
  * Operators who want to reclaim space can manually delete the legacy flat files or run
  * `defragChromaDB.cleanOldBackups` against `dist/chromadb-backups/<target>/`. No automated
@@ -110,8 +109,7 @@ const execFileAsync = promisify(execFile);
  * - The physical Chroma persist directory (`.neo-ai-data/chroma/unified/`) — the
  *   bundle captures logical collection state via JSONL exports, not the on-disk
  *   HNSW indexes. Restore re-ingests via the canonical `manageDatabaseImport` SDK
- *   path. Physical pre-nuke snapshots remain `defragChromaDB.mjs`-exclusive at
- *   `dist/chromadb-backups/`.
+ *   path. The client's configured directory is not an observation of that physical store.
  *
  * @see ai/scripts/maintenance/defragChromaDB.mjs
  */
@@ -973,13 +971,9 @@ export async function verifyBundleIntegrity(layout, subsystems) {
 }
 
 /**
- * Builds the topology descriptor block for `bundle-meta.json`. Captures the KB/MC coordinates
- * at backup time so a restore consumer can detect legacy federated bundles
- * (`bundle-meta.topology.chromaUnified === false`) and refuse to clobber a target whose
- * deployment shape diverged from the bundle source.
- *
- * Restore consumers use this descriptor to validate topology compatibility before
- * importing a bundle.
+ * @summary Records endpoint coordinates and the shared-store topology for a JSONL bundle.
+ * Physical storage is not observed through a client endpoint, so its path stays null with a reason.
+ * Restore uses the shared-topology flag; it does not require access to the source filesystem.
  *
  * @returns {{shared_topology: Boolean, kbChromaCoords: Object, mcChromaCoords: Object}}
  */
@@ -987,14 +981,16 @@ function buildTopologyDescriptor() {
     return {
         shared_topology: true,
         kbChromaCoords : {
-            host: kbConfig.engines.chroma.host    ?? null,
-            port: kbConfig.engines.chroma.port    ?? null,
-            path: kbConfig.engines.chroma.dataDir ?? null
+            host         : kbConfig.engines.chroma.host,
+            port         : kbConfig.engines.chroma.port,
+            path         : null,
+            storageReason: 'physical-storage-not-observed'
         },
         mcChromaCoords: {
-            host   : mcConfig.engines?.chroma?.host    ?? null,
-            port   : mcConfig.engines?.chroma?.port    ?? null,
-            dataDir: mcConfig.engines?.chroma?.dataDir ?? null
+            host         : mcConfig.engines.chroma.host,
+            port         : mcConfig.engines.chroma.port,
+            dataDir      : null,
+            storageReason: 'physical-storage-not-observed'
         }
     }
 }

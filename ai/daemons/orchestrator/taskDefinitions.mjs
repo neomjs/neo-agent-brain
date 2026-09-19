@@ -306,7 +306,7 @@ export function buildTaskDefinitions({
             label  : 'chroma daemon',
             command: 'chroma',
             // The --path persist dir is the resolved engines.chroma.dataDir leaf when built through
-            // the configured builder (the SSOT that KB/MC configs + defragChromaDB read) — an
+            // the configured builder (the SSOT that KB/MC client configs read) — an
             // env-shifted profile MUST move the data with the port, or a test-port launch serves the
             // production persist dir (empirically observed: a second server on the live store). The
             // parameter default keeps direct callers launch-resilient against a stale config.mjs.
@@ -457,16 +457,6 @@ export function buildTaskDefinitions({
             pidFileName      : 'ci-failure-ingest.pid',
             expectedCommand  : 'ingestCiFailures.mjs',
             captureStdoutJson: true
-        },
-        // One-shot KB defrag spawned by the chroma max-runtime recycle once the
-        // freshly-restarted daemon is connection-ready. Unified-store-safe (rebuilds the KB
-        // collection, preserves Memory Core segment dirs). NOT a continuousTask.
-        chromaDefrag: {
-            label          : 'chroma defrag (knowledge-base)',
-            command        : nodeBin,
-            args           : [path.join(scriptDir, 'maintenance', 'defragChromaDB.mjs'), '--target', 'knowledge-base'],
-            pidFileName    : 'chroma-defrag.pid',
-            expectedCommand: 'defragChromaDB.mjs'
         },
         'primary-dev-sync': {
             label          : 'primary checkout dev sync',

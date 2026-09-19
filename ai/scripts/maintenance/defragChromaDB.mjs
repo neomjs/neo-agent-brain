@@ -1,5 +1,4 @@
-import {program}                      from 'commander';
-import {ChromaClient}                 from 'chromadb';
+import {Command}                      from 'commander';
 import {execSync}                     from 'child_process';
 import crypto                         from 'crypto';
 import fs                             from 'fs-extra';
@@ -7,93 +6,41 @@ import path                           from 'path';
 import {fileURLToPath, pathToFileURL} from 'url';
 import Neo                            from 'neo.mjs/src/Neo.mjs';
 import AiConfig                       from '../../config.mjs';
-import {
-    resolveHeavyMaintenanceLeasePath,
-    withHeavyMaintenanceLease
-} from '../../daemons/orchestrator/services/HeavyMaintenanceLeaseService.mjs';
-import {registerNeoChromaEmbeddingFunctions}                         from '../../services/shared/vector/chromaClientPrimitives.mjs';
 import {auditChromaVectorCoverage}                                   from './checkChromaIntegrity.mjs';
-import {extractMemoryCoreCollectionData, truncateToEmbedTokenBudget} from './repairMemoryCoreStoredEmbeddings.mjs';
+import {extractMemoryCoreCollectionData} from './repairMemoryCoreStoredEmbeddings.mjs';
 import {resolveAutonomousRepairExit}                                 from '../../services/memory-core/helpers/acceptedLossSettlement.mjs';
 import {appendAutoAcceptedLoss}                                      from '../../services/memory-core/helpers/acceptedLossAuditStore.mjs';
 import {getAcceptedLossAuditFilePath}                                from '../../services/memory-core/helpers/acceptedLossAuditStore.mjs';
 import {writeAutoAcceptedLossState}                                  from '../../services/memory-core/helpers/acceptedLossAuditStore.mjs';
 
 /**
- * @summary Defragments collection groups inside the unified ChromaDB store.
+ * @summary Explicit-client Chroma repair helpers and an endpoint-only CLI refusal.
  *
- * This script rewrites collection groups to eliminate HNSW index fragmentation and file bloat within
- * ChromaDB. Knowledge Base and Memory Core share one unified persist directory, while the target controls
- * which logical collections are eligible for rewrite. KB uses shadow/parking promotion; MC currently fails
- * closed until a safe multi-collection promotion exists.
+ * Physical maintenance needs access to the serving Chroma process's own store.
+ * Client host/port/dataDir declarations do not establish that access across a
+ * container boundary. The CLI therefore refuses before any lease, snapshot,
+ * collection rewrite, filesystem cleanup or VACUUM.
  *
- * ## Peer Architecture
- *
- * This script and `ai/scripts/maintenance/backup.mjs` are **peer scripts with orthogonal responsibilities**.
- * Defrag does NOT call the canonical backup orchestrator — it retains its own private pre-nuke
- * physical-copy snapshot (step 1 below). The rationale:
- *
- * - `backup.mjs` captures current state as portable JSONL via the `ai/services.mjs` SDK boundary
- * - Defrag needs a *fast* pre-nuke snapshot that preserves exact HNSW index state, which a
- *   physical directory copy provides but a JSONL export does not
- * - Delegation between the two would re-create the discoverability failure this separation solves
- *
- * Operators who want compacted backups compose at the shell layer: `npm run ai:defrag-kb && npm run ai:backup`.
- *
- * ## The Shadow-Promote Strategy
- *
- * 1.  **Pre-Rewrite Snapshot (Defrag-Internal Safety)**: Before any rewrite operation, a full physical copy
- *     of the database folder is created via `fs.copy()`. This preserves exact HNSW index state for instant
- *     restore if the shadow-promotion ETL fails mid-flight. Snapshots live at `dist/chromadb-backups/<target>/`
- *     and are explicitly NOT the canonical backup — that lives at `.neo-ai-data/backups/backup-<ts>/` via
- *     `ai/scripts/maintenance/backup.mjs`. Automated retention: keep last 3, delete others older than 7 days.
- * 2.  **Extract (ETL)**: All data (IDs, embeddings, metadata, documents) is fetched from every collection in the
- *     selected collection group into an in-memory buffer.
- * 3.  **Shadow Load**: A process-unique shadow collection is created and loaded with the extracted data.
- * 4.  **Promote**: The live KB collection is renamed to parking, the shadow is renamed to the canonical name,
- *     then the parked old collection is deleted only after the canonical replacement validates.
- * 5.  **Cleanup (Physical)**: The filesystem is scanned for orphaned segment directories — UUID dirs absent
- *     from the live segment registry (`chroma.sqlite3` `segments` table) — which are physically deleted. The
- *     keep-set is the *segment* registry (on-disk dirs are segment-named), spanning the whole shared store,
- *     never a single target's collection ids.
- *
- * This is not an SQLite FTS5 integrity repair. If `pragma quick_check` reports malformed full-text search
- * indexes, use the dedicated integrity-repair lane instead of collection defrag.
- *
- * Usage:
- * `node ai/scripts/maintenance/defragChromaDB.mjs --target knowledge-base`
- * `node ai/scripts/maintenance/defragChromaDB.mjs --target memory-core` (fails closed until safe)
+ * Exported repair and legacy-snapshot helpers require caller-owned clients and
+ * paths. They are not evidence that this process owns a physical Chroma store.
+ * Portable JSONL backup remains available through the independent backup.mjs.
  *
  * @module ai.scripts.maintenance.defragChromaDB
- * @see ai/scripts/maintenance/backup.mjs   Canonical JSONL bundle backup orchestrator (peer, not dependency)
- * @see Neo.ai.mcp.server.knowledge-base.Config
- * @see Neo.ai.mcp.server.memory-core.Config
- * @see https://github.com/neomjs/neo/issues/10129
+ * @see ai/scripts/maintenance/backup.mjs
  */
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '../../..');
-export const LOCAL_AI_CONFIG_FILE = path.join(PROJECT_ROOT, 'ai', 'config.mjs');
 const DEFRAG_STATE_DIR = path.join(PROJECT_ROOT, '.neo-ai-data', 'maintenance', 'defrag-state');
-const MEMORY_CORE_UNSAFE_MESSAGE  =
-    'Memory Core defrag is disabled until a safe multi-collection shadow/parking promotion exists. ' +
-    'MC is an irreplaceable store; use backup/restore or a purpose-built repair lane instead of delete/recreate defrag.';
 const ACCEPTED_LOSS_STATE_SCHEMA_VERSION = 1;
 
-registerNeoChromaEmbeddingFunctions({
-    dummyEmbeddingFunction: AiConfig.dummyEmbeddingFunction
-});
-
-// Configuration Mapping
-// Maps CLI target names to their collection-group config files. Both targets resolve
-// to the same unified Chroma persist dir; only the collection set differs.
+// Collection-group adapters expose client coordinates, never physical storage authority.
 export const TARGETS = {
     'knowledge-base': {
         configPath: '../../mcp/server/knowledge-base/config.mjs',
         adapt     : (cfg) => ({
             host       : cfg.engines.chroma.host,
-            path       : cfg.engines.chroma.dataDir,
             port       : cfg.engines.chroma.port,
             collections: [cfg.collectionName]
         })
@@ -102,7 +49,6 @@ export const TARGETS = {
         configPath: '../../mcp/server/memory-core/config.mjs',
         adapt     : (cfg) => ({
             host             : cfg.engines.chroma.host,
-            path             : cfg.engines.chroma.dataDir,
             port             : cfg.engines.chroma.port,
             embeddingProvider: cfg.embeddingProvider,
             collections      : [
@@ -115,52 +61,6 @@ export const TARGETS = {
 };
 
 /**
- * Dynamically loads and adapts the configuration for the specified target.
- *
- * @param {String} targetName - The name of the target (e.g., 'knowledge-base').
- * @returns {Promise<Object>} The adapted configuration object {host, path, port, collections}.
- * @throws {Error} If the target is unknown or the config cannot be loaded.
- */
-async function loadConfig(targetName) {
-    const targetDef = TARGETS[targetName];
-    if (!targetDef) {
-        throw new Error(`Unknown target: ${targetName}. Valid targets: ${Object.keys(TARGETS).join(', ')}`);
-    }
-
-    const configAbsPath = path.resolve(__dirname, targetDef.configPath);
-    console.log(`📖 Loading config from: ${configAbsPath}`);
-
-    try {
-        const module = await import(configAbsPath);
-        return targetDef.adapt(module.default);
-    } catch (e) {
-        throw new Error(`Failed to load config for ${targetName}: ${e.message}`);
-    }
-}
-
-/**
- * Loads the gitignored Tier-1 AI config for operator-run scripts when present.
- * @param {Object} [options]
- * @param {String} [options.configPath=LOCAL_AI_CONFIG_FILE] Config path.
- * @param {Object} [options.aiConfig=AiConfig] Config singleton.
- * @param {Object} [options.fsModule=fs] Filesystem seam.
- * @returns {Promise<Object>}
- */
-export async function loadTopLevelAiConfig({
-    configPath = LOCAL_AI_CONFIG_FILE,
-    aiConfig   = AiConfig,
-    fsModule   = fs
-} = {}) {
-    if (!await fsModule.pathExists(configPath)) {
-        return {loaded: false, configPath};
-    }
-
-    await aiConfig.load(configPath);
-
-    return {loaded: true, configPath};
-}
-
-/**
  * Resolves defrag snapshot retention from Tier-1 AI maintenance config.
  * @param {Object} [options]
  * @param {Object} [options.aiConfig=AiConfig] Tier-1 AI config.
@@ -170,24 +70,6 @@ export function resolveDefragSnapshotRetention({
     aiConfig = AiConfig
 } = {}) {
     return aiConfig.maintenance.defrag.snapshotRetention;
-}
-
-/**
- * Fails closed for target groups whose interruption safety is not yet proven. Memory Core is allowed
- * ONLY behind the explicit `allowMemoryCore` opt-in (the `--allow-memory-core` CLI flag), which routes
- * it through the dedicated full-enumeration repair path — never the KB delete/recreate defrag.
- *
- * @param {Object} options
- * @param {String} options.targetName CLI target name.
- * @param {Boolean} [options.allowMemoryCore=false] Explicit opt-in to the Memory Core repair path.
- * @returns {void}
- */
-export function assertDefragTargetSupported({targetName, allowMemoryCore = false} = {}) {
-    if (targetName === 'memory-core' && !allowMemoryCore) {
-        const error = new Error(MEMORY_CORE_UNSAFE_MESSAGE);
-        error.code  = 'DEFRAG_MEMORY_CORE_UNSAFE';
-        throw error
-    }
 }
 
 /**
@@ -329,49 +211,6 @@ export async function cleanOldBackups(backupDir, retention = resolveDefragSnapsh
         }
     } catch (e) {
         console.warn(`   ⚠️  Backup cleanup failed (non-critical): ${e.message}`);
-    }
-}
-
-/**
- * Recursively calculates the size of a directory in bytes.
- *
- * @param {String} dir - The directory path.
- * @returns {Promise<Number>} The total size in bytes.
- */
-async function getDirSize(dir) {
-    const files = await fs.readdir(dir, {withFileTypes: true});
-    let   size  = 0;
-
-    for (const file of files) {
-        const filePath = path.join(dir, file.name);
-        if (file.isDirectory()) {
-            size += await getDirSize(filePath);
-        } else {
-            const stats = await fs.stat(filePath);
-            size += stats.size;
-        }
-    }
-    return size;
-}
-
-/**
- * Runs the SQLite VACUUM command on the chroma.sqlite3 file.
- * This is critical for reclaiming disk space after mass deletions.
- *
- * @param {String} dbDir - The directory containing chroma.sqlite3.
- */
-function vacuumSqlite(dbDir) {
-    const sqlitePath = path.join(dbDir, 'chroma.sqlite3');
-    if (fs.existsSync(sqlitePath)) {
-        console.log(`   🧹 Running SQLite VACUUM on ${sqlitePath}...`);
-        try {
-            execSync(`sqlite3 "${sqlitePath}" "VACUUM;"`, {stdio: 'inherit'});
-            console.log(`   ✅ VACUUM complete.`);
-        } catch (e) {
-            console.warn(`   ⚠️  VACUUM failed (sqlite3 CLI might be missing?): ${e.message}`);
-        }
-    } else {
-        console.log(`   ℹ️  No chroma.sqlite3 found to vacuum.`);
     }
 }
 
@@ -1120,8 +959,8 @@ export async function repairMemoryCoreCollectionViaResumableShadow({
  * shadow name. A partial-promoted repair rewrites `memory-core-repair-partial-promoted` with the retained
  * parking collection and full unrecoverable manifest.
  *
- * This function is INERT until wired behind the explicit `--allow-memory-core` opt-in; the default
- * `assertDefragTargetSupported` fail-closed stands until then.
+ * The caller must own the client and physical snapshot. The endpoint-only CLI cannot establish
+ * that binding and does not invoke this primitive.
  *
  * @param {Object} options
  * @param {Object} options.client Chroma client.
@@ -1491,387 +1330,30 @@ export async function applyAutonomousSettlement({
 }
 
 /**
- * Main execution function for the defragmentation process.
- *
- * It orchestrates the Snapshot -> Extract -> Shadow Load -> Promote -> Cleanup pipeline.
- *
- * Key details:
- * - Uses a dummy embedding function to bypass ChromaDB's validation when moving raw embeddings.
- * - Fails closed for Memory Core until safe multi-collection promotion exists.
- * - Implements batch processing for memory efficiency during the restore phase.
- * - Uses heuristics (UUIDv4 pattern matching) to identify orphaned directories safely.
- *
- * @async
- * @returns {Promise<void>}
- * @keywords chromadb, maintenance, defragmentation, memory-core, knowledge-base, optimization
- */
-async function defragChromaDB() {
-    program
-        .name('defragChromaDB')
-        .description('Defragment ChromaDB instances by rewriting data and cleaning orphaned files.')
-        .requiredOption('-t, --target <name>', 'Database target (knowledge-base, memory-core)')
-        .option('--allow-memory-core', 'Opt in to the Memory Core repair-defrag path (default: fails closed)')
-        .option('--dry-run', 'For memory-core, run full enumeration/extraction report without shadow promotion')
-        .parse(process.argv);
-
-    const options    = program.opts();
-    const targetName = options.target;
-
-    console.log(`🧹 Starting Defragmentation for target: ${targetName}`);
-
-    try {
-        await loadTopLevelAiConfig();
-
-        const config    = await loadConfig(targetName);
-        const statePath = resolveDefragStatePath({targetName});
-
-        assertDefragTargetSupported({targetName, allowMemoryCore: options.allowMemoryCore});
-        const resumeState = await assertNoIncompleteDefragState({
-            statePath,
-            allowedPhases: targetName === 'memory-core' && options.allowMemoryCore ? [
-                'memory-core-repair-shadow-loading',
-                'memory-core-repair-shadow-loaded',
-                'memory-core-repair-aborted'
-            ] : []
-        });
-
-        const DB_PATH = config.path;
-
-        if (!DB_PATH) {
-            throw new Error(`Config for ${targetName} is missing a valid 'path' property.`);
-        }
-
-        console.log(`   📂 Database Path: ${DB_PATH}`);
-        console.log(`   🔌 Host: ${config.host}:${config.port}`);
-        console.log(`   📚 Collections: ${config.collections.join(', ')}`);
-
-        // 0. Validation
-        if (!await fs.pathExists(DB_PATH)) {
-            console.error(`❌ Database path not found: ${DB_PATH}`);
-            process.exit(1);
-        }
-
-        // 0.1 Initial Size Check
-        const initialSize = await getDirSize(DB_PATH);
-        console.log(`   📊 Initial Size: ${(initialSize / 1024 / 1024).toFixed(2)} MB`);
-
-        // 1. Pre-Nuke Snapshot (Defrag-Internal Safety)
-        // Fast physical copy preserving exact HNSW index state. This is defrag-exclusive —
-        // it is NOT the canonical backup. For portable JSONL snapshots see `ai/scripts/maintenance/backup.mjs`.
-        // Peer architecture: neither script calls the other.
-        const timestamp  = Date.now();
-        const backupRoot = path.resolve(PROJECT_ROOT, 'dist', 'chromadb-backups', targetName);
-        const backupName = `backup-${timestamp}`;
-        const backupPath = path.join(backupRoot, backupName);
-
-        console.log(`\n1️⃣  Creating pre-nuke snapshot at ${backupPath}...`);
-        await fs.ensureDir(backupRoot);
-        await fs.copy(DB_PATH, backupPath);
-        console.log(`   ✅ Pre-nuke snapshot created (defrag-exclusive, not the canonical backup).`);
-
-        // 1.1 Cleanup Old Backups
-        await cleanOldBackups(backupRoot, resolveDefragSnapshotRetention());
-
-        // 2. Connect
-        console.log(`\n2️⃣  Connecting to ChromaDB...`);
-        const client = new ChromaClient({
-            host: config.host,
-            port: config.port
-        });
-
-        // Dummy embedding function — single source of truth: Tier-1 AiConfig.dummyEmbeddingFunction.
-        // Satisfies the Chroma client for raw embeddings without re-generating via a provider.
-        const dummyEf = AiConfig.dummyEmbeddingFunction;
-
-        // 2.5 Memory Core repair-defrag path (explicit --allow-memory-core opt-in).
-        // MC cannot use the KB extract/promote below — its missing-vector rows throw on stored-embedding
-        // export — so it runs the dedicated full-enumeration repair (extract intact + re-embed missing)
-        // against the pre-nuke snapshot, then shadow-promotes the recovered data. The orchestration clears the
-        // defrag state marker on clean success (or rewrites an explicit aborted marker on a partial repair)
-        // before this branch returns ahead of the KB path.
-        if (targetName === 'memory-core') {
-            const dryRun = options.dryRun === true;
-
-            console.log(dryRun
-                ? `\n3️⃣  Memory Core repair-defrag DRY-RUN: full-enumeration extract + re-embed report (no shadow promotion)...`
-                : `\n3️⃣  Memory Core repair-defrag: full-enumeration extract + re-embed + shadow-promote...`);
-            const {default: TextEmbeddingService} = await import('../../services/memory-core/TextEmbeddingService.mjs');
-            // Prevent oversized-document data loss: truncate each document to the embedding token budget so a
-            // document that exceeds the provider context recovers with a (slightly lossy) vector instead of
-            // falling out of recovery as unrecoverable. The safe-budget leaf is read at the use site.
-            const embedBudgetTokens = AiConfig.localModels.embedding.safeProcessingLimitTokens;
-            const {results}         = await repairMemoryCoreCollectionsViaFullEnumeration({
-                client,
-                collections      : config.collections,
-                snapshotPath     : path.join(backupPath, 'chroma.sqlite3'),
-                persistDir       : backupPath,
-                embedFn          : docs => TextEmbeddingService.embedTexts(docs.map(doc => truncateToEmbedTokenBudget(doc, embedBudgetTokens)), config.embeddingProvider),
-                embeddingFunction: dummyEf,
-                statePath,
-                stateBase        : {targetName},
-                dryRun,
-                resumeState
-            });
-
-            for (const result of results) {
-                console.log(result.aborted
-                    ? `   ⚠️  ${result.collectionName}: ${dryRun ? 'DRY-RUN WOULD ABORT' : 'ABORTED'} — ${result.unrecoverable.length} unrecoverable row(s); counts ${JSON.stringify(result.counts)}`
-                    : result.partialPromoted
-                        ? `   ⚠️  ${result.collectionName}: PARTIAL PROMOTED — ${result.recoveredCount}/${result.sourceCount} recovered row(s), ${result.unrecoverable.length} unrecoverable row(s), parked source retained at ${result.promotion?.parkingName}; counts ${JSON.stringify(result.counts)}`
-                        : dryRun
-                            ? `   🧪 ${result.collectionName}: dry-run report clean; no promotion; counts ${JSON.stringify(result.counts)}`
-                            : `   ✅ ${result.collectionName}: repaired + promoted; counts ${JSON.stringify(result.counts)}`);
-            }
-
-            const finalSize = await getDirSize(DB_PATH);
-            console.log(`   📊 Final Size: ${(finalSize / 1024 / 1024).toFixed(2)} MB`);
-
-            // Fail loud at the operator boundary: non-clean repair work is NOT a successful repair
-            // (mirrors the KB extractionErrors / hasRestoreErrors -> process.exit(1) discipline below).
-            if (anyRepairNonClean(results)) {
-                // Autonomous accepted-loss settlement (zero operator-ack, no runtime escalate): when EVERY
-                // non-clean collection's residue is bounded AND deterministically-terminal, self-settle it —
-                // record a durable audit entry per collection AND clear the non-clean defrag marker (so the next
-                // run is not blocked as DEFRAG_INCOMPLETE_STATE), then exit clean with no human. Transient residue
-                // (heal-path → the data-recovery actuator) or a systemic-fault (mass terminal = a misconfigured
-                // embedder, frozen) keeps the loud non-clean exit below.
-                if (!dryRun) {
-                    const settlement = await applyAutonomousSettlement({
-                        results,
-                        statePath,
-                        auditDir     : path.dirname(statePath),
-                        provider     : config.embeddingProvider,
-                        contextBudget: embedBudgetTokens,
-                        writeLog     : settledCount => console.log(`   ♻️  Autonomous accepted-loss: all ${settledCount} non-clean collection(s) held only bounded, deterministically-terminal residue — settled + recorded to ${path.join(path.dirname(statePath), 'auto-accepted-loss.jsonl')} and ${path.join(path.dirname(statePath), 'auto-accepted-loss-state.json')}, and the defrag marker cleared so the next run is unblocked. No operator page; zero ack.`)
-                    });
-
-                    if (settlement.settled) {
-                        return;
-                    }
-                }
-
-                const abortedNames  = results.filter(result => result.aborted).map(result => result.collectionName),
-                      partialNames  = results.filter(result => result.partialPromoted).map(result => result.collectionName),
-                      nonCleanNames = [...abortedNames, ...partialNames];
-                console.error(dryRun
-                    ? `❌ Memory Core repair dry-run found unrecoverable rows for ${abortedNames.join(', ')} — no promotion was attempted; resolve the unrecoverable rows before running the mutating repair. Counts and reasons logged above.`
-                    : `❌ Memory Core repair non-clean for ${nonCleanNames.join(', ')} (aborted: ${abortedNames.join(', ') || 'none'}; partial-promoted: ${partialNames.join(', ') || 'none'}) — recovered rows are durable where partial-promoted, but this is NOT a successful repair. Resolve unrecoverable rows using the retained parking/source state. Counts and reasons logged above.`);
-                process.exit(1);
-            }
-            return;
-        }
-
-        // 3. Extract All Data (Multi-Collection)
-        console.log(`\n3️⃣  Fetching data from all collections...`);
-        const buffer           = {};
-        let   extractionErrors = false;
-
-        for (const colName of config.collections) {
-            console.log(`   Processing collection: ${colName}`);
-            try {
-                const collection = await client.getCollection({
-                    name             : colName,
-                    embeddingFunction: dummyEf
-                });
-
-                const count = await collection.count();
-                console.log(`     Found ${count} items.`);
-
-                const colData = {ids: [], embeddings: [], metadatas: [], documents: []};
-
-                // 3.1 Fetch all IDs first (avoids HNSW index to prevent "Error finding id")
-                const allIds = [];
-                let   offset = 0;
-                while (true) {
-                    const batch = await collection.get({limit: 2000, offset, include: []});
-                    if (batch.ids.length === 0) break;
-                    allIds.push(...batch.ids);
-                    offset += 2000;
-                    if (batch.ids.length < 2000) break;
-                }
-
-                console.log(`     Fetched ${allIds.length} IDs. Now extracting data...`);
-
-                // 3.2 Fetch full data in chunks, with graceful fallback for corrupted embeddings
-                const chunkSize = 500;
-                for (let i = 0; i < allIds.length; i += chunkSize) {
-                    const chunk = allIds.slice(i, i + chunkSize);
-                    process.stdout.write(`     Extracting data for IDs ${i} to ${i + chunk.length}... `);
-                    try {
-                        const batchData = await collection.get({
-                            ids    : chunk,
-                            include: ['embeddings', 'metadatas', 'documents']
-                        });
-                        colData.ids.push(...batchData.ids);
-                        colData.embeddings.push(...batchData.embeddings);
-                        colData.metadatas.push(...batchData.metadatas);
-                        colData.documents.push(...batchData.documents);
-                        console.log('ok');
-                    } catch (e) {
-                        console.log(`\n     ⚠️ Chunk failed (${e.message}). Falling back to item-by-item extraction...`);
-                        let rescued = 0;
-                        for (const id of chunk) {
-                            try {
-                                const singleData = await collection.get({
-                                    ids    : [id],
-                                    include: ['embeddings', 'metadatas', 'documents']
-                                });
-                                if (singleData.ids.length > 0) {
-                                    colData.ids.push(...singleData.ids);
-                                    colData.embeddings.push(...singleData.embeddings);
-                                    colData.metadatas.push(...singleData.metadatas);
-                                    colData.documents.push(...singleData.documents);
-                                    rescued++;
-                                }
-                            } catch (err) {
-                                // Silently skip corrupted ghost entries to avoid log spam
-                            }
-                        }
-                        console.log(`     ✅ Rescued ${rescued} items. Skipped ${chunk.length - rescued} corrupted ghost entries.`);
-                    }
-                }
-
-                buffer[colName] = colData;
-            } catch (e) {
-                console.warn(`     ⚠️ Could not fetch collection ${colName} (might not exist yet): ${e.message}`);
-                extractionErrors = true;
-                buffer[colName]  = null; // Mark as empty/missing
-            }
-        }
-
-        if (extractionErrors) {
-            console.error('❌ Critical errors during extraction. Aborting before destructive actions.');
-            process.exit(1);
-        }
-
-        // 4. Shadow Load + Promote
-        // Load a replacement collection first, then perform the bounded live->parking /
-        // shadow->canonical rename pair. The canonical collection is never deleted up-front.
-        console.log(`\n4️⃣  Rewriting Collections via Shadow Promotion...`);
-        let hasRestoreErrors = false;
-
-        for (const colName of config.collections) {
-            try {
-                const data = buffer[colName];
-                if (!data || data.ids.length === 0) {
-                    console.log(`   Skipping ${colName} (No data)`);
-                    continue;
-                }
-
-                console.log(`   Rewriting ${colName}...`);
-                const result = await rewriteCollectionViaShadowPromotion({
-                    client,
-                    collectionName   : colName,
-                    data,
-                    embeddingFunction: dummyEf,
-                    statePath,
-                    stateBase        : {
-                        targetName,
-                        dbPath      : DB_PATH,
-                        snapshotPath: backupPath,
-                        startedAt   : new Date(timestamp).toISOString()
-                    }
-                });
-
-                console.log(`     Promoted ${result.shadowName} to ${colName}.`);
-                if (result.parkingDeleted) {
-                    console.log(`     Deleted parked pre-defrag collection ${result.parkingName}.`);
-                } else {
-                    console.warn(`     Parked pre-defrag collection remains for manual cleanup: ${result.parkingName}.`);
-                }
-            } catch (e) {
-                console.error(`❌ Failed to restore ${colName}: ${e.message}`);
-                hasRestoreErrors = true;
-            }
-        }
-
-        if (hasRestoreErrors) {
-            console.error('\n⚠️ Completed with errors in some collections.');
-            process.exit(1);
-        }
-
-        await clearDefragState({statePath});
-
-        // 5. Cleanup (Physical)
-        // Keep-set is the authoritative live-SEGMENT-id registry, not the recreated
-        // collection ids: on-disk UUID dirs are segment-named (disjoint from collection
-        // ids), and the unified store shares one persist dir across subsystems, so a
-        // collection-id / single-target keep-set deletes live data.
-        console.log(`\n5️⃣  Cleaning up orphaned segment directories...`);
-        const liveSegmentIds = resolveLiveSegmentIds({dbPath: DB_PATH});
-        console.log(`   Live segments: ${liveSegmentIds.size}`);
-
-        const {kept, removed} = await cleanOrphanedSegmentDirs({dbPath: DB_PATH, liveSegmentIds});
-        console.log(`   Kept ${kept.length} live segment dirs; removed ${removed.length} orphans.`);
-
-        // 6. Vacuum (SQLite)
-        console.log(`\n6️⃣  Vacuuming SQLite Database...`);
-        vacuumSqlite(DB_PATH);
-
-        console.log(`\n🎉 Defragmentation Complete!`);
-
-        // Final Size Check & Reporting
-        const finalSize        = await getDirSize(DB_PATH);
-        const reduction        = initialSize - finalSize;
-        const reductionPercent = initialSize > 0 ? (reduction / initialSize) * 100 : 0;
-
-        console.log(`   📉 Initial Size : ${(initialSize / 1024 / 1024).toFixed(2)} MB`);
-        console.log(`   📉 Final Size   : ${(finalSize / 1024 / 1024).toFixed(2)} MB`);
-        console.log(`   🔥 Reduction    : ${(reduction / 1024 / 1024).toFixed(2)} MB (${reductionPercent.toFixed(1)}%)`);
-
-    } catch (e) {
-        console.error(`\n❌ Fatal Error: ${e.message}`);
-        console.error(e.stack);
-        process.exit(1);
-    }
-}
-
-/**
- * Runs the standalone defrag CLI under the shared heavy-maintenance lease.
- *
- * The exported defrag implementation remains lease-free for tests and controlled
- * module callers. Only direct CLI execution acquires the cross-process lease, so a
- * manually started defrag is visible to the orchestrator before other heavy tasks run.
- *
- * @param {Object} options
- * @param {Function} [options.runDefrag=defragChromaDB] Defrag implementation seam.
- * @param {Function} [options.withLease=withHeavyMaintenanceLease] Lease wrapper seam.
- * @param {Object} [options.output=console] Terminal sink.
- * @param {Function} [options.exit=process.exit] Exit hook.
- * @returns {Promise<*>}
+ * @summary Refuses physical maintenance from an endpoint-only client process.
+ * @param {Object} [options]
+ * @param {String[]} [options.argv=process.argv] Command-line arguments.
+ * @param {Object} [options.output=console] Terminal error sink.
+ * @param {Function} [options.exit] Nonzero terminal hook.
+ * @returns {Promise<*>} The exit-hook result.
  */
 export async function runDefragChromaDBCli({
-    runDefrag = defragChromaDB,
-    withLease = withHeavyMaintenanceLease,
-    output    = console,
-    exit      = code => process.exit(code)
+    argv = process.argv,
+    output = console,
+    exit = code => process.exit(code)
 } = {}) {
-    let outcome;
+    const command = new Command()
+        .name('defragChromaDB')
+        .description('Physical Chroma maintenance requires an owner-held storage binding; endpoint-only execution is unavailable.')
+        .requiredOption('-t, --target <name>', 'Requested collection group (knowledge-base, memory-core)')
+        .option('--allow-memory-core', 'Legacy option; does not confer physical storage access')
+        .option('--dry-run', 'Legacy option; does not confer physical storage access')
+        .parse(argv);
 
-    try {
-        outcome = await withLease(
-            () => runDefrag(),
-            {
-                leasePath   : resolveHeavyMaintenanceLeasePath({dataDir: AiConfig.orchestrator.dataDir}),
-                owner       : 'defrag',
-                reason      : 'manual-cli',
-                staleAfterMs: AiConfig.orchestrator.heavyMaintenanceLease.staleAfterMs,
-                metadata    : {script: 'ai/scripts/maintenance/defragChromaDB.mjs'}
-            }
-        );
-    } catch (error) {
-        output.error('❌ Defrag lease acquisition failed:', error);
-        return exit(1)
-    }
-
-    if (outcome?.status === 'held') {
-        const held = outcome.lease;
-        output.log(`⏸️  Deferred: heavy-maintenance lease held by '${held.owner}' (reason='${held.reason}', pid=${held.pid}, acquiredAt=${held.acquiredAt}).`);
-        output.log('   This script will not run while another heavy-maintenance task is active. Re-invoke once the active owner completes.');
-        return exit(0)
-    }
-
-    return exit(0)
+    output.error('CHROMA_PHYSICAL_STORAGE_UNAVAILABLE: client coordinates do not identify locally owned Chroma storage.', {
+        target: command.opts().target
+    });
+    return exit(1);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

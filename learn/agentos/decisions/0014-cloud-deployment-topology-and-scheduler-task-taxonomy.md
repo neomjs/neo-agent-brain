@@ -253,9 +253,10 @@ also explicit container-plane lanes: `boot-identity-fact`, `deployment-state-bri
 around the two registries. A host-edge scheduler also projects persisted task state to its owned set,
 so stale plane-task `running` flags from the former mixed supervisor cannot backpressure local work.
 
-`chromaDefrag` is an explicit auxiliary-child registry entry rather than a continuous or scheduled
-lane; it follows `chroma`'s shared-primitive authority and can run only where Chroma supervision
-itself is enabled.
+The former `chromaDefrag` auxiliary child is retired: supervision of a Chroma endpoint does not
+establish physical storage access for its maintenance client. Chroma recycling remains owned by
+its existing supervisor; it no longer dispatches endpoint-only physical maintenance. The auxiliary
+registry remains part of the classification contract and currently has no entries.
 
 The local compatibility profile (`legacy-mixed`) temporarily owns all three classes; it is not part
 of the target split and has an explicit retirement trigger in ADR 0019 §10.8.

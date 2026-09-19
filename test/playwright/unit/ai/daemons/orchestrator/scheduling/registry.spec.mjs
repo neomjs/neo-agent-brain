@@ -100,19 +100,12 @@ test.describe('orchestrator/scheduling/registry (#11862 Sub 18)', () => {
         expect(hostTasks.get('data-integrity-sweep').active).toBe(false);
         expect(hostTasks.get('deployment-state-bridge').active).toBe(false);
         expect(hostTasks.get('freeze-reprobe').active).toBe(false);
-        expect(hostTasks.get('chromaDefrag').active).toBe(false);
 
         expect(containerTasks.get('summary').active).toBe(true);
         expect(containerTasks.get('embedDaemon').active).toBe(true);
         expect(containerTasks.get('data-integrity-sweep').active).toBe(true);
         expect(containerTasks.get('deployment-state-bridge').active).toBe(true);
         expect(containerTasks.get('freeze-reprobe').active).toBe(true);
-        expect(containerTasks.get('chromaDefrag')).toMatchObject({
-            kind          : 'auxiliary',
-            authorityClass: 'shared-primitive',
-            effectiveOwner: 'container-plane',
-            active        : true
-        });
         expect(containerTasks.get('bridgeDaemon').active).toBe(false);
         expect(containerTasks.get('primary-dev-sync').active).toBe(false);
         expect(containerTasks.get('chroma')).toMatchObject({
