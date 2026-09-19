@@ -2236,6 +2236,54 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         expect(result.message).toContain('Origin Session ID');
     });
 
+    // One table for both copies of the Round-1 Review ID check: the service below, and the Engine's
+    // review-body lint, which keeps the same predicate. The placeholder and a link both open with `[`;
+    // only the link continues with `(`. An empty value must not borrow the separator, or the next line.
+    const REVIEW_ID_LINK   = '[5256218531](https://github.com/neomjs/neo/pull/1#pullrequestreview-5256218531)',
+          REVIEW_ID_VALUES = {
+              accepted: [
+                  ` ${REVIEW_ID_LINK} · **Author Response:** IC_456`,
+                  ' PRR_123 · **Author Response:** IC_456',
+                  ' `PRR_123` · **Author Response:** IC_456',
+                  ' 5256218531',
+                  ' https://github.com/neomjs/neo/pull/1#pullrequestreview-5256218531',
+                  ` PRR_123 (${REVIEW_ID_LINK})`
+              ],
+              refused: [
+                  ' [reviewId or URL] · **Author Response:** [commentId or URL]',
+                  ' · **Author Response:** IC_456',
+                  '\n* **Author Response:** IC_456'
+              ]
+          },
+          withReviewId = value => VALID_ROUND_2_REVIEW_BODY.replace(
+              '* **Round-1 Review ID:** PRR_123 · **Author Response:** IC_456',
+              `* **Round-1 Review ID:**${value}`
+          );
+
+    test('#380: the Round-1 Review ID names a review on its own line, and a Markdown link names one', () => {
+        for (const value of REVIEW_ID_VALUES.accepted) {
+            expect.soft(PullRequestService.validatePrReviewBody({body: withReviewId(value)}).valid, value).toBe(true);
+        }
+
+        for (const value of REVIEW_ID_VALUES.refused) {
+            const result = PullRequestService.validatePrReviewBody({body: withReviewId(value)});
+
+            expect.soft(result.message ?? '', JSON.stringify(value)).toContain('names no Round-1 review to disposition');
+        }
+    });
+
+    test('#380: workflow lint reads the Round-1 Review ID like the service does', async () => {
+        for (const value of REVIEW_ID_VALUES.accepted) {
+            expect.soft((await runAgentPrReviewBodyLintWorkflow({body: withReviewId(value)})).failures, value).toEqual([]);
+        }
+
+        for (const value of REVIEW_ID_VALUES.refused) {
+            const {failures} = await runAgentPrReviewBodyLintWorkflow({body: withReviewId(value)});
+
+            expect.soft(failures.join('\n'), JSON.stringify(value)).toContain('Round-1 Review ID: the round this dispositions');
+        }
+    });
+
     // The RELATION corpus. The shape tier proves a body is disposition-shaped; @neo-gpt then showed a
     // shaped body with a plausible review id and an invented RA-999 still passed, because "is this a
     // disposition OF that round" is a claim about two documents. These drive the relation directly.
