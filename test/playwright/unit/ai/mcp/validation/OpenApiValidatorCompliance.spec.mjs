@@ -1095,6 +1095,46 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
         expect(() => listStoresOut.parse({stores: [{id: 'store-1', model: objectModel, count: 2, isLoaded: true}]})).not.toThrow();
     });
 
+    test('neural-link types every windowId as the UUID string it is, so get_route_history passes its own output schema', () => {
+        const source  = fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/neural-link/openapi.yaml'), 'utf8'),
+              doc     = yaml.load(source),
+              opsById = getOperationsById(doc),
+              output  = buildOutputZodSchema(doc, opsById.get_route_history);
+
+        expect(output, 'get_route_history has an output schema').toBeTruthy();
+
+        // The live payload: `windowId: integer` rejected every call with "data/windowId must be integer"
+        expect(() => output.parse({count: 1, history: [{route: '#/home'}], windowId: 'd643259a-00dc-4a19-9f01-cd4d3248501a'})).not.toThrow();
+
+        // The document-wide half: one integer windowId was the only one, and none may come back
+        const integerWindowIds = [];
+
+        const walk = (node, label) => {
+            if (!node || typeof node !== 'object') return;
+
+            for (const [key, value] of Object.entries(node)) {
+                key === 'windowId' && value?.type === 'integer' && integerWindowIds.push(label);
+                walk(value, `${label}.${key}`)
+            }
+        };
+
+        walk(doc, 'openapi');
+        expect(integerWindowIds, 'a window id is a UUID string').toEqual([])
+    });
+
+    test('neural-link execute_dock_operation names no operation list of its own, and points at the live one', () => {
+        const doc           = yaml.load(fs.readFileSync(path.join(repoRoot, 'ai/mcp/server/neural-link/openapi.yaml'), 'utf8')),
+              {description} = getOperationsById(doc).execute_dock_operation;
+
+        // A copied list goes stale: the description named 8 operations while a live workspace accepted 17
+        expect(description, 'points at the vocabulary the workspace reports').toContain('get_dock_topology');
+        expect(description).toContain('operations');
+
+        for (const operation of ['addTab', 'moveItem', 'splitNode', 'resizeSplit', 'detachItem', 'closeItem', 'setItemPinned', 'setItemAutoHidden']) {
+            expect(description, `no copied vocabulary: ${operation}`).not.toContain(operation)
+        }
+    });
+
     for (const server of servers) {
         test(`${server}: every emitted input/output schema has items on array nodes (#10064)`, () => {
             const yamlPath = path.join(repoRoot, 'ai/mcp/server', server, 'openapi.yaml');

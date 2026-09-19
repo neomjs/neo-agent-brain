@@ -140,7 +140,10 @@ class HealthService extends Base {
                     port     : status.port,
                     // Present only when a spawn failed, so "unhealthy" carries its cause instead of
                     // leaving the operator to guess whether the Bridge is down, slow, or unspawnable.
-                    ...(status.lastSpawnFailure ? {spawnFailure: status.lastSpawnFailure} : {})
+                    ...(status.lastSpawnFailure ? {spawnFailure: status.lastSpawnFailure} : {}),
+                    // Present only when the assigned `--cwd` cannot run the Bridge script. Known before the
+                    // first spawn, so a wrong runtime root is named while nothing has failed yet.
+                    ...(status.cwdFinding ? {cwdFinding: status.cwdFinding} : {})
                 },
                 sessions        : status.sessions,
                 windows         : status.windows,

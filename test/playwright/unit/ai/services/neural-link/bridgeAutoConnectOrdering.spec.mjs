@@ -13,14 +13,20 @@ setup({
     }
 });
 
-import {test, expect}                                from '@playwright/test';
-import {spawn}                                       from 'node:child_process';
-import {EventEmitter}                                from 'node:events';
-import path                                          from 'node:path';
-import {fileURLToPath}                               from 'node:url';
-import Neo                                           from 'neo.mjs/src/Neo.mjs';
-import * as core                                     from 'neo.mjs/src/core/_export.mjs';
-import ConnectionService, {resolveBridgeAutoConnect} from '../../../../../../ai/services/neural-link/ConnectionService.mjs';
+import {test, expect}  from '@playwright/test';
+import {spawn}         from 'node:child_process';
+import {EventEmitter}  from 'node:events';
+import fs              from 'node:fs';
+import os              from 'node:os';
+import path            from 'node:path';
+import {fileURLToPath} from 'node:url';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import ConnectionService, {
+    BRIDGE_CWD_MISSING_SCRIPT,
+    BRIDGE_NPM_SCRIPT,
+    resolveBridgeAutoConnect
+} from '../../../../../../ai/services/neural-link/ConnectionService.mjs';
 
 const NEURAL_LINK_ENTRYPOINT = fileURLToPath(
     new URL('../../../../../../ai/mcp/server/neural-link/mcp-server.mjs', import.meta.url)
@@ -35,9 +41,11 @@ const NEURAL_LINK_ENTRYPOINT = fileURLToPath(
  *
  * @param {Object} child The spawned ChildProcess.
  * @param {Number} [timeoutMs=8000] Overall budget for the handshake plus the call.
- * @returns {Promise<Object|null>} The parsed health payload, or null if the transport becomes unavailable.
+ * @param {Object} [call] The `tools/call` params; another tool's witness rides the same handshake. A result whose
+ * text is not JSON, an error result, comes back as the raw MCP result.
+ * @returns {Promise<Object|null>} The parsed payload, or null if the transport becomes unavailable.
  */
-async function callHealthcheck(child, timeoutMs = 8000) {
+async function callHealthcheck(child, timeoutMs = 8000, call = {name: 'healthcheck', arguments: {}}) {
     return new Promise(resolve => {
         let buffer      = '',
             initialised = false,
@@ -88,16 +96,13 @@ async function callHealthcheck(child, timeoutMs = 8000) {
 
                 if (!await writeMessage({jsonrpc: '2.0', method: 'notifications/initialized'})) return;
 
-                await writeMessage({
-                    jsonrpc: '2.0', id: 2, method: 'tools/call',
-                    params : {name: 'healthcheck', arguments: {}}
-                })
+                await writeMessage({jsonrpc: '2.0', id: 2, method: 'tools/call', params: call})
             }
 
             if (message.id === 2) {
                 const text = message.result?.content?.[0]?.text;
 
-                try { finish(text ? JSON.parse(text) : message.result) } catch { finish(message.result) }
+                try { finish(text ? JSON.parse(text) : message.result) } catch { finish(message.result ?? message.error) }
             }
         };
 
@@ -302,6 +307,68 @@ test.describe('ai/services/neural-link — Bridge auto-connect ordering (#16429)
             expect(health.bridge?.spawnFailure, 'healthcheck must attribute the spawn failure').toBe('ENOENT');
         } finally {
             child.kill('SIGKILL')
+        }
+    });
+
+    /**
+     * Spawns the real Neural Link entrypoint against a `--cwd` holding `scripts`, on a port nothing serves, so its
+     * auto-connect reaches the spawn path the way a wrongly configured seat does.
+     * @param {Object} scripts The `package.json` scripts of the directory `--cwd` names
+     * @returns {{child: Object, root: String}}
+     */
+    const spawnAgainstCwd = scripts => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nl-371-cwd-'));
+
+        fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({scripts}));
+
+        return {
+            root,
+            child: spawn(process.execPath, [NEURAL_LINK_ENTRYPOINT, '--cwd', root], {
+                env  : {...process.env, NEO_NL_AUTO_CONNECT: 'true', NEO_NL_PORT: '34118', UNIT_TEST_MODE: 'true'},
+                stdio: ['pipe', 'pipe', 'pipe']
+            })
+        }
+    };
+
+    test('a --cwd that cannot run the Bridge script is named by healthcheck, and nothing was spawned there', async () => {
+        // What a target workspace passed as `--cwd` looks like: a manifest, and no Bridge script in it
+        const {child, root} = spawnAgainstCwd({start: 'node .'});
+
+        try {
+            // out-waits: the boot's own auto-connect attempt, which has to have refused its spawn before the read
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            const health = await callHealthcheck(child);
+
+            expect(child.exitCode, 'the server survives a refused spawn').toBeNull();
+            expect(health?.bridge?.cwdFinding, 'the wrong runtime root is named').toBe(BRIDGE_CWD_MISSING_SCRIPT);
+            expect(health.bridge.connected).toBe(false);
+            expect(health.bridge.spawnFailure, 'no process was launched, so none failed').toBeUndefined();
+            expect(JSON.stringify(health), 'a code, never the host path').not.toContain(root)
+        } finally {
+            child.kill('SIGKILL');
+            fs.rmSync(root, {force: true, recursive: true})
+        }
+    });
+
+    test('manage_connection start reports the spawn that died instead of the socket it left refused', async () => {
+        // The script exists, so the cwd passes; it exits 1, which is what `npm run` does for a Bridge that cannot boot
+        const {child, root} = spawnAgainstCwd({[BRIDGE_NPM_SCRIPT]: 'node -e "process.exit(1)"'});
+
+        try {
+            // out-waits: the boot's own auto-connect attempt, so the call below owns the spawn it reports
+            await new Promise(resolve => setTimeout(resolve, 3000));
+
+            const result = await callHealthcheck(child, 15000, {name: 'manage_connection', arguments: {action: 'start'}}),
+                  text   = JSON.stringify(result);
+
+            expect(child.exitCode, 'the server survives').toBeNull();
+            expect(text, 'the recorded cause').toContain('BRIDGE_EXIT_1');
+            expect(text, 'the script that ran').toContain(`npm run ${BRIDGE_NPM_SCRIPT}`);
+            expect(text, 'the rule --cwd has to meet').toContain('Agent OS runtime root')
+        } finally {
+            child.kill('SIGKILL');
+            fs.rmSync(root, {force: true, recursive: true})
         }
     });
 
