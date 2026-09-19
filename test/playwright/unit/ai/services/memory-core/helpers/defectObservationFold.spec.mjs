@@ -73,6 +73,49 @@ test.describe('defectObservationFold — the defect-channel read model', () => {
         expect(parseDefectNote('defect-note: surface broke ').parseable).toBe(false);
     });
 
+    test('possessives and unmatched quotes do not swallow structural delimiters', () => {
+        const surfaces = [
+            "`Foo.mjs`'s header",
+            "(Foo)'s header",
+            '"Foo"\'s header',
+            "the guard 's output",
+            '"unfinished surface',
+            "'unfinished surface",
+            '`unfinished surface',
+            '"unfinished `broke literal` surface',
+            "`Foo.mjs`'s 'broke literal' header"
+        ];
+
+        for (const surface of surfaces) {
+            for (const verb of ['broke', 'is wrong']) {
+                const subject = `defect-note: ${surface} ${verb} after resize`;
+                expect(parseDefectNote(subject), subject).toEqual({
+                    parseable: true, recovered: false, surface, symptom: 'after resize'
+                });
+                expect(inspectDefectNoteCapture({subject, to: 'AGENT:*'})).toMatchObject({
+                    admitted: true, parseable: true, fingerprint: defectNoteFingerprint(subject)
+                });
+            }
+        }
+    });
+
+    test('complete quoted spans still hide their delimiters, including escaped quotes', () => {
+        const surfaces = [
+            'the "escaped \\" broke literal" marker',
+            "the 'parser\\'s broke literal' marker",
+            'the `is wrong` marker'
+        ];
+
+        for (const surface of surfaces) {
+            expect(parseDefectNote(`defect-note: ${surface} broke after resize`))
+                .toMatchObject({parseable: true, surface, symptom: 'after resize'});
+            expect(parseDefectNote(`defect-note: ${surface}`))
+                .toMatchObject({parseable: false, surface, symptom: ''});
+        }
+        expect(parseDefectNote('defect-note: the fields are wrong after resize'))
+            .toMatchObject({parseable: false, surface: 'the fields are wrong after resize'});
+    });
+
     test('inspectDefectNoteCapture admits only canonical broadcast captures and preserves raw notes', () => {
         const subject = '  DeFeCt-NoTe: query_summaries broke returns zero-content rows';
 
