@@ -27,7 +27,7 @@ const FIRST_PARTY_PACKAGES = {
 };
 
 /**
- * @summary Walks static `import` specifiers from an entry module and reports whether a bare package
+ * @summary Walks static and literal dynamic imports from an entry module and reports whether a bare package
  * is reachable.
  *
  * Static rather than executed: the property under test is what module RESOLUTION pulls in, which is
@@ -74,7 +74,12 @@ function reachesPackage(entry, barePackage) {
             return
         }
 
-        for (const match of source.matchAll(/(?:^|\n)\s*import[^'"]*['"]([^'"]+)['"]/g)) {
+        const imports = [
+            ...source.matchAll(/(?:^|\n)\s*import[^'"]*['"]([^'"]+)['"]/g),
+            ...source.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g)
+        ];
+
+        for (const match of imports) {
             const specifier = match[1];
 
             let resolved;
@@ -221,14 +226,15 @@ test.describe('syncGithubWorkflow SDK-boundary exception — self-expiring', () 
         expect(source).not.toContain("from '../../services.mjs'");
     });
 
-    test('makeSafe is still a no-op for the two methods this script calls', () => {
+    test('makeSafe is still a no-op for the methods this script calls', () => {
         // The barrel wraps services in `makeSafe`, which validates and marshals against the OpenAPI
         // spec. That is currently harmless to lose here because neither called method is an operation
         // in the spec. If someone ADDS one, the direct import silently drops validation — so this
         // fails and says so rather than letting the exception quietly widen its cost.
         const spec = readFileSync(OPENAPI, 'utf8');
 
-        for (const method of ['emitGeneratedContentAndDerive', 'runFullSync', 'emit_generated_content', 'run_full_sync']) {
+        for (const method of ['emitGeneratedContentAndDerive', 'emitConversationCorpus', 'runFullSync',
+            'emit_generated_content', 'emit_conversation_corpus', 'run_full_sync']) {
             expect(
                 spec.includes(method),
                 `${method} is now in the github-workflow OpenAPI spec, so makeSafe would validate or ` +

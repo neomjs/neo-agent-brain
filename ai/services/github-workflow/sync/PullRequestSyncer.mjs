@@ -105,7 +105,7 @@ class PullRequestSyncer extends Base {
     #resolvePath(p) {
         if (!p) return null;
         if (path.isAbsolute(p)) return p;
-        return path.resolve(aiConfig.projectRoot, p);
+        return path.resolve(aiConfig.issueSync.metadataBaseRoot, p);
     }
 
     /**
@@ -116,7 +116,7 @@ class PullRequestSyncer extends Base {
      */
     #relativePath(p) {
         if (!p) return null;
-        return path.relative(aiConfig.projectRoot, p);
+        return path.relative(aiConfig.issueSync.metadataBaseRoot, p);
     }
 
     /**
@@ -315,6 +315,8 @@ class PullRequestSyncer extends Base {
 
         const config = {
             contentRoot  : issueSyncConfig.contentRoot,
+            repoSlug     : aiConfig.repo,
+            originRoot   : issueSyncConfig.originRoot,
             type         : 'pulls',
             filename,
             itemIndex    : plan?.itemIndex || 0,
@@ -406,6 +408,7 @@ class PullRequestSyncer extends Base {
         // does — and against the same complete membership, so a file moved here lands on the ordinal
         // the full bucket ordering chooses rather than one derived from this pass's view of it.
         const inventory = await buildContentInventory(issueSyncConfig, {
+            repoSlug  : aiConfig.repo,
             type      : 'pulls',
             filePrefix: aiConfig.issueSync.pullFilenamePrefix || 'pr-'
         });
@@ -448,6 +451,7 @@ class PullRequestSyncer extends Base {
                 // Derived from the destination, not the plan: the entry describes where the file is.
                 indexUpserts.push(createContentIndexEntryFromPath({
                     issueSyncConfig,
+                    repoSlug : aiConfig.repo,
                     type    : 'pulls',
                     id      : pr.number,
                     filePath: correctPath
@@ -620,6 +624,7 @@ class PullRequestSyncer extends Base {
         // answer "where does PR N already live" for anything the delta did not fetch — and that set
         // is precisely where the rival copies were written.
         const inventory = await buildContentInventory(issueSyncConfig, {
+            repoSlug  : aiConfig.repo,
             type      : 'pulls',
             filePrefix: aiConfig.issueSync.pullFilenamePrefix || 'pr-'
         });
@@ -713,17 +718,14 @@ class PullRequestSyncer extends Base {
             // contradicts its own path — an index internally inconsistent with the file it names.
             indexEntries.push(createContentIndexEntryFromPath({
                 issueSyncConfig,
+                repoSlug : aiConfig.repo,
                 type    : 'pulls',
                 id      : p.number,
-                filePath: path.resolve(aiConfig.projectRoot, p.relativeOutputPath)
+                filePath: path.resolve(aiConfig.issueSync.metadataBaseRoot, p.relativeOutputPath)
             }));
         });
 
-        try {
-            await updateContentIndex(issueSyncConfig, {upsert: indexEntries});
-        } catch (e) {
-            logger.warn(`⚠️ Could not update _index.json for pull requests: ${e.message}`);
-        }
+        await updateContentIndex(issueSyncConfig, {upsert: indexEntries});
 
         if (stats.count > 0) {
             logger.info(`✨ Synced ${stats.count} modified pull requests to disk.`);
@@ -758,6 +760,7 @@ class PullRequestSyncer extends Base {
      */
     async repairDuplicateArtifacts(metadata, indexMutations = null) {
         const inventory = await buildContentInventory(issueSyncConfig, {
+            repoSlug  : aiConfig.repo,
             type      : 'pulls',
             filePrefix: aiConfig.issueSync.pullFilenamePrefix || 'pr-'
         });
@@ -837,7 +840,7 @@ class PullRequestSyncer extends Base {
                 // the invariant every later id in the loop plans against.
                 inventory.set(id, [{
                     absPath    : targetPath,
-                    ...parseContentPath({contentRoot: issueSyncConfig.contentRoot, filePath: targetPath, ...pathSegmentOptionsFor(issueSyncConfig)})
+                    ...parseContentPath({repoSlug: aiConfig.repo, contentRoot: issueSyncConfig.contentRoot, filePath: targetPath, ...pathSegmentOptionsFor(issueSyncConfig)})
                 }]);
 
                 metadata.pulls ??= {};
@@ -854,7 +857,7 @@ class PullRequestSyncer extends Base {
 
                 if (indexMutations) {
                     indexMutations.upsert.push(createContentIndexEntryFromPath({
-                        issueSyncConfig, type: 'pulls', id, filePath: targetPath
+                        issueSyncConfig, repoSlug: aiConfig.repo, type: 'pulls', id, filePath: targetPath
                     }));
                 }
 
@@ -889,6 +892,7 @@ class PullRequestSyncer extends Base {
      */
     async verifyCorpusIntegrity() {
         return validateContentIntegrity(issueSyncConfig, {
+            repoSlug  : aiConfig.repo,
             type      : 'pulls',
             filePrefix: aiConfig.issueSync.pullFilenamePrefix || 'pr-'
         });
@@ -922,13 +926,14 @@ class PullRequestSyncer extends Base {
      */
     async reconcilePullRequestIndex(inventory = null) {
         const corpus = inventory || await buildContentInventory(issueSyncConfig, {
+            repoSlug  : aiConfig.repo,
             type      : 'pulls',
             filePrefix: aiConfig.issueSync.pullFilenamePrefix || 'pr-'
         });
 
         const existing = new Map(
             (await readContentIndex(issueSyncConfig))
-                .filter(entry => entry.type === 'pulls')
+                .filter(entry => entry.repoSlug === aiConfig.repo && entry.type === 'pulls')
                 .map(entry => [Number(entry.id), entry])
         );
 
@@ -946,13 +951,14 @@ class PullRequestSyncer extends Base {
                 // divergent artifacts, and a row is an assertion that the id resolves there — which
                 // is the canonical-by-implication choice this lane refuses to make on the corpus's
                 // behalf. Silently, too: the path is real, so every existence check passes.
-                if (existing.has(id)) remove.push({type: 'pulls', id});
+                if (existing.has(id)) remove.push({repoSlug: aiConfig.repo, type: 'pulls', id});
 
                 continue;
             }
 
             const entry = createContentIndexEntryFromPath({
                 issueSyncConfig,
+                repoSlug : aiConfig.repo,
                 type    : 'pulls',
                 id,
                 filePath: copies[0].absPath
@@ -977,7 +983,7 @@ class PullRequestSyncer extends Base {
         // A row whose id owns NO artifact at all is a lookup into nothing. The projection drops it
         // rather than leaving a resolvable-looking entry behind.
         for (const id of existing.keys()) {
-            if (!corpus.has(id)) remove.push({type: 'pulls', id});
+            if (!corpus.has(id)) remove.push({repoSlug: aiConfig.repo, type: 'pulls', id});
         }
 
         if (upsert.length > 0 || remove.length > 0) {
@@ -1020,6 +1026,7 @@ class PullRequestSyncer extends Base {
         const list  = [...numbers];
 
         const inventory = await buildContentInventory(issueSyncConfig, {
+            repoSlug  : aiConfig.repo,
             type      : 'pulls',
             filePrefix: aiConfig.issueSync.pullFilenamePrefix || 'pr-'
         });
@@ -1048,7 +1055,7 @@ class PullRequestSyncer extends Base {
                 const targetPath  = this.#getPullRequestPath(pr, planBuckets, inventory);
                 if (!targetPath) {
                     if (indexMutations) {
-                        indexMutations.remove.push({type: 'pulls', id: prNumber});
+                        indexMutations.remove.push({repoSlug: aiConfig.repo, type: 'pulls', id: prNumber});
                     }
                     continue;
                 }
@@ -1080,6 +1087,7 @@ class PullRequestSyncer extends Base {
                     // ships beside.
                     indexMutations.upsert.push(createContentIndexEntryFromPath({
                         issueSyncConfig,
+                        repoSlug : aiConfig.repo,
                         type    : 'pulls',
                         id      : prNumber,
                         filePath: this.#resolvePath(this.#relativePath(targetPath))

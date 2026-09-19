@@ -125,9 +125,15 @@ class SyncService extends Base {
      * @param {Object} [options]
      * @param {Boolean} [options.pushLocalChanges=true] Whether locally-authored issue changes may
      * be pushed to GitHub before the pull. Scheduled CI emission passes `false` and remains read-only.
+     * @param {Boolean} [options.includeReleaseNotes=true] Whether release-note Markdown is materialized.
+     * @param {Boolean} [options.deriveContent=true] Whether Portal indexes and SEO are derived.
      * @returns {Promise<object>} Statistics for the emitted generated content, plus `facetOutcomes`.
      */
-    async emitGeneratedContentAndDerive({pushLocalChanges = true} = {}) {
+    async emitGeneratedContentAndDerive({
+        pushLocalChanges = true,
+        includeReleaseNotes = true,
+        deriveContent = true
+    } = {}) {
         const
             metadata = await MetadataManager.load(),
             outcomes = [],
@@ -225,8 +231,12 @@ class SyncService extends Base {
             }
         });
 
-        // 5. Sync release notes
-        const releaseStats = await dependentFacet('releaseNotes', ['releases'], () => ReleaseNotesSyncer.syncNotes(metadata));
+        // 5. Sync release notes only for the repository-owned generated-content path. Corpus-only
+        // emission still fetched the full release history above because the three conversation
+        // facets require it for closed-item bucketing; it never materializes release-note files.
+        const releaseStats = includeReleaseNotes
+            ? await dependentFacet('releaseNotes', ['releases'], () => ReleaseNotesSyncer.syncNotes(metadata))
+            : null;
 
         // 6. Sync discussions
         const discussionStats = await dependentFacet('discussions', ['discussions'], () => DiscussionSyncer.syncDiscussions(metadata));
@@ -309,15 +319,17 @@ class SyncService extends Base {
         //     prepare, the data-sync pipeline's CLI stage) has to reach across the engine↔Brain
         //     boundary to repair layout it never wrote. The `issueSync` block is read at the use site;
         //     only its `contentRoot` leaf is consumed.
-        await reconcileActiveChunks(aiConfig.issueSync, {type: 'pulls',       filePrefix: 'pr-'});
-        await reconcileActiveChunks(aiConfig.issueSync, {type: 'issues',      filePrefix: 'issue-'});
-        await reconcileActiveChunks(aiConfig.issueSync, {type: 'discussions', filePrefix: 'discussion-'});
+        await reconcileActiveChunks(aiConfig.issueSync, {repoSlug: aiConfig.repo, type: 'pulls',       filePrefix: 'pr-'});
+        await reconcileActiveChunks(aiConfig.issueSync, {repoSlug: aiConfig.repo, type: 'issues',      filePrefix: 'issue-'});
+        await reconcileActiveChunks(aiConfig.issueSync, {repoSlug: aiConfig.repo, type: 'discussions', filePrefix: 'discussion-'});
 
         // 8. Derive the portal projection from whatever DID advance. The indexes are a projection of the
         //    corpus on disk, so a partially-advanced corpus derives a correspondingly partial projection
         //    rather than a wrong one — and running it before the verdict below means a facet failure does
         //    not also strand the facets that succeeded without their indexes.
-        await this.rebuildContentIndexesAndSeo();
+        if (deriveContent) {
+            await this.rebuildContentIndexesAndSeo();
+        }
 
         const failedFacets = outcomes.filter(outcome => !outcome.advanced);
 
@@ -349,6 +361,22 @@ class SyncService extends Base {
             pullIntegrity,
             facetOutcomes: outcomes
         };
+    }
+
+    /**
+     * @summary Emits one origin-qualified conversation corpus without consumer derivation or delivery.
+     *
+     * Release history remains the prerequisite for issue, discussion and pull bucketing, while
+     * release-note files, Portal/SEO output, local-to-GitHub issue pushes and git publication stay
+     * outside this producer-only boundary.
+     * @returns {Promise<object>} Conversation facet statistics and truthful aggregate outcome.
+     */
+    async emitConversationCorpus() {
+        return this.emitGeneratedContentAndDerive({
+            deriveContent     : false,
+            includeReleaseNotes: false,
+            pushLocalChanges  : false
+        });
     }
 
     /**

@@ -26,19 +26,19 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
     let issueSyncConfig;
     let aiConfig;
     let originalQuery;
-    let originalContentRoot;
+    let originalContentRootOverride;
     let tmpRoot;
     let logger;
 
     test.beforeAll(async () => {
         aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         issueSyncConfig = aiConfig.issueSync;
-        originalContentRoot = issueSyncConfig.contentRoot;
+        originalContentRootOverride = issueSyncConfig.contentRootOverride;
 
         tmpRoot = path.resolve(process.cwd(), 'tmp', `release-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
-        issueSyncConfig.contentRoot = tmpRoot;
+        issueSyncConfig.contentRootOverride = tmpRoot;
 
         ReleaseNotesSyncer = (await import('../../../../../../ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).default;
         GraphqlService     = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
@@ -50,7 +50,7 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
     });
 
     test.afterAll(async () => {
-        issueSyncConfig.contentRoot = originalContentRoot;
+        issueSyncConfig.contentRootOverride = originalContentRootOverride;
         GraphqlService.query = originalQuery;
         await fs.remove(tmpRoot);
     });
@@ -119,7 +119,7 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
 
         await ReleaseNotesSyncer.fetchAndCacheReleases(metadata);
 
-        const releaseDir = path.join(tmpRoot, 'release-notes');
+        const releaseDir = issueSyncConfig.releaseNotesDir;
         await fs.emptyDir(releaseDir);
 
         const stats = await ReleaseNotesSyncer.syncNotes(metadata);
@@ -149,7 +149,7 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
         ];
 
         // Ensure the directory is clean
-        const releaseDir = path.join(tmpRoot, 'release-notes');
+        const releaseDir = issueSyncConfig.releaseNotesDir;
         await fs.emptyDir(releaseDir);
 
         const stats = await ReleaseNotesSyncer.syncNotes({});
@@ -223,7 +223,7 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
             vNew: {tagName: 'vNew', name: 'New', publishedAt: inWindow, description: 'new'}
         };
 
-        const releaseDir = path.join(tmpRoot, 'release-notes');
+        const releaseDir = issueSyncConfig.releaseNotesDir;
         await fs.emptyDir(releaseDir);
 
         const stats = await ReleaseNotesSyncer.syncNotes({});

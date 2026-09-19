@@ -1,7 +1,7 @@
 import {existsSync}                              from 'fs';
 import fs                                        from 'fs/promises';
 import path                                      from 'path';
-import {parseContentPath, pathSegmentOptionsFor} from './contentPath.mjs';
+import {parseContentPath, pathSegmentOptionsFor, validateSegment} from './contentPath.mjs';
 import {readContentIndex, contentRootFor}        from './contentIndex.mjs';
 
 /**
@@ -34,17 +34,20 @@ import {readContentIndex, contentRootFor}        from './contentIndex.mjs';
  *
  * @param {Object} issueSyncConfig GitHub workflow `issueSync` config block
  * @param {Object} options
+ * @param {String} options.repoSlug Explicit producer provenance for this numeric-id scope
  * @param {'issues'|'pulls'|'discussions'} options.type Content type segment
  * @param {String} options.filePrefix File-leaf prefix (e.g. `'pr-'`, `'issue-'`)
  * @returns {Promise<Map<Number, Array<{absPath: String, version: String|null, bucket: String|null, chunkNumber: Number}>>>}
  */
-export async function buildContentInventory(issueSyncConfig = {}, {type, filePrefix} = {}) {
+export async function buildContentInventory(issueSyncConfig = {}, {repoSlug, type, filePrefix} = {}) {
     const contentRoot = contentRootFor(issueSyncConfig),
           // The segment vocabularies are configured, not universal — a hardcoded parse agrees with
           // the default and diverges silently under any override.
           segments    = pathSegmentOptionsFor(issueSyncConfig),
           idPattern   = new RegExp(`(?:^|[\\\\/])${filePrefix}(\\d+)\\.md$`),
           inventory   = new Map();
+
+    validateSegment(repoSlug, 'repoSlug');
 
     const scan = async root => {
         if (!existsSync(root)) return;
@@ -55,7 +58,7 @@ export async function buildContentInventory(issueSyncConfig = {}, {type, filePre
             if (!match) continue;
 
             const absPath = path.join(root, rel),
-                  parsed  = parseContentPath({contentRoot, filePath: absPath, ...segments});
+                  parsed  = parseContentPath({contentRoot, repoSlug, filePath: absPath, ...segments});
 
             // A file whose path does not parse is off-contract (wrong depth, no chunk dir). Record
             // it with null coordinates rather than skipping: an unparseable artifact is exactly the
@@ -73,8 +76,10 @@ export async function buildContentInventory(issueSyncConfig = {}, {type, filePre
         }
     };
 
-    await scan(path.join(contentRoot, type));
-    await scan(path.join(contentRoot, 'archive', type));
+    const originRoot = segments.originRoot || path.join(contentRoot, repoSlug);
+
+    await scan(path.join(originRoot, type));
+    await scan(path.join(originRoot, 'archive', type));
 
     // Stable ordering so a duplicate's "first" copy is deterministic across platforms — callers
     // reporting a divergent pair must name the same two files on every machine.
@@ -128,16 +133,22 @@ export function resolveArchivedLocation(inventory, id) {
  *
  * @param {Object} issueSyncConfig GitHub workflow `issueSync` config block
  * @param {Object} options
+ * @param {String} options.repoSlug Explicit producer provenance for this numeric-id scope
  * @param {'issues'|'pulls'|'discussions'} options.type Content type segment
  * @param {String} options.filePrefix File-leaf prefix (e.g. `'pr-'`)
  * @param {Map<Number, Array<Object>>} [options.inventory] Pre-built inventory; scanned when omitted
  * @returns {Promise<{type: String, ok: Boolean, indexedTotal: Number, corpusTotal: Number, uniqueIds: Number, staleIndexEntries: Array<Object>, inconsistentIndexEntries: Array<Object>, duplicateIndexEntryIds: Array<Number>, unindexedIds: Array<Number>, identicalDuplicateIds: Array<Number>, divergentDuplicateIds: Array<Number>}>}
  */
-export async function validateContentIntegrity(issueSyncConfig = {}, {type, filePrefix, inventory} = {}) {
+export async function validateContentIntegrity(issueSyncConfig = {}, {repoSlug, type, filePrefix, inventory} = {}) {
     const contentRoot = contentRootFor(issueSyncConfig),
           segments    = pathSegmentOptionsFor(issueSyncConfig),
-          corpus      = inventory || await buildContentInventory(issueSyncConfig, {type, filePrefix}),
-          indexed     = (await readContentIndex(issueSyncConfig)).filter(entry => entry.type === type);
+          corpus      = inventory || await buildContentInventory(issueSyncConfig, {repoSlug, type, filePrefix}),
+          index       = await readContentIndex(issueSyncConfig),
+          indexed     = index.filter(entry => entry.repoSlug === repoSlug && entry.type === type),
+          unqualifiedIndexEntries = index.filter(entry =>
+              entry.type === type && (entry.repoSlug === undefined || entry.repoSlug === null));
+
+    validateSegment(repoSlug, 'repoSlug');
 
     const staleIndexEntries        = [],
           inconsistentIndexEntries = [];
@@ -153,7 +164,7 @@ export async function validateContentIntegrity(issueSyncConfig = {}, {type, file
         // entry then names a real file and still lies about where it sits, which every check that
         // only tests path existence will pass. Compared against the path the entry itself carries,
         // so this needs no filesystem opinion beyond the file being there.
-        const parsed = parseContentPath({contentRoot, filePath: entry.path, ...segments});
+        const parsed = parseContentPath({contentRoot, repoSlug, filePath: entry.path, ...segments});
 
         if (!parsed || parsed.chunkNumber !== entry.chunkNumber || (parsed.version ?? null) !== (entry.version ?? null)) {
             inconsistentIndexEntries.push({
@@ -200,12 +211,15 @@ export async function validateContentIntegrity(issueSyncConfig = {}, {type, file
         type,
         ok          : staleIndexEntries.length === 0 && inconsistentIndexEntries.length === 0 &&
                       duplicateIndexEntryIds.length === 0 && unindexedIds.length === 0 &&
-                      identicalDuplicateIds.length === 0 && divergentDuplicateIds.length === 0,
+                      identicalDuplicateIds.length === 0 && divergentDuplicateIds.length === 0 &&
+                      unqualifiedIndexEntries.length === 0,
+        repoSlug,
         indexedTotal: indexed.length,
         corpusTotal,
         uniqueIds   : corpus.size,
         staleIndexEntries,
         inconsistentIndexEntries,
+        unqualifiedIndexEntries,
         duplicateIndexEntryIds,
         unindexedIds,
         identicalDuplicateIds,
@@ -226,6 +240,7 @@ export function formatIntegrityReport(result = {}) {
         `  unique ids           : ${result.uniqueIds}`,
         `  stale indexed paths  : ${result.staleIndexEntries?.length ?? 0}`,
         `  inconsistent entries : ${result.inconsistentIndexEntries?.length ?? 0}`,
+        `  unqualified rows     : ${result.unqualifiedIndexEntries?.length ?? 0}`,
         `  duplicate index rows : ${result.duplicateIndexEntryIds?.length ?? 0}`,
         `  unindexed artifacts  : ${result.unindexedIds?.length ?? 0}`,
         `  identical duplicates : ${result.identicalDuplicateIds?.length ?? 0}`,

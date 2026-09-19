@@ -29,7 +29,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
     let ReleaseNotesSyncer;
     let originalArchiveRoot;
     let originalPullsDir;
-    let originalContentRoot;
+    let originalContentRootOverride;
     let originalQuery;
     let originalSortedReleases;
     let originalVersionDirectoryPrefix;
@@ -44,7 +44,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
 
         originalArchiveRoot            = aiConfig.issueSync.archiveRoot;
         originalPullsDir               = aiConfig.issueSync.pullsDir;
-        originalContentRoot            = aiConfig.issueSync.contentRoot;
+        originalContentRootOverride    = aiConfig.issueSync.contentRootOverride;
         originalQuery                  = GraphqlService.query.bind(GraphqlService);
         originalSortedReleases         = ReleaseNotesSyncer.sortedReleases;
         originalVersionDirectoryPrefix = aiConfig.issueSync.versionDirectoryPrefix;
@@ -55,9 +55,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         tmpRoot = path.resolve(process.cwd(), 'tmp', `pull-request-syncer-test-${process.pid}-${Date.now()}`);
         await fs.ensureDir(tmpRoot);
 
-        aiConfig.issueSync.archiveRoot            = path.join(tmpRoot, 'archive');
-        aiConfig.issueSync.pullsDir               = path.join(tmpRoot, 'pulls');
-        aiConfig.issueSync.contentRoot            = tmpRoot;
+        aiConfig.issueSync.contentRootOverride    = tmpRoot;
         aiConfig.issueSync.versionDirectoryPrefix = 'v';
         aiConfig.issueSync.routeByMilestone       = false;
         ReleaseNotesSyncer.sortedReleases              = [];
@@ -66,9 +64,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
     test.afterEach(async () => {
         GraphqlService.query                       = originalQuery;
         ReleaseNotesSyncer.sortedReleases              = originalSortedReleases;
-        aiConfig.issueSync.archiveRoot            = originalArchiveRoot;
-        aiConfig.issueSync.pullsDir               = originalPullsDir;
-        aiConfig.issueSync.contentRoot            = originalContentRoot;
+        aiConfig.issueSync.contentRootOverride    = originalContentRootOverride;
         aiConfig.issueSync.versionDirectoryPrefix = originalVersionDirectoryPrefix;
         aiConfig.issueSync.routeByMilestone       = originalRouteByMilestone;
 
@@ -113,13 +109,13 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         });
 
         const stats      = await PullRequestSyncer.syncPullRequests(metadata);
-        const activePath = path.join(aiConfig.issueSync.contentRoot, 'pulls', 'chunk-1', `pr-${prNumber}.md`);
-        const stalePath  = path.join(aiConfig.issueSync.contentRoot, 'archive', 'pulls', 'v13.0.0', 'chunk-1', `pr-${prNumber}.md`);
+        const activePath = path.join(aiConfig.issueSync.pullsDir, 'chunk-1', `pr-${prNumber}.md`);
+        const stalePath  = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-1', `pr-${prNumber}.md`);
 
         expect(stats.synced).toEqual([prNumber]);
         await expect(fs.pathExists(activePath)).resolves.toBe(true);
         await expect(fs.pathExists(stalePath)).resolves.toBe(false);
-        expect(metadata.pulls[prNumber].path).toBe(path.relative(aiConfig.projectRoot, activePath));
+        expect(metadata.pulls[prNumber].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, activePath));
         // `archiveVersion` is fully retired — it is no longer written to metadata.
         expect(metadata.pulls[prNumber].archiveVersion).toBeUndefined();
     });
@@ -148,8 +144,8 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         });
 
         const stats       = await PullRequestSyncer.syncPullRequests({pulls: {}});
-        const releasePath = path.join(aiConfig.issueSync.contentRoot, 'archive', 'pulls', 'v9.0.0', 'chunk-1', `pr-${prNumber}.md`);
-        const garbagePath = path.join(aiConfig.issueSync.contentRoot, 'archive', 'pulls', 'vNeo-Material Component Library v0.1', 'chunk-1', `pr-${prNumber}.md`);
+        const releasePath = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v9.0.0', 'chunk-1', `pr-${prNumber}.md`);
+        const garbagePath = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'vNeo-Material Component Library v0.1', 'chunk-1', `pr-${prNumber}.md`);
 
         expect(stats.synced).toEqual([prNumber]);
         // Bucketed into the real release, NOT a title-derived garbage folder.
@@ -173,8 +169,8 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         });
 
         const stats       = await PullRequestSyncer.syncPullRequests({pulls: {}});
-        const activePath  = path.join(aiConfig.issueSync.contentRoot, 'pulls', 'chunk-1', `pr-${prNumber}.md`);
-        const archivePath = path.join(aiConfig.issueSync.contentRoot, 'archive', 'pulls', 'v99.0.0', 'chunk-1', `pr-${prNumber}.md`);
+        const activePath  = path.join(aiConfig.issueSync.pullsDir, 'chunk-1', `pr-${prNumber}.md`);
+        const archivePath = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v99.0.0', 'chunk-1', `pr-${prNumber}.md`);
 
         expect(stats.synced).toEqual([prNumber]);
         await expect(fs.pathExists(activePath)).resolves.toBe(true);
@@ -251,8 +247,8 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         });
 
         const stats             = await PullRequestSyncer.syncPullRequests({pulls: {}});
-        const missingActivePath = path.join(aiConfig.issueSync.contentRoot, 'pulls', 'chunk-1', `pr-${missingBucketPr.number}.md`);
-        const cutArchivePath    = path.join(aiConfig.issueSync.contentRoot, 'archive', 'pulls', 'v98.0.0', 'chunk-1', `pr-${cutBucketPr.number}.md`);
+        const missingActivePath = path.join(aiConfig.issueSync.pullsDir, 'chunk-1', `pr-${missingBucketPr.number}.md`);
+        const cutArchivePath    = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v98.0.0', 'chunk-1', `pr-${cutBucketPr.number}.md`);
 
         expect(stats.synced).toEqual([missingBucketPr.number, cutBucketPr.number]);
         await expect(fs.pathExists(missingActivePath)).resolves.toBe(true);
@@ -263,7 +259,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         const prNumber = 3291;
         const pr       = buildPullRequest(prNumber);
         const oldPath  = path.join(aiConfig.issueSync.pullsDir, 'chunk-77', `pr-${prNumber}.md`);
-        const oldRel   = path.relative(aiConfig.projectRoot, oldPath);
+        const oldRel   = path.relative(aiConfig.issueSync.metadataBaseRoot, oldPath);
 
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
 
@@ -297,7 +293,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         await expect(fs.pathExists(oldPath)).resolves.toBe(false);
         await expect(fs.pathExists(path.dirname(oldPath))).resolves.toBe(false);
         await expect(fs.pathExists(aiConfig.issueSync.pullsDir)).resolves.toBe(true);
-        expect(metadata.pulls[prNumber].path).toBe(path.relative(aiConfig.projectRoot, targetPath));
+        expect(metadata.pulls[prNumber].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, targetPath));
     });
 
     test('delta cutoff stops PR pagination once a batch predates the cached high-water mark (#12190)', async () => {
@@ -345,7 +341,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-06-01T00:00:00Z'}];
 
         const stats       = await PullRequestSyncer.reconcileClosedPullRequestLocations(metadata),
-              archivePath = path.join(aiConfig.issueSync.contentRoot, 'archive', 'pulls', 'v13.0.0', 'chunk-1', `pr-${prNumber}.md`);
+              archivePath = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-1', `pr-${prNumber}.md`);
 
         expect(stats.count).toBe(1);
         expect(stats.pullRequests).toEqual([prNumber]);
@@ -359,15 +355,15 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         await fs.ensureDir(path.dirname(activePath));
         await fs.writeFile(activePath, `---\nnumber: ${prNumber}\nstate: MERGED\nclosedAt: '2026-05-01T00:00:00Z'\n---\n`, 'utf-8');
 
-        const metadata = {pulls: {[prNumber]: {number: prNumber, state: 'MERGED', closedAt: '2026-05-01T00:00:00Z', path: path.relative(aiConfig.projectRoot, activePath)}}};
+        const metadata = {pulls: {[prNumber]: {number: prNumber, state: 'MERGED', closedAt: '2026-05-01T00:00:00Z', path: path.relative(aiConfig.issueSync.metadataBaseRoot, activePath)}}};
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-06-01T00:00:00Z'}];
 
         const stats       = await PullRequestSyncer.reconcileClosedPullRequestLocations(metadata),
-              archivePath = path.join(aiConfig.issueSync.contentRoot, 'archive', 'pulls', 'v13.0.0', 'chunk-1', `pr-${prNumber}.md`);
+              archivePath = path.join(aiConfig.issueSync.archiveRoot, 'pulls', 'v13.0.0', 'chunk-1', `pr-${prNumber}.md`);
 
         expect(stats.count).toBe(1);
         await expect(fs.pathExists(archivePath)).resolves.toBe(true);
-        expect(metadata.pulls[prNumber].path).toBe(path.relative(aiConfig.projectRoot, archivePath));
+        expect(metadata.pulls[prNumber].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, archivePath));
     });
 
     test('leaves an OPEN PR file in active (never archives a non-terminal PR)', async () => {
@@ -553,7 +549,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
 
         // The index names the file's CURRENT (active) location, as it would before the move.
         await fs.writeJson(path.join(aiConfig.issueSync.contentRoot, '_index.json'), [
-            {type: 'pulls', id: prNumber, version: null, chunkNumber: 1, path: `pulls/chunk-1/pr-${prNumber}.md`}
+            {repoSlug: aiConfig.repo, type: 'pulls', id: prNumber, version: null, chunkNumber: 1, path: `${aiConfig.repo}/pulls/chunk-1/pr-${prNumber}.md`}
         ]);
 
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-06-01T00:00:00Z'}];
@@ -565,7 +561,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         // change itself added, so a spec that trips on it first proves only that the new field exists
         // — the defect (a lookup naming a file that moved) would never be evaluated. Pre-fix this
         // reads `pulls/chunk-1/...`: the file is in the archive and the index still points at active.
-        expect(entry.path).toBe(`archive/pulls/v13.0.0/chunk-1/pr-${prNumber}.md`);
+        expect(entry.path).toBe(`${aiConfig.repo}/archive/pulls/v13.0.0/chunk-1/pr-${prNumber}.md`);
         expect(entry.version).toBe('v13.0.0');
         expect(entry.chunkNumber).toBe(1);
 
@@ -594,7 +590,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         // Asserted before the counter: pre-fix there is no entry at all for this PR, and nothing
         // downstream would ever create one.
         expect(entry, 'a marooned move must still produce an index entry').toBeDefined();
-        expect(entry.path).toBe(`archive/pulls/v13.0.0/chunk-1/pr-${prNumber}.md`);
+        expect(entry.path).toBe(`${aiConfig.repo}/archive/pulls/v13.0.0/chunk-1/pr-${prNumber}.md`);
         expect(stats.indexed).toBe(1);
     });
 
@@ -871,13 +867,13 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
 
         // The entry the historical move left behind: names the pre-move active path.
         await fs.writeJson(path.join(aiConfig.issueSync.contentRoot, '_index.json'), [
-            {type: 'pulls', id: prNumber, version: null, chunkNumber: 1, path: `pulls/chunk-1/pr-${prNumber}.md`}
+            {repoSlug: aiConfig.repo, type: 'pulls', id: prNumber, version: null, chunkNumber: 1, path: `${aiConfig.repo}/pulls/chunk-1/pr-${prNumber}.md`}
         ]);
 
         const stats = await PullRequestSyncer.reconcilePullRequestIndex();
         const entry = (await readContentIndex(aiConfig.issueSync)).find(e => e.id === prNumber);
 
-        expect(entry.path).toBe(`archive/pulls/v13.0.0/chunk-3/pr-${prNumber}.md`);
+        expect(entry.path).toBe(`${aiConfig.repo}/archive/pulls/v13.0.0/chunk-3/pr-${prNumber}.md`);
         expect(entry.version).toBe('v13.0.0');
         expect(entry.chunkNumber).toBe(3);
         expect(stats.reindexed).toBe(1);
@@ -890,7 +886,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         await fs.ensureDir(path.dirname(archived));
         await fs.writeFile(archived, 'x', 'utf8');
         await fs.writeJson(path.join(aiConfig.issueSync.contentRoot, '_index.json'), [
-            {type: 'pulls', id: prNumber, version: 'v13.0.0', chunkNumber: 1, path: `archive/pulls/v13.0.0/chunk-1/pr-${prNumber}.md`}
+            {repoSlug: aiConfig.repo, type: 'pulls', id: prNumber, version: 'v13.0.0', chunkNumber: 1, path: `${aiConfig.repo}/archive/pulls/v13.0.0/chunk-1/pr-${prNumber}.md`}
         ]);
 
         const first = await PullRequestSyncer.reconcilePullRequestIndex();
@@ -912,7 +908,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         await fs.writeFile(archived, 'x', 'utf8');
         // Path is right, coordinates are not — invisible to any check that only resolves the path.
         await fs.writeJson(path.join(aiConfig.issueSync.contentRoot, '_index.json'), [
-            {type: 'pulls', id: prNumber, version: 'v13.0.0', chunkNumber: 1, path: `archive/pulls/v13.0.0/chunk-2/pr-${prNumber}.md`}
+            {repoSlug: aiConfig.repo, type: 'pulls', id: prNumber, version: 'v13.0.0', chunkNumber: 1, path: `${aiConfig.repo}/archive/pulls/v13.0.0/chunk-2/pr-${prNumber}.md`}
         ]);
 
         const stats = await PullRequestSyncer.reconcilePullRequestIndex();
@@ -936,7 +932,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
 
         // A pre-existing row blessing chunk-1.
         await fs.writeJson(path.join(aiConfig.issueSync.contentRoot, '_index.json'), [
-            {type: 'pulls', id: prNumber, version: 'v13.0.0', chunkNumber: 1, path: `archive/pulls/v13.0.0/chunk-1/pr-${prNumber}.md`}
+            {repoSlug: aiConfig.repo, type: 'pulls', id: prNumber, version: 'v13.0.0', chunkNumber: 1, path: `${aiConfig.repo}/archive/pulls/v13.0.0/chunk-1/pr-${prNumber}.md`}
         ]);
 
         const stats = await PullRequestSyncer.reconcilePullRequestIndex();
@@ -948,13 +944,35 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
 
     test('REMOVES a row whose id owns no artifact at all — a lookup into nothing', async () => {
         await fs.writeJson(path.join(aiConfig.issueSync.contentRoot, '_index.json'), [
-            {type: 'pulls', id: 4040, version: null, chunkNumber: 1, path: 'pulls/chunk-1/pr-4040.md'}
+            {repoSlug: aiConfig.repo, type: 'pulls', id: 4040, version: null, chunkNumber: 1, path: `${aiConfig.repo}/pulls/chunk-1/pr-4040.md`}
         ]);
 
         const stats = await PullRequestSyncer.reconcilePullRequestIndex();
 
         expect(stats.removed).toBe(1);
         expect((await readContentIndex(aiConfig.issueSync)).find(e => e.id === 4040)).toBeUndefined();
+    });
+
+    test('does not remove another origin\'s equal id or unrelated shared-index rows', async () => {
+        const foreignSlug = 'neo-agent-brain';
+
+        await fs.writeJson(path.join(aiConfig.issueSync.contentRoot, '_index.json'), [
+            {
+                repoSlug: foreignSlug, type: 'pulls', id: 4040, version: null, chunkNumber: 1,
+                path: `${foreignSlug}/pulls/chunk-1/pr-4040.md`
+            },
+            {
+                repoSlug: foreignSlug, type: 'issues', id: 7, version: null, chunkNumber: 1,
+                path: `${foreignSlug}/issues/chunk-1/issue-7.md`
+            }
+        ]);
+
+        const stats = await PullRequestSyncer.reconcilePullRequestIndex();
+        const rows  = await readContentIndex(aiConfig.issueSync);
+
+        expect(stats).toEqual({reindexed: 0, unchanged: 0, removed: 0, skippedAmbiguous: []});
+        expect(rows).toContainEqual(expect.objectContaining({repoSlug: foreignSlug, type: 'pulls', id: 4040}));
+        expect(rows).toContainEqual(expect.objectContaining({repoSlug: foreignSlug, type: 'issues', id: 7}));
     });
 
     test('leaves an ambiguous id UNINDEXED rather than blessing a copy as canonical', async () => {
@@ -1036,7 +1054,7 @@ test.describe('Neo.ai.services.github-workflow.sync.PullRequestSyncer', () => {
         // Metadata refreshed with the live hash (no longer the stale one) + the resolved path.
         expect(metadata.pulls[prNumber].contentHash).not.toBe('STALE-HASH');
         expect(metadata.pulls[prNumber].state).toBe('MERGED');
-        expect(metadata.pulls[prNumber].path).toBe(path.relative(aiConfig.projectRoot, targetPath));
+        expect(metadata.pulls[prNumber].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, targetPath));
     });
 
     test('refetchPullsByNumber skips a PR that no longer exists on GitHub (#13794)', async () => {

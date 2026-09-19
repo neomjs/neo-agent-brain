@@ -2,7 +2,7 @@ import {test, expect}                            from '@playwright/test';
 import fs                                        from 'fs/promises';
 import os                                        from 'os';
 import path                                      from 'path';
-import {parseContentPath, pathSegmentOptionsFor} from '../../../../../../../ai/services/github-workflow/shared/contentPath.mjs';
+import {parseContentPath as parseSourceContentPath, pathSegmentOptionsFor} from '../../../../../../../ai/services/github-workflow/shared/contentPath.mjs';
 import {writeContentIndex}                       from '../../../../../../../ai/services/github-workflow/shared/contentIndex.mjs';
 import {
     buildContentInventory,
@@ -26,6 +26,9 @@ import {
  */
 test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
     let tmpDir, contentRoot, config;
+    const repoSlug = 'neo';
+
+    const parseContentPath = config => parseSourceContentPath({repoSlug, ...config});
 
     test.beforeEach(async () => {
         tmpDir      = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-inventory-'));
@@ -40,51 +43,51 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
 
     /** Writes an active-tier PR artifact and returns its contentRoot-relative path. */
     const writeActive = async (chunk, id, body = `# pr ${id}\n`) => {
-        const dir = path.join(contentRoot, 'pulls', `chunk-${chunk}`);
+        const dir = path.join(contentRoot, repoSlug, 'pulls', `chunk-${chunk}`);
         await fs.mkdir(dir, {recursive: true});
         await fs.writeFile(path.join(dir, `pr-${id}.md`), body, 'utf8');
-        return `pulls/chunk-${chunk}/pr-${id}.md`
+        return `${repoSlug}/pulls/chunk-${chunk}/pr-${id}.md`
     };
 
     /** Writes an archive-tier PR artifact and returns its contentRoot-relative path. */
     const writeArchived = async (version, chunk, id, body = `# pr ${id}\n`) => {
-        const dir = path.join(contentRoot, 'archive', 'pulls', version, `chunk-${chunk}`);
+        const dir = path.join(contentRoot, repoSlug, 'archive', 'pulls', version, `chunk-${chunk}`);
         await fs.mkdir(dir, {recursive: true});
         await fs.writeFile(path.join(dir, `pr-${id}.md`), body, 'utf8');
-        return `archive/pulls/${version}/chunk-${chunk}/pr-${id}.md`
+        return `${repoSlug}/archive/pulls/${version}/chunk-${chunk}/pr-${id}.md`
     };
 
     const indexEntry = (id, relPath, version = null, chunkNumber = 1) =>
-        ({type: 'pulls', id, version, chunkNumber, path: relPath});
+        ({repoSlug, type: 'pulls', id, version, chunkNumber, path: relPath});
 
-    const inventoryOpts = {type: 'pulls', filePrefix: 'pr-'};
+    const inventoryOpts = {repoSlug, type: 'pulls', filePrefix: 'pr-'};
 
     test.describe('parseContentPath — the inverse of the path math', () => {
         test('reads an archive path back into its tier coordinates', () => {
             expect(parseContentPath({
                 contentRoot: 'resources/content',
-                filePath   : 'archive/pulls/v13.0.0/chunk-2/pr-10124.md'
+                filePath   : 'neo/archive/pulls/v13.0.0/chunk-2/pr-10124.md'
             })).toEqual({type: 'pulls', version: 'v13.0.0', bucket: null, chunkNumber: 2, filename: 'pr-10124.md'})
         });
 
         test('reads an active path back into its tier coordinates', () => {
             expect(parseContentPath({
                 contentRoot: 'resources/content',
-                filePath   : 'pulls/chunk-1/pr-9537.md'
+                filePath   : 'neo/pulls/chunk-1/pr-9537.md'
             })).toEqual({type: 'pulls', version: null, bucket: null, chunkNumber: 1, filename: 'pr-9537.md'})
         });
 
         test('reads an ABSOLUTE path back into its tier coordinates', () => {
             expect(parseContentPath({
                 contentRoot: '/repo/resources/content',
-                filePath   : '/repo/resources/content/archive/pulls/v13.0.0/chunk-2/pr-10124.md'
+                filePath   : '/repo/resources/content/neo/archive/pulls/v13.0.0/chunk-2/pr-10124.md'
             })).toEqual({type: 'pulls', version: 'v13.0.0', bucket: null, chunkNumber: 2, filename: 'pr-10124.md'})
         });
 
         test('a non-version archive segment reads as a bucket, not a version', () => {
             const parsed = parseContentPath({
                 contentRoot: 'resources/content',
-                filePath   : 'archive/pulls/rejected/chunk-1/pr-5.md'
+                filePath   : 'neo/archive/pulls/rejected/chunk-1/pr-5.md'
             });
 
             expect(parsed.bucket).toBe('rejected');
@@ -97,7 +100,7 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
             // recognised `chunk-3/`, and the two halves of one contract would disagree with nothing red.
             expect(parseContentPath({
                 contentRoot: 'resources/content',
-                filePath   : 'archive/pulls/v13.0.0/slice-2/pr-10124.md',
+                filePath   : 'neo/archive/pulls/v13.0.0/slice-2/pr-10124.md',
                 chunkPrefix: 'slice-'
             })).toEqual({type: 'pulls', version: 'v13.0.0', bucket: null, chunkNumber: 2, filename: 'pr-10124.md'})
         });
@@ -108,7 +111,7 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
             // are valid shapes and neither throws.
             const parsed = parseContentPath({
                 contentRoot  : 'resources/content',
-                filePath     : 'archive/pulls/rel-13.0.0/chunk-1/pr-5.md',
+                filePath     : 'neo/archive/pulls/rel-13.0.0/chunk-1/pr-5.md',
                 versionPrefix: 'rel-'
             });
 
@@ -121,7 +124,7 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
             // permissive: with `rel-` configured, `v13.0.0` is not a release bucket at all.
             const parsed = parseContentPath({
                 contentRoot  : 'resources/content',
-                filePath     : 'archive/pulls/v13.0.0/chunk-1/pr-5.md',
+                filePath     : 'neo/archive/pulls/v13.0.0/chunk-1/pr-5.md',
                 versionPrefix: 'rel-'
             });
 
@@ -148,7 +151,7 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
             // this module exists to detect.
             expect(parseContentPath({
                 contentRoot: 'resources/content',
-                filePath   : 'resources/content/pulls/chunk-1/pr-9537.md'
+                filePath   : 'resources/content/neo/pulls/chunk-1/pr-9537.md'
             })).toBeNull()
         });
 
@@ -156,8 +159,8 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
             // Off-contract input is data, not an exception: callers scanning a real tree will meet
             // stray files, and a throw here would make the scanner the thing that fails.
             expect(parseContentPath({contentRoot: 'resources/content', filePath: 'resources/content/_index.json'})).toBeNull();
-            expect(parseContentPath({contentRoot: 'resources/content', filePath: 'resources/content/pulls/pr-1.md'})).toBeNull();
-            expect(parseContentPath({contentRoot: 'resources/content', filePath: 'resources/content/pulls/nochunk/pr-1.md'})).toBeNull();
+            expect(parseContentPath({contentRoot: 'resources/content', filePath: 'resources/content/neo/pulls/pr-1.md'})).toBeNull();
+            expect(parseContentPath({contentRoot: 'resources/content', filePath: 'resources/content/neo/pulls/nochunk/pr-1.md'})).toBeNull();
             expect(parseContentPath({contentRoot: 'resources/content', filePath: '/etc/passwd'})).toBeNull()
         });
 
@@ -245,6 +248,47 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
     });
 
     test.describe('validateContentIntegrity — the verdict', () => {
+        test('honors an explicit ordinary origin root while rows remain repository-qualified', async () => {
+            const ordinaryConfig = {contentRoot, originRoot: contentRoot},
+                  directory      = path.join(contentRoot, 'pulls', 'chunk-1'),
+                  relativePath   = 'pulls/chunk-1/pr-10.md';
+
+            await fs.mkdir(directory, {recursive: true});
+            await fs.writeFile(path.join(directory, 'pr-10.md'), '# ordinary pr 10\n', 'utf8');
+            await writeContentIndex(ordinaryConfig, [indexEntry(10, relativePath)]);
+
+            const result = await validateContentIntegrity(ordinaryConfig, inventoryOpts);
+
+            expect(result.ok).toBe(true);
+            expect(result.indexedTotal).toBe(1);
+            expect(result.staleIndexEntries).toEqual([]);
+        });
+
+        test('keeps equal ids from distinct origins independent in one shared index', async () => {
+            const neoPath   = await writeActive(1, 10),
+                  otherSlug = 'neo-agent-brain',
+                  otherPath = `${otherSlug}/pulls/chunk-1/pr-10.md`,
+                  otherDir  = path.join(contentRoot, otherSlug, 'pulls', 'chunk-1');
+
+            await fs.mkdir(otherDir, {recursive: true});
+            await fs.writeFile(path.join(otherDir, 'pr-10.md'), '# foreign pr 10\n', 'utf8');
+            await writeContentIndex(config, [
+                indexEntry(10, neoPath),
+                {repoSlug: otherSlug, type: 'pulls', id: 10, version: null, chunkNumber: 1, path: otherPath}
+            ]);
+
+            const neoResult = await validateContentIntegrity(config, inventoryOpts);
+            const otherResult = await validateContentIntegrity(config, {
+                repoSlug: otherSlug, type: 'pulls', filePrefix: 'pr-'
+            });
+
+            expect(neoResult.ok).toBe(true);
+            expect(neoResult.indexedTotal).toBe(1);
+            expect(neoResult.duplicateIndexEntryIds).toEqual([]);
+            expect(otherResult.ok).toBe(true);
+            expect(otherResult.indexedTotal).toBe(1);
+        });
+
         test('a clean corpus PASSES — proving the verdict is reachable, so a FAIL below means something', async () => {
             const a = await writeActive(1, 10),
                   b = await writeArchived('v13.0.0', 1, 20);
@@ -264,13 +308,13 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
             // its old active path. 2,015 entries in the live corpus look exactly like this.
             const archived = await writeArchived('v13.0.0', 1, 9537);
 
-            await writeContentIndex(config, [indexEntry(9537, 'pulls/chunk-1/pr-9537.md')]);
+            await writeContentIndex(config, [indexEntry(9537, `${repoSlug}/pulls/chunk-1/pr-9537.md`)]);
 
             const result = await validateContentIntegrity(config, inventoryOpts);
 
             expect(result.ok).toBe(false);
             expect(result.staleIndexEntries).toHaveLength(1);
-            expect(result.staleIndexEntries[0].path).toBe('pulls/chunk-1/pr-9537.md');
+            expect(result.staleIndexEntries[0].path).toBe(`${repoSlug}/pulls/chunk-1/pr-9537.md`);
             // The artifact itself is present and healthy — only the lookup is wrong.
             expect(result.corpusTotal).toBe(1);
             expect(archived).toContain('v13.0.0')
@@ -340,7 +384,7 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
         test('classifies byte-IDENTICAL duplicates separately — one artifact written twice', async () => {
             await writeArchived('v13.0.0', 1, 10, 'same bytes');
             await writeArchived('v13.0.0', 2, 10, 'same bytes');
-            await writeContentIndex(config, [indexEntry(10, 'archive/pulls/v13.0.0/chunk-1/pr-10.md', 'v13.0.0')]);
+            await writeContentIndex(config, [indexEntry(10, `${repoSlug}/archive/pulls/v13.0.0/chunk-1/pr-10.md`, 'v13.0.0')]);
 
             const result = await validateContentIntegrity(config, inventoryOpts);
 
@@ -354,7 +398,7 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
             // Nothing on disk says which rendering is current, so position must not decide it.
             await writeArchived('v13.0.0', 1, 10124, 'rendering with fewer comments');
             await writeArchived('v13.0.0', 2, 10124, 'rendering with more comments and reviews');
-            await writeContentIndex(config, [indexEntry(10124, 'archive/pulls/v13.0.0/chunk-2/pr-10124.md', 'v13.0.0', 2)]);
+            await writeContentIndex(config, [indexEntry(10124, `${repoSlug}/archive/pulls/v13.0.0/chunk-2/pr-10124.md`, 'v13.0.0', 2)]);
 
             const result = await validateContentIntegrity(config, inventoryOpts);
 
@@ -371,7 +415,7 @@ test.describe('Neo.ai.services.github-workflow.shared.contentInventory', () => {
             await writeArchived('v13.0.0', 1, 10, 'A');
             await writeArchived('v13.0.0', 2, 10, 'B');
             await writeActive(1, 20);
-            await writeContentIndex(config, [indexEntry(30, 'pulls/chunk-1/pr-30.md')]);
+            await writeContentIndex(config, [indexEntry(30, `${repoSlug}/pulls/chunk-1/pr-30.md`)]);
 
             const result = await validateContentIntegrity(config, inventoryOpts);
 

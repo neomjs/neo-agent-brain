@@ -6,6 +6,7 @@ const __filename     = fileURLToPath(import.meta.url);
 const __dirname      = path.dirname(__filename);
 const packageRoot    = path.resolve(__dirname, '../../../../');
 const projectRoot    = process.cwd() === '/' ? packageRoot : process.cwd();
+const contentRoot    = path.resolve(projectRoot, 'resources/content');
 const validLogLevels = ['error', 'warn', 'info', 'log', 'debug'];
 
 function parseLogLevel(envVarName, {env = process.env, warn = console.warn} = {}) {
@@ -42,7 +43,7 @@ class ConfigBase extends ConfigProvider {
          */
         data: {
             /**
-             * The root directory of the project.
+             * The checkout owning ordinary GitHub Workflow operations.
              * @type {string}
              */
             projectRoot: leaf(projectRoot),
@@ -83,12 +84,12 @@ class ConfigBase extends ConfigProvider {
              * The owner of the GitHub repository.
              * @type {string}
              */
-            owner: leaf('neomjs'),
+            owner: leaf('neomjs', 'NEO_MCP_GITHUB_OWNER', 'string'),
             /**
              * The name of the GitHub repository.
              * @type {string}
              */
-            repo: leaf('neo'),
+            repo: leaf('neo', 'NEO_MCP_GITHUB_REPO', 'string'),
             /**
              * Whether to automatically commit and push changes after a sync.
              * Only executes if the user has write permissions and there are non-metadata changes.
@@ -103,22 +104,34 @@ class ConfigBase extends ConfigProvider {
                  * The root directory for synced content.
                  * @type {string}
                  */
-                contentRoot: leaf(path.resolve(projectRoot, 'resources/content')),
+                contentRootOverride: leaf(null, 'NEO_MCP_GITHUB_CONTENT_ROOT', 'string', {
+                    requiredFor: [{
+                        entrypoints: ['sync-github-workflow'],
+                        modes      : ['corpus-only'],
+                        reason     : 'Corpus-only emission requires an explicitly declared destination root.'
+                    }]
+                }),
+                /**
+                 * Explicit provenance for legacy unqualified input. New writes always use the
+                 * resolved repository identity and never infer it from a filesystem path.
+                 * @type {string|null}
+                 */
+                legacyRepoSlug: leaf(null, 'NEO_MCP_GITHUB_LEGACY_REPO_SLUG', 'string'),
                 /**
                  * The path to the directory for active issues.
                  * @type {string}
                  */
-                issuesDir: leaf(path.resolve(projectRoot, 'resources/content/issues')),
+                issuesDirOverride: leaf(null, 'NEO_MCP_GITHUB_ISSUES_DIR', 'string'),
                 /**
                  * The root directory for version-based archives across all entities.
                  * @type {string}
                  */
-                archiveRoot: leaf(path.resolve(projectRoot, 'resources/content/archive'), 'NEO_MCP_GITHUB_ARCHIVE_ROOT'),
+                archiveRootOverride: leaf(null, 'NEO_MCP_GITHUB_ARCHIVE_ROOT', 'string'),
                 /**
                  * The path to the directory for discussions.
                  * @type {string}
                  */
-                discussionsDir: leaf(path.resolve(projectRoot, 'resources/content/discussions')),
+                discussionsDirOverride: leaf(null, 'NEO_MCP_GITHUB_DISCUSSIONS_DIR', 'string'),
                 /**
                  * Initial number of discussions projected per GraphQL page (1–30). The syncer halves
                  * this value and retries the same cursor when GitHub reports
@@ -130,12 +143,12 @@ class ConfigBase extends ConfigProvider {
                  * The path to the directory for pull requests.
                  * @type {string}
                  */
-                pullsDir: leaf(path.resolve(projectRoot, 'resources/content/pulls')),
+                pullsDirOverride: leaf(null, 'NEO_MCP_GITHUB_PULLS_DIR', 'string'),
                 /**
                  * The path to the synchronization metadata file.
                  * @type {string}
                  */
-                metadataFile: leaf(path.resolve(projectRoot, 'resources/content/.sync-metadata.json')),
+                metadataFileOverride: leaf(null, 'NEO_MCP_GITHUB_METADATA_FILE', 'string'),
                 /**
                  * Labels that, when present on an issue, will cause it to be ignored and deleted locally.
                  * @type {string[]}
@@ -184,7 +197,7 @@ class ConfigBase extends ConfigProvider {
                  * The path to the directory for release notes.
                  * @type {string}
                  */
-                releaseNotesDir: leaf(path.resolve(projectRoot, 'resources/content/release-notes')),
+                releaseNotesDirOverride: leaf(null, 'NEO_MCP_GITHUB_RELEASE_NOTES_DIR', 'string'),
                 /**
                  * A prefix for issue filenames to prevent them from starting with a number (e.g., 'issue-').
                  * @type {string}
@@ -308,6 +321,36 @@ class ConfigBase extends ConfigProvider {
                  */
                 maxCommentsPerPullRequest: leaf(100)
             }
+        },
+        /**
+         * @summary Resolves GitHub corpus paths from the one relocatable content-root parent.
+         *
+         * Corpus-only emission must declare `contentRootOverride` and writes beneath its repository
+         * child. Ordinary invocation retains the existing checkout layout for Portal/SEO compatibility.
+         * Logical index identity remains repository-qualified in both modes. Each child is a genuine
+         * reactive derivation from that parent; the matching `*Override` leaf is the sole escape hatch.
+         */
+        formulas: {
+            // Metadata stores target-relative paths. In corpus-only mode the target is the declared
+            // corpus checkout, while ordinary operation retains the module-time checkout anchor.
+            'issueSync.metadataBaseRoot': data => data.issueSync.contentRootOverride ?? data.projectRoot,
+            'issueSync.contentRoot': data => data.issueSync.contentRootOverride ?? contentRoot,
+            'issueSync.corpusLeaseFile': data => path.resolve(data.issueSync.contentRoot, '.corpus-sync.lock'),
+            'issueSync.originRoot' : data => data.issueSync.contentRootOverride
+                ? path.resolve(data.issueSync.contentRootOverride, data.repo)
+                : contentRoot,
+            'issueSync.issuesDir': data => data.issueSync.issuesDirOverride ??
+                path.resolve(data.issueSync.originRoot, 'issues'),
+            'issueSync.archiveRoot': data => data.issueSync.archiveRootOverride ??
+                path.resolve(data.issueSync.originRoot, 'archive'),
+            'issueSync.discussionsDir': data => data.issueSync.discussionsDirOverride ??
+                path.resolve(data.issueSync.originRoot, 'discussions'),
+            'issueSync.pullsDir': data => data.issueSync.pullsDirOverride ??
+                path.resolve(data.issueSync.originRoot, 'pulls'),
+            'issueSync.metadataFile': data => data.issueSync.metadataFileOverride ??
+                path.resolve(data.issueSync.originRoot, '.sync-metadata.json'),
+            'issueSync.releaseNotesDir': data => data.issueSync.releaseNotesDirOverride ??
+                path.resolve(data.issueSync.originRoot, 'release-notes')
         }
     }
 }

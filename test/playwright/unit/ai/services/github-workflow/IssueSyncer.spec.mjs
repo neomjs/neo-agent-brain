@@ -47,7 +47,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
     let originalQuery;
     let originalArchiveRoot;
     let originalIssuesDir;
-    let originalContentRoot;
+    let originalContentRootOverride;
     let originalRouteByMilestone;
     let tmpRoot;
     let logger;
@@ -57,7 +57,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         issueSyncConfig = aiConfig.issueSync;
         originalArchiveRoot = issueSyncConfig.archiveRoot;
         originalIssuesDir   = issueSyncConfig.issuesDir;
-        originalContentRoot = issueSyncConfig.contentRoot;
+        originalContentRootOverride = issueSyncConfig.contentRootOverride;
         originalRouteByMilestone = issueSyncConfig.routeByMilestone;
 
         tmpRoot = path.resolve(process.cwd(), 'tmp', `issue-syncer-test-${process.pid}-${Date.now()}`);
@@ -65,9 +65,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
 
         // Redirect local markdown writes to the tmp dir so the test does not pollute
         // the real resources/content/issues tree.
-        issueSyncConfig.issuesDir = path.join(tmpRoot, 'issues');
-        issueSyncConfig.archiveRoot = path.join(tmpRoot, 'archive');
-        issueSyncConfig.contentRoot = tmpRoot;
+        issueSyncConfig.contentRootOverride = tmpRoot;
 
         GraphqlService = (await import('../../../../../../ai/services/github-workflow/GraphqlService.mjs')).default;
         IssueSyncer    = (await import('../../../../../../ai/services/github-workflow/sync/IssueSyncer.mjs')).default;
@@ -79,9 +77,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
 
     test.afterAll(async () => {
         GraphqlService.query = originalQuery;
-        issueSyncConfig.archiveRoot = originalArchiveRoot;
-        issueSyncConfig.issuesDir   = originalIssuesDir;
-        issueSyncConfig.contentRoot = originalContentRoot;
+        issueSyncConfig.contentRootOverride = originalContentRootOverride;
         issueSyncConfig.routeByMilestone = originalRouteByMilestone;
         await fs.remove(tmpRoot).catch(() => {});
     });
@@ -294,7 +290,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         expect(stats.refetched.count).toBe(1);
         expect(stats.errors).toHaveLength(0);
 
-        const writtenPath = path.resolve(aiConfig.projectRoot, metadata.issues[mockIssue.number].path);
+        const writtenPath = path.resolve(aiConfig.issueSync.metadataBaseRoot, metadata.issues[mockIssue.number].path);
         const written     = await fs.readFile(writtenPath, 'utf-8');
         const parsed      = matter(written);
 
@@ -345,7 +341,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
                     state: 'CLOSED',
                     // Pretend it was previously archived under 'v12'
                     path: path.relative(
-                        aiConfig.projectRoot,
+                        aiConfig.issueSync.metadataBaseRoot,
                         path.join(issueSyncConfig.archiveRoot, 'issues', 'v12', 'chunk-1', 'issue-50001.md')
                     )
                 }
@@ -362,7 +358,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         // the test rewrites issuesDir to a tmp dir, so the literal substring no longer matches even
         // when behavior is correct.
         const targetPath          = metadata.issues['50001'].path;
-        const absoluteTargetPath  = path.resolve(aiConfig.projectRoot, targetPath);
+        const absoluteTargetPath  = path.resolve(aiConfig.issueSync.metadataBaseRoot, targetPath);
         const relativeToIssuesDir = path.relative(issueSyncConfig.issuesDir, absoluteTargetPath);
         expect(relativeToIssuesDir.startsWith('..')).toBe(false); // path is under issuesDir
         expect(targetPath).not.toContain('/archive/');
@@ -445,7 +441,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             expect(stats.refetched.count).toBe(1);
             expect(stats.errors).toHaveLength(0);
             expect(targetPath).not.toContain('/archive/');
-            expect(path.relative(issueSyncConfig.issuesDir, path.resolve(aiConfig.projectRoot, targetPath)).startsWith('..')).toBe(false);
+            expect(path.relative(issueSyncConfig.issuesDir, path.resolve(aiConfig.issueSync.metadataBaseRoot, targetPath)).startsWith('..')).toBe(false);
         } finally {
             ReleaseNotesSyncer.sortedReleases = originalSorted;
             issueSyncConfig.routeByMilestone  = originalRouteByMilestone;
@@ -512,7 +508,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         const originalSorted = ReleaseNotesSyncer.sortedReleases;
         const issueNumber    = 6003;
         const oldAbs         = path.join(issueSyncConfig.issuesDir, 'chunk-77', `issue-${issueNumber}.md`);
-        const oldRel         = path.relative(aiConfig.projectRoot, oldAbs);
+        const oldRel         = path.relative(aiConfig.issueSync.metadataBaseRoot, oldAbs);
 
         await fs.ensureDir(path.dirname(oldAbs));
         await fs.writeFile(oldAbs, 'CLOSED ISSUE CONTENT', 'utf8');
@@ -539,7 +535,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             const targetAbs = path.join(issueSyncConfig.archiveRoot, 'issues', 'v13.0.0', 'chunk-1', `issue-${issueNumber}.md`);
 
             expect(stats.count).toBe(1);
-            expect(metadata.issues[issueNumber].path).toBe(path.relative(aiConfig.projectRoot, targetAbs));
+            expect(metadata.issues[issueNumber].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, targetAbs));
             await expect(fs.pathExists(targetAbs)).resolves.toBe(true);
             await expect(fs.pathExists(oldAbs)).resolves.toBe(false);
             await expect(fs.pathExists(path.dirname(oldAbs))).resolves.toBe(false);
@@ -587,7 +583,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             'chunk-42000',
             `issue-${mockIssue.number}.md`
         );
-        const originalOldPath = path.relative(aiConfig.projectRoot, originalOldAbsolutePath);
+        const originalOldPath = path.relative(aiConfig.issueSync.metadataBaseRoot, originalOldAbsolutePath);
 
         const metadata = {
             issues: {
@@ -605,7 +601,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         };
 
         // create the mock file to simulate it already exists in the archive
-        const absOldPath = path.resolve(aiConfig.projectRoot, originalOldPath);
+        const absOldPath = path.resolve(aiConfig.issueSync.metadataBaseRoot, originalOldPath);
         await fs.ensureDir(path.dirname(absOldPath));
         await fs.writeFile(absOldPath, 'mock content', 'utf8');
 
@@ -796,7 +792,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         // ghost issue is CLOSED post-latest-release (no release applies; sortedReleases empty by default),
         // so it lands in the active issues directory rather than archive — assert the file exists wherever it landed.
         const writtenRelativePath = metadata.issues[ghostIssue.number].path;
-        const writtenAbsolutePath = path.resolve(aiConfig.projectRoot, writtenRelativePath);
+        const writtenAbsolutePath = path.resolve(aiConfig.issueSync.metadataBaseRoot, writtenRelativePath);
         const written             = await fs.readFile(writtenAbsolutePath, 'utf-8');
 
         // Frontmatter fallback markers landed correctly. Use quote-agnostic regex because
@@ -890,8 +886,8 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             issueSyncConfig.archiveRoot, 'issues',
             'v11.12.0', 'chunk-7900', `issue-${issueBSemverShift.number}.md`
         );
-        const issueAOldRelPath = path.relative(aiConfig.projectRoot, issueAOldAbsolutePath);
-        const issueBOldRelPath = path.relative(aiConfig.projectRoot, issueBOldAbsolutePath);
+        const issueAOldRelPath = path.relative(aiConfig.issueSync.metadataBaseRoot, issueAOldAbsolutePath);
+        const issueBOldRelPath = path.relative(aiConfig.issueSync.metadataBaseRoot, issueBOldAbsolutePath);
 
         const metadata = {
             issues: {
@@ -1014,7 +1010,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             issueSyncConfig.archiveRoot, 'issues',
             'v11.12.0', 'chunk-7900', `issue-${issueUnchangedAtCanonicalBucket.number}.md`
         );
-        const issueRelPath = path.relative(aiConfig.projectRoot, issueAbsolutePath);
+        const issueRelPath = path.relative(aiConfig.issueSync.metadataBaseRoot, issueAbsolutePath);
 
         const metadata = {
             issues: {
@@ -1068,7 +1064,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         const ts = '2026-05-01T00:00:00Z';
 
         const cachedAbs = path.join(issueSyncConfig.archiveRoot, 'issues', 'v12.0.0', 'chunk-1', `issue-${N}.md`);
-        const cachedRel = path.relative(aiConfig.projectRoot, cachedAbs);
+        const cachedRel = path.relative(aiConfig.issueSync.metadataBaseRoot, cachedAbs);
         await fs.ensureDir(path.dirname(cachedAbs));
         await fs.writeFile(cachedAbs, 'SENTINEL — must not be re-rendered', 'utf8');
 
@@ -1110,7 +1106,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         const originalSorted = ReleaseNotesSyncer.sortedReleases;
         const N              = 6001;
         const wrongAbs       = path.join(issueSyncConfig.archiveRoot, 'issues', 'v8.1.0', 'chunk-1', `issue-${N}.md`);
-        const wrongRel       = path.relative(aiConfig.projectRoot, wrongAbs);
+        const wrongRel       = path.relative(aiConfig.issueSync.metadataBaseRoot, wrongAbs);
         await fs.ensureDir(path.dirname(wrongAbs));
         await fs.writeFile(wrongAbs, 'ISSUE 6001 CONTENT', 'utf8');
 
@@ -1141,7 +1137,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             await expect(fs.pathExists(wrongAbs)).resolves.toBe(false);              // old location gone
             // Emptied source version dir pruned.
             await expect(fs.pathExists(path.join(issueSyncConfig.archiveRoot, 'issues', 'v8.1.0'))).resolves.toBe(false);
-            expect(metadata.issues[N].path).toBe(path.relative(aiConfig.projectRoot, correctAbs));
+            expect(metadata.issues[N].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, correctAbs));
 
             const idx   = await fs.readJson(path.join(tmpRoot, '_index.json'));
             const entry = idx.find(e => e.type === 'issues' && e.id === N);
@@ -1156,7 +1152,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         const originalSorted = ReleaseNotesSyncer.sortedReleases;
         const N              = 6002;
         const wrongAbs       = path.join(issueSyncConfig.archiveRoot, 'issues', 'v8.1.0', 'chunk-1', `issue-${N}.md`);
-        const wrongRel       = path.relative(aiConfig.projectRoot, wrongAbs);
+        const wrongRel       = path.relative(aiConfig.issueSync.metadataBaseRoot, wrongAbs);
         await fs.ensureDir(path.dirname(wrongAbs));
         await fs.writeFile(wrongAbs, 'DRYRUN CONTENT', 'utf8');
 
@@ -1232,7 +1228,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             issues  : {
                 [issueNumber]: {
                     state        : 'OPEN',
-                    path         : path.relative(aiConfig.projectRoot, filePath),
+                    path         : path.relative(aiConfig.issueSync.metadataBaseRoot, filePath),
                     updatedAt    : '2026-06-24T12:00:00Z',
                     closedAt     : null,
                     milestone    : null,
@@ -1302,7 +1298,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             issues  : {
                 [issueNumber]: {
                     state        : 'OPEN',
-                    path         : path.relative(aiConfig.projectRoot, filePath),
+                    path         : path.relative(aiConfig.issueSync.metadataBaseRoot, filePath),
                     updatedAt    : '2026-06-24T12:00:00Z',
                     closedAt     : null,
                     milestone    : null,
@@ -1472,7 +1468,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
 
         expect(storedRelative).toBeTruthy();
 
-        const storedAbsolute = path.resolve(aiConfig.projectRoot, storedRelative);
+        const storedAbsolute = path.resolve(aiConfig.issueSync.metadataBaseRoot, storedRelative);
 
         await expect(fs.pathExists(storedAbsolute)).resolves.toBe(true);
 
@@ -1508,7 +1504,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         const ts = '2026-05-01T00:00:00Z';
 
         const archivedAbs = path.join(issueSyncConfig.archiveRoot, 'issues', 'v12.0.0', 'chunk-1', `issue-${N}.md`);
-        const archivedRel = path.relative(aiConfig.projectRoot, archivedAbs);
+        const archivedRel = path.relative(aiConfig.issueSync.metadataBaseRoot, archivedAbs);
 
         await fs.ensureDir(path.dirname(archivedAbs));
         await fs.writeFile(archivedAbs, 'hostile content that a moderator classified after ingestion', 'utf8');
@@ -1598,7 +1594,7 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         expect(stats.dropped.issues).toEqual([]);
         expect(stats.pulled.issues).toContain(60004);
 
-        const written = path.resolve(aiConfig.projectRoot, newMetadata.issues[60004].path);
+        const written = path.resolve(aiConfig.issueSync.metadataBaseRoot, newMetadata.issues[60004].path);
 
         await expect(fs.pathExists(written)).resolves.toBe(true);
 

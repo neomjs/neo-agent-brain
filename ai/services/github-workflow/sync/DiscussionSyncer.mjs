@@ -84,7 +84,7 @@ class DiscussionSyncer extends Base {
     #resolvePath(p) {
         if (!p) return null;
         if (path.isAbsolute(p)) return p;
-        return path.resolve(aiConfig.projectRoot, p);
+        return path.resolve(aiConfig.issueSync.metadataBaseRoot, p);
     }
 
     /**
@@ -95,7 +95,7 @@ class DiscussionSyncer extends Base {
      */
     #relativePath(p) {
         if (!p) return null;
-        return path.relative(aiConfig.projectRoot, p);
+        return path.relative(aiConfig.issueSync.metadataBaseRoot, p);
     }
 
     /**
@@ -238,6 +238,8 @@ class DiscussionSyncer extends Base {
 
         const config = {
             contentRoot,
+            repoSlug     : aiConfig.repo,
+            originRoot   : issueSyncConfig.originRoot,
             type         : 'discussions',
             filename,
             itemIndex    : plan?.itemIndex || 0,
@@ -642,7 +644,7 @@ class DiscussionSyncer extends Base {
             if (cachedPath) {
                 await fs.unlink(this.#resolvePath(cachedPath)).catch(() => {});
             }
-            quarantineRemovals.push({type: 'discussions', id: number});
+            quarantineRemovals.push({repoSlug: aiConfig.repo, type: 'discussions', id: number});
 
             // Removed EXPLICITLY. Containment clears three surfaces — the file above, the content-index
             // entry via `quarantineRemovals`, and this metadata row — and the row used to disappear only
@@ -663,7 +665,7 @@ class DiscussionSyncer extends Base {
             await this.#hydrateDiscussionConversation(discussion)
         }
 
-        const inventory            = await buildContentInventory(issueSyncConfig, {type: 'discussions', filePrefix: issueSyncConfig.discussionFilenamePrefix});
+        const inventory            = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'discussions', filePrefix: issueSyncConfig.discussionFilenamePrefix});
         const planBuckets          = this.#planBuckets(metadata, allDiscussions, inventory);
         let   shouldPruneEmptyDirs = false;
 
@@ -753,20 +755,17 @@ class DiscussionSyncer extends Base {
 
             indexEntries.push(createContentIndexEntry({
                 issueSyncConfig,
+                repoSlug : aiConfig.repo,
                 type     : 'discussions',
                 id       : d.number,
-                filePath : path.resolve(aiConfig.projectRoot, d.relativeOutputPath),
+                filePath : path.resolve(aiConfig.issueSync.metadataBaseRoot, d.relativeOutputPath),
                 itemIndex: plan ? plan.itemIndex : 0,
                 version  : plan?.version || null,
                 bucket   : null
             }));
         });
 
-        try {
-            await updateContentIndex(issueSyncConfig, {upsert: indexEntries, remove: quarantineRemovals});
-        } catch (e) {
-            logger.warn(`⚠️ Could not update _index.json for discussions: ${e.message}`);
-        }
+        await updateContentIndex(issueSyncConfig, {upsert: indexEntries, remove: quarantineRemovals});
 
         if (stats.count > 0) {
             logger.info(`✨ Interacted and synced ${stats.count} modified discussions to disk.`);
@@ -799,7 +798,7 @@ class DiscussionSyncer extends Base {
 
         // Build the complete-membership inventory ONCE for the whole refetch batch — a full corpus scan
         // per discussion would be pathological; every planned ordinal reads the same complete membership.
-        const inventory = await buildContentInventory(issueSyncConfig, {type: 'discussions', filePrefix: issueSyncConfig.discussionFilenamePrefix});
+        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'discussions', filePrefix: issueSyncConfig.discussionFilenamePrefix});
 
         for (const discussionNumber of list) {
             try {
@@ -827,7 +826,7 @@ class DiscussionSyncer extends Base {
                 const targetPath  = this.#getDiscussionPath(discussion, planBuckets);
                 if (!targetPath) {
                     if (indexMutations) {
-                        indexMutations.remove.push({type: 'discussions', id: discussionNumber});
+                        indexMutations.remove.push({repoSlug: aiConfig.repo, type: 'discussions', id: discussionNumber});
                     }
                     continue;
                 }
@@ -861,6 +860,7 @@ class DiscussionSyncer extends Base {
                     const plan = planBuckets.get(discussionNumber);
                     indexMutations.upsert.push(createContentIndexEntry({
                         issueSyncConfig,
+                        repoSlug : aiConfig.repo,
                         type     : 'discussions',
                         id       : discussionNumber,
                         filePath : this.#resolvePath(this.#relativePath(targetPath)),
