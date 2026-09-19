@@ -58,3 +58,4 @@ jobs:
                   test/playwright/unit/src/evolution/RemDigestion.spec.mjs
                   test/playwright/unit/ai/mcp/server/neural-link/Bridge.spec.mjs
                   test/playwright/unit/playwrightConfigUnit.spec.mjs
+                  test/playwright/unit/chromaOwnership.spec.mjs

@@ -90,7 +90,7 @@ function signalTarget(pid, platform) {
  * @param {String} value
  * @returns {String} The resolved safe path.
  */
-function assertSafeTemporaryPath(value) {
+export function assertSafeTemporaryPath(value) {
     const
         resolved = path.resolve(value),
         relative = path.relative(path.resolve(os.tmpdir()), resolved);
