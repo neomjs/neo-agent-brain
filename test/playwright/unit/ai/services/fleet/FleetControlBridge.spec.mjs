@@ -45,7 +45,9 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             removeAgent    : async id => { calls.push(['removeAgent', id]);  return {success: true, id}; },
             fleetRepoStatus: ()       => { calls.push(['fleetRepoStatus']);  return [{id: 'alice', repo: 'clean'}]; },
             setRepo        : payload  => { calls.push(['setRepo', payload]);   return {id: payload.id, metadata: {repo: payload}}; },
-            setAvatar      : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; }
+            setAvatar      : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
+            adoptAgent     : payload  => { calls.push(['adoptAgent', payload]);   return {id: payload.id, launchOwner: 'fleet'}; },
+            releaseAgent   : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; }
         };
 
         tenantServiceStub = {
@@ -409,6 +411,12 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         const payload = {id: 'alice', avatarUrl: 'https://cdn/x.png'};
         expect(FleetControlBridge.setAvatar(payload)).toEqual({id: 'alice', metadata: {avatarUrl: 'https://cdn/x.png'}});
         expect(calls).toEqual([['setAvatar', payload]]);
+    });
+
+    test('adoptAgent / releaseAgent delegate the single payload to the manager (fleet authority)', () => {
+        expect(FleetControlBridge.adoptAgent({id: 'alice'})).toEqual({id: 'alice', launchOwner: 'fleet'});
+        expect(FleetControlBridge.releaseAgent({id: 'alice'})).toEqual({id: 'alice', launchOwner: 'external'});
+        expect(calls).toEqual([['adoptAgent', {id: 'alice'}], ['releaseAgent', {id: 'alice'}]]);
     });
 
     test('fleetStatus delegates to the manager repo-status aggregator', () => {

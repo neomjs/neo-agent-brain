@@ -9,7 +9,7 @@
 
 /** @type {ReadonlyArray<String>} */
 export const FLEET_WIRE_METHODS = Object.freeze([
-    'defineAgent', 'configureAgent', 'setRepo', 'setAvatar', 'listAgents', 'getAgent',
+    'defineAgent', 'configureAgent', 'setRepo', 'setAvatar', 'adoptAgent', 'releaseAgent', 'listAgents', 'getAgent',
     'startAgent', 'stopAgent', 'restartAgent', 'removeAgent', 'fleetStatus', 'fleetRuntimeStatus',
     'getBootIdentity', 'fleetActivity', 'fleetHistory', 'fleetMemories', 'fleetSessionMemories', 'fleetRoster', 'fleetMailboxMirror', 'connectTenant', 'listTenants',
     'composeOperatorMessage', 'markFleetCaughtUp', 'resolveViewerIdentity', 'fleetWakeRoutes', 'fleetTasks',

@@ -540,3 +540,64 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         expect(fs.readdirSync(tmpDir).some(name => name.endsWith('.tmp'))).toBe(false)
     });
 });
+
+// Launch ownership decides whether a seat with no process record may read as stopped, which is what
+// lets the cockpit start it — so every path that could arm that without the operator's intent is pinned.
+test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership', () => {
+    let tmpDir;
+
+    test.beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-fleet-reg-'));
+    });
+
+    test.afterEach(() => {
+        FleetRegistryService.dataDir = null;
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+    });
+
+    test('a definition without launchOwner reads external: a row persisted before the field, and a define without it', () => {
+        fs.writeFileSync(path.join(tmpDir, 'registry.json'), JSON.stringify({agents: {legacy: {
+            id: 'legacy', githubUsername: 'legacy', harnessType: 'codex', modelProvider: 'ollama', metadata: {},
+            mcpServers: null, mcpTarget: null, createdAt: '2026-08-01T00:00:00.000Z', updatedAt: '2026-08-01T00:00:00.000Z'
+        }}}));
+
+        FleetRegistryService.dataDir = tmpDir;
+
+        expect(FleetRegistryService.getAgent('legacy').launchOwner).toBe('external');
+        expect(FleetRegistryService.defineAgent({githubUsername: 'onboarded', harnessType: 'codex'}).launchOwner).toBe('external')
+    });
+
+    test('defineAgent takes fleet launch ownership as creation intent, and refuses any other value without a write', () => {
+        FleetRegistryService.dataDir = tmpDir;
+
+        expect(FleetRegistryService.defineAgent({githubUsername: 'cockpit', harnessType: 'codex', launchOwner: 'fleet'}).launchOwner).toBe('fleet');
+        expect(() => FleetRegistryService.defineAgent({githubUsername: 'bad', harnessType: 'codex', launchOwner: 'banana'}))
+            .toThrow(/FleetRegistryService\.defineAgent: invalid launchOwner 'banana'/);
+        expect(FleetRegistryService.getAgent('bad')).toBeNull()
+    });
+
+    test('setLaunchOwner flips the fact and records when; an unknown id writes nothing, a bad value throws', () => {
+        FleetRegistryService.dataDir = tmpDir;
+        FleetRegistryService.defineAgent({githubUsername: 'seat', harnessType: 'codex'});
+
+        const adopted = FleetRegistryService.setLaunchOwner('seat', 'fleet');
+
+        expect(adopted.launchOwner).toBe('fleet');
+        expect(adopted.launchOwnerSince).toBe(adopted.updatedAt);
+        expect(FleetRegistryService.setLaunchOwner('seat', 'external').launchOwner).toBe('external');
+        expect(FleetRegistryService.setLaunchOwner('ghost', 'fleet')).toBeNull();
+        expect(() => FleetRegistryService.setLaunchOwner('seat', 'everyone')).toThrow(/invalid launchOwner 'everyone'/)
+    });
+
+    test('no other write surface changes launchOwner', () => {
+        FleetRegistryService.dataDir = tmpDir;
+        FleetRegistryService.defineAgent({githubUsername: 'owned', harnessType: 'codex', launchOwner: 'fleet'});
+
+        // a metadata key of the same name is only metadata: nothing reads it as the fact
+        FleetRegistryService.updateAgent('owned', {metadata: {launchOwner: 'external'}});
+        expect(FleetRegistryService.getAgent('owned').launchOwner).toBe('fleet');
+
+        expect(() => FleetRegistryService.configureAgent({id: 'owned', launchOwner: 'external'})).toThrow(/FleetRegistryService\.configureAgent/);
+        expect(FleetRegistryService.getAgent('owned').launchOwner).toBe('fleet')
+    });
+});
