@@ -266,6 +266,16 @@ export class Orchestrator extends Base {
 
     primaryRepoSyncService   = PrimaryRepoSyncService
     tenantRepoSyncService    = TenantRepoSyncService
+    /** @summary Defers community storage imports until this authority owns an executing task. */
+    communityReconciliationService = {
+        runTask: async options => {
+            if (!this.isTaskAuthorityOwned('community-reconciliation')) {
+                return {status: 'skipped', reasonCode: 'COMMUNITY_RECONCILIATION_AUTHORITY_NOT_OWNED'}
+            }
+            const {default: service} = await import('./services/CommunityReconciliationService.mjs');
+            return service.runTask(options)
+        }
+    }
     remDigestion             = createRemDigestion()
     conceptDiscoveryService  = ConceptDiscoveryService
     swarmHeartbeatService    = SwarmHeartbeatService

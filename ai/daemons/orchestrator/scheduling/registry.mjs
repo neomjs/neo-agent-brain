@@ -7,6 +7,7 @@ import {getDueTask as getMemorySummaryBackfillDueTask}              from './memo
 import {getDueTask as getPrimaryDevSyncDueTask}                     from './primaryDevSync.mjs';
 import {getDueTask as getSwarmHeartbeatDueTask}                     from './swarmHeartbeat.mjs';
 import {getDueTask as getTenantRepoSyncDueTask}                     from './tenantRepoSync.mjs';
+import {getDueTask as getCommunityReconciliationDueTask}            from './communityReconciliation.mjs';
 import {getDueTask as getEmbedDrainLivenessWatchdogDueTask}         from './embedDrainLivenessWatchdog.mjs';
 import {getDueTask as getRemConsolidationLivenessWatchdogDueTask}   from './remConsolidationLivenessWatchdog.mjs';
 import {getDueTask as getHeavyMaintenanceStarvationWatchdogDueTask} from './heavyMaintenanceStarvationWatchdog.mjs';
@@ -184,6 +185,21 @@ const taskRegistry = [
                 intervalMs: intervals.tenantRepoSync,
                 enabled   : enables.tenantRepoSync
             });
+        }
+    },
+    {
+        taskName        : 'community-reconciliation',
+        executionKind   : 'service-runner',
+        maintenanceClass: 'graph-dependent',
+        backpressure    : 'after-heavy',
+        dependencies    : [],
+        getDueTask({state, now, intervals, enables}) {
+            return getCommunityReconciliationDueTask({
+                state,
+                now,
+                intervalMs: intervals.communityReconciliation,
+                enabled   : enables.communityReconciliation
+            })
         }
     },
     {

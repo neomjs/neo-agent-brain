@@ -372,6 +372,22 @@ class SourceRegistryService extends Base {
     }
 
     /**
+     * @summary Enumerates registrations for the server-bound tenant without widening read authority.
+     * Lifecycle and provider selection belong to the consuming connector; every row remains scoped
+     * by the same tenant predicate as keyed registration reads. No caller-supplied tenant is accepted.
+     * @returns {Object[]} Stable source-id order; empty when no tenant is bound.
+     */
+    listRegistrations() {
+        const tenantId = this.resolveTenantId();
+
+        if (!tenantId) return [];
+
+        return this.db.prepare(
+            `SELECT * FROM mc_source_registration WHERE tenant_id = ? ORDER BY source_instance_id`
+        ).all(tenantId).map(row => this.#toCamel(row))
+    }
+
+    /**
      * @summary Loads one registration under an explicit server-owned tenant predicate.
      * @param {String} tenantId
      * @param {String} sourceInstanceId

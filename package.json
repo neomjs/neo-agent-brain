@@ -64,6 +64,7 @@
         "ai:check-retired-primitives": "node ./ai/scripts/diagnostics/check-retired-primitives.mjs",
         "ai:kb-push-client": "node ./ai/scripts/maintenance/kbPushClient.mjs",
         "ai:community-batch-push": "node ./ai/scripts/maintenance/communityBatchPushClient.mjs",
+        "ai:community-reconcile": "node ./ai/scripts/maintenance/reconcileGithubCommunity.mjs",
         "ai:mcp-healthcheck": "node ./ai/scripts/diagnostics/mcpHealthcheck.mjs",
         "ai:mcp-client": "node ./ai/mcp/client/mcp-cli.mjs",
         "ai:mcp-server-file-system": "node ./ai/mcp/server/file-system/mcp-server.mjs",
