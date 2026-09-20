@@ -25,10 +25,10 @@ import {
     markNlTransactionReplayed,
     saveNlTransaction
 } from '../../../services/memory-core/helpers/nlTransactionArchiveStore.mjs';
-import {readSandmanHandoff}          from '../../../services/memory-core/helpers/sandmanHandoffStore.mjs';
-import {exploreLaneLandscape}        from '../../../services/graph/exploreLaneLandscape.mjs';
-import {exploreMemoryHistory}        from '../../../services/memory-core/helpers/exploreMemoryHistory.mjs';
-import {makeChatModelGenerate}       from '../../../services/memory-core/helpers/chatModelGenerate.mjs';
+import {readSandmanHandoff}    from '../../../services/memory-core/helpers/sandmanHandoffStore.mjs';
+import {exploreLaneLandscape}  from '../../../services/graph/exploreLaneLandscape.mjs';
+import {exploreMemoryHistory}  from '../../../services/memory-core/helpers/exploreMemoryHistory.mjs';
+import {makeChatModelGenerate} from '../../../services/memory-core/helpers/chatModelGenerate.mjs';
 import {
     makeLandscapeCensusSource,
     makeRefusingCensusPageReader
@@ -49,6 +49,12 @@ import {
     getCommunitySourceHealth,
     hostedCommunityToolNames
 } from './communityBatchTool.mjs';
+import {
+    assertCommunityActivityToolBoundary,
+    getCommunityActivity,
+    getCommunityActivityContent,
+    markCommunityActivitySeen
+} from './communityActivityTool.mjs';
 
 const __filename      = fileURLToPath(import.meta.url);
 const __dirname       = path.dirname(__filename);
@@ -510,10 +516,12 @@ const serviceMapping = {
     search_nodes                : GraphService           .searchNodes             .bind(GraphService),
     get_memory_core_tool_metrics:
                               MemoryCoreRecorderService.getMemoryCoreToolMetrics.bind(MemoryCoreRecorderService),
-    add_message           : addMessageTool,
-    list_messages         : listMessagesTool,
-    get_message           : MailboxService         .getMessage              .bind(MailboxService),
-    get_rem_pipeline_state: HealthService          .getRemPipelineState     .bind(HealthService),
+    add_message                   : addMessageTool,
+    get_community_activity        : getCommunityActivity,
+    get_community_activity_content: getCommunityActivityContent,
+    list_messages                 : listMessagesTool,
+    get_message                   : MailboxService         .getMessage              .bind(MailboxService),
+    get_rem_pipeline_state        : HealthService          .getRemPipelineState     .bind(HealthService),
     get_sqlite_holder_diagnostics:
                               HealthService          .getSqliteHolderDiagnostics.bind(HealthService),
     get_deployment_state_snapshot: readDeploymentInspection,
@@ -527,6 +535,7 @@ const serviceMapping = {
     revoke_permission            : PermissionService      .revokePermission        .bind(PermissionService),
     list_permissions             : PermissionService      .listPermissions         .bind(PermissionService),
     manage_wake_subscription     : WakeSubscriptionService.manage                  .bind(WakeSubscriptionService),
+    mark_community_activity_seen : markCommunityActivitySeen,
     record_turn_presence         : TurnPresenceService    .recordTurnPresence      .bind(TurnPresenceService),
     admit_community_batch        : admitCommunityBatch,
     who_is_online                : WakeSubscriptionService.whoIsOnline             .bind(WakeSubscriptionService),
@@ -610,6 +619,7 @@ const createTransportVisibleToolFacade = ({
         let result, success = false, error = null;
 
         try {
+            assertCommunityActivityToolBoundary(name, args);
             assertHostedCommunityToolAllowed(name, resolveTransport());
             const boundaryRejection = getHostedCommunityBoundaryRejection(name, args);
 

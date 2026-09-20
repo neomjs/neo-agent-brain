@@ -117,6 +117,83 @@ paths:
               schema:
                 $ref: '#/components/schemas/HostedCommunitySourceHealth'
 
+  /community/activity:
+    post:
+      summary: Get community activity
+      operationId: get_community_activity
+      x-neo-tool-tier: read
+      x-pass-as-object: true
+      x-neo-tool-summary: Read tenant-scoped community activity metadata with citations and honest coverage.
+      x-annotations:
+        readOnlyHint: true
+      description: |
+        Returns metadata and citation handles for a half-open community window.
+      tags: [Community Activity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommunityActivityQueryRequest'
+      responses:
+        '200':
+          description: Metadata-only community activity view.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunityActivityQueryResponse'
+
+  /community/activity/content:
+    post:
+      summary: Get community activity content
+      operationId: get_community_activity_content
+      x-neo-tool-tier: read
+      x-pass-as-object: true
+      x-neo-tool-summary: Read one explicitly requested current community-content item through source trust checks.
+      x-annotations:
+        readOnlyHint: true
+      description: |
+        Returns transient current content strings for one explicit activity handle.
+      tags: [Community Activity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommunityActivityContentRequest'
+      responses:
+        '200':
+          description: Typed current-content result; prose is never persisted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunityActivityContentResponse'
+
+  /community/activity/seen:
+    post:
+      summary: Mark community activity seen
+      operationId: mark_community_activity_seen
+      x-neo-tool-tier: write
+      x-pass-as-object: true
+      x-neo-tool-summary: Idempotently mark one community activity handle seen for the authenticated viewer.
+      description: |
+        Records a per-viewer presentation marker only. It never changes admission, counts, tasks,
+        wake state, or lifecycle authority; tenant and viewer identity are server-derived.
+      tags: [Community Activity]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommunityActivitySeenRequest'
+      responses:
+        '200':
+          description: Idempotent zero-authority seen result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunityActivitySeenResponse'
+
   /healthcheck:
     get:
       summary: Health Check
@@ -5121,6 +5198,356 @@ components:
         limits:
           type: object
           additionalProperties: true
+
+    CommunityActivityQueryRequest:
+      type: object
+      additionalProperties: false
+      required: [windowStart, windowEnd, limit]
+      properties:
+        windowStart:
+          type: string
+          format: date-time
+          description: Inclusive ISO-8601 window start.
+        windowEnd:
+          type: string
+          format: date-time
+          description: Exclusive ISO-8601 window end.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+          description: Positive page size; no implicit default is applied.
+        sourceInstanceIds:
+          type: array
+          items:
+            type: string
+            minLength: 1
+          description: Optional source-registration filter resolved under the authenticated tenant.
+        cursor:
+          type: string
+          minLength: 1
+          description: Opaque continuation cursor returned by a prior query.
+
+    CommunityActivityWindow:
+      type: object
+      additionalProperties: false
+      required: [partition, preset, tier, windowStart, windowEnd, windowStartIso, windowEndIso, windowSemantics]
+      properties:
+        partition:
+          type: string
+        preset:
+          type: string
+          nullable: true
+        tier:
+          type: string
+          nullable: true
+        windowStart:
+          type: integer
+        windowEnd:
+          type: integer
+        windowStartIso:
+          type: string
+          format: date-time
+        windowEndIso:
+          type: string
+          format: date-time
+        windowSemantics:
+          type: object
+          additionalProperties: false
+          required: [interval, durationMs, filterSet]
+          properties:
+            interval:
+              type: string
+              enum: [half-open]
+            durationMs:
+              type: integer
+              minimum: 1
+            filterSet:
+              type: object
+              additionalProperties: false
+              required: [grain, partition]
+              properties:
+                grain:
+                  type: string
+                partition:
+                  type: string
+
+    CommunityActivityCitation:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          minLength: 1
+        id:
+          type: string
+          minLength: 1
+        sessionId:
+          type: string
+          minLength: 1
+        ref:
+          type: string
+          minLength: 1
+        revision:
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: number
+        drillDown:
+          type: object
+          additionalProperties: false
+          required: [operation, arguments]
+          properties:
+            operation:
+              type: string
+              minLength: 1
+            arguments:
+              type: object
+              additionalProperties: true
+        inSynthesis:
+          type: boolean
+
+    CommunityActivityCoverage:
+      type: object
+      additionalProperties: false
+      required: [totalResolved, included, excluded, truncated, sourceTypeCounts, degraded, degradedReason, degradedReasons, invalidTimes, sources, basis, snapshot]
+      properties:
+        totalResolved:
+          type: integer
+          minimum: 0
+        included:
+          type: integer
+          minimum: 0
+        excluded:
+          type: integer
+          minimum: 0
+        truncated:
+          type: boolean
+        sourceTypeCounts:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+        degraded:
+          type: boolean
+        degradedReason:
+          type: string
+          nullable: true
+        degradedReasons:
+          type: array
+          items:
+            type: string
+        invalidTimes:
+          type: integer
+          minimum: 0
+        sources:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [sourceInstanceId, lifecycleState, registrationEpoch, families, degradedReasons]
+            properties:
+              sourceInstanceId:
+                type: string
+                minLength: 1
+              lifecycleState:
+                type: string
+              registrationEpoch:
+                type: integer
+                minimum: 0
+              families:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [resourceFamily, receiptId, complete, gapCount]
+                  properties:
+                    resourceFamily:
+                      type: string
+                    receiptId:
+                      type: string
+                      nullable: true
+                    complete:
+                      type: boolean
+                    gapCount:
+                      type: integer
+                      minimum: 0
+                      nullable: true
+              degradedReasons:
+                type: array
+                items:
+                  type: string
+        basis:
+          type: string
+        snapshot:
+          type: integer
+          minimum: 0
+
+    CommunityActivityItem:
+      type: object
+      additionalProperties: false
+      required: [sourceEventId, sourceInstanceId, providerEntityId, occurrenceKind, occurredAt, citation, notAuthority]
+      properties:
+        sourceEventId:
+          type: string
+          minLength: 1
+        sourceInstanceId:
+          type: string
+          minLength: 1
+        providerEntityId:
+          type: string
+          minLength: 1
+        parentProviderEntityId:
+          type: string
+          nullable: true
+        occurrenceKind:
+          type: string
+          minLength: 1
+        occurredAt:
+          type: string
+          format: date-time
+        actorId:
+          type: string
+          nullable: true
+        actorKind:
+          type: string
+          nullable: true
+        sourceAssociation:
+          type: string
+          nullable: true
+        citation:
+          $ref: '#/components/schemas/CommunityActivityCitation'
+        seen:
+          type: boolean
+          description: Whether the authenticated viewer has already marked this item seen.
+        notAuthority:
+          type: boolean
+          enum: [true]
+
+    CommunityActivityQueryResponse:
+      type: object
+      additionalProperties: false
+      required: [notAuthority, window, coverage, sourceManifestHash, citations, synthesis, synthesisAvailable, synthesisUnavailableReason, generatedAt, items, nextCursor, snapshot]
+      properties:
+        notAuthority:
+          type: boolean
+          enum: [true]
+        window:
+          $ref: '#/components/schemas/CommunityActivityWindow'
+        coverage:
+          $ref: '#/components/schemas/CommunityActivityCoverage'
+        sourceManifestHash:
+          type: string
+          minLength: 1
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/CommunityActivityCitation'
+        synthesis:
+          type: string
+          nullable: true
+        synthesisAvailable:
+          type: boolean
+        synthesisUnavailableReason:
+          type: string
+          nullable: true
+        generatedAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CommunityActivityItem'
+        nextCursor:
+          type: string
+          nullable: true
+        snapshot:
+          type: integer
+          minimum: 0
+
+    CommunityActivityContentRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceEventId]
+      properties:
+        sourceEventId:
+          type: string
+          minLength: 1
+
+    CommunityActivityContentResponse:
+      type: object
+      additionalProperties: false
+      required: [status, sourceEventId, notAuthority]
+      properties:
+        status:
+          type: string
+          enum: [available, deleted, inaccessible, unknown, unsupported]
+        sourceEventId:
+          type: string
+          minLength: 1
+        notAuthority:
+          type: boolean
+          enum: [true]
+        contentTrust:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            tier:
+              type: string
+            sourceRelative:
+              type: string
+        citation:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            providerEntityId:
+              type: string
+            url:
+              type: string
+            providerUpdatedAt:
+              type: string
+              format: date-time
+            readAt:
+              type: string
+              format: date-time
+            contentVersion:
+              type: string
+        content:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            body:
+              type: string
+            title:
+              type: string
+
+    CommunityActivitySeenRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceEventId]
+      properties:
+        sourceEventId:
+          type: string
+          minLength: 1
+
+    CommunityActivitySeenResponse:
+      type: object
+      additionalProperties: false
+      required: [status, sourceEventId, notAuthority]
+      properties:
+        status:
+          type: string
+          enum: [seen, ineligible]
+        sourceEventId:
+          type: string
+          minLength: 1
+        notAuthority:
+          type: boolean
+          enum: [true]
 
     ErrorResponse:
       type: object
