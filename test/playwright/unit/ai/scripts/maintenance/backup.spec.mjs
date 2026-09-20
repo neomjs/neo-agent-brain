@@ -593,6 +593,10 @@ test.describe('backup.mjs orchestrator — atomic bundle assembly (#10129 Phase 
         expect('host' in meta.topology.mcChromaCoords).toBe(true);
         expect('port' in meta.topology.mcChromaCoords).toBe(true);
         expect('dataDir' in meta.topology.mcChromaCoords).toBe(true);
+        expect(meta.topology.kbChromaCoords.path).toBeNull();
+        expect(meta.topology.mcChromaCoords.dataDir).toBeNull();
+        expect(meta.topology.kbChromaCoords.storageReason).toBe('physical-storage-not-observed');
+        expect(meta.topology.mcChromaCoords.storageReason).toBe('physical-storage-not-observed');
 
         expect('neoVersion' in meta).toBe(true);
         expect('gitSha' in meta).toBe(true);

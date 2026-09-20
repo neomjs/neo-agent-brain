@@ -55,6 +55,8 @@ jobs:
                   test/playwright/unit/ai/services/graph/SemanticGraphExtractor.spec.mjs
                   test/playwright/unit/ai/services/memory-core/MailboxService.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/defectObservationFold.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/backup.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/restore.spec.mjs
                   test/playwright/unit/ai/services/github-workflow/DiscussionReconciliationService.spec.mjs
                   test/playwright/unit/ai/services/github-workflow/community/githubDiscussionObservations.spec.mjs
                   test/playwright/unit/ai/services/github-workflow/community/githubDiscussionReconciliation.spec.mjs
