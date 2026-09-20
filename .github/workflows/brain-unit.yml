@@ -50,6 +50,10 @@ jobs:
                   test/playwright/unit/ai/Env.spec.mjs
                   test/playwright/unit/harness/terminateDaemon.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/pipeline.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/scheduling/communityReconciliation.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/services/CommunityReconciliationService.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/reconcileGithubCommunity.spec.mjs
+                  test/playwright/unit/ai/services/memory-core/SourceRegistryService.spec.mjs
                   test/playwright/unit/src/fleet/contract/fleetContract.spec.mjs
                   test/playwright/unit/ai/services/neural-link/ConnectionService.spec.mjs
                   test/playwright/unit/ai/services/graph/SemanticGraphExtractor.spec.mjs
@@ -62,3 +66,9 @@ jobs:
                   test/playwright/unit/ai/mcp/server/neural-link/Bridge.spec.mjs
                   test/playwright/unit/playwrightConfigUnit.spec.mjs
                   test/playwright/unit/chromaOwnership.spec.mjs
+
+            - name: Verify community host authority boundary
+              run: >-
+                  npm run test-unit --
+                  test/playwright/unit/ai/daemons/orchestrator/Orchestrator.spec.mjs
+                  --grep 'community reconciliation is plane-owned'

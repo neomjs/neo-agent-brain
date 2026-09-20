@@ -1,8 +1,9 @@
-# Hosted Community Source Runbook
+# Community Source Runbook
 
-This runbook operates the authenticated hosted path for GitHub community-activity batches. It is a
-small synchronous push path into Memory Core's neutral admission transaction—not a webhook receiver,
-not a queue, and not tenant self-service.
+This runbook operates GitHub community acquisition through either the local coordinator or the
+authenticated hosted connector. Both paths use Memory Core's neutral admission transaction and the
+same source registrations. A local deployment can reconcile directly; a hosted connector submits its
+acquired batch through authenticated MCP.
 
 The authority boundary is the important part:
 
@@ -81,7 +82,46 @@ Provisioning advances the epoch; activation does not. Give the connector only th
 identity from the registration document. It must not send `tenantId`, `sourceInstanceId`, or
 `registrationEpoch`.
 
-## 3. Bind connector credentials outside Memory Core
+## 3. Run local reconciliation
+
+Run the local entry in the deployment that holds Memory Core's database and the GitHub connector
+credentials. Like the source-control CLI above, this is a co-located deployment-operator capability:
+`--tenant-id` binds that process's request context. It is not an MCP caller override or a tenant
+self-service endpoint. Only that tenant's ACTIVE GitHub registrations are selected.
+
+Start with a shadow pass to inspect acquisition and coverage without admitting batches:
+
+```bash
+npm run ai:community-reconcile -- \
+  --tenant-id tenant-a --mode shadow \
+  --max-admission-attempts <explicit-count> \
+  --source-instance-id SOURCE_ID
+```
+
+Omit the repeatable source selector to reconcile all supported registrations in that tenant. An
+unknown explicit selector refuses the run rather than silently processing a different subset.
+For durable admission, use `--mode manual` and supply `--attention-policy-file <reviewed-policy.json>`.
+The policy has the classifier's `responseBearingKinds` and `rosteredActorIds` arrays and optional
+reviewed `recordedActorDispositions`; this command selects no policy values for you. Shadow mode
+needs no attention policy because it does not admit observations.
+
+Output contains per-family status, connector call counts, observation and coverage-gap counts, receipt/checkpoint identity,
+and receipt age when observed. Connector calls count query/REST invocations, not individual GraphQL
+connection pages or provider-internal HTTP retries. Receipt age is not provider-head lag. Provider prose, tokens, grant
+references and the captured batch stay out of output. A failure in one family does not stop the others;
+partial or failed outcomes exit nonzero.
+
+An ambiguous admission response retries the exact batch held by the current attempt. Restarting the
+process generates a new batch ID and re-enumerates; Memory Core deduplicates occurrence/revision
+facts. There is no pending-batch file to recover or independently advance. Memory Core commits the
+receipt and checkpoint together.
+
+The Orchestrator task is `community-reconciliation`, owned by the container plane. Its canonical
+enable flag is false, cadence is null, and tenant/attempt policy are unset. Periodic activation requires
+explicit calibrated settings and a deployment-bound admission policy; a manual pass does not enable
+it. The host-edge scheduler refuses this task before importing community storage dependencies.
+
+## 4. Bind hosted connector credentials outside Memory Core
 
 Configure the GitHub App installation or equivalent grant in the connector's own secret store. The
 connector uses that grant to acquire provider data, normalizes it to
@@ -106,7 +146,7 @@ The client makes at most two attempts by default. If the first response is lost,
 same `batchId` and exact envelope; the server returns the original receipt for the same digest. A reused
 `batchId` with different bytes is a conflict.
 
-## 4. Read readiness without raw database access
+## 5. Read readiness without raw database access
 
 Call `get_community_source_health` with the same neutral provider identity. The response contains:
 
@@ -118,7 +158,7 @@ Call `get_community_source_health` with the same neutral provider identity. The 
 `COMMUNITY_SOURCE_READY` means the source is `ACTIVE`. `COMMUNITY_SOURCE_NOT_FOUND` intentionally
 collapses unknown-source and wrong-tenant lookups so the read path does not become a tenant oracle.
 
-## 5. Revoke and audit
+## 6. Revoke and audit
 
 Revoke from the last observed control generation:
 

@@ -1746,13 +1746,14 @@ class ConfigBase extends ConfigProvider {
                      * priority-0 lane and wins the pick unconditionally, so an unbounded retry would
                      * monopolize the heavy-maintenance lease and starve the REM chain.
                      */
-                    backupRetryDelayMs     : leaf(15 * 60 * 1000, 'NEO_ORCHESTRATOR_BACKUP_RETRY_DELAY_MS', 'number'),
-                    backupRetryWindowMs    : leaf(HOUR_MS, 'NEO_ORCHESTRATOR_BACKUP_RETRY_WINDOW_MS', 'number'),
-                    graphLogCompactionMs   : leaf(DAY_MS, 'NEO_ORCHESTRATOR_GRAPHLOG_COMPACTION_INTERVAL_MS', 'number'),
-                    primaryDevSyncMs       : leaf(10 * 60 * 1000, 'NEO_ORCHESTRATOR_PRIMARY_DEV_SYNC_INTERVAL_MS', 'number'),
-                    tenantRepoSyncMs       : leaf(30 * 60 * 1000, 'NEO_ORCHESTRATOR_TENANT_REPO_SYNC_INTERVAL_MS', 'number'),
-                    dreamMs                : leaf(HOUR_MS, 'NEO_ORCHESTRATOR_DREAM_INTERVAL_MS', 'number'),
-                    messageConceptHarvestMs: leaf(6 * HOUR_MS, 'NEO_ORCHESTRATOR_MESSAGE_CONCEPT_HARVEST_INTERVAL_MS', 'number'),
+                    backupRetryDelayMs       : leaf(15 * 60 * 1000, 'NEO_ORCHESTRATOR_BACKUP_RETRY_DELAY_MS', 'number'),
+                    backupRetryWindowMs      : leaf(HOUR_MS, 'NEO_ORCHESTRATOR_BACKUP_RETRY_WINDOW_MS', 'number'),
+                    graphLogCompactionMs     : leaf(DAY_MS, 'NEO_ORCHESTRATOR_GRAPHLOG_COMPACTION_INTERVAL_MS', 'number'),
+                    primaryDevSyncMs         : leaf(10 * 60 * 1000, 'NEO_ORCHESTRATOR_PRIMARY_DEV_SYNC_INTERVAL_MS', 'number'),
+                    tenantRepoSyncMs         : leaf(30 * 60 * 1000, 'NEO_ORCHESTRATOR_TENANT_REPO_SYNC_INTERVAL_MS', 'number'),
+                    communityReconciliationMs: leaf(null, 'NEO_ORCHESTRATOR_COMMUNITY_RECONCILIATION_INTERVAL_MS', 'number'),
+                    dreamMs                  : leaf(HOUR_MS, 'NEO_ORCHESTRATOR_DREAM_INTERVAL_MS', 'number'),
+                    messageConceptHarvestMs  : leaf(6 * HOUR_MS, 'NEO_ORCHESTRATOR_MESSAGE_CONCEPT_HARVEST_INTERVAL_MS', 'number'),
                     /**
                      * Cadence of the defect-ledger digest: the observer tick that folds `defect-note:`
                      * captures and sends at most one A2A digest for newly-qualifying observations
@@ -2141,6 +2142,11 @@ class ConfigBase extends ConfigProvider {
                     // posture reports whether it is met — an explicit `false` is a deliberate opt-out,
                     // which is what distinguishes it from an unconfigured hook nobody noticed.
                     offHostBackupRequired: leaf(null, 'NEO_ORCHESTRATOR_OFF_HOST_BACKUP_REQUIRED', 'boolean')
+                },
+                communityReconciliation: {
+                    enabled             : leaf(false, 'NEO_ORCHESTRATOR_COMMUNITY_RECONCILIATION_ENABLED', 'boolean'),
+                    maxAdmissionAttempts: leaf(null, 'NEO_ORCHESTRATOR_COMMUNITY_RECONCILIATION_MAX_ADMISSION_ATTEMPTS', 'number'),
+                    tenantId            : leaf(null, 'NEO_ORCHESTRATOR_COMMUNITY_RECONCILIATION_TENANT_ID', 'string')
                 },
                 /**
                  * Recovery actuator envelope. Enabled by default so deployed immune-system

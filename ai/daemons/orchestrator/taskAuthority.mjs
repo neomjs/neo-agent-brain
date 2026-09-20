@@ -106,6 +106,7 @@ export const TASK_AUTHORITY_BY_NAME = Object.freeze({
     chromaDefrag                           : ORCHESTRATOR_AUTHORITY_CLASS.sharedPrimitive,
     'primary-dev-sync'                     : ORCHESTRATOR_AUTHORITY_CLASS.hostEdge,
     'tenant-repo-sync'                     : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
+    'community-reconciliation'             : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     dream                                  : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'message-concept-harvest'              : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,
     'defect-ledger-digest'                 : ORCHESTRATOR_AUTHORITY_CLASS.containerPlane,

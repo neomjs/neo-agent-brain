@@ -1,4 +1,5 @@
-import {test, expect} from '@playwright/test';
+import {test, expect}  from '@playwright/test';
+import {TASK_REGISTRY} from '../../../../../../../ai/daemons/orchestrator/scheduling/registry.mjs';
 import {
     buildOrchestratorSchedulingOptions,
     buildSchedulingContext,
@@ -168,6 +169,9 @@ function makeAdapterConfig({dreamMs = 3_600_000, remBacklogCatchupCooldownMs = 3
             tenantRepoSync: {
                 sweepCadenceMs: 1,
                 jitterRatio   : 0
+            },
+            communityReconciliation: {
+                enabled: false
             }
         },
         temporalSummary: {
@@ -507,6 +511,33 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
             globalCadenceMs: 25_000,
             jitterRatio    : 0.25
         });
+    });
+
+    test('dispatches the real community descriptor only with an explicit cadence and enabled flag', () => {
+        const calls      = [],
+              descriptor = TASK_REGISTRY.find(row => row.taskName === 'community-reconciliation'),
+              service    = {runTask: options => { calls.push(options); return true }},
+              config     = makeAdapterConfig();
+
+        config.orchestrator.intervals.communityReconciliationMs = 100;
+        config.orchestrator.communityReconciliation.enabled = true;
+        const options = buildOrchestratorSchedulingOptions({
+            orchestrator: makeOrchestratorAdapterFixture({communityReconciliationService: service}),
+            config, now: 1000, registry: [descriptor]
+        });
+        expect(options.services.communityReconciliationService).toBe(service);
+        expect(options.context.intervals.communityReconciliation).toBe(100);
+        expect(options.context.enables.communityReconciliation).toBe(true);
+
+        const services = makeServices({communityReconciliationService: service});
+        runSchedulingPipeline({...options, services, runtime: makeRuntime()});
+        expect(calls).toHaveLength(1);
+        expect(calls[0]).toMatchObject({taskName: 'community-reconciliation', taskStateService: services.taskStateService});
+        expect(calls[0]).not.toHaveProperty('maxAdmissionAttempts');
+
+        options.context.intervals.communityReconciliation = null;
+        runSchedulingPipeline({...options, services, runtime: makeRuntime()});
+        expect(calls).toHaveLength(1);
     });
 
     test('reports unsupported executionKind as dispatch failure', () => {

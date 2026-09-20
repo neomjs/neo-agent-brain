@@ -395,6 +395,16 @@ test.describe('Neo.ai.daemons.Orchestrator (#11009)', () => {
         await Promise.resolve();
     });
 
+    test('community reconciliation is plane-owned and the host facade refuses before loading it', async () => {
+        const host = createTestOrchestrator({authorityProfile: ORCHESTRATOR_AUTHORITY_PROFILE.hostEdge});
+        expect(host.getAuthorityScheduledRegistry().map(row => row.taskName)).not.toContain('community-reconciliation');
+        await expect(host.communityReconciliationService.runTask({taskName: 'community-reconciliation'}))
+            .resolves.toEqual({status: 'skipped', reasonCode: 'COMMUNITY_RECONCILIATION_AUTHORITY_NOT_OWNED'});
+
+        const plane = createTestOrchestrator({authorityProfile: ORCHESTRATOR_AUTHORITY_PROFILE.containerPlane});
+        expect(plane.getAuthorityScheduledRegistry().map(row => row.taskName)).toContain('community-reconciliation');
+    });
+
     test('host-edge never opens a graph database while plane roles still bootstrap it (#16210)', async () => {
         const calls                = [];
         const initializeDatabaseFn = async dbPath => {

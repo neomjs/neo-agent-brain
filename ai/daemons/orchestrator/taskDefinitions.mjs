@@ -480,6 +480,9 @@ export function buildTaskDefinitions({
             expectedCommand: 'TenantRepoSyncService',
             serviceTask    : true
         },
+        'community-reconciliation': {
+            label: 'GitHub community reconciliation', pidFileName: 'community-reconciliation.pid', expectedCommand: 'CommunityReconciliationService', serviceTask: true
+        },
         dream: {
             label          : 'REM sleep graph extraction',
             pidFileName    : 'dream.pid',

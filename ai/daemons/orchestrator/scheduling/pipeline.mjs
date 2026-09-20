@@ -29,18 +29,19 @@ export const PRIORITY_ZERO_TASKS = Object.freeze(['backup']);
  * @type {Readonly<Object>}
  */
 export const TASK_STALENESS_CADENCE_KEY = Object.freeze({
-    summary                  : 'summarySweep',
-    'memory-summary-backfill': 'summarySweep',
-    kbSync                   : 'kbSync',
-    'core-corpus-projection' : 'corpusProjection',
-    backup                   : 'backup',
-    'graphlog-compaction'    : 'graphLogCompaction',
-    'primary-dev-sync'       : 'primaryDevSync',
-    'tenant-repo-sync'       : 'tenantRepoSync',
-    dream                    : 'dream',
-    'message-concept-harvest': 'messageConceptHarvest',
-    'temporal-summary'       : 'temporalSummary',
-    'golden-path'            : 'goldenPath'
+    summary                   : 'summarySweep',
+    'memory-summary-backfill' : 'summarySweep',
+    kbSync                    : 'kbSync',
+    'core-corpus-projection'  : 'corpusProjection',
+    backup                    : 'backup',
+    'graphlog-compaction'     : 'graphLogCompaction',
+    'primary-dev-sync'        : 'primaryDevSync',
+    'tenant-repo-sync'        : 'tenantRepoSync',
+    'community-reconciliation': 'communityReconciliation',
+    dream                     : 'dream',
+    'message-concept-harvest' : 'messageConceptHarvest',
+    'temporal-summary'        : 'temporalSummary',
+    'golden-path'             : 'goldenPath'
 });
 
 /**
@@ -133,6 +134,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
                 graphLogCompaction                     : config.orchestrator.intervals.graphLogCompactionMs,
                 primaryDevSync                         : config.orchestrator.intervals.primaryDevSyncMs,
                 tenantRepoSync                         : config.orchestrator.tenantRepoSync.sweepCadenceMs,
+                communityReconciliation                : config.orchestrator.intervals.communityReconciliationMs,
                 dream                                  : config.orchestrator.intervals.dreamMs,
                 messageConceptHarvest                  : config.orchestrator.intervals.messageConceptHarvestMs,
                 defectLedgerDigest                     : config.orchestrator.intervals.defectLedgerDigestMs,
@@ -151,13 +153,14 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
                 temporalSummary                        : config.temporalSummary.aggregationIntervalMs
             },
             enables: {
-                kbSync            : orchestrator.kbSyncEnabled,
-                corpusProjection  : orchestrator.corpusProjectionEnabled,
-                graphLogCompaction: orchestrator.graphLogCompactionEnabled,
-                primaryDevSync    : orchestrator.primaryDevSyncEnabled,
-                tenantRepoSync    : orchestrator.tenantRepoSyncEnabled,
-                swarmHeartbeat    : orchestrator.swarmHeartbeatEnabled,
-                temporalSummary   : orchestrator.temporalSummaryEnabled
+                kbSync                 : orchestrator.kbSyncEnabled,
+                corpusProjection       : orchestrator.corpusProjectionEnabled,
+                graphLogCompaction     : orchestrator.graphLogCompactionEnabled,
+                primaryDevSync         : orchestrator.primaryDevSyncEnabled,
+                tenantRepoSync         : orchestrator.tenantRepoSyncEnabled,
+                communityReconciliation: config.orchestrator.communityReconciliation.enabled,
+                swarmHeartbeat         : orchestrator.swarmHeartbeatEnabled,
+                temporalSummary        : orchestrator.temporalSummaryEnabled
             },
             hooks: {
                 log                                 : orchestrator.writeLog.bind(orchestrator),
@@ -184,6 +187,7 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
             swarmHeartbeatService                  : orchestrator.swarmHeartbeatService,
             taskStateService                       : orchestrator.taskStateService,
             tenantRepoSyncService                  : orchestrator.tenantRepoSyncService,
+            communityReconciliationService         : orchestrator.communityReconciliationService,
             embedDrainLivenessAlarmDispatcher      : orchestrator.embedDrainLivenessAlarmDispatcher,
             remConsolidationLivenessAlarmDispatcher: orchestrator.remConsolidationLivenessAlarmDispatcher,
             dataIntegrityDiagnosisService          : orchestrator.dataIntegrityDiagnosisService
@@ -484,6 +488,13 @@ function executeServiceRunnerCandidate({candidate, activeHeavyTask, services, ru
             globalCadenceMs : runtime.tenantRepoSyncGlobalCadenceMs,
             jitterRatio     : runtime.tenantRepoSyncJitterRatio,
             leaseYieldVoter : taskOptions?.leaseYieldVoter ?? null
+        }),
+        'community-reconciliation': (taskName, reason) => services.communityReconciliationService.runTask({
+            taskName,
+            reason,
+            taskStateService: services.taskStateService,
+            healthService   : services.healthService,
+            writeLog        : runtime.writeLog
         })
     };
 

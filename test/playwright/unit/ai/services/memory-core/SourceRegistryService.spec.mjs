@@ -136,6 +136,22 @@ test.describe('Neo.ai.services.memory-core.SourceRegistryService', () => {
         expect(reg.registrationEpoch).toBe(1);
     });
 
+    test('registration enumeration never widens the server-bound tenant', async () => {
+        const alice = seed('u-alice'), bob = seed('u-bob');
+
+        expect(SourceRegistryService.listRegistrations()).toEqual([]);
+        await asTenant('u-alice', () => {
+            expect(SourceRegistryService.listRegistrations().map(row => row.sourceInstanceId)).toEqual([alice]);
+            expect(SourceRegistryService.listRegistrations({tenantId: 'u-bob'})
+                .map(row => row.sourceInstanceId)).toEqual([alice]);
+        });
+        await asTenant('u-bob', () => {
+            expect(SourceRegistryService.listRegistrations().map(row => row.sourceInstanceId)).toEqual([bob]);
+        });
+        SourceRegistryService.localSubjectId = 'u-alice';
+        expect(SourceRegistryService.listRegistrations().map(row => row.sourceInstanceId)).toEqual([alice]);
+    });
+
     test('same-clock reverse UUIDs preserve causal operator-audit order through a durable sequence', () => {
         const
             originalNow        = Date.now,
