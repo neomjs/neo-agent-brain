@@ -18,6 +18,7 @@ import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs-extra';
+import fsp             from 'node:fs/promises';
 import matter          from 'gray-matter';
 import path            from 'path';
 import crypto          from 'crypto';
@@ -664,6 +665,64 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             expect(metadata.issues[6201].path).toContain(path.join('archive', 'issues', version));
             expect(metadata.issues[6202].path).toContain(path.join('archive', 'issues', version));
         } finally {
+            ReleaseNotesSyncer.sortedReleases = originalSorted;
+            issueSyncConfig.routeByMilestone  = originalRouteByMilestone;
+        }
+    });
+
+    test('reconcileClosedIssueLocations refreshes the plan on the bucket the mkdir cut even when that move\'s rename fails (#403)', async () => {
+        // @neo-gpt's second differential on PR #405: the refresh must key on the directory-state change, not
+        // on the rename succeeding. `mkdir` cuts the bucket, the rename of the first issue fails and is caught,
+        // and the milestone issue planned after it must still see the cut bucket and land there.
+        const originalSorted           = ReleaseNotesSyncer.sortedReleases,
+              originalRouteByMilestone = issueSyncConfig.routeByMilestone,
+              originalRename           = fsp.rename,
+              version                  = 'v63.0.0',
+              bucketDir                = path.join(issueSyncConfig.archiveRoot, 'issues', version);
+
+        ReleaseNotesSyncer.sortedReleases = [{tagName: version, publishedAt: '2026-05-10T00:00:00Z'}];
+        issueSyncConfig.routeByMilestone  = true;
+
+        const seed = async (chunk, n, closedAt, milestone) => {
+            const abs = path.join(issueSyncConfig.issuesDir, chunk, `issue-${n}.md`);
+
+            await fs.ensureDir(path.dirname(abs));
+            await fs.writeFile(abs, `CLOSED ISSUE ${n}`, 'utf8');
+
+            return {
+                state        : 'CLOSED',
+                path         : path.relative(aiConfig.issueSync.metadataBaseRoot, abs),
+                updatedAt    : closedAt,
+                closedAt,
+                milestone,
+                title        : `Closed issue ${n}`,
+                contentHash  : 'hash',
+                commentsTotal: 0
+            }
+        };
+
+        // The syncer moves through `fs/promises`; fail only the first issue's rename, after its mkdir ran.
+        fsp.rename = async (from, to) => {
+            if (String(from).endsWith('issue-6301.md')) throw new Error('injected rename failure');
+            return originalRename(from, to)
+        };
+
+        try {
+            await expect(fs.pathExists(bucketDir)).resolves.toBe(false);
+
+            const metadata = {issues: {
+                6301: await seed('chunk-81', 6301, '2026-05-01T00:00:00Z', null),     // routed by date; its rename fails after mkdir cut the bucket
+                6302: await seed('chunk-81', 6302, '2026-05-20T00:00:00Z', version)   // routed only by milestone, into the bucket that now exists
+            }};
+
+            const stats = await IssueSyncer.reconcileClosedIssueLocations(metadata);
+
+            expect(stats.count).toBe(1);
+            expect(stats.issues).toEqual([6302]);
+            expect(metadata.issues[6301].path).not.toContain('/archive/');
+            expect(metadata.issues[6302].path).toContain(path.join('archive', 'issues', version));
+        } finally {
+            fsp.rename                        = originalRename;
             ReleaseNotesSyncer.sortedReleases = originalSorted;
             issueSyncConfig.routeByMilestone  = originalRouteByMilestone;
         }

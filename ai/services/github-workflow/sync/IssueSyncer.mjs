@@ -1243,12 +1243,14 @@ class IssueSyncer extends Base {
 
                 logger.debug(`📦 Archiving closed issue #${issueNumber}: ${currentAbsolutePath} → ${correctPath}`);
 
-                try {
-                    // `archive/issues/<version>` — the bucket this move lands in. Read BEFORE the mkdir, so a
-                    // bucket cut by this very move is recognised as new and the plan is refreshed for the
-                    // issues planned after it.
-                    const bucketWasCut = existsSync(path.dirname(path.dirname(correctPath)));
+                // `archive/issues/<version>` — the bucket this move lands in. Its existence is a planner
+                // input (`#deriveMilestoneVersion`), so the plan is refreshed whenever THIS move changes
+                // it — keyed on the directory state, not on the rename succeeding: `mkdir` can cut the
+                // bucket and the rename still fail, and that failure is caught below.
+                const bucketDir    = path.dirname(path.dirname(correctPath)),
+                      bucketWasCut = existsSync(bucketDir);
 
+                try {
                     // Ensure target directory exists
                     await fs.mkdir(path.dirname(correctPath), { recursive: true });
 
@@ -1262,13 +1264,13 @@ class IssueSyncer extends Base {
                     stats.count++;
                     stats.issues.push(parseInt(issueNumber));
 
-                    if (!bucketWasCut) {
-                        planBuckets = null; // a newly cut bucket is a planner input — see the comment above the loop
-                    }
-
                     logger.debug(`✅ Archived #${issueNumber} to ${path.relative(process.cwd(), correctPath)}`);
                 } catch (e) {
                     logger.error(`❌ Failed to archive #${issueNumber}: ${e.message}`);
+                } finally {
+                    if (!bucketWasCut && existsSync(bucketDir)) {
+                        planBuckets = null; // the bucket exists now — see the comment above the loop
+                    }
                 }
             }
         }
