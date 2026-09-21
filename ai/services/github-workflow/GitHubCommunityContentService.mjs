@@ -16,20 +16,29 @@ export const COMMUNITY_CONTENT_QUERY = `query CommunityContent($id: ID!) {
     }
 }`;
 
-/** @summary Known source-relative association alone controls sanitizer trust; the global roster is not consulted. */
+/** @summary Source-relative trust controls projection; field-tagged disclosures preserve each sanitizer result. */
 function projectContent({id, url, updatedAt, body, title, association}) {
-    const trusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(association),
-          tier    = trusted ? TRUST_TIERS.REPO_TRUSTED : association ? TRUST_TIERS.EXTERNAL : TRUST_TIERS.UNCLASSIFIED;
+    const trusted      = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(association),
+          tier         = trusted ? TRUST_TIERS.REPO_TRUSTED : association ? TRUST_TIERS.EXTERNAL : TRUST_TIERS.UNCLASSIFIED,
+          content      = {},
+          contentTrust = {tier, sourceRelative: association || 'UNKNOWN', redactions: [], signals: [], wasModified: false};
+
+    for (const [field, value] of Object.entries({body, ...(typeof title === 'string' ? {title} : {})})) {
+        const projection = sanitizeContent(value, {tier});
+
+        content[field] = projection.sanitized;
+        // Disclose the transform without reintroducing quarantined URLs through audit metadata.
+        contentTrust.redactions.push(...projection.redactions.map(({type, domain}) => ({at: field, type, ...(domain ? {domain} : {})})));
+        contentTrust.signals.push(...projection.signals.map(record => ({...record, at: field})));
+        contentTrust.wasModified ||= projection.wasModified;
+    }
 
     return {
-        status      : 'available', notAuthority: true,
-        contentTrust: {tier, sourceRelative: association || 'UNKNOWN'},
-        citation    : {providerEntityId: id, url, providerUpdatedAt: updatedAt,
+        status  : 'available', notAuthority: true,
+        contentTrust,
+        citation: {providerEntityId: id, url, providerUpdatedAt: updatedAt,
             readAt: new Date().toISOString(), contentVersion: 'current-provider-read'},
-        content: {
-            body: sanitizeContent(body, {tier}).sanitized,
-            ...(typeof title === 'string' ? {title: sanitizeContent(title, {tier}).sanitized} : {})
-        }
+        content
     }
 }
 

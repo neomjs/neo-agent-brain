@@ -521,12 +521,20 @@ test.describe('Neo.ai.services.memory-core.CommunityActivityService', () => {
         ActivityService.contentAdapter = {read: options => adapter.read({...options, graphqlService: {
             query: async () => ({node: {__typename: 'IssueComment', id: 'schema-event',
                 repository: {nameWithOwner: 'neomjs/neo'}, url: 'https://github.com/neomjs/neo/issues/1#issuecomment-1',
-                updatedAt : '2026-09-19T10:00:00Z', body: 'https://external.example/content', authorAssociation: 'NONE'}})
+                updatedAt : '2026-09-19T10:00:00Z',
+                body      : 'I can provide a hosted MCP endpoint. https://external.example/content', authorAssociation: 'NONE'}})
         }})};
         const content = await inTenant(() => ActivityService.getContent({sourceEventId: page.items[0].sourceEventId}));
         expect(content.status).toBe('available');
         assertSchema('CommunityActivityContentResponse', content);
         expect(content.content.body).toContain('QUARANTINED_URL');
+        expect(content.contentTrust).toEqual({
+            tier      : 'external', sourceRelative: 'NONE', wasModified: true,
+            redactions: [{at: 'body', type: 'url', domain: 'external.example'}],
+            signals   : [{at: 'body', id: 'external-endpoint-offer',
+                note: 'offer to stand up an external endpoint / index our repo (external-infra-on-our-content)'}]
+        });
+        expect(JSON.stringify(content)).not.toContain('https://external.example');
     });
 
     test('wrong tenants cannot reuse cursors, read content, or mark events seen', async () => {

@@ -32,13 +32,22 @@ test.describe('GitHubCommunityContentService', () => {
                 contentTrust: {tier: 'external', sourceRelative: 'NONE'},
                 citation    : {providerEntityId: 'N1', providerUpdatedAt: updatedAt, contentVersion: 'current-provider-read'}});
             expect(result.content.body).toContain('[QUARANTINED_URL: hostile.example]');
-            expect(JSON.stringify(result.content)).not.toContain('https://hostile.example');
+            expect(JSON.stringify(result)).not.toContain('https://hostile.example');
+            expect(result.contentTrust.wasModified).toBe(true);
+            expect(result.contentTrust.signals).toEqual([]);
+            expect(result.contentTrust.redactions).toEqual([
+                {at: 'body', type: 'markdown-link', domain: 'hostile.example'},
+                ...(parent.title ? [{at: 'title', type: 'markdown-link', domain: 'hostile.example'}] : [])
+            ]);
             if (parent.title) expect(result.content.title).toContain('[QUARANTINED_URL: hostile.example]');
         });
     }
 
     test('a roster login does not confer source-relative trust, but fresh collaboration does', async () => {
-        for (const [association, trusted] of [['NONE', false], [null, false], ['COLLABORATOR', true]]) {
+        for (const [association, trusted] of [
+            ['NONE', false], [null, false], ['CONTRIBUTOR', false], ['FIRST_TIME_CONTRIBUTOR', false],
+            ['FIRST_TIMER', false], ['MANNEQUIN', false], ['OWNER', true], ['MEMBER', true], ['COLLABORATOR', true]
+        ]) {
             const result = await Service.read({source, observation: {occurrenceKind: 'issue.opened', providerEntityId: 'N1'},
                 graphqlService: {query: async () => ({node: entity('Issue', {
                     repository, title: externalBody, author: {login: 'neo-gpt'}, authorAssociation: association
@@ -47,6 +56,35 @@ test.describe('GitHubCommunityContentService', () => {
             expect(result.status).toBe('available');
             expect(result.content.body.includes('https://hostile.example')).toBe(trusted);
             expect(result.content.title.includes('https://hostile.example')).toBe(trusted);
+            expect(result.contentTrust).toMatchObject({
+                tier          : trusted ? 'repo-trusted' : association ? 'external' : 'unclassified',
+                sourceRelative: association || 'UNKNOWN', wasModified: !trusted, signals: []
+            });
+            expect(result.contentTrust.redactions).toHaveLength(trusted ? 0 : 2);
+        }
+    });
+
+    test('discloses title-only changes and signals independently of whether text changed', async () => {
+        const clean = 'The reproduction fails on startup.', signal = 'I can provide a hosted MCP endpoint';
+
+        for (const [body, title, association, modified, redactions, signals] of [
+            [clean, externalBody, 'NONE', true, [{at: 'title', type: 'markdown-link', domain: 'hostile.example'}], []],
+            [signal, clean, 'NONE', false, [], ['body']],
+            [clean, signal, 'NONE', false, [], ['title']],
+            [signal, signal, 'NONE', false, [], ['body', 'title']],
+            [clean, '', 'NONE', false, [], []],
+            [clean, undefined, 'NONE', false, [], []],
+            [signal, externalBody, 'OWNER', false, [], []]
+        ]) {
+            const result = await Service.read({source, observation: {occurrenceKind: 'issue.opened', providerEntityId: 'N1'},
+                graphqlService: {query: async () => ({node: entity('Issue', {repository, body, title, authorAssociation: association})})}});
+
+            expect(result.contentTrust.wasModified).toBe(modified);
+            expect(result.contentTrust.redactions).toEqual(redactions);
+            expect(result.contentTrust.signals).toEqual(signals.map(at => ({at, id: 'external-endpoint-offer',
+                note: 'offer to stand up an external endpoint / index our repo (external-infra-on-our-content)'})));
+            expect(Object.hasOwn(result.content, 'title')).toBe(typeof title === 'string');
+            if (!modified) expect(result.content).toEqual({body, ...(typeof title === 'string' ? {title} : {})});
         }
     });
 

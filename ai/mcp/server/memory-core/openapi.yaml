@@ -5493,11 +5493,46 @@ components:
           type: object
           nullable: true
           additionalProperties: false
+          required: [tier, sourceRelative, redactions, signals, wasModified]
           properties:
             tier:
               type: string
             sourceRelative:
               type: string
+            redactions:
+              type: array
+              description: Field-tagged sanitizer records across body and title; quarantined original values are withheld.
+              items:
+                type: object
+                additionalProperties: false
+                required: [at, type]
+                properties:
+                  at:
+                    type: string
+                    enum: [body, title]
+                  type:
+                    type: string
+                    enum: [markdown-link, url, product-name]
+                  domain:
+                    type: string
+            signals:
+              type: array
+              description: Field-tagged review signals; a signal alone does not mean the content was modified.
+              items:
+                type: object
+                additionalProperties: false
+                required: [at, id, note]
+                properties:
+                  at:
+                    type: string
+                    enum: [body, title]
+                  id:
+                    type: string
+                  note:
+                    type: string
+            wasModified:
+              type: boolean
+              description: True if sanitization changed body or title; false for trusted or unchanged content.
         citation:
           type: object
           nullable: true
