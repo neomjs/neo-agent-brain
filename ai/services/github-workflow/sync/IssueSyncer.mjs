@@ -1187,9 +1187,13 @@ class IssueSyncer extends Base {
             return stats;
         }
 
-        // Build the complete-membership inventory ONCE for the reconcile pass (not per closed issue) —
-        // every "where SHOULD this land" ordinal reads the same complete membership.
-        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
+        // Build the complete-membership inventory AND the bucket plan ONCE for the reconcile pass (not per
+        // closed issue) — every "where SHOULD this land" ordinal reads the same complete membership. The
+        // plan's inputs do not change inside the loop: a move updates an issue's path, and the plan resolves
+        // that issue to the same release either way. Planning per closed active issue made this pass
+        // quadratic — ~35 minutes for zero moves on the Engine corpus (#403).
+        const inventory   = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
+        const planBuckets = this.#planBuckets(metadata, [], {inventory});
 
         for (const issueNumber in metadata.issues) {
             const issueData = metadata.issues[issueNumber];
@@ -1208,7 +1212,6 @@ class IssueSyncer extends Base {
             }
 
             // Calculate where this closed issue SHOULD be
-            const planBuckets = this.#planBuckets(metadata, [], {inventory});
             const correctPath = this.#getIssuePath({
                 number   : parseInt(issueNumber),
                 state    : issueData.state,

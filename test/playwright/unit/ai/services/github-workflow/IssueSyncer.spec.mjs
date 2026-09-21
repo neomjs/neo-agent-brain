@@ -545,6 +545,69 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
         }
     });
 
+    test('reconcileClosedIssueLocations plans the buckets once per pass, not once per closed active issue (#403)', async () => {
+        const originalSorted = ReleaseNotesSyncer.sortedReleases;
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
+
+        // Every plan enumerates `metadata.issues` (`Object.entries`) and the reconcile loop enumerates it once
+        // (`for…in`), so counting enumerations counts plans without reaching into a private method. A pass
+        // over one closed active issue and a pass over five must enumerate the same number of times: the
+        // plan is per pass. The per-issue shape this ticket removes scales the count with the population.
+        const runPass = async (chunk, numbers) => {
+            const issues = {};
+
+            for (const n of numbers) {
+                const abs = path.join(issueSyncConfig.issuesDir, chunk, `issue-${n}.md`);
+
+                await fs.ensureDir(path.dirname(abs));
+                await fs.writeFile(abs, `CLOSED ISSUE ${n}`, 'utf8');
+
+                issues[n] = {
+                    state        : 'CLOSED',
+                    path         : path.relative(aiConfig.issueSync.metadataBaseRoot, abs),
+                    updatedAt    : '2026-05-02T00:00:00Z',
+                    closedAt     : '2026-05-01T00:00:00Z',
+                    milestone    : null,
+                    title        : `Closed issue ${n}`,
+                    contentHash  : 'hash',
+                    commentsTotal: 0
+                };
+            }
+
+            let enumerations = 0;
+
+            const metadata = {issues: new Proxy(issues, {
+                ownKeys(target) {
+                    enumerations++;
+                    return Reflect.ownKeys(target)
+                }
+            })};
+
+            const stats = await IssueSyncer.reconcileClosedIssueLocations(metadata);
+
+            expect(stats.count).toBe(numbers.length);
+
+            for (const n of numbers) {
+                const targetAbs = path.join(issueSyncConfig.archiveRoot, 'issues', 'v13.0.0', 'chunk-1', `issue-${n}.md`);
+
+                expect(issues[n].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, targetAbs));
+                await expect(fs.pathExists(targetAbs)).resolves.toBe(true);
+            }
+
+            return enumerations
+        };
+
+        try {
+            const one  = await runPass('chunk-78', [6101]),
+                  five = await runPass('chunk-79', [6111, 6112, 6113, 6114, 6115]);
+
+            expect(one).toBeGreaterThan(1);   // positive control: the loop and at least one plan both enumerate
+            expect(five).toBe(one);           // the plan count does not scale with the closed active population
+        } finally {
+            ReleaseNotesSyncer.sortedReleases = originalSorted;
+        }
+    });
+
     test('pullFromGitHub enforces sealed-chunk archive semantics', async () => {
         const mockIssue = buildMockIssue({
             number       : 42044,
