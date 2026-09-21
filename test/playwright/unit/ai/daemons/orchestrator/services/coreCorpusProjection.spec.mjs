@@ -8,6 +8,11 @@ import os             from 'node:os';
 import path           from 'node:path';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+import IssueIngestor  from '../../../../../../../ai/services/ingestion/IssueIngestor.mjs';
+import {
+    Memory_GraphService as GraphService,
+    Memory_StorageRouter as StorageRouter
+} from '../../../../../../../ai/services.mjs';
 import {
     getChangedCorpusIndexFacets,
     getChangedCorpusProjectionFacets,
@@ -30,7 +35,7 @@ const HEAD_B = 'b'.repeat(40);
 function createConfig(root) {
     return {
         enabled                    : true,
-        sourceRepository           : 'https://github.com/neomjs/neo.git',
+        sourceRepository           : 'https://github.com/neomjs/github-content-sync.git',
         sourceRef                  : 'refs/heads/dev',
         mirrorRoot                 : path.join(root, 'mirror'),
         materializedRoot           : path.join(root, 'materialized'),
@@ -92,32 +97,40 @@ function createIngestor(calls, failures = {}) {
     }
 }
 
-test.describe('coreCorpusProjection — source-neutral writer (#17627)', () => {
-    test('recognizes only the three corpus facets plus their index inputs', () => {
+test.describe('coreCorpusProjection — core-origin corpus writer (#401)', () => {
+    test('recognizes only neo facets and the shared root index', () => {
         for (const sourcePath of [
-            'resources/content/_index.json',
-            'resources/content/issues/chunk-1/issue-1.md',
-            'resources/content/archive/pulls/v13/pr-1.md',
-            'resources/content/discussions/discussion-1.md'
+            '_index.json',
+            'neo/issues/chunk-1/issue-1.md',
+            'neo/archive/pulls/v13/pr-1.md',
+            'neo/discussions/discussion-1.md'
         ]) {
             expect(isCoreCorpusProjectionPath(sourcePath), sourcePath).toBe(true)
         }
 
-        expect(isCoreCorpusProjectionPath('resources/content/release-notes/v13.2.0.md')).toBe(false);
+        for (const sourcePath of [
+            'neo/release-notes/v13.2.0.md',
+            'neo-agent-brain/issues/issue-1.md',
+            'neo-agent-brain/archive/pulls/v13/pr-1.md',
+            'resources/content/issues/issue-1.md'
+        ]) {
+            expect(isCoreCorpusProjectionPath(sourcePath), sourcePath).toBe(false)
+        }
         expect(isCoreCorpusProjectionPath('ai/configBase.mjs')).toBe(false);
         expect(getChangedCorpusProjectionFacets([
-            'resources/content/archive/issues/v13/issue-1.md',
-            'resources/content/pulls/pr-2.md'
+            'neo/archive/issues/v13/issue-1.md',
+            'neo/pulls/pr-2.md',
+            'neo-agent-brain/discussions/discussion-1.md'
         ])).toEqual(['issues', 'pulls']);
-        expect(getChangedCorpusProjectionFacets(['resources/content/_index.json'])).toEqual([]);
+        expect(getChangedCorpusProjectionFacets(['_index.json'])).toEqual([]);
         expect(getChangedCorpusIndexFacets(
             JSON.stringify([
-                {type: 'issues', id: 1, path: 'issues/issue-1.md'},
-                {type: 'pulls', id: 2, path: 'pulls/pr-2.md'}
+                {repoSlug: 'neo', type: 'issues', id: 1, path: 'neo/issues/issue-1.md'},
+                {repoSlug: 'neo', type: 'pulls', id: 2, path: 'neo/pulls/pr-2.md'}
             ]),
             JSON.stringify([
-                {type: 'issues', id: 1, path: 'issues/issue-1.md'},
-                {type: 'pulls', id: 3, path: 'pulls/pr-3.md'}
+                {repoSlug: 'neo', type: 'issues', id: 1, path: 'neo/issues/issue-1.md'},
+                {repoSlug: 'neo', type: 'pulls', id: 3, path: 'neo/pulls/pr-3.md'}
             ])
         )).toEqual(['pulls'])
     });
@@ -131,17 +144,224 @@ test.describe('coreCorpusProjection — source-neutral writer (#17627)', () => {
         expect(source).not.toMatch(/TenantRepoSyncService|syncTenantRepos|tenant-repo-sync|kb-config\.yaml/)
     });
 
+    test('same-id origins materialize only neo and the real ingestor resolves its normalized index into graph writes', async () => {
+        const root      = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-origin-')),
+              config    = createConfig(root),
+              neoPath   = 'neo/issues/issue-999.md',
+              brainPath = 'neo-agent-brain/issues/issue-999.md',
+              neoRow    = {repoSlug: 'neo', type: 'issues', id: 42, path: neoPath},
+              gitMirror = createGitMirror({
+                  pathsByRevision: {[HEAD_A]: ['_index.json', neoPath, brainPath]},
+                  filesByRevision: {[HEAD_A]: {
+                      '_index.json': JSON.stringify([
+                          neoRow,
+                          {repoSlug: 'neo-agent-brain', type: 'issues', id: 42, path: brainPath}
+                      ]),
+                      [neoPath]  : '---\ntitle: Core selected issue\nstate: OPEN\n---\nCore body',
+                      [brainPath]: '---\ntitle: Foreign colliding issue\nstate: OPEN\n---\nForeign body'
+                  }}
+              }),
+              graphWrites  = [],
+              vectorWrites = [],
+              originals    = {
+                  db                           : GraphService.db,
+                  upsertNode                   : GraphService.upsertNode,
+                  listSharedNodeRecordsByLabels: GraphService.listSharedNodeRecordsByLabels,
+                  removeNodes                  : GraphService.removeNodes,
+                  getGraphCollection           : StorageRouter.getGraphCollection
+              };
+
+        GraphService.db = {
+            nodes           : {get: () => null},
+            edges           : {items: []},
+            getAdjacentNodes: () => {}
+        };
+        GraphService.upsertNode = node => graphWrites.push(node);
+        GraphService.listSharedNodeRecordsByLabels = () => [];
+        GraphService.removeNodes = () => {};
+        StorageRouter.getGraphCollection = async () => ({
+            get   : async () => ({ids: [], metadatas: []}),
+            upsert: async payload => vectorWrites.push(payload)
+        });
+
+        try {
+            const outcome = await runCoreCorpusProjectionCycle({config, gitMirror, issueIngestor: IssueIngestor});
+
+            expect(outcome.status).toBe('completed');
+            expect(await fs.readJson(path.join(config.materializedRoot, '_index.json'))).toEqual([
+                {...neoRow, path: 'issues/issue-999.md'}
+            ]);
+            expect(fs.readdirSync(config.materializedRoot).sort()).toEqual(['_index.json', 'issues']);
+            expect(graphWrites).toHaveLength(1);
+            expect(graphWrites[0]).toMatchObject({
+                id        : 'issue-42',
+                name      : 'Core selected issue',
+                properties: {
+                    corpusProjectionSourceRepository: config.sourceRepository,
+                    corpusProjectionSourceRevision  : HEAD_A
+                }
+            });
+            expect(vectorWrites).toHaveLength(1);
+            expect(vectorWrites[0]).toMatchObject({ids: ['issue-42'], documents: ['Core selected issue\n\nCore body']})
+        } finally {
+            GraphService.db = originals.db;
+            GraphService.upsertNode = originals.upsertNode;
+            GraphService.listSharedNodeRecordsByLabels = originals.listSharedNodeRecordsByLabels;
+            GraphService.removeNodes = originals.removeNodes;
+            StorageRouter.getGraphCollection = originals.getGraphCollection;
+            fs.removeSync(root)
+        }
+    });
+
+    for (const [name, invalidIndex, errorCode] of [
+        ['malformed JSON', '{', 'CORE_CORPUS_INDEX_INVALID'],
+        ['non-array JSON', '{}', 'CORE_CORPUS_INDEX_INVALID'],
+        ['missing repoSlug', JSON.stringify([
+            {repoSlug: 'neo', type: 'issues', id: 1, path: 'neo/issues/issue-1.md'},
+            {type: 'issues', id: 2, path: 'neo-agent-brain/issues/issue-2.md'}
+        ]), 'CORE_CORPUS_INDEX_INVALID'],
+        ['empty repoSlug', JSON.stringify([
+            {repoSlug: 'neo', type: 'issues', id: 1, path: 'neo/issues/issue-1.md'},
+            {repoSlug: ' ', type: 'issues', id: 2, path: 'neo-agent-brain/issues/issue-2.md'}
+        ]), 'CORE_CORPUS_INDEX_INVALID'],
+        ['absent neo origin', JSON.stringify([
+            {repoSlug: 'neo-agent-brain', type: 'issues', id: 1, path: 'neo-agent-brain/issues/issue-1.md'}
+        ]), 'CORE_CORPUS_ORIGIN_MISSING'],
+        ['foreign selected path', JSON.stringify([
+            {repoSlug: 'neo', type: 'issues', id: 1, path: 'neo-agent-brain/issues/issue-1.md'}
+        ]), 'CORE_CORPUS_INDEX_INVALID'],
+        ['traversing selected path', JSON.stringify([
+            {repoSlug: 'neo', type: 'issues', id: 1, path: 'neo/issues/../../issue-1.md'}
+        ]), 'CORE_CORPUS_INDEX_INVALID']
+    ]) {
+        for (const incremental of [false, true]) {
+            test(`${name} refuses ${incremental ? 'incremental' : 'full'} materialization before staging, ingestion, or receipt mutation`, async () => {
+                const root      = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-invalid-')),
+                      config    = createConfig(root),
+                      issuePath = 'neo/issues/issue-1.md',
+                      gitMirror = createGitMirror({
+                          head           : incremental ? HEAD_A : HEAD_B,
+                          pathsByRevision: {
+                              [HEAD_A]: ['_index.json', issuePath],
+                              [HEAD_B]: ['_index.json', issuePath]
+                          },
+                          filesByRevision: {
+                              [HEAD_A]: {
+                                  '_index.json': JSON.stringify([{repoSlug: 'neo', type: 'issues', id: 1, path: issuePath}]),
+                                  [issuePath]  : 'retained issue content'
+                              },
+                              [HEAD_B]: {'_index.json': invalidIndex, [issuePath]: 'must not replace retained content'}
+                          },
+                          diff: {addedOrChanged: ['_index.json', issuePath], deleted: []}
+                      }),
+                      calls     = [],
+                      mutations = [],
+                      fileSystem = {...fs};
+
+                for (const method of ['ensureDir', 'outputFile', 'move', 'remove']) {
+                    fileSystem[method] = async (...args) => {
+                        mutations.push({method, path: args[0]});
+                        return fs[method](...args)
+                    }
+                }
+
+                try {
+                    if (incremental) {
+                        await runCoreCorpusProjectionCycle({config, gitMirror, issueIngestor: createIngestor(calls)})
+                    } else {
+                        await fs.outputFile(path.join(config.materializedRoot, 'retained.txt'), 'existing staging')
+                    }
+                    const beforeEntries = fs.readdirSync(root, {recursive: true}).sort(),
+                          beforeReceipt = await readCorpusProjectionReceipt(config.receiptPath),
+                          retainedPath  = path.join(config.materializedRoot, incremental ? 'issues/issue-1.md' : 'retained.txt'),
+                          retainedValue = fs.readFileSync(retainedPath, 'utf8'),
+                          beforeIndex   = incremental ? fs.readFileSync(path.join(config.materializedRoot, '_index.json'), 'utf8') : null;
+
+                    calls.length = 0;
+                    gitMirror.setHead(HEAD_B);
+
+                    await expect(runCoreCorpusProjectionCycle({
+                        config, gitMirror, fileSystem, issueIngestor: createIngestor(calls)
+                    })).rejects.toMatchObject({code: errorCode});
+
+                    expect(mutations).toEqual([]);
+                    expect(calls).toEqual([]);
+                    expect(fs.readdirSync(root, {recursive: true}).sort()).toEqual(beforeEntries);
+                    expect(fs.readFileSync(retainedPath, 'utf8')).toBe(retainedValue);
+                    expect(await readCorpusProjectionReceipt(config.receiptPath)).toEqual(beforeReceipt);
+                    if (incremental) {
+                        expect(fs.readFileSync(path.join(config.materializedRoot, '_index.json'), 'utf8')).toBe(beforeIndex)
+                    }
+                } finally {
+                    fs.removeSync(root)
+                }
+            })
+        }
+    }
+
+    for (const changeIndex of [false, true]) {
+        test(`other-origin-only ${changeIndex ? 'index and path' : 'path'} changes advance every receipt with zero ingestor calls`, async () => {
+            const root      = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-other-origin-')),
+                  config    = createConfig(root),
+                  neoPath   = 'neo/issues/issue-1.md',
+                  brainPath = 'neo-agent-brain/issues/issue-1.md',
+                  neoRow    = {repoSlug: 'neo', type: 'issues', id: 1, path: neoPath},
+                  brainRow  = {repoSlug: 'neo-agent-brain', type: 'issues', id: 1, path: brainPath},
+                  indexA    = JSON.stringify([neoRow, brainRow]),
+                  indexB    = JSON.stringify([neoRow, changeIndex ? {...brainRow, version: 'v1'} : brainRow]),
+                  gitMirror = createGitMirror({
+                      pathsByRevision: {[HEAD_A]: ['_index.json', neoPath, brainPath]},
+                      filesByRevision: {
+                          [HEAD_A]: {'_index.json': indexA, [neoPath]: 'core issue', [brainPath]: 'foreign issue A'},
+                          [HEAD_B]: {'_index.json': indexB, [brainPath]: 'foreign issue B'}
+                      },
+                      diff: {addedOrChanged: changeIndex ? ['_index.json', brainPath] : [brainPath], deleted: []}
+                  }),
+                  calls = [];
+
+            try {
+                await runCoreCorpusProjectionCycle({config, gitMirror, issueIngestor: createIngestor(calls)});
+                calls.length = 0;
+                gitMirror.setHead(HEAD_B);
+
+                const outcome = await runCoreCorpusProjectionCycle({config, gitMirror, issueIngestor: createIngestor(calls)});
+
+                expect(getChangedCorpusIndexFacets(indexA, indexB)).toEqual([]);
+                expect(outcome.materialization).toMatchObject({full: false, changedFacets: []});
+                expect(outcome.receipt.materializedCorpusRevision).toBe(HEAD_B);
+                expect(outcome.receipt.projectedRevisionByFacet).toEqual({issues: HEAD_B, pulls: HEAD_B, discussions: HEAD_B});
+                expect(calls).toEqual([]);
+                expect(await fs.readJson(path.join(config.materializedRoot, '_index.json'))).toEqual([
+                    {...neoRow, path: 'issues/issue-1.md'}
+                ]);
+                expect(fs.readFileSync(path.join(config.materializedRoot, 'issues/issue-1.md'), 'utf8')).toBe('core issue');
+                expect(fs.readdirSync(config.materializedRoot).sort()).toEqual(['_index.json', 'issues'])
+            } finally {
+                fs.removeSync(root)
+            }
+        })
+    }
+
     test('cold start fully materializes one exact source revision before committing every facet', async () => {
         const root   = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-cold-')),
               config = createConfig(root),
               paths  = [
-                  'resources/content/_index.json',
-                  'resources/content/issues/issue-1.md',
-                  'resources/content/pulls/pr-2.md',
-                  'resources/content/discussions/discussion-3.md',
+                  '_index.json',
+                  'neo/issues/issue-1.md',
+                  'neo/pulls/pr-2.md',
+                  'neo/discussions/discussion-3.md',
                   'README.md'
               ],
-              files = Object.fromEntries(paths.filter(isCoreCorpusProjectionPath).map(sourcePath => [sourcePath, `content:${sourcePath}`])),
+              files = {
+                  '_index.json': JSON.stringify([
+                      {repoSlug: 'neo', type: 'issues', id: 1, path: 'neo/issues/issue-1.md'},
+                      {repoSlug: 'neo', type: 'pulls', id: 2, path: 'neo/pulls/pr-2.md'},
+                      {repoSlug: 'neo', type: 'discussions', id: 3, path: 'neo/discussions/discussion-3.md'}
+                  ]),
+                  'neo/issues/issue-1.md'          : 'issue A',
+                  'neo/pulls/pr-2.md'              : 'pull A',
+                  'neo/discussions/discussion-3.md': 'discussion A'
+              },
               gitMirror = createGitMirror({
                   pathsByRevision: {[HEAD_A]: paths},
                   filesByRevision: {[HEAD_A]: files}
@@ -168,7 +388,7 @@ test.describe('coreCorpusProjection — source-neutral writer (#17627)', () => {
                 call.options.contentRoot === config.materializedRoot
             )).toBe(true);
             expect(fs.readFileSync(path.join(config.materializedRoot, 'issues/issue-1.md'), 'utf8'))
-                .toBe('content:resources/content/issues/issue-1.md');
+                .toBe('issue A');
 
             const receipt = await readCorpusProjectionReceipt(config.receiptPath);
             expect(receipt.materializedCorpusRevision).toBe(HEAD_A);
@@ -186,13 +406,19 @@ test.describe('coreCorpusProjection — source-neutral writer (#17627)', () => {
     test('a later linear head applies exact add/delete/archive-move reconciliation without a full rebuild', async () => {
         const root      = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-incremental-')),
               config    = createConfig(root),
-              active    = 'resources/content/issues/issue-4.md',
-              archived  = 'resources/content/archive/issues/v13/issue-4.md',
+              active    = 'neo/issues/issue-4.md',
+              archived  = 'neo/archive/issues/v13/issue-4.md',
               gitMirror = createGitMirror({
-                  pathsByRevision: {[HEAD_A]: [active]},
+                  pathsByRevision: {[HEAD_A]: ['_index.json', active]},
                   filesByRevision: {
-                      [HEAD_A]: {[active]: 'state: OPEN'},
-                      [HEAD_B]: {[archived]: 'state: CLOSED'}
+                      [HEAD_A]: {
+                          '_index.json': JSON.stringify([{repoSlug: 'neo', type: 'issues', id: 4, path: active}]),
+                          [active]     : 'state: OPEN'
+                      },
+                      [HEAD_B]: {
+                          '_index.json': JSON.stringify([{repoSlug: 'neo', type: 'issues', id: 4, path: archived}]),
+                          [archived]   : 'state: CLOSED'
+                      }
                   }
               }),
               calls = [];
@@ -206,7 +432,7 @@ test.describe('coreCorpusProjection — source-neutral writer (#17627)', () => {
             });
 
             gitMirror.setHead(HEAD_B);
-            gitMirror.setDiff({addedOrChanged: [archived], deleted: [active]});
+            gitMirror.setDiff({addedOrChanged: ['_index.json', archived], deleted: [active]});
 
             const outcome = await runCoreCorpusProjectionCycle({
                 config,
@@ -217,7 +443,7 @@ test.describe('coreCorpusProjection — source-neutral writer (#17627)', () => {
 
             expect(outcome.materialization).toEqual({
                 full          : false,
-                addedOrChanged: [archived],
+                addedOrChanged: ['_index.json', archived],
                 deleted       : [active],
                 changedFacets : ['issues']
             });
@@ -236,10 +462,13 @@ test.describe('coreCorpusProjection — source-neutral writer (#17627)', () => {
     test('the named periodic cadence forces a same-head full rematerialization and all-facet reconciliation', async () => {
         const root      = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-periodic-full-')),
               config    = {...createConfig(root), fullRematerializeIntervalMs: 60_000},
-              issuePath = 'resources/content/issues/issue-7.md',
+              issuePath = 'neo/issues/issue-7.md',
               gitMirror = createGitMirror({
-                  pathsByRevision: {[HEAD_A]: [issuePath]},
-                  filesByRevision: {[HEAD_A]: {[issuePath]: 'state: OPEN'}}
+                  pathsByRevision: {[HEAD_A]: ['_index.json', issuePath]},
+                  filesByRevision: {[HEAD_A]: {
+                      '_index.json': JSON.stringify([{repoSlug: 'neo', type: 'issues', id: 7, path: issuePath}]),
+                      [issuePath]  : 'state: OPEN'
+                  }}
               }),
               calls = [];
 
@@ -271,19 +500,19 @@ test.describe('coreCorpusProjection — source-neutral writer (#17627)', () => {
     test('a pull-only failure carries unrelated facet coverage forward instead of all-cursors starvation', async () => {
         const root          = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-pulls-only-')),
               config        = createConfig(root),
-              issuePath     = 'resources/content/issues/issue-1.md',
-              pullPath      = 'resources/content/pulls/pr-2.md',
-              discussPath   = 'resources/content/discussions/discussion-3.md',
-              rootIndexPath = 'resources/content/_index.json',
+              issuePath     = 'neo/issues/issue-1.md',
+              pullPath      = 'neo/pulls/pr-2.md',
+              discussPath   = 'neo/discussions/discussion-3.md',
+              rootIndexPath = '_index.json',
               indexA        = JSON.stringify([
-                  {type: 'issues', id: 1, version: null, path: 'issues/issue-1.md'},
-                  {type: 'pulls', id: 2, version: null, path: 'pulls/pr-2.md'},
-                  {type: 'discussions', id: 3, version: null, path: 'discussions/discussion-3.md'}
+                  {repoSlug: 'neo', type: 'issues', id: 1, version: null, path: issuePath},
+                  {repoSlug: 'neo', type: 'pulls', id: 2, version: null, path: pullPath},
+                  {repoSlug: 'neo', type: 'discussions', id: 3, version: null, path: discussPath}
               ]),
               indexB = JSON.stringify([
-                  {type: 'issues', id: 1, version: null, path: 'issues/issue-1.md'},
-                  {type: 'pulls', id: 2, version: 'v13.2.0', path: 'pulls/pr-2.md'},
-                  {type: 'discussions', id: 3, version: null, path: 'discussions/discussion-3.md'}
+                  {repoSlug: 'neo', type: 'issues', id: 1, version: null, path: issuePath},
+                  {repoSlug: 'neo', type: 'pulls', id: 2, version: 'v13.2.0', path: pullPath},
+                  {repoSlug: 'neo', type: 'discussions', id: 3, version: null, path: discussPath}
               ]),
               gitMirror  = createGitMirror({
                   pathsByRevision: {[HEAD_A]: [rootIndexPath, issuePath, pullPath, discussPath]},
@@ -350,7 +579,12 @@ test.describe('coreCorpusProjection — source-neutral writer (#17627)', () => {
               config       = createConfig(root),
               issueFailure = Object.assign(new Error('injected issue failure'), {code: 'ISSUE_PROJECTION_FAILED'}),
               calls        = [],
-              gitMirror    = createGitMirror({pathsByRevision: {[HEAD_A]: []}});
+              gitMirror    = createGitMirror({
+                  pathsByRevision: {[HEAD_A]: ['_index.json']},
+                  filesByRevision: {[HEAD_A]: {'_index.json': JSON.stringify([
+                      {repoSlug: 'neo', type: 'issues', id: 1, path: 'neo/issues/issue-1.md'}
+                  ])}}
+              });
 
         try {
             let failure;

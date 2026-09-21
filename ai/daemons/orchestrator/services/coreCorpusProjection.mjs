@@ -8,6 +8,7 @@ import {
     beginCorpusProjection,
     commitCorpusProjectionFacet,
     CORPUS_PROJECTION_FACETS,
+    CORPUS_PROJECTION_ORIGIN,
     CORPUS_PROJECTION_OWNER,
     createCorpusProjectionReceipt,
     failCorpusProjectionFacet,
@@ -25,7 +26,7 @@ import {
  * source-bound receipts only for facets that complete.
  */
 
-const CORPUS_PATH_PATTERN = /^resources\/content\/(?:_index\.json|(?:issues|pulls|discussions)(?:\/|$)|archive\/(?:issues|pulls|discussions)(?:\/|$))/;
+const CORPUS_FACET_PATTERN = new RegExp(`^${CORPUS_PROJECTION_ORIGIN}/(?:archive/)?(issues|pulls|discussions)(?:/|$)`);
 
 /**
  * @summary Creates one stable-code projection failure while retaining machine-readable details.
@@ -109,12 +110,15 @@ async function mapWithConcurrency(values, limit, fn) {
  * @returns {Boolean}
  */
 export function isCoreCorpusProjectionPath(sourcePath) {
-    return typeof sourcePath === 'string' && CORPUS_PATH_PATTERN.test(sourcePath.replace(/\\/g, '/'))
+    if (typeof sourcePath !== 'string') return false;
+
+    const normalized = sourcePath.replace(/\\/g, '/');
+    return normalized === '_index.json' || CORPUS_FACET_PATTERN.test(normalized)
 }
 
 /**
  * @summary Maps exact-revision path changes to the facets whose materialized inputs changed.
- * The shared root index can remap any facet id, so it truthfully invalidates all three.
+ * Root-index changes are compared separately against the selected origin's normalized rows.
  * @param {String[]} sourcePaths Repo-relative added, changed, or deleted paths.
  * @returns {String[]} Facets in canonical receipt order.
  */
@@ -124,7 +128,7 @@ export function getChangedCorpusProjectionFacets(sourcePaths = []) {
     for (const sourcePath of sourcePaths) {
         const normalized = typeof sourcePath === 'string' ? sourcePath.replace(/\\/g, '/') : '';
 
-        const match = normalized.match(/^resources\/content\/(?:archive\/)?(issues|pulls|discussions)(?:\/|$)/);
+        const match = normalized.match(CORPUS_FACET_PATTERN);
         if (match) changed.add(match[1])
     }
 
@@ -132,23 +136,52 @@ export function getChangedCorpusProjectionFacets(sourcePaths = []) {
 }
 
 /**
- * @summary Compares the shared root content index by facet, preventing its routine rewrite from
- * invalidating unrelated consumers. Every relevant row is compared, not merely row counts, so a
+ * @summary Validates source provenance before staging, then projects the fixed origin's index for existing Graph ingestors.
+ * @param {String|Buffer} content Exact-revision corpus root index JSON.
+ * @returns {Object[]} Selected index rows with origin-relative paths.
+ */
+function projectCoreCorpusIndex(content) {
+    let rows;
+
+    try {
+        rows = JSON.parse(String(content))
+    } catch {
+        throw createProjectionError('CORE_CORPUS_INDEX_INVALID', 'Corpus root index must contain valid JSON')
+    }
+
+    if (!Array.isArray(rows) || rows.some(row => typeof row?.repoSlug !== 'string' || !row.repoSlug.trim())) {
+        throw createProjectionError('CORE_CORPUS_INDEX_INVALID', 'Every corpus index row must declare its repository origin')
+    }
+
+    const selected = rows.filter(row => row.repoSlug === CORPUS_PROJECTION_ORIGIN);
+
+    if (!selected.length) {
+        throw createProjectionError('CORE_CORPUS_ORIGIN_MISSING', `Corpus index does not contain the Graph origin ${CORPUS_PROJECTION_ORIGIN}`)
+    }
+
+    return selected.map(row => {
+        const sourcePath = row.path,
+              match      = typeof sourcePath === 'string' && sourcePath.match(CORPUS_FACET_PATTERN);
+
+        if (!match || match[1] !== row.type || sourcePath.includes('\\') || path.posix.normalize(sourcePath) !== sourcePath) {
+            throw createProjectionError('CORE_CORPUS_INDEX_INVALID', 'Selected corpus index path must match its origin and facet')
+        }
+
+        return {...row, path: sourcePath.slice(CORPUS_PROJECTION_ORIGIN.length + 1)}
+    })
+}
+
+/**
+ * @summary Compares the selected origin's root-index rows by facet, preventing other origins' edits from
+ * invalidating Graph consumers. Every relevant row is compared, not merely row counts, so a
  * same-count id/path substitution still marks the owning facet changed.
  * @param {String|Buffer} baseContent Exact base-revision index JSON.
  * @param {String|Buffer} headContent Exact head-revision index JSON.
  * @returns {String[]} Changed facets in canonical receipt order.
  */
 export function getChangedCorpusIndexFacets(baseContent, headContent) {
-    const base = JSON.parse(String(baseContent));
-    const head = JSON.parse(String(headContent));
-
-    if (!Array.isArray(base) || !Array.isArray(head)) {
-        throw createProjectionError(
-            'CORE_CORPUS_INDEX_INVALID',
-            'Core corpus root index must be a JSON array at both revisions'
-        )
-    }
+    const base = projectCoreCorpusIndex(baseContent);
+    const head = projectCoreCorpusIndex(headContent);
 
     const signature = (rows, facet) => JSON.stringify(rows
         .filter(row => row?.type === facet)
@@ -181,6 +214,12 @@ export async function materializeCoreCorpusRevision({
         )
     }
 
+    const rootIndexPath = '_index.json',
+          headIndex     = await gitMirror.readRevisionFile({
+              mirrorRoot, ...identity, revision: headRevision, sourcePath: rootIndexPath
+          }),
+          projectedIndex = projectCoreCorpusIndex(headIndex);
+
     let addedOrChanged, deleted, indexChangedFacets = [];
 
     if (full) {
@@ -200,18 +239,7 @@ export async function materializeCoreCorpusRevision({
         addedOrChanged = diff.addedOrChanged.filter(isCoreCorpusProjectionPath);
         deleted = diff.deleted.filter(isCoreCorpusProjectionPath);
 
-        const rootIndexPath = 'resources/content/_index.json';
-
-        if (deleted.includes(rootIndexPath)) {
-            indexChangedFacets = [...CORPUS_PROJECTION_FACETS]
-        } else if (addedOrChanged.includes(rootIndexPath)) {
-            const headIndex = await gitMirror.readRevisionFile({
-                mirrorRoot,
-                ...identity,
-                revision  : headRevision,
-                sourcePath: rootIndexPath
-            });
-
+        if (addedOrChanged.includes(rootIndexPath)) {
             try {
                 const baseIndex = await gitMirror.readRevisionFile({
                     mirrorRoot,
@@ -222,8 +250,8 @@ export async function materializeCoreCorpusRevision({
                 indexChangedFacets = getChangedCorpusIndexFacets(baseIndex, headIndex)
             } catch (error) {
                 // A newly introduced/unreadable base index cannot prove any facet unchanged.
-                // Re-running all facets is the fail-closed recovery; strict head ingestion still
-                // rejects malformed current JSON before a cursor can advance.
+                // Re-running all facets is the fail-closed recovery; the head index was validated
+                // before any staging mutation or reconciliation could occur.
                 indexChangedFacets = [...CORPUS_PROJECTION_FACETS]
             }
         }
@@ -240,18 +268,18 @@ export async function materializeCoreCorpusRevision({
 
     try {
         await mapWithConcurrency(addedOrChanged, readConcurrency, async sourcePath => {
-            const content = await gitMirror.readRevisionFile({
+            const content = sourcePath === rootIndexPath ? JSON.stringify(projectedIndex) : await gitMirror.readRevisionFile({
                 mirrorRoot,
                 ...identity,
                 revision: headRevision,
                 sourcePath
             });
-            const relative = sourcePath.replace(/^resources\/content\//, '');
+            const relative = sourcePath === rootIndexPath ? rootIndexPath : sourcePath.slice(CORPUS_PROJECTION_ORIGIN.length + 1);
             await fileSystem.outputFile(path.join(targetRoot, relative), content, 'utf8')
         });
 
         for (const sourcePath of deleted) {
-            const relative = sourcePath.replace(/^resources\/content\//, '');
+            const relative = sourcePath === rootIndexPath ? rootIndexPath : sourcePath.slice(CORPUS_PROJECTION_ORIGIN.length + 1);
             await fileSystem.remove(path.join(targetRoot, relative))
         }
 
