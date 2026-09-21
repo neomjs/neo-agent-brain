@@ -51,6 +51,7 @@ jobs:
                   test/playwright/unit/harness/terminateDaemon.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/pipeline.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/services/coreCorpusProjection.spec.mjs
+                  test/playwright/unit/ai/services/github-workflow/IssueSyncer.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/communityReconciliation.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/services/CommunityReconciliationService.spec.mjs
                   test/playwright/unit/ai/scripts/maintenance/reconcileGithubCommunity.spec.mjs

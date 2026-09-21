@@ -18,6 +18,7 @@ import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs-extra';
+import fsp             from 'node:fs/promises';
 import matter          from 'gray-matter';
 import path            from 'path';
 import crypto          from 'crypto';
@@ -542,6 +543,188 @@ test.describe('Neo.ai.services.github-workflow.sync.IssueSyncer', () => {
             await expect(fs.pathExists(issueSyncConfig.issuesDir)).resolves.toBe(true);
         } finally {
             ReleaseNotesSyncer.sortedReleases = originalSorted;
+        }
+    });
+
+    test('reconcileClosedIssueLocations plans the buckets once per pass, not once per closed active issue (#403)', async () => {
+        const originalSorted = ReleaseNotesSyncer.sortedReleases;
+
+        // Every plan enumerates `metadata.issues` (`Object.entries`) and the reconcile loop enumerates it once
+        // (`for…in`), so counting enumerations counts plans without reaching into a private method. A pass
+        // over two closed active issues and a pass over five must enumerate the same number of times: the
+        // plan is per pass, refreshed only when a move cuts a new archive bucket — each pass here cuts
+        // exactly one, its own, so each plans twice regardless of population. The per-issue shape this
+        // ticket removes scales the count with the population (2 + 1 = 3 vs 5 + 1 = 6); a hoist WITHOUT the
+        // bucket-cut refresh passes this test with 2 vs 2 and is caught by the milestone test below.
+        const runPass = async (chunk, numbers, version, closedAt) => {
+            const issues = {};
+
+            for (const n of numbers) {
+                const abs = path.join(issueSyncConfig.issuesDir, chunk, `issue-${n}.md`);
+
+                await fs.ensureDir(path.dirname(abs));
+                await fs.writeFile(abs, `CLOSED ISSUE ${n}`, 'utf8');
+
+                issues[n] = {
+                    state        : 'CLOSED',
+                    path         : path.relative(aiConfig.issueSync.metadataBaseRoot, abs),
+                    updatedAt    : closedAt,
+                    closedAt,
+                    milestone    : null,
+                    title        : `Closed issue ${n}`,
+                    contentHash  : 'hash',
+                    commentsTotal: 0
+                };
+            }
+
+            await expect(fs.pathExists(path.join(issueSyncConfig.archiveRoot, 'issues', version))).resolves.toBe(false);
+
+            let enumerations = 0;
+
+            const metadata = {issues: new Proxy(issues, {
+                ownKeys(target) {
+                    enumerations++;
+                    return Reflect.ownKeys(target)
+                }
+            })};
+
+            const stats = await IssueSyncer.reconcileClosedIssueLocations(metadata);
+
+            expect(stats.count).toBe(numbers.length);
+
+            for (const n of numbers) {
+                const targetAbs = path.join(issueSyncConfig.archiveRoot, 'issues', version, 'chunk-1', `issue-${n}.md`);
+
+                expect(issues[n].path).toBe(path.relative(aiConfig.issueSync.metadataBaseRoot, targetAbs));
+                await expect(fs.pathExists(targetAbs)).resolves.toBe(true);
+            }
+
+            return enumerations
+        };
+
+        try {
+            ReleaseNotesSyncer.sortedReleases = [{tagName: 'v61.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
+            const two = await runPass('chunk-78', [6101, 6102], 'v61.0.0', '2026-05-01T00:00:00Z');
+
+            ReleaseNotesSyncer.sortedReleases = [
+                {tagName: 'v61.0.0', publishedAt: '2026-05-10T00:00:00Z'},
+                {tagName: 'v61.1.0', publishedAt: '2026-06-10T00:00:00Z'}
+            ];
+            const five = await runPass('chunk-79', [6111, 6112, 6113, 6114, 6115], 'v61.1.0', '2026-06-01T00:00:00Z');
+
+            expect(two).toBeGreaterThan(1);   // positive control: the loop and at least one plan both enumerate
+            expect(five).toBe(two);           // the plan count does not scale with the closed active population
+        } finally {
+            ReleaseNotesSyncer.sortedReleases = originalSorted;
+        }
+    });
+
+    test('reconcileClosedIssueLocations re-plans after a move cuts a new bucket, so milestone routing into that bucket still happens in the same pass (#403)', async () => {
+        // @neo-gpt's differential on PR #405: with routeByMilestone=true, `#deriveMilestoneVersion` routes a
+        // milestone issue only into an ALREADY-CUT bucket (existsSync). Before the hoist, the first move cut
+        // the bucket and the next per-issue plan saw it; a plan computed once before any move would not.
+        // Both issues must land: the pre-release close by date, the milestone issue by the bucket the pass cut.
+        const originalSorted           = ReleaseNotesSyncer.sortedReleases,
+              originalRouteByMilestone = issueSyncConfig.routeByMilestone,
+              version                  = 'v62.0.0',
+              bucketDir                = path.join(issueSyncConfig.archiveRoot, 'issues', version);
+
+        ReleaseNotesSyncer.sortedReleases = [{tagName: version, publishedAt: '2026-05-10T00:00:00Z'}];
+        issueSyncConfig.routeByMilestone  = true;
+
+        const seed = async (chunk, n, closedAt, milestone) => {
+            const abs = path.join(issueSyncConfig.issuesDir, chunk, `issue-${n}.md`);
+
+            await fs.ensureDir(path.dirname(abs));
+            await fs.writeFile(abs, `CLOSED ISSUE ${n}`, 'utf8');
+
+            return {
+                state        : 'CLOSED',
+                path         : path.relative(aiConfig.issueSync.metadataBaseRoot, abs),
+                updatedAt    : closedAt,
+                closedAt,
+                milestone,
+                title        : `Closed issue ${n}`,
+                contentHash  : 'hash',
+                commentsTotal: 0
+            }
+        };
+
+        try {
+            await expect(fs.pathExists(bucketDir)).resolves.toBe(false);
+
+            // Object key order is insertion order for these keys, so the date-routed issue is planned first.
+            const metadata = {issues: {
+                6201: await seed('chunk-80', 6201, '2026-05-01T00:00:00Z', null),     // before the release: routed by date
+                6202: await seed('chunk-80', 6202, '2026-05-20T00:00:00Z', version)   // after it: routed only by milestone, into a cut bucket
+            }};
+
+            const stats = await IssueSyncer.reconcileClosedIssueLocations(metadata);
+
+            expect(stats.count).toBe(2);
+            expect(metadata.issues[6201].path).toContain(path.join('archive', 'issues', version));
+            expect(metadata.issues[6202].path).toContain(path.join('archive', 'issues', version));
+        } finally {
+            ReleaseNotesSyncer.sortedReleases = originalSorted;
+            issueSyncConfig.routeByMilestone  = originalRouteByMilestone;
+        }
+    });
+
+    test('reconcileClosedIssueLocations refreshes the plan on the bucket the mkdir cut even when that move\'s rename fails (#403)', async () => {
+        // @neo-gpt's second differential on PR #405: the refresh must key on the directory-state change, not
+        // on the rename succeeding. `mkdir` cuts the bucket, the rename of the first issue fails and is caught,
+        // and the milestone issue planned after it must still see the cut bucket and land there.
+        const originalSorted           = ReleaseNotesSyncer.sortedReleases,
+              originalRouteByMilestone = issueSyncConfig.routeByMilestone,
+              originalRename           = fsp.rename,
+              version                  = 'v63.0.0',
+              bucketDir                = path.join(issueSyncConfig.archiveRoot, 'issues', version);
+
+        ReleaseNotesSyncer.sortedReleases = [{tagName: version, publishedAt: '2026-05-10T00:00:00Z'}];
+        issueSyncConfig.routeByMilestone  = true;
+
+        const seed = async (chunk, n, closedAt, milestone) => {
+            const abs = path.join(issueSyncConfig.issuesDir, chunk, `issue-${n}.md`);
+
+            await fs.ensureDir(path.dirname(abs));
+            await fs.writeFile(abs, `CLOSED ISSUE ${n}`, 'utf8');
+
+            return {
+                state        : 'CLOSED',
+                path         : path.relative(aiConfig.issueSync.metadataBaseRoot, abs),
+                updatedAt    : closedAt,
+                closedAt,
+                milestone,
+                title        : `Closed issue ${n}`,
+                contentHash  : 'hash',
+                commentsTotal: 0
+            }
+        };
+
+        // The syncer moves through `fs/promises`; fail only the first issue's rename, after its mkdir ran.
+        fsp.rename = async (from, to) => {
+            if (String(from).endsWith('issue-6301.md')) throw new Error('injected rename failure');
+            return originalRename(from, to)
+        };
+
+        try {
+            await expect(fs.pathExists(bucketDir)).resolves.toBe(false);
+
+            const metadata = {issues: {
+                6301: await seed('chunk-81', 6301, '2026-05-01T00:00:00Z', null),     // routed by date; its rename fails after mkdir cut the bucket
+                6302: await seed('chunk-81', 6302, '2026-05-20T00:00:00Z', version)   // routed only by milestone, into the bucket that now exists
+            }};
+
+            const stats = await IssueSyncer.reconcileClosedIssueLocations(metadata);
+
+            expect(stats.count).toBe(1);
+            expect(stats.issues).toEqual([6302]);
+            expect(metadata.issues[6301].path).not.toContain('/archive/');
+            expect(metadata.issues[6302].path).toContain(path.join('archive', 'issues', version));
+        } finally {
+            fsp.rename                        = originalRename;
+            ReleaseNotesSyncer.sortedReleases = originalSorted;
+            issueSyncConfig.routeByMilestone  = originalRouteByMilestone;
         }
     });
 

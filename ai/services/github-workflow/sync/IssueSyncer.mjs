@@ -1191,6 +1191,17 @@ class IssueSyncer extends Base {
         // every "where SHOULD this land" ordinal reads the same complete membership.
         const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
 
+        // One bucket plan per pass as well, re-planned only when a move CUTS an archive bucket that did
+        // not exist before it. That is the one planner input this pass mutates: `#deriveMilestoneVersion`
+        // routes a milestone issue only into an already-cut bucket (`existsSync`), so a bucket cut by an
+        // earlier move in the same pass must be visible to the issues planned after it. A move's other
+        // effect — the issue's path — resolves to the same release either way. Re-planning per NEW bucket
+        // is bounded by the release count, not the closed backlog; planning per closed active issue made
+        // this pass quadratic — ~35 minutes for zero moves on the Engine corpus (#403).
+        let planBuckets = null;
+
+        const plan = () => planBuckets ??= this.#planBuckets(metadata, [], {inventory});
+
         for (const issueNumber in metadata.issues) {
             const issueData = metadata.issues[issueNumber];
 
@@ -1208,14 +1219,13 @@ class IssueSyncer extends Base {
             }
 
             // Calculate where this closed issue SHOULD be
-            const planBuckets = this.#planBuckets(metadata, [], {inventory});
             const correctPath = this.#getIssuePath({
                 number   : parseInt(issueNumber),
                 state    : issueData.state,
                 milestone: issueData.milestone ? { title: issueData.milestone } : null,
                 closedAt : issueData.closedAt,
                 updatedAt: issueData.updatedAt
-            }, planBuckets);
+            }, plan());
 
             // If the correct path is null, the issue should be dropped (shouldn't happen here)
             if (!correctPath) {
@@ -1232,6 +1242,13 @@ class IssueSyncer extends Base {
                 }
 
                 logger.debug(`📦 Archiving closed issue #${issueNumber}: ${currentAbsolutePath} → ${correctPath}`);
+
+                // `archive/issues/<version>` — the bucket this move lands in. Its existence is a planner
+                // input (`#deriveMilestoneVersion`), so the plan is refreshed whenever THIS move changes
+                // it — keyed on the directory state, not on the rename succeeding: `mkdir` can cut the
+                // bucket and the rename still fail, and that failure is caught below.
+                const bucketDir    = path.dirname(path.dirname(correctPath)),
+                      bucketWasCut = existsSync(bucketDir);
 
                 try {
                     // Ensure target directory exists
@@ -1250,6 +1267,10 @@ class IssueSyncer extends Base {
                     logger.debug(`✅ Archived #${issueNumber} to ${path.relative(process.cwd(), correctPath)}`);
                 } catch (e) {
                     logger.error(`❌ Failed to archive #${issueNumber}: ${e.message}`);
+                } finally {
+                    if (!bucketWasCut && existsSync(bucketDir)) {
+                        planBuckets = null; // the bucket exists now — see the comment above the loop
+                    }
                 }
             }
         }
