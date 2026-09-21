@@ -973,13 +973,9 @@ export async function verifyBundleIntegrity(layout, subsystems) {
 }
 
 /**
- * Builds the topology descriptor block for `bundle-meta.json`. Captures the KB/MC coordinates
- * at backup time so a restore consumer can detect legacy federated bundles
- * (`bundle-meta.topology.chromaUnified === false`) and refuse to clobber a target whose
- * deployment shape diverged from the bundle source.
- *
- * Restore consumers use this descriptor to validate topology compatibility before
- * importing a bundle.
+ * @summary Records endpoint coordinates and the shared-store topology for a JSONL bundle.
+ * Physical storage is not observed through a client endpoint, so its path stays null with a reason.
+ * Restore uses the shared-topology flag; it does not require access to the source filesystem.
  *
  * @returns {{shared_topology: Boolean, kbChromaCoords: Object, mcChromaCoords: Object}}
  */
@@ -987,14 +983,16 @@ function buildTopologyDescriptor() {
     return {
         shared_topology: true,
         kbChromaCoords : {
-            host: kbConfig.engines.chroma.host    ?? null,
-            port: kbConfig.engines.chroma.port    ?? null,
-            path: kbConfig.engines.chroma.dataDir ?? null
+            host         : kbConfig.engines.chroma.host,
+            port         : kbConfig.engines.chroma.port,
+            path         : null,
+            storageReason: 'physical-storage-not-observed'
         },
         mcChromaCoords: {
-            host   : mcConfig.engines?.chroma?.host    ?? null,
-            port   : mcConfig.engines?.chroma?.port    ?? null,
-            dataDir: mcConfig.engines?.chroma?.dataDir ?? null
+            host         : mcConfig.engines.chroma.host,
+            port         : mcConfig.engines.chroma.port,
+            dataDir      : null,
+            storageReason: 'physical-storage-not-observed'
         }
     }
 }
