@@ -53,7 +53,7 @@ Release-gating chooses *which* revision to deploy. This section is how the deplo
 **Resolve the channel, then pin once.** Every Neo service in [`deploy/cloud/docker-compose.yml`](../../../deploy/cloud/docker-compose.yml) still receives two internal build arguments — `NEO_REF` for source acquisition and `NEO_REVISION` for the OCI assertion — but Compose derives both from one operator-facing resolved pin. Resolve once, pass `NEO_REVISION` once, build once:
 
 ```bash
-export NEO_REVISION=$(git ls-remote https://github.com/neomjs/neo.git dev | cut -f1)
+export NEO_REVISION=$(git ls-remote https://github.com/neomjs/neo-agent-brain.git dev | cut -f1)
 docker compose -f deploy/cloud/docker-compose.yml [--profile …] build
 ```
 
@@ -177,7 +177,7 @@ So a caller must pass three things, and the script infers none of them:
 ```bash
 NEO_DEPLOY_PROJECT_NAME=<project> \
 NEO_DEPLOY_COMPOSE_FILE="<base>.yml:<overlay>.yml" \
-NEO_REF=$(git ls-remote https://github.com/neomjs/neo.git dev | cut -f1) \
+NEO_REF=$(git ls-remote https://github.com/neomjs/neo-agent-brain.git dev | cut -f1) \
   ai/examples/cloud-deployment/deploy-pipeline.sh
 ```
 

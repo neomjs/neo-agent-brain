@@ -121,7 +121,7 @@ compose() {
 # arguments: source acquisition and the OCI revision assertion. Unset the selector
 # before Docker so it cannot survive as a second, potentially conflicting build input.
 NEO_SELECTOR="${NEO_REF:-dev}"
-NEO_REPO_URL="${NEO_REPO_URL:-https://github.com/neomjs/neo.git}"
+NEO_REPO_URL="${NEO_REPO_URL:-https://github.com/neomjs/neo-agent-brain.git}"
 
 if [[ "$NEO_SELECTOR" =~ ^[0-9a-f]{40}$ ]]; then
     # A 40-hex string is an OBJECT id — NOT necessarily a commit, and not necessarily
