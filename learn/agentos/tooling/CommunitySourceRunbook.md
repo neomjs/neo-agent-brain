@@ -203,3 +203,42 @@ Branch automation on stable codes, not error prose:
 
 There is deliberately no tenant registration tool and no neutral HTTP/queue receiver. Those surfaces
 need a real membership/source-admin authority and measured queue demand before they can graduate.
+
+## Read a community activity window
+
+Authenticated Memory Core clients on stdio or Streamable HTTP can call `get_community_activity`:
+
+```json
+{
+  "windowStart": "2026-09-19T00:00:00Z",
+  "windowEnd": "2026-09-20T00:00:00Z",
+  "limit": 25
+}
+```
+
+The window includes the start and excludes the end, using occurrence time. An optional
+`sourceInstanceIds` array limits the query to registrations owned by the authenticated tenant.
+Supply `nextCursor` as `cursor` with the same window and source filter to continue. Pagination freezes
+admission membership; new batches require a fresh query. Seen flags and source lifecycle stay current.
+
+The result uses the shared Bird View envelope: `coverage`, `sourceManifestHash`, `citations`,
+`synthesisAvailable`, and `notAuthority`. Each item carries an occurrence `sourceEventId` and a citation
+with an executable drill-down descriptor. The manifest fingerprints the page's immutable occurrences,
+so marking an item seen does not change it. Coverage describes the admitted ledger, including missing
+family receipts, source lifecycle and provider gaps; it is not a guarantee of current provider completeness.
+The default query returns no title, body, excerpt or synthesized narrative and performs no provider fetch.
+
+Call `get_community_activity_content` with a listed `sourceEventId` for an explicit prose read. It returns
+current provider content with its revision/read time, rather than reconstructing a historical body.
+Source identity and repository-relative author association are checked before sanitization; a source
+grant or lifecycle change during the fetch discards the content. `deleted` requires recorded deletion
+evidence, `inaccessible` identifies a source denial, `unknown` covers ambiguous missing/failing reads,
+and `unsupported` identifies a metadata occurrence without a prose resolver. Prose is never persisted.
+
+Call `mark_community_activity_seen` with the same handle to record an idempotent marker for the
+authenticated viewer. The tenant and viewer cannot be supplied in tool arguments. A deployment's
+local tenant fallback alone does not establish a viewer. Seen markers change no admission receipt,
+checkpoint, membership count, Task, wake or ranking state. Popularity events are excluded even if an
+invalid stored row marks one attention-eligible.
+
+This section documents the query contract; retire or update it when these three operations change.
