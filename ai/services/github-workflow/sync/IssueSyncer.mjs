@@ -1187,13 +1187,20 @@ class IssueSyncer extends Base {
             return stats;
         }
 
-        // Build the complete-membership inventory AND the bucket plan ONCE for the reconcile pass (not per
-        // closed issue) — every "where SHOULD this land" ordinal reads the same complete membership. The
-        // plan's inputs do not change inside the loop: a move updates an issue's path, and the plan resolves
-        // that issue to the same release either way. Planning per closed active issue made this pass
-        // quadratic — ~35 minutes for zero moves on the Engine corpus (#403).
-        const inventory   = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
-        const planBuckets = this.#planBuckets(metadata, [], {inventory});
+        // Build the complete-membership inventory ONCE for the reconcile pass (not per closed issue) —
+        // every "where SHOULD this land" ordinal reads the same complete membership.
+        const inventory = await buildContentInventory(issueSyncConfig, {repoSlug: aiConfig.repo, type: 'issues', filePrefix: issueSyncConfig.issueFilenamePrefix});
+
+        // One bucket plan per pass as well, re-planned only when a move CUTS an archive bucket that did
+        // not exist before it. That is the one planner input this pass mutates: `#deriveMilestoneVersion`
+        // routes a milestone issue only into an already-cut bucket (`existsSync`), so a bucket cut by an
+        // earlier move in the same pass must be visible to the issues planned after it. A move's other
+        // effect — the issue's path — resolves to the same release either way. Re-planning per NEW bucket
+        // is bounded by the release count, not the closed backlog; planning per closed active issue made
+        // this pass quadratic — ~35 minutes for zero moves on the Engine corpus (#403).
+        let planBuckets = null;
+
+        const plan = () => planBuckets ??= this.#planBuckets(metadata, [], {inventory});
 
         for (const issueNumber in metadata.issues) {
             const issueData = metadata.issues[issueNumber];
@@ -1218,7 +1225,7 @@ class IssueSyncer extends Base {
                 milestone: issueData.milestone ? { title: issueData.milestone } : null,
                 closedAt : issueData.closedAt,
                 updatedAt: issueData.updatedAt
-            }, planBuckets);
+            }, plan());
 
             // If the correct path is null, the issue should be dropped (shouldn't happen here)
             if (!correctPath) {
@@ -1237,6 +1244,11 @@ class IssueSyncer extends Base {
                 logger.debug(`📦 Archiving closed issue #${issueNumber}: ${currentAbsolutePath} → ${correctPath}`);
 
                 try {
+                    // `archive/issues/<version>` — the bucket this move lands in. Read BEFORE the mkdir, so a
+                    // bucket cut by this very move is recognised as new and the plan is refreshed for the
+                    // issues planned after it.
+                    const bucketWasCut = existsSync(path.dirname(path.dirname(correctPath)));
+
                     // Ensure target directory exists
                     await fs.mkdir(path.dirname(correctPath), { recursive: true });
 
@@ -1249,6 +1261,10 @@ class IssueSyncer extends Base {
 
                     stats.count++;
                     stats.issues.push(parseInt(issueNumber));
+
+                    if (!bucketWasCut) {
+                        planBuckets = null; // a newly cut bucket is a planner input — see the comment above the loop
+                    }
 
                     logger.debug(`✅ Archived #${issueNumber} to ${path.relative(process.cwd(), correctPath)}`);
                 } catch (e) {
