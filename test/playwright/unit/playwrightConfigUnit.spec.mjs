@@ -2,19 +2,27 @@ import {expect, test} from '@playwright/test';
 import fs             from 'node:fs';
 import os             from 'node:os';
 import path           from 'node:path';
+import * as yaml      from 'js-yaml';
 
 import {CHROMA_CLI_ENTRYPOINT} from '../chromaProcess.mjs';
 import {
     assertBrainTierForEnvironment,
     BRAIN_TIER_SETUP_GUIDANCE,
+    brainTierRequirements,
     hasBrainTier,
     nativeSqliteArtifacts,
     sqliteHost
 } from '../playwright.config.unit.mjs';
+import {
+    BRAIN_TIER,
+    BRAIN_TIER_PACKAGES,
+    readDeniedPackages
+} from '../../../ai/scripts/diagnostics/denyCloudPlanePackages.loader.mjs';
 
 const
     repoRoot     = path.resolve(import.meta.dirname, '../../..'),
     manifest     = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')),
+    dependabot   = yaml.load(fs.readFileSync(path.join(repoRoot, '.github/dependabot.yml'), 'utf8')),
     unitWorkflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/brain-unit.yml'), 'utf8');
 
 /**
@@ -54,9 +62,36 @@ function tierFixture(layout) {
 const
     hostPrebuild  = nativeSqliteArtifacts(sqliteHost())[0],
     completeChroma = {
-        'chromadb'                  : ['dist/chromadb.mjs', CHROMA_CLI_ENTRYPOINT],
-        '@chroma-core/default-embed': ['dist/default-embed.mjs']
+        [BRAIN_TIER.chroma]: ['dist/chromadb.mjs', CHROMA_CLI_ENTRYPOINT],
+        [BRAIN_TIER.embed] : ['dist/default-embed.mjs']
     };
+
+test.describe('Brain tier membership is written once', () => {
+    test('every member is excluded from the dependabot all-deps group, so its bump gets its own pull request', () => {
+        const
+            npm     = dependabot.updates.find(update => update['package-ecosystem'] === 'npm'),
+            exclude = npm.groups['all-deps']['exclude-patterns'];
+
+        for (const pkg of BRAIN_TIER_PACKAGES) {
+            expect(exclude, `${pkg} must be excluded from the all-deps group`).toContain(pkg)
+        }
+    });
+
+    test('every member is a declared root dependency', () => {
+        for (const pkg of BRAIN_TIER_PACKAGES) {
+            expect(manifest.dependencies[pkg], pkg).toBeTruthy()
+        }
+    });
+
+    test('the install gate has one requirement row per member and no other', () => {
+        expect(Object.keys(brainTierRequirements()).sort()).toEqual([...BRAIN_TIER_PACKAGES].sort())
+    });
+
+    test('the denial loader defaults to the tier and yields to NEO_DENIED_PACKAGES', () => {
+        expect(readDeniedPackages({})).toEqual([...BRAIN_TIER_PACKAGES]);
+        expect(readDeniedPackages({NEO_DENIED_PACKAGES: ' foo , bar,, '})).toEqual(['foo', 'bar'])
+    })
+});
 
 test.describe('Brain unit dependency setup guidance', () => {
     test('names only the root install and current CI native rebuild', () => {
@@ -64,10 +99,6 @@ test.describe('Brain unit dependency setup guidance', () => {
         expect(BRAIN_TIER_SETUP_GUIDANCE).toContain('`npm rebuild better-sqlite3`');
         expect(BRAIN_TIER_SETUP_GUIDANCE).not.toContain('install-brain');
         expect(BRAIN_TIER_SETUP_GUIDANCE).not.toContain('package.brain.json');
-
-        for (const dependency of ['better-sqlite3', 'chromadb', '@chroma-core/default-embed']) {
-            expect(manifest.dependencies[dependency], dependency).toBeTruthy()
-        }
 
         expect(unitWorkflow).toContain('npm ci --ignore-scripts');
         expect(unitWorkflow).toContain('npm rebuild better-sqlite3')
@@ -84,7 +115,7 @@ test.describe('Brain unit dependency setup guidance', () => {
 test.describe('hasBrainTier native-artifact admission', () => {
     test('admits a prebuild-only install, which is all better-sqlite3@13 ever produces', () => {
         const root = tierFixture({
-            'better-sqlite3': ['lib/index.js', hostPrebuild],
+            [BRAIN_TIER.sqlite]: ['lib/index.js', hostPrebuild],
             ...completeChroma
         });
 
@@ -93,7 +124,7 @@ test.describe('hasBrainTier native-artifact admission', () => {
 
     test('admits a node-gyp install, which is all better-sqlite3@12 ever produces', () => {
         const root = tierFixture({
-            'better-sqlite3': ['lib/index.js', 'build/Release/better_sqlite3.node'],
+            [BRAIN_TIER.sqlite]: ['lib/index.js', 'build/Release/better_sqlite3.node'],
             ...completeChroma
         });
 
@@ -102,7 +133,7 @@ test.describe('hasBrainTier native-artifact admission', () => {
 
     test('still rejects an entrypoint with no binary anywhere', () => {
         const root = tierFixture({
-            'better-sqlite3': ['lib/index.js'],
+            [BRAIN_TIER.sqlite]: ['lib/index.js'],
             ...completeChroma
         });
 
@@ -111,9 +142,9 @@ test.describe('hasBrainTier native-artifact admission', () => {
 
     test('keeps chromadb entrypoints REQUIRED rather than alternatives', () => {
         const root = tierFixture({
-            'better-sqlite3'            : ['lib/index.js', hostPrebuild],
-            'chromadb'                  : ['dist/chromadb.mjs'],
-            '@chroma-core/default-embed': ['dist/default-embed.mjs']
+            [BRAIN_TIER.sqlite]: ['lib/index.js', hostPrebuild],
+            [BRAIN_TIER.chroma]: ['dist/chromadb.mjs'],
+            [BRAIN_TIER.embed] : ['dist/default-embed.mjs']
         });
 
         expect(hasBrainTier(root)).toBe(false)

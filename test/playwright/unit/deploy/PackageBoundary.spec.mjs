@@ -165,6 +165,8 @@ test('the Cloud package owns its manifest, lock, dependencies, and commands inde
     expect(cloudRootLock.version).toBe(cloudManifest.version);
     expect(cloudRootLock.dependencies).toEqual(cloudManifest.dependencies);
 
+    // The cloud manifest is the Brain tier PLUS the two org packages — a superset by design, not a
+    // copy of the loader's `BRAIN_TIER_PACKAGES`. Collapsing it to the tier would shrink this guard.
     expect(Object.keys(cloudManifest.dependencies).sort()).toEqual([
         '@chroma-core/default-embed',
         'better-sqlite3',
