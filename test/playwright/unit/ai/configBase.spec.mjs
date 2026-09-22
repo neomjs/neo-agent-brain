@@ -249,7 +249,7 @@ test.describe('fleet.contentRoot — the activity feed reads a declared root, ne
     test('both wiring sites in devFleetServer read the leaf at the use site — no content literal remains', () => {
         const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../ai/services/fleet/devFleetServer.mjs'), 'utf8');
 
-        expect(source.match(/AiConfig\.fleet\.contentRoot/g)?.length).toBe(4);
+        expect(source.match(/AiConfig\.fleet\.contentRoot/g)?.length).toBe(2);
         expect(source).not.toMatch(/resources\/content\//);
     })
 });

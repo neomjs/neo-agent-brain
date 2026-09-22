@@ -1,5 +1,6 @@
 import {createFleetCockpitEvent, createFleetCockpitEventId} from './fleetCockpitStatus.mjs';
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
+import {CORPUS_PROJECTION_ORIGIN}                           from '../graph/corpusProjectionContract.mjs';
 import {
     extractIssueCommentBlocks,
     getPrDeferDisposition,
@@ -23,6 +24,25 @@ export const DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT = 50
 const LANE_CLAIM_PATTERN = /\[(?:lane-claim|claiming)\]|\blane-state:\s*next-lane\b|\b(?:taking|claiming)\s+#\d+\b/i
 
 /**
+ * @summary The producer-native identity of a conversation across corpus origins.
+ *
+ * The Graph's origin keeps the bare number, so every event id the cockpit has keyed since the feed
+ * shipped stays byte-identical; any other origin carries its slug (`<repoSlug>#<number>`), because
+ * the same number in two repositories names two durable facts, and a feed that keys both by the
+ * bare number merges them.
+ * @param {String|null} repoSlug The conversation's origin repository slug; absent means the Graph's origin.
+ * @param {Number|String|null} nativeId The bare number or id inside that origin.
+ * @returns {Number|String|null}
+ */
+export function qualifyNativeId(repoSlug, nativeId) {
+    if (nativeId === null || nativeId === undefined) return null
+
+    const slug = normalizeOrigin(repoSlug)
+
+    return slug && slug !== CORPUS_PROJECTION_ORIGIN ? `${slug}#${nativeId}` : nativeId
+}
+
+/**
  * @summary Build one cockpit activity snapshot from already-read GitHub / graph facts.
  *
  * @param {Object} options={}
@@ -30,6 +50,9 @@ const LANE_CLAIM_PATTERN = /\[(?:lane-claim|claiming)\]|\blane-state:\s*next-lan
  * @param {Object[]} options.issues Open or recent issue payloads from GitHub Workflow / local sync.
  * @param {Object[]} options.stallFindings Work-graph stall findings from `issueFocusSections`.
  * @param {Error|String|null} options.error Source-read failure; returns degraded capability.
+ * @param {String[]} options.partialFailures Origins that could not be read while others could; the
+ *     snapshot keeps the events it has and reports `degraded` naming them — partial truth is carried,
+ *     never presented as the whole fleet.
  * @param {Date|String} options.capturedAt Capture timestamp.
  * @param {Number} options.limit Maximum events to return.
  * @returns {{capability: Object, counts: Object[], events: Object[]}}
@@ -39,6 +62,7 @@ export function createFleetPrLaneActivitySnapshot({
     issues = [],
     stallFindings = [],
     error = null,
+    partialFailures = [],
     capturedAt = new Date(),
     limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT
 } = {}) {
@@ -67,6 +91,8 @@ export function createFleetPrLaneActivitySnapshot({
         }
     }
 
+    const failures = asArray(partialFailures).filter(Boolean).map(normalizeError)
+
     const events = [
         ...createPrActivityEvents(prs, {capturedAt: observedAt}),
         ...createIssueActivityEvents(issues, {capturedAt: observedAt}),
@@ -74,6 +100,34 @@ export function createFleetPrLaneActivitySnapshot({
     ]
         .sort((a, b) => new Date(b.occurredAt || 0) - new Date(a.occurredAt || 0))
         .slice(0, Math.max(0, limit))
+
+    if (failures.length > 0) {
+        const reason = normalizeError(failures.join(' · '))
+
+        return {
+            capability: createActivityCapability({
+                capturedAt: observedAt,
+                confidence: 'observed',
+                reason,
+                state     : 'degraded'
+            }),
+            counts: [],
+            events: [
+                createFleetCockpitEvent({
+                    eventId   : createFleetCockpitEventId('pr-lane', 'source-degraded'),
+                    type      : 'source-degraded',
+                    source    : FLEET_COCKPIT_SOURCES.activity,
+                    confidence: 'none',
+                    occurredAt: observedAt,
+                    payload   : {
+                        kind  : 'source-degraded',
+                        reason
+                    }
+                }),
+                ...events
+            ]
+        }
+    }
 
     return {
         capability: createActivityCapability({
@@ -101,6 +155,7 @@ export function createPrActivityEvents(prs = [], {capturedAt = new Date()} = {})
         .map(pr => {
             const number         = getNumber(pr.number),
                   author         = getLogin(pr.author),
+                  repoSlug       = normalizeOrigin(pr.repoSlug),
                   relatedTickets = extractRefs(`${pr.title || ''} ${pr.body || ''}`)
 
             if (number === null) {
@@ -110,7 +165,7 @@ export function createPrActivityEvents(prs = [], {capturedAt = new Date()} = {})
             const humanGateState = getPrHumanGateState(pr)
 
             return createFleetCockpitEvent({
-                eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.githubPr, number),
+                eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.githubPr, qualifyNativeId(repoSlug, number)),
                 type      : 'pr-activity',
                 source    : FLEET_COCKPIT_SOURCES.githubPr,
                 agentId   : author,
@@ -119,6 +174,7 @@ export function createPrActivityEvents(prs = [], {capturedAt = new Date()} = {})
                 payload   : {
                     kind            : 'pull-request',
                     number,
+                    repoSlug,
                     title           : pr.title || null,
                     url             : pr.url || null,
                     state           : pr.state || null,
@@ -153,7 +209,7 @@ export function createIssueActivityEvents(issues = [], {capturedAt = new Date()}
 
         if (normalized.number !== null) {
             events.push(createFleetCockpitEvent({
-                eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.githubIssue, normalized.number),
+                eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.githubIssue, qualifyNativeId(normalized.repoSlug, normalized.number)),
                 type      : 'issue-activity',
                 source    : FLEET_COCKPIT_SOURCES.githubIssue,
                 agentId   : normalized.assignees[0] || null,
@@ -162,6 +218,7 @@ export function createIssueActivityEvents(issues = [], {capturedAt = new Date()}
                 payload   : {
                     kind          : 'issue',
                     number        : normalized.number,
+                    repoSlug      : normalized.repoSlug,
                     title         : normalized.title,
                     url           : normalized.url,
                     state         : normalized.state,
@@ -185,6 +242,7 @@ export function createIssueActivityEvents(issues = [], {capturedAt = new Date()}
                 payload   : {
                     kind          : 'lane-claim',
                     issueNumber   : normalized.number,
+                    repoSlug      : normalized.repoSlug,
                     issueTitle    : normalized.title,
                     issueUrl      : normalized.url,
                     commentId     : comment.id || null,
@@ -226,7 +284,7 @@ export function createStallActivityEvents(stallFindings = [], {capturedAt = new 
         .map(finding => {
             const
                 anchoredAt = finding.waitingSince || finding.observedAt || finding.lastVerifiedAt || null,
-                subjectKey = finding.subject?.number ?? finding.subject?.id ?? null,
+                subjectKey = qualifyNativeId(finding.subject?.repoSlug, finding.subject?.number ?? finding.subject?.id ?? null),
                 identity   = subjectKey !== null && finding.findingClass
                     ? `${finding.findingClass}:${subjectKey}`
                     : null;
@@ -279,6 +337,7 @@ function normalizeIssue(issue, capturedAt) {
 
     return {
         number,
+        repoSlug      : normalizeOrigin(issue.repoSlug ?? meta.repoSlug),
         title,
         url           : issue.url || meta.githubUrl || meta.url || null,
         state         : issue.state || meta.state || null,
@@ -310,13 +369,18 @@ function normalizeSubject(subject = {}) {
     if (!subject || typeof subject !== 'object') return null
 
     return {
-        id    : subject.id || null,
-        number: getNumber(subject.number),
-        owner : subject.owner || null,
-        title : subject.title || null,
-        type  : subject.type || null,
-        url   : subject.url || null
+        id      : subject.id || null,
+        number  : getNumber(subject.number),
+        repoSlug: normalizeOrigin(subject.repoSlug),
+        owner   : subject.owner || null,
+        title   : subject.title || null,
+        type    : subject.type || null,
+        url     : subject.url || null
     }
+}
+
+function normalizeOrigin(value) {
+    return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
 function normalizeDeferDisposition(disposition = {}) {
