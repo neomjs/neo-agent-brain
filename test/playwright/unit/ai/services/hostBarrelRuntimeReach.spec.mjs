@@ -18,6 +18,11 @@ const
     /**
      * The full cloud-only population. Two are static edges; `better-sqlite3` is not, which is
      * precisely why this file exists — see the boundary note below.
+     *
+     * A SUPERSET of the Brain tier (`BRAIN_TIER_PACKAGES` in the loader): it adds
+     * `@google/generative-ai`, which the tier does not install. Kept literal on purpose — derived from
+     * the tier, the tier's membership would decide what this proof denies, and a cloud-only package
+     * outside the tier would silently stop being denied.
      */
     CLOUD_ONLY = ['chromadb', '@google/generative-ai', 'better-sqlite3', '@chroma-core/default-embed'];
 

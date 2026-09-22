@@ -20,10 +20,42 @@
  * a copy would fork exactly the failure-code fidelity described above.
  */
 
-const DENIED = (process.env.NEO_DENIED_PACKAGES || 'chromadb,better-sqlite3,@chroma-core/default-embed')
-    .split(',')
-    .map(name => name.trim())
-    .filter(Boolean);
+/**
+ * @summary The Brain tier — the native and vector packages the cloud plane installs and a host
+ * process must remain importable without. Named keys let a consumer address one member without
+ * spelling its name; {@link BRAIN_TIER_PACKAGES} is the same set as an ordered list.
+ *
+ * This is the one place the membership is written. The unit config's install gate, its spec and
+ * `.github/dependabot.yml`'s `exclude-patterns` are asserted against it instead of repeating it: a
+ * hand-copied set fails silently when a member joins, because nothing reds; a set asserted against
+ * this one reds.
+ * @type {Readonly<{sqlite: String, chroma: String, embed: String}>}
+ */
+export const BRAIN_TIER = Object.freeze({
+    sqlite: 'better-sqlite3',
+    chroma: 'chromadb',
+    embed : '@chroma-core/default-embed'
+});
+
+/**
+ * @summary The Brain tier as an ordered list, for consumers that iterate rather than address.
+ * @type {ReadonlyArray<String>}
+ */
+export const BRAIN_TIER_PACKAGES = Object.freeze(Object.values(BRAIN_TIER));
+
+/**
+ * @summary Resolves the denied package list: `NEO_DENIED_PACKAGES` when set, else the Brain tier.
+ * @param {Object} [env=process.env] Environment to read the override from.
+ * @returns {String[]}
+ */
+export function readDeniedPackages(env = process.env) {
+    return (env.NEO_DENIED_PACKAGES || BRAIN_TIER_PACKAGES.join(','))
+        .split(',')
+        .map(name => name.trim())
+        .filter(Boolean)
+}
+
+const DENIED = readDeniedPackages();
 
 /**
  * @param {String} specifier

@@ -5,6 +5,7 @@ import {existsSync}                               from 'node:fs';
 import path                                       from 'path';
 import {fileURLToPath}                            from 'url';
 import {CHROMA_CLI_ENTRYPOINT, resolvePackageDir} from './chromaProcess.mjs';
+import {BRAIN_TIER, BRAIN_TIER_PACKAGES}          from '../../ai/scripts/diagnostics/denyCloudPlanePackages.loader.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -64,7 +65,8 @@ export const memoryCoreConfigTemplateTestMatch =
 // budgets — a ratio or a loose timeout is NOT one, since those survive contention.
 
 // Brain-tier install gate.
-// The Brain root manifest owns better-sqlite3, chromadb, and @chroma-core/default-embed. Without a
+// The Brain root manifest owns the packages `BRAIN_TIER_PACKAGES` names — written once, in the
+// denial loader, and asserted against here rather than repeated. Without a
 // complete root install, Brain specs cannot even be COLLECTED — the gate therefore excludes every
 // Brain-dependent project locally (one named skip line) instead of crashing mid-collection, while
 // CI fails before collection. A normal `npm ci` restores the set. CI deliberately installs with
@@ -139,6 +141,22 @@ export function nativeSqliteArtifacts({arch, isMusl, platform}) {
 }
 
 /**
+ * @summary The consumable artifacts the install gate demands of each Brain-tier member.
+ *
+ * Keyed by {@link BRAIN_TIER} so the gate never spells a member's name. The spec asserts these keys
+ * cover `BRAIN_TIER_PACKAGES` exactly, which turns a new member without a gate row into a red arm
+ * instead of a silent gap. Computed per call because the native artifact list depends on the host.
+ * @returns {Object<String, Array<String|String[]>>} Package name → requirements (see {@link hasBrainTier}).
+ */
+export function brainTierRequirements() {
+    return {
+        [BRAIN_TIER.sqlite]: ['lib/index.js', nativeSqliteArtifacts(sqliteHost())],
+        [BRAIN_TIER.chroma]: ['dist/chromadb.mjs', CHROMA_CLI_ENTRYPOINT],
+        [BRAIN_TIER.embed] : ['dist/default-embed.mjs']
+    }
+}
+
+/**
  * @summary Probes whether the Brain-tier set is installed AND consumable, as resolved from `rootDir`.
  * Directory names alone lie: a pruned or corrupt install can leave three empty husks that
  * false-green CI. The probe therefore checks each root's consumable entrypoint — for
@@ -168,11 +186,7 @@ export function nativeSqliteArtifacts({arch, isMusl, platform}) {
  * @returns {Boolean}
  */
 export function hasBrainTier(rootDir) {
-    return [
-        ['better-sqlite3', 'lib/index.js', nativeSqliteArtifacts(sqliteHost())],
-        ['chromadb', 'dist/chromadb.mjs', CHROMA_CLI_ENTRYPOINT],
-        ['@chroma-core/default-embed', 'dist/default-embed.mjs']
-    ].every(([pkg, ...requirements]) => {
+    return Object.entries(brainTierRequirements()).every(([pkg, requirements]) => {
         const packageDir = resolvePackageDir(rootDir, pkg);
 
         return packageDir !== null && requirements.every(
@@ -193,9 +207,9 @@ export function hasBrainTier(rootDir) {
 export function assertBrainTierForEnvironment({brainPresent, isCI}) {
     if (isCI && !brainPresent) {
         throw new Error(
-            '[playwright.config.unit] CI requires the complete Brain tier (better-sqlite3, chromadb, ' +
-            '@chroma-core/default-embed) but it is absent or partial — a skipped brain matrix on a ' +
-            `green CI run is silent coverage loss. ${BRAIN_TIER_SETUP_GUIDANCE}`
+            `[playwright.config.unit] CI requires the complete Brain tier (${BRAIN_TIER_PACKAGES.join(', ')}) ` +
+            'but it is absent or partial — a skipped brain matrix on a green CI run is silent coverage ' +
+            `loss. ${BRAIN_TIER_SETUP_GUIDANCE}`
         )
     }
 }
