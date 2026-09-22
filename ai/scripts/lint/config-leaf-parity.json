@@ -222,6 +222,7 @@
         "fleet.bearer",
         "fleet.bearerHandshake",
         "fleet.cockpitOrigins",
+        "fleet.contentRoot",
         "fleet.dataDir",
         "fleet.harnessBinaries",
         "fleet.harnessBinaries.antigravity",

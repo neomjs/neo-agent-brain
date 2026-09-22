@@ -1,4 +1,7 @@
 import {test, expect} from '@playwright/test';
+import fs             from 'node:fs';
+import path           from 'node:path';
+import {fileURLToPath} from 'node:url';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import 'neo.mjs/src/core/_export.mjs';
 import ConfigBase                from '../../../../ai/configBase.mjs';
@@ -227,6 +230,27 @@ test.describe('fleet.port — the domain type, not the generic one', () => {
         for (const invalid of ['0', '-1', '80.5', '70000', 'abc', '']) {
             expect(resolve(invalid), `NEO_FLEET_PORT="${invalid}" must not resolve`).toBeUndefined();
         }
+    })
+});
+
+test.describe('fleet.contentRoot — the activity feed reads a declared root, never a hardwired checkout path', () => {
+    // devFleetServer resolved `<projectRoot>/resources/content/{issues,pulls}` at both wiring
+    // sites. A Brain checkout carries no `resources/content` post-split, so the PR/lane slot died with
+    // ENOENT unless a symlink pointed at the engine tree. The leaf keeps that path as the default for
+    // self-contained checkouts and lets a deployment name the corpus root through one env.
+    const contentRootLeaf = () => ConfigBase.config.data.fleet.contentRoot;
+
+    test('declares the string type, the env name and the checkout-relative default', () => {
+        expect(contentRootLeaf().type).toBe('string');
+        expect(contentRootLeaf().env).toBe('NEO_FLEET_CONTENT_ROOT');
+        expect(contentRootLeaf().default).toBe(path.resolve(ConfigBase.config.data.projectRoot.default, 'resources/content'));
+    });
+
+    test('both wiring sites in devFleetServer read the leaf at the use site — no content literal remains', () => {
+        const source = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../ai/services/fleet/devFleetServer.mjs'), 'utf8');
+
+        expect(source.match(/AiConfig\.fleet\.contentRoot/g)?.length).toBe(4);
+        expect(source).not.toMatch(/resources\/content\//);
     })
 });
 

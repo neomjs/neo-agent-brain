@@ -194,6 +194,14 @@ reports the boot failure; it never falls through to a host-native organism.
 Leave the base empty only on a machine intentionally using the host-native
 fresh-install path.
 
+The cockpit's activity feed (the PR · ISSUE · STALL rows) reads the synced
+conversation tree under `NEO_FLEET_CONTENT_ROOT` (`<root>/issues`,
+`<root>/pulls`). The default is the checkout-relative `resources/content`,
+which a Brain checkout does not carry; point it at the `neo/` tree of a
+`neomjs/github-content-sync` checkout, or at the corpus a deployment
+materializes. A root that does not exist degrades the PR/lane slot honestly
+instead of failing the server.
+
 ## Install the host edge (macOS, supervised)
 
 This section is macOS-only: `launchctl` and `plutil` do not exist elsewhere. It
