@@ -516,9 +516,10 @@ class ConfigBase extends ConfigProvider {
                 embeddingProbeFailureTtlMaxMs: leaf(600000, 'NEO_KB_HEALTHCHECK_EMBEDDING_PROBE_FAILURE_TTL_MAX_MS', 'number')
             },
             /**
-             * When `true` (default), the SourceRegistry auto-registers Neo's
-             * 10 curated default Source classes. Cloud deployments that ingest only tenant content
-             * can set `false` to skip Neo's curated sources entirely.
+             * When `true` (default), the SourceRegistry auto-registers Neo's seven curated default
+             * Source classes (GitHub conversations arrive through the `github-content-sync` tenant
+             * route instead). Cloud deployments that ingest only tenant content can set `false` to
+             * skip Neo's curated sources entirely.
              * @type {boolean}
              */
             useDefaultSources: leaf(true),
@@ -527,7 +528,7 @@ class ConfigBase extends ConfigProvider {
              *
              * When `true`, `SourceRegistry` registers `RawRepoSource` in addition to any default or
              * custom Sources. It is intentionally disabled by default so zero-config Neo deployments
-             * keep the curated 10-source corpus and never walk the full repository tree implicitly.
+             * keep the curated default corpus and never walk the full repository tree implicitly.
              *
              * Operator env var: `NEO_KB_RAW_REPO_SOURCE`.
              * @type {boolean}
@@ -614,12 +615,6 @@ class ConfigBase extends ConfigProvider {
                 TestSource        : 'test/playwright',
                 LearningSource    : 'learn/tree.json',
                 ProtoSource       : 'proto',
-                DiscussionSource  : ['resources/content/discussions',
-                                     'resources/content/archive/discussions'],
-                PullRequestSource : ['resources/content/pulls',
-                                     'resources/content/archive/pulls'],
-                TicketSource      : ['resources/content/issues',
-                                     'resources/content/archive/issues'],
                 ApiSource         : [
                     {path: 'node_modules/neo.mjs/src',      type: 'src'},
                     {path: 'node_modules/neo.mjs/apps',     type: 'app'},

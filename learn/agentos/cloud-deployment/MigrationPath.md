@@ -12,10 +12,10 @@ This is the load-bearing migration property: the substrate is **additive**, not 
 
 | Concern | Pre-substrate | Post-substrate, zero-config |
 |---|---|---|
-| Source discovery | Hardcoded 10-source array | `SourceRegistry` auto-registers the same 10 sources (`useDefaultSources` defaults `true`) — same set, same order |
+| Source discovery | Hardcoded 10-source array | `SourceRegistry` auto-registers the default set (`useDefaultSources` defaults `true`) in the same order — seven since the three conversation facets moved to the `github-content-sync` tenant route (`ConversationCorpusSource`, neo-agent-brain#402) |
 | Source input paths | Hardcoded in each Source class | `aiConfig.sourcePaths` carries Neo's default layout; each Source falls through to its hardcoded fallback if the config key is absent |
 | Chunk identity | `neoRootDir`-relative `source` string | Path-identity tuple with `tenantId: 'neo-shared'`, `repoSlug: 'neo'` — the default tenant for a single-repo deployment |
-| `npm run ai:sync-kb` output | — | Byte-equivalent under default config (the byte-equivalence test in #11660/#11661 is the regression guard) |
+| `npm run ai:sync-kb` output | — | Byte-equivalent for the seven remaining default Sources (the byte-equivalence test in #11660/#11661 is the regression guard). GitHub conversations are no longer part of this output: they arrive through the `github-content-sync` tenant route (neo-agent-brain#402), so a legacy sync emits no `ticket` / `pull` / `discussion` chunks and, under the default stale strategy, retires the ones an earlier sync stamped under `neo-shared/neo` |
 
 A single-repo deployment *is* a one-tenant deployment where the tenant is `neo-shared`. The cloud substrate doesn't add a code path the single-repo case has to navigate — it generalizes the existing path, with the existing behavior as the `N=1` default.
 

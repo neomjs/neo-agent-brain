@@ -23,7 +23,7 @@ This is implemented in Phase 0/1B ([#11630](https://github.com/neomjs/neo/issues
 
 ## Backward-compat for Neo's own content
 
-Neo's curated content (10 default sources: `AdrSource`, `ApiSource`, `ConceptSource`, etc.) is reformulated with:
+Neo's curated content (the default sources: `AdrSource`, `ApiSource`, `ConceptSource`, etc.) is reformulated with:
 - `tenantId: 'neo-shared'`
 - `repoSlug: 'neo'`
 - `rootKind: 'neo-workspace'`

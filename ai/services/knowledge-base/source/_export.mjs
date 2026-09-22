@@ -1,16 +1,13 @@
-import aiConfig          from '../../../mcp/server/knowledge-base/config.mjs';
-import SourceRegistry    from './SourceRegistry.mjs';
-import AdrSource         from './AdrSource.mjs';
-import ApiSource         from './ApiSource.mjs';
-import ConceptSource     from './ConceptSource.mjs';
-import DiscussionSource  from './DiscussionSource.mjs';
-import LearningSource    from './LearningSource.mjs';
-import PullRequestSource from './PullRequestSource.mjs';
-import RawRepoSource     from './RawRepoSource.mjs';
+import aiConfig           from '../../../mcp/server/knowledge-base/config.mjs';
+import SourceRegistry     from './SourceRegistry.mjs';
+import AdrSource          from './AdrSource.mjs';
+import ApiSource          from './ApiSource.mjs';
+import ConceptSource      from './ConceptSource.mjs';
+import LearningSource     from './LearningSource.mjs';
+import RawRepoSource      from './RawRepoSource.mjs';
 import ReleaseNotesSource from './ReleaseNotesSource.mjs';
-import SkillSource       from './SkillSource.mjs';
-import TestSource        from './TestSource.mjs';
-import TicketSource      from './TicketSource.mjs';
+import SkillSource        from './SkillSource.mjs';
+import TestSource         from './TestSource.mjs';
 
 /**
  * @module Neo.ai.services.knowledge-base.source._export
@@ -20,16 +17,20 @@ import TicketSource      from './TicketSource.mjs';
  * **Auto-registration contract:**
  *
  * - When `aiConfig.useDefaultSources !== false` (the zero-config default for any Neo
- *   deployment), all 10 default Source classes register in deterministic insertion order.
- *   That order matches the pre-Phase-0/1B hardcoded array at `DatabaseService.mjs:454-465`,
- *   ensuring byte-equivalence with the prior KB generation pipeline.
+ *   deployment), the default Source classes register in deterministic insertion order.
+ *   That order matches the pre-Phase-0/1B hardcoded array at `DatabaseService.mjs:454-465`, so the
+ *   seven surviving Sources still emit byte-equivalent output. GitHub conversations are
+ *   not a default Source any more: the Knowledge Base ingests the org corpus published by
+ *   `github-content-sync` as its own tenant through the `ConversationCorpusSource` extractor
+ *   (neo-agent-brain#402), so the three per-facet Sources that walked the Engine's tracked
+ *   conversation mirror retired.
  * - When `aiConfig.useDefaultSources === false` (cloud deployments opting out of Neo's
  *   curated content), no default registration occurs. The registry only contains whatever
  *   tenant-supplied sources register via `aiConfig.customSources`, explicit `rawRepoSource`,
  *   or programmatically via `SourceRegistry.registerSource(...)`.
  * - When `aiConfig.rawRepoSource === true`, {@link RawRepoSource} registers as an
  *   explicit opt-in fallback for tenants whose repo shape is unknown. It is intentionally
- *   NOT part of {@link DEFAULT_SOURCES}; zero-config Neo sync keeps the legacy 10-source set.
+ *   NOT part of {@link DEFAULT_SOURCES}; zero-config Neo sync keeps the curated default set.
  *
  * **Declarative custom-source/parser registration shape:**
  *
@@ -55,10 +56,9 @@ import TicketSource      from './TicketSource.mjs';
  *
  * **Order discipline:**
  *
- * The 10 default sources MUST appear in the registry in the same order as the pre-#11658
- * hardcoded array — `AdrSource`, `ApiSource`, `ConceptSource`, `DiscussionSource`,
- * `LearningSource`, `PullRequestSource`, `ReleaseNotesSource`, `SkillSource`,
- * `TicketSource`, `TestSource` (TicketSource BEFORE TestSource, NOT alphabetic).
+ * The default sources MUST appear in the registry in the same relative order as the original
+ * hardcoded array — `AdrSource`, `ApiSource`, `ConceptSource`, `LearningSource`,
+ * `ReleaseNotesSource`, `SkillSource`, `TestSource`.
  *
  * **Testability:**
  *
@@ -77,12 +77,9 @@ const DEFAULT_SOURCES = [
     AdrSource,
     ApiSource,
     ConceptSource,
-    DiscussionSource,
     LearningSource,
-    PullRequestSource,
     ReleaseNotesSource,
     SkillSource,
-    TicketSource,
     TestSource
 ];
 
@@ -102,7 +99,7 @@ const DEFAULT_SOURCES = [
 export function applyConfigToRegistry(registry, config, {defaults = DEFAULT_SOURCES} = {}) {
     const stats = {
         defaultSourcesRegistered: 0,
-        rawRepoSourceRegistered: 0,
+        rawRepoSourceRegistered : 0,
         customSourcesRegistered : 0,
         customParsersRegistered : 0
     };
@@ -156,12 +153,9 @@ export {
     ApiSource,
     ConceptSource,
     DEFAULT_SOURCES,
-    DiscussionSource,
     LearningSource,
-    PullRequestSource,
     RawRepoSource,
     ReleaseNotesSource,
     SkillSource,
-    TestSource,
-    TicketSource
+    TestSource
 };

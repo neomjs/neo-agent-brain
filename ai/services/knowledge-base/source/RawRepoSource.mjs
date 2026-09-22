@@ -45,7 +45,7 @@ const DEFAULT_CONFIG = Object.freeze({
  * Neo's curated Source classes and who have not authored a custom Source yet. It walks a configured
  * repository root, skips common generated/binary/heavy paths, and emits each remaining file through
  * the existing raw-text parsed-chunk contract. This keeps day-0 tenant ingestion possible without
- * widening Neo's default 10-source corpus.
+ * widening Neo's curated default corpus.
  *
  * @class Neo.ai.services.knowledge-base.source.RawRepoSource
  * @extends Neo.ai.services.knowledge-base.source.Base

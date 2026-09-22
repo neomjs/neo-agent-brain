@@ -1,4 +1,4 @@
-# Tenant bootstrap for the containerized plane's pull-mode KB ingestion. Four repos under one
+# Tenant bootstrap for the containerized plane's pull-mode KB ingestion. Five repos under one
 # tenant (`neo-shared`), keyed as `tenantId/repoSlug` — all genuinely EXTERNAL to the maintainer
 # checkout, which is the lane's actual purpose:
 #
@@ -19,9 +19,20 @@
 #                                  actually be WRONG about — the three entries above cannot fail
 #                                  a retrieval assertion. Whole-tree ingestion became safe by
 #                                  construction only once the generated data files left git.
+#   neo-shared/github-content-sync — the org conversation corpus (issues, pull requests and
+#                                  discussions of five org repositories, one markdown file each,
+#                                  published hourly). Ingested under its OWN tuple through the
+#                                  `ConversationCorpusSource` route below; a conversation's origin
+#                                  is display-grade `customMeta`, never this repoSlug. Publishing
+#                                  it under `neo` would orphan every `neo` source-code row on the
+#                                  next reconciliation (neo-agent-brain#402, D#17846 §8.6).
+#                                  `disabled: true` until neo-agent-brain#237 — the tenant
+#                                  poller's ref-not-found specimen — is dispositioned: a new entry
+#                                  inherits whatever the lane's failure state is. The flip and the
+#                                  plane-side freshness receipts are neo-agent-brain#411.
 #
 # The Neo repo itself is deliberately NOT registered here. `kbSync` already ingests neo's content
-# through 10 source extractors, producing TYPED chunks (`type`, `kind`) that `query_documents` and
+# through the default source extractors, producing TYPED chunks (`type`, `kind`) that `query_documents` and
 # `get_class_hierarchy` consume. A pull-mode entry for the same repo declares no parser, so it falls
 # through to `RawRepoSource` and yields untyped raw-file chunks — a second, weaker corpus under the
 # SAME `{tenantId, repoSlug}` stamp that `kbSync` resolves to by default. Each lane then classifies
@@ -68,3 +79,23 @@ tenants:
         cloneUrl     : https://github.com/neomjs/devindex.git
         credentialRef: none
         branchRef    : dev
+      - tenantId: neo-shared
+        repoSlug     : github-content-sync
+        cloneUrl     : https://github.com/neomjs/github-content-sync.git
+        credentialRef: none
+        branchRef    : dev
+        disabled     : true
+        extractionProfile:
+          profileSchemaVersion: 1
+          routes:
+            - extractorId: ConversationCorpusSource
+              territory:
+                roots: ['.']
+                include:
+                  - _index.json
+                  - '*/issues/**/*.md'
+                  - '*/pulls/**/*.md'
+                  - '*/discussions/**/*.md'
+                  - '*/archive/**/*.md'
+          fallback:
+            action: exclude
