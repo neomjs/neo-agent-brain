@@ -8,11 +8,13 @@
 #   NEO_REF      : git ref to fetch. MUST be a full 40-hex commit SHA — a mutable ref is
 #                  refused, because it does not merely cost reproducibility, it costs
 #                  FRESHNESS (see the source-git stage). Resolve a channel to a SHA first.
-#   NEO_REPO_URL : neo repository (MIT-licensed) to clone from
+#   NEO_REPO_URL : the Agent OS repository to clone — neo-agent-brain. The Engine repository
+#                  has carried no `ai/` since the 2026-08-27 split, so a source fetched from it
+#                  has nothing this image can run (#406).
 # ---------------------------------------------------------------------------------------
 ARG NEO_SOURCE=git
 ARG NEO_REF=dev
-ARG NEO_REPO_URL=https://github.com/neomjs/neo.git
+ARG NEO_REPO_URL=https://github.com/neomjs/neo-agent-brain.git
 
 FROM alpine/git AS source-git
 ARG NEO_REF

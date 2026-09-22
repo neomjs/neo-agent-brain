@@ -70,6 +70,7 @@ jobs:
                   test/playwright/unit/ai/mcp/server/neural-link/Bridge.spec.mjs
                   test/playwright/unit/playwrightConfigUnit.spec.mjs
                   test/playwright/unit/chromaOwnership.spec.mjs
+                  test/playwright/unit/deploy/DeploySourceRepository.spec.mjs
 
             - name: Verify community host authority boundary
               run: >-

@@ -122,7 +122,7 @@ a branch name makes the fetch layer cache-stable, so the build would package
 whatever `dev` pointed at the first time it ran and report success doing it:
 
 ```sh
-export NEO_REVISION=$(git ls-remote https://github.com/neomjs/neo.git dev | cut -f1)
+export NEO_REVISION=$(git ls-remote https://github.com/neomjs/neo-agent-brain.git dev | cut -f1)
 
 docker compose --env-file .env \
   -f deploy/cloud/docker-compose.yml \
