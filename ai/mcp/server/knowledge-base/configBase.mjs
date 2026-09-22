@@ -527,7 +527,7 @@ class ConfigBase extends ConfigProvider {
              *
              * When `true`, `SourceRegistry` registers `RawRepoSource` in addition to any default or
              * custom Sources. It is intentionally disabled by default so zero-config Neo deployments
-             * keep the curated 10-source corpus and never walk the full repository tree implicitly.
+             * keep the curated default corpus and never walk the full repository tree implicitly.
              *
              * Operator env var: `NEO_KB_RAW_REPO_SOURCE`.
              * @type {boolean}
@@ -614,12 +614,6 @@ class ConfigBase extends ConfigProvider {
                 TestSource        : 'test/playwright',
                 LearningSource    : 'learn/tree.json',
                 ProtoSource       : 'proto',
-                DiscussionSource  : ['resources/content/discussions',
-                                     'resources/content/archive/discussions'],
-                PullRequestSource : ['resources/content/pulls',
-                                     'resources/content/archive/pulls'],
-                TicketSource      : ['resources/content/issues',
-                                     'resources/content/archive/issues'],
                 ApiSource         : [
                     {path: 'node_modules/neo.mjs/src',      type: 'src'},
                     {path: 'node_modules/neo.mjs/apps',     type: 'app'},

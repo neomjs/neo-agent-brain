@@ -12,7 +12,7 @@ This is the load-bearing migration property: the substrate is **additive**, not 
 
 | Concern | Pre-substrate | Post-substrate, zero-config |
 |---|---|---|
-| Source discovery | Hardcoded 10-source array | `SourceRegistry` auto-registers the same 10 sources (`useDefaultSources` defaults `true`) — same set, same order |
+| Source discovery | Hardcoded 10-source array | `SourceRegistry` auto-registers the default set (`useDefaultSources` defaults `true`) in the same order — seven since the three conversation facets moved to the `github-content-sync` tenant route (`ConversationCorpusSource`, neo-agent-brain#402) |
 | Source input paths | Hardcoded in each Source class | `aiConfig.sourcePaths` carries Neo's default layout; each Source falls through to its hardcoded fallback if the config key is absent |
 | Chunk identity | `neoRootDir`-relative `source` string | Path-identity tuple with `tenantId: 'neo-shared'`, `repoSlug: 'neo'` — the default tenant for a single-repo deployment |
 | `npm run ai:sync-kb` output | — | Byte-equivalent under default config (the byte-equivalence test in #11660/#11661 is the regression guard) |

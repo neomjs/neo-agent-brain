@@ -82,6 +82,11 @@ test.describe('immutable extractor catalogue (#261)', () => {
             deltaSafe        : false,
             requiresHierarchy: true
         }, {
+            extractorId      : 'ConversationCorpusSource',
+            version          : '1.0.0',
+            deltaSafe        : false,
+            requiresHierarchy: false
+        }, {
             extractorId      : 'ParserSource',
             version          : '1.0.0',
             deltaSafe        : false,

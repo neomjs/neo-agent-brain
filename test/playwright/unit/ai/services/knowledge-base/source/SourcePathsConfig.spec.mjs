@@ -46,7 +46,7 @@ const API_SOURCE_FALLBACK = Object.freeze([
 
 /**
  * Verifies the `aiConfig.sourcePaths` config-driven override + legacy hardcoded-fallback contract
- * across all 10 default Neo Source classes. Each test exercises
+ * across the default Neo Source classes. Each test exercises
  * the same `path.resolve(aiConfig.neoRootDir, aiConfig.sourcePaths?.<SourceName> ?? '<fallback>')`
  * pattern that each Source class uses at its extract-path-resolution point.
  *
@@ -155,60 +155,6 @@ test.describe('aiConfig.sourcePaths config-driven path resolution (#11660)', () 
         }
     });
 
-    test.describe('Multi-path (array) Source classes', () => {
-        const arrayPathSources = [
-            {name: 'DiscussionSource',  fallback: ['resources/content/discussions', 'resources/content/archive/discussions']},
-            {name: 'PullRequestSource', fallback: ['resources/content/pulls',       'resources/content/archive/pulls']},
-            {name: 'TicketSource',      fallback: ['resources/content/issues',      'resources/content/archive/issues']}
-        ];
-
-        for (const {name, fallback} of arrayPathSources) {
-            test(`${name}: template default matches Source-class hardcoded fallback array (byte-equivalence anchor)`, () => {
-                expect(templateConfig.sourcePaths[name]).toEqual(fallback);
-            });
-
-            test(`${name}: override array takes precedence over fallback`, () => {
-                const
-                    override = ['tenant-primary', 'tenant-archive'],
-                    config   = createSourcePathsConfig({[name]: override});
-
-                try {
-                    const resolved = config.sourcePaths?.[name] ?? fallback;
-
-                    expect(resolved).toEqual(override);
-                } finally {
-                    config.destroy();
-                }
-            });
-
-            test(`${name}: missing config key falls through to hardcoded fallback`, () => {
-                const config = createSourcePathsConfig({});
-
-                try {
-                    const resolved = config.sourcePaths?.[name] ?? fallback;
-
-                    expect(resolved).toEqual(fallback);
-                } finally {
-                    config.destroy();
-                }
-            });
-
-            test(`${name}: single-element override array works (cloud deployment without archive subdir)`, () => {
-                const
-                    override = ['tenant-only-primary'],
-                    config   = createSourcePathsConfig({[name]: override});
-
-                try {
-                    const resolved = config.sourcePaths?.[name] ?? fallback;
-
-                    expect(resolved).toEqual(override);
-                } finally {
-                    config.destroy();
-                }
-            });
-        }
-    });
-
     test.describe('ApiSource ordered path/type rows', () => {
         const apiSourceFallback = API_SOURCE_FALLBACK;
 
@@ -252,7 +198,7 @@ test.describe('aiConfig.sourcePaths config-driven path resolution (#11660)', () 
     });
 
     test.describe('Defensive fallback — entire sourcePaths object missing', () => {
-        test('entire aiConfig.sourcePaths object can be absent; all 10 sources fall through to hardcoded defaults', () => {
+        test('entire aiConfig.sourcePaths object can be absent; every source falls through to hardcoded defaults', () => {
             const config = createSourcePathsConfig();
 
             try {
@@ -263,9 +209,6 @@ test.describe('aiConfig.sourcePaths config-driven path resolution (#11660)', () 
                 expect(config.sourcePaths?.SkillSource        ?? '.agents/skills').toBe('.agents/skills');
                 expect(config.sourcePaths?.TestSource         ?? 'test/playwright').toBe('test/playwright');
                 expect(config.sourcePaths?.LearningSource     ?? 'learn/tree.json').toBe('learn/tree.json');
-                expect(config.sourcePaths?.DiscussionSource   ?? ['resources/content/discussions', 'resources/content/archive/discussions']).toEqual(['resources/content/discussions', 'resources/content/archive/discussions']);
-                expect(config.sourcePaths?.PullRequestSource  ?? ['resources/content/pulls',       'resources/content/archive/pulls']).toEqual(['resources/content/pulls', 'resources/content/archive/pulls']);
-                expect(config.sourcePaths?.TicketSource       ?? ['resources/content/issues',      'resources/content/archive/issues']).toEqual(['resources/content/issues', 'resources/content/archive/issues']);
                 expect(config.sourcePaths?.ApiSource ?? API_SOURCE_FALLBACK).toEqual(API_SOURCE_FALLBACK);
             } finally {
                 config.destroy();

@@ -49,6 +49,39 @@ function normalizeApiSourceOptions(options = {}) {
 }
 
 /**
+ * @summary Closes ConversationCorpusSource route options to an optional origin selection.
+ *
+ * `origins` names the conversation origins (index `repoSlug` values) the route extracts; absent
+ * means every origin present in the corpus root index. Canonical form is trimmed, deduplicated
+ * and sorted, so the same selection always yields the same extraction identity.
+ *
+ * @param {Object} options
+ * @returns {{origins?: String[]}}
+ * @private
+ */
+function normalizeConversationCorpusOptions(options = {}) {
+    const keys = Object.keys(options);
+
+    if (keys.some(key => key !== 'origins')) {
+        throw new TypeError('ConversationCorpusSource route options support only origins')
+    }
+
+    if (options.origins === undefined) {
+        return {};
+    }
+
+    const origins = Array.isArray(options.origins)
+        ? options.origins.map(origin => typeof origin === 'string' ? origin.trim() : '')
+        : [];
+
+    if (!origins.length || origins.some(origin => !origin)) {
+        throw new TypeError('ConversationCorpusSource route options.origins must be a non-empty array of repository slugs')
+    }
+
+    return {origins: [...new Set(origins)].sort()};
+}
+
+/**
  * @summary Closes ParserSource identity to the declared parser pair.
  * @param {Object} options
  * @returns {{parserId: String, parserVersion: String}}
@@ -159,9 +192,11 @@ export function createExtractorCatalogue(descriptors = []) {
  * @summary Built-in extraction definitions available to repository profiles.
  *
  * ApiSource, SkillSource, and ParserSource are intentionally non-delta-safe: their output can depend
- * on repository hierarchy, trigger pointers, or arbitrary parser code. RawRepoSource is the bounded
- * exception: one output is derived from one file, while every filter option participates in the
- * extraction identity and therefore forces full materialization when it changes.
+ * on repository hierarchy, trigger pointers, or arbitrary parser code. ConversationCorpusSource is
+ * non-delta-safe for a narrower reason: every chunk's identity comes from the corpus root index, a
+ * file that does not change when a conversation file does. RawRepoSource is the bounded exception:
+ * one output is derived from one file, while every filter option participates in the extraction
+ * identity and therefore forces full materialization when it changes.
  */
 export const ExtractorCatalogue = createExtractorCatalogue([{
     extractorId      : 'ApiSource',
@@ -173,6 +208,17 @@ export const ExtractorCatalogue = createExtractorCatalogue([{
         const {default: ApiSource} = await import('./ApiSource.mjs');
 
         return await ApiSource.extractFromRepository(options)
+    }
+}, {
+    extractorId      : 'ConversationCorpusSource',
+    version          : '1.0.0',
+    deltaSafe        : false,
+    requiresHierarchy: false,
+    normalizeOptions : normalizeConversationCorpusOptions,
+    extract          : async options => {
+        const {default: ConversationCorpusSource} = await import('./ConversationCorpusSource.mjs');
+
+        return await ConversationCorpusSource.extractFromRepository(options)
     }
 }, {
     extractorId      : 'ParserSource',
