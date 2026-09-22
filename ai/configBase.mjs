@@ -311,6 +311,16 @@ class ConfigBase extends ConfigProvider {
                  */
                 instanceRoot   : leaf(path.resolve(planeDataRootDefault, 'fleet/instances'), 'NEO_FLEET_INSTANCE_ROOT', 'string', {planeMember: true}),
                 /**
+                 * Root of the synced GitHub conversation tree the cockpit's activity feed reads:
+                 * `<root>/issues` + `<root>/pulls`, the single-origin layout `neomjs/github-content-sync`
+                 * publishes under `neo/`. The default is the pre-split checkout-relative engine tree,
+                 * which a Brain checkout does not carry, so a deployment names the corpus it
+                 * materializes. A root that does not exist degrades the PR/lane slot honestly. Not a
+                 * plane member — a read source, never a data-root path.
+                 * @type {string}
+                 */
+                contentRoot    : leaf(path.resolve(projectRoot, 'resources/content'), 'NEO_FLEET_CONTENT_ROOT', 'string'),
+                /**
                  * Canonical base of the containerized Agent OS plane the Fleet server's mailbox,
                  * compose, and catch-up seams consume (`<base>/mc/mcp` is derived — the
                  * connected-tenant resource contract). EMPTY means in-process binding: correct for machines without
