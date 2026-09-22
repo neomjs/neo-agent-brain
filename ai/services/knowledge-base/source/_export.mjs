@@ -18,8 +18,8 @@ import TestSource         from './TestSource.mjs';
  *
  * - When `aiConfig.useDefaultSources !== false` (the zero-config default for any Neo
  *   deployment), the default Source classes register in deterministic insertion order.
- *   That order matches the pre-Phase-0/1B hardcoded array at `DatabaseService.mjs:454-465`,
- *   ensuring byte-equivalence with the prior KB generation pipeline. GitHub conversations are
+ *   That order matches the pre-Phase-0/1B hardcoded array at `DatabaseService.mjs:454-465`, so the
+ *   seven surviving Sources still emit byte-equivalent output. GitHub conversations are
  *   not a default Source any more: the Knowledge Base ingests the org corpus published by
  *   `github-content-sync` as its own tenant through the `ConversationCorpusSource` extractor
  *   (neo-agent-brain#402), so the three per-facet Sources that walked the Engine's tracked

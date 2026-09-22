@@ -113,7 +113,7 @@ A Source class is registered in the `SourceRegistry` singleton under a stable na
 - **Declaratively** — add it to `aiConfig.customSources` as `{SourceClass, sourceName?}` (loaded once at boot). `sourceName` defaults to the class's `className` final segment (`ProtoSource` above).
 - **Programmatically** — `SourceRegistry.registerSource(ProtoSource, {sourceName: 'ProtoSource'})` at runtime; re-registering the same name overwrites (idempotent, useful for hot-reload).
 
-`aiConfig.useDefaultSources` (default `true`) controls whether Neo's 10 curated Source classes are also registered. A deployment indexing *only* tenant content sets it `false`; the registry then contains only the tenant's custom Sources. See [Configuration](./Configuration.md).
+`aiConfig.useDefaultSources` (default `true`) controls whether Neo's seven curated Source classes are also registered (GitHub conversations are a tenant route, `ConversationCorpusSource`, not a default Source). A deployment indexing *only* tenant content sets it `false`; the registry then contains only the tenant's custom Sources. See [Configuration](./Configuration.md).
 
 This registry remains mutable for compatibility: the current full-corpus builder still enumerates
 it, and freezing or removing it before that consumer cuts over would break a working deployment.

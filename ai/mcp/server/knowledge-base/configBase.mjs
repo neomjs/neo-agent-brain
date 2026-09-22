@@ -516,9 +516,10 @@ class ConfigBase extends ConfigProvider {
                 embeddingProbeFailureTtlMaxMs: leaf(600000, 'NEO_KB_HEALTHCHECK_EMBEDDING_PROBE_FAILURE_TTL_MAX_MS', 'number')
             },
             /**
-             * When `true` (default), the SourceRegistry auto-registers Neo's
-             * 10 curated default Source classes. Cloud deployments that ingest only tenant content
-             * can set `false` to skip Neo's curated sources entirely.
+             * When `true` (default), the SourceRegistry auto-registers Neo's seven curated default
+             * Source classes (GitHub conversations arrive through the `github-content-sync` tenant
+             * route instead). Cloud deployments that ingest only tenant content can set `false` to
+             * skip Neo's curated sources entirely.
              * @type {boolean}
              */
             useDefaultSources: leaf(true),

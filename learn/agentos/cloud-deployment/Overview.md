@@ -64,7 +64,7 @@ There is no separate Chroma instance per tenant. Every piece of content is tagge
 
 ## Default-source inheritance
 
-A zero-config Neo deployment behaves identically with or without the cloud-ingestion substrate: `useDefaultSources` defaults to `true`, `rawRepoSource` defaults to `false`, the `SourceRegistry` auto-registers Neo's 10 curated Source classes, and `aiConfig.sourcePaths` carries Neo's default layout. A cloud tenant opting out of Neo's curated content sets `useDefaultSources: false`; a tenant whose repo layout differs overrides only the `sourcePaths` keys it needs; a tenant with no known shape can opt into `rawRepoSource` as a day-0 fallback. Inheritance is the default; divergence is opt-in and granular.
+A zero-config Neo deployment behaves identically with or without the cloud-ingestion substrate: `useDefaultSources` defaults to `true`, `rawRepoSource` defaults to `false`, the `SourceRegistry` auto-registers Neo's seven curated Source classes (GitHub conversations arrive through the `github-content-sync` tenant route), and `aiConfig.sourcePaths` carries Neo's default layout. A cloud tenant opting out of Neo's curated content sets `useDefaultSources: false`; a tenant whose repo layout differs overrides only the `sourcePaths` keys it needs; a tenant with no known shape can opt into `rawRepoSource` as a day-0 fallback. Inheritance is the default; divergence is opt-in and granular.
 
 ## Registry contract split — Source vs Parser
 
