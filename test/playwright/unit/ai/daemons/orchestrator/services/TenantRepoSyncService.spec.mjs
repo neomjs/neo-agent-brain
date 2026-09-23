@@ -26,6 +26,7 @@ import path                       from 'path';
 import {fileURLToPath}            from 'url';
 
 import TenantRepoSyncService from '../../../../../../../ai/daemons/orchestrator/services/TenantRepoSyncService.mjs';
+import {TaskStateService}    from '../../../../../../../ai/daemons/orchestrator/services/TaskStateService.mjs';
 import {classifyEmbeddingRecoveryState, isRepoDue, resolveUnknownRepoSelectorFailure, YIELD_CAUSE_LEASE}
                             from '../../../../../../../ai/daemons/orchestrator/scheduling/tenantRepoSync.mjs';
 import {
@@ -91,16 +92,18 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     let tmpDir;
     let revisionsFile;
 
-    function createInMemoryTaskStateService() {
-        const taskState = {};
-        return {
-            taskState,
-            getTaskState : taskName => taskState[taskName],
-            markStarted  : (taskName, reason) => { taskState[taskName] = {...taskState[taskName], running: true, reason, startedAt: Date.now()}; },
-            markCompleted: (taskName, lastCompletion = null) => { taskState[taskName] = {...taskState[taskName], running: false, completedAt: Date.now(), lastCompletion}; },
-            markSkipped  : (taskName, lastCompletion = null) => { taskState[taskName] = {...taskState[taskName], running: false, skippedAt: Date.now(), lastCompletion}; },
-            markFailed   : (taskName, code, lastCompletion = null) => { taskState[taskName] = {...taskState[taskName], running: false, failedAt: Date.now(), lastCompletion}; }
-        };
+    // The real writer over this test's temp dir, never a double: a double carrying fields the writer
+    // lacks let a reader ship against fiction while this suite stayed green (#420).
+    function createTaskStateService() {
+        const options = {
+                  stateFile      : path.join(tmpDir, 'task-state.json'),
+                  taskDefinitions: {'tenant-repo-sync': {label: 'Tenant repo sync'}},
+                  writeLogFn     : () => {}
+              },
+              service = Neo.create(TaskStateService, options);
+
+        service.configure(options);
+        return service;
     }
 
     function makeFakeGitMirror({captureCalls = []} = {}) {
@@ -513,7 +516,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('a fence-only summary COMPLETES with the undeliverable census; a live failure beside it still defers (#17129)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             fenceSlug        = 'org/fence-only',
             mixedSlug        = 'org/fence-mixed',
             monsterId        = 'd'.repeat(64),
@@ -605,7 +608,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('a content-poison-only summary COMPLETES with its own census, and never arms recovery (#17139)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             poisonSlug       = 'org/poison-only',
             bothSlug         = 'org/both-families',
             poisonId         = 'a'.repeat(64),
@@ -722,7 +725,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             {default: IngestionService} = await import(
                 '../../../../../../../ai/services/knowledge-base/IngestionService.mjs'
             ),
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             manifests        = new Map(),
             repoSlug         = 'org/real-fence-receipt',
             poisonId         = '9'.repeat(64),
@@ -848,7 +851,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('a live row sharing a fence code still defers, and the retained cause is the LIVE one (#17139)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/live-beside-fence',
             poisonId         = 'c'.repeat(64),
             startedAt        = Date.now();
@@ -938,7 +941,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         for (const [label, details] of Object.entries(variants)) {
             const
-                taskStateService = createInMemoryTaskStateService(),
+                taskStateService = createTaskStateService(),
                 repoSlug         = `org/gate-${label.replace(/\W+/gu, '-')}`;
 
             await provisionMirrorDir({tenantId: 't1', repoSlug});
@@ -1164,7 +1167,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('embedding recovery releases only the affected repo once, then rearms after a failed retry (#16692)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             embeddingSlug    = 'org/embedding-recovery',
             ordinarySlug     = 'org/ordinary-backoff',
             mirrorCalls      = [],
@@ -1346,7 +1349,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('a recovery bypass without a durable write-ahead receipt is deferred unconsumed (#16692)', async () => {
         const
-            taskStateService      = createInMemoryTaskStateService(),
+            taskStateService      = createTaskStateService(),
             repoSlug              = 'org/recovery-receipt',
             mirrorCalls           = [],
             episodeId             = 'a'.repeat(32),
@@ -1419,7 +1422,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('skipped when no tenantRepos configured', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'manual-test',
@@ -1431,12 +1434,14 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(result.status).toBe('skipped');
         expect(result.details.reason).toBe('no-tenant-repos-configured');
         expect(result.details.repoCount).toBe(0);
-        expect(taskStateService.taskState['tenant-repo-sync'].skippedAt).toBeTruthy();
+        // The real record carries the disposition: a skip stamps the cycle and leaves the exit code and
+        // the success clock alone.
+        expect(taskStateService.getTaskState('tenant-repo-sync')).toMatchObject({running: false, lastExitCode: null, lastSuccessAt: null, lastCompletionAt: expect.any(String)});
     });
 
     test('skipped when already running (re-entrancy guard)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
-        taskStateService.taskState['tenant-repo-sync'] = {running: true, pid: 12345};
+        const taskStateService = createTaskStateService();
+        taskStateService.adoptRunning('tenant-repo-sync', 12345);
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic',
@@ -1452,7 +1457,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('preflights a not-due repo at bootstrap and re-probes only after config or credential rotation', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repo             = {
                 tenantId     : 'tenant-a',
                 repoSlug     : 'private/repo',
@@ -1558,7 +1563,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('isolates an inaccessible repo while unrelated repositories continue syncing', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             mirrorCalls      = [],
             repos            = [
                 {
@@ -1648,7 +1653,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('completed: iterates configured repos and calls ingestion service', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const mirrorCalls      = [];
         const ingestCalls      = [];
 
@@ -1745,7 +1750,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         });
 
         test('a second sweep performs ZERO work — elapsed time does not retry a terminal input', async () => {
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/stopped'});
 
@@ -1785,7 +1790,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         });
 
         test('the stopped repo names the UNRESOLVED REF, not just a bounded code', async () => {
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/stopped'});
 
@@ -1802,7 +1807,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // `attemptedCount === 0` branch written for "every repo was not-due" and inherits that clean
         // verdict — reporting success while every repo it owns is permanently not syncing.
         test('a sweep of nothing but stopped repos reports `stopped`, never `completed`', async () => {
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/stopped'});
             await runSweep({branchRef: REF, counters: {fetches: 0, builds: 0}, taskStateService});
@@ -1824,7 +1829,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // 🔴 THE RESUMPTION CONTROL, and the reason the fingerprint is a comparison rather than a flag.
         // Repointing the repo clears the stop with no reset command, no TTL and no revalidation pass.
         test('repointing branchRef resumes the repo — the fingerprint no longer matches', async () => {
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/stopped'});
             await runSweep({branchRef: REF, counters: {fetches: 0, builds: 0}, taskStateService});
@@ -1844,7 +1849,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('per-repo failure isolation: one failed repo does not halt remaining', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         let   fetchCount       = 0;
 
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/good'});
@@ -1899,7 +1904,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('onlyRepoSlugs scoping: subset filtering for manual CLI path', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const ingestCalls      = [];
 
         // Only need to provision the subset that will actually run
@@ -1928,7 +1933,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('current-contract checkpoints are read on subsequent run and passed as lastIngestedRev', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
 
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/seeded'});
 
@@ -2002,7 +2007,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('legacy null-contract checkpoint bootstraps an empty target after the first positive materialization (#16045)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/legacy-empty-bootstrap',
             envelopeCalls    = [],
             ingestCalls      = [];
@@ -2148,7 +2153,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     ]) {
         test(`${scenario.label} fails closed when full materialization has zero effect (#16045)`, async () => {
             const
-                taskStateService = createInMemoryTaskStateService(),
+                taskStateService = createTaskStateService(),
                 repoSlug         = `org/${scenario.label.replaceAll(' ', '-')}`,
                 envelopeCalls    = [],
                 healthCalls      = [];
@@ -2235,7 +2240,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('zero-effect full materialization cannot echo the current attempt as durable proof (#16045)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/echoed-current-receipt';
 
         await provisionMirrorDir({tenantId: 't1', repoSlug});
@@ -2302,7 +2307,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // nothing arrived and the embed stage is where to look.
     test('INVARIANT BREACH — effect with unmatched proof is refused under its OWN code, not the empty one', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/effect-without-receipt';
 
         await provisionMirrorDir({tenantId: 't1', repoSlug});
@@ -2391,7 +2396,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('full delete-only reconciliation remains a successful checkpoint effect (#16045)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/delete-only-full';
 
         await fs.writeJson(revisionsFile, {
@@ -2467,7 +2472,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // so `deleted` is 0 as well — there is nothing to have removed. Under the current guard this
         // repo can never reach a checkpoint, on this attempt or any future one.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/genuinely-empty',
             envelopeCalls    = [],
             ingestCalls      = [];
@@ -2672,7 +2677,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'manual',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: [{
                 tenantId          : 't1', repoSlug, mirrorRoot,
                 cloneUrl          : 'https://example.invalid/hierarchy-changed.git',
@@ -2786,7 +2791,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // The first sweep already passes against `dev`, so a spec running ONE sweep passes against the
         // defect. The second sweep's `completed` is the assertion that reds.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/empty-replayed',
             ingestCalls      = [];
 
@@ -2869,7 +2874,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         let committedSnapshot = null;
 
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/poison-replay-receipt',
             retryAttemptId   = 'a'.repeat(32),
             envelope         = {
@@ -2961,7 +2966,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // declared, nothing landed, and nothing reported why. Without this assertion, "an empty
         // materialization completes" is indistinguishable from having disabled the guard.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/silent-drop';
 
         await fs.writeJson(revisionsFile, {revisions: {}});
@@ -3012,7 +3017,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // This asserts only what the code must NOT say. Which code it SHOULD carry, and whether this
         // case commits or fails, is the open decision on the ticket.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/all-oversized';
 
         await fs.writeJson(revisionsFile, {revisions: {}});
@@ -3061,7 +3066,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('delete-only full replay settles an unacknowledged receipt after checkpoint-write failure exactly once (#16045)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/delete-only-retry',
             ingestCalls      = [];
         let ingestAttempt = 0;
@@ -3196,7 +3201,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('error-bearing ingestion summary fails closed and the next run reuses the last good revision (#15748)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/error-summary',
             envelopeCalls    = [],
             logs             = [];
@@ -3303,7 +3308,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     ]) {
         test(`${label} fails closed without advancing the persisted revision (#15748)`, async () => {
             const
-                taskStateService = createInMemoryTaskStateService(),
+                taskStateService = createTaskStateService(),
                 repoSlug         = `org/${label.replaceAll(' ', '-')}`;
 
             await fs.writeJson(revisionsFile, {
@@ -3354,7 +3359,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // therefore the one the next live run is most likely to produce. Pinning only the arm that
         // already works would leave the claim "these two read differently" half-evidenced.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/empty-envelope',
             logs             = [];
 
@@ -3405,7 +3410,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // live. Pinning it here is what keeps the line above BOTH guards; if someone moves it back
         // down, this test goes red rather than the regression reaching a plane.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/error-bearing-diagnostic',
             logs             = [];
 
@@ -3470,7 +3475,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // This fixture is deliberately the DROPPED-INGEST arm: two envelope files, zero ingested.
         // That is the combination the old log could not describe at all.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/empty-materialization',
             logs             = [];
 
@@ -3540,7 +3545,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // BOUNDED_KB_ERROR_CODE_PATTERN admits only KB_[A-Z0-9_]{1,120} — a code cannot carry a URL,
         // a token, or stderr. The unbounded code and every message/detail must still never project.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/multi-cause',
             logs             = [];
 
@@ -3625,7 +3630,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // sole scheduler and the recovery generation is the only thing that can bypass it, so a
         // still-starved provider cannot buy one retry per sweep by deferring instead of failing.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             slug             = 'org/capped-defer-recovery',
             repoLabel        = `t1/${slug}`,
             seededAt         = 1_000;
@@ -3741,7 +3746,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // states are opposites: not-due means nobody needed work; all-deferred means everybody
         // needed it and none of it landed.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             slugA            = 'org/all-deferred-a',
             slugB            = 'org/all-deferred-b';
 
@@ -3778,7 +3783,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         const
             restoreMCConfig        = snapshotAiConfig(MemoryCoreConfig, ['ollama.maxInFlightEmbeddings']),
             originalOllamaProvider = TextEmbeddingService.ollamaProvider,
-            taskStateService       = createInMemoryTaskStateService(),
+            taskStateService       = createTaskStateService(),
             slugs                  = ['org/provider-timeout-a', 'org/provider-timeout-b'],
             providerInputs         = [],
             ingestionEntries       = [],
@@ -3949,7 +3954,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             originalUnload    = embeddingConfig.openAiCompatible.unloadRetryCount,
             originalProbe     = TextEmbeddingService.openAiCompatibleLoadedModelsProbe,
             {default: http}   = await import('node:http'),
-            taskStateService  = createInMemoryTaskStateService(),
+            taskStateService  = createTaskStateService(),
             slugs             = ['org/oai-timeout-a', 'org/oai-timeout-b'],
             serverRequests    = [],
             ingestionEntries  = [],
@@ -4094,7 +4099,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // system is a RETAINED CAUSE — that is what arms the dependency-recovery canary, whose
         // scoped generation is the sanctioned way a repo returns before its cadence.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             slug             = 'org/capped-streak-defer',
             repoLabel        = `t1/${slug}`;
 
@@ -4147,7 +4152,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // then climbed the backoff toward its 2h cap. The isolation assertions are unchanged;
         // only the verdict for a deferrable code differs.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             badSlug          = 'org/summary-deferred',
             goodSlug         = 'org/summary-good-deferred';
 
@@ -4201,7 +4206,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('mixed cycle counts an error-bearing summary as failed while preserving per-repo isolation (#15748)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             // A REJECTED code, not a deferrable one. This test's contract — an
             // error-bearing summary fails the run and earns a backoff step — is still exactly right
             // for a deliberate refusal: a spoofed tenant must never be retried into success. Only
@@ -4251,7 +4256,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('scoped full replay keeps the old checkpoint on failure and replaces it only after clean completion (#15748)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/full-replay',
             envelopeCalls    = [];
         let ingestCallCount = 0;
@@ -4337,7 +4342,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('legacy checkpoint revalidation retries returned and thrown failures from a null base before proving the new head (#15761)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             repoSlug         = 'org/legacy-retry',
             envelopeCalls    = [];
         let ingestAttempt = 0;
@@ -4417,7 +4422,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('periodic migration admits at most concurrencyLimit legacy replays per sweep while current repos stay incremental (#15761)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             legacySlugs      = ['org/legacy-a', 'org/legacy-b', 'org/legacy-c'],
             currentSlug      = 'org/current',
             envelopeCalls    = [];
@@ -4513,7 +4518,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('admitted legacy replay gets the semaphore before a slow current repo across repeated sweeps (#15761)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             currentSlug      = 'org/current-slow',
             legacySlug       = 'org/legacy-starvation',
             mirrorCalls      = [],
@@ -4601,7 +4606,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('slow admitted replay settles before current repo timeout accounting begins (#15761)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             currentSlug      = 'org/current-fast',
             legacySlug       = 'org/legacy-slow',
             envelopeCalls    = [];
@@ -4687,7 +4692,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     ]) {
         test(`malformed ${label} fails closed without authorizing legacy replay (#15761)`, async () => {
             const
-                taskStateService = createInMemoryTaskStateService(),
+                taskStateService = createTaskStateService(),
                 mirrorCalls      = [],
                 repoSlug         = 'org/malformed-contract';
 
@@ -4727,7 +4732,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('future checkpoint-contract markers fail closed without downgrade or repo work (#15761)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             mirrorCalls      = [],
             repoSlug         = 'org/future-contract',
             futureVersion    = TENANT_REPO_INGEST_CONTRACT_VERSION + 1;
@@ -4771,7 +4776,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('full replay without an explicit repo selector fails before repo work begins (#15748)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'manual',
@@ -4792,7 +4797,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('health payload: per-repo details.repos[] carries operator-visible freshness fields on success', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/repo-a'});
 
         const result = await TenantRepoSyncService.runTask({
@@ -4823,7 +4828,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('health payload: failed repo surfaces status=degraded + stable KB_TENANT_REPO_SYNC_* error code', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/broken'});
 
         const failingMirror = {
@@ -4932,7 +4937,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
             const result = await TenantRepoSyncService.runTask({
                 reason           : 'periodic-sweep:60000',
-                taskStateService : createInMemoryTaskStateService(),
+                taskStateService : createTaskStateService(),
                 tenantReposConfig: {tenantRepos: [
                     {tenantId: 't1', repoSlug, mirrorRoot, cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`}
                 ]},
@@ -5043,7 +5048,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
 
     test('health payload: unresolved credentialRef preserves GitMirror source code', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
 
         const failingMirror = {
             async cloneIfMissing() {
@@ -5088,7 +5093,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('operator log: emits per-repo completed line + cycle summary in expected shape', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const logLines         = [];
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/repo-a'});
 
@@ -5129,7 +5134,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // completed run while the repo they meant was never touched. The known-good repo IS
         // provisioned and would sync happily, so the refusal has to come from the selector check
         // rather than from the run failing for some unrelated reason.
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const ingestion        = makeFakeIngestionService();
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/known'});
 
@@ -5160,7 +5165,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     test('an ALL-known selector is unaffected — the stricter trigger does not over-refuse', async () => {
         // Non-vacuity control for the case above. Without it, a predicate that refused every
         // non-empty selector would pass the partial-unknown test and break every legitimate run.
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/known'});
 
         const result = await TenantRepoSyncService.runTask({
@@ -5182,7 +5187,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('--repo-slug filter against unknown slug surfaces stable KB_TENANT_REPO_SYNC_REPO_NOT_CONFIGURED', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const logLines         = [];
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/known'});
 
@@ -5213,7 +5218,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('corrupt persisted revision state fails closed without being overwritten as bootstrap (#15761)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             malformedJson    = '{"revisions":';
 
         await fs.writeFile(revisionsFile, malformedJson);
@@ -5261,7 +5266,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('#17414 a lease-yield outcome is refused when the active-cohort manifest commit fails', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const logLines         = [];
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/repo-a'});
 
@@ -5316,7 +5321,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             ingestionCalls                                                       = [],
             ingestionSummaries                                                   = [],
             events                                                               = [],
-            taskStateService                                                     = createInMemoryTaskStateService(),
+            taskStateService                                                     = createTaskStateService(),
             original                                                             = {
                 batchConfig: {
                     batchDelay: KB_Config.data.batchDelay,
@@ -5654,7 +5659,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: ['org/r1', 'org/r2', 'org/r3'].map(s => ({
                 tenantId: 't1', repoSlug: s, mirrorRoot, cloneUrl: `https://github.com/neomjs/${s.split('/')[1]}.git`
             }))},
@@ -5696,7 +5701,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: ['org/r1', 'org/r2', 'org/r3', 'org/r4'].map(s => ({
                 tenantId: 't1', repoSlug: s, mirrorRoot, cloneUrl: `https://github.com/neomjs/${s.split('/')[1]}.git`
             }))},
@@ -5731,7 +5736,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
             try {
                 await TenantRepoSyncService.syncTenantRepos({
-                    taskStateService : createInMemoryTaskStateService(),
+                    taskStateService : createTaskStateService(),
                     leaseGuard       : async () => {},
                     tenantReposConfig: {tenantRepos: [{
                         tenantId: 't1', repoSlug: 'org/r1', mirrorRoot, cloneUrl: 'https://github.com/neomjs/r1.git'
@@ -5757,7 +5762,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
             try {
                 await TenantRepoSyncService.syncTenantRepos({
-                    taskStateService             : createInMemoryTaskStateService(),
+                    taskStateService             : createTaskStateService(),
                     leaseGuard                   : async () => {},
                     tenantReposConfig            : {tenantRepos: []},
                     gitMirror                    : makeFakeGitMirror(),
@@ -5792,7 +5797,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     test('concurrency-gate: runTask preserves both typed config-refusal codes through the public boundary (#17158 RA-2)', async () => {
         const baseOptions = () => ({
             reason           : 'periodic',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: [{
                 tenantId: 't1', repoSlug: 'org/r1', mirrorRoot, cloneUrl: 'https://github.com/neomjs/r1.git'
             }]},
@@ -5897,7 +5902,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
             const resultPromise = TenantRepoSyncService.runTask({
                 reason           : 'periodic',
-                taskStateService : createInMemoryTaskStateService(),
+                taskStateService : createTaskStateService(),
                 tenantReposConfig: {tenantRepos: [
                     {tenantId: 't1', repoSlug: 'org/slow',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/slow.git'},
                     {tenantId: 't1', repoSlug: 'org/queued', mirrorRoot, cloneUrl: 'https://github.com/neomjs/queued.git'}
@@ -5929,7 +5934,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('jitter+backoff: skips not-due repo with prior recent lastRunAttemptAt (#11942 AC1)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const ingestCalls      = [];
 
         // Pre-populate persistence with a recent lastRunAttemptAt — repo should be skipped.
@@ -5974,7 +5979,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('jitter+backoff: persists consecutiveFailures increment on failure (#11942 AC1)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
 
         // Opts out of bootstrap seeding so the simulated failure path
         // actually fires this sweep (instead of being
@@ -6037,7 +6042,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('jitter+backoff: persists consecutiveFailures reset on subsequent success (#11942 AC1)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
 
         // Pre-populate with consecutiveFailures=3 (from prior failures); also stale lastRunAttemptAt
         // so the backoff'd effective cadence is still elapsed.
@@ -6077,7 +6082,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('jitter+backoff: backward-compatible read of pre-AC1 string-shaped persistence (#11942 AC1)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const envelopeCalls    = [];
 
         // Pre-AC1 persistence shape: bare SHA strings under revisions.
@@ -6117,7 +6122,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('jitter+backoff: onlyRepoSlugs (manual CLI path) bypasses due-check (#11942 AC1)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const ingestCalls      = [];
 
         // Pre-populate with very recent lastRunAttemptAt — would normally be not-due.
@@ -6164,7 +6169,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // ─────────────────────────────────────────────────────────────────────────
 
     test('bootstrap-spread: first sweep seeds new repos with lastRunAttemptAt=now-baseCadence (#11942 AC1 cycle-2)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/repo-a'});
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/repo-b'});
 
@@ -6236,7 +6241,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic-sweep:1000',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: [
                 {tenantId: 't1', repoSlug: 'org/short-jitter', mirrorRoot, cloneUrl: 'https://github.com/neomjs/short.git'},
                 {tenantId: 't1', repoSlug: 'org/long-jitter',  mirrorRoot, cloneUrl: 'https://github.com/neomjs/long.git'}
@@ -6277,7 +6282,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // AiConfig.data.orchestrator.intervals.tenantRepoSyncMs default.
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic-sweep:60000',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: [
                 {tenantId: 't1', repoSlug: 'org/repo', mirrorRoot, cloneUrl: 'https://github.com/neomjs/repo.git'}
             ]},
@@ -6312,7 +6317,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // (because (now - lastRunAttemptAt) = baseCadenceMs < baseCadenceMs + jitter).
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic-sweep:60000',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: [
                 {tenantId: 't1', repoSlug: 'org/repo', mirrorRoot, cloneUrl: 'https://github.com/neomjs/repo.git'}
             ]},
@@ -6332,7 +6337,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('manual CLI (onlyRepoSlugs) bypasses bootstrap seeding (#11942 AC1 cycle-2)', async () => {
         // Operator-initiated sync must always fire regardless of bootstrap-seeding state.
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const ingestCalls      = [];
 
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/manual-target'});
@@ -6384,7 +6389,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         try {
             resultPromise = TenantRepoSyncService.runTask({
                 reason           : 'periodic',
-                taskStateService : createInMemoryTaskStateService(),
+                taskStateService : createTaskStateService(),
                 tenantReposConfig: {tenantRepos: [
                     {tenantId: 't1', repoSlug: 'org/slow',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/slow.git'},
                     {tenantId: 't1', repoSlug: 'org/queued', mirrorRoot, cloneUrl: 'https://github.com/neomjs/queued.git'}
@@ -6474,7 +6479,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         const resultPromise = TenantRepoSyncService.runTask({
             reason           : 'periodic',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: [
                 {tenantId: 't1', repoSlug: 'org/slow',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/slow.git'},
                 {tenantId: 't1', repoSlug: 'org/queued', mirrorRoot, cloneUrl: 'https://github.com/neomjs/queued.git'}
@@ -6510,7 +6515,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('branchRef from tenantRepos[] flows through to envelopeBuilder.newHead (#12040)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
         const envelopeCalls    = [];
 
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/repo-with-branch'});
@@ -6570,7 +6575,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('cross-process lease: a held lease defers the sweep without repo work or manifest mutation (#15763)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             mirrorCalls      = [];
 
         await fs.writeJson(revisionsFile, {revisions: {'t1/org/lease-repo': {
@@ -6612,8 +6617,8 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('cross-process lease: two concurrent invocations serialize — one completes, one defers (#15763)', async () => {
         const
-            taskStateServiceA = createInMemoryTaskStateService(),
-            taskStateServiceB = createInMemoryTaskStateService();
+            taskStateServiceA = createTaskStateService(),
+            taskStateServiceB = createTaskStateService();
 
         let releaseGate;
         const gate = new Promise(resolve => releaseGate = resolve);
@@ -6662,7 +6667,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         }));
 
         const result = await TenantRepoSyncService.runTask(baseLeaseRunOptions({
-            taskStateService: createInMemoryTaskStateService()
+            taskStateService: createTaskStateService()
         }));
 
         expect(result.status).toBe('completed');
@@ -6671,7 +6676,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('cross-process lease: released after a failing sweep so the next run can acquire (#15763)', async () => {
         const failing = await TenantRepoSyncService.runTask(baseLeaseRunOptions({
-            taskStateService             : createInMemoryTaskStateService(),
+            taskStateService             : createTaskStateService(),
             knowledgeBaseIngestionService: makeFakeIngestionService({
                 summaryFactory() {
                     return {ingested: 0, deleted: 0, errors: [{code: 'KB_TENANT_SPOOF_REJECTED'}]};
@@ -6683,14 +6688,14 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(await fs.pathExists(leaseFilePath())).toBe(false);
 
         const recovered = await TenantRepoSyncService.runTask(baseLeaseRunOptions({
-            taskStateService: createInMemoryTaskStateService()
+            taskStateService: createTaskStateService()
         }));
 
         expect(recovered.status).toBe('completed');
     });
 
     test('lease renewal keeps a live long-running owner past its base TTL — no mid-work reclaim (#15763)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
 
         let releaseIngestion;
         const ingestionGate = new Promise(resolve => releaseIngestion = resolve);
@@ -6733,7 +6738,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('renewal failure aborts before protected work: failed run, no manifest, untouched backoff, replacement intact (#15763)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
 
         let releaseEnvelope;
         const envelopeGate = new Promise(resolve => releaseEnvelope = resolve);
@@ -6812,7 +6817,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('commit-point fence: an evicted writer aborts without writing (#15763)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             foreignLease     = buildLeasePayload({
                 owner       : 'tenant-repo-sync:scheduler',
                 reason      : 'tenant-repo-sync',
@@ -6873,7 +6878,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // real residue unreadable while this spec still passed.
     test('a sweep that never returns still records the attempt, and the next sweep commits it (#16551)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             inFlightFile     = `${revisionsFile}.in-flight`,
             now              = Date.now(),
             // The predecessor's committed state: one clean prior run, no failures.
@@ -6932,7 +6937,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
     test('a crashed recovery retry consumes its generation without synthesizing another bypass (#16692)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             inFlightFile     = `${revisionsFile}.in-flight`,
             crashedAttemptAt = Date.now(),
             episodeId        = 'a'.repeat(32),
@@ -7014,7 +7019,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // agreed with the frozen counters last time while the arithmetic disagreed.
     test('successive crashed attempts keep growing the backoff term, not just the first (#16551)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             inFlightFile     = `${revisionsFile}.in-flight`,
             baseCadenceMs    = 60 * 60_000,
             crashedAttemptAt = Date.now() - 20 * 60_000;
@@ -7109,7 +7114,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         }});
 
         await TenantRepoSyncService.runTask(baseLeaseRunOptions({
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: repos},
             globalCadenceMs  : baseCadenceMs,
             backoffCapMs     : 0
@@ -7125,7 +7130,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // The class assertion, independent of the file: a second sweep must not fold repo-a again.
         // One crash happened, so the counter is 1 — and must STAY 1.
         await TenantRepoSyncService.runTask(baseLeaseRunOptions({
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: repos},
             globalCadenceMs  : baseCadenceMs,
             backoffCapMs     : 0
@@ -7151,7 +7156,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // replacement, so an in-flight renewal tick cannot interleave with the test's own writes.
     test('an evicted run does not clear the sidecar entry its successor owns (#16551)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             inFlightFile     = `${revisionsFile}.in-flight`,
             successorEntry   = {startedMs: 2000, priorFailures: 1},
             baseEnvelope     = makeFakeEnvelopeBuilder();
@@ -7225,7 +7230,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // same-label is the hard case, since a per-label read-modify-write would still clobber it.
     test('a resumed predecessor merges around the successor rather than deleting it (#16551)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             inFlightFile     = `${revisionsFile}.in-flight`,
             successorEntry   = {startedMs: 2000, priorFailures: 1, runId: 'successor-run'},
             baseEnvelope     = makeFakeEnvelopeBuilder();
@@ -7278,7 +7283,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // find a STALE lease so it takes the guarded recovery path at all.
     test('successor acquisition is refused while the predecessor holds the guard mid-transaction (#16551)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             inFlightFile     = `${revisionsFile}.in-flight`,
             successorEntry   = {startedMs: 2000, priorFailures: 1, runId: 'successor-run'},
             originalRead     = TenantRepoSyncService.readInFlightAttempts.bind(TenantRepoSyncService);
@@ -7369,7 +7374,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // regression that reads as tidiness.
     test('a manifest write failure during recovery still fails the task with its reason code (#16551)', async () => {
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             inFlightFile     = `${revisionsFile}.in-flight`,
             originalWrite    = TenantRepoSyncService.writePersistedRevisions.bind(TenantRepoSyncService);
 
@@ -7439,7 +7444,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         try {
             // One not-due repo, so the ONLY sidecar work this sweep would do is the recovery fold.
             await TenantRepoSyncService.syncTenantRepos({
-                taskStateService : createInMemoryTaskStateService(),
+                taskStateService : createTaskStateService(),
                 revisionsFilePath: revisionsFile,
                 leasePath        : leaseFilePath(),
                 leaseGuard       : async () => {},
@@ -7486,7 +7491,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     // The predecessor must lose both races: no manifest overwrite, no sidecar clear.
     test('a predecessor evicted inside manifest staging commits nothing over its successor (#16551)', async () => {
         const
-            taskStateService  = createInMemoryTaskStateService(),
+            taskStateService  = createTaskStateService(),
             inFlightFile      = `${revisionsFile}.in-flight`,
             successorSidecar  = {'t1/org/lease-repo': {startedMs: 4242, priorFailures: 3, runId: 'successor-run'}},
             successorManifest = {'t1/org/lease-repo': {
@@ -7678,7 +7683,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         });
 
         test('a failure PERSISTS its cause, so it outlives the sweep that produced it', async () => {
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await TenantRepoSyncService.runTask({
                 reason                       : 'periodic',
@@ -7709,7 +7714,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         });
 
         test('a backoff-suppressed repo REPORTS the retained cause, and says it is suppressed', async () => {
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await TenantRepoSyncService.writePersistedRevisions({
                 filePath : revisionsFile,
@@ -7756,7 +7761,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             // `effectiveCadenceMs` alone is ambiguous: 300000 is either a 5-minute configuration or a
             // repo whose streak has run so far past the cap that the cap is all that is left of it.
             // Those two states need different operator responses and read identically.
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await TenantRepoSyncService.writePersistedRevisions({
                 filePath : revisionsFile,
@@ -7800,7 +7805,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         test('POSITIVE CONTROL — an UNCAPPED repo reports backoffCapped false', async () => {
             // Without this, the assertion above is satisfied by hard-coding `true` — a discriminator
             // that never discriminates.
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await TenantRepoSyncService.writePersistedRevisions({
                 filePath : revisionsFile,
@@ -7840,7 +7845,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         test('a healthy repo held back by cadence stays plain not-due and carries NO cause', async () => {
             // The positive control. Without it, the assertion above is satisfied by a change that
             // labels every held-back repo as suppressed and attaches a cause to all of them.
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await TenantRepoSyncService.writePersistedRevisions({
                 filePath : revisionsFile,
@@ -7878,7 +7883,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         test('a repo that heals CLEARS its persisted cause', async () => {
             // A durable reason beside a zero failure count reads as a live fault, so healing has to
             // retract it explicitly rather than leave the last known error lying around.
-            const taskStateService = createInMemoryTaskStateService();
+            const taskStateService = createTaskStateService();
 
             await TenantRepoSyncService.writePersistedRevisions({
                 filePath : revisionsFile,
@@ -7969,7 +7974,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         test('an all-suppressed never-succeeded sweep reports starved, retains per-repo error codes, and stays silent before the duration floor (AC2)', async () => {
             const
-                taskStateService = createInMemoryTaskStateService(),
+                taskStateService = createTaskStateService(),
                 captureCalls     = [],
                 gitMirror        = makeFakeGitMirror({captureCalls});
 
@@ -7997,7 +8002,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         test('the detector emits exactly one heal-ledger record per starved episode once duration-proven (AC3)', async () => {
             const
-                taskStateService = createInMemoryTaskStateService(),
+                taskStateService = createTaskStateService(),
                 gitMirror        = makeFakeGitMirror(),
                 ledgerDir        = path.join(tmpDir, 'heal-events');
 
@@ -8028,7 +8033,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         test('an inverted starved floor warns exactly once per process — and never throws (#16312)', async () => {
             const
-                taskStateService = createInMemoryTaskStateService(),
+                taskStateService = createTaskStateService(),
                 logLines         = [],
                 options          = {
                     reason                       : 'periodic',
@@ -8083,7 +8088,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 logLines           = [],
                 options            = {
                     reason           : 'periodic',
-                    taskStateService : createInMemoryTaskStateService(),
+                    taskStateService : createTaskStateService(),
                     writeLog         : (level, msg) => logLines.push({level, msg}),
                     tenantReposConfig: {tenantRepos: [
                         buildStarvedRepo(),
@@ -8166,7 +8171,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // converging. Driven through the real `runTask` sweep rather than the pure helper, because the
         // helper is already covered and what is unproven here is that the number REACHES a surface.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             slug             = 'org/outstanding-observable',
             repoLabel        = `t1/${slug}`;
 
@@ -8257,7 +8262,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // closes. The second run supplies an internally impossible tuple; present-but-invalid is no
         // more authoritative than absent.
         const
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             slug             = 'org/unmeasured-outstanding',
             repoLabel        = `t1/${slug}`,
             options          = {
@@ -8320,7 +8325,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
      * would fail against the primitive's own forward-progress guarantee and be the wrong shape.
      */
     test('a clean slice CLEARS an inherited streak, while an error-bearing one still accrues it (#17349)', async () => {
-        const taskStateService = createInMemoryTaskStateService();
+        const taskStateService = createTaskStateService();
 
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/rotating'});
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/failing'});
@@ -8423,7 +8428,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         const sliceResult = await TenantRepoSyncService.syncTenantRepos({
             concurrencyLimit             : 2,
-            taskStateService             : createInMemoryTaskStateService(),
+            taskStateService             : createTaskStateService(),
             revisionsFilePath            : revisionsFile,
             leaseGuard                   : async () => {},
             tenantReposConfig            : {tenantRepos: repos},
@@ -8553,7 +8558,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
                 await TenantRepoSyncService.runTask({
                     reason           : 'periodic-sweep:60000',
-                    taskStateService : createInMemoryTaskStateService(),
+                    taskStateService : createTaskStateService(),
                     tenantReposConfig: {tenantRepos: [{
                         tenantId: 't1', repoSlug, mirrorRoot,
                         cloneUrl: `https://github.com/neomjs/lease-vote.git`
@@ -8599,7 +8604,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         const
             repoSlugs        = ['org/lease-observer', 'org/active-sibling', 'org/lease-tail'],
             captureCalls     = [],
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             seededRevisions  = Object.fromEntries(repoSlugs.map(repoSlug => [`t1/${repoSlug}`, {
                 lastIngestedRev                      : `sha-seeded-${repoSlug}`,
                 lastRunAttemptAt                     : Date.now() - 120_000,
@@ -8727,8 +8732,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             // `observedYieldCause` is what the starvation receipt reads back off this state (#415).
             lastCompletion: {status: 'yielded', leaseYielded: true, observedYieldCause: 'lease'}
         });
-        expect(taskStateService.getTaskState('tenant-repo-sync').completedAt).toBeGreaterThan(0);
-        expect(taskStateService.getTaskState('tenant-repo-sync').skippedAt).toBeUndefined();
+        expect(taskStateService.getTaskState('tenant-repo-sync')).toMatchObject({lastExitCode: 0, lastSuccessAt: expect.any(String), lastCompletionAt: expect.any(String)});
 
         const persisted = (await fs.readJson(revisionsFile)).revisions;
         expect(persisted['t1/org/lease-observer'].lastRunAttemptAt)
@@ -8782,7 +8786,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             taskName                : 'tenant-repo-sync',
             concurrencyLimit        : 1,
             concurrencyGateTimeoutMs: 500,
-            taskStateService        : createInMemoryTaskStateService(),
+            taskStateService        : createTaskStateService(),
             leaseGuard              : async () => {},
             tenantReposConfig       : {tenantRepos: repoSlugs.map(repoSlug => ({
                 tenantId          : 't1', repoSlug, mirrorRoot,
@@ -8821,7 +8825,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         const
             repoSlugs        = ['org/mixed-observer', 'org/mixed-complete', 'org/mixed-deferred', 'org/mixed-tail'],
             captureCalls     = [],
-            taskStateService = createInMemoryTaskStateService(),
+            taskStateService = createTaskStateService(),
             seededRevisions  = Object.fromEntries(repoSlugs.map(repoSlug => [`t1/${repoSlug}`, {
                 lastIngestedRev                      : `sha-seeded-${repoSlug}`,
                 lastRunAttemptAt                     : Date.now() - 120_000,
@@ -8910,8 +8914,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             running       : false,
             lastCompletion: {status: 'deferred', leaseYielded: true}
         });
-        expect(taskStateService.getTaskState('tenant-repo-sync').skippedAt).toBeGreaterThan(0);
-        expect(taskStateService.getTaskState('tenant-repo-sync').completedAt).toBeUndefined();
+        expect(taskStateService.getTaskState('tenant-repo-sync')).toMatchObject({lastExitCode: null, lastSuccessAt: null, lastCompletionAt: expect.any(String)});
     });
 
     test('#17414 an unattributed yield fails loud for that repo while the tail keeps sweeping', async () => {
@@ -8933,7 +8936,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic-sweep:60000',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: repoSlugs.map(repoSlug => ({
                 tenantId: 't1', repoSlug, mirrorRoot,
                 cloneUrl: `https://github.com/neomjs/${repoSlug.split('/')[1]}.git`
@@ -8969,7 +8972,7 @@ test.describe('TenantRepoSyncService (#11790)', () => {
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic-sweep:60000',
-            taskStateService : createInMemoryTaskStateService(),
+            taskStateService : createTaskStateService(),
             tenantReposConfig: {tenantRepos: [{
                 tenantId: 't1', repoSlug, mirrorRoot,
                 cloneUrl: 'https://github.com/neomjs/one-batch-lease.git'
