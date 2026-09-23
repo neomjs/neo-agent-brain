@@ -1,6 +1,6 @@
 import {createFleetCockpitEvent, createFleetCockpitEventId} from './fleetCockpitStatus.mjs';
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
-import {CORPUS_PROJECTION_ORIGIN}                           from '../graph/corpusProjectionContract.mjs';
+import {qualifyOriginId}                                    from '../graph/corpusProjectionContract.mjs';
 import {
     extractIssueCommentBlocks,
     getPrDeferDisposition,
@@ -22,25 +22,6 @@ import {redactCredentials} from './redactCredentials.mjs'
 export const DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT = 50
 
 const LANE_CLAIM_PATTERN = /\[(?:lane-claim|claiming)\]|\blane-state:\s*next-lane\b|\b(?:taking|claiming)\s+#\d+\b/i
-
-/**
- * @summary The producer-native identity of a conversation across corpus origins.
- *
- * The Graph's origin keeps the bare number, so every event id the cockpit has keyed since the feed
- * shipped stays byte-identical; any other origin carries its slug (`<repoSlug>#<number>`), because
- * the same number in two repositories names two durable facts, and a feed that keys both by the
- * bare number merges them.
- * @param {String|null} repoSlug The conversation's origin repository slug; absent means the Graph's origin.
- * @param {Number|String|null} nativeId The bare number or id inside that origin.
- * @returns {Number|String|null}
- */
-export function qualifyNativeId(repoSlug, nativeId) {
-    if (nativeId === null || nativeId === undefined) return null
-
-    const slug = normalizeOrigin(repoSlug)
-
-    return slug && slug !== CORPUS_PROJECTION_ORIGIN ? `${slug}#${nativeId}` : nativeId
-}
 
 /**
  * @summary Build one cockpit activity snapshot from already-read GitHub / graph facts.
@@ -165,7 +146,7 @@ export function createPrActivityEvents(prs = [], {capturedAt = new Date()} = {})
             const humanGateState = getPrHumanGateState(pr)
 
             return createFleetCockpitEvent({
-                eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.githubPr, qualifyNativeId(repoSlug, number)),
+                eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.githubPr, qualifyOriginId(repoSlug, number)),
                 type      : 'pr-activity',
                 source    : FLEET_COCKPIT_SOURCES.githubPr,
                 agentId   : author,
@@ -209,7 +190,7 @@ export function createIssueActivityEvents(issues = [], {capturedAt = new Date()}
 
         if (normalized.number !== null) {
             events.push(createFleetCockpitEvent({
-                eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.githubIssue, qualifyNativeId(normalized.repoSlug, normalized.number)),
+                eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.githubIssue, qualifyOriginId(normalized.repoSlug, normalized.number)),
                 type      : 'issue-activity',
                 source    : FLEET_COCKPIT_SOURCES.githubIssue,
                 agentId   : normalized.assignees[0] || null,
@@ -284,7 +265,7 @@ export function createStallActivityEvents(stallFindings = [], {capturedAt = new 
         .map(finding => {
             const
                 anchoredAt = finding.waitingSince || finding.observedAt || finding.lastVerifiedAt || null,
-                subjectKey = qualifyNativeId(finding.subject?.repoSlug, finding.subject?.number ?? finding.subject?.id ?? null),
+                subjectKey = qualifyOriginId(finding.subject?.repoSlug, finding.subject?.number ?? finding.subject?.id ?? null),
                 identity   = subjectKey !== null && finding.findingClass
                     ? `${finding.findingClass}:${subjectKey}`
                     : null;

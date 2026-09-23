@@ -213,6 +213,23 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource — corpus orig
         }
     });
 
+    test('the PR bound ranks by the event time: an older-numbered PR updated today survives a limit that a newer-numbered January PR does not', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'content-prbound-'));
+
+        try {
+            writeIndex(root, ['neo']);
+            fs.mkdirSync(path.join(root, 'neo', 'issues'), {recursive: true});
+            writePull(path.join(root, 'neo', 'pulls'), 8, {updatedAt: '2026-01-15T00:00:00Z'});
+            writePull(path.join(root, 'neo', 'pulls'), 7, {updatedAt: '2026-09-22T12:00:00Z'});
+
+            const snapshot = await readPrLane(root, {limit: 1});
+
+            expect(snapshot.events.map(event => event.eventId)).toEqual([`${FLEET_COCKPIT_SOURCES.githubPr}:7`])
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
     test('the bound applies after the merge: a quiet origin\'s newest row is never cut by a busy origin\'s older rows', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'content-bound-'));
 

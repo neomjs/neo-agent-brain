@@ -107,8 +107,8 @@ function isDirectory(dir) {
  *
  * Every origin is read inside its own containment: one unreadable origin degrades the slot naming
  * that origin while the rows of the others are kept (the builder's `partialFailures` path), and only
- * when no origin at all could be read does the slot take the builder's `error` path. Records are
- * stamped with their origin's `repoSlug` so the builder can key them apart. Stall inference joins
+ * when no origin at all could be read does the slot take the builder's `error` path. The readers
+ * receive the origin and answer origin-qualified records, so the builder keys them apart. Stall inference joins
  * the Native Edge Graph by bare `issue-N`, and the Graph carries ONE origin by contract
  * (`CORPUS_PROJECTION_ORIGIN`) — a foreign origin's number would join a stranger's node — so only
  * the Graph's origin is inferred; the others contribute PR, issue and lane-claim rows.
@@ -128,13 +128,16 @@ function makeReadPrLaneSnapshot({origins, graphService}) {
 
         for (const origin of origins) {
             try {
+                // The readers own the identity: with `origin` every record carries `repoSlug` and an
+                // origin-qualified id, so the same number from two repositories is two records here,
+                // not only two events downstream.
                 const originPrs    = (typeof origin.pullsDir === 'string' && origin.pullsDir.length > 0)
-                          ? readSyncedPullRecords(origin.pullsDir, {limit: params.limit})
+                          ? readSyncedPullRecords(origin.pullsDir, {limit: params.limit, origin: origin.repoSlug})
                           : [],
-                      originIssues = readWorkGraphIssueRecords(origin.issuesDir);
+                      originIssues = readWorkGraphIssueRecords(origin.issuesDir, {origin: origin.repoSlug});
 
-                prs.push(...originPrs.map(pr => ({...pr, repoSlug: origin.repoSlug})));
-                issues.push(...originIssues.map(issue => ({...issue, repoSlug: origin.repoSlug})));
+                prs.push(...originPrs);
+                issues.push(...originIssues);
 
                 if (origin.repoSlug === CORPUS_PROJECTION_ORIGIN) {
                     stallFindings.push(...buildWorkGraphStallFindings({issuesDir: origin.issuesDir, prs: originPrs, now: capturedAt, graphService})

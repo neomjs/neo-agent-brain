@@ -21,9 +21,9 @@ import {
     createFleetPrLaneActivitySnapshot,
     createIssueActivityEvents,
     createPrActivityEvents,
-    createStallActivityEvents,
-    qualifyNativeId
+    createStallActivityEvents
 } from '../../../../../../ai/services/fleet/fleetPrLaneActivityAdapter.mjs'
+import {qualifyOriginId} from '../../../../../../ai/services/graph/corpusProjectionContract.mjs'
 import {FLEET_COCKPIT_SOURCES} from '../../../../../../src/fleet/contract/cockpit.mjs';
 
 test.describe('fleetPrLaneActivityAdapter - PR/lane activity mapping', () => {
@@ -304,11 +304,12 @@ test.describe('createStallActivityEvents — stable rank time', () => {
 })
 
 test.describe('fleetPrLaneActivityAdapter - corpus origins', () => {
-    test('qualifyNativeId keeps the Graph origin bare and qualifies every other origin', () => {
-        expect(qualifyNativeId(undefined, 7)).toBe(7)
-        expect(qualifyNativeId('neo', 7)).toBe(7)
-        expect(qualifyNativeId('neo-agent-brain', 7)).toBe('neo-agent-brain#7')
-        expect(qualifyNativeId('neo-agent-brain', null)).toBeNull()
+    test('qualifyOriginId (the corpus contract) keeps the Graph origin bare and qualifies every other origin', () => {
+        expect(qualifyOriginId(undefined, 7)).toBe(7)
+        expect(qualifyOriginId('neo', 7)).toBe(7)
+        expect(qualifyOriginId('neo-agent-brain', 7)).toBe('neo-agent-brain#7')
+        expect(qualifyOriginId('neo-agent-brain', 'issue-7')).toBe('neo-agent-brain#issue-7')
+        expect(qualifyOriginId('neo-agent-brain', null)).toBeNull()
     })
 
     test('PR and issue events of a foreign origin carry the slug in id and payload; the Graph origin\'s ids are unchanged', () => {
