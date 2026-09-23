@@ -75,6 +75,10 @@ jobs:
                   test/playwright/unit/ai/services/knowledge-base/source/SourceRegistry.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/SourcePathsConfig.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/extractorCatalogue.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/scheduling/heavyMaintenanceStarvationWatchdog.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/services/TaskStateService.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/services/TenantRepoSyncService.spec.mjs
+                  test/playwright/unit/ai/services/memory-core/HealthService.starvationFold.spec.mjs
 
             - name: Verify community host authority boundary
               run: >-

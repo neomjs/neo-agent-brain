@@ -1,4 +1,9 @@
 import {test, expect} from '@playwright/test';
+import fs             from 'fs';
+import os             from 'os';
+import path           from 'path';
+import Neo            from 'neo.mjs/src/Neo.mjs';
+import 'neo.mjs/src/core/_export.mjs';
 import {
     describeHolderYield,
     describeStarvationReceiptReachability,
@@ -6,6 +11,7 @@ import {
     getDueTask
 } from '../../../../../../../ai/daemons/orchestrator/scheduling/heavyMaintenanceStarvationWatchdog.mjs';
 import {listActiveWaitersSync} from '../../../../../../../ai/daemons/orchestrator/services/heavyMaintenanceWaiterLedger.mjs';
+import {TaskStateService}      from '../../../../../../../ai/daemons/orchestrator/services/TaskStateService.mjs';
 
 const HOUR = 60 * 60 * 1000;
 
@@ -368,12 +374,10 @@ test.describe('describeHolderYield — the holder’s last cycle rides the recei
     const NULLS = {taskName: null, leaseYielded: null, observedYieldCause: null, cycleAt: null};
 
     test('a holder that records its yield facts is read from its task state, with the cycle time', () => {
-        const completedAt = Date.parse('2026-09-22T21:58:00.000Z');
-
         expect(describeHolderYield({
             leaseHolder  : 'tenant-repo-sync:scheduler',
             readTaskState: name => name === 'tenant-repo-sync'
-                ? {completedAt, lastCompletion: {status: 'yielded', leaseYielded: true, observedYieldCause: 'lease'}}
+                ? {lastCompletionAt: '2026-09-22T21:58:00.000Z', lastCompletion: {status: 'yielded', leaseYielded: true, observedYieldCause: 'lease'}}
                 : undefined
         })).toEqual({
             taskName          : 'tenant-repo-sync',
@@ -386,7 +390,7 @@ test.describe('describeHolderYield — the holder’s last cycle rides the recei
     test('a holder that records nothing yields every field as null — present, never absent', () => {
         const forDream = describeHolderYield({
             leaseHolder  : 'dream',
-            readTaskState: () => ({completedAt: Date.parse('2026-09-22T20:00:00.000Z')})
+            readTaskState: () => ({lastCompletionAt: '2026-09-22T20:00:00.000Z'})
         });
 
         expect(Object.keys(forDream).sort()).toEqual(Object.keys(NULLS).sort());
@@ -399,14 +403,52 @@ test.describe('describeHolderYield — the holder’s last cycle rides the recei
         expect(describeHolderYield({leaseHolder: 'tenant-repo-sync'})).toEqual({...NULLS, taskName: 'tenant-repo-sync'});
         expect(describeHolderYield({
             leaseHolder  : 'tenant-repo-sync:manual',
-            readTaskState: () => ({failedAt: 'not-a-number', lastCompletion: {leaseYielded: 'yes', observedYieldCause: ''}})
-        })).toEqual({...NULLS, taskName: 'tenant-repo-sync'})
+            readTaskState: () => ({lastCompletionAt: 'not-a-date', lastCompletion: {leaseYielded: 'yes', observedYieldCause: ''}})
+        })).toEqual({...NULLS, taskName: 'tenant-repo-sync'});
+        // The writer stamps an ISO string; a number here is somebody else's clock, not this contract.
+        expect(describeHolderYield({leaseHolder: 'tenant-repo-sync', readTaskState: () => ({lastCompletionAt: Date.now()})}).cycleAt).toBe(null)
     });
 
-    test('the latest terminal mark wins as cycleAt, whichever disposition it was', () => {
+    test('a record persisted before the stamp existed carries its facts with a null cycleAt', () => {
         expect(describeHolderYield({
             leaseHolder  : 'tenant-repo-sync',
-            readTaskState: () => ({completedAt: 1_000, failedAt: 3_000, skippedAt: 2_000, lastCompletion: {leaseYielded: false}})
-        })).toMatchObject({leaseYielded: false, observedYieldCause: null, cycleAt: new Date(3_000).toISOString()})
+            readTaskState: () => ({lastSuccessAt: '2026-09-22T20:00:00.000Z', lastCompletion: {leaseYielded: false, observedYieldCause: 'slice'}})
+        })).toEqual({taskName: 'tenant-repo-sync', leaseYielded: false, observedYieldCause: 'slice', cycleAt: null})
+    });
+
+    test('composed with the REAL task-state writer, cycleAt is the stamp of the mark that wrote the facts — completed, failed and skipped alike', () => {
+        const
+            dir     = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-holder-yield-')),
+            options = {stateFile: path.join(dir, 'task-state.json'), taskDefinitions: {'tenant-repo-sync': {name: 'tenant-repo-sync'}}, writeLogFn: () => {}},
+            service = Neo.create(TaskStateService, options),
+            read    = () => describeHolderYield({leaseHolder: 'tenant-repo-sync:scheduler', readTaskState: name => service.getTaskState(name)}),
+            stamp   = () => JSON.parse(fs.readFileSync(options.stateFile, 'utf8'))['tenant-repo-sync'].lastCompletionAt;
+
+        service.configure(options);
+
+        try {
+            expect(read(), 'a task that never finished a cycle').toEqual({...NULLS, taskName: 'tenant-repo-sync'});
+
+            const before = Date.now();
+            service.markCompleted('tenant-repo-sync', {status: 'yielded', leaseYielded: true, observedYieldCause: 'lease'});
+            const completed = read();
+            expect(completed).toEqual({taskName: 'tenant-repo-sync', leaseYielded: true, observedYieldCause: 'lease', cycleAt: stamp()});
+            expect(Date.parse(completed.cycleAt)).toBeGreaterThanOrEqual(before);
+
+            service.markFailed('tenant-repo-sync', 1, {status: 'failed', leaseYielded: true, observedYieldCause: 'slice'});
+            const failed = read();
+            expect(failed).toEqual({taskName: 'tenant-repo-sync', leaseYielded: true, observedYieldCause: 'slice', cycleAt: stamp()});
+            expect(Date.parse(failed.cycleAt)).toBeGreaterThanOrEqual(Date.parse(completed.cycleAt));
+
+            // A skip has no disposition clock of its own in the writer, and it clears the facts: the
+            // stamp still moves with it, so the reader dates THIS cycle rather than the last success.
+            service.markSkipped('tenant-repo-sync');
+            const skipped = read();
+            expect(skipped).toEqual({taskName: 'tenant-repo-sync', leaseYielded: null, observedYieldCause: null, cycleAt: stamp()});
+            expect(Date.parse(skipped.cycleAt)).toBeGreaterThanOrEqual(Date.parse(failed.cycleAt));
+            expect(service.getTaskState('tenant-repo-sync').lastSuccessAt, 'the success clock did not move — the stamp is not an alias of it').toBe(completed.cycleAt)
+        } finally {
+            fs.rmSync(dir, {recursive: true, force: true})
+        }
     })
 });

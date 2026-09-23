@@ -206,9 +206,12 @@ export function describeStarvationReceiptReachability({checkMs, staleAfterMs}) {
  * inferred from two samples. This reads them off the holder's persisted task state.
  *
  * Two clocks, again: the holder is a CHECK-time fact, the yield facts belong to that task's last
- * completed cycle (`cycleAt`), which may predate the current hold — the reader compares `cycleAt`
- * with `checkedAt` before treating the cause as current. Every field is present and `null` when the
- * holder records nothing, so a consumer never has to distinguish "absent" from "not observed".
+ * finished cycle. `cycleAt` is the writer's `lastCompletionAt` — stamped in the same terminal mark
+ * that persists `lastCompletion`, whichever disposition — so the two can never describe different
+ * cycles; it may still predate the current hold, and the reader compares it with `checkedAt` before
+ * treating the cause as current. Every field is present and `null` when the holder records nothing
+ * (a record persisted before the stamp existed carries its facts with a null `cycleAt`), so a
+ * consumer never has to distinguish "absent" from "not observed".
  * A lease owner is stamped `<taskName>` or `<taskName>:<mode>`; the task name is the first segment.
  *
  * @param {Object} options
@@ -221,12 +224,12 @@ export function describeHolderYield({leaseHolder, readTaskState} = {}) {
         taskName   = typeof leaseHolder === 'string' && leaseHolder.trim() ? leaseHolder.split(':')[0] : null,
         state      = taskName && typeof readTaskState === 'function' ? readTaskState(taskName) : null,
         completion = state?.lastCompletion,
-        cycleMs    = Math.max(...[state?.completedAt, state?.failedAt, state?.skippedAt].filter(Number.isFinite), -Infinity);
+        cycleMs    = typeof state?.lastCompletionAt === 'string' ? Date.parse(state.lastCompletionAt) : NaN;
 
     return {
         taskName,
         leaseYielded      : typeof completion?.leaseYielded === 'boolean' ? completion.leaseYielded : null,
         observedYieldCause: typeof completion?.observedYieldCause === 'string' && completion.observedYieldCause ? completion.observedYieldCause : null,
-        cycleAt           : Number.isFinite(cycleMs) && cycleMs > 0 ? new Date(cycleMs).toISOString() : null
+        cycleAt           : Number.isFinite(cycleMs) ? new Date(cycleMs).toISOString() : null
     };
 }

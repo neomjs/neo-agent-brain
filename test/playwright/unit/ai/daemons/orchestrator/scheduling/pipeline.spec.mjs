@@ -1307,7 +1307,8 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
                         pidFileName    : 'heavy-maintenance-starvation-watchdog.pid',
                         expectedCommand: 'HeavyMaintenanceStarvationWatchdog',
                         serviceTask    : true
-                    }
+                    },
+                    'tenant-repo-sync': {label: 'Tenant repo sync'}
                 },
                 writeLogFn: () => {}
             });
@@ -1387,6 +1388,36 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
             // no active holder there is nothing to read, and the receipt says so as four nulls rather
             // than by omission (#415) — a consumer never has to tell "not carried" from "not observed".
             expect(afterStale.holderYield).toEqual({taskName: null, leaseYielded: null, observedYieldCause: null, cycleAt: null});
+
+            // The positive arm the four nulls above cannot exercise: an ACTIVE holder whose task
+            // recorded its yield facts. The lease goes through the real acquire primitive (this pid,
+            // this boot) and the facts through the real writer, so `holderYield` is read off the same
+            // task-state file the verdict is persisted into — a reader bound to a clock the writer
+            // does not stamp fails here, not on a plane.
+            const {acquireHeavyMaintenanceLeaseSync} = await import('../../../../../../../ai/daemons/orchestrator/services/heavyMaintenanceLeasePrimitives.mjs');
+
+            fs.rmSync(leasePath, {force: true});
+            expect(acquireHeavyMaintenanceLeaseSync({owner: 'tenant-repo-sync:scheduler', reason: 'scheduler', leasePath, staleAfterMs: 60 * 60 * 1000}).acquired).toBe(true);
+            fs.writeFileSync(path.join(waitersDir, 'backup.json'), JSON.stringify({
+                taskName         : 'backup',
+                priorityZero     : true,
+                bootstrapCritical: false,
+                deferredSince    : new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+                updatedAt        : new Date().toISOString(),
+                pid              : 999999
+            }));
+            TaskStateService.markCompleted('tenant-repo-sync', {status: 'yielded', leaseYielded: true, observedYieldCause: 'lease'});
+            await drive();
+
+            const afterHeld = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+
+            expect(typeof afterHeld['tenant-repo-sync'].lastCompletionAt, 'the real writer stamped the cycle').toBe('string');
+            expect(afterHeld['heavy-maintenance-starvation-watchdog'].starvation).toMatchObject({
+                posture    : 'degraded',
+                leaseStatus: 'active',
+                leaseHolder: 'tenant-repo-sync:scheduler',
+                holderYield: {taskName: 'tenant-repo-sync', leaseYielded: true, observedYieldCause: 'lease', cycleAt: afterHeld['tenant-repo-sync'].lastCompletionAt}
+            });
         } finally {
             TaskStateService.stateFile       = originals.stateFile;
             TaskStateService.taskDefinitions = originals.taskDefinitions;

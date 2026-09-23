@@ -25,7 +25,10 @@ export function createInitialTaskState(taskDefinitions) {
             // restart reported a fresh streak, which is how an 8.5-hour priority-0 starvation stayed
             // invisible while every sweep read healthy.
             deferralStreakStartedAt: null,
-            interruptedAt          : null
+            interruptedAt          : null,
+            // Stamped by every terminal mark beside `lastCompletion`, so a reader knows which cycle that
+            // record describes; each disposition's own clock survives the others' later marks.
+            lastCompletionAt: null
         };
         return state;
     }, {});
@@ -308,12 +311,15 @@ export class TaskStateService extends Base {
      * @returns {void}
      */
     markCompleted(taskName, lastCompletion=null) {
-        const state = this.taskState[taskName];
-        state.running       = false;
-        state.pid           = null;
-        state.lastExitCode  = 0;
-        state.lastSuccessAt = new Date().toISOString();
-        state.lastCompletion = lastCompletion;
+        const state = this.taskState[taskName],
+              now   = new Date().toISOString();
+
+        state.running          = false;
+        state.pid              = null;
+        state.lastExitCode     = 0;
+        state.lastSuccessAt    = now;
+        state.lastCompletion   = lastCompletion;
+        state.lastCompletionAt = now;
         // Success closes the streak and clears the interruption marker: the lane is known-good again.
         state.failureStreakStartedAt = null;
         state.interruptedAt          = null;
@@ -340,10 +346,12 @@ export class TaskStateService extends Base {
      */
     markSkipped(taskName, lastCompletion=null) {
         const state = this.taskState[taskName];
-        state.running      = false;
-        state.pid          = null;
-        state.lastExitCode = null;
-        state.lastCompletion = lastCompletion;
+
+        state.running          = false;
+        state.pid              = null;
+        state.lastExitCode     = null;
+        state.lastCompletion   = lastCompletion;
+        state.lastCompletionAt = new Date().toISOString();
         this.writeState();
     }
 
@@ -410,14 +418,16 @@ export class TaskStateService extends Base {
      * @returns {void}
      */
     markFailed(taskName, code, lastCompletion=null) {
-        const state = this.taskState[taskName];
+        const state = this.taskState[taskName],
+              now   = new Date().toISOString();
 
-        state.running        = false;
-        state.pid            = null;
-        state.lastExitCode   = code;
-        state.lastCompletion = lastCompletion;
+        state.running          = false;
+        state.pid              = null;
+        state.lastExitCode     = code;
+        state.lastCompletion   = lastCompletion;
+        state.lastCompletionAt = now;
 
-        openFailureStreak(state, new Date().toISOString());
+        openFailureStreak(state, now);
         this.writeState();
     }
 
