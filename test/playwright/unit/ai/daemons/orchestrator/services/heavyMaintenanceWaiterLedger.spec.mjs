@@ -346,6 +346,33 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
             service.destroy()
         });
 
+        test('a disabled entry is not coverage: a parked repo never keeps the lane bootstrap-critical (#434)', async () => {
+            const {default: TenantRepoSyncService} = await import('../../../../../../../ai/daemons/orchestrator/services/TenantRepoSyncService.mjs');
+            const originalResolve = TenantRepoSyncService.resolveTenantReposConfig;
+            const dataDir         = fs.mkdtempSync(path.join(os.tmpdir(), 'bootstrap-disabled-'));
+
+            fs.writeFileSync(path.join(dataDir, 'tenant-repo-sync-revisions.json'), JSON.stringify({revisions: {'a/one': {lastIngestedRev: 'abc123'}}}));
+            // Stubbed at the tiered resolver, so the DEFAULT label resolver (where the filter lives)
+            // runs without touching the tenant lane's lease guards after the test returns.
+            TenantRepoSyncService.resolveTenantReposConfig = async () => ({tenantRepos: [
+                {tenantId: 'a', repoSlug: 'one'},
+                {tenantId: 'a', repoSlug: 'parked', disabled: true}
+            ]});
+
+            const service = Neo.create(MaintenanceBackpressureService, {dataDir, writeLog: () => {}});
+
+            try {
+                await service.ensureConfiguredTenantRepoLabels();
+
+                expect(service.configuredTenantRepoLabels).toEqual(['a/one']);
+                // A parked repo is never swept, so it never gains a checkpoint.
+                expect(service.isBootstrapCriticalTask('tenant-repo-sync')).toBe(false);
+            } finally {
+                service.destroy();
+                TenantRepoSyncService.resolveTenantReposConfig = originalResolve
+            }
+        });
+
         // The boot boundary. The arms above seed the snapshot or await a tick, which proves the
         // predicate but MASKS the first production decision: on a fresh deployment the snapshot is
         // unresolved at the first pick, and ranking ordinary there hands the heavy lease to a

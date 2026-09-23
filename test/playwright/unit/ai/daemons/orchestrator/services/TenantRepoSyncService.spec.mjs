@@ -1919,20 +1919,17 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(failed.lastSourceErrorCode).toBe('KB_GITMIRROR_FETCH_FAILED');
     });
 
-    test('a disabled entry is never swept: no git or ingest call, the sibling completes, the summary counts it (#434)', async () => {
+    test('a disabled entry is never swept: no clone, fetch, envelope or ingest call, the sibling completes, the summary counts it (#434)', async () => {
         const
             taskStateService = createTaskStateService(),
+            gitCalls         = [],
+            envelopeCalls    = [],
             ingestCalls      = [],
-            fetched          = [],
-            logs             = [];
+            logs             = [],
+            slugs            = (calls, op) => calls.filter(call => call.op === op).map(call => call.args.repoSlug);
 
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/live'});
         await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/parked'});
-
-        const observingGitMirror = {
-            ...makeFakeGitMirror(),
-            async fetch(args) { fetched.push(args.repoSlug); }
-        };
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic',
@@ -1942,16 +1939,18 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 {tenantId: 't1', repoSlug: 'org/live',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/live.git'},
                 {tenantId: 't1', repoSlug: 'org/parked', mirrorRoot, cloneUrl: 'https://github.com/neomjs/parked.git', disabled: true}
             ]},
-            gitMirror                    : observingGitMirror,
-            envelopeBuilder              : makeFakeEnvelopeBuilder(),
+            gitMirror                    : makeFakeGitMirror({captureCalls: gitCalls}),
+            envelopeBuilder              : makeFakeEnvelopeBuilder({captureCalls: envelopeCalls}),
             knowledgeBaseIngestionService: makeFakeIngestionService({captureCalls: ingestCalls}),
             revisionsFilePath            : revisionsFile,
             seedBootstrap                : false
         });
 
         expect(result.status).toBe('completed');
-        expect(fetched, 'the parked repo is never fetched').toEqual(['org/live']);
-        expect(ingestCalls.map(call => call.payload.repoSlug), 'the parked repo never reaches the ingestion service').toEqual(['org/live']);
+        expect(slugs(gitCalls, 'cloneIfMissing'), 'only the sibling is cloned').toEqual(['org/live']);
+        expect(slugs(gitCalls, 'fetch'), 'only the sibling is fetched').toEqual(['org/live']);
+        expect(slugs(envelopeCalls, 'buildIngestEnvelope'), 'only the sibling is materialized').toEqual(['org/live']);
+        expect(ingestCalls.map(call => call.payload.repoSlug), 'only the sibling reaches the ingestion service').toEqual(['org/live']);
         expect(result.details.repoCount, 'the sweep set excludes the parked repo').toBe(1);
         expect(result.details.disabledCount).toBe(1);
         expect(logs.find(line => line.includes('Cycle summary'))).toContain('1 disabled');
@@ -1994,11 +1993,14 @@ test.describe('TenantRepoSyncService (#11790)', () => {
     });
 
     test('a sweep whose every entry is disabled skips as all-disabled, not as unconfigured (#434)', async () => {
-        const ingestCalls = [];
+        const
+            ingestCalls = [],
+            logs        = [];
 
         const result = await TenantRepoSyncService.runTask({
             reason           : 'periodic',
             taskStateService : createTaskStateService(),
+            writeLog         : (level, message) => logs.push(`${level} ${message}`),
             tenantReposConfig: {tenantRepos: [
                 {tenantId: 't1', repoSlug: 'org/parked', mirrorRoot, cloneUrl: 'https://github.com/neomjs/parked.git', disabled: true}
             ]},
@@ -2012,6 +2014,31 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(result.status).toBe('skipped');
         expect(result.details).toMatchObject({reason: 'all-tenant-repos-disabled', repoCount: 0, disabledCount: 1});
         expect(ingestCalls).toEqual([]);
+        expect(logs.some(line => line.includes('No tenantRepos configured')), 'the log never calls a parked plane unconfigured').toBe(false);
+        expect(logs.some(line => line.includes('entry is disabled (1)'))).toBe(true);
+    });
+
+    test('bootstrap seeding keeps its selection: a disabled entry is seeded, never swept (#434)', async () => {
+        const ingestCalls = [];
+
+        await TenantRepoSyncService.runTask({
+            reason           : 'periodic',
+            taskStateService : createTaskStateService(),
+            tenantReposConfig: {tenantRepos: [
+                {tenantId: 't1', repoSlug: 'org/live',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/live.git'},
+                {tenantId: 't1', repoSlug: 'org/parked', mirrorRoot, cloneUrl: 'https://github.com/neomjs/parked.git', disabled: true}
+            ]},
+            gitMirror                    : makeFakeGitMirror(),
+            envelopeBuilder              : makeFakeEnvelopeBuilder(),
+            knowledgeBaseIngestionService: makeFakeIngestionService({captureCalls: ingestCalls}),
+            revisionsFilePath            : revisionsFile
+        });
+
+        const {revisions} = await fs.readJson(revisionsFile);
+
+        expect(Object.keys(revisions).sort()).toEqual(['t1/org/live', 't1/org/parked']);
+        expect(revisions['t1/org/parked'].lastIngestedRev).toBeNull();
+        expect(ingestCalls.map(call => call.payload.repoSlug)).not.toContain('org/parked');
     });
 
     test('onlyRepoSlugs scoping: subset filtering for manual CLI path', async () => {

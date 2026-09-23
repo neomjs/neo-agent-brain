@@ -305,12 +305,12 @@ function createTenantRepoAccessKey(repo) {
 }
 
 /**
- * @summary Returns true when a configured tenant repository is disabled.
+ * @summary Returns true when a configured tenant repository is disabled (parked): never swept,
+ * never probed, and not coverage the plane must initialize.
  * @param {Object} repo Effective tenant-repo entry.
  * @returns {Boolean}
- * @private
  */
-function isTenantRepoDisabled(repo) {
+export function isTenantRepoDisabled(repo) {
     return repo.disabled === true || repo.enabled === false;
 }
 
@@ -1860,7 +1860,9 @@ class TenantRepoSyncService extends Base {
             // sitting directly above the one genuine failure in the window and making it
             // indistinguishable from noise. The structured `{status, details}` return is the answer
             // channel for callers that need one; the log line is not.
-            writeLog?.('DEBUG', `[TenantRepoSync] No tenantRepos configured; skipping.`);
+            writeLog?.('DEBUG', disabledCount
+                ? `[TenantRepoSync] Every selected tenantRepos entry is disabled (${disabledCount}); skipping.`
+                : `[TenantRepoSync] No tenantRepos configured; skipping.`);
             return {status: 'skipped', details};
         }
 
@@ -2250,11 +2252,12 @@ class TenantRepoSyncService extends Base {
         // orchestrator restarts so HA-failover preserves the spread.
         // Skipped when `onlyRepoSlugs` is set (manual CLI bypass) or when caller
         // explicitly opts out via `seedBootstrap: false` (test seam for spec files
-        // that simulate "first cycle fires all repos").
+        // that simulate "first cycle fires all repos"). Seeding is config-level state and keeps
+        // its selection from before the disabled filter: a parked entry is seeded, never swept.
         let seededAny = false;
         if (seedBootstrap && !onlyRepoSlugs) {
             const sweepStartedMs = Date.now();
-            for (const repo of repos) {
+            for (const repo of selectedRepos) {
                 const repoLabel = `${repo.tenantId}/${repo.repoSlug}`;
                 if (!persistedRevisions[repoLabel]) {
                     const baseCadenceMs = (Number.isFinite(repo.cadenceMs) && repo.cadenceMs > 0)
