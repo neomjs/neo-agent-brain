@@ -196,3 +196,40 @@ export function describeStarvationReceiptReachability({checkMs, staleAfterMs}) {
         unreadableMs: Math.max(0, checkMs - staleAfterMs)
     };
 }
+
+/**
+ * @summary Reads the current lease holder's LAST FINISHED cycle for the yield facts its task recorded.
+ *
+ * The receipt can say who holds the lease and who waits; it could not say why the holder keeps or
+ * releases it — `tenant-repo-sync` records `leaseYielded` and `observedYieldCause` on every cycle,
+ * and nothing carried them to the observation surface, so the re-acquisition failure had to be
+ * inferred from two samples. This reads them off the holder's persisted task state.
+ *
+ * Two clocks, again: the holder is a CHECK-time fact, the yield facts belong to that task's last
+ * finished cycle. `cycleAt` is the writer's `lastCompletionAt` — stamped in the same terminal mark
+ * that persists `lastCompletion`, whichever disposition — so the two can never describe different
+ * cycles; it may still predate the current hold, and the reader compares it with `checkedAt` before
+ * treating the cause as current. Every field is present and `null` when the holder records nothing
+ * (a record persisted before the stamp existed carries its facts with a null `cycleAt`), so a
+ * consumer never has to distinguish "absent" from "not observed".
+ * A lease owner is stamped `<taskName>` or `<taskName>:<mode>`; the task name is the first segment.
+ *
+ * @param {Object} options
+ * @param {String|null} options.leaseHolder Owner of the currently active lease, or null.
+ * @param {Function} options.readTaskState `taskName => state|undefined` over the durable task-state store.
+ * @returns {{taskName: (String|null), leaseYielded: (Boolean|null), observedYieldCause: (String|null), cycleAt: (String|null)}}
+ */
+export function describeHolderYield({leaseHolder, readTaskState} = {}) {
+    const
+        taskName   = typeof leaseHolder === 'string' && leaseHolder.trim() ? leaseHolder.split(':')[0] : null,
+        state      = taskName && typeof readTaskState === 'function' ? readTaskState(taskName) : null,
+        completion = state?.lastCompletion,
+        cycleMs    = typeof state?.lastCompletionAt === 'string' ? Date.parse(state.lastCompletionAt) : NaN;
+
+    return {
+        taskName,
+        leaseYielded      : typeof completion?.leaseYielded === 'boolean' ? completion.leaseYielded : null,
+        observedYieldCause: typeof completion?.observedYieldCause === 'string' && completion.observedYieldCause ? completion.observedYieldCause : null,
+        cycleAt           : Number.isFinite(cycleMs) ? new Date(cycleMs).toISOString() : null
+    };
+}

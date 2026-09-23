@@ -8724,7 +8724,8 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             .toMatchObject({status: 'lease-yield-deferred'});
         expect(taskStateService.getTaskState('tenant-repo-sync')).toMatchObject({
             running       : false,
-            lastCompletion: {status: 'yielded', leaseYielded: true}
+            // `observedYieldCause` is what the starvation receipt reads back off this state (#415).
+            lastCompletion: {status: 'yielded', leaseYielded: true, observedYieldCause: 'lease'}
         });
         expect(taskStateService.getTaskState('tenant-repo-sync').completedAt).toBeGreaterThan(0);
         expect(taskStateService.getTaskState('tenant-repo-sync').skippedAt).toBeUndefined();

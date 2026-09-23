@@ -2176,6 +2176,10 @@ class TenantRepoSyncService extends Base {
         // the active cohort and finish normally so their resumable state can be committed together.
         let leaseYielded       = false;
         let leaseDeferredCount = 0;
+        // The strongest yield cause observed by ANY repo in this sweep — `lease` outranks `slice`,
+        // and the first observation wins within a rank. Reported on the cycle summary so the
+        // starvation receipt can name why this holder released (or never did).
+        let sweepYieldCause = null;
 
         /**
          * @summary Records a due repo that never entered protected work because the active cohort
@@ -2649,6 +2653,7 @@ class TenantRepoSyncService extends Base {
 
                     if (cause === YIELD_CAUSE_LEASE) {
                         observedYieldCause = cause;
+                        sweepYieldCause    = cause;
                         // Publish at the exact observation, not after this repo's ingestion call
                         // returns. An active sibling can finish and release its semaphore slot while
                         // this repo is still unwinding; the queued tail must see the latch before that
@@ -2656,6 +2661,7 @@ class TenantRepoSyncService extends Base {
                         leaseYielded = true;
                     } else if (cause !== null && observedYieldCause === null) {
                         observedYieldCause = cause;
+                        sweepYieldCause  ??= cause;
                     }
 
                     return cause
@@ -3414,6 +3420,9 @@ class TenantRepoSyncService extends Base {
                 notDueCount,
                 revalidationDeferredCount,
                 leaseYielded,
+                // The strongest cause observed anywhere in the sweep (`lease` outranks `slice`), so the
+                // starvation receipt can say why this holder let the lease go — or that it never did.
+                observedYieldCause: sweepYieldCause,
                 leaseDeferredCount,
                 ...(detection.starved ? {starved: true, starvedEvidence: detection.evidence} : {}),
                 starvedEventAt: detection.starvedEventAt,

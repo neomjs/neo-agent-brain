@@ -163,6 +163,31 @@ test.describe('Neo.ai.daemons.services.TaskStateService', () => {
         expect(stateData.mockTask.lastCompletion).toEqual(failedCompletion);
     });
 
+    test('every terminal mark stamps lastCompletionAt beside the lastCompletion it writes', () => {
+        const { service, stateFile } = createTestService();
+        const persisted              = () => JSON.parse(fs.readFileSync(stateFile, 'utf8')).mockTask;
+
+        expect(service.getTaskState('mockTask').lastCompletionAt).toBeNull();
+
+        service.markCompleted('mockTask', {status: 'completed'});
+        const completed = persisted();
+        expect(completed.lastCompletionAt).toBe(completed.lastSuccessAt);
+
+        service.markFailed('mockTask', 1, {status: 'failed'});
+        const failed = persisted();
+        expect(failed.lastCompletionAt).toBe(failed.lastErrorAt);
+        expect(Date.parse(failed.lastCompletionAt)).toBeGreaterThanOrEqual(Date.parse(completed.lastCompletionAt));
+
+        // The skip is the case with no disposition clock of its own: without the shared stamp its
+        // record would date from whichever earlier mark ran last.
+        service.markSkipped('mockTask');
+        const skipped = persisted();
+        expect(skipped.lastCompletion).toBeNull();
+        expect(Date.parse(skipped.lastCompletionAt)).toBeGreaterThanOrEqual(Date.parse(failed.lastCompletionAt));
+        expect(skipped.lastSuccessAt).toBe(completed.lastSuccessAt);
+        expect(skipped.lastErrorAt).toBe(failed.lastErrorAt);
+    });
+
     test('adoptRunning sets state without immediately writing to disk', () => {
         const { service, stateFile } = createTestService();
 

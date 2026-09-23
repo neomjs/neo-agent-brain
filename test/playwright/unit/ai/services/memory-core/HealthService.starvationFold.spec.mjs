@@ -33,7 +33,7 @@ function makeInspection({status = 'available', receipt} = {}) {
     };
 }
 
-function makeReceipt({posture = 'degraded', checkedAgoMs = 1000, breaches} = {}) {
+function makeReceipt({posture = 'degraded', checkedAgoMs = 1000, breaches, holderYield} = {}) {
     return {
         posture,
         checkedAt      : new Date(NOW - checkedAgoMs).toISOString(),
@@ -41,6 +41,8 @@ function makeReceipt({posture = 'degraded', checkedAgoMs = 1000, breaches} = {})
         waiterCount    : breaches?.length ?? 0,
         unreadableCount: 0,
         leaseHolder    : 'dream',
+        // Omitted unless a caller supplies it: a receipt from a producer that predates #415 carries no key.
+        ...(holderYield === undefined ? {} : {holderYield}),
         breaches       : breaches ?? [{taskName: 'backup', priorityZero: true, bootstrapCritical: false, deferredSince: new Date(NOW - 7_200_000).toISOString(), starvedForMs: 7_200_000, leaseHolder: 'dream'}]
     };
 }
@@ -62,6 +64,41 @@ test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed agg
         expect(payload.details[0]).toContain('lease holder: dream');
         expect(payload.heavyMaintenanceStarvation).toMatchObject({state: 'consumed-degraded', posture: 'degraded'});
         expect(payload.heavyMaintenanceStarvation.breaches[0].taskName).toBe('backup');
+        // A receipt from a producer that predates the field: carried as null, never invented.
+        expect(payload.heavyMaintenanceStarvation.holderYield).toBe(null);
+        expect(payload.details[0]).not.toContain("holder's last cycle");
+    });
+
+    test('the holder’s last-cycle yield facts ride the consumed receipt and the detail line (#415)', () => {
+        const payload = makePayload();
+
+        foldHeavyMaintenanceStarvation({
+            payload,
+            inspection: makeInspection({receipt: makeReceipt({
+                holderYield: {taskName: 'tenant-repo-sync', leaseYielded: true, observedYieldCause: 'lease', cycleAt: new Date(NOW - 60_000).toISOString()}
+            })}),
+            now         : NOW,
+            staleAfterMs: STALE_AFTER_MS
+        });
+
+        expect(payload.heavyMaintenanceStarvation.holderYield).toEqual({
+            taskName: 'tenant-repo-sync', leaseYielded: true, observedYieldCause: 'lease', cycleAt: new Date(NOW - 60_000).toISOString()
+        });
+        expect(payload.details[0]).toContain("holder's last cycle: yielded true, cause lease, at");
+
+        // Nulls-never-absent from the producer read as "none observed" — a holder that records
+        // nothing is a different fact from a producer that carries nothing.
+        const quiet = makePayload();
+
+        foldHeavyMaintenanceStarvation({
+            payload     : quiet,
+            inspection  : makeInspection({receipt: makeReceipt({holderYield: {taskName: 'dream', leaseYielded: null, observedYieldCause: null, cycleAt: null}})}),
+            now         : NOW,
+            staleAfterMs: STALE_AFTER_MS
+        });
+
+        expect(quiet.heavyMaintenanceStarvation.holderYield).toMatchObject({taskName: 'dream', observedYieldCause: null});
+        expect(quiet.details[0]).toContain("holder's last cycle: yielded unknown, cause none observed, at unknown");
     });
 
     test('healthy, unknown, and disabled postures never authorize degradation', () => {

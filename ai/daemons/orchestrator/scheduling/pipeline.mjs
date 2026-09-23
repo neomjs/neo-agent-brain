@@ -2,7 +2,7 @@ import {collectDueCandidates}                                  from './collector
 import {pickNextCandidate}                                     from './picker.mjs';
 import {evaluateStallAlarm, getEmbedDrainPendingAge}           from './embedDrainLivenessWatchdog.mjs';
 import {evaluateConsolidationStallAlarm, getRemCycleStaleness} from './remConsolidationLivenessWatchdog.mjs';
-import {evaluateWaiterStarvation}                              from './heavyMaintenanceStarvationWatchdog.mjs';
+import {describeHolderYield, evaluateWaiterStarvation}         from './heavyMaintenanceStarvationWatchdog.mjs';
 import {classifyBootFreshness}                                 from '../services/bootIdentityFreshness.mjs';
 import {listActiveWaitersSync}                                 from '../services/heavyMaintenanceWaiterLedger.mjs';
 import {inspectHeavyMaintenanceLeaseSync}                      from '../services/heavyMaintenanceLeasePrimitives.mjs';
@@ -835,6 +835,13 @@ async function runHeavyMaintenanceStarvationWatchdogTask({taskName, reason, serv
 
         const inspection  = inspectHeavyMaintenanceLeaseSync({leasePath, now});
         const leaseHolder = inspection.active ? (inspection.lease?.owner ?? null) : null;
+        // The holder's own account of its last cycle — did it yield, and to what cause. Read from the
+        // durable task state the holder task writes, so the receipt can say WHY the lease keeps
+        // changing hands (or does not), not only who holds it now.
+        const holderYield = describeHolderYield({
+            leaseHolder,
+            readTaskState: name => services.taskStateService.getTaskState(name)
+        });
 
         const evaluation = evaluateWaiterStarvation({
             ledgerReading,
@@ -867,6 +874,7 @@ async function runHeavyMaintenanceStarvationWatchdogTask({taskName, reason, serv
             // and 114 minutes past the bound. Unactionable as reported; one of four named conditions
             // once this field travels with it.
             leaseStatus: inspection.status,
+            holderYield,
             breaches   : evaluation.breaches
         };
 

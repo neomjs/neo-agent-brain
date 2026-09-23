@@ -80,6 +80,10 @@ jobs:
                   test/playwright/unit/ai/services/fleet/wireFleetActivityReadSource.spec.mjs
                   test/playwright/unit/ai/services/graph/readSyncedPullRecords.spec.mjs
                   test/playwright/unit/ai/services/graph/readWorkGraphIssueRecords.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/scheduling/heavyMaintenanceStarvationWatchdog.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/services/TaskStateService.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/services/TenantRepoSyncService.spec.mjs
+                  test/playwright/unit/ai/services/memory-core/HealthService.starvationFold.spec.mjs
 
             - name: Verify community host authority boundary
               run: >-
