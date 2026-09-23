@@ -72,15 +72,20 @@ test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () =>
             document = yamlLoad(fs.readFileSync(path.join(repoRoot, bootstrapRel), 'utf8')),
             repos    = document.tenants['neo-shared'].tenantRepos;
 
-        expect(repos).toHaveLength(4);
+        // Both inventories in this spec are pinned on purpose, like the mount roster at the end: a
+        // yaml entry change is a reviewed change here. The spec sits outside Brain CI's unit
+        // allowlist (#201), so run it by hand with every yaml edit — #402 added the corpus entry
+        // without it, and both inventories sat red on dev until #429.
+        expect(repos).toHaveLength(5);
 
         const normalized = repos.map(normalizeTenantRepoEntry);
 
         const expected = [
-            {repoSlug: 'create-app',       cloneUrl: 'https://github.com/neomjs/create-app.git',       branchRef: 'main'},
-            {repoSlug: 'devindex-opt-in',  cloneUrl: 'https://github.com/neomjs/devindex-opt-in.git',  branchRef: 'main'},
-            {repoSlug: 'devindex-opt-out', cloneUrl: 'https://github.com/neomjs/devindex-opt-out.git', branchRef: 'main'},
-            {repoSlug: 'devindex',         cloneUrl: 'https://github.com/neomjs/devindex.git',         branchRef: 'dev'}
+            {repoSlug: 'create-app',          cloneUrl: 'https://github.com/neomjs/create-app.git',          branchRef: 'main'},
+            {repoSlug: 'devindex-opt-in',     cloneUrl: 'https://github.com/neomjs/devindex-opt-in.git',     branchRef: 'main'},
+            {repoSlug: 'devindex-opt-out',    cloneUrl: 'https://github.com/neomjs/devindex-opt-out.git',    branchRef: 'main'},
+            {repoSlug: 'devindex',            cloneUrl: 'https://github.com/neomjs/devindex.git',            branchRef: 'dev'},
+            {repoSlug: 'github-content-sync', cloneUrl: 'https://github.com/neomjs/github-content-sync.git', branchRef: 'dev'}
         ];
 
         expected.forEach((entry, index) => {
@@ -90,6 +95,13 @@ test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () =>
             expect(normalized[index].credentialRef).toBe('none');
             expect(normalized[index].branchRef).toBe(entry.branchRef);
         });
+
+        // The corpus entry (#402) is the one row that carries an extraction profile: without it the
+        // conversation corpus would ingest untyped. The extractor identity is this contract's to
+        // assert; the territory globs are the profile's own business.
+        const corpus = normalized.find(repo => repo.repoSlug === 'github-content-sync');
+
+        expect(corpus.extractionProfile.routes.map(route => route.extractorId)).toEqual(['ConversationCorpusSource']);
 
         // The Neo repo is deliberately absent: `kbSync` already ingests it through the source
         // extractors, and a pull-mode entry for the same repo declares no parser, so it produced a
@@ -113,7 +125,8 @@ test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () =>
             'neo-shared/create-app',
             'neo-shared/devindex-opt-in',
             'neo-shared/devindex-opt-out',
-            'neo-shared/devindex'
+            'neo-shared/devindex',
+            'neo-shared/github-content-sync'
         ])
     });
 
@@ -155,7 +168,8 @@ test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () =>
         expect(bySlug['create-app']).toBe('main');
         expect(bySlug['devindex-opt-in']).toBe('main');
         expect(bySlug['devindex-opt-out']).toBe('main');
-        expect(bySlug['devindex']).toBe('dev')
+        expect(bySlug['devindex']).toBe('dev');
+        expect(bySlug['github-content-sync']).toBe('dev')
     });
 
     test('exactly the two consuming services mount the bootstrap read-only in the local-agent-os overlay', () => {
