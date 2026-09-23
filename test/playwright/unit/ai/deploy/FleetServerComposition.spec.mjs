@@ -30,8 +30,10 @@ test.describe('optional Fleet server composition', () => {
         // one-writer-per-path deployment contract, pinned here so it cannot silently regress.
         expect(fleet.environment).toContain('NEO_AUTH_PAT_DISK_CACHE_PATH=/app/.neo-ai-data/auth/fleet-pat-validation-cache.json');
         expect(fleet.volumes).toEqual([
+            'fleet-server-plane-root:/app/.neo-ai-data',
             'fleet-data:/app/.neo-ai-data/fleet',
-            'auth-cache-data:/app/.neo-ai-data/auth'
+            'auth-cache-data:/app/.neo-ai-data/auth',
+            'shared-deployment-state-data:/app/.neo-ai-data/deployment-state:ro'
         ]);
         expect(fleet.secrets).toEqual(['mcp-auth-token']);
         expect(fleet.expose).toEqual(['8083']);
