@@ -360,6 +360,26 @@ export function hasPendingEmbeddingRecoveryBypass(persistedRepoState) {
 }
 
 /**
+ * @summary Returns whether a clean partial slice earns the repo the very next sweep.
+ *
+ * The `partial-progress` outcome writes `partialProgressAt` beside `lastRunAttemptAt` when a slice ran
+ * out of budget with nothing failed; every other outcome writes it back to `null`. A repo carrying
+ * the marker with a zero streak is due at the next sweep instead of after the global cadence — the
+ * cadence paces repos that are caught up, and a corpus that is mid-ingest is not one of them.
+ *
+ * Deliberately gated on the streak as well as the marker: a marker beside a non-zero streak is a
+ * record two writers disagreed about, and the safe reading is the one that keeps the backoff.
+ *
+ * @param {Object|null} persistedRepoState Normalized durable checkpoint state.
+ * @returns {Boolean}
+ */
+export function hasCleanPartialResume(persistedRepoState) {
+    const at = persistedRepoState?.partialProgressAt;
+
+    return Number.isFinite(at) && at > 0 && (persistedRepoState?.consecutiveFailures ?? 0) === 0;
+}
+
+/**
  * @summary Classifies the recovery dimension of one backoff-suppressed repository.
  * @param {Object} options
  * @param {Object|null} options.persistedRepoState Normalized durable checkpoint state.
@@ -439,14 +459,18 @@ export function isRepoDue({repo, persistedRepoState, now, globalCadenceMs, jitte
     const backoffCapped      = Number.isFinite(backoffCapMs) && backoffCapMs > 0 && uncappedCadenceMs > backoffCapMs;
     const effectiveCadenceMs = backoffCapped ? backoffCapMs : uncappedCadenceMs;
     const recoveryBypass     = hasPendingEmbeddingRecoveryBypass(persistedRepoState),
+          partialResume  = hasCleanPartialResume(persistedRepoState),
           cadenceDue     = (now - lastRunAttemptAt) >= effectiveCadenceMs,
-          due            = recoveryBypass || cadenceDue,
-          dueReason      = recoveryBypass ? 'embedding-recovery' : (cadenceDue ? 'cadence' : 'not-due');
+          due            = recoveryBypass || partialResume || cadenceDue,
+          dueReason      = recoveryBypass
+              ? 'embedding-recovery'
+              : (partialResume ? 'partial-resume' : (cadenceDue ? 'cadence' : 'not-due'));
 
     return {
         due,
         dueReason,
         recoveryBypass,
+        partialResume,
         effectiveCadenceMs,
         jitterMs,
         backoffMultiplier,

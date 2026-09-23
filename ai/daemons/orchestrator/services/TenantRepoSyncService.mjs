@@ -2805,6 +2805,8 @@ class TenantRepoSyncService extends Base {
                         lastSourceErrorCode               : deferredCauseCode,
                         lastErrorAt                       : startedMs,
                         corpusOutstanding                 : deferredOutstanding,
+                        // A deferral retains a cause; the clean-partial resume marker does not survive it (#430).
+                        partialProgressAt                 : null,
                         undeliverableChunks               : deferredCensus,
                         contentPoisonChunks               : deferredPoisonCensus,
                         // Recovery eligibility, on the SAME episode a failure would advance. A
@@ -2939,7 +2941,16 @@ class TenantRepoSyncService extends Base {
                         lastRunAttemptAt                  : startedMs,
                         consecutiveFailures               : 0,
                         lastAttemptedIngestContractVersion: TENANT_REPO_INGEST_CONTRACT_VERSION,
-                        corpusOutstanding                 : partialOutstanding
+                        corpusOutstanding                 : partialOutstanding,
+                        // The resume marker `isRepoDue` reads as `partial-resume`: a clean slice that
+                        // ran out of budget is due at the next sweep, not after the global cadence.
+                        // Measured before it existed (#430): a 47k-chunk first ingest landed one
+                        // embedding batch per 30-minute cadence, every cycle re-materializing the
+                        // whole envelope first. Fairness toward the heavy-maintenance waiters is not
+                        // this cadence's job — the lease gate yields to a starving waiter on the
+                        // ledger's clock — so re-admitting here costs them nothing they had. Every
+                        // other outcome writes the marker back to null.
+                        partialProgressAt                 : startedMs
                     };
 
                     // Report the streak TRANSITION rather than a single number. `streak held at 42`
@@ -2954,7 +2965,7 @@ class TenantRepoSyncService extends Base {
                         `ingested=${rawSummary?.ingested ?? 0} ` +
                         `embeddings=${rawSummary?.embeddingsGenerated ?? 0} ` +
                         `(clean slice: streak ${priorStreak} -> 0` +
-                        `${priorStreak > 0 ? ', backoff cleared' : ''}; repo due next cycle)`);
+                        `${priorStreak > 0 ? ', backoff cleared' : ''}; repo due next sweep)`);
 
                     repoStates.push({
                         tenantId        : repo.tenantId,
@@ -3045,6 +3056,8 @@ class TenantRepoSyncService extends Base {
                         || priorState?.lastCommittedMaterializationAttemptId
                         || null,
                     extractionIdentity                   : committedExtractionIdentity,
+                    // The corpus is whole, so the clean-partial resume marker is spent (#430).
+                    partialProgressAt                    : null,
                     // Cleared explicitly, not merely omitted. The retained cause is now durable, so a
                     // repo that heals would otherwise keep publishing the reason it used to fail —
                     // a stale cause beside a zero failure count is worse than none, because it reads
@@ -3173,6 +3186,8 @@ class TenantRepoSyncService extends Base {
                         lastErrorCode                     : code,
                         lastSourceErrorCode               : sourceErrorCode,
                         lastErrorAt                       : startedMs,
+                        // A stopped lane has nothing to resume; the marker is cleared with the streak held (#430).
+                        partialProgressAt                 : null,
                         // The fingerprint the pre-work gate reads. Without it the stop lasts exactly
                         // one sweep: nothing durable distinguishes "same terminal input" from "input
                         // changed", so the next cadence performs the work again to find out.
@@ -3222,6 +3237,8 @@ class TenantRepoSyncService extends Base {
                     lastAttemptedIngestContractVersion   : TENANT_REPO_INGEST_CONTRACT_VERSION,
                     lastCommittedMaterializationAttemptId: priorState?.lastCommittedMaterializationAttemptId || null,
                     extractionIdentity                   : priorState?.extractionIdentity || null,
+                    // A failed slice ends the clean-partial resume; the backoff below paces the retry (#430).
+                    partialProgressAt                    : null,
                     // PERSIST the cause, not just the count. Before this, `lastErrorCode` existed only
                     // on the in-memory record for the sweep that failed: it was published for one
                     // cadence and then overwritten by the next sweep, which — once backoff parked the
@@ -3715,7 +3732,9 @@ class TenantRepoSyncService extends Base {
                 // torn or hand-edited sidecar must not project arbitrary text into durable state.
                 lastAccessCode   : priorState?.lastAccessCode ?? null,
                 lastErrorAt      : startedMs,
-                embeddingRecovery: foldedRecovery
+                embeddingRecovery: foldedRecovery,
+                // A crashed attempt is a failure for pacing purposes; the resume marker does not outlive it (#430).
+                partialProgressAt: null
             };
 
             folded++;
