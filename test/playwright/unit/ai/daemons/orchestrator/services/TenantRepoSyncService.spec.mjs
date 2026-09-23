@@ -47,7 +47,6 @@ import RepositoryClassHierarchyResolver
 import {diffTenantExtractionIdentity}
     from '../../../../../../../ai/services/knowledge-base/helpers/kbReconciliationEngine.mjs';
 import {
-    LIFECYCLE_GUARD_SUFFIX,
     acquireHeavyMaintenanceLease,
     buildLeasePayload,
     inspectHeavyMaintenanceLease,
@@ -6776,18 +6775,21 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(await fs.pathExists(leaseFilePath())).toBe(true);
 
         // A reclaimer replaces the lease while the run is paused mid-work.
-        // The replacement happens INSIDE the lifecycle guard so an in-flight
-        // renewal tick cannot interleave with this test write.
-        const guardPath = `${leaseFilePath()}${LIFECYCLE_GUARD_SUFFIX}`;
-        await fs.ensureDir(guardPath);
-        await fs.writeJson(leaseFilePath(), buildLeasePayload({
-            owner       : 'replacement-owner',
-            reason      : 'tenant-repo-sync',
-            pid         : process.pid,
-            staleAfterMs: 60_000,
-            token       : 'replacement-token'
-        }));
-        await fs.rmdir(guardPath);
+        // The replacement happens INSIDE the lifecycle guard, entered exclusively,
+        // so an in-flight renewal tick cannot interleave with this test write.
+        const held = await enterLifecycleGuard({leasePath: leaseFilePath(), fsModule: fs});
+        expect(held, 'the reclaimer holds the guard exclusively').not.toBeNull();
+        try {
+            await fs.writeJson(leaseFilePath(), buildLeasePayload({
+                owner       : 'replacement-owner',
+                reason      : 'tenant-repo-sync',
+                pid         : process.pid,
+                staleAfterMs: 60_000,
+                token       : 'replacement-token'
+            }));
+        } finally {
+            await exitLifecycleGuard({ownerFilePath: held.ownerFilePath, fsModule: fs});
+        }
 
         // Let renewal ticks observe the loss; even under full renewal
         // starvation the pre-ingest fence re-inspects the live file and
@@ -7202,17 +7204,20 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // The predecessor is now inside protected work with its own in-flight record persisted.
         await envelopeEntered;
 
-        const guardPath = `${leaseFilePath()}${LIFECYCLE_GUARD_SUFFIX}`;
-        await fs.ensureDir(guardPath);
-        await fs.writeJson(leaseFilePath(), buildLeasePayload({
-            owner       : 'successor-owner',
-            reason      : 'tenant-repo-sync',
-            pid         : process.pid,
-            staleAfterMs: 60_000,
-            token       : 'successor-token'
-        }));
-        await fs.writeJson(inFlightFile, {'t1/org/lease-repo': successorEntry});
-        await fs.rmdir(guardPath);
+        const held = await enterLifecycleGuard({leasePath: leaseFilePath(), fsModule: fs});
+        expect(held, 'the successor holds the guard exclusively').not.toBeNull();
+        try {
+            await fs.writeJson(leaseFilePath(), buildLeasePayload({
+                owner       : 'successor-owner',
+                reason      : 'tenant-repo-sync',
+                pid         : process.pid,
+                staleAfterMs: 60_000,
+                token       : 'successor-token'
+            }));
+            await fs.writeJson(inFlightFile, {'t1/org/lease-repo': successorEntry});
+        } finally {
+            await exitLifecycleGuard({ownerFilePath: held.ownerFilePath, fsModule: fs});
+        }
 
         await new Promise(resolve => setTimeout(resolve, 120));
 
