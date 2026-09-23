@@ -417,6 +417,55 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
             service.destroy()
         });
 
+        // #430: a clean partial slice is due at the next sweep. Were the rest of a first ingest still
+        // bootstrap-critical, the rank gate would let it hold the heavy lane for the whole corpus.
+        const partialManifest = (lastIngestedRev, consecutiveFailures = 0) => JSON.stringify({revisions: {
+            'a/one': {lastIngestedRev, partialProgressAt: 990_000, consecutiveFailures}
+        }});
+
+        function tenantSyncYieldsTo(service, waiters) {
+            return findWaiterToYieldTo({
+                taskName            : 'tenant-repo-sync',
+                bootstrapCritical   : service.isBootstrapCriticalTask('tenant-repo-sync'),
+                waiters,
+                fairnessYieldAfterMs: 30 * 60 * 1000,
+                now                 : T0
+            })?.taskName ?? null
+        }
+
+        const starvingDream = [{taskName: 'dream', deferredSince: iso(T0 - HOUR)}];
+        const waitingBackup = [{taskName: 'backup', priorityZero: true, deferredSince: iso(T0 - 60_000)}];
+
+        test('a first ingest whose first slice landed clean ranks ordinary in the pick and at admission', () => {
+            const service = serviceWithCoverage(partialManifest(null), ['a/one']);
+
+            expect(service.isBootstrapCriticalTask('tenant-repo-sync')).toBe(false);
+            expect(pickNextCandidate({candidates: bootCandidates(), runningTasks: [], policyContext: bootPolicyContext(service)}).taskName,
+                'the more-stale REM lane wins the pick').toBe('dream');
+            expect(tenantSyncYieldsTo(service, starvingDream), 'a waiter starved past the bound gets its turn').toBe('dream');
+            expect(tenantSyncYieldsTo(service, waitingBackup)).toBe('backup');
+            service.destroy()
+        });
+
+        test('CONTROL — a checkpointed partial repo yields the same way, while an unlanded or failed first slice keeps the class', () => {
+            const
+                checkpointed = serviceWithCoverage(partialManifest('abc123'), ['a/one']),
+                firstSlice   = serviceWithCoverage(JSON.stringify({revisions: {'a/one': {lastIngestedRev: null}}}), ['a/one']),
+                failedSlice  = serviceWithCoverage(partialManifest(null, 1), ['a/one']);
+
+            expect(tenantSyncYieldsTo(checkpointed, starvingDream)).toBe('dream');
+
+            expect(firstSlice.isBootstrapCriticalTask('tenant-repo-sync')).toBe(true);
+            expect(tenantSyncYieldsTo(firstSlice, starvingDream), 'an ordinary waiter never displaces the first slice').toBeNull();
+            expect(tenantSyncYieldsTo(firstSlice, waitingBackup), 'priority-0 still wins').toBe('backup');
+
+            expect(failedSlice.isBootstrapCriticalTask('tenant-repo-sync')).toBe(true);
+
+            checkpointed.destroy();
+            firstSlice.destroy();
+            failedSlice.destroy()
+        });
+
         test('an expired coverage snapshot cannot dispatch REM while a canonical refresh discovers a new repo', async () => {
             const service = serviceWithManifest(JSON.stringify({revisions: {
                 'a/one': {lastIngestedRev: 'abc123'}
