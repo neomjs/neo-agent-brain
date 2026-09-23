@@ -166,6 +166,10 @@ services:
     # than a substring that survives it.
     command: ["sh", "-c", "node --max-old-space-size=${NEO_KB_SERVER_HEAP_MB:-768} \"$$SERVER_ENTRYPOINT\""]
     volumes:
+      # Private plane root: whatever this service writes under the data root that no channel volume
+      # below owns (logs, cursors, discovered state) lands here instead of the writable layer, so a
+      # recreate keeps it. The channel volumes mount on top of this one.
+      - kb-server-plane-root:/app/.neo-ai-data
       - shared-sqlite-data:/app/.neo-ai-data/sqlite
       # Read-only half of the orchestrator -> public MCP deployment-state bridge.
       # A dedicated volume keeps this graph-independent receipt visible without
@@ -180,6 +184,7 @@ services:
       # layer and the orchestrator reads its own empty one, so every observation surfaces as
       # `unavailable/absent` forever — a silent no-op, because a successful LOCAL write is
       # indistinguishable from a delivered one at the writer.
+      - shared-heap-observation-data:/app/.neo-ai-data/heap-observation
       # Restart-durable admission cache (hash-keyed; no token material). DISTINCT per service:
       # the deployment contract is one writer per path, which dissolves cross-process cache
       # contention structurally instead of locking.
@@ -317,6 +322,8 @@ services:
           node --max-old-space-size=${NEO_MC_SERVER_HEAP_MB:-768} "$$SERVER_ENTRYPOINT";
         fi
     volumes:
+      # Private plane root (see kb-server): the wake cursor and logs survive a recreate.
+      - mc-server-plane-root:/app/.neo-ai-data
       - shared-sqlite-data:/app/.neo-ai-data/sqlite
       - shared-handoff-data:/app/.neo-ai-data/handoff:ro
       # Read-only half of the orchestrator -> public MCP deployment-state bridge, and the mount the
@@ -330,6 +337,7 @@ services:
       # layer and the orchestrator reads its own empty one, so every observation surfaces as
       # `unavailable/absent` forever — a silent no-op, because a successful LOCAL write is
       # indistinguishable from a delivered one at the writer.
+      - shared-heap-observation-data:/app/.neo-ai-data/heap-observation
       # Restart-durable admission cache (hash-keyed; no token material). DISTINCT per service:
       # the deployment contract is one writer per path, which dissolves cross-process cache
       # contention structurally instead of locking.
@@ -484,6 +492,9 @@ services:
     secrets:
       - mcp-auth-token
     volumes:
+      # Private plane root (see kb-server): discovered concepts, the lazy-edge queue, REM run
+      # receipts and the wake cursor live outside every channel volume and survive a recreate here.
+      - orchestrator-plane-root:/app/.neo-ai-data
       # Scheduler cadence, tenant-repo revisions, recovery ledgers, logs, and
       # process-epoch files share AiConfig.orchestrator.dataDir. Persist the
       # directory as one orchestrator-owned lifecycle boundary: PID/lease files
@@ -655,6 +666,8 @@ services:
       - NEO_PUBLIC_URL=https://${NEO_DEPLOY_HOSTNAME:-localhost}/fleet
     command: ["sh", "-c", "node --max-old-space-size=${NEO_FLEET_SERVER_HEAP_MB:-384} \"$$SERVER_ENTRYPOINT\""]
     volumes:
+      # Private plane root (see kb-server). Fleet's keys and ciphertext stay in `fleet-data` below.
+      - fleet-server-plane-root:/app/.neo-ai-data
       # One Fleet-owned root co-locates registry, tenant descriptors, encryption/signing keys, and
       # ciphertext. No graph/MC/KB private volume is mounted into this service.
       - fleet-data:/app/.neo-ai-data/fleet
@@ -785,6 +798,12 @@ volumes:
   # orchestrator so the authority cannot split across container writable layers.
   shared-vector-generation-data:
   tenant-repo-mirrors:
+  # One private plane root per service that writes under the data root; the channel volumes above
+  # mount on top of it. A new root starts empty, so the first deploy seeds it from the old container.
+  kb-server-plane-root:
+  mc-server-plane-root:
+  orchestrator-plane-root:
+  fleet-server-plane-root:
   caddy-data:
   caddy-config:
   local-model-data:
