@@ -26,10 +26,11 @@
 #                                  is display-grade `customMeta`, never this repoSlug. Publishing
 #                                  it under `neo` would orphan every `neo` source-code row on the
 #                                  next reconciliation (neo-agent-brain#402, D#17846 §8.6).
-#                                  Enabled by neo-agent-brain#411 once the #253 image cut shipped
-#                                  the stop for neo-agent-brain#237's ref-not-found specimen, so a
-#                                  new entry no longer inherits a retrying lane. Plane-side
-#                                  freshness receipts: neo-agent-brain#411 and neo-agent-brain#64.
+#                                  Declared enabled by neo-agent-brain#411 after the #253 image cut
+#                                  deployed the stop for an unresolvable ref (neo-agent-brain#237),
+#                                  so the lane can no longer retry one. The entry ingests only once
+#                                  the activation transaction switches the lane's master toggle on;
+#                                  the plane receipts live on neo-agent-brain#411 and #64.
 #
 # The Neo repo itself is deliberately NOT registered here. `kbSync` already ingests neo's content
 # through the default source extractors, producing TYPED chunks (`type`, `kind`) that `query_documents` and
