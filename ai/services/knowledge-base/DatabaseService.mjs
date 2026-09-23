@@ -3,20 +3,19 @@ import {classifyExportCompleteness, EXPORT_COMPLETENESS}                        
 import {partitionRowsByVectorValidity}                                                                                     from '../memory-core/helpers/vectorWriteInvariant.mjs';
 import {validateJsonlSourceFile}                                                                                           from '../memory-core/helpers/vectorJsonlSourceValidation.mjs';
 import {assertNoNaturalKeyDivergence, classifyIncomingRow, DIVERGENCE_SCAN, KB_MERGE_NATURAL_KEY_DIVERGENCE, naturalKeyOf} from './helpers/mergeIdentityContract.mjs';
+import {embedCoreCorpusProfiles, materializeCoreCorpusProfiles, prepareCoreCorpusProfiles}                                 from './helpers/coreCorpusProfileRunner.mjs';
+import {assertNoCoreCorpusAcquisitionOverlap}                                                                              from './helpers/coreCorpusProfilePlan.mjs';
+import {RepositorySourcePathClassHierarchyResolver}                                                                        from './helpers/repositoryClassHierarchyResolver.mjs';
 import Base                                                                                                                from 'neo.mjs/src/core/Base.mjs';
 import ChromaManager                                                                                                       from './ChromaManager.mjs';
 import DestructiveOperationGuard                                                                                           from '../../mcp/server/shared/services/DestructiveOperationGuard.mjs';
 import VectorService                                                                                                       from './VectorService.mjs';
-// SourceRegistry owns KB source discovery. Importing `./source/_export.mjs` triggers
-// auto-registration of Neo's default Source classes when `aiConfig.useDefaultSources !== false`,
-// plus declarative `aiConfig.customSources` entries.
-import SourceRegistry from './source/_export.mjs';
-import crypto         from 'crypto';
-import dotenv         from 'dotenv';
-import fs             from 'fs-extra';
-import logger         from '../../mcp/server/knowledge-base/logger.mjs';
-import path           from 'path';
-import readline       from 'readline';
+import crypto                                                                                                              from 'crypto';
+import dotenv                                                                                                              from 'dotenv';
+import fs                                                                                                                  from 'fs-extra';
+import logger                                                                                                              from '../../mcp/server/knowledge-base/logger.mjs';
+import path                                                                                                                from 'path';
+import readline                                                                                                            from 'readline';
 
 /**
  * Refusal codes `importDatabase` re-throws unwrapped. A refusal's value is that a caller can tell it
@@ -91,13 +90,12 @@ function describeKbExportOutcome({exported, verdict, bootstrapped = null}) {
  * ensures the database is synchronized on application startup.
  *
  * ### Key Responsibilities:
- * 1.  **Autonomous Startup:** On initialization, it automatically checks if the knowledge base
- *     is synchronized with the source files and runs the necessary embedding or creation
- *     processes to bring it up-to-date.
+ * 1.  **Readiness:** Initialization waits for Chroma. The Orchestrator or explicit CLI owns
+ *     the heavy shared-core sync schedule; constructing this singleton never scans or embeds.
  * 2.  **ETL Pipeline:**
- *     - **Extract:** Reads from diverse source-of-truth files (`createKnowledgeBase`).
- *     - **Transform:** Parses and structures data into a unified JSONL format.
- *     - **Load:** Delegates embedding and vector storage to `VectorService`.
+ *     - **Extract:** Compiles exact Engine and Brain repository profiles (`createKnowledgeBase`).
+ *     - **Transform:** Publishes two separately owned JSONL artifacts behind one manifest.
+ *     - **Load:** Embeds them under separate repository stamps through `VectorService`.
  * 3.  **Lifecycle Management:** Provides methods for the full lifecycle of the knowledge base,
  *     from creation and synchronization to deletion.
  * 4.  **Backup Surface:** Exposes `manageDatabaseBackup({action: 'export'})` as a peer to
@@ -134,10 +132,11 @@ class DatabaseService extends Base {
      * having to compare the full text, while keeping byte-identical chunks from different
      * tenants or repositories collision-safe.
      * @param {Object} chunk The chunk object.
+     * @param {Object} [context] Explicit shared-core repository and profile identity.
      * @returns {String} The hexadecimal hash string.
      * @private
      */
-    createContentHash(chunk) {
+    createContentHash(chunk, context = {}) {
         // Prefer the nested tenant-shape only when it exposes a tenant field; Tier-1's inherited
         // `knowledgeBase` ops leaf is not one (see VectorService.getTenantIsolationConfig).
         // A wrong surface here would corrupt content-hash tenant collision-safety.
@@ -148,16 +147,17 @@ class DatabaseService extends Base {
             nestedKb.defaultVisibility !== undefined
         )) ? nestedKb : aiConfig;
         const contentString = JSON.stringify({
-            tenantId   : chunk.tenantId ?? kbConfig.defaultTenantId,
-            repoSlug   : chunk.repoSlug ?? kbConfig.defaultRepoSlug,
-            type       : chunk.type,
-            name       : chunk.name,
-            description: chunk.description,
-            content    : chunk.content,
-            extends    : chunk.extends,
-            configType : chunk.configType,
-            params     : chunk.params,
-            returns    : chunk.returns
+            tenantId          : context.tenantId ?? chunk.tenantId ?? kbConfig.defaultTenantId,
+            repoSlug          : context.repoSlug ?? chunk.repoSlug ?? kbConfig.defaultRepoSlug,
+            extractionIdentity: context.extractionIdentity ?? chunk.extractionIdentity,
+            type              : chunk.type,
+            name              : chunk.name,
+            description       : chunk.description,
+            content           : chunk.content,
+            extends           : chunk.extends,
+            configType        : chunk.configType,
+            params            : chunk.params,
+            returns           : chunk.returns
         });
         return crypto.createHash('sha256').update(contentString).digest('hex');
     }
@@ -817,52 +817,42 @@ class DatabaseService extends Base {
     }
 
     /**
-     * Parses all knowledge sources (JSDoc, guides, release notes, tickets) and generates
-     * a structured JSONL file at `dist/ai-knowledge-base.jsonl`.
+     * @summary Materializes shared Engine and Brain source into separately owned JSONL artifacts.
      *
-     * This function acts as the "compiler" for the knowledge base. Its primary role is to
-     * read from various source-of-truth files and convert them into a unified, structured format.
-     * It uses a write stream to handle potentially large amounts of data efficiently without
-     * holding everything in memory at once.
+     * Each repository supplies one exact reader and its own hierarchy. Both profiles compile
+     * before either artifact is written; a manifest is published only after both finish. The
+     * legacy mutable SourceRegistry is not a core-scan authority after this cut.
      *
-     * ### Key Characteristics:
-     * - **Input:** Reads from `docs/output/all.json` for API data and `learn/tree.json` for the guide structure.
-     * - **Processing:** It breaks down the content into logical "chunks" (e.g., a class, a method, a section of a guide).
-     * - **Output:** It streams each chunk as a JSON object into the `dist/ai-knowledge-base.jsonl` file.
-     *
-     * @returns {Promise<object>} A promise that resolves to a success message with the total chunk count.
+     * @param {Object} [options]
+     * @param {String} [options.brainRevision] Exact checkout revision when no image stamp exists.
+     * @param {String} [options.dataPath=aiConfig.dataPath] Explicit artifact destination; tests use an isolated directory.
+     * @param {Function} [options.listConfiguredTenantRepos] Effective graph/YAML/Tier-1 repo reader test seam.
+     * @returns {Promise<Object>} Published two-repository artifact manifest and chunk count.
      */
-    async createKnowledgeBase() {
-        logger.log('Starting knowledge base file creation...');
-        const outputPath = aiConfig.dataPath;
-        await fs.ensureDir(path.dirname(outputPath));
-        const writeStream = fs.createWriteStream(outputPath);
-        let   totalChunks = 0;
+    async createKnowledgeBase({brainRevision, dataPath = aiConfig.dataPath, listConfiguredTenantRepos} = {}) {
+        const
+            brainRoot = aiConfig.neoRootDir,
+            tenantId  = VectorService.resolveTenantStamp().tenantId;
 
-        // Sources are discovered via SourceRegistry instead of a hardcoded array. Default
-        // Neo sources auto-register at import-time via `./source/_export.mjs` unless
-        // `aiConfig.useDefaultSources === false`; tenant-supplied custom sources register
-        // either declaratively via `aiConfig.customSources` or programmatically via
-        // `SourceRegistry.registerSource(...)`. Insertion order is preserved for
-        // byte-equivalent generated JSONL output.
-        const sources      = SourceRegistry.getSources();
-        const createHashFn = this.createContentHash.bind(this);
+        await this.assertCoreCorpusAcquisitionOwnership({tenantId, listConfiguredTenantRepos});
 
-        for (const source of sources) {
-            const sourceName = source.className.split('.').pop();
-            logger.log(`Extracting knowledge from ${sourceName}...`);
-            totalChunks += await source.extract(writeStream, createHashFn);
-        }
-
-        return new Promise((resolve, reject) => {
-            writeStream.on('finish', () => {
-                const message = `Knowledge base file created with ${totalChunks} chunks.`;
-                logger.log(message);
-                resolve({message});
+        const
+            prepared  = await prepareCoreCorpusProfiles({
+                brainRoot,
+                brainRevision,
+                tenantId,
+                hierarchyResolver: RepositorySourcePathClassHierarchyResolver
             });
-            writeStream.on('error', reject);
-            writeStream.end();
+
+        const result = await materializeCoreCorpusProfiles({
+            dataPath,
+            prepared,
+            tenantId,
+            createHashFn: (chunk, context) => this.createContentHash(chunk, context)
         });
+
+        logger.log(result.message);
+        return result
     }
 
     /**
@@ -877,8 +867,11 @@ class DatabaseService extends Base {
     }
 
     /**
-     * Reads the generated JSONL file and upserts the data into the ChromaDB collection.
-     * Delegates to VectorService.
+     * @summary Embeds the two published repository artifacts under separate ownership stamps.
+     *
+     * The first profile cut is additive: routine stale deletion remains disabled until the
+     * replacement-proven old-code-row retirement from #419 and scoped conversation cleanup
+     * from #417. A caller-supplied stale strategy is refused, never passed through.
      * @param {Object}  [opts]
      * @param {Boolean} [opts.viaMcp=false] True when invoked via MCP tool dispatch;
      *                                      threaded to VectorService.embed for the
@@ -887,29 +880,34 @@ class DatabaseService extends Base {
      * @param {Function} [opts.shouldYield]  Cooperative heavy-maintenance-lease yield predicate,
      *                                      threaded to VectorService.embed so a long re-embed releases the
      *                                      lease at a batch boundary and resumes on the next sweep.
+     * @param {String} [opts.brainRevision] Exact checkout revision when no image stamp exists.
+     * @param {String} [opts.dataPath=aiConfig.dataPath] Explicit artifact destination.
+     * @param {Function} [opts.listConfiguredTenantRepos] Effective repo reader test seam.
      * @returns {Promise<object>} A promise that resolves to a success message, OR a
      *     `{error, code: 'KB_SYNC_VOLUME_EXCEEDED', ...}` shape when the MCP gate fires.
      */
-    async embedKnowledgeBase({viaMcp = false, staleStrategy, shouldYield} = {}) {
-        return await VectorService.embed(aiConfig.dataPath, {viaMcp, staleStrategy, shouldYield});
+    async embedKnowledgeBase({viaMcp = false, staleStrategy, shouldYield, brainRevision, dataPath = aiConfig.dataPath, listConfiguredTenantRepos} = {}) {
+        await this.assertCoreCorpusAcquisitionOwnership({
+            tenantId: VectorService.resolveTenantStamp().tenantId,
+            listConfiguredTenantRepos
+        });
+
+        return await embedCoreCorpusProfiles({
+            dataPath,
+            brainRoot    : aiConfig.neoRootDir,
+            brainRevision,
+            vectorService: VectorService,
+            viaMcp,
+            staleStrategy,
+            shouldYield
+        });
     }
 
     /**
-     * Orchestrates the automated startup synchronization of the knowledge base.
+     * @summary Waits for Chroma readiness without starting a heavy core-corpus sync.
      *
-     * This method is called automatically by the framework after the service is constructed.
-     * It ensures that the knowledge base is ready and up-to-date before the application
-     * proceeds.
-     *
-     * The logic is as follows:
-     * 1. It first waits for the underlying database connection to be ready.
-     * 2. It then checks for the existence of the `ai-knowledge-base.jsonl` file.
-     * 3. If the file does not exist, it triggers a full `syncDatabase()` (create + embed).
-     * 4. If the file exists, it triggers `embedKnowledgeBase()` to process any new or changed content.
-     *
-     * This entire process is awaited via the `ready()` promise on the service, ensuring
-     * that dependent services or startup sequences only proceed once the knowledge base is
-     * fully initialized.
+     * The Orchestrator/CLI holds the heavy-maintenance lease and calls `syncDatabase()` on its
+     * own schedule. Importing this singleton only establishes the database dependency.
      * @protected
      */
     async initAsync() {
@@ -920,21 +918,44 @@ class DatabaseService extends Base {
     }
 
     /**
-     * A convenience orchestrator that runs the entire knowledge base synchronization process.
-     * It first creates the knowledge base file and then embeds its contents into the vector database.
-     * This provides a simple, single-command way to update the knowledge base from scratch.
+     * @summary Builds both repository profiles and embeds them additively under separate stamps.
+     *
+     * The legacy-row deletion/migration is a separate acceptance transaction. This method
+     * never treats a missing row in the new profiles as authority to delete an old one.
      * @param {Object}  [opts]
      * @param {Boolean} [opts.viaMcp=false] True when invoked via MCP tool dispatch;
      *                                      threaded to embed() for the work-volume gate.
      * @param {String}  [opts.staleStrategy] Explicit stale-data handling strategy.
      * @param {Function} [opts.shouldYield]  Cooperative heavy-maintenance-lease yield predicate,
      *                                      threaded to the embed step.
+     * @param {String} [opts.brainRevision] Exact checkout revision when no image stamp exists.
+     * @param {String} [opts.dataPath=aiConfig.dataPath] Explicit artifact destination.
+     * @param {Function} [opts.listConfiguredTenantRepos] Effective repo reader test seam.
      * @returns {Promise<object>} A promise that resolves to the final success message from the embedding step.
      */
-    async syncDatabase({viaMcp = false, staleStrategy, shouldYield} = {}) {
+    async syncDatabase({viaMcp = false, staleStrategy, shouldYield, brainRevision, dataPath = aiConfig.dataPath, listConfiguredTenantRepos} = {}) {
         logger.log('Starting full database synchronization...');
-        await this.createKnowledgeBase();
-        return await this.embedKnowledgeBase({viaMcp, staleStrategy, shouldYield});
+        await this.createKnowledgeBase({brainRevision, dataPath, listConfiguredTenantRepos});
+        return await this.embedKnowledgeBase({viaMcp, staleStrategy, shouldYield, brainRevision, dataPath, listConfiguredTenantRepos});
+    }
+
+    /**
+     * @summary Refuses dual acquisition against the effective tenant-repo configuration before
+     * either materialization or standalone embedding can write.
+     * @param {Object} options
+     * @param {String} options.tenantId Shared core tenant.
+     * @param {Function} [options.listConfiguredTenantRepos] Tier-resolved config reader test seam.
+     * @returns {Promise<void>}
+     */
+    async assertCoreCorpusAcquisitionOwnership({tenantId, listConfiguredTenantRepos}) {
+        const resolve = listConfiguredTenantRepos || (async () => {
+            const {KB_IngestionService} = await import('../../services.mjs');
+
+            return KB_IngestionService.listConfiguredTenantRepos()
+        });
+        const {tenantRepos} = await resolve();
+
+        assertNoCoreCorpusAcquisitionOverlap({tenantId, tenantRepos});
     }
 }
 

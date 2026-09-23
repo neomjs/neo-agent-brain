@@ -32,10 +32,10 @@ This manifest defines the public API for the Neo.mjs AI Infrastructure SDK. Agen
 - **`async stopDatabase()`**
 
 ### KB_DatabaseService
-- **`async ready()`**: Resolves when the KB content is synchronized.
-- **`async syncDatabase()`**: Full re-index (expensive).
-- **`async createKnowledgeBase()`**: Generates JSONL.
-- **`async embedKnowledgeBase()`**: Generates vectors.
+- **`async ready()`**: Resolves when Chroma is ready; it does not start a sync.
+- **`async syncDatabase({brainRevision?})`**: Materializes separate exact-revision Engine and Brain profiles, then embeds them additively. An unstamped checkout resolves and attests its clean HEAD; an optional supplied revision must match it. The image uses `.neo-revision`.
+- **`async createKnowledgeBase({brainRevision?, dataPath?})`**: Publishes two repository-owned JSONL artifacts behind one manifest. Both profiles validate before publication; an unstamped Brain checkout must be clean at its resolved HEAD revision.
+- **`async embedKnowledgeBase({brainRevision?, dataPath?})`**: Embeds the published artifacts under separate `neo` and `neo-agent-brain` stamps. Legacy-row deletion remains off until the migration receipt.
 
 ### KB_DocumentService
 - **`async getDocumentById({ id })`**

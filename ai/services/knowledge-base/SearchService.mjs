@@ -313,7 +313,11 @@ class SearchService extends Base {
      * Brain implementation, guides, skills, and tests live under `neoRootDir`; the synchronized
      * primary-repository corpus and raw-repository source live under `projectRoot`. Type is the
      * primary discriminator, with stable path prefixes preserving older chunks that predate type
-     * normalization.
+     * normalization. Repository-profile Engine rows instead carry `rootKind: neo-workspace` with
+     * `sourcePath` relative to the installed Engine package, while legacy `source` includes its
+     * `node_modules/neo.mjs/` prefix. That explicit provenance wins over type heuristics:
+     * Brain and Engine can contain the same relative test path, and reading the Brain file for
+     * an Engine row would hand the model the wrong content.
      *
      * @param {Object} ref Query reference.
      * @returns {String} Absolute local root that owns the relative source path.
@@ -321,6 +325,14 @@ class SearchService extends Base {
     resolveLocalReferenceRoot(ref = {}) {
         const source = String(ref.source || '').replaceAll('\\', '/'),
               type   = ref.metadata?.type;
+
+        if (
+            ref.metadata?.rootKind === 'neo-workspace'
+            && ref.metadata?.tenantId === aiConfig.defaultTenantId
+            && ref.metadata?.repoSlug === aiConfig.defaultRepoSlug
+        ) {
+            return aiConfig.neoRootDir
+        }
 
         return primaryRepoHydrationTypes.has(type) ||
             source.startsWith('resources/content/') || source.startsWith('.github/RELEASE_NOTES/')
@@ -345,9 +357,10 @@ class SearchService extends Base {
     /**
      * Resolves the best available source content for RAG synthesis.
      *
-     * Curated local references hydrate from their owning Brain or primary-repository root. Tenant-
-     * ingested references use Chroma metadata content instead, preventing same-relative-path
-     * collisions from reading files out of the host repo.
+     * Curated legacy references hydrate from their owning Brain or primary-repository root. Tenant-
+     * ingested references and revision-bound Engine profile rows use Chroma metadata content instead:
+     * an additive migration can retain an old vector after the installed Engine package advances,
+     * and reading the new package would attach different bytes to that old vector.
      *
      * @param {Object} ref Query reference.
      * @returns {Promise<String>} Hydrated content or the standard placeholder.
@@ -364,6 +377,16 @@ class SearchService extends Base {
             }
 
             logger.warn(`[SearchService] Missing metadata.content for non-local tenant ref.source="${ref.source}" (tenantId="${metadata.tenantId}", repoSlug="${metadata.repoSlug || ''}") — refusing local filesystem fallback.`);
+
+            return 'No Content (File missing or empty)';
+        }
+
+        if (metadata.rootKind === 'neo-workspace' && metadata.extractionIdentity) {
+            if (embeddedContent) {
+                return embeddedContent;
+            }
+
+            logger.warn(`[SearchService] Missing metadata.content for revision-bound Engine ref.source="${ref.source}" — refusing current-package fallback.`);
 
             return 'No Content (File missing or empty)';
         }
@@ -577,7 +600,10 @@ class SearchService extends Base {
         //
         // Source loaders store `metadata.source` as a portable relative path. Brain-owned paths
         // resolve against `neoRootDir`; synchronized primary-repository corpus paths resolve against
-        // `projectRoot`. Before the relative-source fix, this branch did a bare `fs.pathExists(ref.source)`
+        // `projectRoot`. New Engine core-profile rows carry a package-prefixed legacy `source` and
+        // repo-relative `sourcePath`, so their `neo-workspace` root resolves against `neoRootDir`
+        // even when their type formerly chose `projectRoot`.
+        // Before the relative-source fix, this branch did a bare `fs.pathExists(ref.source)`
         // which silently succeeded for legacy absolute-path chunks but failed for the
         // relative-path chunks emitted by ApiSource / TestSource — producing phantom
         // `No Content (File missing or empty)` context. The synthesis LLM then saw

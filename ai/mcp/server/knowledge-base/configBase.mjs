@@ -100,7 +100,7 @@ class ConfigBase extends ConfigProvider {
             // The Chroma host and port are declared ONCE, at Tier-1 (`engines.chroma.{host,port}`),
             // and consumers read them there through the getParent() chain. The child leaves that
             // used to sit here re-bound `NEO_CHROMA_HOST` / `NEO_CHROMA_PORT` over a Tier-1 value
-            // captured as their default — ADR-0019 §3 C4 (two declared paths, one coordinate) with
+            // captured as their default — two declared paths for one coordinate, with
             // a B2 primitive-capture edge, against §2's "no layer holds a copy of another's data".
             // The duplicate was not cosmetic: Tier-1 resolves the coordinate test-aware
             // (`useTestDatabase ? hostTest : hostProd`), so with the production variable set under a
@@ -112,7 +112,7 @@ class ConfigBase extends ConfigProvider {
             // there. The child `path` leaf that used to sit here wrapped that same Tier-1 leaf and
             // carried a docblock asserting it "MUST equal" the orchestrator's `--path` — which is
             // the confession, not the safeguard: two declared coordinates that must be equal ARE
-            // one coordinate with two names, ADR-0019 §3 C4. The sanctioned form is one declared
+            // one coordinate with two names. The sanctioned form is one declared
             // coordinate with its readers migrated, so `DatabaseService`, `VectorService`,
             // `backup.mjs` and `defragChromaDB.mjs` now read the Tier-1 leaf at their use sites.
             /**
@@ -517,9 +517,10 @@ class ConfigBase extends ConfigProvider {
             },
             /**
              * When `true` (default), the SourceRegistry auto-registers Neo's seven curated default
-             * Source classes (GitHub conversations arrive through the `github-content-sync` tenant
-             * route instead). Cloud deployments that ingest only tenant content can set `false` to
-             * skip Neo's curated sources entirely.
+             * Source classes for remaining legacy/custom consumers. GitHub conversations arrive
+             * through the `github-content-sync` tenant route, and shared Engine/Brain `kbSync`
+             * uses independent repository profiles rather than this registry. Set `false` only to
+             * skip registration for registry consumers; it does not disable shared core sync.
              * @type {boolean}
              */
             useDefaultSources: leaf(true),
@@ -598,10 +599,10 @@ class ConfigBase extends ConfigProvider {
              */
             tenantRepos: leaf([]),
             /**
-             * Per-source path overrides keyed by Source-class registry name.
-             * Empty entries or missing keys fall through to each Source class's hardcoded fallback
-             * (preserves byte-equivalence with existing deployment behavior). Shape varies per Source class —
-             * each interprets its own entry shape (string / string-array / ordered path/type rows).
+             * Legacy per-source path overrides keyed by SourceRegistry class name. Shared Engine/Brain
+             * core profiles do not read this leaf: their route territories bind exact repository
+             * revisions. Remaining registry consumers keep each Source's existing entry shape
+             * (string / string-array / ordered path/type rows).
              * ApiSource uses rows rather than filesystem paths as object keys: the reactive data
              * namespace treats dots as path separators, so `node_modules/neo.mjs/**` keys are not a
              * lossless config shape.

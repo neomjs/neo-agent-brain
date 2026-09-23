@@ -22,6 +22,7 @@ import path           from 'node:path';
 const SHA = 'a'.repeat(40);
 
 let RepositoryClassHierarchyResolver,
+    RepositorySourcePathClassHierarchyResolver,
     REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID,
     REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION;
 
@@ -76,6 +77,7 @@ test.describe('repository class-hierarchy resolver (#263)', () => {
         );
 
         RepositoryClassHierarchyResolver          = module.default;
+        RepositorySourcePathClassHierarchyResolver = module.RepositorySourcePathClassHierarchyResolver;
         REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID      = module.REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID;
         REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION = module.REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION;
     });
@@ -150,6 +152,43 @@ test.describe('repository class-hierarchy resolver (#263)', () => {
 
         await expect(RepositoryClassHierarchyResolver.resolve({repositoryReader: reader}))
             .rejects.toMatchObject({code: 'KB_REPOSITORY_HIERARCHY_DUPLICATE_CLASS'});
+    });
+
+    test('the core profile keeps two same-name classes with different parents distinct by source path', async () => {
+        const reader = createReader({
+            'examples/ConfigurationViewport.mjs': neoClass({
+                name: 'ConfigurationViewport', className: 'Neo.examples.ConfigurationViewport'
+            }),
+            'examples/component/timer/MainContainer.mjs': neoClass({
+                name  : 'MainContainer', className: 'Neo.examples.component.timer.MainContainer',
+                parent: 'ConfigurationViewport', parentImport: '../../ConfigurationViewport.mjs'
+            }),
+            'examples/component/video/MainContainer.mjs': neoClass({
+                name  : 'MainContainer', className: 'Neo.examples.component.timer.MainContainer',
+                parent: 'Viewport', parentImport: '../../../src/container/Viewport.mjs'
+            })
+        });
+
+        await expect(RepositoryClassHierarchyResolver.resolve({repositoryReader: reader}))
+            .rejects.toMatchObject({code: 'KB_REPOSITORY_HIERARCHY_DUPLICATE_CLASS'});
+
+        const hierarchy = await RepositorySourcePathClassHierarchyResolver.resolve({repositoryReader: reader});
+
+        expect(RepositorySourcePathClassHierarchyResolver).toMatchObject({
+            id: 'repository-source-path-class-hierarchy', version: '1.0.0'
+        });
+        expect(hierarchy).toEqual({
+            'examples/ConfigurationViewport.mjs': {
+                'Neo.examples.ConfigurationViewport': null
+            },
+            'examples/component/timer/MainContainer.mjs': {
+                'Neo.examples.component.timer.MainContainer': 'Neo.examples.ConfigurationViewport'
+            },
+            'examples/component/video/MainContainer.mjs': {
+                'Neo.examples.component.timer.MainContainer': 'Neo.container.Viewport'
+            }
+        });
+        expect(Object.isFrozen(hierarchy)).toBe(true);
     });
 
     test('fails closed on malformed source and names the revision path', async () => {

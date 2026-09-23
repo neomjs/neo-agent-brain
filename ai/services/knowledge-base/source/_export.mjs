@@ -16,11 +16,11 @@ import TestSource         from './TestSource.mjs';
  *
  * **Auto-registration contract:**
  *
- * - When `aiConfig.useDefaultSources !== false` (the zero-config default for any Neo
- *   deployment), the default Source classes register in deterministic insertion order.
- *   That order matches the pre-Phase-0/1B hardcoded array at `DatabaseService.mjs:454-465`, so the
- *   seven surviving Sources still emit byte-equivalent output. GitHub conversations are
- *   not a default Source any more: the Knowledge Base ingests the org corpus published by
+ * - When `aiConfig.useDefaultSources !== false`, the seven surviving default Source classes
+ *   register in deterministic insertion order for legacy registry consumers. The shared
+ *   Engine/Brain `kbSync` no longer reads this registry; it uses revision-bound repository
+ *   profiles, so the old single-JSONL byte-equivalence claim no longer applies. GitHub
+ *   conversations are not a default Source: the Knowledge Base ingests the org corpus published by
  *   `github-content-sync` as its own tenant through the `ConversationCorpusSource` extractor
  *   (neo-agent-brain#402), so the three per-facet Sources that walked the Engine's tracked
  *   conversation mirror retired.
@@ -30,7 +30,7 @@ import TestSource         from './TestSource.mjs';
  *   or programmatically via `SourceRegistry.registerSource(...)`.
  * - When `aiConfig.rawRepoSource === true`, {@link RawRepoSource} registers as an
  *   explicit opt-in fallback for tenants whose repo shape is unknown. It is intentionally
- *   NOT part of {@link DEFAULT_SOURCES}; zero-config Neo sync keeps the curated default set.
+ *   NOT part of {@link DEFAULT_SOURCES}; the shared core profiles do not consult the registry.
  *
  * **Declarative custom-source/parser registration shape:**
  *
@@ -84,7 +84,7 @@ const DEFAULT_SOURCES = [
 ];
 
 /**
- * Applies the Phase 0/1B (#11658) config-driven registration contract to a {@link SourceRegistry}
+ * Applies legacy config-driven registration to a {@link SourceRegistry}
  * instance: registers default Neo Source classes when `config.useDefaultSources !== false`,
  * then walks `config.customSources` / `config.customParsers` declarative arrays. Exported as
  * a pure function so tests can verify the config-driven path against a fresh registry

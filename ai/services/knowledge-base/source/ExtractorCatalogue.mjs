@@ -27,25 +27,32 @@ function normalizeDescriptor(descriptor = {}) {
 }
 
 /**
- * @summary Closes ApiSource route options to one required semantic type.
+ * @summary Closes ApiSource route options to one required semantic type and optional path scope.
  * @param {Object} options
- * @returns {{type: String}}
+ * @returns {{type: String, hierarchyScope?: String}}
  * @private
  */
 function normalizeApiSourceOptions(options = {}) {
     const keys = Object.keys(options);
 
-    if (keys.some(key => key !== 'type')) {
-        throw new TypeError('ApiSource route options support only type')
+    if (keys.some(key => key !== 'type' && key !== 'hierarchyScope')) {
+        throw new TypeError('ApiSource route options support only type and hierarchyScope')
     }
 
-    const type = typeof options.type === 'string' ? options.type.trim() : '';
+    const
+        type           = typeof options.type === 'string' ? options.type.trim() : '',
+        hierarchyScope = typeof options.hierarchyScope === 'string'
+            ? options.hierarchyScope.trim()
+            : '';
 
     if (!type) {
         throw new TypeError('ApiSource route options require a non-empty type')
     }
+    if (options.hierarchyScope !== undefined && hierarchyScope !== 'source-path') {
+        throw new TypeError("ApiSource route options.hierarchyScope must be 'source-path'")
+    }
 
-    return {type};
+    return hierarchyScope ? {type, hierarchyScope} : {type};
 }
 
 /**
@@ -120,6 +127,58 @@ function normalizeSkillSourceOptions(options = {}) {
 }
 
 /**
+ * @summary Closes file-local legacy Source routes to an empty option surface.
+ * @param {Object} options
+ * @returns {Object}
+ * @private
+ */
+function normalizeFileSourceOptions(options = {}) {
+    if (Object.keys(options).length) {
+        throw new TypeError('File Source route options must be empty')
+    }
+
+    return {};
+}
+
+/**
+ * @summary Declares either a tree-bound or an explicitly file-selected learn route.
+ * @param {Object} options
+ * @returns {{treePath: String}|{mode: String}}
+ * @private
+ */
+function normalizeLearningSourceOptions(options = {}) {
+    const keys = Object.keys(options);
+
+    if (options.mode === 'files') {
+        if (keys.some(key => key !== 'mode')) {
+            throw new TypeError('LearningSource files mode supports only mode')
+        }
+
+        return {mode: 'files'};
+    }
+
+    if (keys.some(key => key !== 'treePath')) {
+        throw new TypeError('LearningSource tree mode supports only treePath')
+    }
+
+    const treePath = typeof options.treePath === 'string'
+        ? options.treePath.trim().replaceAll('\\', '/').replace(/^\.\//u, '')
+        : '';
+
+    if (
+        !treePath.endsWith('.json')
+        || treePath.startsWith('/')
+        || /^[a-z]:\//iu.test(treePath)
+        || treePath.includes('\0')
+        || treePath.split('/').some(segment => !segment || segment === '.' || segment === '..')
+    ) {
+        throw new TypeError('LearningSource route options require a safe repository-relative treePath')
+    }
+
+    return {treePath};
+}
+
+/**
  * @summary Builds a read-only descriptor catalogue with no mutation surface.
  *
  * This is intentionally not a frozen `Map`: `Object.freeze(new Map())` still permits
@@ -191,14 +250,24 @@ export function createExtractorCatalogue(descriptors = []) {
 /**
  * @summary Built-in extraction definitions available to repository profiles.
  *
- * ApiSource, SkillSource, and ParserSource are intentionally non-delta-safe: their output can depend
- * on repository hierarchy, trigger pointers, or arbitrary parser code. ConversationCorpusSource is
+ * ApiSource, SkillSource, LearningSource, and ParserSource are intentionally non-delta-safe: their output can depend
+ * on repository hierarchy, trigger pointers, a learning-tree manifest, or arbitrary parser code. ConversationCorpusSource is
  * non-delta-safe for a narrower reason: every chunk's identity comes from the corpus root index, a
- * file that does not change when a conversation file does. RawRepoSource is the bounded exception:
- * one output is derived from one file, while every filter option participates in the extraction
- * identity and therefore forces full materialization when it changes.
+ * file that does not change when a conversation file does. AdrSource, ConceptSource, TestSource, and
+ * RawRepoSource are file-local; each output derives from its own file and declared route identity.
  */
 export const ExtractorCatalogue = createExtractorCatalogue([{
+    extractorId      : 'AdrSource',
+    version          : '1.0.0',
+    deltaSafe        : true,
+    requiresHierarchy: false,
+    normalizeOptions : normalizeFileSourceOptions,
+    extract          : async options => {
+        const {default: AdrSource} = await import('./AdrSource.mjs');
+
+        return await AdrSource.extractFromRepository(options)
+    }
+}, {
     extractorId      : 'ApiSource',
     version          : '1.0.0',
     deltaSafe        : false,
@@ -210,6 +279,17 @@ export const ExtractorCatalogue = createExtractorCatalogue([{
         return await ApiSource.extractFromRepository(options)
     }
 }, {
+    extractorId      : 'ConceptSource',
+    version          : '1.0.0',
+    deltaSafe        : true,
+    requiresHierarchy: false,
+    normalizeOptions : normalizeFileSourceOptions,
+    extract          : async options => {
+        const {default: ConceptSource} = await import('./ConceptSource.mjs');
+
+        return await ConceptSource.extractFromRepository(options)
+    }
+}, {
     extractorId      : 'ConversationCorpusSource',
     version          : '1.0.0',
     deltaSafe        : false,
@@ -219,6 +299,17 @@ export const ExtractorCatalogue = createExtractorCatalogue([{
         const {default: ConversationCorpusSource} = await import('./ConversationCorpusSource.mjs');
 
         return await ConversationCorpusSource.extractFromRepository(options)
+    }
+}, {
+    extractorId      : 'LearningSource',
+    version          : '1.0.0',
+    deltaSafe        : false,
+    requiresHierarchy: false,
+    normalizeOptions : normalizeLearningSourceOptions,
+    extract          : async options => {
+        const {default: LearningSource} = await import('./LearningSource.mjs');
+
+        return await LearningSource.extractFromRepository(options)
     }
 }, {
     extractorId      : 'ParserSource',
@@ -251,6 +342,17 @@ export const ExtractorCatalogue = createExtractorCatalogue([{
         const {default: SkillSource} = await import('./SkillSource.mjs');
 
         return await SkillSource.extractFromRepository(options)
+    }
+}, {
+    extractorId      : 'TestSource',
+    version          : '1.0.0',
+    deltaSafe        : true,
+    requiresHierarchy: false,
+    normalizeOptions : normalizeFileSourceOptions,
+    extract          : async options => {
+        const {default: TestSource} = await import('./TestSource.mjs');
+
+        return await TestSource.extractFromRepository(options)
     }
 }]);
 

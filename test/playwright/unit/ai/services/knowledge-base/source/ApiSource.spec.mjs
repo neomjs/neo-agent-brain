@@ -282,4 +282,49 @@ export default Foo;
 
         expect(writes).toEqual([]);
     });
+
+    test('source-path hierarchy keeps duplicate app class names distinct and refuses a missing entry before writes', async () => {
+        const
+            files = {
+                'apps/alpha/MainContainer.mjs': `class MainContainer extends Base {
+    static config = {className: 'Fixture.SharedMainContainer'}
+}
+export default Neo.setupClass(MainContainer);`,
+                'apps/beta/MainContainer.mjs': `class MainContainer extends Viewport {
+    static config = {className: 'Fixture.SharedMainContainer'}
+}
+export default Neo.setupClass(MainContainer);`
+            },
+            assignments = Object.keys(files).map(sourcePath => ({
+                root: 'apps', relativePath: sourcePath.slice(5), entry: {sourcePath}
+            })),
+            hierarchy = {
+                'apps/alpha/MainContainer.mjs': {'Fixture.SharedMainContainer': 'Neo.core.Base'},
+                'apps/beta/MainContainer.mjs' : {'Fixture.SharedMainContainer': 'Neo.container.Viewport'}
+            },
+            writes = [],
+            context = {
+                tenantId         : 'neo-shared', repoSlug: 'neo', revision: 'f'.repeat(40),
+                repositoryReader : {async readText(sourcePath) { return files[sourcePath] }},
+                territory        : {assignments},
+                hierarchyResolver: {id: 'path-hierarchy', version: '1.0.0', async resolve() { return hierarchy }}
+            };
+
+        const result = await ApiSource.extractFromRepository({
+            context, options: {type: 'app', hierarchyScope: 'source-path'},
+            writeStream: {write: value => writes.push(JSON.parse(value))}, createHashFn: () => 'hash'
+        });
+
+        expect(result.yieldedSourcePaths).toEqual(Object.keys(files));
+        expect(writes.filter(chunk => chunk.extends).map(chunk => chunk.extends))
+            .toEqual(expect.arrayContaining(['Neo.core.Base', 'Neo.container.Viewport']));
+
+        writes.length = 0;
+        await expect(ApiSource.extractFromRepository({
+            context    : {...context, hierarchy: {'apps/alpha/MainContainer.mjs': hierarchy['apps/alpha/MainContainer.mjs']}},
+            options    : {type: 'app', hierarchyScope: 'source-path'},
+            writeStream: {write: value => writes.push(value)}, createHashFn: () => 'hash'
+        })).rejects.toMatchObject({code: 'KB_REPOSITORY_HIERARCHY_SOURCE_PATH_MISSING'});
+        expect(writes).toEqual([]);
+    });
 });

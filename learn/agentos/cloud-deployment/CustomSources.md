@@ -115,13 +115,13 @@ A Source class is registered in the `SourceRegistry` singleton under a stable na
 
 `aiConfig.useDefaultSources` (default `true`) controls whether Neo's seven curated Source classes are also registered (GitHub conversations are a tenant route, `ConversationCorpusSource`, not a default Source). A deployment indexing *only* tenant content sets it `false`; the registry then contains only the tenant's custom Sources. See [Configuration](./Configuration.md).
 
-This registry remains mutable for compatibility: the current full-corpus builder still enumerates
-it, and freezing or removing it before that consumer cuts over would break a working deployment.
-New repository-profile execution uses `ExtractorCatalogue` plus
+This registry remains mutable for legacy tenant/custom Source and Parser consumers; the shared
+Engine/Brain `kbSync` no longer enumerates it. `customSources` registration therefore does not add
+content to the shared core profiles. New repository-profile execution uses `ExtractorCatalogue` plus
 `extractFromRepository({context, options, writeStream, createHashFn})` instead. That invocation is
 bound to one tenant, repository, and revision; it never reads `SourceRegistry`, ambient cwd, or
-process-wide path config. The legacy registry retires only after every legacy Source consumer has
-ported and the tenant ingestion lane has cut over.
+process-wide path config. The legacy registry retires only after its remaining tenant/custom Source
+and Parser consumers have ported.
 
 ## Authoring a repository-profile extractor
 
