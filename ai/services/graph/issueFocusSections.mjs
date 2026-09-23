@@ -1,6 +1,7 @@
 import fs                                    from 'fs';
 import matter                                from 'gray-matter';
 import path                                  from 'path';
+import {qualifyOriginId}                     from './corpusProjectionContract.mjs';
 import {Memory_Config as aiConfig}           from '../../services.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
 import logger                                from '../../mcp/server/memory-core/logger.mjs';
@@ -646,11 +647,19 @@ export function renderSilentThreadCandidatesSection(candidates, {
 /**
  * @summary Reads synced issue markdown into deterministic work-item records.
  *
+ * With an `origin` the record identity is origin-qualified (`neo-agent-brain#issue-7`) and the record
+ * carries `repoSlug`, so the same number from two repositories stays two records; without one — the
+ * Golden Path and stall-inference callers on the Graph's own tree — ids stay the bare `issue-N` the
+ * Graph keys, and `repoSlug` is `null`.
+ *
  * @param {String} issuesDir Local synced issue directory.
+ * @param {Object} [options]
+ * @param {String} [options.origin] The tree's origin repository slug (a corpus `repoSlug`).
  * @returns {Array<Object>} Parsed issue work records.
  */
-export function readWorkGraphIssueRecords(issuesDir) {
-    const records = [];
+export function readWorkGraphIssueRecords(issuesDir, {origin} = {}) {
+    const records  = [],
+          repoSlug = typeof origin === 'string' && origin.trim() ? origin.trim() : null;
 
     for (const filePath of collectIssueMarkdownFiles(issuesDir)) {
         let parsed;
@@ -662,7 +671,8 @@ export function readWorkGraphIssueRecords(issuesDir) {
         }
 
         const meta    = parsed.data || {},
-              issueId = getIssueId(meta, filePath);
+              bareId  = getIssueId(meta, filePath),
+              issueId = qualifyOriginId(repoSlug, bareId);
 
         records.push({
             assignees: Array.isArray(meta.assignees) ? meta.assignees.filter(Boolean) : [],
@@ -671,7 +681,8 @@ export function readWorkGraphIssueRecords(issuesDir) {
             issueId,
             labels   : normalizeLabels(meta.labels),
             meta,
-            number   : getIssueNumber(meta, issueId),
+            number   : getIssueNumber(meta, bareId),
+            repoSlug,
             title    : meta.title || '(no title)',
             url      : meta.githubUrl
         });
@@ -784,29 +795,39 @@ function deriveReviewDecision(reviews) {
  * read as valid-empty. A configured, readable, PR-less directory is the only `[]` this reader returns.
  * A single stray/malformed file is still skip-soft — one bad file must not fail the whole read.
  *
- * **Bounded before parse.** When `limit` is a non-negative number, the PR-number-descending candidate
- * set is sliced BEFORE any `fs.readFileSync` / `gray-matter`, so a 300+-file corpus never fully parses
- * to fill a small event window. PR numbers come from the `pr-<N>.md` filename — no read to rank.
+ * **Bounded before parse, ranked by the event time.** When `limit` is a non-negative number, the
+ * candidate set is ranked by each file's `updatedAt` — peeked from the frontmatter head with one
+ * bounded `read`, never a full read or a `gray-matter` parse — and sliced BEFORE any file is parsed,
+ * so a 300+-file corpus never fully parses to fill a small event window. Ranking by the filename's
+ * PR number was the first cut, and it dropped the newest event: an older PR updated today outranks a
+ * newer one updated in January on the feed the records serve. A head without a readable stamp ranks
+ * by its filename number, after every stamped file.
+ *
+ * **Origin.** With `origin` the record carries `repoSlug` and an origin-qualified `prId`
+ * (`neo-agent-brain#pr-7`); without one `repoSlug` is `null` and `prId` is the bare `pr-N`.
  *
  * **`isDraft` is intentionally unset.** CONTENT_GRAMMAR.md carries no draft frontmatter field, so a
  * synced record cannot assert draft state; it is left absent (unknown) rather than fabricated `false`.
  *
  * @param {String} pullsDir Local synced pulls directory (`resources/content/pulls`).
  * @param {Object} [options]
- * @param {Number} [options.limit] Max PR records to parse, newest-PR-first; omit to parse all.
+ * @param {Number} [options.limit] Max PR records to parse, most recently updated first; omit to parse all.
+ * @param {String} [options.origin] The tree's origin repository slug (a corpus `repoSlug`).
  * @returns {Array<Object>} Parsed PR records; `[]` only when the (readable) directory holds no PRs.
  * @throws when `pullsDir` cannot be collected (missing/unreadable) — the caller's catch degrades the slot.
  */
-export function readSyncedPullRecords(pullsDir, {limit} = {}) {
+export function readSyncedPullRecords(pullsDir, {limit, origin} = {}) {
     // Collection failure PROPAGATES by design (a configured-but-unreadable dir → the wiring's catch →
     // degraded capability). Only the per-file parse below is skip-soft.
-    const files = collectIssueMarkdownFiles(pullsDir);
+    const files    = collectIssueMarkdownFiles(pullsDir),
+          repoSlug = typeof origin === 'string' && origin.trim() ? origin.trim() : null;
 
-    // Bound BEFORE parsing: rank by the PR number in the filename (no read), keep the newest `limit`.
+    // Bound BEFORE parsing: rank by the peeked `updatedAt` (stamped files first, newest first; the
+    // rest by filename number), keep the newest `limit`.
     const ordered = (typeof limit === 'number' && limit >= 0)
         ? files
-            .map(filePath => ({filePath, number: prNumberFromPath(filePath)}))
-            .sort((left, right) => right.number - left.number)
+            .map(filePath => ({filePath, number: prNumberFromPath(filePath), updatedAt: peekUpdatedAt(filePath)}))
+            .sort((left, right) => (right.updatedAt - left.updatedAt) || (right.number - left.number))
             .slice(0, limit)
             .map(entry => entry.filePath)
         : files;
@@ -834,10 +855,48 @@ export function readSyncedPullRecords(pullsDir, {limit} = {}) {
         const body    = parsed.content || '',
               reviews = parsePullReviewEntries(body);
 
-        records.push({...meta, body, filePath, reviews, reviewDecision: deriveReviewDecision(reviews)})
+        records.push({
+            ...meta,
+            body,
+            filePath,
+            prId          : qualifyOriginId(repoSlug, `pr-${meta.number}`),
+            repoSlug,
+            reviews,
+            reviewDecision: deriveReviewDecision(reviews)
+        })
     }
 
     return records
+}
+
+/**
+ * @summary Peeks a synced pull file's `updatedAt` from its frontmatter head with ONE bounded read.
+ *
+ * The head is read into a fixed buffer through the file descriptor — no full read, no parse — so
+ * ranking a large corpus stays cheap. A missing or unreadable stamp answers `0`, which ranks the
+ * file after every stamped one (the caller falls back to the filename number among equals).
+ * @param {String} filePath
+ * @returns {Number} Epoch milliseconds of `updatedAt`, or 0.
+ * @private
+ */
+function peekUpdatedAt(filePath) {
+    const buffer = Buffer.alloc(1024);
+    let fd = null;
+
+    try {
+        fd = fs.openSync(filePath, 'r');
+
+        const bytes   = fs.readSync(fd, buffer, 0, buffer.length, 0),
+              head    = buffer.toString('utf-8', 0, bytes),
+              match   = head.match(/^updatedAt:\s*'?([^'\n]+?)'?\s*$/m),
+              stamp   = match ? Date.parse(match[1]) : NaN;
+
+        return Number.isFinite(stamp) ? stamp : 0
+    } catch {
+        return 0
+    } finally {
+        if (fd !== null) fs.closeSync(fd)
+    }
 }
 
 /**

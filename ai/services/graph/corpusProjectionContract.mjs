@@ -19,6 +19,25 @@ export const CORPUS_PROJECTION_OWNER          = 'core-corpus-projection';
 /** @summary The existing unqualified Graph identities belong to neo; changing origin requires a Graph migration. */
 export const CORPUS_PROJECTION_ORIGIN = 'neo';
 
+/**
+ * @summary Qualifies a conversation identity with its origin repository.
+ *
+ * The Graph's origin keeps the bare identity, so every id the Graph and the cockpit already key stays
+ * byte-identical; any other origin carries its slug in front (`neo-agent-brain#issue-7`), because the
+ * same number in two repositories names two durable facts, and a consumer that keys both by the bare
+ * identity merges them.
+ * @param {String|null} repoSlug The conversation's origin repository slug; absent means the Graph's origin.
+ * @param {String|Number|null} id The bare identity inside that origin.
+ * @returns {String|Number|null}
+ */
+export function qualifyOriginId(repoSlug, id) {
+    if (id === null || id === undefined) return null;
+
+    const slug = typeof repoSlug === 'string' ? repoSlug.trim() : '';
+
+    return slug && slug !== CORPUS_PROJECTION_ORIGIN ? `${slug}#${id}` : id
+}
+
 export const CORPUS_PROJECTION_FACETS = Object.freeze([
     'issues',
     'pulls',

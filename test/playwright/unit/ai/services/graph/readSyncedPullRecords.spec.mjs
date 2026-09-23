@@ -114,9 +114,11 @@ test.describe('Neo.ai.services.graph.readSyncedPullRecords', () => {
         expect(readSyncedPullRecords(dir)).toEqual([])
     });
 
-    test('bounds the candidate set BEFORE parsing — only the newest `limit` PRs are ever read', () => {
+    test('bounds the candidate set BEFORE parsing, ranked by the event time — an older PR updated today outranks a newer one updated in January', () => {
+        const stamps = {1: '2026-01-01T00:00:00Z', 2: '2026-09-20T00:00:00Z', 3: '2026-03-01T00:00:00Z', 4: '2026-04-01T00:00:00Z', 5: '2026-05-01T00:00:00Z'};
+
         for (const n of [1, 2, 3, 4, 5]) {
-            writePull(`pr-${n}.md`, [`number: ${n}`, 'title: t', 'author: a', 'state: OPEN']);
+            writePull(`pr-${n}.md`, [`number: ${n}`, 'title: t', 'author: a', 'state: OPEN', `updatedAt: '${stamps[n]}'`]);
         }
 
         const originalReadFileSync = fs.readFileSync,
@@ -132,12 +134,35 @@ test.describe('Neo.ai.services.graph.readSyncedPullRecords', () => {
         try {
             const records = readSyncedPullRecords(dir, {limit: 2});
 
-            // only the two newest PRs (by number) are parsed, and ONLY two markdown files are ever read
-            expect(records.map(pr => pr.number).sort((a, b) => b - a)).toEqual([5, 4]);
+            // the two most recently UPDATED PRs are parsed — #2 (September) and #5 (May), not the two
+            // highest numbers — and ONLY those two markdown files are fully read; the ranking peeks
+            // heads through a bounded descriptor read, never a full read.
+            expect(records.map(pr => pr.number).sort((a, b) => b - a)).toEqual([5, 2]);
             expect(readMarkdownPaths).toHaveLength(2);
-            expect(readMarkdownPaths.some(p => p.endsWith('pr-1.md'))).toBe(false)
+            expect(readMarkdownPaths.some(p => p.endsWith('pr-1.md'))).toBe(false);
+            expect(readMarkdownPaths.some(p => p.endsWith('pr-4.md'))).toBe(false)
         } finally {
             fs.readFileSync = originalReadFileSync
         }
+    });
+
+    test('files without a readable stamp rank after every stamped file, by number among themselves', () => {
+        writePull('pr-9.md', ['number: 9', 'title: t', 'author: a', 'state: OPEN']);
+        writePull('pr-8.md', ['number: 8', 'title: t', 'author: a', 'state: OPEN']);
+        writePull('pr-3.md', ['number: 3', 'title: t', 'author: a', 'state: OPEN', "updatedAt: '2026-02-01T00:00:00Z'"]);
+
+        expect(readSyncedPullRecords(dir, {limit: 2}).map(pr => pr.number).sort((a, b) => b - a)).toEqual([9, 3])
+    });
+
+    test('with an origin the record carries repoSlug and an origin-qualified prId; without one the ids stay bare', () => {
+        writePull('pr-7.md', ['number: 7', 'title: t', 'author: a', 'state: OPEN']);
+
+        const [foreign] = readSyncedPullRecords(dir, {origin: 'neo-agent-brain'}),
+              [home]    = readSyncedPullRecords(dir, {origin: 'neo'}),
+              [bare]    = readSyncedPullRecords(dir);
+
+        expect(foreign).toMatchObject({number: 7, repoSlug: 'neo-agent-brain', prId: 'neo-agent-brain#pr-7'});
+        expect(home).toMatchObject({number: 7, repoSlug: 'neo', prId: 'pr-7'});
+        expect(bare).toMatchObject({number: 7, repoSlug: null, prId: 'pr-7'})
     })
 });
