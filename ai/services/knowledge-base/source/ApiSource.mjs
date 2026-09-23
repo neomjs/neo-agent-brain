@@ -101,7 +101,7 @@ class ApiSource extends Base {
      *
      * @param {Object} params
      * @param {Object} params.context Repository-bound invocation context.
-     * @param {Object} params.options Route options; requires semantic `type`.
+     * @param {Object} params.options Route options; requires semantic `type`, optionally path-scoped hierarchy.
      * @param {Object} params.writeStream JSONL output.
      * @param {Function} params.createHashFn Legacy content hash function.
      * @returns {Promise<{count: Number, yieldedSourcePaths: String[], skippedSourcePaths: Object[], coverage: Object}>}
@@ -110,7 +110,8 @@ class ApiSource extends Base {
         const
             reader       = context?.repositoryReader,
             resolver     = context?.hierarchyResolver,
-            semanticType = typeof options.type === 'string' ? options.type.trim() : '';
+            semanticType = typeof options.type === 'string' ? options.type.trim() : '',
+            pathScoped   = options.hierarchyScope === 'source-path';
 
         if (!reader || typeof reader.readText !== 'function') {
             throw new TypeError('ApiSource repository extraction requires context.repositoryReader')
@@ -123,6 +124,9 @@ class ApiSource extends Base {
         }
         if (!semanticType) {
             throw new TypeError('ApiSource repository extraction requires route.options.type')
+        }
+        if (options.hierarchyScope !== undefined && !pathScoped) {
+            throw new TypeError("ApiSource route.options.hierarchyScope must be 'source-path'")
         }
 
         const
@@ -165,12 +169,39 @@ class ApiSource extends Base {
                 throw error
             }
 
+            let fileHierarchy = hierarchy;
+
+            if (pathScoped) {
+                const className = SourceParser.describeClass(content, sourcePath, {strict: true})?.className;
+
+                fileHierarchy = Object.hasOwn(hierarchy, sourcePath) ? hierarchy[sourcePath] : null;
+
+                if (
+                    className
+                    && (
+                        !fileHierarchy
+                        || typeof fileHierarchy !== 'object'
+                        || Array.isArray(fileHierarchy)
+                        || !Object.hasOwn(fileHierarchy, className)
+                    )
+                ) {
+                    const error = new Error(
+                        `Repository hierarchy has no source-path entry for class '${className}' in '${sourcePath}'`
+                    );
+
+                    error.code = 'KB_REPOSITORY_HIERARCHY_SOURCE_PATH_MISSING';
+                    throw error
+                }
+
+                fileHierarchy ||= {};
+            }
+
             const rootCoverage = coverage[assignment.root] ||= {declared: 0, resolved: 0};
             const chunks       = SourceParser.parse(
                 content,
                 sourcePath,
                 semanticType,
-                hierarchy,
+                fileHierarchy,
                 rootCoverage,
                 {strict: true}
             );

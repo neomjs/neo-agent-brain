@@ -33,6 +33,8 @@ import {
 } from '../../../services/knowledge-base/helpers/tenantRepoIngestEnvelopeBuilder.mjs';
 import RepositoryClassHierarchyResolver
     from '../../../services/knowledge-base/helpers/repositoryClassHierarchyResolver.mjs';
+import {assertNoCoreCorpusAcquisitionOverlap}
+    from '../../../services/knowledge-base/helpers/coreCorpusProfilePlan.mjs';
 import {
     classifyTenantRepoAccessFailure,
     isTenantRepoAccessReadinessOutcome,
@@ -1755,7 +1757,16 @@ class TenantRepoSyncService extends Base {
         const ingestionService = knowledgeBaseIngestionService || await this.resolveIngestionService();
         const resolvedConfig   = tenantReposConfig || await this.resolveTenantReposConfig({ingestionService});
         const allRepos         = resolvedConfig.tenantRepos || [];
-        const repos            = onlyRepoSlugs
+        // The shared image carries these repositories already. A configured GitMirror route with
+        // either their owner key or their clone URL would give the same source two acquisition lanes.
+        const {default: VectorService} = await import('../../../services/knowledge-base/VectorService.mjs');
+
+        assertNoCoreCorpusAcquisitionOverlap({
+            tenantId   : VectorService.resolveTenantStamp().tenantId,
+            tenantRepos: allRepos
+        });
+
+        const repos = onlyRepoSlugs
             ? allRepos.filter(r => onlyRepoSlugs.includes(r.repoSlug))
             : allRepos;
 

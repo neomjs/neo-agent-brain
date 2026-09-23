@@ -273,6 +273,22 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         TenantRepoSyncService.clearEmbeddingRecoveryProbeState();
     });
 
+    test('shared core clone aliases refuse before tenant GitMirror acquisition (#282)', async () => {
+        const mirrorCalls       = [],
+              tenantReposConfig = {tenantRepos: [{
+                  tenantId: 'neo-shared', repoSlug: 'alias', cloneUrl: 'https://github.com/neomjs/neo.git'
+              }]};
+
+        await expect(TenantRepoSyncService.syncTenantRepos({
+            tenantReposConfig,
+            knowledgeBaseIngestionService: {},
+            gitMirror                    : makeFakeGitMirror({captureCalls: mirrorCalls}),
+            revisionsFilePath            : revisionsFile,
+            writeLog                     : () => {}
+        })).rejects.toMatchObject({code: 'KB_CORE_CORPUS_ACQUISITION_OVERLAP'});
+        expect(mirrorCalls).toEqual([])
+    });
+
     test('clear-backoff resets ONLY the streak, leaves every checkpoint field untouched, and never silently no-ops', async () => {
         // The safety property is the second assertion, not the first. Resetting `lastIngestedRev`
         // alongside the streak would turn "let this lane retry now" into "re-ingest from a null

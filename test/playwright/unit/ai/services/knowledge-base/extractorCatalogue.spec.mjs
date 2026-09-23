@@ -77,12 +77,27 @@ test.describe('immutable extractor catalogue (#261)', () => {
             deltaSafe,
             requiresHierarchy
         }))).toEqual([{
+            extractorId      : 'AdrSource',
+            version          : '1.0.0',
+            deltaSafe        : true,
+            requiresHierarchy: false
+        }, {
             extractorId      : 'ApiSource',
             version          : '1.0.0',
             deltaSafe        : false,
             requiresHierarchy: true
         }, {
+            extractorId      : 'ConceptSource',
+            version          : '1.0.0',
+            deltaSafe        : true,
+            requiresHierarchy: false
+        }, {
             extractorId      : 'ConversationCorpusSource',
+            version          : '1.0.0',
+            deltaSafe        : false,
+            requiresHierarchy: false
+        }, {
+            extractorId      : 'LearningSource',
             version          : '1.0.0',
             deltaSafe        : false,
             requiresHierarchy: false
@@ -100,6 +115,11 @@ test.describe('immutable extractor catalogue (#261)', () => {
             extractorId      : 'SkillSource',
             version          : '1.0.0',
             deltaSafe        : false,
+            requiresHierarchy: false
+        }, {
+            extractorId      : 'TestSource',
+            version          : '1.0.0',
+            deltaSafe        : true,
             requiresHierarchy: false
         }]);
     });

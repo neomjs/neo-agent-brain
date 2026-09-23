@@ -21,7 +21,7 @@ A deployment's `config.mjs` is gitignored and copied from `config.template.mjs`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `useDefaultSources` | `true` | Auto-register Neo's seven curated Source classes (GitHub conversations come through the `github-content-sync` tenant route, not a default Source). A deployment ingesting only tenant content sets `false`. |
+| `useDefaultSources` | `true` | Auto-register Neo's seven curated classes for legacy/custom SourceRegistry consumers (GitHub conversations use the `github-content-sync` tenant route). This switch does not disable the separate Engine/Brain `kbSync` repository profiles; use the scheduler's core-sync control for that lane. |
 | `rawRepoSource` | `false` | Explicitly registers `RawRepoSource`, a raw-text fallback that walks one configured repository root for tenants whose repo shape is unknown. |
 | `useDefaultParsers` | `true` | Auto-register Neo's built-in Parser classes (`SourceParser`, `DocumentationParser`, `TestParser`). |
 | `customSources` | `[]` | Declarative tenant Source registration — `[{SourceClass, sourceName?}]`. See [Custom Sources](./CustomSources.md). |

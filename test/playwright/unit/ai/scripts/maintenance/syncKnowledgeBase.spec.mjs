@@ -30,13 +30,14 @@ import * as core      from 'neo.mjs/src/core/_export.mjs';
  */
 test.describe.configure({mode: 'serial'});
 
-test.describe('syncKnowledgeBase — lease-yield boundary wiring', () => {
-    let buildLeaseYieldPredicate, classifyKbSyncOutcome, AiConfig;
+test.describe('syncKnowledgeBase — lease-yield and revision boundary wiring', () => {
+    let buildLeaseYieldPredicate, classifyKbSyncOutcome, resolveCoreBrainRevision, AiConfig;
 
     test.beforeAll(async () => {
         const mod = await import('../../../../../../ai/scripts/maintenance/syncKnowledgeBase.mjs');
         buildLeaseYieldPredicate = mod.buildLeaseYieldPredicate;
         classifyKbSyncOutcome    = mod.classifyKbSyncOutcome;
+        resolveCoreBrainRevision = mod.resolveCoreBrainRevision;
         AiConfig = (await import('../../../../../../ai/config.template.mjs')).default;
     });
 
@@ -71,5 +72,25 @@ test.describe('syncKnowledgeBase — lease-yield boundary wiring', () => {
         });
         expect(held).toMatchObject({deferred: true, reason: 'heavy-maintenance-lease-held'});
         expect(held.holder.owner).toBe('sandman');
+    });
+
+    test('a stamped image trusts its explicit stamp; an unstamped checkout must be clean and exact', () => {
+        const root   = '/fixture/brain';
+        const calls  = [];
+        const runGit = (binary, args) => {
+            calls.push({binary, args});
+            return args.includes('status') ? '' : 'a'.repeat(40) + '\n'
+        };
+
+        expect(resolveCoreBrainRevision({root, hasStamp: () => true, runGit})).toBeUndefined();
+        expect(calls).toEqual([]);
+        expect(resolveCoreBrainRevision({root, hasStamp: () => false, runGit})).toBe('a'.repeat(40));
+        expect(calls.map(call => call.args[2])).toEqual(['status', 'rev-parse']);
+        expect(calls.every(call => call.binary === 'git' && call.args[1] === root)).toBe(true);
+
+        expect(() => resolveCoreBrainRevision({
+            root, hasStamp: () => false,
+            runGit: (binary, args) => args.includes('status') ? ' M ai/Config.mjs\n' : 'a'.repeat(40)
+        })).toThrow(/clean, exact Brain checkout/u);
     });
 });

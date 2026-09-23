@@ -9,6 +9,8 @@ import SourceParser from '../parser/SourceParser.mjs';
  */
 export const REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID      = 'repository-class-hierarchy';
 export const REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION = '1.0.0';
+export const REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_ID = 'repository-source-path-class-hierarchy';
+export const REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_VERSION = '1.0.0';
 
 /**
  * @summary Creates a stable repository-hierarchy failure.
@@ -115,25 +117,39 @@ function resolveSuperClass({sourcePath, descriptor, descriptorsByPath}) {
         return binding.importedName
     }
 
-    return inferClassNameFromPath(relative?.sourcePath || binding.source) || reference.name
+    // A route's reader excludes sibling territories by construction. The imported module may
+    // still be a known Neo path (e.g. examples/... → src/container/Viewport.mjs), so infer from
+    // its normalized repository path rather than the unresolved relative specifier.
+    const importPath = binding.source.startsWith('.')
+        ? pathPosix.normalize(pathPosix.join(pathPosix.dirname(sourcePath), binding.source))
+        : binding.source;
+
+    return inferClassNameFromPath(relative?.sourcePath || importPath) || reference.name
 }
 
 /**
- * @summary Derives a deterministic class hierarchy from one exact, scoped repository revision.
+ * @summary Reads class descriptors from one exact, scoped repository revision.
  *
  * This capability is pure over `repositoryReader`: it reads no configuration, process filesystem,
  * cwd, generated artifact, or mutable registry. The profile runner supplies the already-admitted
  * territory, and `SourceParser.describeClass()` supplies the SAME class universe used to produce
- * chunks. The module owns its identity/version; no caller or config surface can restate them.
+ * chunks.
  *
  * @param {Object} options
  * @param {String} [options.tenantId]
  * @param {String} [options.repoSlug]
  * @param {String} [options.revision]
  * @param {Object} options.repositoryReader Exact scoped revision reader.
- * @returns {Promise<Object>} Frozen `className -> superClassName|null` map.
+ * @param {Boolean} [options.rejectDuplicateClassNames=false] Preserve the flat resolver's uniqueness contract.
+ * @returns {Promise<Map>} Source-path keyed descriptors.
  */
-async function resolve({tenantId, repoSlug, revision, repositoryReader} = {}) {
+async function describeRepositoryClasses({
+    tenantId,
+    repoSlug,
+    revision,
+    repositoryReader,
+    rejectDuplicateClassNames = false
+} = {}) {
     if (
         !repositoryReader
         || typeof repositoryReader.listRegularEntries !== 'function'
@@ -184,7 +200,7 @@ async function resolve({tenantId, repoSlug, revision, repositoryReader} = {}) {
             continue
         }
 
-        const existingOwner = classOwners.get(descriptor.className);
+        const existingOwner = rejectDuplicateClassNames && classOwners.get(descriptor.className);
 
         if (existingOwner) {
             throw createResolverError(
@@ -194,8 +210,25 @@ async function resolve({tenantId, repoSlug, revision, repositoryReader} = {}) {
         }
 
         descriptorsByPath.set(entry.sourcePath, descriptor);
-        classOwners.set(descriptor.className, entry.sourcePath);
+        if (rejectDuplicateClassNames) {
+            classOwners.set(descriptor.className, entry.sourcePath);
+        }
     }
+
+    return descriptorsByPath
+}
+
+/**
+ * @summary Derives the original flat class hierarchy from one exact, scoped repository revision.
+ * Duplicate class names remain a refusal for this resolver's existing consumers and identity.
+ * @param {Object} options Bound revision reader and optional identity assertions.
+ * @returns {Promise<Object>} Frozen `className -> superClassName|null` map.
+ */
+async function resolve(options = {}) {
+    const descriptorsByPath = await describeRepositoryClasses({
+        ...options,
+        rejectDuplicateClassNames: true
+    });
 
     return Object.freeze(Object.fromEntries([...descriptorsByPath.entries()]
         .map(([sourcePath, descriptor]) => [
@@ -205,10 +238,36 @@ async function resolve({tenantId, repoSlug, revision, repositoryReader} = {}) {
         .sort(([left], [right]) => left === right ? 0 : left < right ? -1 : 1)))
 }
 
+/**
+ * @summary Resolves each class in its source file's own namespace, so separate application trees
+ * may declare the same className with different superclasses without borrowing each other's parent.
+ * The result has a separate identity from the original flat resolver because hierarchy values
+ * participate in chunk materialization.
+ * @param {Object} options Bound revision reader and optional identity assertions.
+ * @returns {Promise<Object>} Frozen `sourcePath -> {className: superClassName|null}` map.
+ */
+async function resolveBySourcePath(options = {}) {
+    const descriptorsByPath = await describeRepositoryClasses(options);
+
+    return Object.freeze(Object.fromEntries([...descriptorsByPath.entries()]
+        .map(([sourcePath, descriptor]) => [
+            sourcePath,
+            Object.freeze({
+                [descriptor.className]: resolveSuperClass({sourcePath, descriptor, descriptorsByPath})
+            })
+        ])));
+}
+
 const RepositoryClassHierarchyResolver = Object.freeze({
     id     : REPOSITORY_CLASS_HIERARCHY_RESOLVER_ID,
     version: REPOSITORY_CLASS_HIERARCHY_RESOLVER_VERSION,
     resolve
+});
+
+export const RepositorySourcePathClassHierarchyResolver = Object.freeze({
+    id     : REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_ID,
+    version: REPOSITORY_SOURCE_PATH_CLASS_HIERARCHY_RESOLVER_VERSION,
+    resolve: resolveBySourcePath
 });
 
 export default RepositoryClassHierarchyResolver;

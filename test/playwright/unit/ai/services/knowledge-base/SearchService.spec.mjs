@@ -78,6 +78,33 @@ test.describe('Neo.ai.services.knowledge-base.SearchService', () => {
         expect(SearchService.resolveLocalReferenceRoot({
             source: '.github/RELEASE_NOTES/v13.2.0.md'
         })).toBe(aiConfig.projectRoot)
+        expect(SearchService.resolveLocalReferenceRoot({
+            source  : 'node_modules/neo.mjs/test/playwright/setup.mjs',
+            metadata: {type: 'test', tenantId: 'neo-shared', repoSlug: 'neo', rootKind: 'neo-workspace'}
+        })).toBe(aiConfig.neoRootDir)
+    });
+
+    test('revision-bound Engine rows use stored bytes after the package advances; legacy rows still hydrate locally', async () => {
+        const
+            relative   = 'test/playwright/playwright.config.unit.mjs',
+            enginePath = path.join(aiConfig.neoRootDir, 'node_modules/neo.mjs', relative),
+            brainPath  = path.join(aiConfig.neoRootDir, relative),
+            engineText = await fs.readFile(enginePath, 'utf8'),
+            brainText  = await fs.readFile(brainPath, 'utf8');
+
+        expect(engineText).not.toBe(brainText);
+        await expect(SearchService.hydrateReferenceContent({
+            source  : `node_modules/neo.mjs/${relative}`,
+            metadata: {
+                type              : 'test', tenantId: 'neo-shared', repoSlug: 'neo', rootKind: 'neo-workspace',
+                extractionIdentity: 'a'.repeat(64), content: 'old revision content'
+            }
+        })).resolves.toBe('old revision content');
+
+        await expect(SearchService.hydrateReferenceContent({
+            source  : `node_modules/neo.mjs/${relative}`,
+            metadata: {type: 'test', tenantId: 'neo-shared', repoSlug: 'neo', rootKind: 'neo-workspace'}
+        })).resolves.toBe(engineText);
     });
 
     test('ask resolves RELATIVE ref.source against neoRootDir and feeds real content to synthesis', async () => {

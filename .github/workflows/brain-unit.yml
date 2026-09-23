@@ -83,6 +83,15 @@ jobs:
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/heavyMaintenanceStarvationWatchdog.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/services/TaskStateService.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/services/TenantRepoSyncService.spec.mjs
+                  test/playwright/unit/ai/mcp/server/knowledge-base/manageKnowledgeBaseWipeRefusal.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/DatabaseService.sync.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/coreCorpusProfileRunner.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/imageRevisionReader.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/repositoryClassHierarchyResolver.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/source/ApiSource.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/source/coreCorpusSources.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/SearchService.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/syncKnowledgeBase.spec.mjs
                   test/playwright/unit/ai/services/memory-core/HealthService.starvationFold.spec.mjs
 
             - name: Verify community host authority boundary

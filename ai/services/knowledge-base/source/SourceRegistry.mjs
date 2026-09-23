@@ -3,8 +3,9 @@ import Base from 'neo.mjs/src/core/Base.mjs';
 /**
  * @summary Data-driven registry for Knowledge Base Source + Parser classes.
  *
- * Replaces the hardcoded source-list at [`DatabaseService.createKnowledgeBase`](../DatabaseService.mjs)
- * with a registry that supports:
+ * Historically replaced the hardcoded source-list at `DatabaseService.createKnowledgeBase`.
+ * The shared Engine/Brain core scan now uses immutable repository profiles instead; this
+ * registry remains for legacy/custom Source and Parser consumers and supports:
  *
  * - **Neo defaults** auto-registered via the sibling [`_export.mjs`](./_export.mjs) when
  *   `aiConfig.useDefaultSources !== false`. Same defaults always present unless a cloud
@@ -23,11 +24,11 @@ import Base from 'neo.mjs/src/core/Base.mjs';
  * through `parsed-chunk-v1.parserId`. This class owns the API surface and the config pipeline;
  * runtime parser execution is dispatched by `IngestionService.resolveFileChunks`.
  *
- * **Migration boundary:** this singleton remains mutable and byte-compatible for the legacy
- * extract-all path. Repository-profile execution uses the immutable sibling
+ * **Migration boundary:** this singleton remains mutable for its remaining legacy consumers.
+ * Repository-profile execution uses the immutable sibling
  * {@link ./ExtractorCatalogue.mjs ExtractorCatalogue} and must never consult this registry; tenant
  * extractors resolve per invocation instead of registering globally. The legacy surface retires
- * only after its remaining Source consumers are ported and the tenant lane has cut over.
+ * only after its remaining Source/Parser consumers are ported.
  *
  * @class Neo.ai.services.knowledge-base.source.SourceRegistry
  * @extends Neo.core.Base

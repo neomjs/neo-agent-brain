@@ -1,31 +1,41 @@
 # Cloud-Native KB Ingestion — Migration Path
 
-> **Status — Phase 3A invariant scaffold.** This guide describes the *invariant* upgrade story for existing single-repo Neo deployments; the tenant-config persistence shape it references is documented in [Configuration](./Configuration.md).
+> **Status — post-split migration.** The Phase 0/1 zero-config promise below is historical context. The current shared-core scan is a deliberate Engine/Brain repository-profile cut; tenant-config persistence remains documented in [Configuration](./Configuration.md).
 
-## The headline: zero-config for existing deployments
+## Historical Phase 0/1 zero-config promise
 
-An existing single-repo Neo deployment — one repository, one KB indexing it — **requires no configuration change** to run on the cloud-ingestion substrate. The Phase 0/1 contracts were designed so that every new config key carries a default matching the pre-substrate behavior. A deployment that pulls the new code and changes nothing behaves byte-identically.
+The original cloud-ingestion substrate let a single-repo Neo deployment adopt tenant plumbing without a config edit. That claim applied to its original SourceRegistry-backed `kbSync` path; later repository splits and the `github-content-sync` tenant changed the source set. Do not use the old byte-equivalence claim as current migration evidence.
 
-This is the load-bearing migration property: the substrate is **additive**, not a breaking change.
+## Current shared-core boundary
 
-## What stays the same
+| Concern | Current behavior |
+|---|---|
+| Shared core acquisition | `kbSync` reads the image-carried Engine package and Brain source through two exact-revision profiles. It no longer enumerates `SourceRegistry` or reads `aiConfig.sourcePaths` for the core scan. |
+| Shared core ownership | The two outputs are stamped separately as `(neo-shared, neo)` and `(neo-shared, neo-agent-brain)`; one combined JSONL cannot represent both safely. |
+| Conversations | The old three Engine-tree Sources retired in #402. `ConversationCorpusSource` is a distinct `github-content-sync` tenant route; its activation and freshness receipts are #411. |
+| First profile embed | Additive (`deleteStale: false`). The post-cut legacy scan remains disabled; old and new IDs for one code fact can coexist until #419's replacement-proven retirement. Old conversation rows have their separate #417 owner. A corpus-tenant receipt alone never authorizes legacy `kbSync` stale deletion. |
 
-| Concern | Pre-substrate | Post-substrate, zero-config |
-|---|---|---|
-| Source discovery | Hardcoded 10-source array | `SourceRegistry` auto-registers the default set (`useDefaultSources` defaults `true`) in the same order — seven since the three conversation facets moved to the `github-content-sync` tenant route (`ConversationCorpusSource`, neo-agent-brain#402) |
-| Source input paths | Hardcoded in each Source class | `aiConfig.sourcePaths` carries Neo's default layout; each Source falls through to its hardcoded fallback if the config key is absent |
-| Chunk identity | `neoRootDir`-relative `source` string | Path-identity tuple with `tenantId: 'neo-shared'`, `repoSlug: 'neo'` — the default tenant for a single-repo deployment |
-| `npm run ai:sync-kb` output | — | Byte-equivalent for the seven remaining default Sources (the byte-equivalence test in #11660/#11661 is the regression guard). GitHub conversations are no longer part of this output: they arrive through the `github-content-sync` tenant route (neo-agent-brain#402), so a legacy sync emits no `ticket` / `pull` / `discussion` chunks and, under the default stale strategy, retires the ones an earlier sync stamped under `neo-shared/neo` |
+The first profile materialization publishes two JSONL artifacts behind one manifest, with separate revision and extraction identities. The current code does not claim byte-equivalence with the retired global SourceRegistry builder. Release-note files and the skills corpus have no active image-carried roots in this cut; their separately owned source contracts remain outside the shared-core profiles.
 
-A single-repo deployment *is* a one-tenant deployment where the tenant is `neo-shared`. The cloud substrate doesn't add a code path the single-repo case has to navigate — it generalizes the existing path, with the existing behavior as the `N=1` default.
+### Activation and legacy-row migration receipt
+
+This is the acceptance plan for #282 AC-9, not an activation performed by its code PR. `kbSync` remains off under #253 / #411 until a later activation owner records each step against the same deployed image and collection:
+
+1. Capture the pre-activation Chroma row inventory by `(tenantId, repoSlug, sourcePath, type)` and count old code, conversation, skill, concept, and release-note rows separately. Bind the installed Engine pin, Brain revision, and current corpus revision in the receipt; an aggregate count cannot prove which family was preserved.
+2. Resolve effective `tenantRepos` through the graph → YAML → Tier-1 winner. The core scan and tenant GitMirror both refuse an enabled shared-tenant Engine/Brain route by owner key or canonical clone URL before writes. A higher-tier `tenantRepos: []` suppresses lower-tier entries; reading Tier-1 alone is not an ownership check.
+3. Materialize both exact-revision profiles and record their manifest SHA, extraction identity, per-family yielded paths and counts. The full profile embed is additive (`deleteStale: false`): it can leave a legacy and a new ID for the same Engine code fact because extraction identity changes the hash. Until #419's deployed cleanup receipt, neither a green embed nor `ask_knowledge_base` can prove code currentness. Verify both repository stamps, same-path collision separation, and stored-content hydration against representative old and new rows. No global collection `shadow-swap` or per-repo stale deletion is authorized by this receipt.
+4. Retire old conversation rows only through #417's conversation-scoped control. #419 owns a separate replacement-proven source-code-row retirement: it compares the exact old IDs against landed Engine/Brain profile rows and preserves unmatched families. Neither transaction may delete rows of another family as a side effect.
+5. The Skills package is a separate repository: the Brain image's `.agents/skills` link is not a revision-bound Brain input. Name and verify its ingestion owner before retiring old `SkillSource` rows. The #282 Engine pin `17b59aad8f95c55c916fd6bb8bd6a0f43bd2d687` contains 59 `resources/content/concepts` files; the Engine content-removal lane must preserve a declared, revision-bound concept input before deleting that directory. Release-note roots are absent from both images in this cut; compare any retained historical rows before deciding their retirement.
+
+Only after these receipts pass may an activation owner change the `kbSync` gate and choose a scoped stale-row strategy. A corpus tenant receipt alone cannot make the shared core scan current.
 
 ## What an operator opts into (cloud / multi-tenant mode)
 
 Divergence from the single-repo default is **granular and opt-in**. An operator moving to a multi-tenant cloud deployment changes only what their topology requires:
 
-- **Skip Neo's curated content** — set `aiConfig.useDefaultSources = false`. The `SourceRegistry` then contains only tenant-supplied Sources.
+- **Skip legacy default Source registration** — set `aiConfig.useDefaultSources = false` for SourceRegistry consumers. This does not disable the shared Engine/Brain core profiles; `kbSync` has its own scheduler toggle.
 - **Unknown tenant repo shape** — set `aiConfig.rawRepoSource = true` to register the built-in raw-text fallback Source while a custom Source is still premature.
-- **Different repo layout** — override only the affected `aiConfig.sourcePaths` keys (e.g. a tenant whose guides live under `docs/guides/tree.json` rather than `learn/tree.json`). Un-overridden keys still resolve to Neo defaults.
+- **Different legacy Source layout** — override affected `aiConfig.sourcePaths` keys for a consumer still using that registry. Repository profiles carry their own route territories and exact reader authority; `sourcePaths` does not override them.
 - **Register tenant Sources/Parsers** — populate `aiConfig.customSources` / `aiConfig.customParsers` with pre-imported tenant classes, or call `SourceRegistry.registerSource(...)` at runtime.
 - **Spoof-rejection policy** — a multi-tenant operator should consider `aiConfig.spoofRejectionMode: 'reject'` (fail-closed) over the `'overwrite'` default (see [Security](./Security.md)).
 

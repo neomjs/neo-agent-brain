@@ -517,7 +517,7 @@ A single `repoSlug` can be served by both surfaces, but the operational rules ar
 
 - Server-derived `tenantId` stamping is authoritative regardless of which surface delivered the content. A push-mode tenant can't claim a different `tenantId` than its authenticated identity; a pull-mode entry uses the `tenantRepos[]` config's `tenantId`.
 - If both surfaces write to the same `(tenantId, repoSlug)`, the most recent revision wins for the next ingest envelope. The deletion-signaling contract (tombstones, manifests, baseRevision/headRevision) keeps state consistent across alternation, but operators should expect noisy revision history.
-- Local maintainer checkout sync (`primary-dev-sync`, `kbSync`) is NEVER repointed at tenant content. Tenant content lives only in tenant-namespaced `(tenantId, repoSlug)` keys; the maintainer-checkout lanes remain scoped to the operator's own neomjs/neo repo.
+- Shared-core `kbSync` is never repointed at tenant content. It reads the image-carried Engine package and Brain source through separate exact-revision repository profiles and stamps each under its own `(tenantId, repoSlug)` tuple; `primary-dev-sync` remains the separate host checkout lane. Tenant pull content arrives through `tenant-repo-sync`. Both acquisition lanes refuse an effective shared-tenant Engine/Brain overlap before writing, including a clone URL aliased under another slug. The first core-profile delivery embeds additively; the [activation and legacy-row migration receipt](./MigrationPath.md#activation-and-legacy-row-migration-receipt) remains a separate transaction, so a fresh tenant manifest never authorizes old-core stale deletion.
 
 ### Cross-Subsystem Surfaces
 

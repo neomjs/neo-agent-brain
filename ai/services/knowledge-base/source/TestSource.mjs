@@ -49,6 +49,79 @@ class TestSource extends Base {
     }
 
     /**
+     * @summary Parses assigned Playwright modules from one repository revision.
+     * @param {Object} params Repository-bound route invocation.
+     * @returns {Promise<{count: Number, yieldedSourcePaths: String[], skippedSourcePaths: Object[]}>}
+     */
+    async extractFromRepository({context, writeStream, createHashFn} = {}) {
+        const reader = context?.repositoryReader;
+
+        if (!reader || typeof reader.readText !== 'function') {
+            throw new TypeError('TestSource repository extraction requires context.repositoryReader')
+        }
+
+        const
+            assignments = [...(context?.territory?.assignments || [])]
+                .sort((left, right) => left.entry.sourcePath === right.entry.sourcePath
+                    ? 0
+                    : left.entry.sourcePath < right.entry.sourcePath ? -1 : 1),
+            yieldedSourcePaths = [],
+            skippedSourcePaths = [];
+
+        let count = 0;
+
+        for (const assignment of assignments) {
+            const
+                sourcePath   = assignment.entry.sourcePath,
+                relativePath = assignment.relativePath;
+
+            if (
+                typeof relativePath !== 'string'
+                || !relativePath.endsWith('.mjs')
+                || relativePath.split('/').some(segment =>
+                    ['node_modules', 'test-results', 'reports'].includes(segment))
+            ) {
+                skippedSourcePaths.push({sourcePath, reason: 'not-test-module'});
+                continue
+            }
+
+            let content;
+
+            try {
+                content = await reader.readText(sourcePath);
+            } catch (error) {
+                if (error.code === 'KB_REVISION_READER_BINARY_BLOB') {
+                    skippedSourcePaths.push({sourcePath, reason: 'binary'});
+                    continue
+                }
+                throw error
+            }
+
+            const chunks = TestParser.parse(content, sourcePath);
+
+            if (!chunks.length) {
+                chunks.push({
+                    type  : 'test',
+                    kind  : 'test-spec',
+                    name  : sourcePath,
+                    content,
+                    source: sourcePath
+                });
+            }
+
+            for (const chunk of chunks) {
+                chunk.hash = createHashFn(chunk);
+                writeStream.write(JSON.stringify(chunk) + '\n');
+                count++;
+            }
+
+            yieldedSourcePaths.push(sourcePath);
+        }
+
+        return {count, yieldedSourcePaths, skippedSourcePaths};
+    }
+
+    /**
      * Recursively scans a directory and indexes files as raw source chunks.
      * @param {Object}   writeStream           The stream to write chunks to.
      * @param {Function} createHashFn          Function to create content hash.
@@ -62,7 +135,7 @@ class TestSource extends Base {
      * @private
      */
     async indexRawDirectory(writeStream, createHashFn, relativePath, defaultType, options={}) {
-        let count = 0;
+        let   count    = 0;
         const fullPath = path.resolve(aiConfig.neoRootDir, relativePath);
 
         if (!await fs.pathExists(fullPath)) return 0;
@@ -82,7 +155,7 @@ class TestSource extends Base {
                 const ext = path.extname(entryName);
                 if (options.include?.includes(ext)) {
                     const content = await fs.readFile(entryPath, 'utf-8');
-                    let type      = defaultType;
+                    let   type    = defaultType;
 
                     if (options.typeOverrides) {
                         for (const [key, value] of Object.entries(options.typeOverrides)) {

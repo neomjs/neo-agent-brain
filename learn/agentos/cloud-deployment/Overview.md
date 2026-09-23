@@ -62,16 +62,16 @@ Remote agents read the Dream Pipeline's morning surface (`sandman_handoff.md`) t
 
 There is no separate Chroma instance per tenant. Every piece of content is tagged with its owner when it's written and filtered by owner when it's read, so each tenant sees its own content plus Neo's shared library — never another tenant's private data.
 
-## Default-source inheritance
+## Shared core profiles and legacy default registration
 
-A zero-config Neo deployment behaves identically with or without the cloud-ingestion substrate: `useDefaultSources` defaults to `true`, `rawRepoSource` defaults to `false`, the `SourceRegistry` auto-registers Neo's seven curated Source classes (GitHub conversations arrive through the `github-content-sync` tenant route), and `aiConfig.sourcePaths` carries Neo's default layout. A cloud tenant opting out of Neo's curated content sets `useDefaultSources: false`; a tenant whose repo layout differs overrides only the `sourcePaths` keys it needs; a tenant with no known shape can opt into `rawRepoSource` as a day-0 fallback. Inheritance is the default; divergence is opt-in and granular.
+The shared `kbSync` scans the image-carried Engine package and Brain source through separate exact-revision repository profiles, then embeds under separate `neo-shared` repository stamps. It no longer discovers core content through `SourceRegistry`. The seven default Source classes still register for legacy/custom consumers (`useDefaultSources: true`), while GitHub conversations arrive through the distinct `github-content-sync` tenant route. `sourcePaths` and `rawRepoSource` configure legacy registry consumers, not the shared core profiles. The first profile embed is additive; old-row migration and stale deletion have their own acceptance receipts.
 
 ## Registry contract split — Source vs Parser
 
-- A **Source** locates and reads content from a territory (a directory tree, an external workspace) and emits knowledge chunks into the full-corpus build.
+- A **Source** locates and reads content from a declared territory and emits chunks. Legacy/custom Sources use `SourceRegistry`; shared core and tenant repository profiles use immutable `ExtractorCatalogue` descriptors with route-bound readers.
 - A **Parser** transforms a specific file format into chunk content (e.g. a `.proto` parser, an ES5-aware parser).
 
-`SourceRegistry` holds both. Neo's curated Sources auto-register; tenant Sources/Parsers register declaratively via `aiConfig.customSources` / `aiConfig.customParsers` or programmatically via `SourceRegistry.registerSource(...)`. The Phase 2 ingestion facades can invoke a registered Parser during an ingestion call; with no parser match, the raw-text fallback ingests the whole file as one chunk.
+`SourceRegistry` still holds legacy/custom Sources and Parsers. Tenant Sources/Parsers register declaratively via `aiConfig.customSources` / `aiConfig.customParsers` or programmatically via `SourceRegistry.registerSource(...)`. The Phase 2 ingestion facades can invoke a registered Parser during an ingestion call; with no parser match, the raw-text fallback ingests the whole file as one chunk.
 
 ## Relationship to Neo's curated content
 
@@ -82,8 +82,8 @@ Neo's own guides, ADRs, skills, and API docs remain in the KB under `tenantId: '
 - **[Security](./Security.md)** — tenant-isolation invariants, write-side stamping + spoof-rejection, parser-execution boundary framing, and the KB-as-cache vs MC-as-store recovery model.
 - **[Day-0 Tutorial](./Day0Tutorial.md)** - linear PoC walkthrough for a fresh operator or agent: remote MCP healthcheck, MC/KB connection, tenant ingestion, client-side parsing, bulk path, and backup/redeploy handoff.
 - **[llama.cpp Profile](./LlamaCppProfile.md)** - OpenAI-compatible cloud-provider profile for self-hosted llama.cpp, including chat+embedding residency and handoff smoke.
-- **[Migration Path](./MigrationPath.md)** — how an existing single-repo Neo deployment upgrades to the cloud-ingestion substrate with zero config changes.
+- **[Migration Path](./MigrationPath.md)** — the historical zero-config phase and the current post-split Engine/Brain core-profile boundary.
 - **[Tenant Ingestion Model](./TenantIngestionModel.md)** — the operator-facing model for tenant repo identity, credential boundaries, parser dispatch, source-family inventory, and push-vs-bulk ingestion choices.
 - **[Configuration](./Configuration.md)** — the `aiConfig` keys and the `KnowledgeBaseTenantConfig` / `kb-config.yaml` tenant-config storage.
-- **[Custom Sources](./CustomSources.md)** / **[Custom Parsers](./CustomParsers.md)** — authoring a Source for the full-corpus build, or a Parser for the push path.
+- **[Custom Sources](./CustomSources.md)** / **[Custom Parsers](./CustomParsers.md)** — authoring a repository-profile extractor, legacy Source, or Parser for ingestion.
 - **[Hook Wiring](./HookWiring.md)** — the `ingest_source_files` / `ai:ingest-tenant` facades and git-hook patterns; runnable companions live under [`ai/examples/cloud-deployment/`](../../../ai/examples/cloud-deployment/).
