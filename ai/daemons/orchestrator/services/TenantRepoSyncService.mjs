@@ -1709,7 +1709,7 @@ class TenantRepoSyncService extends Base {
      * Iterates configured tenantRepos and refreshes each via GitMirror → envelope → KB.
      *
      * @param {Object} options Forwarded from `runTask`.
-     * @returns {Promise<Object>} `{status, details: {repoCount, completedCount, deferredCount, stoppedCount, partialProgressCount, failedCount, leaseYielded, leaseDeferredCount, repos}}`.
+     * @returns {Promise<Object>} `{status, details: {repoCount, disabledCount, completedCount, deferredCount, stoppedCount, partialProgressCount, failedCount, leaseYielded, leaseDeferredCount, repos}}`.
      */
     async syncTenantRepos({
         writeLog, tenantReposConfig, gitMirror, knowledgeBaseIngestionService, onlyRepoSlugs,
@@ -1766,9 +1766,20 @@ class TenantRepoSyncService extends Base {
             tenantRepos: allRepos
         });
 
-        const repos = onlyRepoSlugs
+        const selectedRepos = onlyRepoSlugs
             ? allRepos.filter(r => onlyRepoSlugs.includes(r.repoSlug))
             : allRepos;
+
+        // A disabled entry is parked: excluded before any git or ingest call and counted in the cycle
+        // summary, never logged per sweep. A selector naming one is told so once — like an unknown
+        // slug, it is neither synced nor dropped silently.
+        const disabledRepos = selectedRepos.filter(repo => isTenantRepoDisabled(repo));
+        const repos         = selectedRepos.filter(repo => !isTenantRepoDisabled(repo));
+        const disabledCount = disabledRepos.length;
+
+        if (onlyRepoSlugs) {
+            disabledRepos.forEach(repo => writeLog?.('WARN', `[TenantRepoSync] ${repo.tenantId}/${repo.repoSlug} skipped: the entry is disabled in tenantRepos[]; the selector named it.`));
+        }
 
         // One-time deployment sanity check on the OTHER leaf relationship, and never a throw for the
         // same reason as its sibling at the runTask boundary. A cap that does not clear the JITTERED
@@ -1842,7 +1853,7 @@ class TenantRepoSyncService extends Base {
         }
 
         if (repos.length === 0) {
-            const details = {reason: 'no-tenant-repos-configured', repoCount: 0};
+            const details = {reason: disabledCount ? 'all-tenant-repos-disabled' : 'no-tenant-repos-configured', repoCount: 0, disabledCount};
             // DEBUG, not INFO: this fires on the 60s sweep cadence forever on any deployment with
             // no tenant repos, and an INFO line that repeats once a minute costs more than it tells
             // anyone. It was measured doing exactly that — eight identical lines in eight minutes,
@@ -3412,12 +3423,13 @@ class TenantRepoSyncService extends Base {
             });
         }
 
-        writeLog?.('INFO', `[TenantRepoSync] Cycle summary: ${repos.length} repos, ${completedCount} completed, ${deferredCount} deferred, ${failedCount} failed, ${partialProgressCount} partial-progress, ${notDueCount} not-due, ${revalidationDeferredCount} revalidation-deferred, ${leaseDeferredCount} lease-yield-deferred${status === 'yielded' ? ' — OUTER LEASE YIELDED' : (leaseYielded ? ' — OUTER LEASE BOUND OBSERVED' : '')}${detection.starved ? ` — STARVED (oldest suppression ${detection.evidence.oldestSuppressedAt})` : ''}.`);
+        writeLog?.('INFO', `[TenantRepoSync] Cycle summary: ${repos.length} repos, ${completedCount} completed, ${deferredCount} deferred, ${failedCount} failed, ${partialProgressCount} partial-progress, ${notDueCount} not-due, ${disabledCount} disabled, ${revalidationDeferredCount} revalidation-deferred, ${leaseDeferredCount} lease-yield-deferred${status === 'yielded' ? ' — OUTER LEASE YIELDED' : (leaseYielded ? ' — OUTER LEASE BOUND OBSERVED' : '')}${detection.starved ? ` — STARVED (oldest suppression ${detection.evidence.oldestSuppressedAt})` : ''}.`);
 
         return {
             status,
             details: {
                 repoCount: repos.length,
+                disabledCount,
                 completedCount,
                 deferredCount,
                 stoppedCount,
