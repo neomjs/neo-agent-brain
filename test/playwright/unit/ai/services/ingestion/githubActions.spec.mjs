@@ -17,6 +17,8 @@ test.describe('githubActions — the bounded Actions REST reads', () => {
         expect(resolveGithubToken({env: {GH_TOKEN: 'gh', GITHUB_TOKEN: 'github'}})).toBe('gh');
         expect(resolveGithubToken({env: {GITHUB_TOKEN: ' github '}})).toBe('github');
         expect(() => resolveGithubToken({env: {}})).toThrow(/GH_TOKEN or GITHUB_TOKEN/);
+        // Typed, so a caller can tell an unconfigured credential from a failing one
+        expect(() => resolveGithubToken({env: {}})).toThrow(expect.objectContaining({code: 'github-token-unset'}));
     });
 
     test('the client refuses a malformed repo slug or a missing token before any request', () => {
