@@ -278,6 +278,142 @@ test.describe('SessionService validateSessionForResume (#10725)', () => {
         }
     });
 
+    test('#438: a failed job backs off 30 min, doubling with each claim since its last success, capped at 24 h', async () => {
+        const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        await GraphService.ready();
+
+        const
+            sqlite    = GraphService.db.storage.db,
+            service   = SDK.Memory_SessionService,
+            sessionId = `failure-backoff-${crypto.randomUUID()}`,
+            now       = 1_000_000,
+            minute    = 60_000,
+            expiresAt = () => sqlite.prepare('SELECT expires_at FROM SummarizationJobs WHERE session_id = ?').pluck().get(sessionId),
+            retries   = count => sqlite.prepare('UPDATE SummarizationJobs SET retry_count = ? WHERE session_id = ?').run(count, sessionId);
+
+        sqlite.prepare(`
+            INSERT INTO SummarizationJobs (session_id, status, lease_token, expires_at, retry_count)
+            VALUES (?, 'in_progress', 'token', ?, 0)
+        `).run(sessionId, now + 5 * minute);
+
+        try {
+            service.failSummarizationJob(sessionId, now);
+            expect(expiresAt()).toBe(now + 30 * minute);
+            expect(service.getSessionIdsInFailureBackoff(now + 30 * minute - 1).has(sessionId)).toBe(true);
+            expect(service.getSessionIdsInFailureBackoff(now + 30 * minute).has(sessionId), 'eligible once the not-before passes').toBe(false);
+
+            retries(3);
+            service.failSummarizationJob(sessionId, now);
+            expect(expiresAt()).toBe(now + 240 * minute);
+
+            retries(9);
+            service.failSummarizationJob(sessionId, now);
+            expect(expiresAt(), 'capped at 24 h').toBe(now + 24 * 60 * minute);
+        } finally {
+            sqlite.prepare('DELETE FROM SummarizationJobs WHERE session_id = ?').run(sessionId);
+        }
+    });
+
+    test('#438: acknowledging a summary resets the backoff exponent', async () => {
+        const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        await GraphService.ready();
+
+        const
+            sqlite    = GraphService.db.storage.db,
+            service   = SDK.Memory_SessionService,
+            sessionId = `failure-reset-${crypto.randomUUID()}`,
+            now       = 1_000_000;
+
+        sqlite.prepare(`
+            INSERT INTO SummarizationJobs (session_id, status, lease_token, expires_at, retry_count, result_envelope, result_encoding, result_staged_at)
+            VALUES (?, 'in_progress', 'token', ?, 4, ?, 'gzip-json-v1', 100)
+        `).run(sessionId, now, Buffer.from('staged-receipt'));
+
+        try {
+            service.completeSummarizationJob(sessionId);
+
+            const row = sqlite.prepare('SELECT status, retry_count FROM SummarizationJobs WHERE session_id = ?').get(sessionId);
+
+            expect(row).toEqual({status: 'completed', retry_count: 0});
+
+            sqlite.prepare(`UPDATE SummarizationJobs SET status = 'in_progress' WHERE session_id = ?`).run(sessionId);
+            service.failSummarizationJob(sessionId, now);
+
+            expect(sqlite.prepare('SELECT expires_at FROM SummarizationJobs WHERE session_id = ?').pluck().get(sessionId), 'the ladder starts again at 30 min').toBe(now + 30 * 60_000);
+        } finally {
+            sqlite.prepare('DELETE FROM SummarizationJobs WHERE session_id = ?').run(sessionId);
+        }
+    });
+
+    test('#438: a disconnect re-queues a failed job only once its backoff has passed', async () => {
+        const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        await GraphService.ready();
+
+        const
+            sqlite    = GraphService.db.storage.db,
+            service   = SDK.Memory_SessionService,
+            now       = 1_000_000,
+            backedOff = `failure-queue-held-${crypto.randomUUID()}`,
+            expired   = `failure-queue-expired-${crypto.randomUUID()}`,
+            row       = id => sqlite.prepare('SELECT status, expires_at FROM SummarizationJobs WHERE session_id = ?').get(id);
+
+        const insertFailed = sqlite.prepare(`
+            INSERT INTO SummarizationJobs (session_id, status, lease_token, expires_at, retry_count)
+            VALUES (?, 'failed', NULL, ?, 1)
+        `);
+
+        insertFailed.run(backedOff, now + 1);
+        insertFailed.run(expired,   now);
+
+        try {
+            expect(service.queueSummarizationJob(backedOff, now)).toBe(true);
+            expect(service.queueSummarizationJob(expired,   now)).toBe(true);
+
+            expect(row(backedOff), 'the pending drain must not bypass the backoff').toEqual({status: 'failed', expires_at: now + 1});
+            expect(row(expired)).toEqual({status: 'pending', expires_at: null});
+        } finally {
+            sqlite.prepare('DELETE FROM SummarizationJobs WHERE session_id IN (?, ?)').run(backedOff, expired);
+        }
+    });
+
+    test('#438: backed-off sessions are dropped before the cap, and the drift line counts failures and backoff', async () => {
+        const
+            service   = SDK.Memory_SessionService,
+            originals = {
+                findSessionsToSummarize      : service.findSessionsToSummarize,
+                getSessionIdsInFailureBackoff: service.getSessionIdsInFailureBackoff,
+                claimSummarizationJob        : service.claimSummarizationJob,
+                summarizeSession             : service.summarizeSession,
+                failSummarizationJob         : service.failSummarizationJob
+            },
+            originalConsoleError = console.error,
+            fresh                = ['f1', 'f2', 'f3', 'f4', 'f5'],
+            claimed              = [],
+            failed               = [],
+            lines                = [];
+
+        Object.assign(service, {
+            findSessionsToSummarize      : async () => ['backed-off', ...fresh],
+            getSessionIdsInFailureBackoff: () => new Set(['backed-off']),
+            claimSummarizationJob        : sessionId => claimed.push(sessionId) > 0,
+            summarizeSession             : async () => null,
+            failSummarizationJob         : sessionId => failed.push(sessionId)
+        });
+        console.error = (...args) => lines.push(args.join(' '));
+
+        try {
+            await service.summarizeSessions();
+
+            // The default per-sweep cap is 5 (config.template.spec): six candidates, one backed off.
+            expect(claimed, 'the backed-off session never takes one of the five slots').toEqual(fresh);
+            expect(failed).toEqual(fresh);
+            expect(lines.find(line => line.includes('drift complete'))).toContain('candidates=5; processed=0; failed=5; skippedClaims=0; backoff=1');
+        } finally {
+            Object.assign(service, originals);
+            console.error = originalConsoleError;
+        }
+    });
+
     test('#13462: summarizeSessions enables completed-row repair for drift candidates', async () => {
         const originalFind      = SDK.Memory_SessionService.findSessionsToSummarize;
         const originalClaim     = SDK.Memory_SessionService.claimSummarizationJob;
