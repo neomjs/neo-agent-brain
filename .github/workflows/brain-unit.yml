@@ -75,6 +75,11 @@ jobs:
                   test/playwright/unit/ai/services/knowledge-base/source/SourceRegistry.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/SourcePathsConfig.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/extractorCatalogue.spec.mjs
+                  test/playwright/unit/ai/configBase.spec.mjs
+                  test/playwright/unit/ai/services/fleet/fleetPrLaneActivityAdapter.spec.mjs
+                  test/playwright/unit/ai/services/fleet/wireFleetActivityReadSource.spec.mjs
+                  test/playwright/unit/ai/services/graph/readSyncedPullRecords.spec.mjs
+                  test/playwright/unit/ai/services/graph/readWorkGraphIssueRecords.spec.mjs
 
             - name: Verify community host authority boundary
               run: >-

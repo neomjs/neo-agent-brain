@@ -284,10 +284,10 @@ async function boot() {
     // Wire the composed activitySource onto FleetControlBridge. The memory-core mailbox + graph
     // singletons are imported lazily at this boot use site (mirroring readActiveWakeSubscriptionIdentities's
     // lazy GraphService) and INJECTED — the composer's slot readers never import a singleton, so the
-    // mailbox identity/permission binding stays here. issuesDir + pullsDir are the synced content trees
-    // under the `fleet.contentRoot` leaf, resolved here at the use site (a Brain checkout carries no
-    // `resources/content`, so the deployment names the corpus root and the pre-split path stays the
-    // default). The pulls reader fills the composer's last honest-empty slot so the PR/lane slot emits pr-activity
+    // mailbox identity/permission binding stays here. The synced content root is the `fleet.contentRoot`
+    // leaf, resolved here at the use site (a Brain checkout carries no `resources/content`, so the
+    // deployment names a corpus checkout root or one origin's tree, and the pre-split path stays the
+    // default); the wiring resolves the origins under it. The pulls reader fills the composer's last honest-empty slot so the PR/lane slot emits pr-activity
     // events (opens/reviews/merges) alongside issues + lane-claims + stall. Fail-soft: an unavailable
     // singleton leaves activitySource unwired.
     if (planeClient) {
@@ -297,8 +297,7 @@ async function boot() {
         // defer-disposition degrades per that slot's own fail-soft contract while issues/pulls
         // keep reading the git-synced local trees (correctly host-local, ticket Out of Scope).
         wireFleetActivityReadSource({
-            issuesDir   : path.resolve(AiConfig.fleet.contentRoot, 'issues'),
-            pullsDir    : path.resolve(AiConfig.fleet.contentRoot, 'pulls'),
+            contentRoot : AiConfig.fleet.contentRoot,
             listMessages: args => planeClient.listMessages(args)
         });
 
@@ -311,8 +310,7 @@ async function boot() {
             import('../memory-core/GraphService.mjs')
         ]).then(([{default: MailboxService}, {default: GraphService}]) => {
             wireFleetActivityReadSource({
-                issuesDir   : path.resolve(AiConfig.fleet.contentRoot, 'issues'),
-                pullsDir    : path.resolve(AiConfig.fleet.contentRoot, 'pulls'),
+                contentRoot : AiConfig.fleet.contentRoot,
                 listMessages: MailboxService.listMessages.bind(MailboxService),
                 graphService: GraphService
             });

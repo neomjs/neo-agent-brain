@@ -23,6 +23,7 @@ import {
     createPrActivityEvents,
     createStallActivityEvents
 } from '../../../../../../ai/services/fleet/fleetPrLaneActivityAdapter.mjs'
+import {qualifyOriginId} from '../../../../../../ai/services/graph/corpusProjectionContract.mjs'
 import {FLEET_COCKPIT_SOURCES} from '../../../../../../src/fleet/contract/cockpit.mjs';
 
 test.describe('fleetPrLaneActivityAdapter - PR/lane activity mapping', () => {
@@ -299,5 +300,48 @@ test.describe('createStallActivityEvents — stable rank time', () => {
 
         expect(event.occurredAt).toBe(capturedAt)
         expect(event.payload.rankAnchor).toBe('capture-time-degraded')
+    })
+})
+
+test.describe('fleetPrLaneActivityAdapter - corpus origins', () => {
+    test('qualifyOriginId (the corpus contract) keeps the Graph origin bare and qualifies every other origin', () => {
+        expect(qualifyOriginId(undefined, 7)).toBe(7)
+        expect(qualifyOriginId('neo', 7)).toBe(7)
+        expect(qualifyOriginId('neo-agent-brain', 7)).toBe('neo-agent-brain#7')
+        expect(qualifyOriginId('neo-agent-brain', 'issue-7')).toBe('neo-agent-brain#issue-7')
+        expect(qualifyOriginId('neo-agent-brain', null)).toBeNull()
+    })
+
+    test('PR and issue events of a foreign origin carry the slug in id and payload; the Graph origin\'s ids are unchanged', () => {
+        const stamp     = {title: 't', state: 'OPEN', updatedAt: '2026-09-22T10:00:00Z'},
+              [foreign] = createPrActivityEvents([{number: 7, repoSlug: 'neo-agent-brain', ...stamp}]),
+              [home]    = createPrActivityEvents([{number: 7, repoSlug: 'neo', ...stamp}]),
+              [issue]   = createIssueActivityEvents([{number: 7, repoSlug: 'devindex', ...stamp}])
+
+        expect(foreign.eventId).toBe(`${FLEET_COCKPIT_SOURCES.githubPr}:neo-agent-brain#7`)
+        expect(foreign.payload.repoSlug).toBe('neo-agent-brain')
+        expect(home.eventId).toBe(`${FLEET_COCKPIT_SOURCES.githubPr}:7`)
+        expect(home.payload.repoSlug).toBe('neo')
+        expect(issue.eventId).toBe(`${FLEET_COCKPIT_SOURCES.githubIssue}:devindex#7`)
+        expect(issue.payload.repoSlug).toBe('devindex')
+    })
+
+    test('a stall finding of a foreign origin keys its event by the qualified subject', () => {
+        const [event] = createStallActivityEvents([{findingClass: 'STALE_DEFER', waitingSince: '2026-09-01T00:00:00Z', subject: {number: 7, repoSlug: 'neo-agent-brain', owner: '@a'}}])
+
+        expect(event.eventId).toBe(`${FLEET_COCKPIT_SOURCES.graphStall}:STALE_DEFER:neo-agent-brain#7`)
+        expect(event.payload.subject.repoSlug).toBe('neo-agent-brain')
+    })
+
+    test('partial origin failures degrade the capability BY NAME while the rows that were read stay', () => {
+        const snapshot = createFleetPrLaneActivitySnapshot({
+            prs            : [{number: 7, repoSlug: 'neo', title: 't', state: 'OPEN', updatedAt: '2026-09-22T10:00:00Z'}],
+            partialFailures: ['devindex: ENOENT: no such file or directory'],
+            capturedAt     : '2026-09-22T12:00:00Z'
+        })
+
+        expect(snapshot.capability).toMatchObject({state: 'degraded', confidence: 'observed'})
+        expect(snapshot.capability.reason).toContain('devindex')
+        expect(snapshot.events.map(event => event.type)).toEqual(['source-degraded', 'pr-activity'])
     })
 })
