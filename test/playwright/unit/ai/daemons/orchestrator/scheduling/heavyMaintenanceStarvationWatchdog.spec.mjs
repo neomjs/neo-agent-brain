@@ -1,5 +1,6 @@
 import {test, expect} from '@playwright/test';
 import {
+    describeHolderYield,
     describeStarvationReceiptReachability,
     evaluateWaiterStarvation,
     getDueTask
@@ -360,5 +361,52 @@ test.describe('the published breach schema equals the shipped breach (#239)', ()
               advertised = Object.keys(schema.items.properties).sort();
 
         expect(advertised).toEqual(emitted)
+    })
+});
+
+test.describe('describeHolderYield — the holder’s last cycle rides the receipt (#415)', () => {
+    const NULLS = {taskName: null, leaseYielded: null, observedYieldCause: null, cycleAt: null};
+
+    test('a holder that records its yield facts is read from its task state, with the cycle time', () => {
+        const completedAt = Date.parse('2026-09-22T21:58:00.000Z');
+
+        expect(describeHolderYield({
+            leaseHolder  : 'tenant-repo-sync:scheduler',
+            readTaskState: name => name === 'tenant-repo-sync'
+                ? {completedAt, lastCompletion: {status: 'yielded', leaseYielded: true, observedYieldCause: 'lease'}}
+                : undefined
+        })).toEqual({
+            taskName          : 'tenant-repo-sync',
+            leaseYielded      : true,
+            observedYieldCause: 'lease',
+            cycleAt           : '2026-09-22T21:58:00.000Z'
+        })
+    });
+
+    test('a holder that records nothing yields every field as null — present, never absent', () => {
+        const forDream = describeHolderYield({
+            leaseHolder  : 'dream',
+            readTaskState: () => ({completedAt: Date.parse('2026-09-22T20:00:00.000Z')})
+        });
+
+        expect(Object.keys(forDream).sort()).toEqual(Object.keys(NULLS).sort());
+        expect(forDream).toMatchObject({taskName: 'dream', leaseYielded: null, observedYieldCause: null, cycleAt: '2026-09-22T20:00:00.000Z'});
+        expect(describeHolderYield({leaseHolder: 'kbSync', readTaskState: () => undefined})).toEqual({...NULLS, taskName: 'kbSync'})
+    });
+
+    test('no holder, no reader, or mistyped facts all resolve to nulls rather than guesses', () => {
+        expect(describeHolderYield({leaseHolder: null, readTaskState: () => ({lastCompletion: {leaseYielded: true}})})).toEqual(NULLS);
+        expect(describeHolderYield({leaseHolder: 'tenant-repo-sync'})).toEqual({...NULLS, taskName: 'tenant-repo-sync'});
+        expect(describeHolderYield({
+            leaseHolder  : 'tenant-repo-sync:manual',
+            readTaskState: () => ({failedAt: 'not-a-number', lastCompletion: {leaseYielded: 'yes', observedYieldCause: ''}})
+        })).toEqual({...NULLS, taskName: 'tenant-repo-sync'})
+    });
+
+    test('the latest terminal mark wins as cycleAt, whichever disposition it was', () => {
+        expect(describeHolderYield({
+            leaseHolder  : 'tenant-repo-sync',
+            readTaskState: () => ({completedAt: 1_000, failedAt: 3_000, skippedAt: 2_000, lastCompletion: {leaseYielded: false}})
+        })).toMatchObject({leaseYielded: false, observedYieldCause: null, cycleAt: new Date(3_000).toISOString()})
     })
 });

@@ -3815,6 +3815,30 @@ components:
               nullable: true
               description: "Owner of the active heavy-maintenance lease at check time; null when no active lease. Present on consumed-degraded."
               example: "dream"
+            holderYield:
+              type: object
+              nullable: true
+              description: "The lease holder's own account of its LAST FINISHED cycle, read from its durable task state on consumed-degraded: whether that cycle yielded the lease and to which cause, and when it ended. Every field is present and null when the holder task records nothing (`kbSync`, `dream`, …); null as a whole under a producer that predates the field. `cycleAt` may predate the current hold — compare it with the receipt's `checkedAt` before reading the cause as current."
+              properties:
+                taskName:
+                  type: string
+                  nullable: true
+                  description: "The holder's task name — the lease owner's first `:`-segment."
+                  example: "tenant-repo-sync"
+                leaseYielded:
+                  type: boolean
+                  nullable: true
+                  example: true
+                observedYieldCause:
+                  type: string
+                  nullable: true
+                  description: "The strongest yield cause the holder observed in that cycle (`lease` outranks `slice`); null when it observed none or records none."
+                  example: "lease"
+                cycleAt:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  example: "2026-09-22T21:58:00.000Z"
             breaches:
               type: array
               description: "Starved-waiter receipt on consumed-degraded: one entry per live waiter whose deferral streak exceeded the bound."

@@ -1156,6 +1156,9 @@ export function foldHeavyMaintenanceStarvation({payload, inspection, now, staleA
             observation.state       = 'consumed-degraded';
             observation.breaches    = receipt.breaches ?? [];
             observation.leaseHolder = receipt.leaseHolder ?? null;
+            // The holder's last-cycle yield facts, when the producer stamps them; `null` under an
+            // older producer, so a consumer never mistakes "not carried" for "not observed".
+            observation.holderYield = receipt.holderYield ?? null;
 
             if (payload.status === 'healthy') {
                 payload.status = 'degraded';
@@ -1163,7 +1166,11 @@ export function foldHeavyMaintenanceStarvation({payload, inspection, now, staleA
             // A degraded verdict withdraws the all-clear line a cached-healthy payload carries —
             // the two statements cannot coexist in one response.
             payload.details = payload.details.filter(detail => detail !== 'All features are operational');
-            payload.details.push(`Heavy-maintenance starvation: ${(receipt.breaches ?? []).map(breach => `${breach.taskName} deferred since ${breach.deferredSince}`).join(', ') || 'degraded receipt'} (lease holder: ${receipt.leaseHolder ?? 'none'})`);
+            const holderYield = receipt.holderYield
+                ? `; holder's last cycle: yielded ${receipt.holderYield.leaseYielded ?? 'unknown'}, cause ${receipt.holderYield.observedYieldCause ?? 'none observed'}, at ${receipt.holderYield.cycleAt ?? 'unknown'}`
+                : '';
+
+            payload.details.push(`Heavy-maintenance starvation: ${(receipt.breaches ?? []).map(breach => `${breach.taskName} deferred since ${breach.deferredSince}`).join(', ') || 'degraded receipt'} (lease holder: ${receipt.leaseHolder ?? 'none'}${holderYield})`);
         } else if (receipt.posture === 'unknown') {
             // Inconclusive is its own answer. A fresh `unknown` means the watchdog READ the ledger
             // and could not decide (unreadable entries, or a watchdog fault) — so it may not

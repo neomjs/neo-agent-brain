@@ -1383,6 +1383,10 @@ test.describe('orchestrator/scheduling/pipeline — heavy-maintenance starvation
 
             expect(afterStale.leaseStatus, 'a stale lease must be distinguishable from an absent one').toBe('stale');
             expect(afterStale.leaseHolder, 'and it still reports no holder — which is exactly why the status is needed').toBe(null);
+            // The holder's yield facts travel on the persisted verdict with every field PRESENT: with
+            // no active holder there is nothing to read, and the receipt says so as four nulls rather
+            // than by omission (#415) — a consumer never has to tell "not carried" from "not observed".
+            expect(afterStale.holderYield).toEqual({taskName: null, leaseYielded: null, observedYieldCause: null, cycleAt: null});
         } finally {
             TaskStateService.stateFile       = originals.stateFile;
             TaskStateService.taskDefinitions = originals.taskDefinitions;
