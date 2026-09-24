@@ -1380,18 +1380,22 @@ function selectedPrReviewTemplatePath(body) {
 }
 
 /**
- * @summary The review a Round 2's `**Round-1 Review ID:**` names, in each form the shape gate accepts: a node
- * id (`PRR_…`), a database id, or a review URL (`#pullrequestreview-<databaseId>`), bare or as a link.
+ * @summary Every review reference a Round 2's `**Round-1 Review ID:**` carries, in each form the shape gate accepts:
+ * a node id (`PRR_…`), a database id, or a review URL (`#pullrequestreview-<databaseId>`), bare or as a link. A
+ * link contributes its label and its URL separately, so the two can be held to naming the same review.
  * @param {String} body
- * @returns {{databaseIds: String[], nodeIds: String[], text: String}} `text` is the cited value, before any ` · ` field
+ * @returns {{references: Object[], text: String}} `{kind: 'id'|'databaseId', value}` each; `text` is the cited value,
+ * before any ` · ` field
  */
 function citedRound1Review(body) {
     const text = (/\*\*Round-1 Review ID:\*\*[ \t]*([^\n]*)/.exec(body || '')?.[1] ?? '').split(' · ')[0].trim();
 
     return {
-        // A bare number, or the one after `pullrequestreview-`; never a digit run inside a path or an id
-        databaseIds: [...text.matchAll(/(?:pullrequestreview-|(?<![\w/#-]))(\d+)(?![\w/])/g)].map(match => match[1]),
-        nodeIds    : text.match(/PRR_[\w-]+/g) ?? [],
+        references: [
+            ...(text.match(/PRR_[\w-]+/g) ?? []).map(value => ({kind: 'id', value})),
+            // A bare number, or the one after `pullrequestreview-`; never a digit run inside a path or an id
+            ...[...text.matchAll(/(?:pullrequestreview-|(?<![\w/#-]))(\d+)(?![\w/])/g)].map(match => ({kind: 'databaseId', value: match[1]}))
+        ],
         text
     }
 }
@@ -1437,9 +1441,13 @@ function reviewDatabaseId(review) {
  */
 function getRound2DispositionRelationFailure({body, reviews, state}) {
     const
-        cited = citedRound1Review(body),
-        rcs   = (reviews || []).filter(review => review?.state === 'CHANGES_REQUESTED'),
-        prior = rcs.find(review => cited.nodeIds.includes(review.id) || cited.databaseIds.includes(reviewDatabaseId(review)));
+        {references, text} = citedRound1Review(body),
+        rcs                = (reviews || []).filter(review => review?.state === 'CHANGES_REQUESTED'),
+        // Per reference, at most one RC can match. EVERY reference must, and all must match the same one: a link
+        // whose label and URL disagree, or ids of two rounds, would otherwise be settled by the order of history
+        matched            = references.map(({kind, value}) => rcs.find(review => (kind === 'id' ? review.id : reviewDatabaseId(review)) === value)),
+        unmatched          = references.filter((reference, index) => !matched[index]),
+        prior              = unmatched.length === 0 && new Set(matched).size === 1 ? matched[0] : null;
 
     if (rcs.length === 0) {
         return round2RelationFailure([
@@ -1448,11 +1456,21 @@ function getRound2DispositionRelationFailure({body, reviews, state}) {
         ])
     }
 
+    if (references.length === 0 || unmatched.length > 0) {
+        return round2RelationFailure([
+            `This Round 2 cites \`${text}\` as its Round-1 review, but`,
+            unmatched.length > 0
+                ? `${unmatched.map(({value}) => `\`${value}\``).join(', ')} names no \`CHANGES_REQUESTED\` review on the pull request.`
+                : 'no review id can be read from it.',
+            'Cite the review whose Required Actions the table dispositions: a node id, a database id, or its URL.'
+        ])
+    }
+
     if (!prior) {
         return round2RelationFailure([
-            `This Round 2 cites \`${cited.text}\` as its Round-1 review, but no \`CHANGES_REQUESTED\` review on the`,
-            'pull request has that id. Cite the review whose Required Actions the table dispositions: a node id,',
-            'a database id, or its URL.'
+            `This Round 2 cites \`${text}\` as its Round-1 review,`,
+            `and its references name ${new Set(matched).size} different \`CHANGES_REQUESTED\` reviews.`,
+            'A link\'s label and its URL, or an id beside a link, must name the same review.'
         ])
     }
 
