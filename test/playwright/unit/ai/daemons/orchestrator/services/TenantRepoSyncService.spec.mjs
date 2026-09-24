@@ -2013,38 +2013,53 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             gitMirror                    : makeFakeGitMirror(),
             envelopeBuilder              : makeFakeEnvelopeBuilder(),
             knowledgeBaseIngestionService: makeFakeIngestionService({captureCalls: ingestCalls}),
-            revisionsFilePath            : revisionsFile,
-            seedBootstrap                : false
+            revisionsFilePath            : revisionsFile
         });
+
+        const persisted = await fs.pathExists(revisionsFile) ? await fs.readJson(revisionsFile) : {revisions: {}};
 
         expect(result.status).toBe('skipped');
         expect(result.details).toMatchObject({reason: 'all-tenant-repos-disabled', repoCount: 0, disabledCount: 1});
         expect(ingestCalls).toEqual([]);
+        expect(persisted.revisions['t1/org/parked'], 'a sole parked entry is not seeded').toBeUndefined();
         expect(logs.some(line => line.includes('No tenantRepos configured')), 'the log never calls a parked plane unconfigured').toBe(false);
         expect(logs.some(line => line.includes('entry is disabled (1)'))).toBe(true);
     });
 
-    test('bootstrap seeding keeps its selection: a disabled entry is seeded, never swept (#434)', async () => {
-        const ingestCalls = [];
+    test('a parked entry is seeded by its first swept cycle after re-enabling, not while parked (#434)', async () => {
+        const
+            baseCadenceMs = 1800000,
+            live          = {tenantId: 't1', repoSlug: 'org/live',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/live.git'},
+            parked        = {tenantId: 't1', repoSlug: 'org/parked', mirrorRoot, cloneUrl: 'https://github.com/neomjs/parked.git'},
+            sweep         = tenantRepos => TenantRepoSyncService.runTask({
+                reason                       : 'periodic',
+                taskStateService             : createTaskStateService(),
+                tenantReposConfig            : {tenantRepos},
+                gitMirror                    : makeFakeGitMirror(),
+                envelopeBuilder              : makeFakeEnvelopeBuilder(),
+                knowledgeBaseIngestionService: makeFakeIngestionService(),
+                revisionsFilePath            : revisionsFile,
+                globalCadenceMs              : baseCadenceMs,
+                jitterRatio                  : 0.20
+            });
 
-        await TenantRepoSyncService.runTask({
-            reason           : 'periodic',
-            taskStateService : createTaskStateService(),
-            tenantReposConfig: {tenantRepos: [
-                {tenantId: 't1', repoSlug: 'org/live',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/live.git'},
-                {tenantId: 't1', repoSlug: 'org/parked', mirrorRoot, cloneUrl: 'https://github.com/neomjs/parked.git', disabled: true}
-            ]},
-            gitMirror                    : makeFakeGitMirror(),
-            envelopeBuilder              : makeFakeEnvelopeBuilder(),
-            knowledgeBaseIngestionService: makeFakeIngestionService({captureCalls: ingestCalls}),
-            revisionsFilePath            : revisionsFile
-        });
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/live'});
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/parked'});
 
-        const {revisions} = await fs.readJson(revisionsFile);
+        await sweep([live, {...parked, disabled: true}]);
 
-        expect(Object.keys(revisions).sort()).toEqual(['t1/org/live', 't1/org/parked']);
-        expect(revisions['t1/org/parked'].lastIngestedRev).toBeNull();
-        expect(ingestCalls.map(call => call.payload.repoSlug)).not.toContain('org/parked');
+        expect(Object.keys((await fs.readJson(revisionsFile)).revisions), 'parked: no sync state').toEqual(['t1/org/live']);
+
+        await new Promise(resolve => setTimeout(resolve, 5));
+
+        const reEnabledAt = Date.now();
+
+        await sweep([live, parked]);
+
+        const reEnabled = (await fs.readJson(revisionsFile)).revisions['t1/org/parked'];
+
+        expect(reEnabled, 're-enabled: seeded by the sweep that first sees it').toBeTruthy();
+        expect(reEnabled.lastRunAttemptAt, 'the jitter spread starts at re-enable').toBeGreaterThanOrEqual(reEnabledAt - baseCadenceMs);
     });
 
     test('onlyRepoSlugs scoping: subset filtering for manual CLI path', async () => {

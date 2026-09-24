@@ -306,7 +306,7 @@ function createTenantRepoAccessKey(repo) {
 
 /**
  * @summary Returns true when a configured tenant repository is disabled (parked): never swept,
- * never probed, and not coverage the plane must initialize.
+ * probed or seeded, and not coverage the plane must initialize.
  * @param {Object} repo Effective tenant-repo entry.
  * @returns {Boolean}
  */
@@ -2252,12 +2252,13 @@ class TenantRepoSyncService extends Base {
         // orchestrator restarts so HA-failover preserves the spread.
         // Skipped when `onlyRepoSlugs` is set (manual CLI bypass) or when caller
         // explicitly opts out via `seedBootstrap: false` (test seam for spec files
-        // that simulate "first cycle fires all repos"). Seeding is config-level state and keeps
-        // its selection from before the disabled filter: a parked entry is seeded, never swept.
+        // that simulate "first cycle fires all repos"). A parked entry is not seeded: its first
+        // swept cycle after re-enabling seeds it, so the spread starts there — a timestamp seeded
+        // while parked goes stale and makes the entry due on the spot.
         let seededAny = false;
         if (seedBootstrap && !onlyRepoSlugs) {
             const sweepStartedMs = Date.now();
-            for (const repo of selectedRepos) {
+            for (const repo of repos) {
                 const repoLabel = `${repo.tenantId}/${repo.repoSlug}`;
                 if (!persistedRevisions[repoLabel]) {
                     const baseCadenceMs = (Number.isFinite(repo.cadenceMs) && repo.cadenceMs > 0)
