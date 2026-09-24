@@ -19,6 +19,10 @@ import Neo       from 'neo.mjs/src/Neo.mjs';
 import * as core from 'neo.mjs/src/core/_export.mjs';
 
 import {test, expect} from '@playwright/test';
+import {execFileSync} from 'node:child_process';
+import fs             from 'node:fs';
+import os             from 'node:os';
+import path           from 'node:path';
 
 test.describe('Neo.ai.daemons.TemporalSummaryAggregationService', () => {
     let TemporalSummaryAggregationService, logger, StorageRouter, GraphService, originals = {};
@@ -174,9 +178,44 @@ test.describe('Neo.ai.daemons.TemporalSummaryAggregationService', () => {
         expect(queried).toBe(0)
     });
 
-    test('readContentRecords fails loud on a missing sync root — a broken checkout is not an empty window', () => {
-        expect(() => TemporalSummaryAggregationService.readContentRecords('no-such-type'))
-            .toThrow(/missing synced content root/)
+    test('readContentRecords reads the corpus projection root, fails loud on a missing type, refuses a disabled projection (#443)', () => {
+        const root   = fs.mkdtempSync(path.join(os.tmpdir(), 'temporal-projection-')),
+              script = `
+                  import 'neo.mjs/src/Neo.mjs';
+                  import * as core from 'neo.mjs/src/core/_export.mjs';
+                  const {default: service} = await import('./ai/daemons/temporal-summary/TemporalSummaryAggregationService.mjs');
+                  const result = {};
+                  for (const type of ['pulls', 'discussions']) {
+                      try { result[type] = service.readContentRecords(type).map(record => record.frontmatter.number) }
+                      catch (error) { result[type] = error.message }
+                  }
+                  console.log('RESULT=' + JSON.stringify(result));
+                  process.exit(0);
+              `,
+              run    = enabled => JSON.parse(execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+                  cwd     : process.cwd(),
+                  encoding: 'utf8',
+                  env     : {
+                      ...process.env,
+                      NEO_ORCHESTRATOR_CORPUS_MATERIALIZED_ROOT : root,
+                      NEO_ORCHESTRATOR_CORPUS_PROJECTION_ENABLED: String(enabled),
+                      UNIT_TEST_MODE                            : 'true'
+                  }
+              }).split('RESULT=')[1]);
+
+        fs.mkdirSync(path.join(root, 'pulls', 'chunk-1'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'pulls', 'chunk-1', 'pr-7.md'), '---\nnumber: 7\nstate: MERGED\n---\nbody\n');
+
+        try {
+            const enabled  = run(true),
+                  disabled = run(false);
+
+            expect(enabled.pulls, 'records come from the projection root').toEqual([7]);
+            expect(enabled.discussions).toMatch(/missing projected content root/);
+            expect(disabled.pulls).toMatch(/core corpus projection is disabled/)
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
     });
 
     test('fetchMergedPrs counts only MERGED records whose mergedAt lands in the half-open window', async () => {

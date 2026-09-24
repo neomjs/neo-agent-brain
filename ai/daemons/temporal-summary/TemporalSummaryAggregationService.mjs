@@ -174,21 +174,27 @@ class TemporalSummaryAggregationService extends Base {
     }
 
     /**
-     * @summary Reads every synced content record of one type (`'pulls'`, `'discussions'`) from the repo-tracked
-     * GitHub sync under `resources/content/<type>/chunk-*`. The corpus is **complete**: a durable metric is
-     * never derived from a truncated live API page, because a confidently-wrong count is worse than none. The
-     * repo-relative root derives from the Tier-1 `projectRoot` leaf at the use site — the sync is fixed repo
-     * substrate, so it needs no config leaf of its own. A missing root is a broken checkout, not an empty
-     * window, and fails loud rather than silently reporting zero.
+     * @summary Reads every synced content record of one type (`'pulls'`, `'discussions'`) from the plane's core
+     * corpus projection under `<materializedRoot>/<type>/chunk-*`, the `neo` origin of the published corpus that
+     * the Graph consumers read. The corpus is **complete**: a durable metric is never derived from a truncated
+     * live API page, because a confidently-wrong count is worse than none. A disabled projection or a missing
+     * root fails loud rather than silently reporting zero — and never falls back to a checkout's frozen
+     * `resources/content`, which is four weeks stale where it still exists.
      * @param {String} type The content type directory name.
      * @returns {Array<{frontmatter:Object, body:String}>}
      * @protected
      */
     readContentRecords(type) {
-        const root = path.resolve(AiConfig.projectRoot, 'resources', 'content', type);
+        const projection = AiConfig.orchestrator.corpusProjection;
+
+        if (!projection.enabled) {
+            throw new Error(`readContentRecords: the core corpus projection is disabled on this plane; the temporal summary reads its materialized root (${projection.materializedRoot}).`)
+        }
+
+        const root = path.join(projection.materializedRoot, type);
 
         if (!fs.existsSync(root)) {
-            throw new Error(`readContentRecords: missing synced content root ${root} — a broken checkout would otherwise report an honest-looking zero.`)
+            throw new Error(`readContentRecords: missing projected content root ${root} — a projection without a completed cycle would otherwise report an honest-looking zero.`)
         }
 
         return fs.readdirSync(root, {withFileTypes: true})
