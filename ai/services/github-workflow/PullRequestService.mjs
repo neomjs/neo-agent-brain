@@ -1380,6 +1380,34 @@ function selectedPrReviewTemplatePath(body) {
 }
 
 /**
+ * @summary The review a Round 2's `**Round-1 Review ID:**` names, in each form the shape gate accepts: a node
+ * id (`PRR_…`), a database id, or a review URL (`#pullrequestreview-<databaseId>`), bare or as a link.
+ * @param {String} body
+ * @returns {{databaseIds: String[], nodeIds: String[], text: String}} `text` is the cited value, before any ` · ` field
+ */
+function citedRound1Review(body) {
+    const text = (/\*\*Round-1 Review ID:\*\*[ \t]*([^\n]*)/.exec(body || '')?.[1] ?? '').split(' · ')[0].trim();
+
+    return {
+        // A bare number, or the one after `pullrequestreview-`; never a digit run inside a path or an id
+        databaseIds: [...text.matchAll(/(?:pullrequestreview-|(?<![\w/#-]))(\d+)(?![\w/])/g)].map(match => match[1]),
+        nodeIds    : text.match(/PRR_[\w-]+/g) ?? [],
+        text
+    }
+}
+
+/**
+ * @summary A review node's database id as a string, read from its URL when the node carries none.
+ * @param {Object} review
+ * @returns {String|null}
+ */
+function reviewDatabaseId(review) {
+    const id = review.databaseId ?? /#pullrequestreview-(\d+)$/.exec(review.url || '')?.[1];
+
+    return id == null ? null : String(id)
+}
+
+/**
  * @summary Validates an ordinary Round 2 against the round it claims to disposition.
  *
  * The body-only tier proves a document is disposition-SHAPED. It cannot prove a disposition occurred,
@@ -1397,21 +1425,34 @@ function selectedPrReviewTemplatePath(body) {
  * APPROVED round carrying a `STILL_OPEN` silently discharges the item it just declared unresolved,
  * and a REQUEST_CHANGES spends a round the per-family budget does not have.
  *
+ * **The prior round is the one the body cites**, never the newest `CHANGES_REQUESTED` on the pull request.
+ * With two reviewers requesting changes, the newest RC is the other reviewer's whenever theirs came
+ * later, and the correct disposition of one's own round was refused against their actions (neo#19125).
+ *
  * @param {Object}   options
  * @param {String}   options.body        The candidate Round-2 body.
- * @param {Object[]} options.reviews     Prior review nodes (`{body, state, submittedAt, author}`).
+ * @param {Object[]} options.reviews     Prior review nodes (`{body, databaseId, id, state, submittedAt, url, author}`).
  * @param {String}   options.state       The GitHub review state being submitted.
  * @returns {Object|null} Failure payload, or `null` when the round is a faithful disposition.
  */
 function getRound2DispositionRelationFailure({body, reviews, state}) {
-    const prior = [...(reviews || [])]
-        .filter(review => review?.state === 'CHANGES_REQUESTED')
-        .sort((a, b) => Date.parse(b?.submittedAt || 0) - Date.parse(a?.submittedAt || 0))[0];
+    const
+        cited = citedRound1Review(body),
+        rcs   = (reviews || []).filter(review => review?.state === 'CHANGES_REQUESTED'),
+        prior = rcs.find(review => cited.nodeIds.includes(review.id) || cited.databaseIds.includes(reviewDatabaseId(review)));
 
-    if (!prior) {
+    if (rcs.length === 0) {
         return round2RelationFailure([
             'This body declares itself a Round 2, but the pull request carries no submitted',
             '`CHANGES_REQUESTED` review for it to disposition. A first review uses the canonical template.'
+        ])
+    }
+
+    if (!prior) {
+        return round2RelationFailure([
+            `This Round 2 cites \`${cited.text}\` as its Round-1 review, but no \`CHANGES_REQUESTED\` review on the`,
+            'pull request has that id. Cite the review whose Required Actions the table dispositions: a node id,',
+            'a database id, or its URL.'
         ])
     }
 

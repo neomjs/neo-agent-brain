@@ -2084,7 +2084,7 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
     const priorRequestChanges = ({
         body=['# PR Review Summary', '', '### 📋 Required Actions', '', '- [ ] prior template miss'].join('\n'),
         commit='1111111111111111111111111111111111111111',
-        id='PRR_prior',
+        id='PRR_123', // the review VALID_ROUND_2_REVIEW_BODY cites, since the relation selects the cited round
         reviewer='neo-gpt',
         state='CHANGES_REQUESTED',
         submittedAt='2026-07-16T16:40:00Z'
@@ -2307,6 +2307,55 @@ test.describe('Neo.ai.services.github-workflow.PullRequestService — managePrRe
         ...rows, '',
         '### 🔚 Verdict', '', 'Approve'
     ].join('\n');
+
+    // neo#19125's shape: two reviewers requested changes, and the one with the OLDER RC dispositions it
+    const LATER_RC_OF_ANOTHER_REVIEWER = {
+        author     : {login: 'neo-opus-vega'},
+        body       : ['# PR Review Summary', '', '### 📋 Required Actions', '', '- [ ] a later reviewer\'s only action'].join('\n'),
+        databaseId : 2,
+        id         : 'PRR_later',
+        state      : 'CHANGES_REQUESTED',
+        submittedAt: '2026-08-15T12:00:00Z',
+        url        : 'https://github.com/neomjs/neo/pull/1#pullrequestreview-2'
+    };
+
+    const BOTH_ACTIONS_ADDRESSED = ['| RA-1 | make the tier semantic | ADDRESSED | done |',
+                                    '| RA-2 | update the stale predecessors | ADDRESSED | done |'];
+
+    test('#455: a Round 2 dispositions the review it cites, not the newest RC from another reviewer', () => {
+        const failure = getRound2DispositionRelationFailure({
+            body   : round2With(BOTH_ACTIONS_ADDRESSED),
+            reviews: [PRIOR_RC, LATER_RC_OF_ANOTHER_REVIEWER],
+            state  : 'APPROVED'
+        });
+
+        expect(failure, 'the body cites PRR_prior; the later RC is not its round').toBeNull()
+    });
+
+    test('#455: every Round-1 Review ID form the shape gate accepts selects the cited review', () => {
+        const cited = {...PRIOR_RC, databaseId: 5256218531, id: 'PRR_123', url: 'https://github.com/neomjs/neo/pull/1#pullrequestreview-5256218531'};
+
+        for (const value of REVIEW_ID_VALUES.accepted) {
+            const failure = getRound2DispositionRelationFailure({
+                body   : round2With(BOTH_ACTIONS_ADDRESSED).replace('* **Round-1 Review ID:** PRR_prior', `* **Round-1 Review ID:**${value}`),
+                reviews: [cited, LATER_RC_OF_ANOTHER_REVIEWER],
+                state  : 'APPROVED'
+            });
+
+            expect.soft(failure, value).toBeNull()
+        }
+    });
+
+    test('#455: a Round 2 citing no RC on the pull request is refused, and the refusal names what it cited', () => {
+        const failure = getRound2DispositionRelationFailure({
+            body   : round2With(BOTH_ACTIONS_ADDRESSED).replace('* **Round-1 Review ID:** PRR_prior', '* **Round-1 Review ID:** PRR_unknown'),
+            reviews: [PRIOR_RC, LATER_RC_OF_ANOTHER_REVIEWER],
+            state  : 'APPROVED'
+        });
+
+        expect(failure?.code).toBe('PR_REVIEW_TEMPLATE_VALIDATION_FAILED');
+        expect(failure.message).toContain('PRR_unknown')
+    });
 
     test('#17178: an invented action is refused — the row must exist in the prior round', () => {
         const failure = getRound2DispositionRelationFailure({
