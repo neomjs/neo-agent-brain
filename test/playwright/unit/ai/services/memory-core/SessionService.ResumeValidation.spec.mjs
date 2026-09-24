@@ -26,6 +26,7 @@ import path            from 'path';
 import {fileURLToPath} from 'url';
 import dotenv          from 'dotenv';
 import crypto          from 'crypto';
+import {execFileSync}  from 'node:child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -665,5 +666,41 @@ test.describe('SessionService validateSessionForResume (#10725)', () => {
         } finally {
             sqlite.prepare('DELETE FROM SummarizationJobs WHERE session_id = ?').run(sessionId);
         }
+    });
+});
+
+test.describe('SessionService failure backoff under a declared policy (#438)', () => {
+    test('a non-default policy drives the delays, and its cap binds whatever the ratio', () => {
+        const script = `
+            import 'neo.mjs/src/Neo.mjs';
+            const {default: GraphService}   = await import('./ai/services/memory-core/GraphService.mjs');
+            const {default: SessionService} = await import('./ai/services/memory-core/SessionService.mjs');
+            await GraphService.ready();
+            const db = GraphService.db.storage.db, now = 1000000, id = 'failure-backoff-policy';
+            db.prepare("INSERT INTO SummarizationJobs (session_id, status, lease_token, expires_at, retry_count) VALUES (?, 'in_progress', 'token', ?, 0)").run(id, now);
+            const delays = [0, 3, 20].map(retries => {
+                db.prepare('UPDATE SummarizationJobs SET retry_count = ? WHERE session_id = ?').run(retries, id);
+                SessionService.failSummarizationJob(id, now);
+                return db.prepare('SELECT expires_at FROM SummarizationJobs WHERE session_id = ?').pluck().get(id) - now;
+            });
+            console.log('DELAYS=' + JSON.stringify(delays));
+            process.exit(0);
+        `;
+
+        // A fresh process resolves the policy at construction, on its own in-memory graph; the
+        // shared singleton is never touched.
+        const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+            cwd     : process.cwd(),
+            encoding: 'utf8',
+            env     : {
+                ...process.env,
+                NEO_MC_SUMMARY_FAILURE_BACKOFF_BASE_MS: '60000',
+                NEO_MC_SUMMARY_FAILURE_BACKOFF_MAX_MS : '86400000',
+                UNIT_TEST_MODE                        : 'true'
+            }
+        });
+
+        // 1 min, 8 min, then the 24 h cap at retry 20 — a doubling clamped at six steps stops at 64 min.
+        expect(output).toContain('DELAYS=[60000,480000,86400000]')
     });
 });

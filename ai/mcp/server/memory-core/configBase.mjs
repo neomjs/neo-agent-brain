@@ -185,6 +185,19 @@ class ConfigBase extends ConfigProvider {
              */
             sessionSummaryTimeoutMs: leaf(180000, 'NEO_MEMORY_SESSION_SUMMARY_TIMEOUT_MS', 'number'),
             /**
+             * First drift-sweep retry delay (ms) after a session summary fails. It doubles with each claim
+             * since the job's last success, up to `summaryFailureBackoffMaxMs`, so a session the model
+             * cannot summarize costs one attempt per window instead of one per sweep under the
+             * heavy-maintenance lease. An explicit single-session run ignores the window.
+             * @type {number}
+             */
+            summaryFailureBackoffBaseMs: leaf(30 * 60 * 1000, 'NEO_MC_SUMMARY_FAILURE_BACKOFF_BASE_MS', 'number'),
+            /**
+             * Ceiling (ms) of the failed-summary retry delay that `summaryFailureBackoffBaseMs` starts.
+             * @type {number}
+             */
+            summaryFailureBackoffMaxMs: leaf(24 * 60 * 60 * 1000, 'NEO_MC_SUMMARY_FAILURE_BACKOFF_MAX_MS', 'number'),
+            /**
              * The target Storage Architecture to use.
              * Note: Chroma is the only supported Vector DB.
              * Options: 'hybrid' (Chroma vectors + SQLite graph), 'chroma' (Chroma vectors only).

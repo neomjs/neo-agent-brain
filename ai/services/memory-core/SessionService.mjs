@@ -36,9 +36,7 @@ import RequestContextService, {
 } from '../../mcp/server/shared/services/RequestContextService.mjs';
 import MemoryCoreRecorderService from './MemoryCoreRecorderService.mjs';
 
-const CHROMA_SESSION_READ_TIMEOUT_MS  = 10000;
-const SUMMARY_FAILURE_BACKOFF_BASE_MS = 30 * 60 * 1000;
-const SUMMARY_FAILURE_BACKOFF_MAX_MS  = 24 * 60 * 60 * 1000;
+const CHROMA_SESSION_READ_TIMEOUT_MS = 10000;
 
 /**
  * @summary Service for handling session summarization and drift detection.
@@ -1471,9 +1469,10 @@ ${sessionContent}
 
     /**
      * Marks a summarization job as failed in the coordinator table and records when a drift sweep may
-     * retry it: 30 minutes, doubling with each claim since the job's last success, capped at 24 hours.
-     * A session the model cannot summarize then costs one attempt per window instead of one per sweep
-     * under the heavy-maintenance lease. An explicit single-session run ignores the window.
+     * retry it: `summaryFailureBackoffBaseMs`, doubling with each claim since the job's last success,
+     * capped at `summaryFailureBackoffMaxMs`. A session the model cannot summarize then costs one
+     * attempt per window instead of one per sweep under the heavy-maintenance lease. An explicit
+     * single-session run ignores the window.
      * @summary Releases a failed job's lease and backs off its next drift attempt.
      * @param {String} sessionId
      * @param {Number} [now=Date.now()]
@@ -1482,13 +1481,21 @@ ${sessionContent}
         const db = GraphService.db?.storage?.db;
         if (!db) return;
         try {
+            // The doubling stops at the fewest steps that reach the cap, so the cap binds for any
+            // declared policy and the shift cannot overflow.
             db.prepare(`
                 UPDATE SummarizationJobs
                 SET status      = 'failed',
                     lease_token = NULL,
-                    expires_at  = ? + min(? << min(coalesce(retry_count, 0), 6), ?)
+                    expires_at  = ? + min(? << min(coalesce(retry_count, 0), ?), ?)
                 WHERE session_id = ?
-            `).run(now, SUMMARY_FAILURE_BACKOFF_BASE_MS, SUMMARY_FAILURE_BACKOFF_MAX_MS, sessionId);
+            `).run(
+                now,
+                aiConfig.summaryFailureBackoffBaseMs,
+                Math.max(0, Math.ceil(Math.log2(aiConfig.summaryFailureBackoffMaxMs / aiConfig.summaryFailureBackoffBaseMs))),
+                aiConfig.summaryFailureBackoffMaxMs,
+                sessionId
+            );
         } catch (e) {
             logger.warn(`[SessionService] Error failing job for ${sessionId}: ${e.message}`);
         }
