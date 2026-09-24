@@ -52,11 +52,28 @@ async function main() {
     process.exit(0)
 }
 
+/**
+ * @summary Reports a failed cycle and exits 1. The memory-core logger writes only its file sink once
+ * config is ready, so the reason also goes out as one stderr line — the channel the supervisor re-logs
+ * into the orchestrator log: the stable code, the message, and the command's own stderr when the error
+ * carries it (a GitMirror error's is redacted at `createGitMirrorError`).
+ * @param {Error} error
+ * @param {Object} [options] Test seams.
+ * @param {Object} [options.output=console]
+ * @param {Function} [options.exit=process.exit]
+ * @returns {*}
+ */
+export function reportAggregationFailure(error, {output = console, exit = code => process.exit(code)} = {}) {
+    const gitStderr = String(error?.stderr ?? '').trim().replace(/\s*\n\s*/g, ' | ');
+
+    logger.error('[temporal-summary] Aggregation cycle failed:', error);
+    output.error(`[temporal-summary] Aggregation cycle failed: ${[error?.code, error?.message ?? String(error), gitStderr && `git: ${gitStderr}`].filter(Boolean).join(' — ')}`);
+
+    return exit(1)
+}
+
 // Process-entry only: run one cycle when this is the main module, never on import — preserves the
 // process-entry isolation invariant (mirrors the sibling maintenance one-shots).
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    main().catch(err => {
-        logger.error('[temporal-summary] Aggregation cycle failed:', err);
-        process.exit(1)
-    })
+    main().catch(error => reportAggregationFailure(error))
 }

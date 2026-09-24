@@ -28,6 +28,7 @@ import {
     classifyCoreCorpusProjectionOutcome,
     runProjectCoreCorpus
 } from '../../../../../../../ai/scripts/maintenance/projectCoreCorpus.mjs';
+import logger from '../../../../../../../ai/mcp/server/memory-core/logger.mjs';
 
 const HEAD_A = 'a'.repeat(40);
 const HEAD_B = 'b'.repeat(40);
@@ -793,6 +794,50 @@ test.describe('coreCorpusProjection — core-origin corpus writer (#401)', () =>
                 leaseStatus: 'unreadable'
             })
         } finally {
+            fs.removeSync(root)
+        }
+    });
+
+    test('a failed cycle names its code, message and git stderr on stderr, keeps the file-sink line and exits 1 (#448)', async () => {
+        const root        = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-failure-line-')),
+              config      = createConfig(root),
+              errors      = [],
+              fileLines   = [],
+              loggerError = logger.error,
+              failure     = Object.assign(new Error('GitMirror failed to read a revision file'), {
+                  code  : 'KB_GITMIRROR_FILE_READ_FAILED',
+                  stderr: "fatal: path '_index.json' does not exist in 'abc123'\n"
+              });
+
+        logger.error = (...args) => fileLines.push(args);
+
+        try {
+            const exitCode = await runProjectCoreCorpus({
+                config,
+                configProvider: {
+                    orchestrator: {
+                        corpusProjection     : config,
+                        dataDir              : root,
+                        heavyMaintenanceLease: {staleAfterMs: 60_000}
+                    },
+                    validateRequiredEnv: () => ({findings: []})
+                },
+                assertFresh : async () => {},
+                graphService: {ready: async () => {}},
+                runCycle    : async () => { throw failure },
+                withLease   : async work => ({status: 'completed', result: await work()}),
+                output      : {log: () => {}, error: value => errors.push(value)},
+                exit        : code => code
+            });
+
+            expect(exitCode).toBe(1);
+            expect(errors).toEqual([
+                "[core-corpus-projection] Projection cycle failed: KB_GITMIRROR_FILE_READ_FAILED — GitMirror failed to read a revision file — git: fatal: path '_index.json' does not exist in 'abc123'"
+            ]);
+            expect(fileLines).toHaveLength(1);
+            expect(fileLines[0][1]).toBe(failure)
+        } finally {
+            logger.error = loggerError;
             fs.removeSync(root)
         }
     })

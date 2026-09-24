@@ -64,6 +64,11 @@ export function classifyCoreCorpusProjectionOutcome(outcome) {
 /**
  * @summary Runs one source-neutral projection cycle inside the shared heavy-maintenance lease and
  * emits its structured supervisor outcome.
+ *
+ * A failed cycle also writes its reason as one stderr line: the stable code, the message, and git's
+ * own stderr when a GitMirror error carries it (redacted at `createGitMirrorError`). The supervisor
+ * re-logs child stderr into the orchestrator log; the memory-core logger writes only its file sink
+ * once config is ready, so without this line the orchestrator log records nothing but the exit code.
  * @param {Object} [options] Test seams.
  * @param {Object} [options.configProvider=AiConfig]
  * @param {Object} [options.config=options.configProvider.orchestrator.corpusProjection]
@@ -85,37 +90,43 @@ export async function runProjectCoreCorpus({
     output = console,
     exit = code => process.exit(code)
 } = {}) {
-    if (!config.enabled) {
-        output.log(JSON.stringify({deferred: true, reason: 'core-corpus-projection-disabled'}));
+    try {
+        if (!config.enabled) {
+            output.log(JSON.stringify({deferred: true, reason: 'core-corpus-projection-disabled'}));
+            return exit(0)
+        }
+
+        const {findings} = configProvider.validateRequiredEnv({entrypoint: 'core-corpus-projection'});
+
+        await assertFresh({
+            requiredFindings: findings,
+            serverPath      : fileURLToPath(new URL('../../mcp/server/memory-core/', import.meta.url))
+        });
+
+        const outcome = await withLease(async () => {
+            await graphService.ready();
+
+            return runCycle({config})
+        }, {
+            leasePath   : resolveHeavyMaintenanceLeasePath({dataDir: configProvider.orchestrator.dataDir}),
+            owner       : 'core-corpus-projection',
+            reason      : 'projection-cycle',
+            staleAfterMs: configProvider.orchestrator.heavyMaintenanceLease.staleAfterMs,
+            metadata    : {script: 'ai/scripts/maintenance/projectCoreCorpus.mjs'}
+        });
+        output.log(JSON.stringify(classifyCoreCorpusProjectionOutcome(outcome)));
+
         return exit(0)
+    } catch (error) {
+        const gitStderr = String(error?.stderr ?? '').trim().replace(/\s*\n\s*/g, ' | ');
+
+        logger.error('[core-corpus-projection] Projection cycle failed:', error);
+        output.error(`[core-corpus-projection] Projection cycle failed: ${[error?.code, error?.message ?? String(error), gitStderr && `git: ${gitStderr}`].filter(Boolean).join(' — ')}`);
+
+        return exit(1)
     }
-
-    const {findings} = configProvider.validateRequiredEnv({entrypoint: 'core-corpus-projection'});
-
-    await assertFresh({
-        requiredFindings: findings,
-        serverPath      : fileURLToPath(new URL('../../mcp/server/memory-core/', import.meta.url))
-    });
-
-    const outcome = await withLease(async () => {
-        await graphService.ready();
-
-        return runCycle({config})
-    }, {
-        leasePath   : resolveHeavyMaintenanceLeasePath({dataDir: configProvider.orchestrator.dataDir}),
-        owner       : 'core-corpus-projection',
-        reason      : 'projection-cycle',
-        staleAfterMs: configProvider.orchestrator.heavyMaintenanceLease.staleAfterMs,
-        metadata    : {script: 'ai/scripts/maintenance/projectCoreCorpus.mjs'}
-    });
-    output.log(JSON.stringify(classifyCoreCorpusProjectionOutcome(outcome)));
-
-    return exit(0)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-    runProjectCoreCorpus().catch(error => {
-        logger.error('[core-corpus-projection] Projection cycle failed:', error);
-        process.exit(1)
-    })
+    runProjectCoreCorpus()
 }
