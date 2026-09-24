@@ -477,22 +477,28 @@ export async function buildIngestEnvelope({
         revision: headRevision,
         credentialRef
     });
-    const entries   = await repositoryReader.listEntries();
     const collector = createProfileWriteCollector({
         extractionIdentity: derivedExtractionIdentity,
         repoSlug          : identity.repoSlug,
         rootKind
     });
-    const execution = await runExtractionProfile({
-        profile,
-        catalogue   : extractorCatalogue,
-        repositoryReader,
-        hierarchyResolver,
-        parserResolver,
-        changedPaths: fullMaterialization ? undefined : [...new Set(diff?.addedOrChanged || [])].sort(),
-        writeStream : collector.writeStream,
-        createHashFn: createLegacyChunkHash
-    });
+    let entries, execution;
+
+    try {
+        entries   = await repositoryReader.listEntries();
+        execution = await runExtractionProfile({
+            profile,
+            catalogue   : extractorCatalogue,
+            repositoryReader,
+            hierarchyResolver,
+            parserResolver,
+            changedPaths: fullMaterialization ? undefined : [...new Set(diff?.addedOrChanged || [])].sort(),
+            writeStream : collector.writeStream,
+            createHashFn: createLegacyChunkHash
+        })
+    } finally {
+        await repositoryReader.close()
+    }
     const envelope = {
         tenantId          : identity.tenantId,
         repoSlug          : identity.repoSlug,

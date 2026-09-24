@@ -1476,6 +1476,113 @@ export async function readRevisionFile(options = {}) {
     return (await readRevisionBlob(options)).toString('utf8');
 }
 
+/**
+ * @summary Opens one `git cat-file --batch` process that reads many blobs of one revision.
+ *
+ * `readRevisionBlob` pays a credential resolution, an isolated HOME and a subprocess for every file,
+ * and an envelope reads every file of a revision one after another — 47k spawns for the corpus
+ * tenant. This session answers the whole revision from one process, for LOCAL objects only: it runs
+ * anonymously with `GIT_NO_LAZY_FETCH=1`, so a blob the bulk prefetch did not localize comes back as
+ * `null` and the caller takes `readRevisionBlob`, the one path that carries the credential for the
+ * promisor fetch.
+ *
+ * `read` never rejects. It resolves `null` for a missing object, a non-blob, a blob over the per-read
+ * output limit, a path the line protocol cannot carry, and after the process ended; the per-file path
+ * then gives today's answer, errors included. `close` never rejects either: it ends the process and
+ * removes the environment, which holds no secret.
+ *
+ * @param {Object} options
+ * @param {String} options.mirrorRoot Root directory for tenant repo mirrors.
+ * @param {String} options.tenantId Tenant id.
+ * @param {String} options.repoSlug Repository slug.
+ * @param {String} options.revision Resolved revision.
+ * @param {Number} [options.maxOutputBytes=GIT_MAX_OUTPUT_BYTES] Per-blob limit, as `runGit` applies per read.
+ * @returns {Promise<{read: function(String): Promise<Buffer|null>, close: function(): Promise<void>}>}
+ */
+export async function openRevisionBlobSession({mirrorRoot, tenantId, repoSlug, revision, maxOutputBytes = GIT_MAX_OUTPUT_BYTES} = {}) {
+    const execution = await createGitExecutionEnvironment(
+        await resolveCredentialMaterial({credentialRef: null}),
+        {knownHostsPath: getKnownHostsPath(mirrorRoot)}
+    );
+    const child = spawn('git', ['-c', 'credential.helper=', 'cat-file', '--batch'], {
+        cwd  : getMirrorPath({mirrorRoot, tenantId, repoSlug}),
+        env  : {...execution.env, GIT_NO_LAZY_FETCH: '1'},
+        stdio: ['pipe', 'pipe', 'ignore']
+    });
+    const exited  = new Promise(resolve => {child.once('close', resolve); child.once('error', resolve)});
+    const pending = [];
+    let   buffer  = Buffer.alloc(0),
+        ended  = false,
+        skip   = 0,
+        closing;
+
+    const end = () => {
+        ended = true;
+        pending.splice(0).forEach(resolve => resolve(null))
+    };
+
+    // Answers arrive in request order: `<oid> <type> <size>\n<bytes>\n`, or `<name> missing\n`. The
+    // name carries the path, so only a header of exactly three tokens counts as content. A body over
+    // the limit is discarded as it streams rather than buffered whole.
+    const drain = () => {
+        while (pending.length > 0) {
+            const lineEnd = buffer.indexOf(0x0a);
+
+            if (lineEnd < 0) return;
+
+            const header = /^[0-9a-f]{40,64} (\S+) (\d+)$/u.exec(buffer.subarray(0, lineEnd).toString('utf8'));
+            const size   = header ? Number(header[2]) : -1;
+
+            if (size > maxOutputBytes) {
+                skip   = Math.max(0, lineEnd + size + 2 - buffer.length);
+                buffer = buffer.subarray(Math.min(buffer.length, lineEnd + size + 2));
+                pending.shift()(null);
+                continue
+            }
+
+            if (buffer.length < lineEnd + size + 2) return;
+
+            const content = header ? buffer.subarray(lineEnd + 1, lineEnd + 1 + size) : null;
+
+            buffer = buffer.subarray(header ? lineEnd + size + 2 : lineEnd + 1);
+            pending.shift()(header?.[1] === 'blob' ? Buffer.from(content) : null)
+        }
+    };
+
+    child.stdout.on('data', data => {
+        const dropped = Math.min(skip, data.length);
+
+        skip  -= dropped;
+        buffer = Buffer.concat([buffer, data.subarray(dropped)]);
+        drain()
+    });
+    child.stdin.on('error', end);
+    exited.then(end);
+
+    return {
+        read(sourcePath) {
+            if (ended || closing || typeof sourcePath !== 'string' || /[\0\n\r]/u.test(sourcePath)) {
+                return Promise.resolve(null)
+            }
+
+            return new Promise(resolve => {
+                pending.push(resolve);
+                child.stdin.write(`${revision}:${sourcePath}\n`)
+            })
+        },
+
+        close() {
+            closing ??= (async () => {
+                child.stdin.end();
+                await exited;
+                await execution.cleanup().catch(() => {})
+            })();
+
+            return closing
+        }
+    }
+}
+
 const GitMirror = {
     cloneIfMissing,
     diffRevisions,
@@ -1484,6 +1591,7 @@ const GitMirror = {
     isAncestor,
     listRevisionEntries,
     listRevisionPaths,
+    openRevisionBlobSession,
     prefetchRevisionBlobs,
     probeRemoteAccess,
     readRevisionBlob,

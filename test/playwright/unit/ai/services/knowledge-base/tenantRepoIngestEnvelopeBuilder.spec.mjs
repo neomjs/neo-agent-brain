@@ -529,8 +529,9 @@ exec ${JSON.stringify(realGitPath)} "$@"
         test.afterEach(async  () => { await fs.remove(root) });
 
         /**
-         * Wraps the real GitMirror so every prefetch and read is recorded in order. Only the two methods
-         * under test are intercepted; everything else is the production primitive.
+         * Wraps the real GitMirror so every prefetch, read and batch-session event is recorded in order.
+         * A read is recorded once, by whichever path served it; `via` names which. Everything else is
+         * the production primitive.
          */
         function recordingMirror(calls) {
             return {
@@ -539,8 +540,27 @@ exec ${JSON.stringify(realGitPath)} "$@"
                     calls.push({kind: 'prefetch', credentialRef: options.credentialRef, paths: [...(options.sourcePaths ?? [])]});
                     return GitMirror.prefetchRevisionBlobs(options)
                 },
+                async openRevisionBlobSession(options) {
+                    const session = await GitMirror.openRevisionBlobSession(options);
+
+                    calls.push({kind: 'open'});
+
+                    return {
+                        async read(sourcePath) {
+                            const bytes = await session.read(sourcePath);
+
+                            if (bytes) calls.push({kind: 'read', via: 'batch', sourcePath});
+
+                            return bytes
+                        },
+                        async close() {
+                            calls.push({kind: 'close'});
+                            await session.close()
+                        }
+                    }
+                },
                 readRevisionBlob(options) {
-                    calls.push({kind: 'read', sourcePath: options.sourcePath});
+                    calls.push({kind: 'read', via: 'per-file', sourcePath: options.sourcePath});
                     return GitMirror.readRevisionBlob(options)
                 }
             }
@@ -569,7 +589,56 @@ exec ${JSON.stringify(realGitPath)} "$@"
             expect(calls.indexOf(prefetches[0])).toBeLessThan(calls.indexOf(reads[0]));
             // and it must cover exactly what the loop is about to read, not a guess
             expect([...prefetches[0].paths].sort()).toEqual(reads.map(read => read.sourcePath).sort());
-            expect(envelope.files.length).toBe(reads.length)
+            expect(envelope.files.length).toBe(reads.length);
+            // One process answers the whole revision (#432), and it is closed after the last read.
+            expect(calls.filter(call => call.kind === 'open')).toHaveLength(1);
+            expect(reads.every(read => read.via === 'batch')).toBe(true);
+            expect(calls.at(-1).kind).toBe('close')
+        });
+
+        test('the batched envelope is byte-identical to the per-file one (#432)', async () => {
+            const source = await createSourceRepo();
+
+            await fs.writeFile(path.join(source, 'binary.bin'), Buffer.from([0xff, 0xfe, 0x00, 0x41]));
+            await fs.writeFile(path.join(source, 'docs', 'with space.md'), '# Spaced\n');
+            await git(['add', '.'], source);
+            await git(['-c', 'user.name=Neo Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'identity fixture'], source);
+
+            const options = await createMirror(source),
+                  newHead = await resolveHead({...options, ref: 'main'}),
+                  build   = gitMirror => buildIngestEnvelope({...options, newHead, rootKind: 'bare-repo', gitMirror});
+
+            const perFile = await build({...GitMirror, openRevisionBlobSession: undefined}),
+                  batched = await build(GitMirror);
+
+            expect(batched.files.map(file => file.sourcePath)).toContain('docs/with space.md');
+            expect(batched.files).toEqual(perFile.files);
+            expect(batched.manifestSnapshot).toEqual(perFile.manifestSnapshot)
+        });
+
+        test('the batch session is closed when the materialization fails (#432)', async () => {
+            const source  = await createSourceRepo(),
+                  options = await createMirror(source),
+                  newHead = await resolveHead({...options, ref: 'main'}),
+                  calls   = [],
+                  mirror  = recordingMirror(calls);
+
+            // The session answers nothing and the per-file read refuses, so the envelope fails mid-read.
+            const failing = {
+                ...mirror,
+                async openRevisionBlobSession(sessionOptions) {
+                    const session = await mirror.openRevisionBlobSession(sessionOptions);
+
+                    return {read: async () => null, close: () => session.close()}
+                },
+                async readRevisionBlob() {
+                    throw Object.assign(new Error('refused'), {code: 'KB_GITMIRROR_FILE_READ_FAILED'})
+                }
+            };
+
+            await expect(buildIngestEnvelope({...options, newHead, rootKind: 'bare-repo', gitMirror: failing}))
+                .rejects.toMatchObject({code: 'KB_GITMIRROR_FILE_READ_FAILED'});
+            expect(calls.filter(call => call.kind === 'close')).toHaveLength(1)
         });
 
         test('INCREMENTAL envelope: the prefetch is scoped to the CHANGED paths only', async () => {

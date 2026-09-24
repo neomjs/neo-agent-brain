@@ -84,6 +84,53 @@ test.describe('repository revision reader (#261)', () => {
         });
     });
 
+    test('a reader and its scopes share one batch session, reading per file only what it cannot answer (#432)', async () => {
+        const calls     = {opened: 0, closed: 0, perFile: []};
+        const gitMirror = {
+            async listRevisionEntries() {
+                return [entry('a.txt', '100644', 'blob'), entry('b.txt', '100644', 'blob'), entry('c.txt', '100644', 'blob')];
+            },
+            async openRevisionBlobSession() {
+                calls.opened++;
+
+                return {
+                    async read(sourcePath) {
+                        return sourcePath === 'c.txt' ? null : Buffer.from(`batch:${sourcePath}`);
+                    },
+                    async close() {
+                        calls.closed++;
+                    }
+                };
+            },
+            async readRevisionBlob({sourcePath}) {
+                calls.perFile.push(sourcePath);
+
+                return Buffer.from(`file:${sourcePath}`);
+            }
+        };
+        const reader = createRepositoryRevisionReader({
+            gitMirror,
+            mirrorRoot: '/fixture',
+            tenantId  : 'tenant-a',
+            repoSlug  : 'org/repo',
+            revision  : 'f'.repeat(40)
+        });
+        const scoped = await reader.scope((await reader.listEntries()).slice(1));
+
+        expect(await reader.readText('a.txt')).toBe('batch:a.txt');
+        expect(await scoped.readText('b.txt')).toBe('batch:b.txt');
+        expect(await scoped.readText('c.txt')).toBe('file:c.txt');
+        expect(calls.opened).toBe(1);
+        expect(calls.perFile).toEqual(['c.txt']);
+
+        await reader.close();
+
+        expect(calls.closed).toBe(1);
+        // Closed is not broken: later reads are per file, and still correct.
+        expect(await scoped.readText('b.txt')).toBe('file:b.txt');
+        expect(calls.opened).toBe(1);
+    });
+
     test('rejects malformed adapter entry identity instead of classifying it as a skip', async () => {
         const reader = createRepositoryRevisionReader({
             gitMirror: {
