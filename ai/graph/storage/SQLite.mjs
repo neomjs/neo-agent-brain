@@ -68,6 +68,7 @@ class SQLite extends Base {
         await fs.ensureDir(path.dirname(me.dbPath));
         me.db = new Database(me.dbPath, { verbose: null });
         me.db.pragma('journal_mode = WAL');
+        me.db.pragma('journal_size_limit = 67108864'); // 64 MiB: a reset WAL is truncated, not kept at its high-water size
         me.db.pragma('busy_timeout = 5000');
         me.db.pragma('foreign_keys = ON'); // honor schema-declared `Edges` ON DELETE CASCADE
 
