@@ -1233,11 +1233,14 @@ ${sessionContent}
      * @summary Writes an idempotent `pending` SummarizationJobs row without running
      * summarization inline. Multiple MCP server instances can race this cheap marker
      * safely; the orchestrator-owned summary lane remains the only drainer and the
-     * existing lease transition serializes the expensive summarization work.
+     * existing lease transition serializes the expensive summarization work. A job inside its
+     * failure backoff stays `failed`: a reconnecting session must not re-enter through the pending
+     * drain what the drift sweep keeps out (see `failSummarizationJob`).
      * @param {String} sessionId Session id whose transport disconnected.
+     * @param {Number} [now=Date.now()]
      * @returns {Boolean} true when the marker was written, false otherwise.
      */
-    queueSummarizationJob(sessionId) {
+    queueSummarizationJob(sessionId, now = Date.now()) {
         if (!sessionId || typeof sessionId !== 'string') {
             return false;
         }
@@ -1258,7 +1261,8 @@ ${sessionContent}
                     expires_at  = NULL
                 WHERE SummarizationJobs.status != 'completed'
                     AND SummarizationJobs.status != 'in_progress'
-            `).run(sessionId);
+                    AND NOT (SummarizationJobs.status = 'failed' AND coalesce(SummarizationJobs.expires_at, 0) > ?)
+            `).run(sessionId, now);
 
             return true;
         } catch (e) {
@@ -1464,22 +1468,51 @@ ${sessionContent}
     }
 
     /**
-     * Marks a summarization job as failed in the coordinator table.
-     * @summary Releases the exclusive lease on a background summarization job after an unhandled execution failure.
+     * Marks a summarization job as failed in the coordinator table and records when a drift sweep may
+     * retry it: `summaryFailureBackoffBaseMs`, doubling with each claim since the job's last success,
+     * capped at `summaryFailureBackoffMaxMs`. A session the model cannot summarize then costs one
+     * attempt per window instead of one per sweep under the heavy-maintenance lease. An explicit
+     * single-session run ignores the window.
+     * @summary Releases a failed job's lease and backs off its next drift attempt.
      * @param {String} sessionId
+     * @param {Number} [now=Date.now()]
      */
-    failSummarizationJob(sessionId) {
+    failSummarizationJob(sessionId, now = Date.now()) {
         const db = GraphService.db?.storage?.db;
         if (!db) return;
         try {
+            // The doubling stops at the fewest steps that reach the cap, so the cap binds for any
+            // declared policy and the shift cannot overflow.
             db.prepare(`
                 UPDATE SummarizationJobs
-                SET status = 'failed', lease_token = NULL
+                SET status      = 'failed',
+                    lease_token = NULL,
+                    expires_at  = ? + min(? << min(coalesce(retry_count, 0), ?), ?)
                 WHERE session_id = ?
-            `).run(sessionId);
+            `).run(
+                now,
+                aiConfig.summaryFailureBackoffBaseMs,
+                Math.max(0, Math.ceil(Math.log2(aiConfig.summaryFailureBackoffMaxMs / aiConfig.summaryFailureBackoffBaseMs))),
+                aiConfig.summaryFailureBackoffMaxMs,
+                sessionId
+            );
         } catch (e) {
             logger.warn(`[SessionService] Error failing job for ${sessionId}: ${e.message}`);
         }
+    }
+
+    /**
+     * @summary Session ids whose last summary attempt failed and whose retry time has not arrived.
+     * @param {Number} [now=Date.now()]
+     * @returns {Set<String>}
+     */
+    getSessionIdsInFailureBackoff(now = Date.now()) {
+        const db = GraphService.db?.storage?.db;
+        if (!db) return new Set();
+
+        return new Set(db.prepare(`
+            SELECT session_id FROM SummarizationJobs WHERE status = 'failed' AND expires_at > ?
+        `).pluck().all(now));
     }
 
     /**
@@ -1520,10 +1553,13 @@ ${sessionContent}
                 // Cap the per-sweep drain so the child releases the heavy-maintenance lease after a
                 // small batch — the fair picker then interleaves dream / golden-path / backfill rather
                 // than waiting out the whole drift list. The next sweep re-derives the remainder.
-                const sessionsToSummarize = capSessionsForSweep(
-                    await this.findSessionsToSummarize(),
-                    aiConfig.maxSessionsPerSummarySweep
-                );
+                // Sessions inside their failure backoff are dropped BEFORE the cap, so the slots go to
+                // sessions that can run.
+                const driftCandidates     = await this.findSessionsToSummarize(),
+                      backedOff           = this.getSessionIdsInFailureBackoff(),
+                      eligible            = driftCandidates.filter(id => !backedOff.has(id)),
+                      backoffCount        = driftCandidates.length - eligible.length,
+                      sessionsToSummarize = capSessionsForSweep(eligible, aiConfig.maxSessionsPerSummarySweep);
 
                 // Hardware concurrency scaling
                 let batchSize;
@@ -1540,6 +1576,7 @@ ${sessionContent}
                 logger.info(`[SessionService] Found ${total} sessions to summarize. Processing in batches of ${batchSize}...`);
 
                 let completed     = 0,
+                    failedCount   = 0,
                     skippedClaims = 0;
 
                 for (let i = 0; i < total; i += batchSize) {
@@ -1565,10 +1602,12 @@ ${sessionContent}
                                 return result;
                             } else {
                                 this.failSummarizationJob(id);
+                                failedCount++;
                                 return null;
                             }
                         } catch (err) {
                             this.failSummarizationJob(id);
+                            failedCount++;
                             logger.error(`[SessionService] Summarization failed for ${id}:`, err);
                             return null;
                         }
@@ -1580,7 +1619,7 @@ ${sessionContent}
                     processed.push(...batchResult);
                 }
 
-                console.error(`[INFO] [SessionService] session summarization drift complete: candidates=${total}; processed=${processed.length}; skippedClaims=${skippedClaims}`);
+                console.error(`[INFO] [SessionService] session summarization drift complete: candidates=${total}; processed=${processed.length}; failed=${failedCount}; skippedClaims=${skippedClaims}; backoff=${backoffCount}`);
             }
 
             return { processed: processed.length, sessions: processed };

@@ -394,4 +394,23 @@ test.describe('Memory Core Config (#10010)', () => {
             freshCfg.destroy();
         }
     });
+
+    test('the failed-summary backoff defaults to 30 min capped at 24 h and parses both env bindings (#438)', () => {
+        expect(config.summaryFailureBackoffBaseMs).toBe(30 * 60 * 1000);
+        expect(config.summaryFailureBackoffMaxMs).toBe(24 * 60 * 60 * 1000);
+
+        process.env.NEO_MC_SUMMARY_FAILURE_BACKOFF_BASE_MS = '60000';
+        process.env.NEO_MC_SUMMARY_FAILURE_BACKOFF_MAX_MS  = '3600000';
+
+        const freshCfg = createConfigProxy(Neo.create(ConfigProvider, {data: config._data}));
+
+        try {
+            expect(freshCfg.summaryFailureBackoffBaseMs).toBe(60000);
+            expect(freshCfg.summaryFailureBackoffMaxMs).toBe(3600000);
+        } finally {
+            freshCfg.destroy();
+            delete process.env.NEO_MC_SUMMARY_FAILURE_BACKOFF_BASE_MS;
+            delete process.env.NEO_MC_SUMMARY_FAILURE_BACKOFF_MAX_MS;
+        }
+    });
 });

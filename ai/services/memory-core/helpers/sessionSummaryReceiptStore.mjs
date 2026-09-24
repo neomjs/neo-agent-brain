@@ -239,7 +239,8 @@ export function stageSessionSummaryReceipt({
 }
 
 /**
- * @summary Marks a staged result completed only when its durable envelope exists.
+ * @summary Marks a staged result completed only when its durable envelope exists, and resets the
+ * job's `retry_count`, the exponent of `SessionService#failSummarizationJob`'s backoff.
  * @param {Object} options
  * @param {Object} options.db Open better-sqlite3 connection.
  * @param {String} options.sessionId
@@ -256,6 +257,7 @@ export function acknowledgeSessionSummaryReceipt({db, sessionId, now = Date.now(
         SET status                 = 'completed',
             lease_token            = NULL,
             expires_at             = NULL,
+            retry_count            = 0,
             result_acknowledged_at = ?
         WHERE session_id = ?
           AND result_envelope IS NOT NULL

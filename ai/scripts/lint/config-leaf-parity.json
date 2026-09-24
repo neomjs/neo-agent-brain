@@ -791,6 +791,8 @@
         "storagePaths.useUnitTestDatabase",
         "summarizationBatchLimit",
         "summarizationConcurrency",
+        "summaryFailureBackoffBaseMs",
+        "summaryFailureBackoffMaxMs",
         "toolTelemetry",
         "toolTelemetry.aggregateLimit",
         "toolTelemetry.aggregateWindowMs",
