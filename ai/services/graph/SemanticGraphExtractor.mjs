@@ -258,6 +258,8 @@ class SemanticGraphExtractor extends Base {
                 return 'wall-clock-timeout';
             case 'parse-failure':
                 return 'schema-failure';
+            case 'reasoning-only-response':
+                return 'reasoning-only-response';
             case 'context-overflow':
             default:
                 return 'under-band-choke';
@@ -1042,7 +1044,9 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
             // (default 'none') disables the gemma MoE's hidden thinking pass; `triVectorSchema` enforces
             // the A2A session_artifact/graph shape via the provider's json_schema path, which makes the
             // repair-retry loop below a safety net rather than the happy path. Schema mirrors the strict
-            // shape declared in the systemInstruction above.
+            // shape declared in the systemInstruction above. Nullable fields are spelled as `anyOf`:
+            // LM Studio's MLX structured-output engine rejects a union `type` for every model but Gemma 4.
+            const nullableString = {anyOf: [{type: 'string'}, {type: 'null'}]};
             const triVectorSchema = {
                 type      : 'object',
                 properties: {
@@ -1051,9 +1055,9 @@ DO NOT output markdown, \`\`\`json blocks, or any other explanations. Provide pu
                     session_artifact: {
                         type      : 'object',
                         properties: {
-                            feature_namespace     : {type: ['string', 'null']},
+                            feature_namespace     : nullableString,
                             human_readable_summary: {type: 'string'},
-                            roadmap_impact        : {type: ['string', 'null']},
+                            roadmap_impact        : nullableString,
                             graph                 : {
                                 type      : 'object',
                                 properties: {

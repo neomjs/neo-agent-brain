@@ -21,9 +21,9 @@
  *   input skips the invocation and emits a `size-precheck-skip` friction.
  *
  * Debounce policy:
- * - **Deterministic symptoms** (`size-precheck-skip`, `context-overflow`) surface on the
- *   first occurrence — these are direct evidence of payload-shape mismatch and should not
- *   be swallowed by aggregation.
+ * - **Deterministic symptoms** (`size-precheck-skip`, `context-overflow`, `reasoning-only-response`)
+ *   surface on the first occurrence — these are direct evidence of a payload-shape or model-channel
+ *   mismatch and should not be swallowed by aggregation.
  * - **Probabilistic symptoms** (`parse-failure`, `timeout`, `token-budget-exceeded`,
  *   `semantic-confusion`) aggregate by `(assetRef, consumer, symptom)` tuple. They surface
  *   once `count >= PROBABILISTIC_EMIT_THRESHOLD` to avoid burying single transient errors
@@ -41,14 +41,15 @@
  * @see ai/services/memory-core/SessionService.mjs#summarizeSession (canonical emitter — Memory Core)
  */
 
-import {PROVIDER_TIMEOUT_CODE} from '../../../provider/createTimeoutError.mjs';
+import {REASONING_ONLY_RESPONSE_CODE} from '../../../provider/createStreamFailureError.mjs';
+import {PROVIDER_TIMEOUT_CODE}        from '../../../provider/createTimeoutError.mjs';
 
 /**
  * @typedef {Object} ConsumerFriction
  * @property {String} assetRef Graph node ID of the substrate causing friction (sessionId, documentId, etc.) — first member of aggregation tuple.
  * @property {String} consumer Service name (e.g. 'SemanticGraphExtractor', 'SessionService.summarizeSession') — second member of aggregation tuple.
  * @property {String} model Consumer model identifier (e.g. 'google/gemma-4-26b-a4b', 'qwen3-8b').
- * @property {'context-overflow' | 'parse-failure' | 'token-budget-exceeded' | 'semantic-confusion' | 'timeout' | 'size-precheck-skip'} symptom Friction symptom enum — third member of aggregation tuple.
+ * @property {'context-overflow' | 'parse-failure' | 'token-budget-exceeded' | 'semantic-confusion' | 'timeout' | 'size-precheck-skip' | 'reasoning-only-response'} symptom Friction symptom enum — third member of aggregation tuple.
  * @property {'pre-invocation' | 'post-invocation-failure'} emissionPoint When the friction was detected.
  * @property {'split-document' | 'compress-payload' | 'extract-anchor' | 'reduce-review-cycle' | 'schema-repair' | 'unknown'} suggestionKind Enum-backed structured suggestion for substrate-evolution action.
  * @property {Number} inputBytes Raw byte size of the payload that triggered the friction — evidence.
@@ -62,7 +63,7 @@ import {PROVIDER_TIMEOUT_CODE} from '../../../provider/createTimeoutError.mjs';
  * @property {String} [note] Optional bounded prose (e.g. truncation diagnostics, raw error tail).
  */
 
-const DETERMINISTIC_SYMPTOMS = new Set(['size-precheck-skip', 'context-overflow']);
+const DETERMINISTIC_SYMPTOMS = new Set(['size-precheck-skip', 'context-overflow', 'reasoning-only-response']);
 
 const VALID_SYMPTOMS = new Set([
     'context-overflow',
@@ -70,7 +71,8 @@ const VALID_SYMPTOMS = new Set([
     'token-budget-exceeded',
     'semantic-confusion',
     'timeout',
-    'size-precheck-skip'
+    'size-precheck-skip',
+    'reasoning-only-response'
 ]);
 
 const VALID_SUGGESTION_KINDS = new Set([
@@ -146,18 +148,19 @@ export function bytesToTokens(bytes) {
 
 /**
  * @summary Categorizes a thrown invocation error into a ConsumerFriction symptom.
- * Pure helper, exported for testability. A provider timeout is detected structurally first
- * (`error.code === PROVIDER_TIMEOUT_CODE`, the uniform cross-provider contract) so the
- * classification does not depend on the provider's message wording; the message regex remains a
- * fallback for non-coded error paths.
+ * Pure helper, exported for testability. Typed provider failures are detected structurally first
+ * (`error.code`, the uniform cross-provider contract: a timeout, an answer that stayed on the
+ * reasoning channel) so the classification does not depend on the provider's message wording; the
+ * message regex remains a fallback for non-coded error paths.
  *
  * @param {*} err The caught error (or thrown value).
- * @returns {'context-overflow' | 'parse-failure' | 'timeout'} The categorized symptom.
+ * @returns {'context-overflow' | 'parse-failure' | 'timeout' | 'reasoning-only-response'} The categorized symptom.
  */
 export function categorizeInvocationError(err) {
     const msg = String(err?.message || err || '');
 
     if (err?.code === PROVIDER_TIMEOUT_CODE)                    return 'timeout';
+    if (err?.code === REASONING_ONLY_RESPONSE_CODE)             return 'reasoning-only-response';
     if (/context|overflow|too large|maximum|exceed/i.test(msg)) return 'context-overflow';
     if (/timeout|aborted|timed[ -]out/i.test(msg))              return 'timeout';
     return 'parse-failure';
@@ -383,6 +386,9 @@ export async function invokeWithGuardrail({
     } catch (err) {
         const symptom = categorizeInvocationError(err);
         const errTail = String(err?.message || err || '').substring(0, 200);
+        // A typed provider failure documents its message as prompt- and credential-free, so it joins
+        // the caller's note; an untyped error's tail stands in only when the caller gave none.
+        const frictionNote = err?.code && note ? `${note} · ${errTail}` : (note || errTail);
         const entry   = emitConsumerFriction({
             assetRef,
             consumer                 : consumerKey,
@@ -395,7 +401,7 @@ export async function invokeWithGuardrail({
             contextLimitTokens,
             safeProcessingLimitTokens: effectiveSafeTokens,
             serviceDomain,
-            note                     : note || errTail
+            note                     : frictionNote
         });
 
         return {result: null, friction: entry.latestFriction};
