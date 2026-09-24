@@ -305,12 +305,12 @@ function createTenantRepoAccessKey(repo) {
 }
 
 /**
- * @summary Returns true when a configured tenant repository is disabled.
+ * @summary Returns true when a configured tenant repository is disabled (parked): never swept,
+ * probed or seeded, and not coverage the plane must initialize.
  * @param {Object} repo Effective tenant-repo entry.
  * @returns {Boolean}
- * @private
  */
-function isTenantRepoDisabled(repo) {
+export function isTenantRepoDisabled(repo) {
     return repo.disabled === true || repo.enabled === false;
 }
 
@@ -1709,7 +1709,7 @@ class TenantRepoSyncService extends Base {
      * Iterates configured tenantRepos and refreshes each via GitMirror → envelope → KB.
      *
      * @param {Object} options Forwarded from `runTask`.
-     * @returns {Promise<Object>} `{status, details: {repoCount, completedCount, deferredCount, stoppedCount, partialProgressCount, failedCount, leaseYielded, leaseDeferredCount, repos}}`.
+     * @returns {Promise<Object>} `{status, details: {repoCount, disabledCount, completedCount, deferredCount, stoppedCount, partialProgressCount, failedCount, leaseYielded, leaseDeferredCount, repos}}`.
      */
     async syncTenantRepos({
         writeLog, tenantReposConfig, gitMirror, knowledgeBaseIngestionService, onlyRepoSlugs,
@@ -1766,9 +1766,20 @@ class TenantRepoSyncService extends Base {
             tenantRepos: allRepos
         });
 
-        const repos = onlyRepoSlugs
+        const selectedRepos = onlyRepoSlugs
             ? allRepos.filter(r => onlyRepoSlugs.includes(r.repoSlug))
             : allRepos;
+
+        // A disabled entry is parked: excluded before any git or ingest call and counted in the cycle
+        // summary, never logged per sweep. A selector naming one is told so once — like an unknown
+        // slug, it is neither synced nor dropped silently.
+        const disabledRepos = selectedRepos.filter(repo => isTenantRepoDisabled(repo));
+        const repos         = selectedRepos.filter(repo => !isTenantRepoDisabled(repo));
+        const disabledCount = disabledRepos.length;
+
+        if (onlyRepoSlugs) {
+            disabledRepos.forEach(repo => writeLog?.('WARN', `[TenantRepoSync] ${repo.tenantId}/${repo.repoSlug} skipped: the entry is disabled in tenantRepos[]; the selector named it.`));
+        }
 
         // One-time deployment sanity check on the OTHER leaf relationship, and never a throw for the
         // same reason as its sibling at the runTask boundary. A cap that does not clear the JITTERED
@@ -1842,14 +1853,16 @@ class TenantRepoSyncService extends Base {
         }
 
         if (repos.length === 0) {
-            const details = {reason: 'no-tenant-repos-configured', repoCount: 0};
+            const details = {reason: disabledCount ? 'all-tenant-repos-disabled' : 'no-tenant-repos-configured', repoCount: 0, disabledCount};
             // DEBUG, not INFO: this fires on the 60s sweep cadence forever on any deployment with
             // no tenant repos, and an INFO line that repeats once a minute costs more than it tells
             // anyone. It was measured doing exactly that — eight identical lines in eight minutes,
             // sitting directly above the one genuine failure in the window and making it
             // indistinguishable from noise. The structured `{status, details}` return is the answer
             // channel for callers that need one; the log line is not.
-            writeLog?.('DEBUG', `[TenantRepoSync] No tenantRepos configured; skipping.`);
+            writeLog?.('DEBUG', disabledCount
+                ? `[TenantRepoSync] Every selected tenantRepos entry is disabled (${disabledCount}); skipping.`
+                : `[TenantRepoSync] No tenantRepos configured; skipping.`);
             return {status: 'skipped', details};
         }
 
@@ -2239,7 +2252,9 @@ class TenantRepoSyncService extends Base {
         // orchestrator restarts so HA-failover preserves the spread.
         // Skipped when `onlyRepoSlugs` is set (manual CLI bypass) or when caller
         // explicitly opts out via `seedBootstrap: false` (test seam for spec files
-        // that simulate "first cycle fires all repos").
+        // that simulate "first cycle fires all repos"). A parked entry is not seeded: its first
+        // swept cycle after re-enabling seeds it, so the spread starts there — a timestamp seeded
+        // while parked goes stale and makes the entry due on the spot.
         let seededAny = false;
         if (seedBootstrap && !onlyRepoSlugs) {
             const sweepStartedMs = Date.now();
@@ -3429,12 +3444,13 @@ class TenantRepoSyncService extends Base {
             });
         }
 
-        writeLog?.('INFO', `[TenantRepoSync] Cycle summary: ${repos.length} repos, ${completedCount} completed, ${deferredCount} deferred, ${failedCount} failed, ${partialProgressCount} partial-progress, ${notDueCount} not-due, ${revalidationDeferredCount} revalidation-deferred, ${leaseDeferredCount} lease-yield-deferred${status === 'yielded' ? ' — OUTER LEASE YIELDED' : (leaseYielded ? ' — OUTER LEASE BOUND OBSERVED' : '')}${detection.starved ? ` — STARVED (oldest suppression ${detection.evidence.oldestSuppressedAt})` : ''}.`);
+        writeLog?.('INFO', `[TenantRepoSync] Cycle summary: ${repos.length} repos, ${completedCount} completed, ${deferredCount} deferred, ${failedCount} failed, ${partialProgressCount} partial-progress, ${notDueCount} not-due, ${disabledCount} disabled, ${revalidationDeferredCount} revalidation-deferred, ${leaseDeferredCount} lease-yield-deferred${status === 'yielded' ? ' — OUTER LEASE YIELDED' : (leaseYielded ? ' — OUTER LEASE BOUND OBSERVED' : '')}${detection.starved ? ` — STARVED (oldest suppression ${detection.evidence.oldestSuppressedAt})` : ''}.`);
 
         return {
             status,
             details: {
                 repoCount: repos.length,
+                disabledCount,
                 completedCount,
                 deferredCount,
                 stoppedCount,

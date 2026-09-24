@@ -1925,6 +1925,143 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(failed.lastSourceErrorCode).toBe('KB_GITMIRROR_FETCH_FAILED');
     });
 
+    test('a disabled entry is never swept: no clone, fetch, envelope or ingest call, the sibling completes, the summary counts it (#434)', async () => {
+        const
+            taskStateService = createTaskStateService(),
+            gitCalls         = [],
+            envelopeCalls    = [],
+            ingestCalls      = [],
+            logs             = [],
+            slugs            = (calls, op) => calls.filter(call => call.op === op).map(call => call.args.repoSlug);
+
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/live'});
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/parked'});
+
+        const result = await TenantRepoSyncService.runTask({
+            reason           : 'periodic',
+            taskStateService,
+            writeLog         : (level, message) => logs.push(`${level} ${message}`),
+            tenantReposConfig: {tenantRepos: [
+                {tenantId: 't1', repoSlug: 'org/live',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/live.git'},
+                {tenantId: 't1', repoSlug: 'org/parked', mirrorRoot, cloneUrl: 'https://github.com/neomjs/parked.git', disabled: true}
+            ]},
+            gitMirror                    : makeFakeGitMirror({captureCalls: gitCalls}),
+            envelopeBuilder              : makeFakeEnvelopeBuilder({captureCalls: envelopeCalls}),
+            knowledgeBaseIngestionService: makeFakeIngestionService({captureCalls: ingestCalls}),
+            revisionsFilePath            : revisionsFile,
+            seedBootstrap                : false
+        });
+
+        expect(result.status).toBe('completed');
+        expect(slugs(gitCalls, 'cloneIfMissing'), 'only the sibling is cloned').toEqual(['org/live']);
+        expect(slugs(gitCalls, 'fetch'), 'only the sibling is fetched').toEqual(['org/live']);
+        expect(slugs(envelopeCalls, 'buildIngestEnvelope'), 'only the sibling is materialized').toEqual(['org/live']);
+        expect(ingestCalls.map(call => call.payload.repoSlug), 'only the sibling reaches the ingestion service').toEqual(['org/live']);
+        expect(result.details.repoCount, 'the sweep set excludes the parked repo').toBe(1);
+        expect(result.details.disabledCount).toBe(1);
+        expect(logs.find(line => line.includes('Cycle summary'))).toContain('1 disabled');
+        // No per-sweep line for a parked repo: sixty lines an hour is noise, the counter is the surface.
+        expect(logs.some(line => line.includes('org/parked') && line.includes('skipped'))).toBe(false);
+    });
+
+    test('a selector naming a disabled entry skips it with one WARN instead of syncing or dropping it silently (#434)', async () => {
+        const
+            taskStateService = createTaskStateService(),
+            ingestCalls      = [],
+            logs             = [];
+
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/live'});
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/parked'});
+
+        const result = await TenantRepoSyncService.runTask({
+            reason           : 'manual',
+            taskStateService,
+            writeLog         : (level, message) => logs.push(`${level} ${message}`),
+            tenantReposConfig: {tenantRepos: [
+                {tenantId: 't1', repoSlug: 'org/live',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/live.git'},
+                {tenantId: 't1', repoSlug: 'org/parked', mirrorRoot, cloneUrl: 'https://github.com/neomjs/parked.git', disabled: true}
+            ]},
+            gitMirror                    : makeFakeGitMirror(),
+            envelopeBuilder              : makeFakeEnvelopeBuilder(),
+            knowledgeBaseIngestionService: makeFakeIngestionService({captureCalls: ingestCalls}),
+            onlyRepoSlugs                : ['org/live', 'org/parked'],
+            revisionsFilePath            : revisionsFile
+        });
+
+        expect(result.status).toBe('completed');
+        expect(ingestCalls.map(call => call.payload.repoSlug)).toEqual(['org/live']);
+        expect(result.details.repoCount).toBe(1);
+        expect(result.details.disabledCount).toBe(1);
+
+        const warnings = logs.filter(line => line.startsWith('WARN') && line.includes('org/parked') && line.includes('disabled'));
+
+        expect(warnings, 'exactly one WARN names the parked repo and the flag').toHaveLength(1);
+    });
+
+    test('a sweep whose every entry is disabled skips as all-disabled, not as unconfigured (#434)', async () => {
+        const
+            ingestCalls = [],
+            logs        = [];
+
+        const result = await TenantRepoSyncService.runTask({
+            reason           : 'periodic',
+            taskStateService : createTaskStateService(),
+            writeLog         : (level, message) => logs.push(`${level} ${message}`),
+            tenantReposConfig: {tenantRepos: [
+                {tenantId: 't1', repoSlug: 'org/parked', mirrorRoot, cloneUrl: 'https://github.com/neomjs/parked.git', disabled: true}
+            ]},
+            gitMirror                    : makeFakeGitMirror(),
+            envelopeBuilder              : makeFakeEnvelopeBuilder(),
+            knowledgeBaseIngestionService: makeFakeIngestionService({captureCalls: ingestCalls}),
+            revisionsFilePath            : revisionsFile
+        });
+
+        const persisted = await fs.pathExists(revisionsFile) ? await fs.readJson(revisionsFile) : {revisions: {}};
+
+        expect(result.status).toBe('skipped');
+        expect(result.details).toMatchObject({reason: 'all-tenant-repos-disabled', repoCount: 0, disabledCount: 1});
+        expect(ingestCalls).toEqual([]);
+        expect(persisted.revisions['t1/org/parked'], 'a sole parked entry is not seeded').toBeUndefined();
+        expect(logs.some(line => line.includes('No tenantRepos configured')), 'the log never calls a parked plane unconfigured').toBe(false);
+        expect(logs.some(line => line.includes('entry is disabled (1)'))).toBe(true);
+    });
+
+    test('a parked entry is seeded by its first swept cycle after re-enabling, not while parked (#434)', async () => {
+        const
+            baseCadenceMs = 1800000,
+            live          = {tenantId: 't1', repoSlug: 'org/live',   mirrorRoot, cloneUrl: 'https://github.com/neomjs/live.git'},
+            parked        = {tenantId: 't1', repoSlug: 'org/parked', mirrorRoot, cloneUrl: 'https://github.com/neomjs/parked.git'},
+            sweep         = tenantRepos => TenantRepoSyncService.runTask({
+                reason                       : 'periodic',
+                taskStateService             : createTaskStateService(),
+                tenantReposConfig            : {tenantRepos},
+                gitMirror                    : makeFakeGitMirror(),
+                envelopeBuilder              : makeFakeEnvelopeBuilder(),
+                knowledgeBaseIngestionService: makeFakeIngestionService(),
+                revisionsFilePath            : revisionsFile,
+                globalCadenceMs              : baseCadenceMs,
+                jitterRatio                  : 0.20
+            });
+
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/live'});
+        await provisionMirrorDir({tenantId: 't1', repoSlug: 'org/parked'});
+
+        await sweep([live, {...parked, disabled: true}]);
+
+        expect(Object.keys((await fs.readJson(revisionsFile)).revisions), 'parked: no sync state').toEqual(['t1/org/live']);
+
+        await new Promise(resolve => setTimeout(resolve, 5));
+
+        const reEnabledAt = Date.now();
+
+        await sweep([live, parked]);
+
+        const reEnabled = (await fs.readJson(revisionsFile)).revisions['t1/org/parked'];
+
+        expect(reEnabled, 're-enabled: seeded by the sweep that first sees it').toBeTruthy();
+        expect(reEnabled.lastRunAttemptAt, 'the jitter spread starts at re-enable').toBeGreaterThanOrEqual(reEnabledAt - baseCadenceMs);
+    });
+
     test('onlyRepoSlugs scoping: subset filtering for manual CLI path', async () => {
         const taskStateService = createTaskStateService();
         const ingestCalls      = [];

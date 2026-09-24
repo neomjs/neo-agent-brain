@@ -60,16 +60,17 @@ export const CONFIGURED_TENANT_REPO_LABELS_TTL_MS = 60 * 1000;
  * Dynamically imported so this policy service does not take a load-time dependency on the tenant
  * sync lane, mirroring `TenantRepoSyncService.resolveIngestionService()`'s own pattern. Routed
  * through the canonical tiered resolver rather than a direct config read so graph-node and
- * bootstrap tiers are honoured.
+ * bootstrap tiers are honoured. A disabled entry is not coverage: it is never swept, so it never
+ * gains a checkpoint, and counting it would keep the tenant lane bootstrap-critical forever.
  *
  * @returns {Promise<String[]>}
  */
 async function resolveConfiguredTenantRepoLabels() {
-    const {default: TenantRepoSyncService} = await import('./TenantRepoSyncService.mjs');
-    const resolved                         = await TenantRepoSyncService.resolveTenantReposConfig();
+    const {default: TenantRepoSyncService, isTenantRepoDisabled} = await import('./TenantRepoSyncService.mjs');
+    const resolved = await TenantRepoSyncService.resolveTenantReposConfig();
 
     return (resolved?.tenantRepos || [])
-        .filter(repo => repo?.tenantId && repo?.repoSlug)
+        .filter(repo => repo?.tenantId && repo?.repoSlug && !isTenantRepoDisabled(repo))
         .map(repo => `${repo.tenantId}/${repo.repoSlug}`);
 }
 
