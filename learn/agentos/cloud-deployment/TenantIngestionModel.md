@@ -447,7 +447,7 @@ usernames, fingerprints, Git output, and stacks never enter the snapshot.
 | Status | Meaning | Transition |
 |---|---|---|
 | `active` | Last cycle succeeded; lane is on its normal cadence | Successful sync from any non-`disabled` status |
-| `partial-progress` | A clean repo slice committed durable vector progress but retained its head checkpoint because work remains | Slice budget fired; the next repo is admitted in the same sweep |
+| `partial-progress` | A clean repo slice committed durable vector progress but retained its head checkpoint because work remains | Slice budget fired; the next repo is admitted in the same sweep, and this repo is due again at the next sweep (`partialProgressAt` → `dueReason: partial-resume`), not after the global cadence — fairness toward heavy-maintenance waiters stays with the lease gate's yield-to-waiter rule |
 | `lease-yield-deferred` | Repo was due but remained queued after an active repo observed the outer lease bound | Next sweep after the wrapper releases and later reacquires the outer lease |
 | `degraded` | Last cycle failed but retry budget remains; lane will retry on next tick | First non-success after `active` |
 | `quarantined` | Compatibility label for an operator-held repository | Current periodic failures surface through bounded `degraded`, `backoff-suppressed`, or `stopped-unresolvable-ref` states instead of silently abandoning the lane |

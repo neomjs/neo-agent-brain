@@ -3330,7 +3330,7 @@ function summarizeTenantRepoState({
             // an observation that it is not.
             ? {due: false, effectiveCadenceMs: null, jitterMs: null, backoffMultiplier: null, backoffCapped: null, lastRunAttemptAt: normalizedCheckpoint?.lastRunAttemptAt || 0}
             : isRepoDue({repo, persistedRepoState: normalizedCheckpoint, now: observedAt, globalCadenceMs, jitterRatio, backoffCapMs}),
-        nextDueAtMs           = dueState.recoveryBypass
+        nextDueAtMs           = (dueState.recoveryBypass || dueState.partialResume)
             ? observedAt
             : (Number.isFinite(dueState.effectiveCadenceMs)
                 ? ((dueState.lastRunAttemptAt || 0) > 0 ? dueState.lastRunAttemptAt + dueState.effectiveCadenceMs : observedAt)

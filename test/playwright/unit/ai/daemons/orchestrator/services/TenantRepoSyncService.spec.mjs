@@ -454,6 +454,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 lastConsumedAt          : null
             };
 
+        // The clean-partial resume marker rides the same allowlist (#430): a well-formed timestamp
+        // survives the read, anything else fails toward the cadence, and the bare-SHA shape predates it.
+        expect(normalizeTenantRepoCheckpointState({partialProgressAt: 1_000}).partialProgressAt).toBe(1_000);
+        expect(normalizeTenantRepoCheckpointState({partialProgressAt: -5}).partialProgressAt).toBeNull();
+        expect(normalizeTenantRepoCheckpointState({partialProgressAt: 'soon'}).partialProgressAt).toBeNull();
+        expect(normalizeTenantRepoCheckpointState('bare-sha').partialProgressAt).toBeNull();
+
         expect(normalizeTenantRepoCheckpointState({
             embeddingRecovery: {...recovery, episodeId: 'not-an-opaque-id'}
         }).embeddingRecovery).toBeNull();
@@ -6052,7 +6059,11 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             lastSourceErrorCode: null,
             lastAccessCode     : 'KB_TENANT_REPO_ACCESS_SYNC_FAILED',
             lastErrorAt        : expect.any(Number),
-            embeddingRecovery  : null
+            embeddingRecovery  : null,
+            // A failure writes the clean-partial resume marker back to null explicitly (#430), so the
+            // exact-shape contract declares it: a marker that survived a failure would re-admit a
+            // broken repo every sweep, and this line is where that would be caught.
+            partialProgressAt  : null
         });
     });
 
@@ -8435,6 +8446,30 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             revisions['t1/org/rotating'].lastIngestedRev,
             'a budgeted slice clears the streak without claiming the corpus is whole'
         ).toBe('sha-rotating');
+
+        // The resume marker (#430): a clean partial slice earns the very next sweep, and only a clean
+        // one. Written beside `lastRunAttemptAt` on the rotating repo; a failing slice writes null, so
+        // the marker can never shorten a backoff it did not earn.
+        expect(
+            revisions['t1/org/rotating'].partialProgressAt,
+            'a clean partial slice records when it yielded, so the scheduler re-admits it next sweep'
+        ).toBeGreaterThan(0);
+        expect(
+            revisions['t1/org/failing'].partialProgressAt ?? null,
+            'a failing slice carries no resume marker — backoff paces its retry'
+        ).toBeNull();
+
+        // And the scheduler reads it: measured live before this existed, a 47k-chunk first ingest
+        // waited the full 30-minute cadence after every clean slice (#430).
+        const {isRepoDue} = await import('../../../../../../../ai/daemons/orchestrator/scheduling/tenantRepoSync.mjs');
+        const due = isRepoDue({
+            repo              : {tenantId: 't1', repoSlug: 'org/rotating'},
+            persistedRepoState: revisions['t1/org/rotating'],
+            now               : revisions['t1/org/rotating'].lastRunAttemptAt + 1,
+            globalCadenceMs   : 30 * 60 * 1000
+        });
+
+        expect(due).toMatchObject({due: true, dueReason: 'partial-resume', partialResume: true});
     });
 
     test('a slice-caused yield rotates its slot and admits the tail without ending the sweep (#17132 AC2/AC6, #17414)', async () => {
