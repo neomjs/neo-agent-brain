@@ -408,14 +408,17 @@ class OpenAiCompatibleProvider extends Base {
                 bodyText = '',
                 yieldedContent = false,
                 reasoningBytes = 0,
-                finishReason   = '';
+                finishReason   = '',
+                parsedFrames   = 0;
 
-            // Every frame passes here: an error the provider reports inside a 200 stream throws at once,
-            // and the reasoning channel is counted so an answer that never reached `content` can be named.
+            // Every frame passes here exactly once: an error the provider reports inside a 200 stream throws
+            // at once, and the reasoning channel is counted so an answer that never reached `content` can be
+            // named. The count of parsed frames decides whether the whole-body fallback below may run.
             const takeFrame = frame => {
                 if (!frame) {
                     return null;
                 }
+                parsedFrames++;
                 if (frame.error) {
                     throw createProviderStreamError({
                         provider : 'OpenAiCompatible',
@@ -471,7 +474,10 @@ class OpenAiCompatibleProvider extends Base {
                 yield finalContent;
             }
 
-            if (!yieldedContent) {
+            // The whole-body fallback exists for bodies no line could parse (pretty-printed JSON). A compact
+            // JSON body already parsed as a line — with or without a trailing newline — must not pass the
+            // gate a second time, or its reasoning bytes double and its frame callback fires twice.
+            if (!yieldedContent && parsedFrames === 0) {
                 const bodyContent = takeFrame(this.#parseCompletionBodyFrame(bodyText));
                 if (bodyContent) {
                     yieldedContent = true;

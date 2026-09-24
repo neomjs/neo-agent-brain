@@ -41,8 +41,8 @@
  * @see ai/services/memory-core/SessionService.mjs#summarizeSession (canonical emitter — Memory Core)
  */
 
-import {REASONING_ONLY_RESPONSE_CODE} from '../../../provider/createStreamFailureError.mjs';
-import {PROVIDER_TIMEOUT_CODE}        from '../../../provider/createTimeoutError.mjs';
+import {REASONING_ONLY_RESPONSE_CODE, isProviderStreamFailureCode} from '../../../provider/createStreamFailureError.mjs';
+import {PROVIDER_TIMEOUT_CODE}                                     from '../../../provider/createTimeoutError.mjs';
 
 /**
  * @typedef {Object} ConsumerFriction
@@ -386,9 +386,11 @@ export async function invokeWithGuardrail({
     } catch (err) {
         const symptom = categorizeInvocationError(err);
         const errTail = String(err?.message || err || '').substring(0, 200);
-        // A typed provider failure documents its message as prompt- and credential-free, so it joins
-        // the caller's note; an untyped error's tail stands in only when the caller gave none.
-        const frictionNote = err?.code && note ? `${note} · ${errTail}` : (note || errTail);
+        // Only a stream ending minted by `ai/provider` joins the caller's note: a reasoning-only message
+        // carries a byte count and never the reasoning text, and an in-stream error carries at most 300
+        // provider-authored characters. Every other error — untyped, `WITH_TIMEOUT`, `PROVIDER_TIMEOUT`,
+        // a system code — keeps the caller's note; its tail stands in only when the caller gave none.
+        const frictionNote = isProviderStreamFailureCode(err?.code) && note ? `${note} · ${errTail}` : (note || errTail);
         const entry   = emitConsumerFriction({
             assetRef,
             consumer                 : consumerKey,

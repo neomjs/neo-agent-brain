@@ -142,6 +142,32 @@ test('reasoning followed by content is an ordinary answer, and onProviderChunk s
     }
 });
 
+// The reasoning byte count must be exact whatever shape the body takes: compact JSON parses as a line AND
+// sits in the whole-body buffer, so a naive gate counted it twice (reviewer's falsifier: 'éx' → 6, not 3).
+const reasoningText = 'éx', reasoningBytes = Buffer.byteLength(reasoningText, 'utf8');
+
+for (const [shape, body] of [
+    ['compact JSON, no trailing newline', JSON.stringify({choices: [{message: {reasoning_content: reasoningText}}]})],
+    ['compact JSON, trailing newline',    JSON.stringify({choices: [{message: {reasoning_content: reasoningText}}]}) + '\n'],
+    ['pretty JSON',                       JSON.stringify({choices: [{message: {reasoning_content: reasoningText}}]}, null, 2)],
+    ['SSE',                               reasoningFrame(reasoningText) + finishFrame('length') + 'data: [DONE]\n\n']
+]) {
+    test(`reasoning bytes are counted exactly once for a ${shape} body`, async () => {
+        const frames = [],
+              server = await serve((request, response) => { response.writeHead(200, {'Content-Type': 'application/json'}); response.end(body) });
+
+        try {
+            const error = await rejectionOf(drain(provider(server).stream('x', {operationLabel: 'probe', onProviderChunk: frame => frames.push(frame)})));
+
+            expect(error?.code).toBe(REASONING_ONLY_RESPONSE_CODE);
+            expect(error.reasoningBytes, 'the UTF-8 byte count of the reasoning text, once').toBe(reasoningBytes);
+            expect(frames.filter(frame => frame.reasoning).length, 'each logical frame reaches the callback once').toBe(1)
+        } finally {
+            server.close()
+        }
+    });
+}
+
 test('a stream with neither content nor reasoning still ends silently — that ending belongs to the caller', async () => {
     const server = await serveFrames([finishFrame('stop')]);
 

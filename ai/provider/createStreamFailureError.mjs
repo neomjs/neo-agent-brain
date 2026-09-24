@@ -81,9 +81,34 @@ function createProviderStreamError({provider, operationLabel, error, host, model
     return streamError;
 }
 
+/**
+ * The two codes this module mints. Module-private for the reason {@link Neo.ai.provider.createTimeoutError}
+ * gives: an exported Set is a shared mutable classifier; the predicate is the only thing that crosses.
+ * @type {Set<String>}
+ */
+const PROVIDER_STREAM_FAILURE_CODES = Object.freeze(new Set([
+    PROVIDER_STREAM_ERROR_CODE,
+    REASONING_ONLY_RESPONSE_CODE
+]));
+
+/**
+ * @summary Whether an error code names one of the two stream endings this module mints.
+ *
+ * Deliberately narrow, like {@link isProviderTimeoutCode}: it answers "did the provider's stream end
+ * without a usable answer", nothing else. A consumer that also treats timeouts as provider failures
+ * composes this with `isProviderTimeoutCode` rather than widening either.
+ *
+ * @param {String|undefined|null} code The `error.code` to classify.
+ * @returns {Boolean} `true` only for `PROVIDER_STREAM_ERROR` or `REASONING_ONLY_RESPONSE`.
+ */
+function isProviderStreamFailureCode(code) {
+    return PROVIDER_STREAM_FAILURE_CODES.has(code);
+}
+
 export {
     PROVIDER_STREAM_ERROR_CODE,
     REASONING_ONLY_RESPONSE_CODE,
     createProviderStreamError,
-    createReasoningOnlyResponseError
+    createReasoningOnlyResponseError,
+    isProviderStreamFailureCode
 };

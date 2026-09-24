@@ -442,6 +442,30 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
         expect(getAggregatedFrictions(), 'deterministic: surfaces on the first emission').toHaveLength(1);
     });
 
+    test('invokeWithGuardrail joins the note only for provider stream endings — other coded errors keep the caller note', async () => {
+        const {invokeWithGuardrail} = helper,
+              invoke = failure => invokeWithGuardrail({
+                  invocationFn      : async () => { throw failure; },
+                  inputPayload      : 'tiny',
+                  model             : 'qwen3.6-35b-a3b',
+                  assetRef          : `session:${failure.code}`,
+                  consumer          : 'SemanticGraphExtractor',
+                  contextLimitTokens: 10000,
+                  serviceDomain     : 'dream-pipeline',
+                  note              : 'attempt 1 of 2'
+              });
+
+        const withTimeout = await invoke(Object.assign(new Error('operation exceeded its budget'), {code: 'WITH_TIMEOUT'}));
+        expect(withTimeout.friction.note, 'a foreign coded error is not a provider contract').toBe('attempt 1 of 2');
+
+        const providerTimeout = await invoke(Object.assign(new Error('[OpenAiCompatible] probe timed out after 5ms'), {code: 'PROVIDER_TIMEOUT'}));
+        expect(providerTimeout.friction.symptom).toBe('timeout');
+        expect(providerTimeout.friction.note, 'a timeout keeps the pre-existing note policy').toBe('attempt 1 of 2');
+
+        const streamError = await invoke(Object.assign(new Error("[OpenAiCompatible] probe failed inside the stream: ValueError: 'type' must be a string"), {code: 'PROVIDER_STREAM_ERROR'}));
+        expect(streamError.friction.note, 'the provider\'s refusal is the diagnosis and joins the note').toBe("attempt 1 of 2 · [OpenAiCompatible] probe failed inside the stream: ValueError: 'type' must be a string");
+    });
+
     test('emitConsumerFriction loud-fails on non-positive-finite contextLimitTokens (#12116 AC2)', () => {
         const {emitConsumerFriction, getAggregatedFrictions} = helper;
 
