@@ -13,17 +13,17 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
+import {test, expect}           from '@playwright/test';
 import {AjvJsonSchemaValidator} from '@modelcontextprotocol/sdk/validation/ajv-provider.js';
-import * as yaml      from 'js-yaml';
-import fs             from 'fs-extra';
-import fsPromises     from 'fs/promises';
-import path           from 'path';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import * as yaml                from 'js-yaml';
+import fs                       from 'fs-extra';
+import fsPromises               from 'fs/promises';
+import path                     from 'path';
+import Neo                      from 'neo.mjs/src/Neo.mjs';
+import * as core                from 'neo.mjs/src/core/_export.mjs';
 import                            'neo.mjs/src/manager/Instance.mjs';
-import RequestContextService from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
-import BaseServer from '../../../../../../ai/mcp/server/BaseServer.mjs';
+import RequestContextService                       from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
+import BaseServer                                  from '../../../../../../ai/mcp/server/BaseServer.mjs';
 import {buildOutputZodSchema, toOpenApiJsonSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 // Static import is safe: a pure classifier with no imports of its own, so it pulls in no Neo graph.
 import {collisionPreventionTag} from '../../../../../../ai/services/shared/a2aCollisionTags.mjs';
@@ -366,7 +366,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
     for (const deferred of [false, true]) {
         test(`defect-note capture feedback accompanies the durable receipt (deferred=${deferred})`, async () => {
             const originalSchedule = MailboxService._scheduleMessageGraphProjection,
-                  subjects = [
+                  subjects         = [
                       '  DeFeCt-NoTe: Grid is wrong after resize',
                       'defect-note: Grid clips its last glyph',
                       'FYI: defect-note: Grid broke layout',
@@ -401,7 +401,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
 
                 if (deferred) {
                     const document = yaml.load(fs.readFileSync(new URL('../../../../../../ai/mcp/server/memory-core/openapi.yaml', import.meta.url), 'utf8')),
-                          schema = toOpenApiJsonSchema(buildOutputZodSchema(document, document.paths['/mailbox/messages'].post)),
+                          schema   = toOpenApiJsonSchema(buildOutputZodSchema(document, document.paths['/mailbox/messages'].post)),
                           validate = new AjvJsonSchemaValidator().getValidator(schema);
 
                     for (const receipt of receipts) {
@@ -875,6 +875,80 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         // repairs, so this scan reports `repaired: 1` — the exact never-self-heals defect this closes.
         const repairCheck = await MailboxService.repairMessageGraphIntegrity({ids: [res.messageId]});
         expect(repairCheck).toMatchObject({scanned: 1, intact: 1, repaired: 0, failed: 0});
+    });
+
+    test('a repair pass costs each candidate its own edges, not every cached edge or a hub reload, and turns the loop between candidates', async () => {
+        // Intact candidates do no I/O, so nothing but an explicit turn lets the loop run between them.
+        GraphService.upsertNode({id: '@charlie', type: 'AgentIdentity', name: 'Charlie', properties: {accountType: 'agent'}});
+
+        const messageIds = [];
+
+        for (let i = 0; i < 3; i++) {
+            const res = await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+                return await MailboxService.addMessage({to: 'AGENT:*', subject: `drain candidate ${i}`, body: 'intact broadcast'});
+            });
+
+            messageIds.push(res.messageId);
+        }
+
+        const db       = GraphService.db,
+              hubs     = ['@alice', '@bob', '@charlie', 'AGENT:*'],
+              hubLoads = new Map(hubs.map(id => [id, 0])),
+              turns    = [];
+
+        let itemsReads = 0,
+            measuring  = false,
+            lastTurn   = null;
+
+        // `items` is an accessor on the store's prototype chain; shadow it on this instance only.
+        let owner = db.edges;
+        while (owner && !Object.getOwnPropertyDescriptor(owner, 'items')) owner = Object.getPrototypeOf(owner);
+        const itemsDescriptor = Object.getOwnPropertyDescriptor(owner, 'items'),
+              ownItems        = owner === db.edges;
+
+        Object.defineProperty(db.edges, 'items', {
+            configurable: true,
+            get() {
+                if (measuring) itemsReads++;
+                return itemsDescriptor.get.call(this)
+            },
+            set(value) {
+                itemsDescriptor.set.call(this, value)
+            }
+        });
+
+        const getAdjacentNodes = db.getAdjacentNodes;
+
+        db.getAdjacentNodes = function(nodeId, direction, ...rest) {
+            if (measuring && hubLoads.has(nodeId)) hubLoads.set(nodeId, hubLoads.get(nodeId) + 1);
+
+            // Each candidate's check opens with its message's outbound load: schedule a turn marker
+            // there, and read at the next candidate whether the loop ran it in between.
+            if (measuring && direction === 'outbound' && messageIds.includes(nodeId)) {
+                if (lastTurn) turns.push(lastTurn.ran);
+                lastTurn = {ran: false};
+                const marker = lastTurn;
+                setImmediate(() => {marker.ran = true});
+            }
+
+            return getAdjacentNodes.call(this, nodeId, direction, ...rest)
+        };
+
+        let summary;
+
+        try {
+            measuring = true;
+            summary   = await MailboxService.repairMessageGraphIntegrity({ids: messageIds});
+        } finally {
+            measuring = false;
+            delete db.getAdjacentNodes;
+            ownItems ? Object.defineProperty(db.edges, 'items', itemsDescriptor) : delete db.edges.items;
+        }
+
+        expect(summary).toMatchObject({scanned: 3, intact: 3, repaired: 0, failed: 0});
+        expect(itemsReads, 'no step of the pass copies every cached edge').toBe(0);
+        hubs.forEach(id => expect(hubLoads.get(id), `${id} is cached; its adjacency is not rebuilt per candidate`).toBe(0));
+        expect(turns, 'the loop turns between every pair of candidates').toEqual([true, true]);
     });
 
     test('a legitimate zero-audience broadcast stays converged across repeated lists (#16767)', async () => {
