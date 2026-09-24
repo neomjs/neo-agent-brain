@@ -6,7 +6,7 @@ import {canonicalizeTaggedConceptIds}           from '../graph/conceptSpineCanon
 import GraphService                             from './GraphService.mjs';
 import PermissionService                        from './PermissionService.mjs';
 import WakeSubscriptionService                  from './WakeSubscriptionService.mjs';
-import {inspectDefectNoteCapture}                from './helpers/defectObservationFold.mjs';
+import {inspectDefectNoteCapture}               from './helpers/defectObservationFold.mjs';
 import {
     TASK_ASSIGNMENT_AUTHORITY,
     TASK_STATES,
@@ -656,7 +656,10 @@ function getMailboxProjectionEndpointRestorePlan(id) {
     }
 
     const db = GraphService.requireDb('MailboxService.getMailboxProjectionEndpointRestorePlan');
-    db.getAdjacentNodes(id, 'both');
+
+    // Only a miss needs the vicinity load; each reload of a cached hub rebuilds its whole adjacency.
+    db.syncCache();
+    db.nodes.get(id) || db.getAdjacentNodes(id, 'both');
 
     const existing = db.nodes.get(id);
     if (!existing) return spec;
@@ -694,14 +697,14 @@ function ensureTaggedConceptNode(id) {
 
 /**
  * @summary Checks a cached mailbox edge using direct-id comparison compatibility.
+ * Reads through {@link getMessageSourceEdges}; `edges.items` copies every cached edge per check.
  * @param {String} source Message node id.
  * @param {String} target Canonical identity target or mailbox sentinel.
  * @param {String} type Mailbox edge type.
  * @returns {Boolean}
  */
 function hasMailboxGraphEdge(source, target, type) {
-    return (GraphService.db?.edges?.items || []).some(edge =>
-        getRecordField(edge, 'source') === source &&
+    return getMessageSourceEdges(source).some(edge =>
         sameMailboxIdentity(getRecordField(edge, 'target'), target) &&
         getRecordField(edge, 'type') === type
     );
@@ -740,8 +743,8 @@ function hasMailboxGraphEdgeInStorage(source, target, type) {
 function getMailboxGraphEdgeTargets(source, type) {
     const targets = new Set();
 
-    for (const edge of GraphService.db?.edges?.items || []) {
-        if (getRecordField(edge, 'source') === source && getRecordField(edge, 'type') === type) {
+    for (const edge of getMessageSourceEdges(source)) {
+        if (getRecordField(edge, 'type') === type) {
             targets.add(getRecordField(edge, 'target'));
         }
     }
@@ -2656,7 +2659,7 @@ class MailboxService extends Base {
         }
 
         const defectNote = inspectDefectNoteCapture({subject, to, taggedConcepts});
-        const walRecord = buildMessageWalRecord({
+        const walRecord  = buildMessageWalRecord({
             messageId,
             messageProperties,
             originSessionId,
@@ -3138,7 +3141,11 @@ class MailboxService extends Base {
             .filter(record => idFilter || messageWalRecordMatchesMailboxView(record, {box, target}))
             .sort((a, b) => candidateOrder.get(a.id) - candidateOrder.get(b.id));
 
-        for (const record of selectedRecords) {
+        for (const [index, record] of selectedRecords.entries()) {
+            // One candidate per loop turn, or a drain's intact candidates hold the loop to the end.
+            // The first registers at once, so a concurrent caller for the same id still coalesces.
+            if (index > 0) await new Promise(resolve => setImmediate(resolve));
+
             let pending   = graphProjectionRepairPromiseById.get(record.id),
                 coalesced = Boolean(pending);
 

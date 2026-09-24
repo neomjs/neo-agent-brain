@@ -179,6 +179,12 @@ class Store extends DataStore {
     }
 
     /**
+     * @summary Fires no `load`: its payload copies every item on each mutation, for a view no graph store has.
+     * @protected
+     */
+    onCollectionMutate() {}
+
+    /**
      * Resolves all property map relationships via Neo Native Object or Document.get accessors.
      * @param {Object[]} [addedItems]
      * @param {Object[]} [removedItems]
