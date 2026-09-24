@@ -54,8 +54,9 @@ const
      * on 2026-09-24 at the limits declared here. `v8` is V8's `heap_size_limit` minus the declared heap,
      * and it grows with the limit (768 reports 816 under 1g, 864 under 1.5g or 2g). `native` is RSS minus
      * the V8 heap total; fleet-server has no heap observation, so its whole RSS stands in. `probe` is the
-     * peak RSS of the healthcheck's own `node`, which runs in the same cgroup. The orchestrator is absent:
-     * its supervised children share its cgroup, so this sum does not bound it.
+     * peak RSS of the healthcheck's own `node`, which runs in the same cgroup. These are samples, not
+     * bounds: a server whose native footprint grows needs a new measurement here. The orchestrator is
+     * absent: its supervised children share its cgroup, so this sum does not bound it.
      */
     NON_HEAP_MB = {
         'kb-server'   : {v8: 96, native:  99, probe: 121},
