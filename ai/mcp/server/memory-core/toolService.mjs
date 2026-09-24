@@ -85,12 +85,14 @@ const inspectDeployment = async args => {
     }
 };
 
-// `get_sandman_handoff` — serves the Dream Pipeline's morning surface to agents with no repo
-// checkout. The path rides the resolved `handoffFilePath` formula leaf (prod/test by
-// construction; `NEO_HANDOFF_FILE_PATH` is honored inside the leaf) — never a second path source.
-// The freshness default (36h, nightly cadence + slack) lives in the helper; per-call override wins.
+/**
+ * @summary Serves the Dream Pipeline handoff from Memory Core's resolved prod/test path.
+ * @param {Object} [args]
+ * @param {Number} [args.staleAfterMs] Optional override of the store's freshness window.
+ * @returns {Promise<Object>} Handoff content and its read/freshness state.
+ */
 const readSandmanHandoffTool = args => readSandmanHandoff({
-    filePath    : AiConfig.handoffFilePath,
+    filePath    : mcConfig.handoffFilePath,
     staleAfterMs: args?.staleAfterMs
 });
 
