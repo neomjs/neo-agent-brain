@@ -209,11 +209,11 @@ services:
       resources:
         limits:
           # Parameterised for the same reason chroma's is: a hardcoded limit is unreachable by the
-          # recovery actuator. The declared heap ceiling above must stay strictly below this value,
+          # recovery actuator. V8's heap limit + native memory + the healthcheck's `node` must fit under it,
           # and that bound has to be expressed as a RELATIONSHIP against this leaf rather than as a
           # constant — a constant goes stale the moment this moves. A YAML literal is reachable by
           # neither config nor the overlay, so it cannot serve as the bound at all.
-          memory: "${NEO_KB_SERVER_MEMORY_LIMIT:-1g}"
+          memory: "${NEO_KB_SERVER_MEMORY_LIMIT:-1536m}"
           cpus  : "1.0"
 
   mc-server:
@@ -375,9 +375,9 @@ services:
       resources:
         limits:
           # Parameterised for the same reason chroma's is — see the kb-server note above. The
-          # strictly-below bound on the heap ceiling is a relationship against this leaf, so this
+          # same heap + native + probe bound is a relationship against this leaf, so this
           # value must be reachable by something other than a YAML literal.
-          memory: "${NEO_MC_SERVER_MEMORY_LIMIT:-1g}"
+          memory: "${NEO_MC_SERVER_MEMORY_LIMIT:-2g}"
           cpus  : "1.0"
 
   # The Agent OS maintenance orchestrator (ADR 0014 §2.3). Built from the shared
@@ -696,7 +696,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: "${NEO_FLEET_SERVER_MEMORY_LIMIT:-512m}"
+          # Holds the heap + native + probe bound from the kb-server note.
+          memory: "${NEO_FLEET_SERVER_MEMORY_LIMIT:-768m}"
           cpus  : "0.5"
 
   # Reverse proxy + TLS termination — the public ingress for the cloud Agent OS

@@ -49,6 +49,20 @@ const
     /** Services that run a Node server and therefore have a V8 heap ceiling that can kill them. */
     NODE_SERVICES = ['kb-server', 'mc-server', 'fleet-server', 'orchestrator'],
 
+    /**
+     * What each API server's cgroup holds beyond its declared heap, in MB, measured on the local plane
+     * on 2026-09-24 at the limits declared here. `v8` is V8's `heap_size_limit` minus the declared heap,
+     * and it grows with the limit (768 reports 816 under 1g, 864 under 1.5g or 2g). `native` is RSS minus
+     * the V8 heap total; fleet-server has no heap observation, so its whole RSS stands in. `probe` is the
+     * peak RSS of the healthcheck's own `node`, which runs in the same cgroup. The orchestrator is absent:
+     * its supervised children share its cgroup, so this sum does not bound it.
+     */
+    NON_HEAP_MB = {
+        'kb-server'   : {v8: 96, native:  99, probe: 121},
+        'mc-server'   : {v8: 96, native: 256, probe: 121},
+        'fleet-server': {v8: 48, native:  95, probe:  73}
+    },
+
     /** Flattens a compose `command` (string | string[] | folded scalar) to one searchable string. */
     commandText = service => {
         const command = compose.services?.[service]?.command;
@@ -106,7 +120,7 @@ const
  *
  * 1. **The escaping itself** — `$$SERVER_ENTRYPOINT` present, no single-`$` form anywhere.
  * 2. **Equality across branches**, not merely presence on each.
- * 3. **Below the container limit**, strictly.
+ * 3. **Below the container limit**, strictly, and for each API server by its measured non-heap memory.
  * 4. **`NODE_OPTIONS` never used** to carry it.
  * 5. **The actually-rendered artifact**, when Docker is available — the belt to the escaping check's
  *    braces, and the only assertion that consumes Compose's own interpolation.
@@ -127,7 +141,8 @@ test.describe('declared V8 heap ceilings', () => {
             for (const mb of declared) {
                 // Strictly below, not equal: the process needs room for non-heap allocation (buffers,
                 // native, stack) on top of the V8 heap, so an equal ceiling still ends in a container
-                // OOM-kill rather than the clean abort this is here to preserve.
+                // OOM-kill rather than the clean abort this is here to preserve. How much room is
+                // measured in `NON_HEAP_MB`.
                 expect(mb, `${service} heap ${mb}MB must be under its ${limit}MB container limit`).toBeLessThan(limit);
             }
         });
@@ -166,6 +181,23 @@ test.describe('declared V8 heap ceilings', () => {
             // count comparison, so a command mixing both forms cannot average out to passing.
             expect(text, `${service} has a single-$ SERVER_ENTRYPOINT that Compose will interpolate to empty`)
                 .not.toMatch(/(?<!\$)\$SERVER_ENTRYPOINT/);
+        });
+    }
+
+    for (const [service, {v8, native, probe}] of Object.entries(NON_HEAP_MB)) {
+        test(`${service}'s container limit holds its heap limit, native memory and healthcheck probe`, () => {
+            const declared = declaredMb(service),
+                  limit    = containerLimitMb(service),
+                  nonHeap  = v8 + native + probe;
+
+            expect(declared, `${service} must declare a ceiling, or the bound below asserts nothing`).not.toEqual([]);
+
+            for (const mb of declared) {
+                // Below this sum a full heap ends in the kernel's silent SIGKILL, not V8's `Reached heap
+                // limit`. Strictly below alone admitted mc-server's 768 under the 1g it was killed at.
+                expect(mb + nonHeap, `${service}: heap ${mb} + non-heap ${nonHeap} must fit its ${limit}MB limit`)
+                    .toBeLessThanOrEqual(limit);
+            }
         });
     }
 
