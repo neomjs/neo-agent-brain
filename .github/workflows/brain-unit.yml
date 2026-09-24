@@ -60,6 +60,7 @@ jobs:
                   test/playwright/unit/src/fleet/contract/fleetContract.spec.mjs
                   test/playwright/unit/ai/services/neural-link/ConnectionService.spec.mjs
                   test/playwright/unit/ai/services/graph/SemanticGraphExtractor.spec.mjs
+                  test/playwright/unit/ai/services/graph/providerReadinessHelper.spec.mjs
                   test/playwright/unit/ai/provider/OpenAiCompatibleStreamFailures.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/consumerFrictionHelper.spec.mjs
                   test/playwright/unit/ai/services/memory-core/MailboxService.spec.mjs
@@ -86,6 +87,7 @@ jobs:
                   test/playwright/unit/ai/services/graph/readWorkGraphIssueRecords.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/heavyMaintenanceStarvationWatchdog.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/services/TaskStateService.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/services/ProcessSupervisorService.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/services/TenantRepoSyncService.spec.mjs
                   test/playwright/unit/ai/mcp/server/knowledge-base/manageKnowledgeBaseWipeRefusal.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/DatabaseService.sync.spec.mjs
