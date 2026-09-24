@@ -87,6 +87,10 @@ function needsPeriodicFullMaterialization(receipt, nowMs, intervalMs) {
 
 /**
  * @summary Applies an async mapper through a bounded worker pool without reordering custody.
+ *
+ * The first failure stops every worker from taking another value, and the pool rejects only once
+ * the in-flight calls have settled. A caller's cleanup therefore runs after the last write, so no
+ * sibling can recreate a staging directory the caller has already removed.
  * @param {Array<*>} values Input values.
  * @param {Number} limit Maximum concurrent reads.
  * @param {Function} fn Async mapper.
@@ -94,14 +98,23 @@ function needsPeriodicFullMaterialization(receipt, nowMs, intervalMs) {
  */
 async function mapWithConcurrency(values, limit, fn) {
     const queue   = [...values];
+    let   failure = null;
+
     const workers = Array.from({length: Math.min(limit, queue.length)}, async () => {
-        while (queue.length) {
+        while (queue.length && !failure) {
             const value = queue.shift();
-            await fn(value)
+
+            try {
+                await fn(value)
+            } catch (error) {
+                failure ??= {error}
+            }
         }
     });
 
-    await Promise.all(workers)
+    await Promise.all(workers);
+
+    if (failure) throw failure.error
 }
 
 /**
@@ -193,8 +206,14 @@ export function getChangedCorpusIndexFacets(baseContent, headContent) {
 /**
  * @summary Materializes one exact source revision, either by full sibling-directory replacement or
  * an exact base→head diff over the already committed view.
+ *
+ * The mirror is blobless, so a blob nobody has read is not local. Before the first read, the root
+ * index and every path this cycle will read are asked for in one bulk prefetch, the tier the tenant
+ * ingest already uses; otherwise a cold mirror (new plane, new source) turns a full cycle into one
+ * lazy network fetch per file. A prefetch that reports `unavailable` leaves those per-file reads as
+ * the fallback, and its outcome rides the result.
  * @param {Object} options
- * @returns {Promise<{full: Boolean, addedOrChanged: String[], deleted: String[], changedFacets: String[]}>}
+ * @returns {Promise<{full: Boolean, addedOrChanged: String[], deleted: String[], changedFacets: String[], prefetch: Object}>}
  */
 export async function materializeCoreCorpusRevision({
     full,
@@ -214,11 +233,7 @@ export async function materializeCoreCorpusRevision({
         )
     }
 
-    const rootIndexPath = '_index.json',
-          headIndex     = await gitMirror.readRevisionFile({
-              mirrorRoot, ...identity, revision: headRevision, sourcePath: rootIndexPath
-          }),
-          projectedIndex = projectCoreCorpusIndex(headIndex);
+    const rootIndexPath = '_index.json';
 
     let addedOrChanged, deleted, indexChangedFacets = [];
 
@@ -237,23 +252,34 @@ export async function materializeCoreCorpusRevision({
             headRevision
         });
         addedOrChanged = diff.addedOrChanged.filter(isCoreCorpusProjectionPath);
-        deleted = diff.deleted.filter(isCoreCorpusProjectionPath);
+        deleted = diff.deleted.filter(isCoreCorpusProjectionPath)
+    }
 
-        if (addedOrChanged.includes(rootIndexPath)) {
-            try {
-                const baseIndex = await gitMirror.readRevisionFile({
-                    mirrorRoot,
-                    ...identity,
-                    revision  : baseRevision,
-                    sourcePath: rootIndexPath
-                });
-                indexChangedFacets = getChangedCorpusIndexFacets(baseIndex, headIndex)
-            } catch (error) {
-                // A newly introduced/unreadable base index cannot prove any facet unchanged.
-                // Re-running all facets is the fail-closed recovery; the head index was validated
-                // before any staging mutation or reconciliation could occur.
-                indexChangedFacets = [...CORPUS_PROJECTION_FACETS]
-            }
+    const prefetch = await gitMirror.prefetchRevisionBlobs({
+              mirrorRoot,
+              ...identity,
+              revision   : headRevision,
+              sourcePaths: [...new Set([rootIndexPath, ...addedOrChanged])]
+          }),
+          headIndex      = await gitMirror.readRevisionFile({
+              mirrorRoot, ...identity, revision: headRevision, sourcePath: rootIndexPath
+          }),
+          projectedIndex = projectCoreCorpusIndex(headIndex);
+
+    if (!full && addedOrChanged.includes(rootIndexPath)) {
+        try {
+            const baseIndex = await gitMirror.readRevisionFile({
+                mirrorRoot,
+                ...identity,
+                revision  : baseRevision,
+                sourcePath: rootIndexPath
+            });
+            indexChangedFacets = getChangedCorpusIndexFacets(baseIndex, headIndex)
+        } catch (error) {
+            // A newly introduced/unreadable base index cannot prove any facet unchanged.
+            // Re-running all facets is the fail-closed recovery; the head index was validated
+            // before any staging mutation or reconciliation could occur.
+            indexChangedFacets = [...CORPUS_PROJECTION_FACETS]
         }
     }
 
@@ -314,7 +340,8 @@ export async function materializeCoreCorpusRevision({
             : CORPUS_PROJECTION_FACETS.filter(facet =>
                 indexChangedFacets.includes(facet) ||
                 getChangedCorpusProjectionFacets([...addedOrChanged, ...deleted]).includes(facet)
-            )
+            ),
+        prefetch
     }
 }
 

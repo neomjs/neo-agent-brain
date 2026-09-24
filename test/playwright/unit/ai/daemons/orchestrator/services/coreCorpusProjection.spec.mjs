@@ -46,7 +46,14 @@ function createConfig(root) {
     }
 }
 
-function createGitMirror({head = HEAD_A, pathsByRevision = {}, filesByRevision = {}, diff = {addedOrChanged: [], deleted: []}} = {}) {
+function createGitMirror({
+    head            = HEAD_A,
+    pathsByRevision = {},
+    filesByRevision = {},
+    diff            = {addedOrChanged: [], deleted: []},
+    events          = [],
+    prefetchStatus  = 'already-local'
+} = {}) {
     let cloned = false;
 
     return {
@@ -76,7 +83,12 @@ function createGitMirror({head = HEAD_A, pathsByRevision = {}, filesByRevision =
         async diffRevisions() {
             return {...diff}
         },
+        async prefetchRevisionBlobs({revision, sourcePaths}) {
+            events.push({op: 'prefetch', revision, sourcePaths: [...sourcePaths]});
+            return {status: prefetchStatus, requested: sourcePaths.length, missing: 0, chunks: 0, reason: null}
+        },
         async readRevisionFile({revision, sourcePath}) {
+            events.push({op: 'read', revision, sourcePath});
             const content = filesByRevision[revision]?.[sourcePath];
             if (content === undefined) throw new Error(`missing fixture ${revision}:${sourcePath}`);
             return content
@@ -362,9 +374,11 @@ test.describe('coreCorpusProjection — core-origin corpus writer (#401)', () =>
                   'neo/pulls/pr-2.md'              : 'pull A',
                   'neo/discussions/discussion-3.md': 'discussion A'
               },
+              events    = [],
               gitMirror = createGitMirror({
                   pathsByRevision: {[HEAD_A]: paths},
-                  filesByRevision: {[HEAD_A]: files}
+                  filesByRevision: {[HEAD_A]: files},
+                  events
               }),
               calls = [];
 
@@ -379,8 +393,14 @@ test.describe('coreCorpusProjection — core-origin corpus writer (#401)', () =>
             expect(outcome).toMatchObject({
                 status         : 'completed',
                 headRevision   : HEAD_A,
-                materialization: {full: true, deleted: []}
+                materialization: {full: true, deleted: [], prefetch: {status: 'already-local', requested: 4}}
             });
+            expect(events[0], 'one bulk prefetch before the first blob read').toEqual({
+                op         : 'prefetch',
+                revision   : HEAD_A,
+                sourcePaths: ['_index.json', 'neo/issues/issue-1.md', 'neo/pulls/pr-2.md', 'neo/discussions/discussion-3.md']
+            });
+            expect(events.filter(event => event.op === 'prefetch')).toHaveLength(1);
             expect(calls.map(call => call.facet)).toEqual(['issues', 'pulls', 'discussions']);
             expect(calls.every(call =>
                 call.options.strict === true &&
@@ -408,6 +428,7 @@ test.describe('coreCorpusProjection — core-origin corpus writer (#401)', () =>
               config    = createConfig(root),
               active    = 'neo/issues/issue-4.md',
               archived  = 'neo/archive/issues/v13/issue-4.md',
+              events    = [],
               gitMirror = createGitMirror({
                   pathsByRevision: {[HEAD_A]: ['_index.json', active]},
                   filesByRevision: {
@@ -419,7 +440,8 @@ test.describe('coreCorpusProjection — core-origin corpus writer (#401)', () =>
                           '_index.json': JSON.stringify([{repoSlug: 'neo', type: 'issues', id: 4, path: archived}]),
                           [archived]   : 'state: CLOSED'
                       }
-                  }
+                  },
+                  events
               }),
               calls = [];
 
@@ -433,6 +455,7 @@ test.describe('coreCorpusProjection — core-origin corpus writer (#401)', () =>
 
             gitMirror.setHead(HEAD_B);
             gitMirror.setDiff({addedOrChanged: ['_index.json', archived], deleted: [active]});
+            events.length = 0;
 
             const outcome = await runCoreCorpusProjectionCycle({
                 config,
@@ -445,7 +468,13 @@ test.describe('coreCorpusProjection — core-origin corpus writer (#401)', () =>
                 full          : false,
                 addedOrChanged: ['_index.json', archived],
                 deleted       : [active],
-                changedFacets : ['issues']
+                changedFacets : ['issues'],
+                prefetch      : {status: 'already-local', requested: 2, missing: 0, chunks: 0, reason: null}
+            });
+            expect(events[0], 'an incremental cycle prefetches its changed paths, never the tree').toEqual({
+                op         : 'prefetch',
+                revision   : HEAD_B,
+                sourcePaths: ['_index.json', archived]
             });
             expect(fs.pathExistsSync(path.join(config.materializedRoot, 'issues/issue-4.md'))).toBe(false);
             expect(fs.readFileSync(path.join(config.materializedRoot, 'archive/issues/v13/issue-4.md'), 'utf8')).toBe('state: CLOSED');
@@ -454,6 +483,78 @@ test.describe('coreCorpusProjection — core-origin corpus writer (#401)', () =>
                 pulls      : HEAD_B,
                 discussions: HEAD_B
             })
+        } finally {
+            fs.removeSync(root)
+        }
+    });
+
+    test('an unavailable prefetch leaves the per-file reads as the fallback and reports itself (#449)', async () => {
+        const root      = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-prefetch-unavailable-')),
+              config    = createConfig(root),
+              issuePath = 'neo/issues/issue-1.md',
+              gitMirror = createGitMirror({
+                  pathsByRevision: {[HEAD_A]: ['_index.json', issuePath]},
+                  filesByRevision: {
+                      [HEAD_A]: {
+                          '_index.json': JSON.stringify([{repoSlug: 'neo', type: 'issues', id: 1, path: issuePath}]),
+                          [issuePath]  : 'issue A'
+                      }
+                  },
+                  prefetchStatus: 'unavailable'
+              });
+
+        try {
+            const outcome = await runCoreCorpusProjectionCycle({
+                config,
+                gitMirror,
+                issueIngestor: createIngestor([]),
+                now          : Date.parse('2026-08-24T00:00:00.000Z')
+            });
+
+            expect(outcome.status).toBe('completed');
+            expect(outcome.materialization.prefetch.status).toBe('unavailable');
+            expect(fs.readFileSync(path.join(config.materializedRoot, 'issues/issue-1.md'), 'utf8')).toBe('issue A')
+        } finally {
+            fs.removeSync(root)
+        }
+    });
+
+    test('a failed read settles its in-flight siblings before the staging directory is removed (#449)', async () => {
+        const root      = fs.mkdtempSync(path.join(os.tmpdir(), 'core-corpus-failed-read-')),
+              config    = createConfig(root),
+              slowPath  = 'neo/issues/issue-1.md',
+              badPath   = 'neo/pulls/pr-2.md',
+              gitMirror = createGitMirror({
+                  pathsByRevision: {[HEAD_A]: ['_index.json', slowPath, badPath]},
+                  filesByRevision: {
+                      [HEAD_A]: {
+                          '_index.json': JSON.stringify([
+                              {repoSlug: 'neo', type: 'issues', id: 1, path: slowPath},
+                              {repoSlug: 'neo', type: 'pulls', id: 2, path: badPath}
+                          ]),
+                          [slowPath]: 'issue A'
+                      }
+                  }
+              }),
+              readFixture = gitMirror.readRevisionFile;
+
+        // `readConcurrency` 2: the slow read is still in flight when its sibling fails.
+        gitMirror.readRevisionFile = async options => {
+            if (options.sourcePath === slowPath) await new Promise(resolve => setTimeout(resolve, 50));
+            return readFixture(options)
+        };
+
+        try {
+            await expect(runCoreCorpusProjectionCycle({
+                config,
+                gitMirror,
+                issueIngestor: createIngestor([]),
+                now          : Date.parse('2026-08-24T00:00:00.000Z')
+            })).rejects.toThrow(`missing fixture ${HEAD_A}:${badPath}`);
+
+            await new Promise(resolve => setTimeout(resolve, 100));
+
+            expect(fs.readdirSync(root).filter(entry => entry.startsWith('materialized.next-')), 'no orphaned staging directory').toEqual([])
         } finally {
             fs.removeSync(root)
         }
