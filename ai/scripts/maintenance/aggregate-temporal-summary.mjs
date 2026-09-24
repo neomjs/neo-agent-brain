@@ -55,7 +55,8 @@ async function main() {
 /**
  * @summary Reports a failed cycle and exits 1. The memory-core logger writes only its file sink once
  * config is ready, so the reason also goes out as one stderr line — the channel the supervisor re-logs
- * into the orchestrator log.
+ * into the orchestrator log: the stable code, the message, and the command's own stderr when the error
+ * carries it (a GitMirror error's is redacted at `createGitMirrorError`).
  * @param {Error} error
  * @param {Object} [options] Test seams.
  * @param {Object} [options.output=console]
@@ -63,8 +64,10 @@ async function main() {
  * @returns {*}
  */
 export function reportAggregationFailure(error, {output = console, exit = code => process.exit(code)} = {}) {
+    const gitStderr = String(error?.stderr ?? '').trim().replace(/\s*\n\s*/g, ' | ');
+
     logger.error('[temporal-summary] Aggregation cycle failed:', error);
-    output.error(`[temporal-summary] Aggregation cycle failed: ${[error?.code, error?.message ?? String(error)].filter(Boolean).join(' — ')}`);
+    output.error(`[temporal-summary] Aggregation cycle failed: ${[error?.code, error?.message ?? String(error), gitStderr && `git: ${gitStderr}`].filter(Boolean).join(' — ')}`);
 
     return exit(1)
 }

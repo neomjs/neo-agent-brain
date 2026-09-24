@@ -36,4 +36,29 @@ test.describe('aggregate-temporal-summary failure report (#448)', () => {
             logger.error = loggerError
         }
     });
+
+    test('an error carrying the command stderr keeps it on the line, collapsed to one line', () => {
+        const errors      = [],
+              loggerError = logger.error,
+              failure     = Object.assign(new Error('GitMirror failed to read a revision file'), {
+                  code  : 'KB_GITMIRROR_FILE_READ_FAILED',
+                  stderr: "fatal: path '_index.json' does not exist in 'abc123'\nhint: second line\n"
+              });
+
+        logger.error = () => {};
+
+        try {
+            const exitCode = reportAggregationFailure(failure, {
+                output: {error: value => errors.push(value)},
+                exit  : code => code
+            });
+
+            expect(exitCode).toBe(1);
+            expect(errors).toEqual([
+                "[temporal-summary] Aggregation cycle failed: KB_GITMIRROR_FILE_READ_FAILED — GitMirror failed to read a revision file — git: fatal: path '_index.json' does not exist in 'abc123' | hint: second line"
+            ])
+        } finally {
+            logger.error = loggerError
+        }
+    });
 });
