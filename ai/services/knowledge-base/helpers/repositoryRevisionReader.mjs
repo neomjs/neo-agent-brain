@@ -71,11 +71,48 @@ export function isBinaryRevisionBlob(value) {
 }
 
 /**
+ * @summary One batch read session per materialization, opened on the first read.
+ *
+ * A reader and every scope it hands out share it, so a revision is read by one process rather than
+ * one per extraction route. An adapter without `openRevisionBlobSession`, a session that fails to
+ * open, and every read after `close` answer `null`, which sends the caller to the per-file read.
+ *
+ * @param {Object} options
+ * @returns {{read: function(String): Promise<Buffer|null>, close: function(): Promise<void>}}
+ */
+function createSharedBlobSession({gitMirror, mirrorRoot, tenantId, repoSlug, revision}) {
+    let opening, closed = false;
+
+    return {
+        async read(sourcePath) {
+            if (closed || typeof gitMirror.openRevisionBlobSession !== 'function') {
+                return null
+            }
+
+            opening ??= Promise.resolve()
+                .then(() => gitMirror.openRevisionBlobSession({mirrorRoot, tenantId, repoSlug, revision}))
+                .catch(() => null);
+
+            return (await opening)?.read(sourcePath) ?? null
+        },
+
+        async close() {
+            closed = true;
+            await (await opening)?.close()
+        }
+    }
+}
+
+/**
  * @summary Creates one immutable reader bound to a tenant repository and exact revision.
  *
  * The binding is the anti-ambient seam: extractors receive this object and cannot silently switch
  * repositories, revisions, credentials, or filesystem roots. Scopes narrow the readable entry set
  * after route validation, so one extractor cannot reach outside the territory assigned to it.
+ *
+ * Reads go through one batch session first and fall back to the per-file `readRevisionBlob` for
+ * whatever it cannot answer. The owner of the root reader calls `close()` when the materialization
+ * ends.
  *
  * @param {Object} options
  * @param {Object} [options.gitMirror=GitMirror]
@@ -85,6 +122,7 @@ export function isBinaryRevisionBlob(value) {
  * @param {String} options.revision
  * @param {String|Object|null} [options.credentialRef]
  * @param {Array<Object>} [options.allowedEntries] Optional already-validated scope.
+ * @param {Object} [options.blobSession] The batch session a scope shares with its parent reader.
  * @returns {Object}
  */
 export function createRepositoryRevisionReader({
@@ -94,7 +132,8 @@ export function createRepositoryRevisionReader({
     repoSlug,
     revision,
     credentialRef,
-    allowedEntries
+    allowedEntries,
+    blobSession = createSharedBlobSession({gitMirror, mirrorRoot, tenantId, repoSlug, revision})
 } = {}) {
     if (
         !gitMirror
@@ -172,15 +211,22 @@ export function createRepositoryRevisionReader({
         return await allEntriesPromise
     };
 
+    let entryIndexPromise;
+
     /**
      * @summary Resolves one entry inside the reader's fixed scope.
+     *
+     * Through a path index built once: a scan per read is quadratic over the envelope, ~3.8 s for
+     * 47k entries.
      * @param {String} sourcePath
      * @returns {Promise<Object>}
      */
     const getEntry = async sourcePath => {
+        entryIndexPromise ??= listEntries().then(entries => new Map(entries.map(item => [item.sourcePath, item])));
+
         const
             normalized = normalizeRevisionSourcePath(sourcePath),
-            entry      = (await listEntries()).find(item => item.sourcePath === normalized);
+            entry      = (await entryIndexPromise).get(normalized);
 
         if (!entry) {
             throw createReaderError(
@@ -207,7 +253,7 @@ export function createRepositoryRevisionReader({
             )
         }
 
-        const value = await gitMirror.readRevisionBlob({
+        const value = await blobSession.read(entry.sourcePath) ?? await gitMirror.readRevisionBlob({
             mirrorRoot,
             tenantId,
             repoSlug,
@@ -339,8 +385,17 @@ export function createRepositoryRevisionReader({
                 repoSlug,
                 revision,
                 credentialRef,
-                allowedEntries: entries
+                allowedEntries: entries,
+                blobSession
             })
+        },
+
+        /**
+         * @summary Ends the batch session this reader shares with its scopes. Later reads go per file.
+         * @returns {Promise<void>}
+         */
+        close() {
+            return blobSession.close()
         }
     };
 

@@ -15,6 +15,7 @@ import GitMirror, {
     isAncestor,
     listRevisionEntries,
     listRevisionPaths,
+    openRevisionBlobSession,
     prefetchRevisionBlobs,
     probeRemoteAccess,
     readRevisionBlob,
@@ -351,6 +352,86 @@ exit 1
 
         await expect(reader.readText('binary.bin'))
             .rejects.toMatchObject({code: 'KB_REVISION_READER_BINARY_BLOB'});
+        await reader.close();
+    });
+
+    test('a batch session reads the same bytes as the per-file read, and leaves the rest to it (#432)', async () => {
+        const source = await createSourceRepo();
+
+        await fs.writeFile(path.join(source, 'binary.bin'), Buffer.from([0xff, 0xfe, 0x00, 0x41]));
+        await fs.writeFile(path.join(source, 'with space.txt'), 'spaced\n');
+        await fs.writeFile(path.join(source, 'empty.txt'), '');
+        await fs.outputFile(path.join(source, 'dir', 'nested.txt'), 'nested\n');
+        await git(['add', '.'], source);
+        await git(['-c', 'user.name=Neo Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'batch fixture'], source);
+        await cloneIfMissing(mirrorOptions(source));
+
+        const revision = await resolveHead({...mirrorOptions(source), ref: 'main'}),
+              paths    = ['alpha.txt', 'binary.bin', 'with space.txt', 'empty.txt', 'dir/nested.txt'],
+              session  = await openRevisionBlobSession({...mirrorOptions(source), revision});
+
+        try {
+            // Concurrent on purpose: answers are matched to requests by order alone.
+            const batched = await Promise.all(paths.map(sourcePath => session.read(sourcePath)));
+
+            for (const [index, sourcePath] of paths.entries()) {
+                expect(batched[index]).toEqual(await readRevisionBlob({...mirrorOptions(source), revision, sourcePath}))
+            }
+
+            // What the per-file path must decide. `absent 7` is a missing name whose last token reads
+            // as a size; the stream must still be aligned after it.
+            expect(await session.read('absent 7')).toBeNull();
+            expect(await session.read('dir')).toBeNull();
+            expect(await session.read('two\nlines.txt')).toBeNull();
+            expect(await session.read('alpha.txt')).toEqual(Buffer.from('alpha v1\n'))
+        } finally {
+            await session.close()
+        }
+
+        expect(await session.read('alpha.txt')).toBeNull()
+    });
+
+    test('a batch session discards a body over its limit without losing the stream (#432)', async () => {
+        const source = await createSourceRepo();
+
+        // Several pipe chunks, so the discard spans data events.
+        await fs.writeFile(path.join(source, 'large.bin'), Buffer.alloc(512 * 1024, 0x41));
+        await git(['add', '.'], source);
+        await git(['-c', 'user.name=Neo Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'large'], source);
+        await cloneIfMissing(mirrorOptions(source));
+
+        const revision = await resolveHead({...mirrorOptions(source), ref: 'main'}),
+              session  = await openRevisionBlobSession({...mirrorOptions(source), revision, maxOutputBytes: 1024});
+
+        try {
+            const [large, after] = await Promise.all([session.read('large.bin'), session.read('alpha.txt')]);
+
+            expect(large).toBeNull();
+            expect(after).toEqual(Buffer.from('alpha v1\n'))
+        } finally {
+            await session.close()
+        }
+    });
+
+    test('a batch session never fetches: a blob the prefetch did not localize answers null (#432)', async () => {
+        const source   = await createSourceRepo(),
+              cloneUrl = await servesPartialClones(source),
+              head     = await git(['rev-parse', 'HEAD'], source),
+              blobOid  = await git(['rev-parse', `${head}:alpha.txt`], source);
+
+        const {mirrorPath} = await cloneIfMissing({...mirrorOptions(source), cloneUrl}),
+              session      = await openRevisionBlobSession({...mirrorOptions(source), revision: head});
+
+        try {
+            expect(await session.read('alpha.txt')).toBeNull()
+        } finally {
+            await session.close()
+        }
+
+        // The control: the blob really was absent, and the session did not fetch it...
+        expect(await localObjectExists(mirrorPath, blobOid)).toBe(false);
+        // ...while the per-file path, which carries the promisor fetch, still reads it.
+        expect(await readRevisionFile({...mirrorOptions(source), revision: head, sourcePath: 'alpha.txt'})).toBe('alpha v1\n')
     });
 
     test('a remote that IGNORES the filter is refused, and the half-trusted mirror is removed', async () => {
