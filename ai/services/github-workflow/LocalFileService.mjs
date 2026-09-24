@@ -36,8 +36,10 @@ class LocalFileService extends Base {
     /**
      * @summary Reads a content file through the `_index.json` lookup surface.
      *
-     * Missing entries return `NOT_FOUND` with a regeneration hint; entries whose files no longer
-     * exist return `STALE_INDEX` so callers can distinguish bad index data from absent content.
+     * Missing entries return `NOT_FOUND`; entries whose files no longer exist return `STALE_INDEX`, so
+     * callers can distinguish bad index data from absent content. Both messages name the root that was
+     * read: a local corpus root is only as current as its last publish or pull, and a checkout's own
+     * `resources/content` has not been regenerated since the corpus moved to its own repository.
      *
      * @param {'issues'|'discussions'} type Content type stored in the index
      * @param {String|Number} rawId GitHub number, with or without a leading `#`
@@ -57,7 +59,7 @@ class LocalFileService extends Base {
                 logger.warn(`[LocalFileService] ${label} index entry not found for #${normalizedId}`);
                 return {
                     error  : 'File not found',
-                    message: `No local markdown index entry found for ${label.toLowerCase()} #${normalizedId}. Use live GitHub for current state; the scheduled Data Sync pipeline regenerates resources/content/_index.json.`,
+                    message: `No local markdown index entry found for ${label.toLowerCase()} #${normalizedId} in ${aiConfig.issueSync.contentRoot}. Use live GitHub for current state; a local corpus root is only as current as its last publish or pull.`,
                     code   : 'NOT_FOUND'
                 };
             }
@@ -68,7 +70,7 @@ class LocalFileService extends Base {
                 logger.warn(`[LocalFileService] ${label} indexed path is stale for #${normalizedId}: ${filePath}`);
                 return {
                     error  : 'Stale content index',
-                    message: `Indexed markdown file for ${label.toLowerCase()} #${normalizedId} does not exist. Use live GitHub for current state; the scheduled Data Sync pipeline regenerates resources/content/_index.json.`,
+                    message: `Indexed markdown file for ${label.toLowerCase()} #${normalizedId} does not exist under ${aiConfig.issueSync.contentRoot}. Use live GitHub for current state; a local corpus root is only as current as its last publish or pull.`,
                     code   : 'STALE_INDEX'
                 };
             }

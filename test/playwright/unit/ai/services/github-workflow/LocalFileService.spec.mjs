@@ -80,7 +80,7 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
         await fs.writeFile(archivePath, '# Archived (new path) content');
         await writeIndex([{
             repoSlug: aiConfig.repo, type: 'issues', id: Number(issueId), version: 'v12.0.0', chunkNumber: 1,
-            path: path.join(aiConfig.repo, 'archive', 'issues', 'v12.0.0', 'chunk-1', filename)
+            path    : path.join(aiConfig.repo, 'archive', 'issues', 'v12.0.0', 'chunk-1', filename)
         }]);
 
         const result = await LocalFileService.getIssueById(issueId);
@@ -110,6 +110,8 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
 
         expect(result.code).toBe('NOT_FOUND');
         expect(result.error).toBe('File not found');
+        expect(result.message, 'names the root it read (#443)').toContain(aiConfig.issueSync.contentRoot);
+        expect(result.message).not.toMatch(/Data Sync pipeline regenerates/);
     });
 
     test('getIssueById returns STALE_INDEX when indexed file is missing', async () => {
@@ -121,6 +123,7 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
 
         expect(result.code).toBe('STALE_INDEX');
         expect(result.error).toBe('Stale content index');
+        expect(result.message, 'names the root it read (#443)').toContain(aiConfig.issueSync.contentRoot);
     });
 
     test('getDiscussionById finds active discussion via _index.json', async () => {
@@ -131,7 +134,7 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
         await fs.writeFile(activePath, '# Active discussion');
         await writeIndex([{
             repoSlug: aiConfig.repo, type: 'discussions', id: Number(discussionId), version: null, chunkNumber: 1,
-            path: path.join(aiConfig.repo, 'discussions', 'chunk-1', filename)
+            path    : path.join(aiConfig.repo, 'discussions', 'chunk-1', filename)
         }]);
 
         const result = await LocalFileService.getDiscussionById(discussionId);
@@ -149,7 +152,7 @@ test.describe.serial('Neo.ai.services.github-workflow.LocalFileService — index
         await fs.writeFile(archivePath, '# Archived discussion');
         await writeIndex([{
             repoSlug: aiConfig.repo, type: 'discussions', id: Number(discussionId), version: 'v12.0.0', chunkNumber: 1,
-            path: path.join(aiConfig.repo, 'archive', 'discussions', 'v12.0.0', 'chunk-1', filename)
+            path    : path.join(aiConfig.repo, 'archive', 'discussions', 'v12.0.0', 'chunk-1', filename)
         }]);
 
         const result = await LocalFileService.getDiscussionById(discussionId);
