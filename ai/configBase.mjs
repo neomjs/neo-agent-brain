@@ -1166,6 +1166,16 @@ class ConfigBase extends ConfigProvider {
                 aggregationIntervalMs: leaf(60 * 60 * 1000, 'NEO_MC_TEMPORAL_SUMMARY_INTERVAL_MS', 'number')
             },
             /**
+             * The MCP servers' event-loop report (`EventLoopReporterService`): a WARN when a check
+             * window's longest delay reaches `stallWarnMs`, far below the 30 s a healthcheck probe
+             * waits, so any stall that fails a probe leaves a line.
+             * @type {Object}
+             */
+            eventLoop: {
+                checkIntervalMs: leaf(10 * 1000, 'NEO_EVENT_LOOP_CHECK_INTERVAL_MS', 'number'),
+                stallWarnMs    : leaf(2 * 1000, 'NEO_EVENT_LOOP_STALL_WARN_MS', 'number')
+            },
+            /**
              * Self-reported V8 heap observation — the one channel through which a Node service can
              * state its own heap/non-heap split.
              *

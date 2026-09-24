@@ -15,6 +15,7 @@ setup({
 
 import {test, expect} from '@playwright/test';
 import fs             from 'fs-extra';
+import nodeFs         from 'node:fs';
 import os             from 'os';
 import path           from 'path';
 import Neo            from 'neo.mjs/src/Neo.mjs';
@@ -197,6 +198,46 @@ test.describe('Neo.ai.mcp.server.shared.Logger', () => {
             if (fs.existsSync(tmpLogDir)) {
                 fs.rmSync(tmpLogDir, {recursive: true, force: true});
             }
+        }
+    });
+
+    test('writeSync() lands the entry in the file and on stderr before it returns, for exit handlers', () => {
+        const tmpLogDir         = path.resolve(os.tmpdir(), `shared-logger-sync-${process.pid}-${Date.now()}`),
+              stderrWrites      = [],
+              originalWriteSync = nodeFs.writeSync;
+
+        // Only descriptor 2 is captured; every other write reaches the disk, the log file's included.
+        nodeFs.writeSync = (fd, data, ...rest) => {
+            if (fd !== 2) return originalWriteSync.call(nodeFs, fd, data, ...rest);
+
+            stderrWrites.push(String(data));
+
+            return String(data).length
+        };
+
+        try {
+            const logger = createLogger({
+                debug  : false,
+                logPath: tmpLogDir,
+                logger : {
+                    filePrefix    : 'sync-test',
+                    fileSink      : true,
+                    stderrMode    : 'debug',
+                    timestampStyle: 'plain'
+                }
+            });
+
+            logger.writeSync('info', 'exit entry', {code: 0});
+
+            // Read back with no flush and no await: nothing runs after an exit handler either.
+            const content = fs.readFileSync(path.join(tmpLogDir, `sync-test-${new Date().toISOString().slice(0, 10)}.log`), 'utf8');
+
+            expect(content).toMatch(/ \[INFO\] exit entry \{"code":0\}\n$/);
+            // On stderr although debug is off, which `stderrMode: 'debug'` would otherwise mute.
+            expect(stderrWrites).toEqual([content]);
+        } finally {
+            nodeFs.writeSync = originalWriteSync;
+            fs.rmSync(tmpLogDir, {recursive: true, force: true});
         }
     });
 

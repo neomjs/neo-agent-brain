@@ -10,6 +10,7 @@ import {
     resolvePlaneDataRoot
 } from '../../planeConfig.mjs';
 import Tier1ConfigBase, {PLANE_MEMBER_PATHS as TIER1_PLANE_MEMBER_PATHS} from '../../configBase.mjs';
+import EventLoopReporterService                                          from './shared/services/EventLoopReporterService.mjs';
 import HeapObservationReporterService                                    from './shared/services/HeapObservationReporterService.mjs';
 import ResolvedConfigReporterService                                     from './shared/services/ResolvedConfigReporterService.mjs';
 
@@ -812,7 +813,21 @@ class BaseServer extends Base {
         await super.initAsync();
         await this.boot();
         this.startHeapObservation();
+        this.startEventLoopReport();
         this.startResolvedConfigReport();
+    }
+
+    /**
+     * @summary Starts this server's event-loop report, if it declared a service key: a WARN per stall
+     * above the bound, and one line at exit saying what still held the loop. Placed after `boot()`
+     * for the heap observation's reasons; the reporter's `start()` is total.
+     * @returns {void}
+     * @protected
+     */
+    startEventLoopReport() {
+        const serviceKey = this.getHeapObservationServiceKey();
+
+        serviceKey && this.logger && EventLoopReporterService.start({serviceKey, logger: this.logger})
     }
 
     /**

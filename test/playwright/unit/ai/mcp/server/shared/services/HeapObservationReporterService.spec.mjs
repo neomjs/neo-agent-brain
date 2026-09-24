@@ -236,4 +236,32 @@ test.describe('Neo.ai.mcp.server.shared.services.HeapObservationReporterService 
         expect(HeapObservationReporterService.observationPath('mc-server', '/tmp/x'))
             .toBe(path.resolve('/tmp/x', 'mc-server.json'));
     });
+
+    test('start() keeps the previous process\'s observation readable, and a restart in this process does not overwrite it', () => {
+        const dir        = makeDir(),
+              readConfig = () => ({enabled: true, writeIntervalMs: 60 * 60 * 1000}),
+              readRecord = name => JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')),
+              // `pid: 1` is what a container's main process has on every start, which is why the
+              // rotation is keyed per process in memory and never on the record's pid.
+              previous   = {recordType: 'process-heap-observation', serviceKey: 'mc-server', pid: 1, observation: {observedAt: 1}};
+
+        fs.writeFileSync(path.join(dir, 'mc-server.json'), JSON.stringify(previous));
+
+        HeapObservationReporterService.start({serviceKey: 'mc-server', dir, readConfig});
+
+        expect(readRecord('mc-server.previous.json')).toEqual(previous);
+        expect(readRecord('mc-server.json').pid).toBe(process.pid);
+
+        HeapObservationReporterService.start({serviceKey: 'mc-server', dir, readConfig});
+
+        expect(readRecord('mc-server.previous.json')).toEqual(previous);
+    });
+
+    test('a first start on an empty plane leaves no previous observation', () => {
+        const dir = makeDir();
+
+        HeapObservationReporterService.start({serviceKey: 'kb-server', dir, readConfig: () => ({enabled: true, writeIntervalMs: 60 * 60 * 1000})});
+
+        expect(fs.readdirSync(dir)).toEqual(['kb-server.json']);
+    });
 });

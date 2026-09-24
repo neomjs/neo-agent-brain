@@ -42,11 +42,32 @@ class HeapObservationReporterService extends Base {
         singleton: true
     }
 
+    /** @member {Set<String>} keptPaths Observation paths this process already rotated. */
+    keptPaths = new Set()
     /**
      * @member {Object|null} timer=null
      * @protected
      */
     timer = null
+
+    /**
+     * @summary Moves the record a previous process left to `<service>.previous.json`, so the last
+     * reading of a process that died survives the first write of the next. Once per path per
+     * process: a reporter restarted in-process would otherwise move its own record over it.
+     * @param {Object} options
+     * @param {String} options.serviceKey Stable service identity.
+     * @param {String} [options.dir]      Directory the observation is published in.
+     * @returns {void}
+     */
+    keepPrevious({serviceKey, dir}) {
+        const target = this.observationPath(serviceKey, dir);
+
+        if (this.keptPaths.has(target)) return;
+
+        this.keptPaths.add(target);
+
+        safely(() => fs.renameSync(target, path.join(path.dirname(target), `${serviceKey}.previous.json`)))
+    }
 
     /**
      * @summary Resolves the file this service publishes its observation to.
@@ -123,7 +144,7 @@ class HeapObservationReporterService extends Base {
      *
      * Writes once immediately so the channel is populated before the first interval elapses — a reader
      * starting inside that window would otherwise see absence and correctly, but uselessly, report the
-     * observation as unavailable.
+     * observation as unavailable. The previous process's record moves aside first ({@link #keepPrevious}).
      *
      * The timer is unref'd: this lane must never be the reason a process stays alive.
      *
@@ -165,6 +186,7 @@ class HeapObservationReporterService extends Base {
             const writeIntervalMs = config.writeIntervalMs;
 
             this.stop();
+            this.keepPrevious({serviceKey, dir});
             this.writeOnce({serviceKey, dir, writeLog});
 
             this.timer = setInterval(() => this.writeOnce({serviceKey, dir, writeLog}), writeIntervalMs);

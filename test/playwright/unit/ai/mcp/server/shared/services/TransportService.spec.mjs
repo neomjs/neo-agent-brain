@@ -435,6 +435,74 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
     });
 
     /**
+     * @summary Once the listener is up, its errors and its closing leave lines. Before, an error after
+     * start reached only the settled start promise's `reject`, and a closing listener said nothing.
+     */
+    test.describe('listener lifecycle lines', () => {
+        let TransportService, AuthService;
+
+        test.beforeAll(async () => {
+            TransportService = (await import('../../../../../../../../ai/mcp/server/shared/services/TransportService.mjs')).default;
+            AuthService      = (await import('../../../../../../../../ai/mcp/server/shared/services/AuthService.mjs')).default
+        });
+
+        test.afterEach(async () => {
+            if (TransportService.httpServer?.listening) {
+                await new Promise((resolve, reject) => {
+                    TransportService.httpServer.close(error => error ? reject(error) : resolve())
+                })
+            }
+
+            TransportService.app        = null;
+            TransportService.httpServer = null;
+            TransportService.transports = new Map();
+            TransportService.mcpServers = new Map()
+        });
+
+        test('an error after start is logged instead of swallowed, and the listener closing leaves a WARN', async () => {
+            const
+                originalSetup = AuthService.setup,
+                errors        = [],
+                warnings      = [];
+
+            AuthService.setup = async () => {};
+
+            try {
+                await TransportService.setup({
+                    server: {
+                        mcpServer      : {connect: async () => {}},
+                        onSessionClosed: () => {}
+                    },
+                    aiConfig: {
+                        mcpHttpHost: '127.0.0.1',
+                        mcpHttpPort: 0,
+                        fleet      : testFleetConfig,
+                        auth       : {mode: 'github-pat'}
+                    },
+                    logger: {
+                        info : () => {},
+                        warn : message => warnings.push(message),
+                        error: (message, error) => errors.push([message, error.message])
+                    },
+                    resourceName: 'ListenerLifecycle'
+                });
+
+                TransportService.httpServer.emit('error', new Error('synthetic accept failure'));
+
+                expect(errors).toEqual([['[ListenerLifecycle] HTTP listener error:', 'synthetic accept failure']]);
+
+                await new Promise((resolve, reject) => {
+                    TransportService.httpServer.close(error => error ? reject(error) : resolve())
+                });
+
+                expect(warnings).toEqual(['[ListenerLifecycle] HTTP listener closed']);
+            } finally {
+                AuthService.setup = originalSetup
+            }
+        });
+    });
+
+    /**
      * @summary Consumed HTTP proof for non-downgrading OIDC + trusted-proxy composition.
      *
      * These four cells cross the real Express route, SDK bearer middleware, OIDC verifier, and

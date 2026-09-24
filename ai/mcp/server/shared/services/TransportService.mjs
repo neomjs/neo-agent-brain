@@ -329,9 +329,12 @@ class TransportService extends Base {
 
         const port = aiConfig.mcpHttpPort;
         await new Promise((resolve, reject) => {
+            let listening = false;
+
             const onListening = () => {
                 const hostSuffix = aiConfig.mcpListenHost ? `, Host: ${aiConfig.mcpListenHost}` : '';
 
+                listening = true;
                 logger.info(`[${resourceName}] Server started on Streamable HTTP transport (Port: ${port}${hostSuffix})`);
                 logger.info(`[${resourceName}] Available tools loaded from OpenAPI spec`);
                 resolve();
@@ -340,7 +343,11 @@ class TransportService extends Base {
             this.httpServer = aiConfig.mcpListenHost
                 ? app.listen(port, aiConfig.mcpListenHost, onListening)
                 : app.listen(port, onListening);
-            this.httpServer.on('error', reject);
+            // Until the listener is up, an error fails the start. After that the promise has settled and
+            // `reject` would swallow the error, so it is logged, and so is the listener closing: a closed
+            // listener is one way a server runs out of work and exits 0 without a word.
+            this.httpServer.on('error', error => listening ? logger.error?.(`[${resourceName}] HTTP listener error:`, error) : reject(error));
+            this.httpServer.on('close', () => logger.warn?.(`[${resourceName}] HTTP listener closed`));
         });
     }
 

@@ -24,6 +24,7 @@ import ConfigProvider, {createConfigProxy}                         from '../../.
 import Tier1ConfigBase, {PLANE_MEMBER_PATHS as TIER1_MEMBER_PATHS} from '../../../../../../ai/configBase.mjs';
 import {derivePlaneMemberPaths}                                    from '../../../../../../ai/planeConfig.mjs';
 import BaseServer                                                  from '../../../../../../ai/mcp/server/BaseServer.mjs';
+import EventLoopReporterService                                    from '../../../../../../ai/mcp/server/shared/services/EventLoopReporterService.mjs';
 // The committed template, never `ai/config.mjs` — tests resolve committed config templates and never a
 // repo-local ignored overlay. ticket-ref-ok: ADR-0019 B1/C3 is the authority lint-config-template-ssot
 // enforces this import against, so a reader reverting it needs the citation, not just the rule.
@@ -1077,11 +1078,13 @@ test.describe('Neo.ai.mcp.server.BaseServer — heap-observation boot reachabili
      * Overrides `boot()` to a no-op WITHOUT chaining `super.boot()` — memory-core's real shape, and
      * the case a start wired into the default `boot()` would silently skip.
      */
-    function makeObservingServerClass(serviceKey) {
+    function makeObservingServerClass(serviceKey, serverLogger = null) {
         const id = ++_testClassCounter;
 
         class ObservingServer extends BaseServer {
             static config = {className: `Neo.test.mcp.server.ObservingServer${id}`}
+
+            logger = serverLogger
 
             getServerMetadata() { return {name: 'neo-test', version: '1.0.0', capabilities: {tools: {}}} }
             getToolService()    { return {listTools: () => ({tools: [], nextCursor: null}), callTool: async () => ({})} }
@@ -1116,6 +1119,24 @@ test.describe('Neo.ai.mcp.server.BaseServer — heap-observation boot reachabili
             expect(record.observation.rssBytes).toBeGreaterThan(0)
         } finally {
             // The teardown the server owns, exercised rather than described.
+            server.stopHeapObservation();
+            fs.rmSync(published(serviceKey), {force: true})
+        }
+    });
+
+    test('booting a server that declares a key arms its event-loop report', async () => {
+        const serviceKey = `witness-loop-${++_testClassCounter}`,
+              server     = Neo.create(makeObservingServerClass(serviceKey, {info() {}, warn() {}, error() {}, writeSync() {}}));
+
+        await server.ready();
+
+        try {
+            // Reached through boot, not through a direct start(): a reporter nothing starts passes its
+            // own specs and still writes nothing when a server exits.
+            expect(process.listeners('exit')).toContain(EventLoopReporterService.listeners?.exit);
+            expect(EventLoopReporterService.timer).not.toBeNull()
+        } finally {
+            EventLoopReporterService.stop();
             server.stopHeapObservation();
             fs.rmSync(published(serviceKey), {force: true})
         }

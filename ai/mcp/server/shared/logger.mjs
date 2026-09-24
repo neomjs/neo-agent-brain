@@ -25,6 +25,9 @@ const FATAL_STARTUP_LOGGER_CONFIG = {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** @summary The day's log file for one prefix, `today` as `YYYY-MM-DD`. */
+const logFilePath = (logDir, filePrefix, today) => path.join(logDir, `${filePrefix}-${today}.log`);
+
 /**
  * @summary Extracts the live config data from either a ConfigProvider proxy or a plain object.
  *
@@ -202,8 +205,8 @@ export const listHistoricalLogFiles = ({
                 name: entry.name,
                 filePath,
                 date: match[1],
-                time    : Date.parse(`${match[1]}T00:00:00.000Z`),
-                size    : includeSize ? statFile(filePath).size : undefined
+                time: Date.parse(`${match[1]}T00:00:00.000Z`),
+                size: includeSize ? statFile(filePath).size : undefined
             };
         })
         .filter(Boolean)
@@ -224,7 +227,7 @@ export const selectPrunableLogFiles = ({files, retention, today}) => {
         return [];
     }
 
-    const prunable = new Set();
+    const prunable  = new Set();
     const todayTime = Date.parse(`${today}T00:00:00.000Z`);
 
     if (Number.isFinite(retention.maxAgeDays) && Number.isFinite(todayTime)) {
@@ -410,7 +413,7 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
             });
 
             currentStreamKey = key;
-            currentStream    = fs.createWriteStream(path.join(logDir, `${loggerConfig.filePrefix}-${today}.log`), {flags: 'a'});
+            currentStream    = fs.createWriteStream(logFilePath(logDir, loggerConfig.filePrefix, today), {flags: 'a'});
 
             // Asynchronous containment: open/write failures on a WriteStream (EISDIR on a
             // directory-shaped filename, ENOSPC mid-stream) surface as a later 'error' EVENT,
@@ -504,6 +507,36 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
         } : loggerConfig);
     };
 
+    /**
+     * @summary Writes one entry to the file and to stderr before returning, for `exit` handlers, where
+     * an entry queued on the stream never lands. stderr is written whatever `stderrMode` says; neither
+     * failure is thrown. Exit paths only: while the loop runs, it can land ahead of buffered entries.
+     * @param {String} level
+     * @param {...*}   args
+     * @returns {void}
+     */
+    const writeSync = (level, ...args) => {
+        const loggerConfig = getLoggerConfig(aiConfig, fallbackLoggerConfig),
+              line         = formatLogLine(level, args, loggerConfig);
+
+        if (loggerConfig.fileSink && aiConfig.isReady !== false) {
+            try {
+                const logDir = resolveLogDir(loggerConfig);
+
+                fs.mkdirSync(logDir, {recursive: true});
+                fs.appendFileSync(logFilePath(logDir, loggerConfig.filePrefix, new Date().toISOString().slice(0, 10)), line)
+            } catch {
+                // The stderr copy below still carries the entry.
+            }
+        }
+
+        try {
+            fs.writeSync(2, line)
+        } catch {
+            // Nothing is left to report a failed stderr write to.
+        }
+    };
+
     const logger = {
         debug       : createLogMethod('debug'),
         error       : createLogMethod('error'),
@@ -511,7 +544,8 @@ export const createLogger = (aiConfig = {}, fallbackLoggerConfig = {}) => {
         fileDebug   : createLogMethod('debug', {fileOnly: true}),
         info        : createLogMethod('info'),
         log         : createLogMethod('log'),
-        warn        : createLogMethod('warn')
+        warn        : createLogMethod('warn'),
+        writeSync
     };
 
     if (getLoggerConfig(aiConfig, fallbackLoggerConfig).flush) {
