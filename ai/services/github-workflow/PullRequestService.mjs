@@ -1380,6 +1380,38 @@ function selectedPrReviewTemplatePath(body) {
 }
 
 /**
+ * @summary Every review reference a Round 2's `**Round-1 Review ID:**` carries, in each form the shape gate accepts:
+ * a node id (`PRR_…`), a database id, or a review URL (`#pullrequestreview-<databaseId>`), bare or as a link. A
+ * link contributes its label and its URL separately, so the two can be held to naming the same review.
+ * @param {String} body
+ * @returns {{references: Object[], text: String}} `{kind: 'id'|'databaseId', value}` each; `text` is the cited value,
+ * before any ` · ` field
+ */
+function citedRound1Review(body) {
+    const text = (/\*\*Round-1 Review ID:\*\*[ \t]*([^\n]*)/.exec(body || '')?.[1] ?? '').split(' · ')[0].trim();
+
+    return {
+        references: [
+            ...(text.match(/PRR_[\w-]+/g) ?? []).map(value => ({kind: 'id', value})),
+            // A bare number, or the one after `pullrequestreview-`; never a digit run inside a path or an id
+            ...[...text.matchAll(/(?:pullrequestreview-|(?<![\w/#-]))(\d+)(?![\w/])/g)].map(match => ({kind: 'databaseId', value: match[1]}))
+        ],
+        text
+    }
+}
+
+/**
+ * @summary A review node's database id as a string, read from its URL when the node carries none.
+ * @param {Object} review
+ * @returns {String|null}
+ */
+function reviewDatabaseId(review) {
+    const id = review.databaseId ?? /#pullrequestreview-(\d+)$/.exec(review.url || '')?.[1];
+
+    return id == null ? null : String(id)
+}
+
+/**
  * @summary Validates an ordinary Round 2 against the round it claims to disposition.
  *
  * The body-only tier proves a document is disposition-SHAPED. It cannot prove a disposition occurred,
@@ -1397,21 +1429,48 @@ function selectedPrReviewTemplatePath(body) {
  * APPROVED round carrying a `STILL_OPEN` silently discharges the item it just declared unresolved,
  * and a REQUEST_CHANGES spends a round the per-family budget does not have.
  *
+ * **The prior round is the one the body cites**, never the newest `CHANGES_REQUESTED` on the pull request.
+ * With two reviewers requesting changes, the newest RC is the other reviewer's whenever theirs came
+ * later, and the correct disposition of one's own round was refused against their actions (neo#19125).
+ *
  * @param {Object}   options
  * @param {String}   options.body        The candidate Round-2 body.
- * @param {Object[]} options.reviews     Prior review nodes (`{body, state, submittedAt, author}`).
+ * @param {Object[]} options.reviews     Prior review nodes (`{body, databaseId, id, state, submittedAt, url, author}`).
  * @param {String}   options.state       The GitHub review state being submitted.
  * @returns {Object|null} Failure payload, or `null` when the round is a faithful disposition.
  */
 function getRound2DispositionRelationFailure({body, reviews, state}) {
-    const prior = [...(reviews || [])]
-        .filter(review => review?.state === 'CHANGES_REQUESTED')
-        .sort((a, b) => Date.parse(b?.submittedAt || 0) - Date.parse(a?.submittedAt || 0))[0];
+    const
+        {references, text} = citedRound1Review(body),
+        rcs                = (reviews || []).filter(review => review?.state === 'CHANGES_REQUESTED'),
+        // Per reference, at most one RC can match. EVERY reference must, and all must match the same one: a link
+        // whose label and URL disagree, or ids of two rounds, would otherwise be settled by the order of history
+        matched            = references.map(({kind, value}) => rcs.find(review => (kind === 'id' ? review.id : reviewDatabaseId(review)) === value)),
+        unmatched          = references.filter((reference, index) => !matched[index]),
+        prior              = unmatched.length === 0 && new Set(matched).size === 1 ? matched[0] : null;
 
-    if (!prior) {
+    if (rcs.length === 0) {
         return round2RelationFailure([
             'This body declares itself a Round 2, but the pull request carries no submitted',
             '`CHANGES_REQUESTED` review for it to disposition. A first review uses the canonical template.'
+        ])
+    }
+
+    if (references.length === 0 || unmatched.length > 0) {
+        return round2RelationFailure([
+            `This Round 2 cites \`${text}\` as its Round-1 review, but`,
+            unmatched.length > 0
+                ? `${unmatched.map(({value}) => `\`${value}\``).join(', ')} names no \`CHANGES_REQUESTED\` review on the pull request.`
+                : 'no review id can be read from it.',
+            'Cite the review whose Required Actions the table dispositions: a node id, a database id, or its URL.'
+        ])
+    }
+
+    if (!prior) {
+        return round2RelationFailure([
+            `This Round 2 cites \`${text}\` as its Round-1 review,`,
+            `and its references name ${new Set(matched).size} different \`CHANGES_REQUESTED\` reviews.`,
+            'A link\'s label and its URL, or an id beside a link, must name the same review.'
         ])
     }
 
