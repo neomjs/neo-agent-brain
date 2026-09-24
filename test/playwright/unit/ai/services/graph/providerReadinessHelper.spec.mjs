@@ -492,6 +492,31 @@ test.describe('provider residency helpers — production mutation authority fenc
         expect(result.operatorDiagnostic.summary).toContain('needs context 32768 (pinned)');
     });
 
+    test('LMS never reports an absent or unusable ttlMs as pinned (#460)', async () => {
+        // Only `ttlMs: null` establishes a pinned load. An older `lms` without the field, or a value
+        // the row does not type, is missing evidence and has to read as such.
+        const result = await ensureLmsModelsLoaded({
+            host             : 'http://127.0.0.1:1234',
+            models           : ['chat-model', 'embed-model'],
+            contextLengths   : {'chat-model': 131072, 'embed-model': 32768},
+            allowPartial     : true,
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 10,
+            fetchModelIds    : async () => ['chat-model', 'embed-model'],
+            fetchLoadedModels: async () => [
+                {id: 'chat-model', contextLength: 4096, ttlMs: 'soon'},
+                {id: 'embed-model', contextLength: 8192}
+            ],
+            loadModel: async () => {},
+            log      : {info() {}, warn() {}}
+        });
+
+        expect(result.operatorDiagnostic.summary).toContain("'chat-model' has context 4096; needs context 131072 (TTL unknown)");
+        expect(result.operatorDiagnostic.summary).toContain("'embed-model' has context 8192; needs context 32768 (TTL unknown)");
+        expect(result.operatorDiagnostic.summary).not.toContain('pinned');
+    });
+
     test('LMS reports a suffixed resident without evicting or reloading it (#17079)', async () => {
         const loads = [],
               rows  = [{id: 'chat-model'}, {id: 'chat-model:2'}];

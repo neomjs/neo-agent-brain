@@ -1706,12 +1706,16 @@ export function buildOllamaReadinessConfig(config = aiConfig) {
  * That means the observed and required shape, whether the resident is a JIT load that will idle out
  * or a pinned one, and the exact `lms` pair.
  * @param {Object[]} insufficient Assessment mismatches (`{model, contextLength, requiredContextLength, parallel, requiredParallel}`).
- * @param {Object[]} rows Loaded-model rows; a positive `ttlMs` marks a JIT load.
+ * @param {Object[]} rows Loaded-model rows. A positive `ttlMs` marks a JIT load and `ttlMs: null` a pinned
+ *     one. Anything else, including an absent field, is reported as unknown and never as pinned.
  * @returns {String} Empty when nothing needs replacement.
  */
 function describeLmsReplacement(insufficient = [], rows = []) {
     return insufficient.map(item => {
-        const ttlMs    = rows.find(row => row.id === item.model)?.ttlMs,
+        const ttlMs  = rows.find(row => row.id === item.model)?.ttlMs,
+              origin = Neo.isNumber(ttlMs) && ttlMs > 0 ? `JIT-loaded, unloads after ${Math.round(ttlMs / 1000)} s idle`
+                  : ttlMs === null ? 'pinned'
+                  : 'TTL unknown',
               parallel = Neo.isNumber(item.requiredParallel),
               flags    = [
                   ...(Neo.isNumber(item.requiredContextLength) ? [`--context-length ${item.requiredContextLength}`] : []),
@@ -1720,8 +1724,7 @@ function describeLmsReplacement(insufficient = [], rows = []) {
 
         return `LM Studio resident '${item.model}' has context ${item.contextLength ?? 'unknown'}` +
             `${parallel ? `, parallel ${item.parallel ?? 'unknown'}` : ''}; needs context ${item.requiredContextLength ?? 'any'}` +
-            `${parallel ? `, parallel ${item.requiredParallel}` : ''} ` +
-            `(${Neo.isNumber(ttlMs) && ttlMs > 0 ? `JIT-loaded, unloads after ${Math.round(ttlMs / 1000)} s idle` : 'pinned'}). ` +
+            `${parallel ? `, parallel ${item.requiredParallel}` : ''} (${origin}). ` +
             `Replace it: lms unload ${item.model} && lms load ${item.model} ${[...flags, `--identifier ${item.model}`].join(' ')}`
     }).join('; ')
 }
