@@ -425,6 +425,73 @@ test.describe('provider residency helpers — production mutation authority fenc
         });
     });
 
+    test('LMS pins a missing role while another role\'s resident needs replacement (#460)', async () => {
+        // The 2026-09-24 plane: a consumer's JIT request left the embedder resident at the server's
+        // default shape, and the early `replacement-required` return kept the chat model unloaded.
+        const loads    = [];
+        let   resident = [{id: 'embed-model', contextLength: 8192, ttlMs: 3600000}];
+
+        const result = await ensureLmsModelsLoaded({
+            host             : 'http://127.0.0.1:1234',
+            models           : ['chat-model', 'embed-model'],
+            contextLengths   : {'chat-model': 131072, 'embed-model': 32768},
+            parallels        : {'chat-model': 1, 'embed-model': 1},
+            allowPartial     : true,
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 10,
+            fetchModelIds    : async () => ['chat-model', 'embed-model'],
+            fetchLoadedModels: async () => resident,
+            loadModel        : async (model, options) => {
+                loads.push({model, ...options});
+                resident = [...resident, {id: model, contextLength: options.contextLength, parallel: options.parallel}];
+            },
+            log              : {info() {}, warn() {}}
+        });
+
+        expect(loads).toEqual([{model: 'chat-model', identifier: 'chat-model', contextLength: 131072, parallel: 1}]);
+        expect(result).toMatchObject({
+            ready                   : false,
+            degraded                : true,
+            observationStatus       : 'replacement-required',
+            loadedModels            : ['chat-model'],
+            insufficientLoadedModels: [{model: 'embed-model', contextLength: 8192, requiredContextLength: 32768}]
+        });
+        expect(result.operatorDiagnostic.code).toBe('LMS_REPLACEMENT_REQUIRED');
+        expect(result.operatorDiagnostic.summary).toContain("'embed-model' has context 8192");
+        expect(result.operatorDiagnostic.summary).toContain('needs context 32768, parallel 1 (JIT-loaded, unloads after 3600 s idle)');
+        expect(result.operatorDiagnostic.summary).toContain(
+            'lms unload embed-model && lms load embed-model --context-length 32768 --parallel 1 --identifier embed-model'
+        );
+    });
+
+    test('LMS reports a pinned mis-shaped resident without probing or loading when nothing is missing (#460)', async () => {
+        const loads  = [];
+        let   probes = 0;
+
+        const result = await ensureLmsModelsLoaded({
+            host             : 'http://127.0.0.1:1234',
+            models           : ['chat-model', 'embed-model'],
+            contextLengths   : {'chat-model': 131072, 'embed-model': 32768},
+            allowPartial     : true,
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 10,
+            fetchModelIds    : async () => ['chat-model', 'embed-model'],
+            fetchLoadedModels: async () => {
+                probes++;
+                return [{id: 'chat-model', contextLength: 131072}, {id: 'embed-model', contextLength: 8192, ttlMs: null}];
+            },
+            loadModel: async model => loads.push(model),
+            log      : {info() {}, warn() {}}
+        });
+
+        expect(loads).toEqual([]);
+        expect(probes).toBe(1);
+        expect(result.observationStatus).toBe('replacement-required');
+        expect(result.operatorDiagnostic.summary).toContain('needs context 32768 (pinned)');
+    });
+
     test('LMS reports a suffixed resident without evicting or reloading it (#17079)', async () => {
         const loads = [],
               rows  = [{id: 'chat-model'}, {id: 'chat-model:2'}];

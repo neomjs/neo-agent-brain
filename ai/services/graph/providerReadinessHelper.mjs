@@ -557,7 +557,7 @@ export function getLmsLoadedModels(payload, {strict = false} = {}) {
             ], {strict, fieldName: `parallel metadata for '${id}'`})
         };
 
-        for (const key of ['type', 'modelKey', 'format', 'displayName', 'publisher', 'path', 'indexedModelIdentifier', 'architecture']) {
+        for (const key of ['type', 'modelKey', 'format', 'displayName', 'publisher', 'path', 'indexedModelIdentifier', 'architecture', 'ttlMs']) {
             if (row?.[key] !== undefined) {
                 model[key] = row[key];
             }
@@ -1700,6 +1700,33 @@ export function buildOllamaReadinessConfig(config = aiConfig) {
 }
 
 /**
+ * @summary Renders the operator action for residents loaded at the wrong shape.
+ *
+ * Readiness never performs the replacement, so the action has to reach the line an operator reads.
+ * That means the observed and required shape, whether the resident is a JIT load that will idle out
+ * or a pinned one, and the exact `lms` pair.
+ * @param {Object[]} insufficient Assessment mismatches (`{model, contextLength, requiredContextLength, parallel, requiredParallel}`).
+ * @param {Object[]} rows Loaded-model rows; a positive `ttlMs` marks a JIT load.
+ * @returns {String} Empty when nothing needs replacement.
+ */
+function describeLmsReplacement(insufficient = [], rows = []) {
+    return insufficient.map(item => {
+        const ttlMs    = rows.find(row => row.id === item.model)?.ttlMs,
+              parallel = Neo.isNumber(item.requiredParallel),
+              flags    = [
+                  ...(Neo.isNumber(item.requiredContextLength) ? [`--context-length ${item.requiredContextLength}`] : []),
+                  ...(parallel ? [`--parallel ${item.requiredParallel}`] : [])
+              ];
+
+        return `LM Studio resident '${item.model}' has context ${item.contextLength ?? 'unknown'}` +
+            `${parallel ? `, parallel ${item.parallel ?? 'unknown'}` : ''}; needs context ${item.requiredContextLength ?? 'any'}` +
+            `${parallel ? `, parallel ${item.requiredParallel}` : ''} ` +
+            `(${Neo.isNumber(ttlMs) && ttlMs > 0 ? `JIT-loaded, unloads after ${Math.round(ttlMs / 1000)} s idle` : 'pinned'}). ` +
+            `Replace it: lms unload ${item.model} && lms load ${item.model} ${[...flags, `--identifier ${item.model}`].join(' ')}`
+    }).join('; ')
+}
+
+/**
  * @summary Ensures LM Studio has all configured OpenAI-compatible models loaded.
  *
  * The orchestrator-owned `lms server start` task gets the server process running;
@@ -1717,7 +1744,11 @@ export function buildOllamaReadinessConfig(config = aiConfig) {
  * Per-model context-length and parallel overrides apply only when a trustworthy residency snapshot
  * proves the exact configured model absent. An additive load receives those shape options. When an
  * exact resident is present with a numeric mismatch, the helper returns `replacement-required` and
- * performs no mutation.
+ * performs no mutation on that resident. The mismatch is judged per role: every other role that is
+ * genuinely missing still gets its additive load in the same pass. Otherwise one mis-shaped
+ * resident, typically a JIT load at the server's default shape, would keep every other role
+ * unloaded. The result carries an `operatorDiagnostic.summary` naming the resident's observed and
+ * required shape and the `lms` pair that replaces it.
  *
  * @param {Object} options
  * @param {String} options.host OpenAI-compatible host.
@@ -1916,13 +1947,16 @@ async function ensureLmsModelsLoadedOnce({
                   .map(item => effectiveLoadFailureGuard?.snapshot?.({host, model: item.model}) ?? item)
                   .filter(Boolean),
               terminalCircuit    = activeLoadFailureCircuits.find(item => item.terminal),
-              operatorDiagnostic = terminalCircuit ? {
-                  code   : 'LMS_LOAD_FAILURE_CIRCUIT_OPEN',
-                  summary: (`LM Studio load circuit open for '${terminalCircuit.model}' after ` +
+              circuitSummary     = terminalCircuit
+                  ? `LM Studio load circuit open for '${terminalCircuit.model}' after ` +
                       `${terminalCircuit.failureStreak} identical failures; selected runtimes=` +
                       `${terminalCircuit.runtime.selectedRows.join(', ') || 'unknown'}; ` +
-                      `resume via ${terminalCircuit.resumeVia}. Last failure: ${terminalCircuit.failure.message}`)
-                      .slice(0, 1600)
+                      `resume via ${terminalCircuit.resumeVia}. Last failure: ${terminalCircuit.failure.message}`
+                  : '',
+              replacementSummary = describeLmsReplacement(insufficientLoadedModels, rows),
+              operatorDiagnostic = circuitSummary || replacementSummary ? {
+                  code   : terminalCircuit ? 'LMS_LOAD_FAILURE_CIRCUIT_OPEN' : 'LMS_REPLACEMENT_REQUIRED',
+                  summary: [circuitSummary, replacementSummary].filter(Boolean).join(' · ').slice(0, 1600)
               } : null;
 
         return {
@@ -1977,7 +2011,9 @@ async function ensureLmsModelsLoadedOnce({
             elapsedMs
         });
     };
-    const rejectNonAuthorizingObservation = (assessment, rows, context = 'loaded-model observation') => {
+    // Unreadable metadata refuses the whole pass: no snapshot we cannot read authorizes a load.
+    // A mis-shaped resident does not. It is reported, never replaced, while the missing roles load.
+    const rejectUnreadableObservation = (assessment, rows, context = 'loaded-model observation') => {
         if (assessment.unknown.length) {
             return failObservation({
                 status             : 'metadata-unknown',
@@ -1986,15 +2022,14 @@ async function ensureLmsModelsLoadedOnce({
                 unknownLoadedModels: assessment.unknown
             });
         }
-        if (assessment.insufficient.length) {
-            return failObservation({
-                status                  : 'replacement-required',
-                warning                 : `LM Studio loaded-model replacement requires an explicit operator action: ${assessment.insufficient.map(item => item.model).join(', ')}`,
-                rows,
-                insufficientLoadedModels: assessment.insufficient
-            });
-        }
     };
+    const reportReplacementRequired = (assessment, rows, extra = {}) => failObservation({
+        status                  : 'replacement-required',
+        warning                 : `LM Studio loaded-model replacement requires an explicit operator action: ${assessment.insufficient.map(item => item.model).join(', ')}`,
+        rows,
+        insufficientLoadedModels: assessment.insufficient,
+        ...extra
+    });
     const completeReadyResult = async result => {
         if (result.ready !== true || typeof embeddingServingProbe !== 'function') {
             return result;
@@ -2053,10 +2088,13 @@ async function ensureLmsModelsLoadedOnce({
     }
 
     let   assessment     = assessResidency(activeLoadedModels);
-    const initialRefusal = rejectNonAuthorizingObservation(assessment, activeLoadedModels);
+    const initialRefusal = rejectUnreadableObservation(assessment, activeLoadedModels);
 
     if (initialRefusal) {
         return initialRefusal;
+    }
+    if (!assessment.missing.length && assessment.insufficient.length) {
+        return reportReplacementRequired(assessment, activeLoadedModels);
     }
 
     if (assessment.missing.length) {
@@ -2072,10 +2110,13 @@ async function ensureLmsModelsLoadedOnce({
 
         activeLoadedModels = fresh;
         assessment = assessResidency(fresh);
-        const freshRefusal = rejectNonAuthorizingObservation(assessment, fresh, 'force-fresh loaded-model preflight');
+        const freshRefusal = rejectUnreadableObservation(assessment, fresh, 'force-fresh loaded-model preflight');
 
         if (freshRefusal) {
             return freshRefusal;
+        }
+        if (!assessment.missing.length && assessment.insufficient.length) {
+            return reportReplacementRequired(assessment, fresh);
         }
     }
 
@@ -2092,7 +2133,7 @@ async function ensureLmsModelsLoadedOnce({
 
         activeLoadedModels = immediate;
         const immediateAssessment = assessResidency(immediate),
-              immediateRefusal    = rejectNonAuthorizingObservation(
+              immediateRefusal    = rejectUnreadableObservation(
                   immediateAssessment,
                   immediate,
                   `immediate loaded-model witness for '${model}'`
@@ -2251,7 +2292,7 @@ async function ensureLmsModelsLoadedOnce({
 
         activeLoadedModels = finalRows;
         assessment = assessResidency(finalRows);
-        const finalRefusal = rejectNonAuthorizingObservation(assessment, finalRows, 'post-load observation');
+        const finalRefusal = rejectUnreadableObservation(assessment, finalRows, 'post-load observation');
 
         if (finalRefusal) {
             return finalRefusal;
@@ -2260,6 +2301,9 @@ async function ensureLmsModelsLoadedOnce({
         const catalogMissing = requiredModels.filter(model => !availableModels.includes(model));
 
         missingModels = [...new Set([...catalogMissing, ...assessment.missing])];
+        if (missingModels.length === 0 && assessment.insufficient.length) {
+            return reportReplacementRequired(assessment, finalRows, {attempt, elapsedMs: Date.now() - startedAt});
+        }
         if (missingModels.length === 0) {
             const ready = failedModels.length === 0;
 
@@ -2277,11 +2321,12 @@ async function ensureLmsModelsLoadedOnce({
 
     if (allowPartial) {
         return buildResult({
-            ready    : false,
-            rows     : activeLoadedModels,
+            ready                   : false,
+            rows                    : activeLoadedModels,
             missingModels,
-            attempt  : attempts,
-            elapsedMs: Date.now() - startedAt
+            insufficientLoadedModels: assessment.insufficient,
+            attempt                 : attempts,
+            elapsedMs               : Date.now() - startedAt
         });
     }
 
