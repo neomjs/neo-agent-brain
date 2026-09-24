@@ -1,7 +1,7 @@
 # The Concept Ontology
 
-The Concept Ontology is a version-controlled graph that provides the **semantic stratum**
-between source code and learning content. It is the foundation for the Dream Pipeline's
+The Concept Ontology is a graph that each Agent OS plane keeps as plane data. It provides the
+**semantic stratum** between source code and learning content. It is the foundation for the Dream Pipeline's
 deterministic documentation gap detection.
 
 ## The Problem It Solves
@@ -66,27 +66,36 @@ A concept is included in the ontology only if it passes **all three** criteria:
 
 ## Storage Format
 
-The concept graph is stored as JSONL files at `.neo-ai-data/concepts/`:
+Each plane keeps its concept graph as JSONL files under its data root. In a container that is
+`/app/.neo-ai-data/concepts/`, on the orchestrator's root volume, and every backup bundle carries
+it as the `concepts` substrate:
 
 ```
-.neo-ai-data/concepts/
+<dataRoot>/concepts/
 ├── nodes.jsonl     # One concept node per line
 └── edges.jsonl     # One relationship edge per line
 ```
 
+Concepts are derived knowledge. A deployment may seed them, and discovery extends them from
+conversations, memories and the graph. A concept can span repositories, and no repository holds
+the store. ADR 0023 §2.5 and ADR 0024 §2.6 record that decision.
+
+The Knowledge Base still reads the engine's Markdown copies of the explanations for now. ADR 0024
+§2.6 records the move to projecting the store instead.
+
 ### Why JSONL, Not JSON or SQLite
 
-- **Git-friendly**: Each line is an independent record. Adding a concept = adding a line.
-  No structural merge conflicts.
-- **PR-reviewable**: `git diff` shows exactly which concepts were added/modified/removed.
+- **Append-friendly**: Each line is an independent record, so discovery adds a candidate by
+  appending a line.
+- **Diffable**: Two backup bundles compare line by line.
 - **Streaming**: Can be processed line-by-line without loading the entire graph into memory.
-- **Source-owned**: JSONL is the PR-reviewable declaration; `ConceptIngestor` projects it into
-  the Native Edge Graph (SQLite). Source and projection are separate representations, not two
+- **Source-owned**: The store is the declaration. `ConceptIngestor` projects it into the Native
+  Edge Graph (SQLite). Source and projection are separate representations, not two
   independently maintained ontologies.
 
 ### Source Membership vs. Runtime Salience
 
-The JSONL files own the version-controlled **membership** contract: which concept rows and typed
+The JSONL store owns the **membership** contract: which concept rows and typed
 relationships are declared. SQLite owns the live edge instances that graph traversal consumes.
 `ConceptIngestor.syncConceptsToGraph()` reconciles those layers on every run:
 
@@ -143,8 +152,8 @@ Each line in `nodes.jsonl` is a JSON object:
 > `CONCEPT_REVERIFY_DUE` handoff signal. This must not fade graph nodes, weaken edges,
 > reduce concept weight, or auto-retire concepts. A stale verification date means "check
 > this against current repo reality"; it is not evidence that the concept lost value.
-> Existing committed ontology nodes start with explicit `verifiedAt: null` so the first
-> source-grounding pass can be queried directly from the data file.
+> Seeded rows start with explicit `verifiedAt: null` so the first source-grounding pass can be
+> queried directly from the store.
 
 ## Curated Tags, Historical Extraction, and Scheduled Discovery
 
@@ -154,7 +163,7 @@ historical search population into the small, deliberate ontology.
 | Path | Current trigger | Runtime / review signal |
 |------|-----------------|-------------------------|
 | **Manual message tag** | `addMessage({taggedConcepts: [...]})` with explicit IDs | Synchronous `TAGGED_CONCEPT` edge at weight `1.0` |
-| **Version-controlled ontology** | `ConceptIngestor` reads `.neo-ai-data/concepts/*.jsonl` during REM | Source-owned projected edges plus `validated`, tier, and projection axes |
+| **Seeded ontology (optional)** | A deployment may seed its store; `ConceptIngestor` reads `<dataRoot>/concepts/*.jsonl` during REM | Source-owned projected edges plus `validated`, tier, and projection axes |
 | **Scheduled candidate discovery** | The orchestrator runs `message-concept-harvest`; `ConceptDiscoveryService` reads a bounded batch of unharvested MESSAGE nodes, frequency-filters them, and sends one bounded Teaching-Test prompt. Its separate `runDiscoveryCycle()` mines epics and a capped recent-PR set on explicit invocation. | Candidate rows append to `nodes.jsonl` as `validated: false`, tier 3; they remain silent until curator promotion and enter SQLite only on a later ConceptIngestor sync |
 | **Historical inline extraction** | Retired runtime path; `SemanticGraphExtractor.extractMessageConcepts()` remains only as a direct/test helper and has no production caller | Existing `auto_extracted: true` nodes and `TAGGED_CONCEPT` edges at weight `0.8` can remain as legacy provenance |
 
@@ -297,26 +306,31 @@ mindmap
 
 ✅ = has at least one `EXPLAINED_BY` edge. Missing ✅ = `GUIDE_GAP` candidate.
 
-## Contributing a Concept
+## How a Concept Enters the Store
 
-1. Add a single line to `nodes.jsonl` following the node schema
-2. Add `PARENT_CONCEPT` edge(s) to `edges.jsonl` to place it in the hierarchy
-3. Add `EXPLAINED_BY` edges for any existing guides that cover the concept
-4. Add `IMPLEMENTED_BY` edges for source files that implement it
-5. Verify the concept passes the Teaching Test
+- **Discovery** appends candidates with `validated: false`. They stay out of gap inference and
+  concept search until they are promoted.
+- **A seed**, which is optional, writes rows into a new plane's store, for example from a guide
+  index. A plane may also start empty.
+- **Promotion has no surface yet.** Evaluating and validating candidates is an open design
+  question (neomjs/neo#19096 OQ9). Until it is answered, a seedless plane has no validated
+  concepts, and therefore no Knowledge Base concepts. That is by design.
+
+Every row follows the node and edge schemas above and passes the Teaching Test, however it
+enters: its `PARENT_CONCEPT` edges place it in the hierarchy, and its `EXPLAINED_BY` and
+`IMPLEMENTED_BY` edges link guides and source files.
 
 ### JSONL Format Rules
 
 - **One JSON object per line** — no multi-line JSON
 - **No trailing commas** — strict JSON per line
-- **Git-friendly** — each line is an independent record, minimizing merge conflicts
 - **Append-only preferred** — add new lines rather than reordering existing ones
 
 ## Integration Architecture
 
 ```mermaid
 flowchart TD
-    CuratedSource["Concept Ontology JSONL\nversion-controlled source rows"] --> CS["ConceptService\nloads + validates source"]
+    CuratedSource["Concept store JSONL\nplane data, per deployment"] --> CS["ConceptService\nloads + validates source"]
     Discovery["ConceptDiscoveryService\nbounded candidate mining"] -->|validated: false proposals| CuratedSource
     CS --> CI["ConceptIngestor\nsource-owned reconciliation"]
     FileIdentity["FileSystemIngestor\ncanonical file identity"] --> CI

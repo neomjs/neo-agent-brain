@@ -15,7 +15,7 @@
 
 ## 1. Context
 
-The Native Edge Graph is the Brain's structural memory — a multi-tenant **SQLite** graph (plus a **Chroma** vector store and a git-versioned **JSONL** concept ontology) that the swarm **actively reads, queries, and writes** via Memory Core MCP tools. It is **not** merely the input to the `sandman_handoff.md` forecast; the Golden Path forecast is one read-consumer among many.
+The Native Edge Graph is the Brain's structural memory — a multi-tenant **SQLite** graph (plus a **Chroma** vector store and a **JSONL** concept store kept as plane data) that the swarm **actively reads, queries, and writes** via Memory Core MCP tools. It is **not** merely the input to the `sandman_handoff.md` forecast; the Golden Path forecast is one read-consumer among many.
 
 The model was **scattered**: ADR 0006 decided ADR-nodes, 0015 the SQLite backend, 0003 / 0017 the Chroma store, 0001 cache coherence, 0018 identity, 0021 write enforcement; `ConceptOntology.md` documents the concept layer; `DreamPipeline.md` the consolidation flow. **No artifact composed the whole** — the unified node/edge taxonomy, how the layers connect, or the active interface. A post-compaction agent (the common case) could not answer *"what node/edge types exist, how do they connect, how do I read/write, where does data live?"* — which left ADR 0023's invariants ungrounded (you cannot govern a system you cannot see). This ADR closes that gap (the `target-architecture-adr-gap`, scoped to the graph layer).
 
@@ -59,8 +59,8 @@ Relationship types grouped by their owning or operational family. The **Decays?*
 
 Five named enums (`CONCEPT_EDGE_TYPES`, `ADR_EDGE_TYPES`, `DIRECTION_EDGE_TYPES`, `PROTECTED_EDGE_TYPES`, `BUSINESS_EDGE_TYPES`) are **authoritative** for their families; the **permission** family's authoritative source is `PermissionService.validScopes` (`heartbeatPulseEvaluator.PERMISSION_EDGE_TYPES` is its **wake-firing subset**, not the source). The remaining families are **observed-in-use** across the MC / graph / ingestion services. Converging these into one canonical edge-type registry is a follow-up (§6).
 
-**Concept membership is not concept salience.** `.neo-ai-data/concepts/edges.jsonl` owns the
-declared, curated relationship set. `ConceptIngestor` reconciles that source-owned tuple set on
+**Concept membership is not concept salience.** The store's `edges.jsonl` (`dataRoot/concepts/`) owns the
+declared relationship set. `ConceptIngestor` reconciles that source-owned tuple set on
 every sync: a surviving tuple retains its edge ID and decayed weight; a still-declared tuple
 removed by pruning is re-derived; a removed declaration deletes only the tuple marked
 `projectionSource: concept-ontology-jsonl`; foreign producers' same-type edges survive. Every
@@ -160,16 +160,22 @@ The graph is **actively operated** via Memory Core MCP tools — the "active hyb
 |---|---|---|
 | **Native Edge Graph (SQLite)** | the runtime node/edge graph; multi-tenant RLS; WAL-first | 0015 (backend posture), 0001 (cross-process cache coherence) |
 | **Vector store (Chroma)** | semantic embeddings for hybrid query + the frontier baseline | 0003, 0017 (single flat unified store; dev/prod parity) |
-| **Concept ontology (JSONL)** | git-versioned, PR-reviewable source membership at `.neo-ai-data/concepts/` (`nodes.jsonl` + `edges.jsonl`); projected into SQLite by `ConceptIngestor` | `ConceptOntology.md` |
+| **Concept store (JSONL)** | plane data at `dataRoot/concepts/` (`nodes.jsonl` + `edges.jsonl`), tenant-scoped, durable through the plane's root volume and backups; projected into SQLite by `ConceptIngestor`, and into the KB for admitted rows | `ConceptOntology.md` |
 
-The JSONL ontology and the SQLite graph are **source and projection**, not independently maintained ontologies. JSONL is git-versioned + human-reviewable; SQLite is the runtime substrate that gap inference and graph traversal consume. `ConceptIngestor` re-derives declared relationship membership while preserving the salience of surviving live edge instances. The independently maintained `resources/content/concepts/*.md` explanation layer is the remaining content-as-SSOT follow-up.
+The JSONL store and the SQLite graph are **source and projection**, not independently maintained ontologies. The store is plane data; SQLite is the runtime substrate that gap inference and graph traversal consume. `ConceptIngestor` re-derives declared relationship membership while preserving the salience of surviving live edge instances. A concept's explanation is its node's `description`.
+
+> **Amended by #472 (graduated from neomjs/neo#19096 under #471, 2026-09-24):** the concept ontology is no longer a git-versioned source.
+> - **Source.** Concepts are deployment-scoped derived knowledge. Each plane's store is their one source. A deployment can optionally seed it, and discovery extends it. There is no repository custody and no write-back.
+> - **Tenant keys.** Rows are keyed by tenant (#473).
+> - **Admission.** Projections admit rows whose `validated` is not `false` (#474). A seedless plane therefore has no KB concepts until one is validated.
+> - **Removals.** neomjs/neo#19093 deletes the engine's tracked JSONL copy and its 59 Markdown explanations. That closes the content-as-SSOT follow-up this section and §6 used to carry.
 
 ### 2.7 Provenance — curated, scheduled, and historical
 
 | Path | Current trigger | Runtime / review signal |
 |---|---|---|
 | **Curated message tags** | operator/agent `addMessage({taggedConcepts})` | synchronous `TAGGED_CONCEPT` edge at weight `1.0` |
-| **Version-controlled ontology** | `ConceptIngestor` projects `nodes.jsonl` + `edges.jsonl` during REM | source-owned relationship tuples with `projectionSource` + four axes; node `validated` and tier/weight fields |
+| **Seeded ontology (optional)** | a deployment may seed its store; `ConceptIngestor` projects `nodes.jsonl` + `edges.jsonl` during REM | source-owned relationship tuples with `projectionSource` + four axes; node `validated` and tier/weight fields |
 | **Scheduled candidate discovery** | periodic `message-concept-harvest` drains a bounded MESSAGE batch through a frequency pre-filter and one Teaching-Test prompt; explicit `runDiscoveryCycle()` mines epics + capped recent PRs | `validated:false`, tier-3 rows appended to JSONL; no direct graph mutation until the next ConceptIngestor sync |
 | **Historical inline extraction** | retired; `SemanticGraphExtractor.extractMessageConcepts()` has no production caller | retained `auto_extracted:true` nodes and `TAGGED_CONCEPT` weight `0.8` edges may remain as legacy provenance |
 
@@ -230,8 +236,6 @@ ADR 0023 (map-fidelity + consolidation-liveness) **governs** the substrate this 
 - Backend / store **decisions** (0015 SQLite, 0003 / 0017 Chroma, 0001 cache) — this ADR **composes**, it does not re-decide.
 - A **canonical edge-type registry** — the four enums + the observed-in-use set should converge into one registry (follow-up).
 - **Embedding** the ADR nodes (the §2.8 target — a follow-up lane).
-- The **content-as-SSOT** unification of JSONL concept records vs `resources/content/concepts/*.md` (§2.6 follow-up); JSONL → SQLite is already a source/projection relationship.
-
 ## 7. Related
 
 - **Connects to:** ADR 0023 (#13805 / PR #13806). **Graduated-lineage:** Discussion #13802. **Resolves:** #13814.
