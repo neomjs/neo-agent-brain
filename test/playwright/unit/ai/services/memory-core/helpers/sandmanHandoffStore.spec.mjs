@@ -1,11 +1,47 @@
-import {test, expect} from '@playwright/test';
-import fs             from 'fs-extra';
-import os             from 'os';
-import path           from 'path';
+import {test, expect}  from '@playwright/test';
+import {execFile}      from 'node:child_process';
+import fs              from 'fs-extra';
+import os              from 'os';
+import path            from 'path';
+import {fileURLToPath} from 'node:url';
+import {promisify}     from 'node:util';
 
 import {readSandmanHandoff} from '../../../../../../../ai/services/memory-core/helpers/sandmanHandoffStore.mjs';
 
 test.describe('sandmanHandoffStore (#15599)', () => {
+    test('the MCP dispatch reads the Memory Core provider path and retains freshness (#451)', async () => {
+        const dir      = await fs.mkdtemp(path.join(os.tmpdir(), 'sandman-handoff-binding-')),
+              filePath = path.join(dir, 'handoff.md'),
+              content  = '# Isolated handoff\n\nGolden Path binding witness\n',
+              written  = new Date(Date.now() - 120_000);
+
+        await fs.writeFile(filePath, content, 'utf8');
+        await fs.utimes(filePath, written, written);
+
+        try {
+            const {stdout} = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `
+                import 'neo.mjs/src/Neo.mjs';
+                import 'neo.mjs/src/core/_export.mjs';
+                const {callTool} = await import('./ai/mcp/server/memory-core/toolService.mjs');
+                const result = await callTool('get_sandman_handoff', {staleAfterMs: 60_000});
+                console.log('HANDOFF=' + JSON.stringify(result));
+                process.exit(0);
+            `], {
+                cwd     : fileURLToPath(new URL('../../../../../../../', import.meta.url)),
+                encoding: 'utf8',
+                timeout : 15_000,
+                env     : {...process.env, UNIT_TEST_MODE: 'true', NEO_HANDOFF_FILE_PATH_TEST: filePath}
+            });
+            const read = JSON.parse(stdout.split('\n').find(line => line.startsWith('HANDOFF=')).slice(8));
+
+            expect(read).toMatchObject({content, path: filePath, reason: null, stale: true, staleAfterMs: 60_000});
+            expect(read.mtimeMs).toBeGreaterThan(0);
+            expect(read.ageMs).toBeGreaterThanOrEqual(120_000);
+        } finally {
+            await fs.remove(dir);
+        }
+    });
+
     test('reads a present fresh handoff with content + freshness metadata', async () => {
         const dir      = await fs.mkdtemp(path.join(os.tmpdir(), 'sandman-handoff-')),
               filePath = path.join(dir, 'sandman_handoff.md'),
