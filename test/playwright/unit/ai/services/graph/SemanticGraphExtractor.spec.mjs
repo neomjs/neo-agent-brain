@@ -26,6 +26,7 @@ import {
     getAggregatedFrictions
 } from '../../../../../../ai/services/memory-core/helpers/consumerFrictionHelper.mjs';
 import {readActiveRemCallState} from '../../../../../../ai/services/memory-core/helpers/remRunStateStore.mjs';
+import {createReasoningOnlyResponseError} from '../../../../../../ai/provider/createStreamFailureError.mjs';
 
 test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
     test.describe.configure({mode: 'serial'});
@@ -198,6 +199,106 @@ test.describe('Neo.ai.daemons.services.SemanticGraphExtractor', () => {
         } finally {
             OpenAiCompatible.prototype.generate = baseGenerate;
             setConfigOverrides({[ENV.GRAPH_PROVIDER]: priorProvider})
+        }
+    });
+
+    test('the requested Tri-Vector schema spells its nullable fields as anyOf, never as a type array', async () => {
+        const baseGenerate  = OpenAiCompatible.prototype.generate,
+              priorProvider = aiConfig.graphProvider,
+              typeArrays    = [],
+              fixture       = value => ({
+                  a2a_version: '1.0',
+                  session_artifact: {
+                      feature_namespace: value,
+                      roadmap_impact: value,
+                      human_readable_summary: 'A nullable-field fixture.',
+                      graph: {
+                          nodes: [{id: 'CLASS:NullableFixture', type: 'CLASS', name: 'NullableFixture',
+                              description: 'A structural fixture.', logical_layer: 'Core', stability: 'STABLE'}],
+                          edges: [{source: 'CLASS:NullableFixture', target: 'frontier', relationship: 'RELATES_TO'}]
+                      }
+                  }
+              }),
+              walk          = (node, trail) => {
+                  if (Array.isArray(node)) {
+                      node.forEach((item, index) => walk(item, `${trail}[${index}]`))
+                  } else if (node && typeof node === 'object') {
+                      Array.isArray(node.type) && typeArrays.push(trail);
+                      Object.entries(node).forEach(([key, value]) => walk(value, `${trail}.${key}`))
+                  }
+              };
+
+        let captured;
+
+        try {
+            setConfigOverrides({[ENV.GRAPH_PROVIDER]: 'openAiCompatible'});
+            OpenAiCompatible.prototype.generate = async (messages, options) => {
+                captured = options.responseSchema;
+                return {content: JSON.stringify(fixture(null))}
+            };
+
+            await SemanticGraphExtractor.executeTriVectorExtraction({
+                id: 'schema-nullable-vector', meta: {sessionId: 'schema-nullable-session'}, document: 'Describe the fixture.'
+            });
+
+            walk(captured, 'schema');
+
+            const validate = new Ajv({strict: false}).compile(captured);
+
+            // LM Studio's MLX structured-output engine rejects a union `type` for every model but Gemma 4.
+            expect(typeArrays, 'no schema node declares type as an array').toEqual([]);
+            expect(validate(fixture(null)), 'null stays valid for both nullable fields').toBe(true);
+            expect(validate(fixture('Neo.dashboard.Main')), 'a string stays valid for both nullable fields').toBe(true);
+            expect(validate(fixture(7)), 'a number is still rejected').toBe(false);
+            expect(captured.properties.session_artifact.required).toContain('feature_namespace')
+        } finally {
+            OpenAiCompatible.prototype.generate = baseGenerate;
+            setConfigOverrides({[ENV.GRAPH_PROVIDER]: priorProvider})
+        }
+    });
+
+    test('a reasoning-only provider stream is filed as reasoning-only-response, not context-overflow', async () => {
+        const baseGenerate  = OpenAiCompatible.prototype.generate,
+              priorProvider = aiConfig.graphProvider;
+
+        let invocationCount = 0;
+
+        try {
+            clearAggregatedFrictions();
+            setConfigOverrides({[ENV.GRAPH_PROVIDER]: 'openAiCompatible'});
+            OpenAiCompatible.prototype.generate = async () => {
+                invocationCount++;
+                throw createReasoningOnlyResponseError({
+                    provider      : 'OpenAiCompatible',
+                    operationLabel: 'REM Tri-Vector fixture',
+                    reasoningBytes: 1700,
+                    finishReason  : 'length',
+                    host          : 'http://127.0.0.1:1234',
+                    modelName     : 'qwen3.6-35b-a3b'
+                })
+            };
+
+            const result = await SemanticGraphExtractor.executeTriVectorExtraction({
+                id: 'reasoning-only-vector', meta: {sessionId: 'reasoning-only-session'}, document: 'Describe the fixture.'
+            });
+
+            expect(result).toMatchObject({
+                ok                : false,
+                deferReason       : 'reasoning-only-response',
+                frictionSymptom   : 'reasoning-only-response',
+                terminalForCadence: true
+            });
+            expect(invocationCount, 'no repair retry against a model that answers on the wrong channel').toBe(1);
+
+            const friction = getAggregatedFrictions().find(item => item.assetRef === 'reasoning-only-session');
+
+            expect(friction?.symptom, 'deterministic: surfaces on the first emission').toBe('reasoning-only-response');
+            expect(friction.note).toContain('1700 bytes on the reasoning channel');
+            expect(result.evidence.note).toContain('1700 bytes on the reasoning channel')
+        } finally {
+            OpenAiCompatible.prototype.generate = baseGenerate;
+            setConfigOverrides({[ENV.GRAPH_PROVIDER]: priorProvider});
+            clearAggregatedFrictions()
         }
     });
 

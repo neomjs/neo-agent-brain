@@ -66,6 +66,10 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
         expect(categorizeInvocationError(new Error('JSON parse failure'))).toBe('parse-failure');
         expect(categorizeInvocationError(null)).toBe('parse-failure');
         expect(categorizeInvocationError('overflow occurred')).toBe('context-overflow');
+
+        const reasoningOnly = Object.assign(new Error('context has nothing to do with it'), {code: 'REASONING_ONLY_RESPONSE'});
+
+        expect(categorizeInvocationError(reasoningOnly), 'the typed code wins over the message regex').toBe('reasoning-only-response');
     });
 
     test('deriveSuggestionKind maps symptoms to enum-backed suggestions', () => {
@@ -76,6 +80,7 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
         expect(deriveSuggestionKind('parse-failure')).toBe('schema-repair');
         expect(deriveSuggestionKind('semantic-confusion')).toBe('extract-anchor');
         expect(deriveSuggestionKind('timeout')).toBe('unknown');
+        expect(deriveSuggestionKind('reasoning-only-response'), 'no substrate-side action fixes a model channel').toBe('unknown');
         expect(deriveSuggestionKind('unrecognized-symptom')).toBe('unknown');
     });
 
@@ -413,6 +418,52 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
 
         expect(result.friction.suggestionKind).toBe('extract-anchor');
         expect(result.friction.note).toBe('Switch to qwen3-8b for stricter JSON output.');
+    });
+
+    test('invokeWithGuardrail keeps a typed provider failure beside the caller note and surfaces it at once', async () => {
+        const {invokeWithGuardrail, getAggregatedFrictions} = helper,
+              message = '[OpenAiCompatible] reasoning-only response: 1700 bytes on the reasoning channel, no content',
+              failure = Object.assign(new Error(message), {code: 'REASONING_ONLY_RESPONSE'});
+
+        const result = await invokeWithGuardrail({
+            invocationFn      : async () => { throw failure; },
+            inputPayload      : 'tiny',
+            model             : 'qwen3.6-35b-a3b',
+            assetRef          : 'session:reasoning',
+            consumer          : 'SemanticGraphExtractor',
+            contextLimitTokens: 10000,
+            serviceDomain     : 'dream-pipeline',
+            note              : 'attempt 1 of 2'
+        });
+
+        expect(result.friction.symptom).toBe('reasoning-only-response');
+        expect(result.friction.suggestionKind).toBe('unknown');
+        expect(result.friction.note).toBe(`attempt 1 of 2 · ${message}`);
+        expect(getAggregatedFrictions(), 'deterministic: surfaces on the first emission').toHaveLength(1);
+    });
+
+    test('invokeWithGuardrail joins the note only for provider stream endings — other coded errors keep the caller note', async () => {
+        const {invokeWithGuardrail} = helper,
+              invoke = failure => invokeWithGuardrail({
+                  invocationFn      : async () => { throw failure; },
+                  inputPayload      : 'tiny',
+                  model             : 'qwen3.6-35b-a3b',
+                  assetRef          : `session:${failure.code}`,
+                  consumer          : 'SemanticGraphExtractor',
+                  contextLimitTokens: 10000,
+                  serviceDomain     : 'dream-pipeline',
+                  note              : 'attempt 1 of 2'
+              });
+
+        const withTimeout = await invoke(Object.assign(new Error('operation exceeded its budget'), {code: 'WITH_TIMEOUT'}));
+        expect(withTimeout.friction.note, 'a foreign coded error is not a provider contract').toBe('attempt 1 of 2');
+
+        const providerTimeout = await invoke(Object.assign(new Error('[OpenAiCompatible] probe timed out after 5ms'), {code: 'PROVIDER_TIMEOUT'}));
+        expect(providerTimeout.friction.symptom).toBe('timeout');
+        expect(providerTimeout.friction.note, 'a timeout keeps the pre-existing note policy').toBe('attempt 1 of 2');
+
+        const streamError = await invoke(Object.assign(new Error("[OpenAiCompatible] probe failed inside the stream: ValueError: 'type' must be a string"), {code: 'PROVIDER_STREAM_ERROR'}));
+        expect(streamError.friction.note, 'the provider\'s refusal is the diagnosis and joins the note').toBe("attempt 1 of 2 · [OpenAiCompatible] probe failed inside the stream: ValueError: 'type' must be a string");
     });
 
     test('emitConsumerFriction loud-fails on non-positive-finite contextLimitTokens (#12116 AC2)', () => {

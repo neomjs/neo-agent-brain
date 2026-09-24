@@ -1,5 +1,6 @@
-import Base                 from './Base.mjs';
-import {createTimeoutError} from './createTimeoutError.mjs';
+import Base                                                          from './Base.mjs';
+import {createProviderStreamError, createReasoningOnlyResponseError} from './createStreamFailureError.mjs';
+import {createTimeoutError}                                          from './createTimeoutError.mjs';
 
 /**
  * Concrete AI provider for a local MLX-native or any OpenAI-compatible API server.
@@ -239,6 +240,24 @@ class OpenAiCompatibleProvider extends Base {
     }
 
     /**
+     * @summary Extracts reasoning-channel text from OpenAI-compatible chat completion chunks.
+     *
+     * Reasoning models stream their hidden pass as `choices[0].delta.reasoning_content` (LM Studio,
+     * vLLM) or `delta.reasoning` (OpenRouter); non-SSE bodies carry the same keys under `message`.
+     *
+     * @param {Object} data Parsed OpenAI-compatible response payload.
+     * @returns {String} Empty when the frame carries no reasoning text.
+     * @private
+     */
+    #getChoiceReasoning(data) {
+        const choice = data?.choices?.[0],
+              part   = choice?.delta ?? choice?.message,
+              text   = part?.reasoning_content ?? part?.reasoning;
+
+        return typeof text === 'string' ? text : '';
+    }
+
+    /**
      * @summary Extracts completion finish metadata from OpenAI-compatible response payloads.
      *
      * @param {Object} data Parsed OpenAI-compatible response payload.
@@ -252,10 +271,27 @@ class OpenAiCompatibleProvider extends Base {
     }
 
     /**
+     * @summary Shapes one parsed provider payload into the frame `stream()` consumes.
+     *
+     * @param {Object} raw Parsed OpenAI-compatible response payload.
+     * @returns {{content: String|null, reasoning: String, finishReason: String, error: Object|String|null, raw: Object}}
+     * @private
+     */
+    #describeFrame(raw) {
+        return {
+            content     : this.#getChoiceContent(raw),
+            reasoning   : this.#getChoiceReasoning(raw),
+            finishReason: this.#getChoiceFinishReason(raw),
+            error       : raw?.error ?? null,
+            raw
+        };
+    }
+
+    /**
      * @summary Parses one streaming line or a complete single-line JSON response.
      *
      * @param {String} line SSE `data:` line or JSON response line.
-     * @returns {{content: String|null, finishReason: String, raw: Object}|null}
+     * @returns {Object|null} A `#describeFrame` frame, or null for blank, `[DONE]` and unparseable lines.
      * @private
      */
     #parseCompletionFrame(line) {
@@ -270,12 +306,7 @@ class OpenAiCompatibleProvider extends Base {
                 return null;
             }
 
-            const raw = JSON.parse(jsonStr);
-            return {
-                content     : this.#getChoiceContent(raw),
-                finishReason: this.#getChoiceFinishReason(raw),
-                raw
-            };
+            return this.#describeFrame(JSON.parse(jsonStr));
         } catch (e) {
             // Safe to ignore if JSON.parse fails on malformed LLM outputs.
             return null;
@@ -289,7 +320,7 @@ class OpenAiCompatibleProvider extends Base {
      * the full body only when no content has already been yielded.
      *
      * @param {String} bodyText Full decoded response body.
-     * @returns {{content: String|null, finishReason: String, raw: Object}|null}
+     * @returns {Object|null} A `#describeFrame` frame, or null for SSE bodies and unparseable text.
      * @private
      */
     #parseCompletionBodyFrame(bodyText) {
@@ -299,12 +330,7 @@ class OpenAiCompatibleProvider extends Base {
         }
 
         try {
-            const raw = JSON.parse(trimmed);
-            return {
-                content     : this.#getChoiceContent(raw),
-                finishReason: this.#getChoiceFinishReason(raw),
-                raw
-            };
+            return this.#describeFrame(JSON.parse(trimmed));
         } catch (e) {
             return null;
         }
@@ -380,7 +406,37 @@ class OpenAiCompatibleProvider extends Base {
             const decoder = new TextDecoder('utf-8');
             let   buffer  = '',
                 bodyText = '',
-                yieldedContent = false;
+                yieldedContent = false,
+                reasoningBytes = 0,
+                finishReason   = '',
+                parsedFrames   = 0;
+
+            // Every frame passes here exactly once: an error the provider reports inside a 200 stream throws
+            // at once, and the reasoning channel is counted so an answer that never reached `content` can be
+            // named. The count of parsed frames decides whether the whole-body fallback below may run.
+            const takeFrame = frame => {
+                if (!frame) {
+                    return null;
+                }
+                parsedFrames++;
+                if (frame.error) {
+                    throw createProviderStreamError({
+                        provider : 'OpenAiCompatible',
+                        operationLabel,
+                        error    : frame.error,
+                        host     : this.host,
+                        modelName: this.modelName
+                    });
+                }
+                if (frame.reasoning) {
+                    reasoningBytes += Buffer.byteLength(frame.reasoning, 'utf8');
+                }
+                if (frame.finishReason) {
+                    finishReason = frame.finishReason;
+                }
+                onProviderChunk?.(frame);
+                return frame.content || null;
+            };
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -398,13 +454,10 @@ class OpenAiCompatibleProvider extends Base {
                 buffer = lines.pop();
 
                 for (const line of lines) {
-                    const frame = this.#parseCompletionFrame(line);
-                    if (frame) {
-                        onProviderChunk?.(frame);
-                    }
-                    if (frame?.content) {
+                    const content = takeFrame(this.#parseCompletionFrame(line));
+                    if (content) {
                         yieldedContent = true;
-                        yield frame.content;
+                        yield content;
                     }
                 }
             }
@@ -415,23 +468,32 @@ class OpenAiCompatibleProvider extends Base {
                 buffer += flushText;
             }
 
-            const finalFrame = this.#parseCompletionFrame(buffer);
-            if (finalFrame) {
-                onProviderChunk?.(finalFrame);
-            }
-            if (finalFrame?.content) {
+            const finalContent = takeFrame(this.#parseCompletionFrame(buffer));
+            if (finalContent) {
                 yieldedContent = true;
-                yield finalFrame.content;
+                yield finalContent;
             }
 
-            if (!yieldedContent) {
-                const bodyFrame = this.#parseCompletionBodyFrame(bodyText);
-                if (bodyFrame) {
-                    onProviderChunk?.(bodyFrame);
+            // The whole-body fallback exists for bodies no line could parse (pretty-printed JSON). A compact
+            // JSON body already parsed as a line — with or without a trailing newline — must not pass the
+            // gate a second time, or its reasoning bytes double and its frame callback fires twice.
+            if (!yieldedContent && parsedFrames === 0) {
+                const bodyContent = takeFrame(this.#parseCompletionBodyFrame(bodyText));
+                if (bodyContent) {
+                    yieldedContent = true;
+                    yield bodyContent;
                 }
-                if (bodyFrame?.content) {
-                    yield bodyFrame.content;
-                }
+            }
+
+            if (!yieldedContent && reasoningBytes > 0) {
+                throw createReasoningOnlyResponseError({
+                    provider : 'OpenAiCompatible',
+                    operationLabel,
+                    reasoningBytes,
+                    finishReason,
+                    host     : this.host,
+                    modelName: this.modelName
+                });
             }
         } catch (error) {
             if (timedOut) {
