@@ -250,7 +250,17 @@ class SessionService extends Base {
         const cutoffMs    = nowMs - thresholdMs;
 
         try {
+            // The subscribed identities are a handful of rows, so they are materialized once and the
+            // memories are matched against them. A correlated EXISTS here re-scanned every node for
+            // every memory row: minutes of synchronous CPU per drift sweep on a 230k-node graph.
             const rows = sqlite.prepare(`
+                WITH subscribed AS (
+                    SELECT DISTINCT json_extract(subscription.data, '$.properties.agentIdentity') AS agentIdentity
+                    FROM Nodes subscription
+                    WHERE json_extract(subscription.data, '$.label') = 'WAKE_SUBSCRIPTION'
+                      AND ${activeWakeSubscriptionStatusSql('subscription.data')}
+                      AND json_extract(subscription.data, '$.properties.harnessTarget') != 'disabled'
+                )
                 SELECT DISTINCT
                        COALESCE(
                            json_extract(memory.data, '$.properties.agentIdentity'),
@@ -265,18 +275,7 @@ class SessionService extends Base {
                   AND COALESCE(
                       json_extract(memory.data, '$.properties.agentIdentity'),
                       json_extract(memory.data, '$.properties.userId')
-                  ) IS NOT NULL
-                  AND EXISTS (
-                      SELECT 1
-                      FROM Nodes subscription
-                      WHERE json_extract(subscription.data, '$.label') = 'WAKE_SUBSCRIPTION'
-                        AND json_extract(subscription.data, '$.properties.agentIdentity') = COALESCE(
-                            json_extract(memory.data, '$.properties.agentIdentity'),
-                            json_extract(memory.data, '$.properties.userId')
-                        )
-                        AND ${activeWakeSubscriptionStatusSql('subscription.data')}
-                        AND json_extract(subscription.data, '$.properties.harnessTarget') != 'disabled'
-                  )
+                  ) IN (SELECT agentIdentity FROM subscribed)
             `).all();
 
             const activeSessionIds = new Set();

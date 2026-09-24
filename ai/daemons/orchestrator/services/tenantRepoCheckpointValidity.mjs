@@ -119,7 +119,8 @@ export function normalizeTenantRepoCheckpointState(value) {
             // A bare SHA predates the operator-clear marker too, so no intervention was recorded.
             backoffClearedAt          : null,
             backoffClearedFromFailures: null,
-            terminalStop              : null
+            terminalStop              : null,
+            partialProgressAt         : null
         };
     }
 
@@ -185,7 +186,12 @@ export function normalizeTenantRepoCheckpointState(value) {
         //
         // Validated WHOLE or dropped: a fingerprint missing either half cannot answer "is this the
         // same input?", and a half-answer must not suppress a repo. Fails toward running.
-        terminalStop              : normalizeTerminalStop(value.terminalStop)
+        terminalStop              : normalizeTerminalStop(value.terminalStop),
+        // The clean-partial resume marker (#430). Same allowlist rule as the operator clear above: a
+        // field absent here is dropped on read, and a dropped marker means a mid-corpus repo silently
+        // falls back to waiting out the global cadence after every reload. Malformed → null, which
+        // fails toward the cadence, never toward an extra sweep.
+        partialProgressAt         : normalizeNonNegativeNumber(value.partialProgressAt) || null
     };
 }
 
