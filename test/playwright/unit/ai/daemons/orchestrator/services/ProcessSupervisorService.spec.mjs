@@ -746,6 +746,33 @@ test.describe('Neo.ai.daemons.services.ProcessSupervisorService', () => {
         expect(degradedLogs[0].message).toContain('chat-model load blocked after three equal failures.');
     });
 
+    test('the degraded readiness line carries the LM Studio replacement action (#460)', async () => {
+        const {ensureLmsModelsLoaded} = await import('../../../../../../../ai/services/graph/providerReadinessHelper.mjs');
+        const {service, logEntries}   = createTestService();
+
+        service.taskDefinitions.mockTask.postSpawn = () => ensureLmsModelsLoaded({
+            host             : 'http://127.0.0.1:1234',
+            models           : ['embed-model'],
+            contextLengths   : {'embed-model': 32768},
+            allowPartial     : true,
+            attempts         : 1,
+            delayMs          : 0,
+            timeoutMs        : 10,
+            fetchModelIds    : async () => ['embed-model'],
+            fetchLoadedModels: async () => [{id: 'embed-model', contextLength: 8192, ttlMs: 3600000}],
+            loadModel        : async () => {},
+            log              : {info() {}, warn() {}}
+        });
+
+        await service.runLivenessReadinessHook('mockTask', service.taskDefinitions.mockTask, 'liveness-confirmed');
+
+        const degraded = logEntries.find(entry => entry.message.includes('degraded readiness after liveness confirmation'));
+
+        // This line used to end at "confirmation.": the one surface an operator reads said nothing.
+        expect(degraded.message).toContain("— LM Studio resident 'embed-model' has context 8192; needs context 32768");
+        expect(degraded.message).toContain('lms unload embed-model && lms load embed-model --context-length 32768 --identifier embed-model');
+    });
+
     test('reconcileSingletonPort SIGKILLs extra listeners but keeps the canonical pid', () => {
         const { service, taskOutcomes } = createTestService();
         const killed                    = [];
