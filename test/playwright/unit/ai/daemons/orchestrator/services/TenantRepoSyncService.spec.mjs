@@ -47,7 +47,6 @@ import RepositoryClassHierarchyResolver
 import {diffTenantExtractionIdentity}
     from '../../../../../../../ai/services/knowledge-base/helpers/kbReconciliationEngine.mjs';
 import {
-    LIFECYCLE_GUARD_SUFFIX,
     acquireHeavyMaintenanceLease,
     buildLeasePayload,
     inspectHeavyMaintenanceLease,
@@ -454,6 +453,13 @@ test.describe('TenantRepoSyncService (#11790)', () => {
                 lastConsumedGenerationId: null,
                 lastConsumedAt          : null
             };
+
+        // The clean-partial resume marker rides the same allowlist (#430): a well-formed timestamp
+        // survives the read, anything else fails toward the cadence, and the bare-SHA shape predates it.
+        expect(normalizeTenantRepoCheckpointState({partialProgressAt: 1_000}).partialProgressAt).toBe(1_000);
+        expect(normalizeTenantRepoCheckpointState({partialProgressAt: -5}).partialProgressAt).toBeNull();
+        expect(normalizeTenantRepoCheckpointState({partialProgressAt: 'soon'}).partialProgressAt).toBeNull();
+        expect(normalizeTenantRepoCheckpointState('bare-sha').partialProgressAt).toBeNull();
 
         expect(normalizeTenantRepoCheckpointState({
             embeddingRecovery: {...recovery, episodeId: 'not-an-opaque-id'}
@@ -6175,7 +6181,11 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             lastSourceErrorCode: null,
             lastAccessCode     : 'KB_TENANT_REPO_ACCESS_SYNC_FAILED',
             lastErrorAt        : expect.any(Number),
-            embeddingRecovery  : null
+            embeddingRecovery  : null,
+            // A failure writes the clean-partial resume marker back to null explicitly (#430), so the
+            // exact-shape contract declares it: a marker that survived a failure would re-admit a
+            // broken repo every sweep, and this line is where that would be caught.
+            partialProgressAt  : null
         });
     });
 
@@ -6898,18 +6908,21 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         expect(await fs.pathExists(leaseFilePath())).toBe(true);
 
         // A reclaimer replaces the lease while the run is paused mid-work.
-        // The replacement happens INSIDE the lifecycle guard so an in-flight
-        // renewal tick cannot interleave with this test write.
-        const guardPath = `${leaseFilePath()}${LIFECYCLE_GUARD_SUFFIX}`;
-        await fs.ensureDir(guardPath);
-        await fs.writeJson(leaseFilePath(), buildLeasePayload({
-            owner       : 'replacement-owner',
-            reason      : 'tenant-repo-sync',
-            pid         : process.pid,
-            staleAfterMs: 60_000,
-            token       : 'replacement-token'
-        }));
-        await fs.rmdir(guardPath);
+        // The replacement happens INSIDE the lifecycle guard, entered exclusively,
+        // so an in-flight renewal tick cannot interleave with this test write.
+        const held = await enterLifecycleGuard({leasePath: leaseFilePath(), fsModule: fs});
+        expect(held, 'the reclaimer holds the guard exclusively').not.toBeNull();
+        try {
+            await fs.writeJson(leaseFilePath(), buildLeasePayload({
+                owner       : 'replacement-owner',
+                reason      : 'tenant-repo-sync',
+                pid         : process.pid,
+                staleAfterMs: 60_000,
+                token       : 'replacement-token'
+            }));
+        } finally {
+            await exitLifecycleGuard({ownerFilePath: held.ownerFilePath, fsModule: fs});
+        }
 
         // Let renewal ticks observe the loss; even under full renewal
         // starvation the pre-ingest fence re-inspects the live file and
@@ -7324,17 +7337,20 @@ test.describe('TenantRepoSyncService (#11790)', () => {
         // The predecessor is now inside protected work with its own in-flight record persisted.
         await envelopeEntered;
 
-        const guardPath = `${leaseFilePath()}${LIFECYCLE_GUARD_SUFFIX}`;
-        await fs.ensureDir(guardPath);
-        await fs.writeJson(leaseFilePath(), buildLeasePayload({
-            owner       : 'successor-owner',
-            reason      : 'tenant-repo-sync',
-            pid         : process.pid,
-            staleAfterMs: 60_000,
-            token       : 'successor-token'
-        }));
-        await fs.writeJson(inFlightFile, {'t1/org/lease-repo': successorEntry});
-        await fs.rmdir(guardPath);
+        const held = await enterLifecycleGuard({leasePath: leaseFilePath(), fsModule: fs});
+        expect(held, 'the successor holds the guard exclusively').not.toBeNull();
+        try {
+            await fs.writeJson(leaseFilePath(), buildLeasePayload({
+                owner       : 'successor-owner',
+                reason      : 'tenant-repo-sync',
+                pid         : process.pid,
+                staleAfterMs: 60_000,
+                token       : 'successor-token'
+            }));
+            await fs.writeJson(inFlightFile, {'t1/org/lease-repo': successorEntry});
+        } finally {
+            await exitLifecycleGuard({ownerFilePath: held.ownerFilePath, fsModule: fs});
+        }
 
         await new Promise(resolve => setTimeout(resolve, 120));
 
@@ -8552,6 +8568,30 @@ test.describe('TenantRepoSyncService (#11790)', () => {
             revisions['t1/org/rotating'].lastIngestedRev,
             'a budgeted slice clears the streak without claiming the corpus is whole'
         ).toBe('sha-rotating');
+
+        // The resume marker (#430): a clean partial slice earns the very next sweep, and only a clean
+        // one. Written beside `lastRunAttemptAt` on the rotating repo; a failing slice writes null, so
+        // the marker can never shorten a backoff it did not earn.
+        expect(
+            revisions['t1/org/rotating'].partialProgressAt,
+            'a clean partial slice records when it yielded, so the scheduler re-admits it next sweep'
+        ).toBeGreaterThan(0);
+        expect(
+            revisions['t1/org/failing'].partialProgressAt ?? null,
+            'a failing slice carries no resume marker — backoff paces its retry'
+        ).toBeNull();
+
+        // And the scheduler reads it: measured live before this existed, a 47k-chunk first ingest
+        // waited the full 30-minute cadence after every clean slice (#430).
+        const {isRepoDue} = await import('../../../../../../../ai/daemons/orchestrator/scheduling/tenantRepoSync.mjs');
+        const due = isRepoDue({
+            repo              : {tenantId: 't1', repoSlug: 'org/rotating'},
+            persistedRepoState: revisions['t1/org/rotating'],
+            now               : revisions['t1/org/rotating'].lastRunAttemptAt + 1,
+            globalCadenceMs   : 30 * 60 * 1000
+        });
+
+        expect(due).toMatchObject({due: true, dueReason: 'partial-resume', partialResume: true});
     });
 
     test('a slice-caused yield rotates its slot and admits the tail without ending the sweep (#17132 AC2/AC6, #17414)', async () => {

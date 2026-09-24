@@ -15,6 +15,16 @@ import {
     listActiveWaitersSync,
     registerWaiterSync
 } from './heavyMaintenanceWaiterLedger.mjs';
+import {hasCleanPartialResume} from '../scheduling/tenantRepoSync.mjs';
+
+/**
+ * @summary Whether a repo's checkpoint entry still owes its first ingest: no committed revision and
+ * no clean slice landed yet. A first ingest that has landed a clean partial slice is catch-up work
+ * that shares the heavy lane, not an uninitialized corpus.
+ * @param {Object|undefined} entry Persisted `tenant-repo-sync-revisions.json` entry.
+ * @returns {Boolean}
+ */
+const awaitsFirstIngest = entry => !entry?.lastIngestedRev && !hasCleanPartialResume(entry);
 
 /**
  * Canonical set of heavy-maintenance task names that participate in the cross-poll
@@ -815,7 +825,11 @@ export class MaintenanceBackpressureService extends Base {
      *
      * So a configured `<tenantId>/<repoSlug>` label with no checkpoint — absent from the manifest
      * or carrying a null `lastIngestedRev` — makes the lane bootstrap-critical, and manifest
-     * entries whose label is no longer configured are ignored. An empty configured set is
+     * entries whose label is no longer configured are ignored. The class buys the FIRST slice: once
+     * one has landed clean (`partialProgressAt` with a zero streak), the remaining slices are
+     * catch-up that is due every sweep, and keeping them above ordinary rank would let the lane
+     * hold the heavy lease for the whole corpus while starving waiters never get a turn. A failed
+     * first slice keeps the class. An empty configured set is
      * ordinary (a plane with no tenant repos is not uninitialized). While the snapshot is still
      * unresolved the older manifest-only predicate applies, so this never grants priority on
      * less evidence than before.
@@ -869,10 +883,10 @@ export class MaintenanceBackpressureService extends Base {
             if (!Array.isArray(labels)) {
                 const manifestKeys = Object.keys(revisions);
 
-                return manifestKeys.length === 0 || manifestKeys.some(key => !revisions[key]?.lastIngestedRev);
+                return manifestKeys.length === 0 || manifestKeys.some(key => awaitsFirstIngest(revisions[key]));
             }
 
-            return labels.some(label => !revisions[label]?.lastIngestedRev);
+            return labels.some(label => awaitsFirstIngest(revisions[label]));
         } catch (e) {
             this.writeLog('WARN', `[Orchestrator] Bootstrap-critical check failed for ${taskName}: ${e.message} — treating as ordinary.`);
             return false;

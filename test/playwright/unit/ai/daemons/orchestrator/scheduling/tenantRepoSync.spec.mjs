@@ -5,6 +5,7 @@ import {
     computeDeterministicJitter,
     detectStarvedTenantSync,
     getDueTask,
+    hasCleanPartialResume,
     hasPendingEmbeddingRecoveryBypass,
     isBackoffMarginCollapsed,
     isRepoDue,
@@ -683,5 +684,54 @@ test.describe('isBackoffMarginCollapsed (#17386)', () => {
         expect(isBackoffMarginCollapsed({backoffCapMs: TWO_HOURS, baseCadenceMs: HALF_HOUR,     jitterRatio: 0.20})).toBe(false);
         expect(isBackoffMarginCollapsed({backoffCapMs: TWO_HOURS, baseCadenceMs: TWO_HOURS,     jitterRatio: 0.20})).toBe(true);
         expect(isBackoffMarginCollapsed({backoffCapMs: TWO_HOURS, baseCadenceMs: TWO_HOURS * 4, jitterRatio: 0.20})).toBe(true);
+    });
+});
+
+test.describe('clean-partial resume (#430)', () => {
+    const
+        repo         = {tenantId: 'neo-shared', repoSlug: 'github-content-sync'},
+        HALF_HOUR    = 30 * 60 * 1000,
+        // A first ingest mid-corpus: no checkpoint yet, a clean slice just yielded on its budget.
+        partialState = {lastIngestedRev: null, lastRunAttemptAt: 1_000, consecutiveFailures: 0, partialProgressAt: 1_000};
+
+    test('a clean partial slice is due at the next sweep, not after the cadence', () => {
+        const due = isRepoDue({repo, persistedRepoState: partialState, now: 1_001, globalCadenceMs: HALF_HOUR});
+
+        expect(hasCleanPartialResume(partialState)).toBe(true);
+        expect(due).toMatchObject({due: true, dueReason: 'partial-resume', partialResume: true, recoveryBypass: false});
+        // The cadence envelope is reported untouched: the marker admits the repo, it does not rewrite pacing truth.
+        expect(due.effectiveCadenceMs).toBeGreaterThanOrEqual(HALF_HOUR);
+    });
+
+    test('the marker never shortens a backoff — a non-zero streak keeps the cadence authoritative', () => {
+        const failedAfterPartial = {...partialState, consecutiveFailures: 1};
+        const due = isRepoDue({repo, persistedRepoState: failedAfterPartial, now: 1_001, globalCadenceMs: HALF_HOUR});
+
+        expect(hasCleanPartialResume(failedAfterPartial)).toBe(false);
+        expect(due).toMatchObject({due: false, dueReason: 'not-due', partialResume: false});
+    });
+
+    test('a spent or absent marker is the ordinary cadence path', () => {
+        expect(hasCleanPartialResume({...partialState, partialProgressAt: null})).toBe(false);
+        expect(hasCleanPartialResume({...partialState, partialProgressAt: 0})).toBe(false);
+        expect(hasCleanPartialResume(null)).toBe(false);
+
+        const due = isRepoDue({repo, persistedRepoState: {...partialState, partialProgressAt: null}, now: 1_001, globalCadenceMs: HALF_HOUR});
+
+        expect(due).toMatchObject({due: false, dueReason: 'not-due', partialResume: false});
+    });
+
+    test('embedding recovery still names the reason when both grants are present', () => {
+        const both = {
+            ...partialState,
+            embeddingRecovery: {
+                episodeId: 'a'.repeat(32), causeCode: 'KB_VECTOR_EMBED_CONNECTION_REFUSED', detectedAt: 100,
+                generationId: 'b'.repeat(32), observedAt: 200, bypassConsumedAt: null,
+                lastConsumedGenerationId: null, lastConsumedAt: null
+            }
+        };
+        const due = isRepoDue({repo, persistedRepoState: both, now: 1_001, globalCadenceMs: HALF_HOUR});
+
+        expect(due).toMatchObject({due: true, dueReason: 'embedding-recovery', recoveryBypass: true, partialResume: true});
     });
 });

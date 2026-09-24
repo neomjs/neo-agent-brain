@@ -61,6 +61,10 @@ import {defectNoteFingerprint, foldDefectObservations} from '../../services/memo
  * checkout's in-process store (test/isolated planes). `--dry-run` reads GitHub and the mailbox and
  * prints what it would send, sending nothing and writing no receipt.
  *
+ * A plane without a GitHub credential or a plane base is not configured for this lane, which is not a
+ * failure: the tick prints the deferred envelope (`{deferred, reason}`) and exits 0, and the supervisor
+ * records it as `skipped` with that reason. An input that is present but fails still exits 1.
+ *
  * Retirement: if the runner gains first-class flake reporting the fold can consume directly, this
  * producer retires with it — the mapping in `CiFailureIngestor.mjs` and this tick are all it adds.
  *
@@ -78,6 +82,8 @@ const RECEIPT_RUN_CAPACITY = 2000;
 const OVERLAP_MS           = 2 * 60 * 60 * 1000;
 const MAILBOX_PAGE_SIZE    = 100;
 const THREAD_READ_CAP      = 500;
+// The error codes of an absent input, as opposed to a failing one
+const UNCONFIGURED         = new Set(['github-token-unset', 'plane-base-unset']);
 
 /**
  * @summary Builds the Commander program; a fresh instance per call keeps parser tests isolated.
@@ -538,7 +544,7 @@ async function openPlaneMailbox(AiConfig, planeBaseOverride) {
     const planeBase = (planeBaseOverride ?? AiConfig.fleet.planeBase).trim().replace(/\/+$/, '');
 
     if (!planeBase) {
-        throw new Error('ingestCiFailures: no plane is configured (AiConfig.fleet.planeBase) — pass --plane-base or use --local');
+        throw Object.assign(new Error('ingestCiFailures: no plane is configured (AiConfig.fleet.planeBase) — pass --plane-base or use --local'), {code: 'plane-base-unset'});
     }
 
     const client = createPlaneMailboxClient({baseUrl: `${planeBase}/mc/mcp`, credential: AiConfig.fleet.planeBearer}),
@@ -590,9 +596,21 @@ export async function main(argv) {
 
     const {default: AiConfig} = await import('../../config.mjs'),
           repoSlug            = args.repo ?? AiConfig.orchestrator.ciFailureIngest.repoSlug,
-          receiptPath         = args.receipt ?? AiConfig.orchestrator.ciFailureIngest.receiptPath,
-          github              = createGithubActionsClient({repoSlug, token: resolveGithubToken()}),
-          {mailbox, close}    = args.local ? await openLocalMailbox() : await openPlaneMailbox(AiConfig, args.planeBase);
+          receiptPath         = args.receipt ?? AiConfig.orchestrator.ciFailureIngest.receiptPath;
+
+    let github, mailbox, close;
+
+    try {
+        github = createGithubActionsClient({repoSlug, token: resolveGithubToken()});
+        ({mailbox, close} = args.local ? await openLocalMailbox() : await openPlaneMailbox(AiConfig, args.planeBase));
+    } catch (error) {
+        if (!UNCONFIGURED.has(error.code)) {
+            throw error;
+        }
+
+        console.log(args.json ? JSON.stringify({deferred: true, reason: error.code}) : `ingestCiFailures: deferred — ${error.message}`);
+        return 0;
+    }
 
     try {
         const summary = await runIngest({

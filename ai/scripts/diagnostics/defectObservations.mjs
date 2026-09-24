@@ -25,7 +25,9 @@ import {
  * dismissed, and not already reported at this count. Prior digest bodies are the re-report
  * suppression ledger, so a quiet ledger costs no A2A traffic. `--dry-run` prints the would-be
  * digest instead of sending it. The digest write is the mode's only mutation; promotion to a
- * ticket stays a deliberate full-ceremony act.
+ * ticket stays a deliberate full-ceremony act. A plane without a plane base is not configured for
+ * the digest, which is not a failure: the tick prints the deferred envelope and exits 0, and the
+ * supervisor records it as `skipped`.
  *
  * The fleet's mailbox lives on the PLANE, so the plane read is the default; `--local` folds the
  * in-process store of this checkout instead (test/isolated planes).
@@ -80,7 +82,9 @@ async function runDigest() {
           planeBase           = (readArgValue('--plane-base', null) ?? AiConfig.fleet.planeBase).trim().replace(/\/+$/, '');
 
     if (!planeBase) {
-        throw new Error('defectObservations --digest: no plane is configured (AiConfig.fleet.planeBase) — pass --plane-base');
+        // stdout carries the envelope alone: the supervisor parses all of it as one JSON outcome
+        console.log(JSON.stringify({deferred: true, reason: 'plane-base-unset'}));
+        return;
     }
 
     const client = createPlaneMailboxClient({

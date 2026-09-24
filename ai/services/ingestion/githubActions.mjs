@@ -24,14 +24,15 @@ const USER_AGENT  = 'neo-agent-brain ci-failure-ingestor';
  * @param {String} [options.override]
  * @param {Object} [options.env=process.env]
  * @returns {String}
- * @throws {Error} When no credential is available.
+ * @throws {Error} `code: 'github-token-unset'` when no credential is available, so a caller can tell an
+ *     unconfigured credential from a failing one.
  */
 export function resolveGithubToken({override = null, env = process.env} = {}) {
     const token = (override && String(override).trim()) || env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim();
 
     if (token) return token;
 
-    throw new Error('Could not authenticate with GitHub: set GH_TOKEN or GITHUB_TOKEN.');
+    throw Object.assign(new Error('Could not authenticate with GitHub: set GH_TOKEN or GITHUB_TOKEN.'), {code: 'github-token-unset'});
 }
 
 /**
