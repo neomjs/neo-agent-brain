@@ -503,7 +503,8 @@ test.describe('agent-preflight utility', () => {
             cwd             : '/repo',
             execFileSyncImpl: () => '',
             existsSyncImpl  : () => true,
-            readFileSyncImpl: () => 'Refs #12345',
+            // The archaeology detector parses a supplied module; only the PR body is prose here.
+            readFileSyncImpl: file => file.endsWith('body.md') ? 'Refs #12345' : 'export const a = 1;\n',
             scriptDir       : '/repo/buildScripts/util',
             stderr          : {write: value => { stderr += value }},
             stdout          : {write: () => {}}
@@ -517,6 +518,27 @@ test.describe('agent-preflight utility', () => {
         expect(stderr).toContain('checked silently and deliberately');
         expect(stderr).toContain('pull-request-workflow.md');
         expect(stderr).toContain('agent-preflight: 1 gate(s) failed: pr-body')
+    });
+
+    test('a supplied module the archaeology detector cannot parse is a named failure, never a pass (#482)', () => {
+        // The detector moved to neo-agent-skills and parses the module to find comment context;
+        // an unparsable file used to throw out of the gate (red on dev with the acorn detector).
+        let stderr = '';
+
+        const status = runAgentPreflight({
+            argv            : ['src/a.mjs'],
+            cwd             : '/repo',
+            execFileSyncImpl: () => '',
+            existsSyncImpl  : () => true,
+            readFileSyncImpl: () => 'Refs #12345',
+            scriptDir       : '/repo/buildScripts/util',
+            stderr          : {write: value => { stderr += value }},
+            stdout          : {write: () => {}}
+        });
+
+        expect(status).toBe(1);
+        expect(stderr).toContain('check-ticket-archaeology: 1 supplied module(s) could not be parsed');
+        expect(stderr).toContain('src/a.mjs: ');
     })
 });
 

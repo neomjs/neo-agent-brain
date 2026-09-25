@@ -5,8 +5,7 @@ import {Command}                                             from 'commander';
 import {createRequire}                                       from 'node:module';
 import path                                                  from 'node:path';
 import process                                               from 'node:process';
-import {fileURLToPath}                                       from 'node:url';
-import {findTicketRefs}                                      from 'neo.mjs/buildScripts/util/check-ticket-archaeology.mjs';
+import {fileURLToPath, pathToFileURL}                        from 'node:url';
 import {collectStaleOverlayFindings}
                                    from './setup/initServerConfigs.mjs';
 
@@ -28,6 +27,29 @@ const
      * @type {String}
      */
     GATE_DIR   = path.join(engineRoot, 'buildScripts', 'util');
+
+/**
+ * @summary The ticket-archaeology detector the reusable PR baseline runs, resolved through the
+ * skills package's own `bin` declaration. The package exports no module path (its `exports` map
+ * names only the manifest), and the Engine's copy was deleted when the guard moved there
+ * (neomjs/neo#18905), so a static import of either is a broken preflight at every Engine pin past
+ * 2026-08-28 (#482). Reading the manifest's `bin` follows the package if its entrypoint moves.
+ * @returns {String} Absolute path of `check-ticket-archaeology.mjs` inside `neo-agent-skills`.
+ */
+function resolveArchaeologyDetector() {
+    const
+        manifestPath = require.resolve('neo-agent-skills/package.json'),
+        {bin}        = JSON.parse(readFileSync(manifestPath, 'utf8')),
+        entry        = bin?.['neo-agent-skills-ticket-archaeology'];
+
+    if (typeof entry !== 'string' || entry.length === 0) {
+        throw new Error(`agent-preflight: neo-agent-skills declares no bin 'neo-agent-skills-ticket-archaeology' at '${manifestPath}'`);
+    }
+
+    return path.join(path.dirname(manifestPath), entry)
+}
+
+const {findArchaeology: findTicketRefs} = await import(pathToFileURL(resolveArchaeologyDetector()).href);
 
 // Source-to-mirror: keep these PR-body anchors in sync with
 // `.github/workflows/agent-pr-body-lint.yml`. Do not reintroduce a shared
@@ -1154,8 +1176,10 @@ function runNodeGate({args, cwd, execFileSyncImpl, name}) {
  * @returns {{name:String,ok:Boolean,output:String,status?:Number}}
  */
 function runTicketArchaeologyGate({cwd, files, findTicketRefsImpl, readFileSyncImpl}) {
-    const violations = [];
-    let   read       = 0;
+    const
+        violations = [],
+        unparsable = [];
+    let read = 0;
 
     for (const file of files) {
         let content;
@@ -1172,8 +1196,29 @@ function runTicketArchaeologyGate({cwd, files, findTicketRefsImpl, readFileSyncI
         }
 
         read++;
-        findTicketRefsImpl(content)
-            .forEach(({line, text}) => violations.push(`${file}:${line}: ${text}`))
+
+        // The detector parses the module (acorn) to find comment context, so a file it cannot
+        // parse is a named failure, never a pass — the same verdict the skills CLI gives
+        // (`N selected module(s) could not be parsed`), and the fail-closed half of the gate.
+        try {
+            findTicketRefsImpl(content)
+                .forEach(({line, text}) => violations.push(`${file}:${line}: ${text}`))
+        } catch (error) {
+            unparsable.push(`${file}: ${error.message}`)
+        }
+    }
+
+    if (unparsable.length > 0) {
+        return {
+            name  : 'check-ticket-archaeology',
+            ok    : false,
+            output: [
+                `check-ticket-archaeology: ${unparsable.length} supplied module(s) could not be parsed, across ${read} file(s) read:`,
+                ...unparsable.map(entry => `  ${entry}`),
+                ''
+            ].join('\n'),
+            status: 1
+        }
     }
 
     if (violations.length > 0) {
