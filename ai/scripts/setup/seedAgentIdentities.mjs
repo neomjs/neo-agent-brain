@@ -33,9 +33,9 @@
  *
  * **Apoptosis Exemption:**
  * Agent root nodes are natively protected from the `DreamService` Phase 4 Garbage Collection (Apoptosis) mechanism.
- * The apoptosis process actively prunes "orphaned nodes" (nodes with zero edges) to prevent unbound
- * graph growth, but `AgentIdentity` and `BroadcastSentinel` are explicitly exempted in `GraphService.getOrphanedNodes`
- * to prevent silent wipes during idle or fresh Memory Core states prior to their first activity edges.
+ * The apoptosis process prunes edgeless nodes of the labels `GraphService.getOrphanedNodes` names
+ * collectable, and `AgentIdentity` and `BroadcastSentinel` are not among them, so an identity survives
+ * idle or fresh Memory Core states before its first activity edges.
  *
  * Idempotent re-run is safe: canonical properties update, runtime-added properties remain merged,
  * and `createdAt` resolves to the registry's declared value — falling back to the node's persisted
