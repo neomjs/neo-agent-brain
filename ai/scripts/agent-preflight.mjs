@@ -51,9 +51,9 @@ function resolveArchaeologyDetector() {
 
 const {findArchaeology: findTicketRefs} = await import(pathToFileURL(resolveArchaeologyDetector()).href);
 
-// Source-to-mirror: keep these PR-body anchors in sync with
-// `.github/workflows/agent-pr-body-lint.yml`. Do not reintroduce a shared
-// `prReviewAnchors.mjs`; sync-by-convention is deliberate.
+// Source-to-mirror: keep these PR-body anchors in sync with the shared PR baseline's `pr-body`
+// job (`neo-agent-skills`' `check-pr-body.mjs`, called from `.github/workflows/shared-pr-baseline.yml`).
+// Do not reintroduce a shared `prReviewAnchors.mjs`; sync-by-convention is deliberate.
 export const VISIBLE_PR_BODY_ANCHORS = [
     'Evidence:',
     '## AC Evidence',
@@ -81,9 +81,9 @@ export const INVISIBLE_PR_BODY_ANCHORS = [
 export const PR_BODY_TEMPLATE_REFERENCE =
     '.agents/skills/pull-request/references/pull-request-workflow.md — §9 carries the agent body template';
 
-/** The workflow section mirroring the same list for hosted lint runs. */
+/** The workflow that runs the same list on hosted PRs. */
 export const PULL_REQUEST_WORKFLOW_REFERENCE =
-    '.github/workflows/agent-pr-body-lint.yml — mirrors pull-request-workflow.md §9';
+    '.github/workflows/shared-pr-baseline.yml — the shared baseline\'s pr-body job mirrors pull-request-workflow.md §9';
 
 /**
  * Guidance emitted when the structural (silent) anchor layer finds misses.
