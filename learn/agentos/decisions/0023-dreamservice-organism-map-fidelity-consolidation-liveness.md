@@ -74,7 +74,7 @@ An ADR must name the **target** architecture *and* the **current** state, per la
 
 > **Amended by #472 (graduated from neomjs/neo#19096 under #471, 2026-09-24):** the knowledge-graph target no longer de-duplicates toward the Markdown content.
 > - **Source.** Concepts are deployment-scoped derived knowledge. The tenant-scoped plane store, `dataRoot/concepts/`, is their one source, and the explanation is the node's `description`.
-> - **Admission.** The graph and the default KB project rows whose `validated` is not `false`, the predicate `ConceptIngestor` and `GapInferenceEngine` already apply. Candidates persist in the store without reaching concept search.
+> - **Admission.** The graph projects rows whose `validated` is not `false` today, the predicate `ConceptIngestor` and `GapInferenceEngine` already apply; the default KB projection applying it is #474's target. Candidates persist in the store without reaching concept search.
 > - **Seedless planes.** A seedless plane has no KB concepts, by design, until curation (neomjs/neo#19096 OQ9) validates one.
 > - **The engine's copies:** neomjs/neo#19093 deletes them.
 

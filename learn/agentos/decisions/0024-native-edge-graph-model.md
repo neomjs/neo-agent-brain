@@ -166,8 +166,8 @@ The JSONL store and the SQLite graph are **source and projection**, not independ
 
 > **Amended by #472 (graduated from neomjs/neo#19096 under #471, 2026-09-24):** the concept ontology is no longer a git-versioned source.
 > - **Source.** Concepts are deployment-scoped derived knowledge. Each plane's store is their one source. A deployment can optionally seed it, and discovery extends it. There is no repository custody and no write-back.
-> - **Tenant keys.** Rows are keyed by tenant (#473).
-> - **Admission.** Projections admit rows whose `validated` is not `false` (#474). A seedless plane therefore has no KB concepts until one is validated.
+> - **Tenant keys.** Rows will be keyed by tenant (#473, open).
+> - **Admission.** The graph projection admits rows whose `validated` is not `false` today (`ConceptIngestor`); the KB projection applying the same predicate is #474's target. A seedless plane therefore has no KB concepts until one is validated.
 > - **Removals.** neomjs/neo#19093 deletes the engine's tracked JSONL copy and its 59 Markdown explanations. That closes the content-as-SSOT follow-up this section and §6 used to carry.
 
 ### 2.7 Provenance — curated, scheduled, and historical
