@@ -12,6 +12,7 @@ import {
     resolveWaitersDir
 } from '../../../../../../../ai/daemons/orchestrator/services/heavyMaintenanceWaiterLedger.mjs';
 import {
+    CONFIGURED_TENANT_REPO_LABELS_TTL_MS,
     DEFAULT_HEAVY_MAINTENANCE_TASK_NAMES,
     MaintenanceBackpressureService,
     WAITER_ENTRY_STALE_AFTER_MS,
@@ -543,6 +544,23 @@ test.describe('Neo.ai.daemons.orchestrator.services.heavyMaintenanceWaiterLedger
             expect(calls).toBe(1);
             expect(a).toEqual(['a/one']);
             expect(b).toEqual(['a/one']);
+            service.destroy()
+        });
+
+        test('warmConfiguredTenantRepoLabels refreshes a snapshot half a TTL old and leaves a younger one alone', async () => {
+            const service = serviceWithCoverage(undefined, ['a/one']);
+            let   calls   = 0;
+
+            service.resolveConfiguredTenantRepoLabelsFn = async () => { calls++; return ['a/one', 'a/two'] };
+
+            await service.warmConfiguredTenantRepoLabels();
+            expect(calls, 'a fresh snapshot is left alone').toBe(0);
+
+            service.configuredTenantRepoLabelsAt = Date.now() - CONFIGURED_TENANT_REPO_LABELS_TTL_MS / 2;
+            await Promise.all([service.warmConfiguredTenantRepoLabels(), service.warmConfiguredTenantRepoLabels()]);
+
+            expect(calls, 'half a TTL refreshes it, once').toBe(1);
+            expect(service.configuredTenantRepoLabels).toEqual(['a/one', 'a/two']);
             service.destroy()
         });
 

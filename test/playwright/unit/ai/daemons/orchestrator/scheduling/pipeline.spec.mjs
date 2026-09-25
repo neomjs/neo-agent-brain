@@ -1,5 +1,11 @@
 import {test, expect}  from '@playwright/test';
+import fs              from 'fs-extra';
+import os              from 'node:os';
+import path            from 'node:path';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
 import {TASK_REGISTRY} from '../../../../../../../ai/daemons/orchestrator/scheduling/registry.mjs';
+import {MaintenanceBackpressureService} from '../../../../../../../ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs';
 import {
     buildOrchestratorSchedulingOptions,
     buildSchedulingContext,
@@ -344,6 +350,103 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
             });
 
             expect(result.winner.taskName).toBe('dream');
+        });
+
+        // A tenant slice outlasts the coverage snapshot's TTL, and the picker never evaluates a
+        // running lane, so only the poll cadence can keep the snapshot fresh for the decision after it.
+        test.describe('the coverage snapshot stays warm while the tenant lane runs', () => {
+            function sliceSequence({warm}) {
+                const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'warm-coverage-'));
+
+                // A first ingest whose first slice landed clean ranks ordinary.
+                fs.writeFileSync(path.join(dataDir, 'tenant-repo-sync-revisions.json'), JSON.stringify({revisions: {
+                    'a/one': {lastIngestedRev: null, partialProgressAt: 990_000, consecutiveFailures: 0}
+                }}));
+
+                const backpressure = Neo.create(MaintenanceBackpressureService, {
+                    dataDir,
+                    writeLog                           : () => {},
+                    resolveConfiguredTenantRepoLabelsFn: async () => ['a/one']
+                });
+
+                // The snapshot the lane was judged by when its slice started, five minutes ago.
+                backpressure.configuredTenantRepoLabels   = ['a/one'];
+                backpressure.configuredTenantRepoLabelsAt = Date.now() - 5 * 60_000;
+
+                const started  = [];
+                const services = makeServices({
+                    maintenanceBackpressureService: {
+                        acquireLeaseAndExecute({executeFn, taskName, reason, onSuccess, activeHeavyTask}) {
+                            return executeFn(taskName, reason, onSuccess, {activeHeavyTask});
+                        },
+                        executeWithGoldenPathDependencyGate({executeFn, taskName, reason}) {
+                            return executeFn(taskName, reason);
+                        },
+                        getActiveHeavyMaintenanceTask() { return null },
+                        isHeavyMaintenanceTask() { return true },
+                        recordDeferral() {},
+                        isBootstrapCriticalTask: taskName => backpressure.isBootstrapCriticalTask(taskName),
+                        ...(warm && {warmConfiguredTenantRepoLabels: () => backpressure.warmConfiguredTenantRepoLabels()})
+                    },
+                    processSupervisorService: {runTask(taskName) { started.push(taskName); return true }}
+                });
+                const registry = [
+                    makeCandidateDescriptor({taskName: 'dream'}),
+                    makeCandidateDescriptor({taskName: 'tenant-repo-sync'})
+                ];
+                const poll = running => runSchedulingPipeline({
+                    registry,
+                    context: makeContext({
+                        now      : 1_000_000,
+                        state    : {dream: {lastRunAt: 0}, 'tenant-repo-sync': {lastRunAt: 990_000, running}},
+                        intervals: {dream: 10_000, tenantRepoSync: 10_000}
+                    }),
+                    services,
+                    runtime: makeRuntime()
+                });
+
+                return {backpressure, started, poll}
+            }
+
+            test('the decision after a slice longer than the TTL goes to the starved waiter', async () => {
+                const {backpressure, started, poll} = sliceSequence({warm: true});
+
+                expect(poll(true).winner, 'mid-slice the heavy lane is held, so nothing is picked').toBeNull();
+                await backpressure.configuredTenantRepoLabelsRefresh;
+
+                expect(poll(false).winner.taskName).toBe('dream');
+                expect(started).toEqual(['dream']);
+                backpressure.destroy()
+            });
+
+            test('CONTROL — without the per-poll warm-up the expired snapshot re-grants the class', async () => {
+                const {backpressure, poll} = sliceSequence({warm: false});
+
+                poll(true);
+                await backpressure.configuredTenantRepoLabelsRefresh;
+
+                expect(poll(false).winner.taskName).toBe('tenant-repo-sync');
+                await backpressure.configuredTenantRepoLabelsRefresh;
+                backpressure.destroy()
+            });
+
+            test('only a running tenant lane warms the snapshot, so a profile that does not run it never resolves coverage', () => {
+                const warmed   = [];
+                const services = makeServices({
+                    maintenanceBackpressureService: {
+                        ...makeServices().maintenanceBackpressureService,
+                        warmConfiguredTenantRepoLabels: () => warmed.push(true)
+                    }
+                });
+                const poll = state => runSchedulingPipeline({registry: [], context: makeContext({state}), services, runtime: makeRuntime()});
+
+                poll({});
+                poll({'tenant-repo-sync': {running: false}});
+                expect(warmed, 'idle, disabled or unowned: the resolver is never reached').toHaveLength(0);
+
+                poll({'tenant-repo-sync': {running: true}});
+                expect(warmed).toHaveLength(1);
+            });
         });
     });
 
