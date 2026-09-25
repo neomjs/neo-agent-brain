@@ -95,6 +95,11 @@ const PROTECTED_EDGE_TYPE_SET = new Set(PROTECTED_EDGE_TYPES);
  * REM extraction links it to the sessions that discuss it, and the Concept Ontology creates it as an
  * edge's target stub. A label joins only when its writers create it with edges and no other service
  * owns its lifecycle.
+ *
+ * A node an ingestor projects carries that ingestor's `payloadHash`, and the ingestor owns it: the
+ * Concept Ontology's `ConceptIngestor.syncConceptsToGraph()` re-derives every concept it declares on
+ * each run, so collecting one only deletes what the next cycle re-creates. Such a node is never
+ * collectable, whatever its label.
  */
 const ORPHAN_COLLECTABLE_LABELS = Object.freeze(['CONCEPT']);
 
@@ -1783,6 +1788,7 @@ class GraphService extends Base {
             SELECT n.id
             FROM Nodes n
             WHERE json_extract(n.data, '$.label') IN (${ORPHAN_COLLECTABLE_LABELS.map(() => '?').join(', ')})
+              AND json_extract(n.data, '$.properties.payloadHash') IS NULL
               AND NOT EXISTS (SELECT 1 FROM Edges WHERE source = n.id)
               AND NOT EXISTS (SELECT 1 FROM Edges WHERE target = n.id)
         `).pluck().all(...ORPHAN_COLLECTABLE_LABELS);

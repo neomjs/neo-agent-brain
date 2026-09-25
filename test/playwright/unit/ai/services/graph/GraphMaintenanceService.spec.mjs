@@ -175,6 +175,16 @@ test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
             .toEqual(Object.keys(records))
     });
 
+    test('a concept an ingestor projects is its ingestor\'s, while an unowned edgeless concept is still collectable', async () => {
+        GraphService.db.addNode({id: 'drag-and-drop-gc', label: 'CONCEPT', properties: {payloadHash: 'hash-of-the-declared-row'}});
+        GraphService.db.addNode({id: 'CONCEPT:gc-faded', label: 'CONCEPT', properties: {}});
+
+        const orphaned = GraphService.getOrphanedNodes();
+
+        expect(orphaned, 'the projected concept is re-derived by its ingestor, never collected').not.toContain('drag-and-drop-gc');
+        expect(orphaned, 'a faded, unowned concept is still collectable').toContain('CONCEPT:gc-faded')
+    });
+
     test('an orphan loses its vectors only together with its node', async () => {
         GraphService.db.addNode({id: 'CONCEPT:gc-cached', label: 'CONCEPT', properties: {}});
         GraphService.db.addNode({id: 'CONCEPT:gc-stored', label: 'CONCEPT', properties: {}});
