@@ -110,10 +110,14 @@ test('the Brain root contains no Engine compatibility projection', () => {
 
     const
         manifest       = readJson(path.join(repoRoot, 'package.json')),
-        prepareSource  = fs.readFileSync(path.join(repoRoot, 'ai/scripts/setup/initServerConfigs.mjs'), 'utf8'),
+        prepareSource  = ['ai/scripts/setup/prepare.mjs', 'ai/scripts/setup/initServerConfigs.mjs']
+            .map(file => fs.readFileSync(path.join(repoRoot, file), 'utf8')).join('\n'),
         engineTestRoot = path.join(repoRoot, 'test/playwright/unit/ai/buildScripts');
 
-    expect(manifest.scripts.prepare).toBe('node ./ai/scripts/setup/initServerConfigs.mjs');
+    // #482: the lifecycle runs from `prepare` (the config bootstrap, then the materializer guarded
+    // to this checkout), never from `postinstall`, which npm runs inside every consumer's install.
+    expect(manifest.scripts.prepare).toBe('node ./ai/scripts/setup/prepare.mjs');
+    expect(manifest.scripts).not.toHaveProperty('postinstall');
     expect(manifest.scripts).not.toHaveProperty('cockpit');
     expect(manifest.scripts).not.toHaveProperty('cockpit:live');
     expect(prepareSource).not.toMatch(/materializeEngineDependency|ENGINE_(?:LINK|COPY)_PROJECTIONS/);

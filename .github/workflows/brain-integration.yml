@@ -56,9 +56,10 @@ jobs:
         run: npm rebuild better-sqlite3
 
       - name: Materialize Brain-owned install projections
-        run: |
-          npm run postinstall
-          npm run prepare
+        # `prepare` runs the config bootstrap and then the skills materializer for this checkout
+        # (INIT_CWD is the workspace). Never `postinstall`: npm runs a dependency's postinstall
+        # inside every consumer's install.
+        run: npm run prepare
 
       # Image construction has its own budget; Playwright's webServer timer measures readiness.
       - name: Build unified integration images
