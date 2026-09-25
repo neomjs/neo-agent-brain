@@ -155,6 +155,25 @@ test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
         expect(vectors.summary, 'and query_summaries keeps its vector').not.toContain('summary_gc-session')
     });
 
+    test('an edgeless durable record is not an orphan, whatever its label', async () => {
+        const records = {
+            'AGENT_MEMORY:gc-turn'     : 'AGENT_MEMORY',
+            'MESSAGE:gc-severed'       : 'MESSAGE',
+            'SYSTEM_CLOCK:gc'          : 'SYSTEM_CLOCK',
+            'kb-tenant-manifest:gc'    : 'KnowledgeBaseTenantManifest',
+            'nl-transaction-archive:gc': 'nl-transaction-archive'
+        };
+
+        Object.entries(records).forEach(([id, label]) => GraphService.db.addNode({id, label, properties: {}}));
+
+        const orphaned = GraphService.getOrphanedNodes();
+
+        await GraphMaintenanceService.runGarbageCollection();
+
+        expect(Object.keys(records).filter(id => !orphaned.includes(id) && nodeRow(id)), 'every record stays out of the orphan query and in storage')
+            .toEqual(Object.keys(records))
+    });
+
     test('an orphan loses its vectors only together with its node', async () => {
         GraphService.db.addNode({id: 'CONCEPT:gc-cached', label: 'CONCEPT', properties: {}});
         GraphService.db.addNode({id: 'CONCEPT:gc-stored', label: 'CONCEPT', properties: {}});

@@ -13,6 +13,7 @@ import fsExtra                         from 'fs-extra';
 import {isDeepStrictEqual}             from 'node:util';
 import {projectNode}                   from './nodeProjection.mjs';
 import {LEGACY_RAW_MEMORY_NODE_LABEL}  from './helpers/rawMemoryGraphIdentity.mjs';
+import {RAW_MEMORY_NODE_LABEL}         from './helpers/rawMemoryGraphIdentity.mjs';
 
 /**
  * Row-level-security visibility predicate for an in-memory graph **node or edge**, mirroring
@@ -91,8 +92,9 @@ const PROTECTED_EDGE_TYPE_SET = new Set(PROTECTED_EDGE_TYPES);
 
 // The labels `GraphService#getOrphanedNodes` never returns; its JSDoc gives each one's reason.
 const ORPHAN_PROTECTED_LABELS = new Set([
-    'ADR', 'AgentIdentity', 'BroadcastSentinel', 'DISCUSSION', 'ISSUE', 'MEMORY', 'PULL_REQUEST', 'SESSION',
-    'SESSION_SUMMARY', 'SUMMARY_DAILY', 'SUMMARY_SESSION', 'SYSTEM_ANCHOR', 'System', 'WAKE_SUBSCRIPTION'
+    'ADR', 'AgentIdentity', 'BroadcastSentinel', 'DISCUSSION', 'ISSUE', 'KnowledgeBaseTenantManifest', 'MESSAGE',
+    'nl-transaction-archive', 'PULL_REQUEST', RAW_MEMORY_NODE_LABEL, LEGACY_RAW_MEMORY_NODE_LABEL, 'SESSION',
+    'SESSION_SUMMARY', 'SUMMARY_DAILY', 'SUMMARY_SESSION', 'SYSTEM_ANCHOR', 'SYSTEM_CLOCK', 'System', 'WAKE_SUBSCRIPTION'
 ]);
 
 /**
@@ -1768,10 +1770,10 @@ class GraphService extends Base {
     /**
      * Finds nodes that have lost all structural edges to trigger algorithmic forgetting.
      * The labels in `ORPHAN_PROTECTED_LABELS` are never returned, whatever their edge state. `SESSION` and
-     * `MEMORY` are protected because they are load-bearing anchors for future mailbox
-     * (`IN_REPLY_TO`), identity (`AUTHORED_BY`), and provenance (`MENTIONED_IN`) edges — they may
-     * be momentarily edgeless during the ingestion window or for empty sessions, and must persist
-     * so downstream edge-creators attach to real targets.
+     * the raw-memory labels (`AGENT_MEMORY`, legacy `MEMORY`) are protected because they are load-bearing
+     * anchors for future mailbox (`IN_REPLY_TO`), identity (`AUTHORED_BY`), and provenance (`MENTIONED_IN`)
+     * edges — they may be momentarily edgeless during the ingestion window or for empty sessions, and must
+     * persist so downstream edge-creators attach to real targets.
      * `AgentIdentity` and `BroadcastSentinel` are protected to prevent silent wipes during
      * idle or fresh Memory Core states prior to their first activity edges.
      * `WAKE_SUBSCRIPTION` nodes are protected natively against GC race conditions during background
@@ -1779,7 +1781,11 @@ class GraphService extends Base {
      * graph-queryable even before relationship edges are materialized. `SUMMARY_SESSION` and
      * `SUMMARY_DAILY` are temporal-pyramid records (`ai/graph/temporalSummarySchema.mjs`), irreplaceable
      * aggregation facts. A `SESSION_SUMMARY` node's id is its vector's id in the collection
-     * `query_summaries` searches, so pruning one deletes that session's summary from search.
+     * `query_summaries` searches, so pruning one deletes that session's summary from search. A `MESSAGE`
+     * is a mailbox record whose edges `PROTECTED_EDGE_TYPES` never decays, so it is edgeless only once
+     * they were destroyed, and deleting it deletes the message. `SYSTEM_CLOCK` (`_SYSTEM_STATE`, whose
+     * `lastDecayedAt` is the decay's 24-hour lock), `KnowledgeBaseTenantManifest` and
+     * `nl-transaction-archive` are records written edgeless by construction.
      * @returns {String[]} Array of node IDs mapping to orphaned vectors.
      */
     getOrphanedNodes() {
