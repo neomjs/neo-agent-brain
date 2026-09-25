@@ -237,13 +237,32 @@ class ReleaseNotesSyncer extends Base {
      * unnecessary writes. A note counts as current only while its file is on disk, and a release's
      * `contentHash` is recorded only once its note is. Any in-window release that cannot be written,
      * or that has neither a body nor its note, fails the call before the index is written, so a
-     * partial set never reads as complete.
+     * partial set never reads as complete. With nothing in window, it writes nothing: no folder, no index.
      * @param {object} metadata The sync metadata containing cached release hashes.
      * @returns {Promise<object>} Statistics about the operation ({count: number, synced: string[]}).
      * @throws {Error} Naming every in-window release whose note could not be synced.
      */
     async syncNotes(metadata) {
         logger.info('📄 Syncing release notes...');
+
+        const stats = {
+            count : 0,
+            synced: []
+        };
+
+        const startDate = new Date(issueSyncConfig.syncStartDate);
+
+        // Release-notes content is floored to syncStartDate even though the bucketing reference
+        // (`sortedReleases`) now spans the full history: we only write notes for in-window releases,
+        // keeping the on-disk notes set and its chunk layout stable. Index within the floored set so
+        // chunk numbers match the notes actually written.
+        const notesReleases = this.sortedReleases.filter(r => new Date(r.publishedAt) >= startDate);
+
+        if (notesReleases.length === 0) {
+            logger.info('No release in window, so no release notes to write.');
+            return stats;
+        }
+
         const releaseDir = contentBucketDir({
             contentRoot: issueSyncConfig.contentRoot,
             repoSlug   : aiConfig.repo,
@@ -262,20 +281,8 @@ class ReleaseNotesSyncer extends Base {
             items: {}
         };
 
-        const stats = {
-            count : 0,
-            synced: []
-        };
-
         const cachedReleases = metadata.releases || {};
-        const startDate      = new Date(issueSyncConfig.syncStartDate);
         const failures       = [];
-
-        // Release-notes content is floored to syncStartDate even though the bucketing reference
-        // (`sortedReleases`) now spans the full history: we only write notes for in-window releases,
-        // keeping the on-disk notes set and its chunk layout stable. Index within the floored set so
-        // chunk numbers match the notes actually written.
-        const notesReleases = this.sortedReleases.filter(r => new Date(r.publishedAt) >= startDate);
 
         for (const release of Object.values(this.releases)) {
             if (new Date(release.publishedAt) < startDate) continue;

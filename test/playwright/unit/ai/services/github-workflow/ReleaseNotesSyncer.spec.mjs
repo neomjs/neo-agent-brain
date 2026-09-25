@@ -196,6 +196,22 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
         expect(queries).toEqual(['latest']);
     });
 
+    test('an origin with no in-window release gets no release-notes folder and no index', async () => {
+        const start    = new Date(issueSyncConfig.syncStartDate).getTime();
+        const preFloor = new Date(start - 86400000).toISOString();
+
+        ReleaseNotesSyncer.releases       = {vOld: {tagName: 'vOld', name: 'Old', publishedAt: preFloor, description: 'old'}};
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'vOld', publishedAt: preFloor}];
+
+        const releaseDir = issueSyncConfig.releaseNotesDir;
+        await fs.remove(releaseDir);
+
+        const stats = await ReleaseNotesSyncer.syncNotes({});
+
+        expect(stats).toEqual({count: 0, synced: []});
+        expect(await fs.pathExists(releaseDir)).toBe(false);
+    });
+
     test('a note that cannot be written fails syncNotes and caches no hash for it', async () => {
         const start    = new Date(issueSyncConfig.syncStartDate).getTime();
         const inWindow = new Date(start + 86400000).toISOString();

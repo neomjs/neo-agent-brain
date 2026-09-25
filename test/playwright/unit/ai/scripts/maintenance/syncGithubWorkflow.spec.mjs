@@ -105,9 +105,11 @@ async function runCliChild({args = [], contentRoot, preload, env = {}} = {}) {
  * @summary Controls remote acquisition while exercising the actual CLI and filesystem writers.
  * @param {Object} [options]
  * @param {Boolean} [options.fail=false] Refuse all acquisition for the failure control.
+ * @param {Boolean} [options.releases=true] False answers as a repository that has never cut a release.
  * @returns {String} Node preload data URL.
  */
-function corpusAcquisitionPreload({fail = false} = {}) {
+function corpusAcquisitionPreload({fail = false, releases = true} = {}) {
+    const release = releases ? "{tagName:'v1.0.0',name:'v1.0.0',description:'fixture',publishedAt:'2026-01-03T00:00:00Z',url:'https://example.test/release'}" : '';
     const issue = {number: 101, title: 'Corpus issue', body: 'issue body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, url: 'https://github.com/neomjs/neo/issues/101', author: {login: 'fixture'}, labels: {nodes: []}, assignees: {nodes: []}, milestone: null, parent: null, subIssues: {nodes: []}, subIssuesSummary: {total: 0, completed: 0, percentCompleted: 0}, blockedBy: {nodes: []}, blocking: {nodes: []}, timelineItems: {nodes: [], pageInfo: {hasNextPage: false, endCursor: null}}};
     const discussion = {number: 102, title: 'Corpus discussion', body: 'discussion body', closed: false, closedAt: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', author: {login: 'fixture'}, category: {name: 'General'}, comments: {nodes: [], totalCount: 0, pageInfo: {hasNextPage: false, endCursor: null}}};
     const pull = {number: 103, title: 'Corpus pull', body: 'pull body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, mergedAt: null, headRefName: 'fixture', baseRefName: 'dev', url: 'https://github.com/neomjs/neo/pull/103', author: {login: 'fixture'}, milestone: null, comments: {nodes: []}, reviews: {nodes: []}};
@@ -117,8 +119,8 @@ function corpusAcquisitionPreload({fail = false} = {}) {
       import GraphqlService from ${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/GraphqlService.mjs')).href)};
       ${fail ? "GraphqlService.query = async () => { throw new Error('controlled acquisition failure') };" : `
       GraphqlService.query = async query => {
-        if (query.includes('FetchLatestRelease')) return {repository:{latestRelease:{tagName:'v1.0.0',publishedAt:'2026-01-03T00:00:00Z'}}};
-        if (query.includes('FetchReleases')) return {repository:{releases:{nodes:[{tagName:'v1.0.0',name:'v1.0.0',description:'fixture',publishedAt:'2026-01-03T00:00:00Z',url:'https://example.test/release'}],pageInfo:{hasNextPage:false,endCursor:null}}}};
+        if (query.includes('FetchLatestRelease')) return {repository:{latestRelease:${releases ? "{tagName:'v1.0.0',publishedAt:'2026-01-03T00:00:00Z'}" : 'null'}}};
+        if (query.includes('FetchReleases')) return {repository:{releases:{nodes:[${release}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchIssuesForSync')) return {rateLimit:{cost:1,remaining:5000,resetAt:'2026-01-04T00:00:00Z'},repository:{issues:{nodes:[${JSON.stringify(issue)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchDiscussionsForSync')) return {repository:{discussions:{nodes:[${JSON.stringify(discussion)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchPullRequestsForSync')) return {repository:{pullRequests:{nodes:[${JSON.stringify(pull)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
@@ -429,6 +431,17 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
 
             expect(result.code, result.stderr).toBe(0);
             await expect(fs.readFile(path.join(origin, 'release-notes/chunk-1/v1.0.0.md'), 'utf8')).resolves.toContain('fixture');
+        });
+    });
+
+    test('actual corpus CLI gives an origin without releases no release-notes folder', async () => {
+        await withOwnedFixture(async ({corpusRoot}) => {
+            await fs.mkdir(corpusRoot);
+            const result = await runCliChild({args: ['--corpus-only'], contentRoot: corpusRoot, preload: corpusAcquisitionPreload({releases: false})});
+
+            expect(result.code, result.stderr).toBe(0);
+            await expect(fs.access(path.join(corpusRoot, 'neo', 'issues'))).resolves.toBeUndefined();
+            await expect(fs.access(path.join(corpusRoot, 'neo', 'release-notes'))).rejects.toThrow();
         });
     });
 
