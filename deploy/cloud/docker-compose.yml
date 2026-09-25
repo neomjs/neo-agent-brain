@@ -326,6 +326,9 @@ services:
       - mc-server-plane-root:/app/.neo-ai-data
       - shared-sqlite-data:/app/.neo-ai-data/sqlite
       - shared-handoff-data:/app/.neo-ai-data/handoff:ro
+      # READ half of the REM run-state channel: `get_rem_pipeline_state` lists the orchestrator's
+      # cycle receipts from here. Read-only on purpose: this service never authors a cycle.
+      - shared-rem-runs-data:/app/.neo-ai-data/rem-runs:ro
       # Read-only half of the orchestrator -> public MCP deployment-state bridge, and the mount the
       # recovery actuator publishes its config overlay onto.
       - shared-deployment-state-data:/app/.neo-ai-data/deployment-state:ro
@@ -492,8 +495,8 @@ services:
     secrets:
       - mcp-auth-token
     volumes:
-      # Private plane root (see kb-server): discovered concepts, the lazy-edge queue, REM run
-      # receipts and the wake cursor live outside every channel volume and survive a recreate here.
+      # Private plane root (see kb-server): discovered concepts, the lazy-edge queue and the wake
+      # cursor live outside every channel volume and survive a recreate here.
       - orchestrator-plane-root:/app/.neo-ai-data
       # Scheduler cadence, tenant-repo revisions, recovery ledgers, logs, and
       # process-epoch files share AiConfig.orchestrator.dataDir. Persist the
@@ -516,6 +519,11 @@ services:
       # The `golden-path` scheduler lane writes the handoff and its derived
       # route artifacts here; mc-server mounts the same directory read-side.
       - shared-handoff-data:/app/.neo-ai-data/handoff
+      # WRITE half of the REM run-state channel (`remRunStateDir`): the dream child writes one
+      # receipt per REM cycle here, and mc-server's `get_rem_pipeline_state` reads them read-side.
+      # Kept in the private root instead, the receipts exist only for this container and the tool
+      # reports `recentCycles: []` forever (#500).
+      - shared-rem-runs-data:/app/.neo-ai-data/rem-runs
       # Redeploy-safe backup persistence (Sub C #11724, relocated by #16201): the cloud-safe
       # `backup` scheduler lane writes bundles here. A host bind keeps them across container
       # rebuilds and host-accessible for off-site copy / inspection.
@@ -792,6 +800,9 @@ volumes:
   shared-sqlite-data:
   shared-deployment-state-data:
   shared-handoff-data:
+  # REM run-state channel: written by the orchestrator's dream child, read by mc-server's health
+  # surface. A new volume starts empty, so a deploy seeds it from the orchestrator's plane root.
+  shared-rem-runs-data:
   # Heap-observation channel: written by every MCP server declaring a heap-observation service
   # key, read by the orchestrator's deployment-state bridge.
   shared-heap-observation-data:

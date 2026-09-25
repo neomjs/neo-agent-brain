@@ -13,6 +13,10 @@ const HEAP_VOLUME          = 'shared-heap-observation-data';
 // The services that report their own V8 heap into the channel, and its one reader.
 const HEAP_WRITERS         = ['kb-server', 'mc-server'];
 const HEAP_READER          = 'orchestrator';
+const REM_RUNS_VOLUME      = 'shared-rem-runs-data';
+// The dream child the orchestrator spawns writes the REM run receipts; the Memory Core server reads them.
+const REM_RUNS_WRITER      = 'orchestrator';
+const REM_RUNS_READER      = 'mc-server';
 
 /**
  * @summary Normalizes one Compose volume entry (short or long form) to source, target and mode.
@@ -42,6 +46,10 @@ function parseMount(entry) {
  * mounts vanished from kb-server and mc-server in a merge, and the channel read `unavailable stale`
  * for four weeks while every health check stayed green. Its target is taken from the production
  * config descriptor, not spelled here.
+ *
+ * The REM run-state channel is pinned for the reverse failure (#500): the receipts were seeded into
+ * the orchestrator's private root, the Memory Core server read an empty directory of its own, and
+ * `get_rem_pipeline_state` reported `recentCycles: []` on every compose plane while REM ran.
  */
 test.describe('plane state reaches a volume (#425)', () => {
     const doc      = loadYaml(fs.readFileSync(composePath, 'utf8').replace(/!override\b/g, ''));
@@ -87,5 +95,24 @@ test.describe('plane state reaches a volume (#425)', () => {
         }
         expect(mountsOf(services[HEAP_READER]).filter(mount => mount.source === HEAP_VOLUME), 'the orchestrator reads the channel')
             .toEqual([{source: HEAP_VOLUME, target, readOnly: true}])
+    });
+
+    test('the orchestrator writes the REM run-state channel, mc-server reads it, and no other service mounts it', () => {
+        const {plane, remRunStateDir} = ConfigBase.config.data;
+        const channelDir               = path.relative(plane.dataRoot.default, remRunStateDir.default);
+
+        expect(channelDir.startsWith('..'), 'the channel must live under the plane root').toBe(false);
+
+        const target = `${CONTAINER_PLANE_ROOT}/${channelDir}`;
+
+        expect(mountsOf(services[REM_RUNS_WRITER]).filter(mount => mount.source === REM_RUNS_VOLUME), 'the orchestrator writes the channel')
+            .toEqual([{source: REM_RUNS_VOLUME, target, readOnly: false}]);
+        expect(mountsOf(services[REM_RUNS_READER]).filter(mount => mount.source === REM_RUNS_VOLUME), 'mc-server reads the channel')
+            .toEqual([{source: REM_RUNS_VOLUME, target, readOnly: true}]);
+
+        for (const [key, service] of Object.entries(services)) {
+            if (key === REM_RUNS_WRITER || key === REM_RUNS_READER) continue;
+            expect(mountsOf(service).some(mount => mount.source === REM_RUNS_VOLUME), `${key} does not mount the channel`).toBe(false)
+        }
     })
 });
