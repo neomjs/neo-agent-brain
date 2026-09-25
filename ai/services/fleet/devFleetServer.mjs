@@ -71,6 +71,7 @@ import {wireDeploymentStateReadSource}                                   from '.
 import {wireFleetActivityReadSource}                                     from './wireFleetActivityReadSource.mjs';
 import {wireFleetCatchUpSource}                                          from './wireFleetCatchUpSource.mjs';
 import {wireFleetTasksSource}                                            from './wireFleetTasksSource.mjs';
+import {wireFleetGoldenPathSource}                                       from './wireFleetGoldenPathSource.mjs';
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
@@ -387,6 +388,16 @@ async function boot() {
                 return typeof text === 'string' ? JSON.parse(text) : result
             }
         })
+    });
+
+    // The Golden Path view reads the synthesizer's own artifact — the computed-route.v1 sidecar
+    // beside the handoff, a plane member on the shared data root — plus the corpus-projection
+    // admission from its receipt and the REM pipeline state through the same operation boundary
+    // as the sources above. Nothing is ranked here; the pane shows the producer's route as written.
+    wireFleetGoldenPathSource({
+        routePath          : path.join(path.dirname(memoryCoreConfig.handoffFilePath), 'computed-route.json'),
+        projectionConfig   : AiConfig.orchestrator.corpusProjection,
+        getRemPipelineState: args => callHistoryOperation('get_rem_pipeline_state', args)
     });
 
     // The memories DRILL-IN rides the same operation boundary one level deeper: the single

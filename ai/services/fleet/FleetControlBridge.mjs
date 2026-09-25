@@ -144,6 +144,15 @@ class FleetControlBridge extends Base {
      */
     tasksSource = null
     /**
+     * Golden Path source — an injected collaborator exposing `readGoldenPath(params)`: the computed
+     * route the synthesizer wrote, passed through under the producer's own status and freshness,
+     * beside the corpus-projection admission (current / last known good / withheld) and the REM
+     * pipeline counts. Same DI contract as {@link #tasksSource}; unwired → an honest
+     * `unavailable` envelope, never a fabricated route.
+     * @member {Object|null} goldenPathSource=null
+     */
+    goldenPathSource = null
+    /**
      * Per-agent mailbox-mirror **read-observe** source — an injected collaborator exposing
      * `readMailboxMirror({subjectAgentId, limit, offset})` that returns the S1 mirror snapshot
      * (`{capability, admission, rows, page}`). Same DI contract as {@link #activitySource}: the
@@ -636,6 +645,26 @@ class FleetControlBridge extends Base {
                 queued    : [],
                 recent    : [],
                 counts    : {running: 0, queued: 0, recent: 0}
+            };
+    }
+
+    /**
+     * @summary READ-OBSERVE: read the computed Golden Path for the authenticated viewer — the
+     * synthesizer's route with its own status and freshness, the corpus-projection admission that
+     * says whether it may be read as current, and the REM pipeline counts. The source envelope
+     * passes through untouched; an unwired source is named as unavailable, never as an empty path.
+     * @param {Object} [params]
+     * @returns {Promise<Object>|Object}
+     */
+    fleetGoldenPath(params = {}) {
+        return typeof this.goldenPathSource?.readGoldenPath === 'function'
+            ? this.goldenPathSource.readGoldenPath(params)
+            : {
+                capability: {state: 'unavailable', reason: 'fleet golden path source not wired'},
+                admission : null,
+                route     : null,
+                rem       : null,
+                sources   : {}
             };
     }
 
