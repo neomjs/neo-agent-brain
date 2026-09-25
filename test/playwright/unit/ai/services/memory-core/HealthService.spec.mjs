@@ -2539,6 +2539,12 @@ test.describe('HealthService #10783 — buildWakeFeaturesBlock', () => {
         // BLOCK'S SHAPE and not about whatever dispatch records the host running the suite happens
         // to have. A health test that reads the real receiver directory passes or fails with the
         // host's wake history, which is the opposite of a unit test.
+        // RESTORE, never `delete`. Playwright reuses a worker process across spec files, so
+        // deleting this removes the value `playwright.config.unit.mjs` gave the worker and every
+        // later `healthcheck()` in that worker reads the host's real dispatch records again — the
+        // exact leak the config line exists to close. Capture and put back.
+        const previousRecordsDir                    = process.env.NEO_WAKE_RECEIVER_RECORDS_DIR;
+
         process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = path.join(os.tmpdir(), 'no-such-wake-records');
 
         try {
@@ -2567,7 +2573,11 @@ test.describe('HealthService #10783 — buildWakeFeaturesBlock', () => {
                 delivery             : {deliveryReadable: true, deliveryReadReason: 'no-records', subscriptions: {}}
             });
         } finally {
-            delete process.env.NEO_WAKE_RECEIVER_RECORDS_DIR;
+            if (previousRecordsDir === undefined) {
+                delete process.env.NEO_WAKE_RECEIVER_RECORDS_DIR
+            } else {
+                process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = previousRecordsDir
+            }
         }
     });
 

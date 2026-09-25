@@ -32,9 +32,12 @@
  * dispatch whose fate was never recorded (the receiver restarted mid-dispatch), which for a
  * reachability question is the same epistemic state — we do not know it landed.
  *
- * `skipped` is deliberately absent. It is the receiver exercising judgement about a digest, not an
- * undelivered wake, and counting it would manufacture an alarm on a healthy seat. It is also
- * deliberately not treated as a success: it breaks a streak without claiming a delivery.
+ * `skipped` appears in neither set, and that is the load-bearing decision rather than an omission.
+ * A skip is the receiver declining to dispatch a digest, so it is neither an attempt nor a delivery
+ * and carries no evidence either way. Counting it would manufacture an alarm on a healthy seat;
+ * letting it CLOSE a failure streak would erase the evidence before it, so a seat failing every real
+ * attempt while skipping digests in between would read healthy-ish between failures. It is
+ * transparent to the streak in both directions.
  */
 const FAILURE_STATES = new Set(['failed', 'unknown']);
 
@@ -128,8 +131,15 @@ export function projectWakeDelivery(records = []) {
             }
 
             if (state === 'skipped') {
-                // A decision, not a delivery: it ends a streak without claiming one.
-                streakOpen = false;
+                // TRANSPARENT, deliberately, and this is the semantic most worth arguing about. A skip
+                // is the receiver choosing not to dispatch a digest — it is neither an attempt nor a
+                // success, so it carries NO evidence about reachability. It must therefore neither add
+                // to the streak nor close it: a seat that fails every real attempt and skips a digest
+                // now and then would otherwise read healthy-ish between failures, which is this whole
+                // ticket's failure mode pointed the other way. `lastAttemptedAt` still moves, because
+                // the receiver genuinely was asked — that is a fact about the receiver, not about
+                // whether a wake can land.
+                verdict.lastAttemptedAt ??= when;
                 continue;
             }
 

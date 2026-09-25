@@ -94,16 +94,34 @@ test.describe('projectWakeDelivery — per-subscription delivery outcome', () =>
         expect(empty.lastDeliveredAt).toBeNull();
     });
 
-    test('`skipped` is a decision and `unknown` is an unlanded dispatch — only one of them is a failure', () => {
+    test('`skipped` is transparent to the failure streak — a lone skip proves nothing', () => {
         // Both are real populations on a live receiver (439 and 247 records respectively at the
-        // time of writing), so collapsing them into "failed" would manufacture an alarm, and
-        // collapsing them into "delivered" would hide one. `skipped` means the receiver chose not
-        // to dispatch; `unknown` means a dispatch was attempted and its fate is not recorded —
-        // which is the same epistemic state as a failure for a reachability question.
+        // time of writing). `skipped` is the receiver choosing not to dispatch a digest.
         const skipped = projectWakeDelivery([at('skipped')])['WAKE_SUB:sub-a'];
-        expect(skipped.state, 'a skip is the receiver exercising judgement, not an undelivered wake').not.toBe('unreachable');
+        expect(skipped.state, 'a lone skip is not an attempt and not a delivery, so it resolves nothing').toBe('unknown');
         expect(skipped.consecutiveFailures).toBe(0);
+    });
 
+    test('`skipped` is transparent in the other direction too: it cannot ERASE a failure streak', () => {
+        // The arm that matters. A skip carries no evidence about reachability, so it must neither
+        // count against a seat nor excuse one. Before this was pinned, three failures followed by a
+        // skip read `unknown / 0` — which means a seat failing every real attempt while skipping
+        // digests in between would read healthy-ish between failures. That is this ticket's own
+        // failure mode pointed the other way, and it is invisible unless an arm interleaves the two.
+        const projected = projectWakeDelivery([
+            at('skipped', {acceptedAt: '2026-09-25T00:03:00.000Z', dispatchFinishedAt: '2026-09-25T00:03:01.000Z'}),
+            at('failed', {acceptedAt: '2026-09-25T00:02:00.000Z', dispatchFinishedAt: '2026-09-25T00:02:01.000Z', outcomeReason: 'a'}),
+            at('failed', {acceptedAt: '2026-09-25T00:01:00.000Z', dispatchFinishedAt: '2026-09-25T00:01:01.000Z', outcomeReason: 'b'}),
+            at('failed', {acceptedAt: '2026-09-25T00:00:00.000Z', dispatchFinishedAt: '2026-09-25T00:00:01.000Z', outcomeReason: 'c'})
+        ])['WAKE_SUB:sub-a'];
+
+        expect(projected.state, 'the newest record is a skip, and a skip decides nothing').toBe('unreachable');
+        expect(projected.consecutiveFailures, 'all three real failures still count — the skip neither adds nor excuses').toBe(3);
+        expect(projected.lastOutcomeReason, 'the most recent FAILURE reason survives the skip').toBe('a');
+        expect(projected.lastAttemptedAt, 'the receiver genuinely was asked, most recently by the skip').toBe('2026-09-25T00:03:01.000Z');
+    });
+
+    test('`unknown` state IS a failure — an unlanded dispatch is not a delivery', () => {
         const unknown = projectWakeDelivery([
             at('unknown', {outcomeReason: 'receiver-restarted-during-non-idempotent-dispatch'})
         ])['WAKE_SUB:sub-a'];
