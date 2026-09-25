@@ -83,9 +83,12 @@ jobs:
                   test/playwright/unit/deploy/DeploySourceRepository.spec.mjs
                   test/playwright/unit/ai/deploy/DeclaredHeapCeilings.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/ConversationCorpusSource.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/source/ReleaseNotesCorpusSource.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/SourceRegistry.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/SourcePathsConfig.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/extractorCatalogue.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/QueryService.queryDocuments.spec.mjs
+                  test/playwright/unit/ai/deploy/KbTenantBootstrapContract.spec.mjs
                   test/playwright/unit/ai/configBase.spec.mjs
                   test/playwright/unit/ai/services/fleet/fleetPrLaneActivityAdapter.spec.mjs
                   test/playwright/unit/ai/services/fleet/wireFleetActivityReadSource.spec.mjs

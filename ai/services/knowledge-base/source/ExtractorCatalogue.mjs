@@ -56,36 +56,38 @@ function normalizeApiSourceOptions(options = {}) {
 }
 
 /**
- * @summary Closes ConversationCorpusSource route options to an optional origin selection.
+ * @summary Closes a corpus extractor's route options to an optional origin selection.
  *
- * `origins` names the conversation origins (index `repoSlug` values) the route extracts; absent
- * means every origin present in the corpus root index. Canonical form is trimmed, deduplicated
- * and sorted, so the same selection always yields the same extraction identity.
+ * `origins` names the origins (the corpus's `repoSlug` values) the route extracts; absent means every
+ * origin in the corpus. Canonical form is trimmed, deduplicated and sorted, so the same selection
+ * always yields the same extraction identity.
  *
- * @param {Object} options
- * @returns {{origins?: String[]}}
+ * @param {String} extractorId The extractor the refusals name.
+ * @returns {function(Object): {origins?: String[]}}
  * @private
  */
-function normalizeConversationCorpusOptions(options = {}) {
-    const keys = Object.keys(options);
+function normalizeOriginSelection(extractorId) {
+    return (options = {}) => {
+        const keys = Object.keys(options);
 
-    if (keys.some(key => key !== 'origins')) {
-        throw new TypeError('ConversationCorpusSource route options support only origins')
+        if (keys.some(key => key !== 'origins')) {
+            throw new TypeError(`${extractorId} route options support only origins`)
+        }
+
+        if (options.origins === undefined) {
+            return {};
+        }
+
+        const origins = Array.isArray(options.origins)
+            ? options.origins.map(origin => typeof origin === 'string' ? origin.trim() : '')
+            : [];
+
+        if (!origins.length || origins.some(origin => !origin)) {
+            throw new TypeError(`${extractorId} route options.origins must be a non-empty array of repository slugs`)
+        }
+
+        return {origins: [...new Set(origins)].sort()};
     }
-
-    if (options.origins === undefined) {
-        return {};
-    }
-
-    const origins = Array.isArray(options.origins)
-        ? options.origins.map(origin => typeof origin === 'string' ? origin.trim() : '')
-        : [];
-
-    if (!origins.length || origins.some(origin => !origin)) {
-        throw new TypeError('ConversationCorpusSource route options.origins must be a non-empty array of repository slugs')
-    }
-
-    return {origins: [...new Set(origins)].sort()};
 }
 
 /**
@@ -253,7 +255,8 @@ export function createExtractorCatalogue(descriptors = []) {
  * ApiSource, SkillSource, LearningSource, and ParserSource are intentionally non-delta-safe: their output can depend
  * on repository hierarchy, trigger pointers, a learning-tree manifest, or arbitrary parser code. ConversationCorpusSource is
  * non-delta-safe for a narrower reason: every chunk's identity comes from the corpus root index, a
- * file that does not change when a conversation file does. AdrSource, ConceptSource, TestSource, and
+ * file that does not change when a conversation file does. ReleaseNotesCorpusSource is the same, with
+ * each origin's release-notes index in the root index's place. AdrSource, ConceptSource, TestSource, and
  * RawRepoSource are file-local; each output derives from its own file and declared route identity.
  */
 export const ExtractorCatalogue = createExtractorCatalogue([{
@@ -294,7 +297,7 @@ export const ExtractorCatalogue = createExtractorCatalogue([{
     version          : '1.0.0',
     deltaSafe        : false,
     requiresHierarchy: false,
-    normalizeOptions : normalizeConversationCorpusOptions,
+    normalizeOptions : normalizeOriginSelection('ConversationCorpusSource'),
     extract          : async options => {
         const {default: ConversationCorpusSource} = await import('./ConversationCorpusSource.mjs');
 
@@ -331,6 +334,17 @@ export const ExtractorCatalogue = createExtractorCatalogue([{
         const {default: RawRepoSource} = await import('./RawRepoSource.mjs');
 
         return await RawRepoSource.extractFromRepository(options)
+    }
+}, {
+    extractorId      : 'ReleaseNotesCorpusSource',
+    version          : '1.0.0',
+    deltaSafe        : false,
+    requiresHierarchy: false,
+    normalizeOptions : normalizeOriginSelection('ReleaseNotesCorpusSource'),
+    extract          : async options => {
+        const {default: ReleaseNotesCorpusSource} = await import('./ReleaseNotesCorpusSource.mjs');
+
+        return await ReleaseNotesCorpusSource.extractFromRepository(options)
     }
 }, {
     extractorId      : 'SkillSource',

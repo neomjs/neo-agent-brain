@@ -19,13 +19,14 @@
 #                                  actually be WRONG about — the three entries above cannot fail
 #                                  a retrieval assertion. Whole-tree ingestion became safe by
 #                                  construction only once the generated data files left git.
-#   neo-shared/github-content-sync — the org conversation corpus (issues, pull requests and
-#                                  discussions of five org repositories, one markdown file each,
+#   neo-shared/github-content-sync — the org corpus (the issues, pull requests, discussions and
+#                                  release notes of five org repositories, one markdown file each,
 #                                  published hourly). Ingested under its OWN tuple through the
-#                                  `ConversationCorpusSource` route below; a conversation's origin
-#                                  is display-grade `customMeta`, never this repoSlug. Publishing
-#                                  it under `neo` would orphan every `neo` source-code row on the
-#                                  next reconciliation (neo-agent-brain#402, D#17846 §8.6).
+#                                  `ConversationCorpusSource` and `ReleaseNotesCorpusSource` routes
+#                                  below; an item's origin is display-grade `customMeta`, never this
+#                                  repoSlug. Publishing it under `neo` would orphan every `neo`
+#                                  source-code row on the next reconciliation (neo-agent-brain#402,
+#                                  D#17846 §8.6).
 #                                  Declared enabled by neo-agent-brain#411 after the #253 image cut
 #                                  deployed the stop for an unresolvable ref (neo-agent-brain#237),
 #                                  so the lane can no longer retry one. The entry ingests only once
@@ -97,5 +98,11 @@ tenants:
                   - '*/pulls/**/*.md'
                   - '*/discussions/**/*.md'
                   - '*/archive/**/*.md'
+            - extractorId: ReleaseNotesCorpusSource
+              territory:
+                roots: ['.']
+                include:
+                  - '*/release-notes/_index.json'
+                  - '*/release-notes/**/*.md'
           fallback:
             action: exclude
