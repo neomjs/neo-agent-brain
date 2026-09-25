@@ -38,10 +38,10 @@ class GraphMaintenanceService extends Base {
         logger.info('[GraphMaintenanceService] Initiating Graph Garbage Collection (Apoptosis)...');
 
         const
-            edges       = GraphService.db.edges.items.slice(),
-            sqlite      = GraphService.db.storage?.db,
-            nodeStmt    = sqlite?.prepare('SELECT 1 FROM Nodes WHERE id = ?'),
-            isAnchored  = id => !!GraphService.db.nodes.get(id) || !!nodeStmt?.get(id);
+            edges      = GraphService.db.edges.items.slice(),
+            sqlite     = GraphService.db.storage?.db,
+            nodeStmt   = sqlite?.prepare('SELECT 1 FROM Nodes WHERE id = ?'),
+            isAnchored = id => !!GraphService.db.nodes.get(id) || !!nodeStmt?.get(id);
         let   cullCount = 0;
 
         edges.forEach(e => {
