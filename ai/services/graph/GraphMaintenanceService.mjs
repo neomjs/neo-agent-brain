@@ -30,6 +30,9 @@ class GraphMaintenanceService extends Base {
      * LRU-bounded, so a node absent from it is usually just not loaded, and severing on that absence
      * deletes live rows. The deletion auto-saves, and the orphan pass then removes every node it
      * stranded. Without storage attached, the cache is the whole graph and decides alone.
+     *
+     * The orphan pass purges a node's vectors only once the node has left storage, because
+     * `GraphService#removeNodes` deletes only the nodes the cache holds.
      */
     async runGarbageCollection() {
         logger.info('[GraphMaintenanceService] Initiating Graph Garbage Collection (Apoptosis)...');
@@ -60,18 +63,20 @@ class GraphMaintenanceService extends Base {
             logger.info(`[GraphMaintenanceService] Apoptosis detected ${orphaned.length} orphaned nodes. Commencing eradication...`);
             GraphService.removeNodes(orphaned);
 
+            const removed = orphaned.filter(id => !nodeStmt.get(id));
+
             try {
                 // Cross-layer purge from semantic embeddings
-                logger.info(`[GraphMaintenanceService] Purging semantic vectors for ${orphaned.length} deleted nodes.`);
+                logger.info(`[GraphMaintenanceService] Purging semantic vectors for the ${removed.length} of ${orphaned.length} orphans that left storage.`);
 
                 const graphColl   = await StorageRouter.getGraphCollection();
                 const summaryColl = await StorageRouter.getSummaryCollection();
 
-                if (graphColl) {
-                    await graphColl.delete({ ids: orphaned }).catch(() => {});
+                if (graphColl && removed.length > 0) {
+                    await graphColl.delete({ ids: removed });
                 }
-                if (summaryColl) {
-                    await summaryColl.delete({ ids: orphaned }).catch(() => {});
+                if (summaryColl && removed.length > 0) {
+                    await summaryColl.delete({ ids: removed });
                 }
             } catch (e) {
                 logger.warn(`[GraphMaintenanceService] Apoptosis soft-failure on Vector purge: ${e.message}`);

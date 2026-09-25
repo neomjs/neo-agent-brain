@@ -22,14 +22,31 @@ if (!Neo.get) Neo.get = () => null;
  * The REM cycle's graph garbage collection against a graph whose node cache holds only part of
  * storage, which is the dream process's normal state: the cache is lazy and LRU-bounded. The GC may
  * sever an edge only when an endpoint is gone from storage. A node that is merely not loaded anchors
- * its edges like any other, so neither the edge nor the node the edge keeps alive is deleted.
+ * its edges like any other, so neither the edge nor the node the edge keeps alive is deleted. The
+ * orphan pass after it purges a node's vectors only together with the node itself, and never touches
+ * a session summary. The vector stores are stubs that record every delete.
  */
 test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
     test.describe.configure({mode: 'serial'});
 
-    let GraphMaintenanceService, GraphService, LifecycleService, TestLifecycleHelper, originalAutoSave;
+    let GraphMaintenanceService, GraphService, LifecycleService, StorageRouter, TestLifecycleHelper, logger, originalAutoSave, originals, vectors;
 
     const
+        stubVectorStores = ({fail = false} = {}) => {
+            const
+                deleted    = {graph: [], summary: []},
+                collection = name => ({
+                    delete: async ({ids}) => {
+                        if (fail) throw new Error('vector store refused the delete');
+                        deleted[name].push(...ids)
+                    }
+                });
+
+            StorageRouter.getGraphCollection   = async () => collection('graph');
+            StorageRouter.getSummaryCollection = async () => collection('summary');
+
+            return deleted
+        },
         edgeRow   = id => GraphService.db.storage.db.prepare(`SELECT json_extract(data, '$.properties.readAt') AS readAt FROM Edges WHERE id = ?`).get(id),
         nodeRow   = id => GraphService.db.storage.db.prepare('SELECT id FROM Nodes WHERE id = ?').get(id),
         // the LRU eviction path: the node leaves the cache, storage keeps it
@@ -56,7 +73,15 @@ test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
         GraphService            = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
         LifecycleService        = (await import('../../../../../../ai/services/memory-core/lifecycle/SystemLifecycleService.mjs')).default;
         GraphMaintenanceService = (await import('../../../../../../ai/services/graph/GraphMaintenanceService.mjs')).default;
+        StorageRouter           = (await import('../../../../../../ai/services.mjs')).Memory_StorageRouter;
+        logger                  = (await import('../../../../../../ai/mcp/server/memory-core/logger.mjs')).default;
         ({TestLifecycleHelper}  = await import('../memory-core/util.mjs'));
+
+        originals = {
+            getGraphCollection  : StorageRouter.getGraphCollection,
+            getSummaryCollection: StorageRouter.getSummaryCollection,
+            warn                : logger.warn
+        };
 
         await TestLifecycleHelper.cleanupGraphService(GraphService, LifecycleService, null, fs, 'clear');
 
@@ -83,6 +108,14 @@ test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
             await GraphService.db.storage.clear();
             GraphService.db.storage.db.exec('DELETE FROM GraphLog')
         }
+
+        vectors = stubVectorStores()
+    });
+
+    test.afterEach(() => {
+        StorageRouter.getGraphCollection   = originals.getGraphCollection;
+        StorageRouter.getSummaryCollection = originals.getSummaryCollection;
+        logger.warn                        = originals.warn
     });
 
     test('an edge whose endpoint is only evicted from the cache survives, with its receipt and both nodes', async () => {
@@ -109,5 +142,43 @@ test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
 
         expect(GraphService.db.edges.get('gc-delivered-to'), 'the unanchored edge leaves the cache').toBeFalsy();
         expect(edgeRow('gc-delivered-to'), 'and storage holds no row for it').toBeUndefined()
+    });
+
+    test('an edgeless session summary is not an orphan: the node and its vector both stay', async () => {
+        GraphService.db.addNode({id: 'summary_gc-session', label: 'SESSION_SUMMARY', properties: {semanticVectorId: 'summary_gc-session'}});
+
+        await GraphMaintenanceService.runGarbageCollection();
+
+        expect(nodeRow('summary_gc-session'), 'the summary node stays').toBeDefined();
+        expect(vectors.summary, 'and query_summaries keeps its vector').not.toContain('summary_gc-session')
+    });
+
+    test('an orphan loses its vectors only together with its node', async () => {
+        GraphService.db.addNode({id: 'CONCEPT:gc-cached', label: 'CONCEPT', properties: {}});
+        GraphService.db.addNode({id: 'CONCEPT:gc-stored', label: 'CONCEPT', properties: {}});
+        evict('CONCEPT:gc-stored');
+
+        await GraphMaintenanceService.runGarbageCollection();
+
+        expect(nodeRow('CONCEPT:gc-cached'), 'precondition: the cached orphan left storage').toBeUndefined();
+
+        for (const id of ['CONCEPT:gc-cached', 'CONCEPT:gc-stored']) {
+            const leftStorage = !nodeRow(id);
+
+            expect(vectors.graph.includes(id), `${id}: graph vector purged exactly when the node left storage`).toBe(leftStorage);
+            expect(vectors.summary.includes(id), `${id}: summary vector purged exactly when the node left storage`).toBe(leftStorage)
+        }
+    });
+
+    test('a failed vector purge is logged, not swallowed', async () => {
+        const warnings = [];
+
+        stubVectorStores({fail: true});
+        logger.warn = message => warnings.push(message);
+        GraphService.db.addNode({id: 'CONCEPT:gc-unpurged', label: 'CONCEPT', properties: {}});
+
+        await GraphMaintenanceService.runGarbageCollection();
+
+        expect(warnings.some(message => message.includes('vector store refused the delete')), 'the pass warns with the store\'s error').toBe(true)
     });
 });
