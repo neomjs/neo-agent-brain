@@ -7,21 +7,15 @@
  * that explain a withheld one. Nothing is ranked, merged or synthesized here: the pane renders
  * the producer's route under the producer's word, or the honest reason why there is none.
  *
- * Three axes, each answering as itself: the sidecar (missing / unreadable / contract-invalid are
- * typed reasons, never an empty route presented as "nothing to do"), the admission (the same
- * contract `get_context_frontier` reads, for the `computed-golden-path` consumer), and the REM
- * state (read through the injected operation; a failed read is its own state).
+ * Both reads cross the plane's operation boundary, like every other fleet source: the route and
+ * its admission come from the Memory Core's `get_computed_route` (the process that mounts the
+ * handoff volume; a fleet server on the host has no route file of its own), the REM state from
+ * `get_rem_pipeline_state`. Each axis answers as itself — the operation's typed statuses
+ * (missing / unreadable / invalid) become degraded reasons, a failed read is its own unavailable
+ * axis with a redacted detail — never an empty route presented as "nothing to do".
  */
 
-import fs                              from 'node:fs';
-import AiConfig                        from '../../config.mjs';
-import {validateComputedRouteResult}   from '../graph/computedRouteResult.mjs';
-import {
-    CORPUS_PROJECTION_CONSUMER,
-    evaluateCorpusProjectionAdmission
-} from '../graph/corpusProjectionContract.mjs';
-import {readCorpusProjectionReceipt}   from '../graph/corpusProjectionReceiptStore.mjs';
-import {redactReadFailure}             from './redactReadFailure.mjs';
+import {redactReadFailure} from './redactReadFailure.mjs';
 
 /**
  * @summary Coerce one ISO or epoch value to finite epoch milliseconds, or `null`.
@@ -42,7 +36,7 @@ function toMsOrNull(value) {
  * timestamps, its provenance, and the items exactly as written (id, title, score, rank,
  * citations). No field is recomputed; `expired` is the one derived fact, and it names the
  * producer's own `expiresAt` against the read's clock.
- * @param {Object} result A `computed-route.v1` object that passed validation.
+ * @param {Object} result A `computed-route.v1` object the operation validated.
  * @param {Number} nowMs
  * @returns {Object}
  */
@@ -74,99 +68,59 @@ export function projectComputedRoute(result, nowMs) {
 }
 
 /**
- * @summary Read the sidecar as one typed axis: `wired` with the projected route, or `degraded`
- * with the reason a route is absent — missing, unreadable, or outside the contract.
- * @param {String} routePath Absolute path of `computed-route.json`.
- * @param {Object} [seams]
- * @param {Function} [seams.exists]
- * @param {Function} [seams.readFile]
- * @param {Number} [seams.nowMs]
- * @returns {{state: String, reason: (String|null), detail: (String|undefined), route: (Object|null)}}
+ * @summary Reduce one `get_computed_route` answer to the route axis: `wired` with the projected
+ * route when the operation served a validated sidecar, `degraded` with the operation's own reason
+ * otherwise. The admission rides the same answer and is passed through untouched.
+ * @param {Object} payload The operation's `{status, reason, details, route, admission}`.
+ * @param {Number} nowMs
+ * @returns {{state: String, reason: (String|null), detail: (String|undefined), route: (Object|null), admission: (Object|null)}}
  */
-export function readComputedRouteAxis(routePath, {exists = fs.existsSync, readFile = file => fs.readFileSync(file, 'utf-8'), nowMs = Date.now()} = {}) {
-    if (typeof routePath !== 'string' || !routePath || !exists(routePath)) {
-        return {state: 'degraded', reason: 'route-sidecar-missing', route: null}
+export function reduceComputedRouteAnswer(payload, nowMs) {
+    const admission = payload?.admission && typeof payload.admission === 'object' ? payload.admission : null;
+
+    if (payload?.status === 'available' && payload.route?.route?.items) {
+        return {state: 'wired', reason: null, route: projectComputedRoute(payload.route, nowMs), admission}
     }
 
-    let result;
+    const detail = payload?.details?.errors?.join?.('; ') ?? payload?.details?.message;
 
-    try {
-        result = JSON.parse(readFile(routePath))
-    } catch (error) {
-        return {state: 'degraded', reason: 'route-sidecar-unreadable', detail: redactReadFailure(error) ?? undefined, route: null}
+    return {
+        state : 'degraded',
+        reason: typeof payload?.reason === 'string' && payload.reason ? payload.reason : 'route-answer-malformed',
+        ...(typeof detail === 'string' && detail ? {detail: detail.slice(0, 240)} : {}),
+        route : null,
+        admission
     }
-
-    const {valid, errors} = validateComputedRouteResult(result);
-
-    if (!valid) {
-        return {state: 'degraded', reason: 'route-sidecar-invalid', detail: errors.join('; ').slice(0, 240), route: null}
-    }
-
-    return {state: 'wired', reason: null, route: projectComputedRoute(result, nowMs)}
-}
-
-/**
- * @summary Resolve the corpus-projection admission for the computed Golden Path — the same
- * contract the Context Frontier read applies, for this consumer. The projection leaves are read
- * here, at the use site (ADR 0019): a disabled gate admits by the contract's own word; an
- * unreadable receipt is evaluated as absent, which the contract refuses on its own terms.
- * @param {Object} [options]
- * @param {Function} [options.readReceipt]
- * @returns {Promise<Object>} `{admitted, fallback, reasonCode, requiredFacets, staleFacets}`
- */
-export async function readProjectionAdmission({readReceipt = readCorpusProjectionReceipt} = {}) {
-    if (!AiConfig.orchestrator.corpusProjection.enabled) {
-        return {
-            admitted      : true,
-            fallback      : 'current',
-            reasonCode    : 'projection-gate-disabled',
-            requiredFacets: ['issues', 'discussions'],
-            staleFacets   : []
-        }
-    }
-
-    let receipt = null;
-
-    try {
-        receipt = await readReceipt(AiConfig.orchestrator.corpusProjection.receiptPath)
-    } catch (error) {
-        console.warn(`[fleet] golden path: corpus projection receipt unavailable: ${redactReadFailure(error) ?? 'no legible error'}`)
-    }
-
-    return evaluateCorpusProjectionAdmission({
-        consumer                : CORPUS_PROJECTION_CONSUMER.computedGoldenPath,
-        receipt,
-        expectedSourceRepository: AiConfig.orchestrator.corpusProjection.sourceRepository,
-        expectedSourceRef       : AiConfig.orchestrator.corpusProjection.sourceRef
-    })
 }
 
 /**
  * @summary Create one process-lifetime Golden Path source.
  * @param {Object} options
- * @param {String} options.routePath Absolute path of the synthesizer's `computed-route.json`.
+ * @param {Function} options.getComputedRoute The Memory Core `get_computed_route` operation.
  * @param {Function} options.getRemPipelineState The Memory Core `get_rem_pipeline_state` operation.
- * @param {Function} [options.readAdmission] The admission read; the production read resolves its leaves itself.
  * @param {Function} [options.now]
- * @param {Function} [options.exists]
- * @param {Function} [options.readFile]
  * @returns {{readGoldenPath: Function}}
  */
-export function createFleetGoldenPathSource({
-    routePath,
-    getRemPipelineState,
-    readAdmission = readProjectionAdmission,
-    now           = () => Date.now(),
-    exists,
-    readFile
-} = {}) {
-    if (typeof routePath !== 'string' || !routePath) {
-        throw new TypeError('fleet golden path: routePath must be a non-empty string')
+export function createFleetGoldenPathSource({getComputedRoute, getRemPipelineState, now = () => Date.now()} = {}) {
+    if (typeof getComputedRoute !== 'function') {
+        throw new TypeError('fleet golden path: getComputedRoute must be a function')
     }
 
     if (typeof getRemPipelineState !== 'function') {
         throw new TypeError('fleet golden path: getRemPipelineState must be a function')
     }
+
+    const readRouteAxis = async nowMs => {
+        try {
+            return reduceComputedRouteAnswer(await getComputedRoute({}), nowMs)
+        } catch (error) {
+            const detail = redactReadFailure(error);
+
+            console.warn(`[fleet] golden path route read failed: ${detail ?? 'no legible error'}`);
+
+            return {state: 'unavailable', reason: 'route-read-failed', ...(detail ? {detail} : {}), route: null, admission: null}
+        }
+    };
 
     const readRemAxis = async () => {
         try {
@@ -192,10 +146,11 @@ export function createFleetGoldenPathSource({
 
     return {
         /**
-         * @summary Read the Golden Path picture: the sidecar axis decides the envelope's
-         * `capability` (`wired` when a contract-valid route was read, `degraded` otherwise, with
-         * the axis's reason); the admission and the REM counts ride beside it so the pane can say
-         * current / last known good / withheld with the producer's own timestamps.
+         * @summary Read the Golden Path picture: the route axis decides the envelope's
+         * `capability` (`wired` when the operation served a validated route, `degraded` when it
+         * answered with a typed reason, `unavailable` when the read itself failed); the admission
+         * and the REM counts ride beside it so the pane can say current / last known good /
+         * withheld with the producer's own timestamps.
          * @param {Object} [params] Reserved; the verb takes no caller input today.
          * @returns {Promise<Object>}
          */
@@ -208,11 +163,8 @@ export function createFleetGoldenPathSource({
 
             const
                 capturedAt        = new Date(nowMs).toISOString(),
-                routeAxis         = readComputedRouteAxis(routePath, {exists, readFile, nowMs}),
-                [admission, rem]  = await Promise.all([
-                    readAdmission(),
-                    readRemAxis()
-                ]);
+                [routeAxis, rem]  = await Promise.all([readRouteAxis(nowMs), readRemAxis()]),
+                admission         = routeAxis.admission;
 
             return {
                 capability: {
@@ -224,9 +176,11 @@ export function createFleetGoldenPathSource({
                 route  : routeAxis.route,
                 rem    : rem.counts,
                 sources: {
-                    route: {state: routeAxis.state, reason: routeAxis.reason, ...(routeAxis.detail ? {detail: routeAxis.detail} : {})},
-                    admission: {state: admission.admitted ? 'current' : 'withheld', reason: admission.reasonCode},
-                    rem  : {state: rem.state, reason: rem.reason, ...(rem.detail ? {detail: rem.detail} : {})}
+                    route    : {state: routeAxis.state, reason: routeAxis.reason, ...(routeAxis.detail ? {detail: routeAxis.detail} : {})},
+                    admission: admission
+                        ? {state: admission.admitted ? 'current' : 'withheld', reason: admission.reasonCode ?? null}
+                        : {state: 'unavailable', reason: routeAxis.reason},
+                    rem      : {state: rem.state, reason: rem.reason, ...(rem.detail ? {detail: rem.detail} : {})}
                 }
             }
         }

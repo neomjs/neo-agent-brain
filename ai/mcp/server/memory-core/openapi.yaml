@@ -492,6 +492,25 @@ paths:
               schema:
                 type: object
 
+  /handoff/computed-route:
+    post:
+      summary: Get Computed Route
+      operationId: get_computed_route
+      x-neo-tool-tier: read
+      x-pass-as-object: true
+      x-annotations:
+        readOnlyHint: true
+      x-neo-tool-summary: Read the computed Golden Path sidecar (validated route + corpus-projection admission).
+      description: Reads the computed Golden Path sidecar (`computed-route.json`, the `computed-route.v1` contract) beside the Sandman handoff and returns `{status, reason, details, path, mtimeMs, route, admission}`. `status` is `available` (the route validated and passed through as written), `missing`, `unreadable` or `invalid`, each with a stable `reason` code and never a throw; `admission` is the corpus-projection admission for the `computed-golden-path` consumer (current, or last-known-good with the contract's reason). Read-only, team-visible; the Fleet cockpit's Golden Path panes read the plane's route through this instead of a host file.
+      tags: [Diagnostics]
+      responses:
+        '200':
+          description: The validated route with its admission, or a typed unavailable envelope.
+          content:
+            application/json:
+              schema:
+                type: object
+
   /rem/pipeline-state:
     post:
       summary: Get REM Pipeline State

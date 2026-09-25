@@ -26,6 +26,8 @@ import {
     saveNlTransaction
 } from '../../../services/memory-core/helpers/nlTransactionArchiveStore.mjs';
 import {readSandmanHandoff}    from '../../../services/memory-core/helpers/sandmanHandoffStore.mjs';
+import {readComputedRoute}     from '../../../services/memory-core/helpers/computedRouteStore.mjs';
+import {COMPUTED_ROUTE_SIDECAR_FILENAME} from '../../../services/graph/computedRouteResult.mjs';
 import {exploreLaneLandscape}  from '../../../services/graph/exploreLaneLandscape.mjs';
 import {exploreMemoryHistory}  from '../../../services/memory-core/helpers/exploreMemoryHistory.mjs';
 import {makeChatModelGenerate} from '../../../services/memory-core/helpers/chatModelGenerate.mjs';
@@ -94,6 +96,20 @@ const inspectDeployment = async args => {
 const readSandmanHandoffTool = args => readSandmanHandoff({
     filePath    : mcConfig.handoffFilePath,
     staleAfterMs: args?.staleAfterMs
+});
+
+/**
+ * @summary Serves the computed Golden Path sidecar beside the handoff, with the corpus-projection
+ * admission for its consumer — the plane's route, for a cockpit that cannot read the plane's files.
+ * The projection leaves are read here, at the use site, and handed on as values.
+ * @returns {Promise<Object>} `{status, reason, details, path, mtimeMs, route, admission}`
+ */
+const readComputedRouteTool = () => readComputedRoute({
+    filePath         : path.join(path.dirname(mcConfig.handoffFilePath), COMPUTED_ROUTE_SIDECAR_FILENAME),
+    projectionEnabled: AiConfig.orchestrator.corpusProjection.enabled,
+    receiptPath      : AiConfig.orchestrator.corpusProjection.receiptPath,
+    sourceRepository : AiConfig.orchestrator.corpusProjection.sourceRepository,
+    sourceRef        : AiConfig.orchestrator.corpusProjection.sourceRef
 });
 
 // `explore_memory_history` — the Memory/session temporal Bird View runtime op. The pure composition
@@ -529,6 +545,7 @@ const serviceMapping = {
     get_deployment_state_snapshot: readDeploymentInspection,
     inspect_deployment           : inspectDeployment,
     get_sandman_handoff          : readSandmanHandoffTool,
+    get_computed_route           : readComputedRouteTool,
     mark_read                    : MailboxService         .markRead                .bind(MailboxService),
     archive_message              : MailboxService         .archiveMessage          .bind(MailboxService),
     delete_message               : MailboxService         .deleteMessage           .bind(MailboxService),

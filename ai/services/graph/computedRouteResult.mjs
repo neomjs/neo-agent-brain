@@ -36,6 +36,13 @@
 export const COMPUTED_ROUTE_SCHEMA_VERSION = 'computed-route.v1';
 
 /**
+ * @summary The sidecar's file name beside the Sandman handoff — the producer writes it there, and
+ * every reader derives the path from the handoff's directory.
+ * @type {String}
+ */
+export const COMPUTED_ROUTE_SIDECAR_FILENAME = 'computed-route.json';
+
+/**
  * @summary Valid top-level route statuses. Independent of item count.
  * @type {Set<String>}
  */

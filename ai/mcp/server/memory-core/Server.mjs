@@ -200,6 +200,7 @@ class Server extends BaseServer {
             'get_deployment_state_snapshot',
             'inspect_deployment',
             'get_sandman_handoff',
+            'get_computed_route',
             'get_memory_core_tool_metrics'
         ];
     }
