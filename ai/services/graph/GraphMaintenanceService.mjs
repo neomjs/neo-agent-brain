@@ -25,18 +25,26 @@ class GraphMaintenanceService extends Base {
     /**
      * Executes the global "Fade" algorithm across all Native Graph edges,
      * then executes Vector Apoptosis to clean up resulting orphaned nodes from the hybrid semantic space.
+     *
+     * An edge is unanchored only when an endpoint is missing from storage. The node cache is lazy and
+     * LRU-bounded, so a node absent from it is usually just not loaded, and severing on that absence
+     * deletes live rows. The deletion auto-saves, and the orphan pass then removes every node it
+     * stranded. Without storage attached, the cache is the whole graph and decides alone.
      */
     async runGarbageCollection() {
         logger.info('[GraphMaintenanceService] Initiating Graph Garbage Collection (Apoptosis)...');
 
-        const edges     = GraphService.db.edges.items.slice();
+        const
+            edges       = GraphService.db.edges.items.slice(),
+            sqlite      = GraphService.db.storage?.db,
+            nodeStmt    = sqlite?.prepare('SELECT 1 FROM Nodes WHERE id = ?'),
+            isAnchored  = id => !!GraphService.db.nodes.get(id) || !!nodeStmt?.get(id);
         let   cullCount = 0;
 
         edges.forEach(e => {
             if (e.type === 'SYSTEM_TENET') return; // Protect structural system edges from fading
 
-            // Enforce SQLite Foreign Key constraints dynamically to avoid crashes
-            if (!GraphService.db.nodes.get(e.source) || !GraphService.db.nodes.get(e.target)) {
+            if (!isAnchored(e.source) || !isAnchored(e.target)) {
                 GraphService.db.removeEdge(e.id);
                 cullCount++;
             }
