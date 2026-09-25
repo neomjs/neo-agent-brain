@@ -477,6 +477,61 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
         });
     });
 
+    // Grace's RA-2: both channel validators (a non-positive lookback, a non-integer death limit) threw
+    // OUTSIDE `read()`'s catch, with no per-service guard in `collectSnapshot` and a rethrowing
+    // `writeSnapshotIfDue` above — so one bad leaf in an OPTIONAL channel stopped the snapshot for
+    // every service, every cycle. This arm is the property that containment buys: the channel degrades,
+    // and everything else still lands.
+    test('an INVALID event-channel leaf degrades only that channel, and the rest of the snapshot still writes', async () => {
+        AiConfig.orchestrator.deploymentStateBridge.includeEvents       = true;
+        AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit    = 0;   // the integer-limit validator rejects this
+        AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs     = -1;  // and so does the lookback validator
+        AiConfig.orchestrator.deploymentRuntimeAccess.readOperations     = ['inspect', 'events', 'logs', 'stats'];
+
+        const calls                = [],
+              runtimeAccessService = {
+                  async readObserve(request) {
+                      calls.push(request);
+
+                      if (request.operation === 'inspect') {
+                          return {data: {State: {Status: 'running'}}, proof: {operation: 'inspect'}};
+                      }
+
+                      if (request.operation === 'stats') {
+                          return {data: statsSample(), proof: {operation: 'stats'}};
+                      }
+
+                      return {data: {logs: '', tail: request.tail}, proof: {operation: 'logs'}};
+                  }
+              },
+              service  = createService({runtimeAccessService, diagnosisService: {diagnose: () => ({status: 'healthy'})}}),
+              // The arm Grace named: not "does it degrade" but "does the SNAPSHOT still come back".
+              // `collectSnapshot` is the same seam every other arm here reads, so a difference in the
+              // result is attributable to the containment and not to a different entry point.
+              snapshot = await service.collectSnapshot();
+
+        // The channel is off and says so, distinct from a read failure and from a disabled channel.
+        expect(snapshot.services[0]).toMatchObject({
+            deaths   : null,
+            deathRead: {status: 'unavailable', unavailableReason: 'event-config-invalid'}
+        });
+
+        // The rest of the service record survived — this is the whole point of containment.
+        expect(calls.map(call => call.operation)).toContain('inspect');
+        expect(snapshot.services[0].serviceKey).toBeTruthy();
+        expect(snapshot.generatedAt).toBeTruthy();
+
+        // And a corrected leaf recovers on its own: the cursor and history were left untouched, so the
+        // next poll with a valid limit publishes normally. A containment that wedged the channel
+        // shut would satisfy the arm above and still be a defect.
+        AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit = 10;
+        AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs  = 5 * 60 * 1000;
+
+        const recovered = await service.collectSnapshot();
+
+        expect(recovered.services[0].deathRead.status).not.toBe('unavailable')
+    });
+
     test('a logs read that landed on a DIFFERENT container is never incarnation-bounded', async () => {
         // `readObserve` resolves a target per call, so a compose recreate between inspect and logs
         // lands them on different containers. A legitimately-applied interval on the WRONG container

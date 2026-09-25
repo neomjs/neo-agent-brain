@@ -769,26 +769,49 @@ export class DeploymentStateBridgeService extends Base {
             };
 
         if (eventsAllowed) {
-            const eventWindow = this.resolveEventWindow({serviceKey, observedAt: observationNow()});
+            // Contained to the CHANNEL, deliberately (#497 RA-2). Both validators below throw on a bad
+            // value — a non-positive lookback, a non-integer death limit — and both sit OUTSIDE `read()`'s
+            // own catch, with no per-service guard in `collectSnapshot` and a rethrowing
+            // `writeSnapshotIfDue` above. So one bad leaf in an OPTIONAL channel would stop the snapshot
+            // for every service, every cycle, and the plane would lose its whole deployment-state
+            // surface over a diagnostic nobody is required to run.
+            //
+            // Boot-refusal was the alternative and is worse: it takes the orchestrator down for the same
+            // leaf. An invalid optional channel degrades that one channel and says so; everything else
+            // keeps writing, which is the property the arm below pins.
+            try {
+                const eventWindow = this.resolveEventWindow({serviceKey, observedAt: observationNow()});
 
-            events = await read('events', eventWindow);
+                events = await read('events', eventWindow);
 
-            if (events !== null) {
-                deaths = foldDockerDeathEvents(
-                    events.events,
-                    this.recentDeathsByService.get(serviceKey),
-                    bridgeConfig.recentDeathLimit
-                );
-                this.recentDeathsByService.set(serviceKey, deaths);
-                this.eventCursorByService.set(serviceKey, events.appliedUntil || eventWindow.until);
+                if (events !== null) {
+                    deaths = foldDockerDeathEvents(
+                        events.events,
+                        this.recentDeathsByService.get(serviceKey),
+                        bridgeConfig.recentDeathLimit
+                    );
+                    this.recentDeathsByService.set(serviceKey, deaths);
+                    this.eventCursorByService.set(serviceKey, events.appliedUntil || eventWindow.until);
+                    deathRead = {
+                        status           : 'available',
+                        source           : 'docker-events',
+                        limit            : bridgeConfig.recentDeathLimit,
+                        unavailableReason: null
+                    };
+                } else {
+                    deathRead.unavailableReason = errors.find(entry => entry?.operation === 'events')?.reason || 'event-read-failed';
+                }
+            } catch (error) {
+                // A rejected configuration, not a runtime fault: name it distinctly so an operator can
+                // tell "the channel is misconfigured" from "the channel could not be read", and leave
+                // the cursor and the death history untouched so a corrected leaf recovers on its own.
+                this.writeLog?.('WARN', `[DeploymentStateBridge] REM run-state channel misconfigured, continuing without it: ${error.message}`);
+                deaths = null;
                 deathRead = {
-                    status           : 'available',
-                    source           : 'docker-events',
-                    limit            : bridgeConfig.recentDeathLimit,
-                    unavailableReason: null
+                    ...deathRead,
+                    status           : 'unavailable',
+                    unavailableReason: 'event-config-invalid'
                 };
-            } else {
-                deathRead.unavailableReason = errors.find(entry => entry?.operation === 'events')?.reason || 'event-read-failed';
             }
         }
 
