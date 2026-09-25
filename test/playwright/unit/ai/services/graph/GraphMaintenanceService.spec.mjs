@@ -161,7 +161,8 @@ test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
             'MESSAGE:gc-severed'       : 'MESSAGE',
             'SYSTEM_CLOCK:gc'          : 'SYSTEM_CLOCK',
             'kb-tenant-manifest:gc'    : 'KnowledgeBaseTenantManifest',
-            'nl-transaction-archive:gc': 'nl-transaction-archive'
+            'nl-transaction-archive:gc': 'nl-transaction-archive',
+            'FUTURE_RECORD:gc'         : 'FUTURE_RECORD' // a label nobody has named yet
         };
 
         Object.entries(records).forEach(([id, label]) => GraphService.db.addNode({id, label, properties: {}}));

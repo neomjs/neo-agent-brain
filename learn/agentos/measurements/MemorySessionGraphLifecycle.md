@@ -53,9 +53,10 @@ or context cost unless an operator explicitly asks for the report.
 
 ## Retention Policy
 
-`MEMORY` and `SESSION` nodes remain protected from
-`GraphService.getOrphanedNodes()` and vector apoptosis by default. This is
-intentional even when a node is temporarily edgeless:
+`GraphService.getOrphanedNodes()` returns only edgeless nodes of a label in
+`ORPHAN_COLLECTABLE_LABELS` (today `CONCEPT` alone), so memories, sessions and
+every other record survive vector apoptosis whatever their edge state. This holds
+even when a node is temporarily edgeless:
 
 - Freshly ingested memories and sessions can be created before all downstream
   provenance edges are attached.
@@ -65,10 +66,9 @@ intentional even when a node is temporarily edgeless:
   memory/session row exists.
 
 `GraphMaintenanceService.runGarbageCollection()` must continue to delete only
-the node IDs returned by `GraphService.getOrphanedNodes()`. Broadening apoptosis
-to include `MEMORY` or `SESSION` requires a separate ticket with a Contract
-Ledger and explicit evidence that memory recovery, mailbox threading, provenance
-queries, and agent identity edge creation remain safe.
+the node IDs returned by `GraphService.getOrphanedNodes()`. A label joins
+`ORPHAN_COLLECTABLE_LABELS` only by its own ticket, with evidence that its
+writers create it with edges and that no other service owns its lifecycle.
 
 ## Future Archival Gate
 

@@ -63,7 +63,7 @@ class GraphMaintenanceService extends Base {
             logger.info(`[GraphMaintenanceService] Apoptosis detected ${orphaned.length} orphaned nodes. Commencing eradication...`);
             GraphService.removeNodes(orphaned);
 
-            const removed = orphaned.filter(id => !nodeStmt.get(id));
+            const removed = orphaned.filter(id => !nodeStmt?.get(id));
 
             try {
                 // Cross-layer purge from semantic embeddings

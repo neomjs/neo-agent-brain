@@ -13,7 +13,6 @@ import fsExtra                         from 'fs-extra';
 import {isDeepStrictEqual}             from 'node:util';
 import {projectNode}                   from './nodeProjection.mjs';
 import {LEGACY_RAW_MEMORY_NODE_LABEL}  from './helpers/rawMemoryGraphIdentity.mjs';
-import {RAW_MEMORY_NODE_LABEL}         from './helpers/rawMemoryGraphIdentity.mjs';
 
 /**
  * Row-level-security visibility predicate for an in-memory graph **node or edge**, mirroring
@@ -90,12 +89,14 @@ export const PROTECTED_EDGE_TYPES = Object.freeze([
 ]);
 const PROTECTED_EDGE_TYPE_SET = new Set(PROTECTED_EDGE_TYPES);
 
-// The labels `GraphService#getOrphanedNodes` never returns; its JSDoc gives each one's reason.
-const ORPHAN_PROTECTED_LABELS = new Set([
-    'ADR', 'AgentIdentity', 'BroadcastSentinel', 'DISCUSSION', 'ISSUE', 'KnowledgeBaseTenantManifest', 'MESSAGE',
-    'nl-transaction-archive', 'PULL_REQUEST', RAW_MEMORY_NODE_LABEL, LEGACY_RAW_MEMORY_NODE_LABEL, 'SESSION',
-    'SESSION_SUMMARY', 'SUMMARY_DAILY', 'SUMMARY_SESSION', 'SYSTEM_ANCHOR', 'SYSTEM_CLOCK', 'System', 'WAKE_SUBSCRIPTION'
-]);
+/**
+ * The labels whose nodes exist only through their edges, so an edgeless one has faded and
+ * `GraphService#getOrphanedNodes` may return it. A `CONCEPT` is created with the edge that names it:
+ * REM extraction links it to the sessions that discuss it, and the Concept Ontology creates it as an
+ * edge's target stub. A label joins only when its writers create it with edges and no other service
+ * owns its lifecycle.
+ */
+const ORPHAN_COLLECTABLE_LABELS = Object.freeze(['CONCEPT']);
 
 /**
  * @summary Service that manages the SQLite Knowledge Graph (Nodes and Edges).
@@ -1768,50 +1769,23 @@ class GraphService extends Base {
     }
 
     /**
-     * Finds nodes that have lost all structural edges to trigger algorithmic forgetting.
-     * The labels in `ORPHAN_PROTECTED_LABELS` are never returned, whatever their edge state. `SESSION` and
-     * the raw-memory labels (`AGENT_MEMORY`, legacy `MEMORY`) are protected because they are load-bearing
-     * anchors for future mailbox (`IN_REPLY_TO`), identity (`AUTHORED_BY`), and provenance (`MENTIONED_IN`)
-     * edges — they may be momentarily edgeless during the ingestion window or for empty sessions, and must
-     * persist so downstream edge-creators attach to real targets.
-     * `AgentIdentity` and `BroadcastSentinel` are protected to prevent silent wipes during
-     * idle or fresh Memory Core states prior to their first activity edges.
-     * `WAKE_SUBSCRIPTION` nodes are protected natively against GC race conditions during background
-     * maintenance sweeps. `ADR` nodes are durable architectural authority records, so they remain
-     * graph-queryable even before relationship edges are materialized. `SUMMARY_SESSION` and
-     * `SUMMARY_DAILY` are temporal-pyramid records (`ai/graph/temporalSummarySchema.mjs`), irreplaceable
-     * aggregation facts. A `SESSION_SUMMARY` node's id is its vector's id in the collection
-     * `query_summaries` searches, so pruning one deletes that session's summary from search. A `MESSAGE`
-     * is a mailbox record whose edges `PROTECTED_EDGE_TYPES` never decays, so it is edgeless only once
-     * they were destroyed, and deleting it deletes the message. `SYSTEM_CLOCK` (`_SYSTEM_STATE`, whose
-     * `lastDecayedAt` is the decay's 24-hour lock), `KnowledgeBaseTenantManifest` and
-     * `nl-transaction-archive` are records written edgeless by construction.
+     * Finds the edgeless nodes algorithmic forgetting may take: those of a label in
+     * `ORPHAN_COLLECTABLE_LABELS`. Every other label is kept whatever its edge state, because an edgeless
+     * record proves nothing about its use: many are written edgeless by construction (the decay clock,
+     * a KB tenant's manifest, an NL archive, presence), and a defect can strip the edges of any durable
+     * one (a message, a session summary, a raw memory).
      * @returns {String[]} Array of node IDs mapping to orphaned vectors.
      */
     getOrphanedNodes() {
         if (!this.db || !this.db.storage || !this.db.storage.db) return [];
 
-        const stmt = this.db.storage.db.prepare(`
-            SELECT n.id, n.data
+        return this.db.storage.db.prepare(`
+            SELECT n.id
             FROM Nodes n
-            WHERE NOT EXISTS (SELECT 1 FROM Edges WHERE source = n.id)
+            WHERE json_extract(n.data, '$.label') IN (${ORPHAN_COLLECTABLE_LABELS.map(() => '?').join(', ')})
+              AND NOT EXISTS (SELECT 1 FROM Edges WHERE source = n.id)
               AND NOT EXISTS (SELECT 1 FROM Edges WHERE target = n.id)
-        `);
-
-        let orphaned = [];
-        for (let row of stmt.all()) {
-            let data;
-            try {
-                // n.data maps to JSON payload storing the node label
-                data = JSON.parse(row.data);
-            } catch(e) { continue; }
-
-            if (!ORPHAN_PROTECTED_LABELS.has(data.label)) {
-                orphaned.push(row.id);
-            }
-        }
-
-        return orphaned;
+        `).pluck().all(...ORPHAN_COLLECTABLE_LABELS);
     }
 
     /**
