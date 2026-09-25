@@ -174,6 +174,10 @@ test.describe('#16229 — the host-edge entrypoint delivers the POSTURE, not the
         // `orchestrator.dataDir` default and every host-edge lane at its config default — which is
         // precisely the "role, not posture" gap the first attempt left open.
         expect(posture.NEO_ORCHESTRATOR_LMS_ENABLED).toBe('true');
+        // #481: the host edge is the one process that can own the loopback Neural Link bridge every
+        // seat's MCP server and the cockpit dial — a seat cannot spawn it, and the container's
+        // bridge is unreachable from the host.
+        expect(posture.NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED).toBe('true');
         expect(posture.NEO_ORCHESTRATOR_MLX_ENABLED).toBe('false');
         expect(posture.NEO_ORCHESTRATOR_OLLAMA_ENABLED).toBe('false');
     });
@@ -183,9 +187,10 @@ test.describe('#16229 — the host-edge entrypoint delivers the POSTURE, not the
         // cannot catch: the enable flag is honoured, the authority filter drops the lane, and the
         // operator reads an enabled flag that does nothing.
         const enabledLanes = {
-            NEO_ORCHESTRATOR_LMS_ENABLED   : 'lms',
-            NEO_ORCHESTRATOR_MLX_ENABLED   : 'mlx',
-            NEO_ORCHESTRATOR_OLLAMA_ENABLED: 'ollama'
+            NEO_ORCHESTRATOR_LMS_ENABLED      : 'lms',
+            NEO_ORCHESTRATOR_MLX_ENABLED      : 'mlx',
+            NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED: 'neuralLinkBridge',
+            NEO_ORCHESTRATOR_OLLAMA_ENABLED   : 'ollama'
         };
         const posture = buildHostEdgeEnv({stateDir: '/probe/host-edge'});
 

@@ -537,6 +537,10 @@ test.describe('data-plane profile election — base and integration-fixture disp
         expect(hostEdgePosture.NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE).toBe('host-edge');
         expect(hostEdgePosture.NEO_AI_DEPLOYMENT_MODE).toBe('local');
         expect(hostEdgePosture.NEO_ORCHESTRATOR_LMS_ENABLED).toBe('true');
+        // #481: the second elected lane — the loopback Neural Link bridge the seats and the cockpit
+        // share. Elected in the posture module only; the plist must not restate it either.
+        expect(hostEdgePosture.NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED).toBe('true');
+        expect(hostEdgePlistSource).not.toContain('<key>NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED</key>');
 
         expect(hostEdgePlistSource).toMatch(
             /<key>NEO_MODEL_PROVIDER<\/key>\s*<string>openAiCompatible<\/string>/
@@ -565,7 +569,6 @@ test.describe('data-plane profile election — base and integration-fixture disp
             'NEO_ORCHESTRATOR_MESSAGE_DAEMON_ENABLED',
             'NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED',
             'NEO_ORCHESTRATOR_DEV_SERVER_ENABLED',
-            'NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED',
             'NEO_ORCHESTRATOR_PRIMARY_DEV_SYNC_ENABLED',
             'NEO_ORCHESTRATOR_KB_SYNC_ENABLED',
             'NEO_ORCHESTRATOR_TEMPORAL_SUMMARY_ENABLED',
