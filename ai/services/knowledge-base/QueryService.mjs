@@ -211,7 +211,8 @@ class QueryService extends Base {
             if (metadata.type === 'pull' && type === 'all') score += queryScoreWeights.pullPenalty;
             if (metadata.type === 'release') score += queryScoreWeights.releasePenalty;
             if (fileName.endsWith('base.mjs')) score += queryScoreWeights.baseFileBonus;
-            if (metadata.type === 'release' && queryLower.startsWith('v') && nameLower === queryLower) score += queryScoreWeights.releaseExactMatch;
+            // A corpus note's name carries its origin (`neo/v13.1.0`), an engine note's does not
+            if (metadata.type === 'release' && queryLower.startsWith('v') && (nameLower === queryLower || nameLower.endsWith(`/${queryLower}`))) score += queryScoreWeights.releaseExactMatch;
 
             sourceScores[sourcePath] = (sourceScores[sourcePath] || 0) + score;
 

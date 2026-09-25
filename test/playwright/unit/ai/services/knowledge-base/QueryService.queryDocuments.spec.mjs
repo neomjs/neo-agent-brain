@@ -266,6 +266,28 @@ test.describe('Neo.ai.services.knowledge-base.QueryService#queryDocuments', () =
             .resolves.toEqual({message: 'No results found for your query and type.'});
     });
 
+    test('an exact version query ranks its release note first when the name carries the corpus origin', async () => {
+        const capture = {};
+        // The beta comes back first and its file name contains the query too, so only the exact-version
+        // boost can put the exact note on top.
+        installQueryStub([{
+            source          : 'neo/release-notes/chunk-1/v13.1.0-beta.md',
+            type            : 'release',
+            name            : 'neo/v13.1.0-beta',
+            inheritanceChain: '[]'
+        }, {
+            source          : 'neo/release-notes/chunk-1/v13.1.0.md',
+            type            : 'release',
+            name            : 'neo/v13.1.0',
+            inheritanceChain: '[]'
+        }], capture);
+
+        const result = await QueryService.queryDocuments({query: 'v13.1.0', type: 'release', limit: 5});
+
+        expect(capture.options[0].where).toEqual({type: 'release'});
+        expect(result.topResult).toBe('neo/release-notes/chunk-1/v13.1.0.md');
+    });
+
     test('boosts inheritance parent sources into the ranked result set', async () => {
         const capture = {};
         installQueryStub([{
