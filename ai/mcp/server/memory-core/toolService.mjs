@@ -309,7 +309,8 @@ export function composeMemoryCoreHealthcheck({
     serviceKey = 'mc-server',
     corpusProjectionFreshness = null,
     starvationNow = Date.now(),
-    starvationStaleAfterMs = null
+    starvationStaleAfterMs = null,
+    deathChannelEnabled = null
 }) {
     const
         backupHealth = deploymentInspection?.ok === true
@@ -325,7 +326,11 @@ export function composeMemoryCoreHealthcheck({
             plane,
             vectorGeneration,
             maintenance,
-            lastDeath: selectLastServiceDeath(deploymentInspection, serviceKey),
+            lastDeath: selectLastServiceDeath(deploymentInspection, serviceKey, {
+                // The config read belongs to the consumer, not the helper: a channel switched off means
+                // "no death" is the expected answer, and only this layer knows whether it is off.
+                channelEnabled: deathChannelEnabled ?? AiConfig.orchestrator.deploymentStateBridge.includeEvents
+            }),
             corpusProjectionFreshness
         },
         drainStalled   = memoryWalDrain.state === 'stalled',

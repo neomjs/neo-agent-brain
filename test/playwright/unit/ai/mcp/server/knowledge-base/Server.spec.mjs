@@ -115,16 +115,78 @@ test.describe('Neo.ai.mcp.server.knowledge-base.Server', () => {
                   }
               });
 
-        expect(result.lastDeath).toEqual(death);
+        expect(result.lastDeath).toEqual({status: 'available', record: death, reason: null});
         expect(result.status).toBe('healthy');
 
         const {tools} = await listTools(),
               schema = tools.find(item => item.name === 'healthcheck').outputSchema.properties.lastDeath;
 
-        expect(schema.nullable).toBe(true);
-        expect(schema.properties.at.type).toBe('string');
-        expect(schema.properties.exitCode.type).toBe('integer');
-        expect(schema.properties.oomKilled.type).toBe('boolean');
+        expect(schema.properties.status.enum).toEqual(['available', 'stale', 'degraded', 'unavailable', 'disabled', 'unknown']);
+        expect(schema.properties.record.nullable).toBe(true);
+        expect(schema.properties.record.properties.at.type).toBe('string');
+        expect(schema.properties.record.properties.exitCode.type).toBe('integer');
+        expect(schema.properties.record.properties.oomKilled.type).toBe('boolean');
+        expect(schema.properties.reason.nullable).toBe(true);
+        expect(schema.required).toEqual(['status', 'record'])
+    });
+
+    // Grace's RA-1, mirrored from the Memory Core spec: a bare `null` answers both "could not read"
+    // and "read it, nothing died". Both healthchecks carry the same projection, and both are pinned
+    // separately — a guard proven on one lane and assumed on the other is how the two drift.
+    test.describe('the Knowledge Base last-death projection keeps the states apart (#466 RA-1)', () => {
+        const project = async (deploymentInspection, channelEnabled) => (await import('../../../../../../../ai/mcp/server/knowledge-base/toolService.mjs')).composeKnowledgeBaseHealthcheck({
+            health               : {status: 'healthy', details: ['ok']},
+            plane                : {id: 'test-plane', dataRoot: '/test-data'},
+            serviceKey           : 'kb-server',
+            deploymentInspection,
+            ...(channelEnabled === undefined ? {} : {deathChannelEnabled: channelEnabled})
+        });
+
+        test('a FAILED read is `unavailable`, and the verdict is untouched', async () => {
+            const result = await project({ok: false, status: 'unavailable', reason: 'snapshot-missing'});
+
+            expect(result.lastDeath).toEqual({status: 'unavailable', record: null, reason: 'snapshot-missing'});
+            expect(result.status).toBe('healthy')
+        });
+
+        test('a STALE snapshot is `stale`', async () => {
+            const result = await project({ok: false, status: 'stale', reason: 'snapshot-stale'});
+
+            expect(result.lastDeath).toEqual({status: 'stale', record: null, reason: 'snapshot-stale'})
+        });
+
+        test('a DISABLED channel is `disabled`, and the same inspection reads `available` when on', async () => {
+            const inspection = {
+                    ok      : true,
+                    status  : 'available',
+                    snapshot: {services: [{serviceKey: 'kb-server', deaths: []}]}
+                },
+                  off = await project(inspection, false),
+                  on  = await project(inspection, true);
+
+            expect(off.lastDeath).toEqual({status: 'disabled', record: null, reason: 'event-channel-disabled'});
+            expect(on.lastDeath).toEqual({status: 'available', record: null, reason: null})
+        });
+
+        test('an OBSERVED but empty history is `available` with a null record', async () => {
+            const result = await project({
+                ok      : true,
+                status  : 'available',
+                snapshot: {services: [{serviceKey: 'kb-server', deaths: []}]}
+            });
+
+            expect(result.lastDeath).toEqual({status: 'available', record: null, reason: null})
+        });
+
+        test('a service absent from a snapshot we DID read is `unknown`', async () => {
+            const result = await project({
+                ok      : true,
+                status  : 'available',
+                snapshot: {services: [{serviceKey: 'mc-server', deaths: []}]}
+            });
+
+            expect(result.lastDeath).toEqual({status: 'unknown', record: null, reason: 'service-absent'})
+        });
     });
 
     test('#15886: the plane-identity assertion names its ORIGIN server, not the shared class name', async () => {

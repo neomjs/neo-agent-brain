@@ -337,10 +337,16 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
         const {tools} = await toolService.listTools(),
               schema = tools.find(item => item.name === 'healthcheck').outputSchema.properties.lastDeath;
 
-        expect(schema.nullable).toBe(true);
-        expect(schema.properties.at.type).toBe('string');
-        expect(schema.properties.exitCode.type).toBe('integer');
-        expect(schema.properties.oomKilled.type).toBe('boolean');
+        // The status vocabulary is what makes a healthcheck honest about its own reachability, so it
+        // is part of the contract rather than an implementation detail: a consumer has to be able to
+        // tell "no death" from "could not look".
+        expect(schema.properties.status.enum).toEqual(['available', 'stale', 'degraded', 'unavailable', 'disabled', 'unknown']);
+        expect(schema.properties.record.nullable).toBe(true);
+        expect(schema.properties.record.properties.at.type).toBe('string');
+        expect(schema.properties.record.properties.exitCode.type).toBe('integer');
+        expect(schema.properties.record.properties.oomKilled.type).toBe('boolean');
+        expect(schema.properties.reason.nullable).toBe(true);
+        expect(schema.required).toEqual(['status', 'record'])
     });
 
     test('healthcheck composition degrades only a stalled drain and preserves stronger verdicts (#16305)', () => {
@@ -451,8 +457,82 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
                   }
               });
 
-        expect(result.lastDeath).toEqual(death);
+        expect(result.lastDeath).toEqual({status: 'available', record: death, reason: null});
         expect(result.status).toBe('healthy');
+    });
+
+    // Grace's RA-1: a bare `null` answers both "could not read" and "read it, nothing died", and a
+    // consumer cannot tell them apart. That is this ticket's incident one layer up — every observer
+    // reporting a clean exit for a container that had been OOM-killed — so the four states the
+    // original single `null` collapsed are pinned separately here and in the Knowledge Base spec.
+    test.describe('the last-death projection keeps "not observed" apart from "observed, none" (#466 RA-1)', () => {
+        const project = (deploymentInspection, channelEnabled) => toolService.composeMemoryCoreHealthcheck({
+            health               : {status: 'healthy', details: ['ok']},
+            memoryWalDrain       : {state: 'caught-up', pendingDrainDepth: 0, oldestPendingAgeMs: null, stallThresholdMs: 1},
+            plane                : {id: 'test-plane', dataRoot: '/test-data'},
+            serviceKey           : 'mc-server',
+            deploymentInspection,
+            ...(channelEnabled === undefined ? {} : {deathChannelEnabled: channelEnabled})
+        });
+
+        test('a FAILED read is `unavailable`, never "no death"', () => {
+            const result = project({ok: false, status: 'unavailable', reason: 'snapshot-missing'});
+
+            expect(result.lastDeath).toEqual({status: 'unavailable', record: null, reason: 'snapshot-missing'});
+            // The verdict is untouched: an unobservable death channel is not a health failure.
+            expect(result.status).toBe('healthy')
+        });
+
+        test('a STALE snapshot is `stale` and forwards the inspection reason', () => {
+            const result = project({ok: false, status: 'stale', reason: 'snapshot-stale'});
+
+            expect(result.lastDeath).toEqual({status: 'stale', record: null, reason: 'snapshot-stale'})
+        });
+
+        test('a DISABLED channel is `disabled` — absence is the expected answer, not a gap', () => {
+            const inspection = {
+                    ok      : true,
+                    status  : 'available',
+                    snapshot: {services: [{serviceKey: 'mc-server', deaths: []}]}
+                },
+                  result = project(inspection, false);
+
+            // Byte-identical inspection to the observed-none case below; only the channel flag differs.
+            // If these two read the same, a plane that deliberately switched the channel off would be
+            // indistinguishable from one that lost it — which is the whole class RA-1 is about.
+            expect(result.lastDeath).toEqual({status: 'disabled', record: null, reason: 'event-channel-disabled'});
+            expect(result.status, 'a deliberately off channel is not a health failure').toBe('healthy')
+        });
+
+        test('the SAME inspection reads `available` when the channel is on — the control for the arm above', () => {
+            const inspection = {
+                ok      : true,
+                status  : 'available',
+                snapshot: {services: [{serviceKey: 'mc-server', deaths: []}]}
+            };
+
+            expect(project(inspection, true).lastDeath).toEqual({status: 'available', record: null, reason: null})
+        });
+
+        test('an OBSERVED but empty history is `available` with a null record — the only null-record state', () => {
+            const observedNone = project({
+                ok      : true,
+                status  : 'available',
+                snapshot: {services: [{serviceKey: 'mc-server', deaths: []}]}
+            });
+
+            expect(observedNone.lastDeath).toEqual({status: 'available', record: null, reason: null})
+        });
+
+        test('a service absent from a snapshot we DID read is `unknown`, not "no death"', () => {
+            const result = project({
+                ok      : true,
+                status  : 'available',
+                snapshot: {services: [{serviceKey: 'kb-server', deaths: []}]}
+            });
+
+            expect(result.lastDeath).toEqual({status: 'unknown', record: null, reason: 'service-absent'})
+        });
     });
 
     test('healthcheck projects current degraded backup maintenance without trusting stale bridge state (#17068)', async () => {

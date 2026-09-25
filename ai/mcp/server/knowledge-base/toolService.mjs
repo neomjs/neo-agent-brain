@@ -75,13 +75,18 @@ export function composeKnowledgeBaseHealthcheck({
     plane,
     vectorGeneration = null,
     deploymentInspection = null,
-    serviceKey = 'kb-server'
+    serviceKey = 'kb-server',
+    deathChannelEnabled = null
 }) {
     return {
         ...health,
         plane,
         vectorGeneration,
-        lastDeath: selectLastServiceDeath(deploymentInspection, serviceKey)
+        lastDeath: selectLastServiceDeath(deploymentInspection, serviceKey, {
+            // The config read belongs to the consumer, not the helper: a channel switched off means
+            // "no death" is the expected answer, and only this layer knows whether it is off.
+            channelEnabled: deathChannelEnabled ?? AiConfig.orchestrator.deploymentStateBridge.includeEvents
+        })
     };
 }
 

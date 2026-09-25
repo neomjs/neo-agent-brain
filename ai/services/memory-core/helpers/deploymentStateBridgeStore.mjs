@@ -103,20 +103,67 @@ export function createDeploymentStateSnapshot({
 }
 
 /**
- * @summary Selects the newest bounded death record for one service from a fresh snapshot.
+ * @summary Projects the last known death for one service, keeping "could not observe" apart from
+ * "observed, and there is none".
+ *
+ * The distinction is the whole point. A bare `null` answers both "the bridge could not read the
+ * snapshot" and "the bridge read it and this service has never died", and a caller cannot tell them
+ * apart — which is the incident this channel exists to close, replayed one layer up: every observer
+ * reported a clean exit while the service had been OOM-killed. A healthcheck that answers `null`
+ * for both states is indistinguishable from the defect it was added to detect.
+ *
+ * So the status travels BESIDE the record, and `record` is non-null only under `available`. The
+ * vocabulary is not new: it is the one `readInspection` already returns (`available`, `stale`,
+ * `degraded`, `unavailable`) plus the two states the inspection cannot see — a channel switched off,
+ * and a service that is not in a snapshot we did read. The same projection is already applied to
+ * maintenance as `observationStatus` by the Memory Core healthcheck, so this makes the death channel
+ * consistent with its sibling rather than introducing a second idiom.
+ *
+ * Two states are resolved by the CALLER, which is the layer that owns the knowledge: `channelEnabled`
+ * is passed in from the healthcheck's own `includeEvents` leaf, so the config read stays with the
+ * config-owning consumer instead of reaching down into a helper.
+ *
  * @param {Object} inspection Deployment snapshot inspection.
  * @param {String} serviceKey Compose service key.
- * @returns {Object|null}
+ * @param {Object} [options]
+ * @param {Boolean} [options.channelEnabled=true] Whether the REM/docker-event death channel is on.
+ * @returns {{status: String, record: Object|null, reason: String|null}}
  */
-export function selectLastServiceDeath(inspection, serviceKey) {
-    if (inspection?.ok !== true || typeof serviceKey !== 'string') return null;
+export function selectLastServiceDeath(inspection, serviceKey, {channelEnabled = true} = {}) {
+    if (channelEnabled === false) {
+        return {status: 'disabled', record: null, reason: 'event-channel-disabled'}
+    }
 
-    const service = (Array.isArray(inspection.snapshot?.services) ? inspection.snapshot.services : [])
-        .find(entry => entry?.serviceKey === serviceKey);
+    // Could not observe. The inspection already names WHICH way, so the reason is forwarded rather
+    // than re-invented — `stale` keeps `snapshot-stale`, `degraded` keeps its schema reason, and an
+    // unreadable file keeps whatever the read reported.
+    if (inspection?.ok !== true) {
+        return {
+            status: inspection?.status ?? 'unavailable',
+            record: null,
+            reason: inspection?.reason ?? 'snapshot-unreadable'
+        }
+    }
 
-    return Array.isArray(service?.deaths) && service.deaths.length > 0
-        ? service.deaths[0]
-        : null;
+    if (typeof serviceKey !== 'string') {
+        return {status: 'unknown', record: null, reason: 'service-key-absent'}
+    }
+
+    const services = Array.isArray(inspection.snapshot?.services) ? inspection.snapshot.services : [],
+          service  = services.find(entry => entry?.serviceKey === serviceKey);
+
+    // Read succeeded, and the service is not in it. Distinct from an empty `deaths` list: this plane
+    // does not run the service, so there is nothing to have died.
+    if (!service) {
+        return {status: 'unknown', record: null, reason: 'service-absent'}
+    }
+
+    // Observed, definitively. `record` is null here and ONLY here, and it means "no death recorded".
+    return {
+        status: 'available',
+        record : Array.isArray(service.deaths) && service.deaths.length > 0 ? service.deaths[0] : null,
+        reason : null
+    };
 }
 
 /**

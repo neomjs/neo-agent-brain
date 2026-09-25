@@ -44,12 +44,61 @@ test.describe('deploymentStateBridgeStore', () => {
         expect(selectLastServiceDeath({
             ok: true,
             snapshot: {services: [{serviceKey: 'mc-server', deaths: [death]}]}
-        }, 'mc-server')).toEqual(death);
+        }, 'mc-server')).toEqual({status: 'available', record: death, reason: null});
+
+        // The stale snapshot is a DISTINCT answer, not the same null as "no death". Before #466 RA-1
+        // both returned `null`, so a caller could not tell a snapshot it had not read from a service
+        // that had not died — which is the incident this channel exists to close, one layer up.
         expect(selectLastServiceDeath({
             ok: false,
             status: 'stale',
+            reason: 'snapshot-stale',
             snapshot: {services: [{serviceKey: 'mc-server', deaths: [death]}]}
-        }, 'mc-server')).toBeNull();
+        }, 'mc-server')).toEqual({status: 'stale', record: null, reason: 'snapshot-stale'});
+    });
+
+    // The helper's whole contract, in one place: `record` is non-null ONLY under `available`, and
+    // each non-available status says why. Pinned here as well as in both healthcheck specs, because
+    // the helper is the shared seam and the two callers only prove the wiring.
+    test.describe('selectLastServiceDeath keeps every observation state apart (#466 RA-1)', () => {
+        const withDeath = {at: '2024-03-09T16:00:01.000Z', exitCode: 137, oomKilled: true};
+
+        test('observed and empty is the ONLY null-record state', () => {
+            expect(selectLastServiceDeath({
+                ok: true, status: 'available', snapshot: {services: [{serviceKey: 'mc-server', deaths: []}]}
+            }, 'mc-server')).toEqual({status: 'available', record: null, reason: null})
+        });
+
+        test('a failed read forwards the inspection status and reason', () => {
+            expect(selectLastServiceDeath({ok: false, status: 'unavailable', reason: 'snapshot-missing'}, 'mc-server'))
+                .toEqual({status: 'unavailable', record: null, reason: 'snapshot-missing'});
+            expect(selectLastServiceDeath({ok: false, status: 'degraded', reason: 'section-missing'}, 'mc-server'))
+                .toEqual({status: 'degraded', record: null, reason: 'section-missing'});
+            // No status at all is still not "no death".
+            expect(selectLastServiceDeath({ok: false}, 'mc-server'))
+                .toEqual({status: 'unavailable', record: null, reason: 'snapshot-unreadable'})
+        });
+
+        test('a disabled channel is named regardless of what the snapshot holds', () => {
+            // Channel off wins even when a death IS present: the channel is not being watched, so a
+            // recorded death is a leftover, not an observation. Reporting it would imply surveillance
+            // the deployment is not doing.
+            expect(selectLastServiceDeath({
+                ok: true, status: 'available', snapshot: {services: [{serviceKey: 'mc-server', deaths: [withDeath]}]}
+            }, 'mc-server', {channelEnabled: false}))
+                .toEqual({status: 'disabled', record: null, reason: 'event-channel-disabled'})
+        });
+
+        test('a service absent from a snapshot we DID read is `unknown`', () => {
+            expect(selectLastServiceDeath({
+                ok: true, status: 'available', snapshot: {services: [{serviceKey: 'kb-server', deaths: []}]}
+            }, 'mc-server')).toEqual({status: 'unknown', record: null, reason: 'service-absent'})
+        });
+
+        test('an unidentifiable service key is `unknown`, not a null record', () => {
+            expect(selectLastServiceDeath({ok: true, status: 'available', snapshot: {services: []}}, null))
+                .toEqual({status: 'unknown', record: null, reason: 'service-key-absent'})
+        });
     });
 
     test('carries additive bridge diagnostics and self-heal status when provided, null by default (#14163 AC2)', () => {
