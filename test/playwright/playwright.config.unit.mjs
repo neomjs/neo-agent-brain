@@ -2,6 +2,7 @@ import './configTemplateResolver.mjs';
 
 import {defineConfig}                             from '@playwright/test';
 import {existsSync}                               from 'node:fs';
+import os                                         from 'os';
 import path                                       from 'path';
 import {fileURLToPath}                            from 'url';
 import {CHROMA_CLI_ENTRYPOINT, resolvePackageDir} from './chromaProcess.mjs';
@@ -31,6 +32,19 @@ process.env.UNIT_TEST_MODE = 'true';
 //
 // A spec that genuinely tests timing must not rely on these values; it sets its own and says so.
 process.env.NEO_KB_EMBEDDING_BACKOFF_BASE_MS = '1';
+
+// The wake delivery projection reads the receiver's dispatch records, and the receiver's state
+// directory is a host-AgentOS path outside the config plane-member family — so without this, a unit
+// run on a developer machine silently reads that host's real wake history. That is both a
+// correctness problem (a health assertion passes or fails with the host's dispatch record) and a
+// performance one: the block runs inside `healthcheck()`, so every call re-read the whole records
+// directory, which is what pushed a timing-sensitive canary spec over its budget. Pointing at a
+// path that does not exist makes the block report its measured-absence shape, deterministically.
+//
+// This is the same rule ADR 0019 B4 states for config: tests isolate BY CONSTRUCTION rather than by
+// mutating and restoring shared state. A spec that needs real records injects `recordsDir`
+// explicitly — see `wakeDeliveryReader.spec.mjs`, which writes its own temp tree.
+process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = path.join(os.tmpdir(), 'neo-unit-absent-wake-records');
 
 // Brain specs retain the Chroma capability by default. Body-focused runs do not select this
 // project, so Playwright omits its setup dependency entirely instead of booting Chroma before it
