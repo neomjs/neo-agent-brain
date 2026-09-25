@@ -34,9 +34,9 @@ jobs:
               run: npm rebuild better-sqlite3
 
             - name: Materialize Brain-owned install projections
-              run: |
-                  npm run postinstall
-                  npm run prepare
+              # `prepare` runs the config bootstrap and then the skills materializer for this
+              # checkout (INIT_CWD is the workspace); there is no `postinstall` any more (#482).
+              run: npm run prepare
 
             - name: Verify the received unit collection
               run: npm run test-unit -- --list
