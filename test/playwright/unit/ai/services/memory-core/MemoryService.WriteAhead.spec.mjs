@@ -63,7 +63,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         // services — `ai/mcp/server/memory-core/mcp-server.mjs:5` and `ai/services.mjs:24` — import
         // it at module load. Without it the graph write path throws `Neo.get is not a function`,
         // which is a harness gap rather than a defect: the suite was booting services along a path
-        // production never uses. Surfaced by @neo-gpt's RA-3 effect arm.
+        // production never uses.
         await import('neo.mjs/src/manager/Instance.mjs');
 
         GraphService         = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
@@ -401,7 +401,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
     });
 
     test('#17342: the save TERMINALIZES a real active turn, not just the no-op path', async () => {
-        // @neo-gpt's RA-3. The control below reaches TurnPresenceService's `no-active-turn` noop
+        // The control below reaches TurnPresenceService's `no-active-turn` noop
         // (:129), which the wrapper also classifies `completed` — so it proves classification and
         // NOT the effect. This arm creates the effect-bearing precondition first: a real interval
         // under the same bound context, then the production save, then the interval's own state.
@@ -443,7 +443,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
     });
 
     test('#17342: a DEFERRED terminal carries a reason too — OpenAPI promises it for both incomplete states', async () => {
-        // @neo-gpt's RA-3. Without this, a mutant that populates the reason only on `failed` keeps
+        // Without this, a mutant that populates the reason only on `failed` keeps
         // every other assertion green while the schema promises it for `deferred` as well.
         const originalPresence = TurnPresenceService.recordTurnPresence;
 
