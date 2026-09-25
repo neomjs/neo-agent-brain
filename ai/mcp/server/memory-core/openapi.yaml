@@ -3812,6 +3812,33 @@ components:
           type: string
           enum: [healthy, degraded, unhealthy]
           example: "healthy"
+        lastDeath:
+          type: object
+          description: "Newest bounded Docker death record for the Memory Core service, carrying HOW it was observed. `status` separates 'could not observe' from 'observed, and there is none' — the distinction the served-health surface exists to preserve, and the one an OOM-killed container reading as a clean exit made invisible."
+          properties:
+            status:
+              type: string
+              description: "Observation status. `available` means the snapshot was read and the answer is definitive; every other value means the record could NOT be observed, and `record` is null."
+              enum: [available, stale, degraded, unavailable, disabled, unknown]
+            record:
+              type: object
+              nullable: true
+              description: "The death record. NON-NULL ONLY when `status` is `available`; null there means 'observed, and this service has no recorded death'."
+              properties:
+                at:
+                  type: string
+                  format: date-time
+                exitCode:
+                  type: integer
+                  nullable: true
+                oomKilled:
+                  type: boolean
+              required: [at, exitCode, oomKilled]
+            reason:
+              type: string
+              nullable: true
+              description: "Why no record accompanies this status — `snapshot-stale`, a schema reason, `event-channel-disabled`, `service-absent`. Null under `available`."
+          required: [status, record]
         timestamp:
           type: string
           format: date-time

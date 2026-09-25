@@ -18,7 +18,10 @@ import PermissionService             from '../../../services/memory-core/Permiss
 import WakeSubscriptionService       from '../../../services/memory-core/WakeSubscriptionService.mjs';
 import TurnPresenceService           from '../../../services/memory-core/TurnPresenceService.mjs';
 import MemoryCoreRecorderService     from '../../../services/memory-core/MemoryCoreRecorderService.mjs';
-import {readDeploymentStateSnapshot} from '../../../services/memory-core/helpers/deploymentStateBridgeStore.mjs';
+import {
+    readDeploymentStateSnapshot,
+    selectLastServiceDeath
+} from '../../../services/memory-core/helpers/deploymentStateBridgeStore.mjs';
 import {admitNlActions}              from '../../../services/memory-core/helpers/nlActionTelemetryStore.mjs';
 import {
     getNlTransaction,
@@ -307,6 +310,7 @@ async function readCorpusProjectionFreshness(now = Date.now()) {
  * @param {Object} options.plane Observed Memory Core plane identity.
  * @param {Object|null} [options.vectorGeneration=null] Vector-generation election health.
  * @param {Object|null} [options.deploymentInspection=null] Current orchestrator bridge inspection.
+ * @param {String} [options.serviceKey='mc-server'] Compose service key for the last-death projection.
  * @param {Object|null} [options.corpusProjectionFreshness=null] Shared receipt SLA classification.
  * @param {Number} [options.starvationNow=Date.now()] Receipt-freshness clock.
  * @param {Number|null} [options.starvationStaleAfterMs=null] Receipt-freshness bound.
@@ -318,9 +322,11 @@ export function composeMemoryCoreHealthcheck({
     plane,
     vectorGeneration = null,
     deploymentInspection = null,
+    serviceKey = 'mc-server',
     corpusProjectionFreshness = null,
     starvationNow = Date.now(),
-    starvationStaleAfterMs = null
+    starvationStaleAfterMs = null,
+    deathChannelEnabled = null
 }) {
     const
         backupHealth = deploymentInspection?.ok === true
@@ -330,7 +336,19 @@ export function composeMemoryCoreHealthcheck({
             observationStatus: deploymentInspection?.status ?? 'unavailable',
             backup           : backupHealth
         },
-        response       = {...health, memoryWalDrain, plane, vectorGeneration, maintenance, corpusProjectionFreshness},
+        response       = {
+            ...health,
+            memoryWalDrain,
+            plane,
+            vectorGeneration,
+            maintenance,
+            lastDeath: selectLastServiceDeath(deploymentInspection, serviceKey, {
+                // The config read belongs to the consumer, not the helper: a channel switched off means
+                // "no death" is the expected answer, and only this layer knows whether it is off.
+                channelEnabled: deathChannelEnabled ?? AiConfig.orchestrator.deploymentStateBridge.includeEvents
+            }),
+            corpusProjectionFreshness
+        },
         drainStalled   = memoryWalDrain.state === 'stalled',
         backupDegraded = backupHealth?.status === 'degraded',
         projectionDegraded = corpusProjectionFreshness?.posture === 'degraded',
@@ -511,6 +529,7 @@ const serviceMapping = {
         // Fresh bridge truth only. `composeMemoryCoreHealthcheck` keeps stale/unavailable
         // observations explicit but prevents either from authorizing a backup degradation.
         deploymentInspection: await readDeploymentInspection(),
+        serviceKey             : 'mc-server',
         // The starvation receipt is bounded by ITS OWN producer's cadence, never by the bridge's
         // write-staleness clock: the snapshot is rewritten every 30s, the receipt only every
         // watchdog run, so one leaf governing both made the verdict readable 2 minutes in 10

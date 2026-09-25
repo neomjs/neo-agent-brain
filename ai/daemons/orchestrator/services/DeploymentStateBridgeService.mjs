@@ -343,6 +343,8 @@ export class DeploymentStateBridgeService extends Base {
     lastWriteAt           = 0
     writeInFlight         = false
     statsSamplesByService = new Map()
+    eventCursorByService  = new Map()
+    recentDeathsByService = new Map()
 
     /**
      * Startup-log heads, keyed by `serviceKey`, holding `{startedAt, record}`.
@@ -714,6 +716,7 @@ export class DeploymentStateBridgeService extends Base {
         let inspect           = null,
             stats             = null,
             logs              = null,
+            events            = null,
             providerResidency = null,
             providerActivity  = null;
 
@@ -751,6 +754,65 @@ export class DeploymentStateBridgeService extends Base {
                 tail : bridgeConfig.logTail,
                 until: inspect?.State?.FinishedAt ?? null
             });
+        }
+
+        const eventsAllowed = bridgeConfig.includeEvents === true &&
+            Array.isArray(AiConfig.orchestrator.deploymentRuntimeAccess.readOperations) &&
+            AiConfig.orchestrator.deploymentRuntimeAccess.readOperations.includes('events');
+
+        let deaths = null,
+            deathRead = {
+                status           : eventsAllowed ? 'unavailable' : 'disabled',
+                source           : 'docker-events',
+                limit            : bridgeConfig.recentDeathLimit,
+                unavailableReason: eventsAllowed ? 'event-read-failed' : 'channel-disabled'
+            };
+
+        if (eventsAllowed) {
+            // Contained to the CHANNEL, deliberately (#497 RA-2). Both validators below throw on a bad
+            // value — a non-positive lookback, a non-integer death limit — and both sit OUTSIDE `read()`'s
+            // own catch, with no per-service guard in `collectSnapshot` and a rethrowing
+            // `writeSnapshotIfDue` above. So one bad leaf in an OPTIONAL channel would stop the snapshot
+            // for every service, every cycle, and the plane would lose its whole deployment-state
+            // surface over a diagnostic nobody is required to run.
+            //
+            // Boot-refusal was the alternative and is worse: it takes the orchestrator down for the same
+            // leaf. An invalid optional channel degrades that one channel and says so; everything else
+            // keeps writing, which is the property the arm below pins.
+            try {
+                const eventWindow = this.resolveEventWindow({serviceKey, observedAt: observationNow()});
+
+                events = await read('events', eventWindow);
+
+                if (events !== null) {
+                    deaths = foldDockerDeathEvents(
+                        events.events,
+                        this.recentDeathsByService.get(serviceKey),
+                        bridgeConfig.recentDeathLimit
+                    );
+                    this.recentDeathsByService.set(serviceKey, deaths);
+                    this.eventCursorByService.set(serviceKey, events.appliedUntil || eventWindow.until);
+                    deathRead = {
+                        status           : 'available',
+                        source           : 'docker-events',
+                        limit            : bridgeConfig.recentDeathLimit,
+                        unavailableReason: null
+                    };
+                } else {
+                    deathRead.unavailableReason = errors.find(entry => entry?.operation === 'events')?.reason || 'event-read-failed';
+                }
+            } catch (error) {
+                // A rejected configuration, not a runtime fault: name it distinctly so an operator can
+                // tell "the channel is misconfigured" from "the channel could not be read", and leave
+                // the cursor and the death history untouched so a corrected leaf recovers on its own.
+                this.writeLog?.('WARN', `[DeploymentStateBridge] REM run-state channel misconfigured, continuing without it: ${error.message}`);
+                deaths = null;
+                deathRead = {
+                    ...deathRead,
+                    status           : 'unavailable',
+                    unavailableReason: 'event-config-invalid'
+                };
+            }
         }
 
         providerResidency = await this.collectProviderResidency({serviceKey, observedAt: observationNow()});
@@ -814,7 +876,7 @@ export class DeploymentStateBridgeService extends Base {
                 // says what it decided. A reader chasing one will look where the other lives.
                 startup: await this.readStartupLogHead({
                     serviceKey,
-                    incarnationStartedAt: inspectSummary?.state?.startedAt ?? null
+                    incarnationStartedAt: inspectSummary?.currentRun?.startedAt ?? null
                 })
             }),
             // Consumes the SAME `nodeCommand` observation the heap attribution uses, rather than
@@ -833,7 +895,7 @@ export class DeploymentStateBridgeService extends Base {
             resolvedConfig  = this.readResolvedConfig({
                 serviceKey,
                 nodeCommand         : inspectSummary?.nodeCommand ?? null,
-                incarnationStartedAt: inspectSummary?.state?.startedAt ?? null
+                incarnationStartedAt: inspectSummary?.currentRun?.startedAt ?? null
             });
 
         // Remembered HERE rather than at the read above, because the heap observation rides ON the
@@ -973,7 +1035,9 @@ export class DeploymentStateBridgeService extends Base {
             memoryPressure,
             inspect: inspectSummary,
             stats  : summarizeStats(stats),
-            logs   : logSummary,
+            logs       : logSummary,
+            deaths,
+            deathRead,
             providerResidency,
             // WAS COMPUTED AND DISCARDED. Without it, `providerResidency: null` is unreadable from
             // the artifact: a reader cannot tell "this service was never eligible for residency
@@ -1061,7 +1125,10 @@ export class DeploymentStateBridgeService extends Base {
             bridgeConfig: {
                 allowedServices             : Array.isArray(AiConfig.orchestrator.deploymentStateBridge.allowedServices) ? [...AiConfig.orchestrator.deploymentStateBridge.allowedServices] : [],
                 effectiveServiceKeys        : this.getServiceKeys(),
+                includeEvents               : AiConfig.orchestrator.deploymentStateBridge.includeEvents,
                 includeLogs                 : AiConfig.orchestrator.deploymentStateBridge.includeLogs,
+                eventLookbackMs             : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs) ? AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs : null,
+                recentDeathLimit            : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit) ? AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit : null,
                 logTail                     : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.logTail) ? AiConfig.orchestrator.deploymentStateBridge.logTail : null,
                 logMaxBytes                 : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.logMaxBytes) ? AiConfig.orchestrator.deploymentStateBridge.logMaxBytes : null,
                 statsSampleWindow           : Number.isFinite(AiConfig.orchestrator.deploymentStateBridge.statsSampleWindow) ? AiConfig.orchestrator.deploymentStateBridge.statsSampleWindow : null,
@@ -1433,6 +1500,32 @@ export class DeploymentStateBridgeService extends Base {
         } catch {
             return unavailable('projection-read-failed');
         }
+    }
+
+    /**
+     * @summary Resolves a bounded event window with a small overlap for timestamp deduplication.
+     * @param {Object} options
+     * @param {String} options.serviceKey Compose service key.
+     * @param {Number} options.observedAt Current observation time.
+     * @returns {{since: String, until: String}}
+     */
+    resolveEventWindow({serviceKey, observedAt}) {
+        const
+            lookbackMs = AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs,
+            now        = Number.isFinite(observedAt) ? observedAt : this.now(),
+            cursorMs   = Date.parse(this.eventCursorByService.get(serviceKey) || ''),
+            sinceMs    = Number.isFinite(cursorMs)
+                ? Math.max(0, cursorMs - 1000)
+                : now - lookbackMs;
+
+        if (!Number.isFinite(lookbackMs) || lookbackMs <= 0) {
+            throw new TypeError('DeploymentStateBridgeService: eventLookbackMs must be a positive finite number');
+        }
+
+        return {
+            since: new Date(sinceMs).toISOString(),
+            until: new Date(now).toISOString()
+        };
     }
 
     /**
@@ -2583,7 +2676,17 @@ function summarizeInspect(inspect) {
         // image-name proxy gets invented.
         declaredHeapCeilingMb: parseDeclaredHeapCeilingMb(inspect.Config?.Cmd),
         nodeCommand          : isNodeCommand(inspect.Config?.Cmd),
-        state                : {
+        // Named `currentRun`, not `state`, and that is the whole of #466's third Fix bullet. A
+        // container runtime's `State` block describes the run that is happening NOW, so after an OOM
+        // kill and restart it reports the NEW run's `ExitCode: 0` and `OOMKilled: false` — which is
+        // how seven hours of work got built on "the process exited cleanly" for a container that had
+        // been killed. A reader who sees an unqualified `exitCode` under a service has no way to know
+        // which run it describes, and the wrong default assumption is the dangerous one.
+        //
+        // The cause of a restart is in `deaths[]` beside this, and it is the only place it is
+        // trustworthy. These fields stay, because a current run's own exit status is real
+        // information; they are named so it cannot be mistaken for the death that preceded it.
+        currentRun: {
             status    : state.Status || null,
             health    : state.Health?.Status || null,
             startedAt : state.StartedAt || null,
@@ -2816,6 +2919,83 @@ function unique(values) {
 
 function isSafeServiceKey(value) {
     return typeof value === 'string' && /^[a-zA-Z0-9_.-]+$/.test(value);
+}
+
+/**
+ * @summary Folds Docker OOM/die events into a bounded newest-first death history.
+ * @param {Object[]} events Normalized Docker events.
+ * @param {Object[]} [previous=[]] Previously published death records.
+ * @param {Number} [limit=10] Maximum records to retain.
+ * @returns {Object[]}
+ */
+export function foldDockerDeathEvents(events, previous = [], limit = 10) {
+    if (!Number.isInteger(limit) || limit < 0) {
+        throw new TypeError('foldDockerDeathEvents: limit must be a non-negative integer');
+    }
+
+    const grouped = new Map();
+
+    for (const event of Array.isArray(events) ? events : []) {
+        if (!event || typeof event.containerId !== 'string' || event.containerId.length === 0 ||
+            !Number.isFinite(event.atMs) || event.atMs <= 0) {
+            continue;
+        }
+
+        const action = String(event.action || '').toLowerCase();
+
+        if (action !== 'oom' && action !== 'die') continue;
+
+        const list = grouped.get(event.containerId) || [];
+        list.push(event);
+        grouped.set(event.containerId, list);
+    }
+
+    const deaths = [];
+
+    for (const list of grouped.values()) {
+        let oomSeen = false;
+
+        list.sort((left, right) => left.atMs - right.atMs);
+
+        for (const event of list) {
+            if (String(event.action).toLowerCase() === 'oom') {
+                oomSeen = true;
+                continue;
+            }
+
+            deaths.push({
+                at       : new Date(event.atMs).toISOString(),
+                exitCode : Number.isFinite(event.exitCode) ? event.exitCode : null,
+                oomKilled: oomSeen
+            });
+            oomSeen = false;
+        }
+    }
+
+    const merged = new Map();
+
+    for (const record of [
+        ...(Array.isArray(previous) ? previous : []),
+        ...deaths
+    ]) {
+        const atMs = Date.parse(record?.at || '');
+
+        if (!Number.isFinite(atMs)) continue;
+
+        const normalized = {
+                at       : new Date(atMs).toISOString(),
+                exitCode : Number.isFinite(record.exitCode) ? record.exitCode : null,
+                oomKilled: record.oomKilled === true
+            },
+            key = `${normalized.at}|${normalized.exitCode ?? 'null'}`,
+            prior   = merged.get(key);
+
+        merged.set(key, prior?.oomKilled ? prior : normalized);
+    }
+
+    return [...merged.values()]
+        .sort((left, right) => Date.parse(right.at) - Date.parse(left.at))
+        .slice(0, limit);
 }
 
 /**

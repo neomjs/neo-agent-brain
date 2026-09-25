@@ -10,7 +10,8 @@ export const DEPLOYMENT_RUNTIME_MECHANISMS = Object.freeze([
 export const DEPLOYMENT_RUNTIME_READ_OPERATIONS = Object.freeze([
     'inspect',
     'logs',
-    'stats'
+    'stats',
+    'events'
 ]);
 
 export const DEPLOYMENT_RUNTIME_LIFECYCLE_OPERATIONS = Object.freeze([
@@ -272,10 +273,10 @@ export class DeploymentRuntimeAccessService extends Base {
      *
      * @param {Object} options
      * @param {String} options.serviceKey Allowlisted compose service key.
-     * @param {'inspect'|'logs'|'stats'} options.operation Read operation.
+     * @param {'inspect'|'logs'|'stats'|'events'} options.operation Read operation.
      * @param {Number} [options.tail] Log tail count for `logs`.
-     * @param {String|Number} [options.since] Lower bound of the incarnation interval for `logs`.
-     * @param {String|Number} [options.until] Upper bound of the incarnation interval for `logs`.
+     * @param {String|Number} [options.since] Lower bound for `logs` or `events`.
+     * @param {String|Number} [options.until] Upper bound for `logs` or `events`.
      * @returns {Promise<Object>} Observation payload plus structured proof metadata.
      */
     async readObserve({serviceKey, operation = 'inspect', tail, since, until} = {}) {
@@ -291,6 +292,10 @@ export class DeploymentRuntimeAccessService extends Base {
 
         if (operation === 'logs') {
             return this.readTargetLogs(target, {tail, since, until});
+        }
+
+        if (operation === 'events') {
+            return this.readTargetEvents(target, {since, until});
         }
 
         if (operation === 'stats') {
@@ -804,7 +809,68 @@ export class DeploymentRuntimeAccessService extends Base {
     }
 
     /**
-     * Reads one non-streaming Docker stats sample for a resolved target.
+     * @summary Reads a bounded Docker event window for one compose service.
+     *
+     * @param {Object} target Resolved target.
+     * @param {Object} options
+     * @param {String} options.since Lower event timestamp.
+     * @param {String} options.until Upper event timestamp.
+     * @returns {Promise<Object>}
+     */
+    async readTargetEvents(target, {since, until} = {}) {
+        const
+            sinceStamp = normalizeDockerTime(since),
+            untilStamp = normalizeDockerTime(until);
+
+        if (sinceStamp === null || untilStamp === null || Date.parse(untilStamp) < Date.parse(sinceStamp)) {
+            throw createRuntimeAccessError({
+                reason : 'runtime-event-window-required',
+                message: 'Docker event reads require a valid bounded since/until window',
+                details: this.createLookupDetails({serviceKey: target.serviceKey, filters: {event: ['oom', 'die']}})
+            });
+        }
+
+        const filters = {
+                type  : ['container'],
+                event : ['oom', 'die'],
+                label : [
+                    `com.docker.compose.project=${target.composeProject}`,
+                    `com.docker.compose.service=${target.serviceKey}`
+                ]
+            },
+            response = await this.dockerRequest({
+                method: 'GET',
+                path  : `/events?since=${encodeURIComponent(sinceStamp)}&until=${encodeURIComponent(untilStamp)}&filters=${encodeURIComponent(JSON.stringify(filters))}`
+            });
+
+        let events;
+
+        try {
+            events = parseDockerEvents(response.body);
+        } catch (error) {
+            throw createRuntimeAccessError({
+                reason : 'docker-events-invalid-json',
+                message: error.message,
+                details: this.createLookupDetails({serviceKey: target.serviceKey, filters})
+            });
+        }
+
+        return {
+            ok   : true,
+            data : {
+                appliedSince: sinceStamp,
+                appliedUntil: untilStamp,
+                bounded     : true,
+                containerId : target.containerId ?? null,
+                events
+            },
+            proof     : this.createProofMetadata({envelope: 'read-observe', operation: 'events', target}),
+            statusCode: response.statusCode
+        };
+    }
+
+    /**
+     * @summary Reads one non-streaming Docker stats sample for a resolved target.
      * @param {Object} target Resolved target.
      * @returns {Promise<Object>}
      */
@@ -1250,4 +1316,66 @@ function normalizeDockerTime(value) {
     if (!Number.isFinite(parsed) || parsed <= 0) return null;
 
     return stamp
+}
+
+/**
+ * @summary Parses Docker's newline-delimited event response into bounded death candidates.
+ * @param {String} body Docker event response body.
+ * @returns {Object[]}
+ */
+function parseDockerEvents(body) {
+    const text = String(body ?? '').trim();
+
+    if (!text) return [];
+
+    let parsed;
+
+    try {
+        parsed = JSON.parse(text);
+    } catch {
+        parsed = text.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+    }
+
+    return (Array.isArray(parsed) ? parsed : [parsed]).map(normalizeDockerEvent).filter(Boolean);
+}
+
+/**
+ * @summary Normalizes one Docker event without retaining arbitrary event attributes.
+ * @param {Object} event Docker event object.
+ * @returns {Object|null}
+ */
+function normalizeDockerEvent(event) {
+    if (!event || typeof event !== 'object') return null;
+
+    const action = String(event.Action ?? event.action ?? event.status ?? '').toLowerCase();
+
+    if (action !== 'oom' && action !== 'die') return null;
+
+    const containerId = event.id ?? event.Actor?.ID;
+
+    if (typeof containerId !== 'string' || containerId.length === 0) return null;
+
+    const
+        timeNano = Number(event.timeNano),
+        timeSec  = Number(event.time),
+        atMs     = Number.isFinite(timeNano) && timeNano > 0
+            ? timeNano / 1e6
+            : Number.isFinite(timeSec) && timeSec > 0
+                ? timeSec * 1000
+                : NaN;
+
+    if (!Number.isFinite(atMs) || atMs <= 0) return null;
+
+    const rawExitCode = event.Actor?.Attributes?.exitCode ?? event.exitCode,
+          exitCode    = rawExitCode === null || rawExitCode === undefined || rawExitCode === ''
+              ? null
+              : Number(rawExitCode);
+
+    return {
+        action,
+        containerId,
+        atMs,
+        at         : new Date(atMs).toISOString(),
+        exitCode   : Number.isFinite(exitCode) ? exitCode : null
+    };
 }
