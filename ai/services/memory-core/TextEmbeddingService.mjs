@@ -30,6 +30,7 @@ import {
 }                           from '../../provider/createTimeoutError.mjs';
 import {
     assertServedModel,
+    hostedModelAliasesAllowed,
     isModelMismatchCode
 }                           from '../../provider/createStreamFailureError.mjs';
 import {
@@ -1542,7 +1543,7 @@ class TextEmbeddingService extends Base {
                                 requested          : embeddingModel,
                                 host,
                                 modelName          : embeddingModel,
-                                replacementRequired: this.#shouldAssertOpenAiCompatibleEmbeddingContext(),
+                                allowDateAlias     : hostedModelAliasesAllowed(host),
                                 log                : (...args) => logger.warn(...args)
                             });
                         } catch (e) {
@@ -1698,6 +1699,14 @@ class TextEmbeddingService extends Base {
         }
     }
 
+    /**
+     * @summary Emits a structured ConsumerFriction signal for a served-model mismatch.
+     * @param {String|String[]} inputData Text input whose provider response was rejected.
+     * @param {Error} err Typed mismatch error.
+     * @param {String} embeddingModel Requested embedding model.
+     * @returns {void}
+     * @private
+     */
     #emitOpenAiCompatibleModelMismatchFriction(inputData, err, embeddingModel) {
         const estimate = this.#getOpenAiCompatibleInputEstimate(inputData);
 

@@ -1,33 +1,36 @@
 /**
- * @summary Shared provider contract for a stream that ended without a usable answer.
+ * @summary Shared provider contract for a response that cannot be consumed safely.
  *
- * Two endings used to reach a caller as an empty string with nothing thrown, so the caller filed them
- * under whatever its empty-response branch assumes (the Tri-Vector extractor: `context-overflow`): an
- * error frame inside a 200 stream (LM Studio refusing a JSON schema: `{"error":{"message":"ValueError:
- * 'type' must be a string"}}`), and a reasoning model whose chat template streams the entire answer on
- * the reasoning channel (LM Studio serving Qwen3.6: every token in `delta.reasoning_content`,
- * `delta.content` empty until `finish_reason: length`). The OpenAI-compatible transport throws both
- * from here with a uniform `error.code`, the shape {@link Neo.ai.provider.createTimeoutError} set for
- * timeouts, so a consumer detects the ending structurally instead of by message wording; the Ollama
- * transport (`message.thinking`, ndjson `error` lines) can adopt the same two codes.
+ * Three provider endings cross this boundary as typed failures: an in-stream provider error, a
+ * reasoning-only completion, and a response whose served model disagrees with the requested model.
+ * The mismatch code carries only bounded identity facts; recovery belongs to the provider's own
+ * actuator, not to an imperative attached to this error.
  *
  * @module Neo.ai.provider.createStreamFailureError
  */
 
 /**
- * Caller-detectable code for a completion whose every token went to the reasoning channel.
+ * @summary Caller-detectable code for a completion whose every token went to the reasoning channel.
  * @type {String}
  */
 const REASONING_ONLY_RESPONSE_CODE = 'REASONING_ONLY_RESPONSE';
 
+/**
+ * @summary Caller-detectable code for a response served by a different model.
+ * @type {String}
+ */
 const MODEL_MISMATCH_CODE = 'MODEL_MISMATCH';
 
+/**
+ * @summary Hosted model ids may carry an appended calendar version.
+ * @type {RegExp}
+ */
 const HOSTED_MODEL_DATE_SUFFIX_RE = /-\d{4}-\d{2}-\d{2}$/;
 
 const missingServedModelWarningKeys = new Set();
 
 /**
- * Caller-detectable code for an error the provider reported inside an otherwise successful response.
+ * @summary Caller-detectable code for an error the provider reported inside an otherwise successful response.
  * @type {String}
  */
 const PROVIDER_STREAM_ERROR_CODE = 'PROVIDER_STREAM_ERROR';
@@ -87,11 +90,45 @@ function createProviderStreamError({provider, operationLabel, error, host, model
     return streamError;
 }
 
+const LOCAL_MODEL_HOSTNAME_RE  = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1|host\.docker\.internal)$/i,
+      PRIVATE_MODEL_HOSTNAME_RE = /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|fc|fd|fe80:)/i;
+
+/**
+ * @summary Returns whether a model endpoint is a public hosted HTTPS service.
+ * @param {String} host Configured provider host.
+ * @returns {Boolean} True only for a public HTTPS endpoint.
+ */
+function hostedModelAliasesAllowed(host) {
+    try {
+        const url      = new URL(host),
+              hostname = url.hostname.replace(/^\\[|\\]$/g, '').toLowerCase();
+
+        return url.protocol === 'https:' &&
+            !LOCAL_MODEL_HOSTNAME_RE.test(hostname) &&
+            !PRIVATE_MODEL_HOSTNAME_RE.test(hostname)
+    } catch {
+        return false
+    }
+}
+
+/**
+ * @summary Normalizes a provider model identifier for comparison.
+ * @param {*} value Candidate model identifier.
+ * @returns {String} Trimmed identifier, or an empty string for a missing/non-string value.
+ */
 function normalizeModelId(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
-function servedModelMatchesRequested(requested, served) {
+/**
+ * @summary Compares a requested model with the model reported by the provider.
+ * @param {String} requested Requested model identifier.
+ * @param {String} served Model identifier reported by the provider.
+ * @param {Object} [options] Comparison policy.
+ * @param {Boolean} [options.allowDateAlias=false] Whether the endpoint's contract permits a hosted date suffix.
+ * @returns {Boolean} True when the served identifier is admissible.
+ */
+function servedModelMatchesRequested(requested, served, {allowDateAlias = false} = {}) {
     const requestedId = normalizeModelId(requested),
           servedId    = normalizeModelId(served);
 
@@ -103,19 +140,23 @@ function servedModelMatchesRequested(requested, served) {
         return true;
     }
 
-    return HOSTED_MODEL_DATE_SUFFIX_RE.test(servedId) &&
+    return allowDateAlias &&
+        HOSTED_MODEL_DATE_SUFFIX_RE.test(servedId) &&
         servedId.replace(HOSTED_MODEL_DATE_SUFFIX_RE, '') === requestedId;
 }
 
-function createModelMismatchError({
-    provider,
-    lane,
-    requested,
-    served,
-    host,
-    modelName,
-    replacementRequired = false
-}) {
+/**
+ * @summary Creates the typed error for a provider model-identity disagreement.
+ * @param {Object} options Error context.
+ * @param {String} options.provider Provider id.
+ * @param {String} options.lane Response lane.
+ * @param {String} options.requested Requested model identifier.
+ * @param {String} options.served Served model identifier.
+ * @param {String} options.host Provider host.
+ * @param {String} options.modelName Provider model id.
+ * @returns {Error} Error carrying `MODEL_MISMATCH` and bounded identity fields.
+ */
+function createModelMismatchError({provider, lane, requested, served, host, modelName}) {
     const error = new Error(
         `[${provider}] ${lane} response served model '${served}' for requested model '${requested}' (host=${host}, model=${modelName})`
     );
@@ -126,17 +167,18 @@ function createModelMismatchError({
     error.requested = requested;
     error.served    = served;
 
-    if (replacementRequired) {
-        error.action = 'replacement-required';
-        error.operatorDiagnostic = {
-            code   : 'LMS_REPLACEMENT_REQUIRED',
-            summary: `LM Studio served model '${served}' for requested model '${requested}'; unload the served model and load the requested model before retrying`.slice(0, 1600)
-        };
-    }
-
     return error;
 }
 
+/**
+ * @summary Warns once per provider/lane/model when a response omits its model field.
+ * @param {Object} options Warning context.
+ * @param {String} options.provider Provider id.
+ * @param {String} options.lane Response lane.
+ * @param {String} options.requested Requested model identifier.
+ * @param {Function} [options.log] Optional bounded logger.
+ * @returns {Boolean} True when this call emitted the warning.
+ */
 function warnMissingServedModel({provider, lane, requested, log}) {
     const key = `${provider}|${lane}|${normalizeModelId(requested)}`;
 
@@ -153,16 +195,21 @@ function warnMissingServedModel({provider, lane, requested, log}) {
     return true;
 }
 
-function assertServedModel({
-    payload,
-    provider,
-    lane,
-    requested,
-    host,
-    modelName,
-    replacementRequired = false,
-    log
-}) {
+/**
+ * @summary Asserts a present served model against the requested provider model.
+ * @param {Object} options Assertion context.
+ * @param {Object} options.payload Parsed provider response.
+ * @param {String} options.provider Provider id.
+ * @param {String} options.lane Response lane.
+ * @param {String} options.requested Requested model identifier.
+ * @param {String} options.host Provider host.
+ * @param {String} options.modelName Provider model id.
+ * @param {Boolean} [options.allowDateAlias=false] Whether hosted date aliases are admissible.
+ * @param {Function} [options.log] Optional bounded logger for an absent model field.
+ * @returns {String|null} The normalized served id, or null when the field is absent.
+ * @throws {Error} `MODEL_MISMATCH` when a present served id is not admissible.
+ */
+function assertServedModel({payload, provider, lane, requested, host, modelName, allowDateAlias = false, log}) {
     const served = normalizeModelId(payload?.model);
 
     if (!served) {
@@ -170,23 +217,15 @@ function assertServedModel({
         return null;
     }
 
-    if (!servedModelMatchesRequested(requested, served)) {
-        throw createModelMismatchError({
-            provider,
-            lane,
-            requested,
-            served,
-            host,
-            modelName,
-            replacementRequired
-        });
+    if (!servedModelMatchesRequested(requested, served, {allowDateAlias})) {
+        throw createModelMismatchError({provider, lane, requested, served, host, modelName});
     }
 
     return served;
 }
 
 /**
- * The two codes this module mints. Module-private for the reason {@link Neo.ai.provider.createTimeoutError}
+ * The three codes this module mints. Module-private for the reason {@link Neo.ai.provider.createTimeoutError}
  * gives: an exported Set is a shared mutable classifier; the predicate is the only thing that crosses.
  * @type {Set<String>}
  */
@@ -197,19 +236,24 @@ const PROVIDER_STREAM_FAILURE_CODES = Object.freeze(new Set([
 ]));
 
 /**
- * @summary Whether an error code names one of the two stream endings this module mints.
+ * @summary Whether an error code names one of the three provider response failures this module mints.
  *
- * Deliberately narrow, like {@link isProviderTimeoutCode}: it answers "did the provider's stream end
- * without a usable answer", nothing else. A consumer that also treats timeouts as provider failures
- * composes this with `isProviderTimeoutCode` rather than widening either.
+ * Deliberately narrow, like {@link isProviderTimeoutCode}: it answers "did the provider response fail
+ * at this boundary", nothing else. A consumer that also treats timeouts as provider failures composes
+ * this with `isProviderTimeoutCode` rather than widening either.
  *
  * @param {String|undefined|null} code The `error.code` to classify.
- * @returns {Boolean} `true` only for `PROVIDER_STREAM_ERROR` or `REASONING_ONLY_RESPONSE`.
+ * @returns {Boolean} `true` only for `PROVIDER_STREAM_ERROR`, `REASONING_ONLY_RESPONSE`, or `MODEL_MISMATCH`.
  */
 function isProviderStreamFailureCode(code) {
     return PROVIDER_STREAM_FAILURE_CODES.has(code);
 }
 
+/**
+ * @summary Whether an error code names a served-model identity mismatch.
+ * @param {String|undefined|null} code The `error.code` to classify.
+ * @returns {Boolean} True only for `MODEL_MISMATCH`.
+ */
 function isModelMismatchCode(code) {
     return code === MODEL_MISMATCH_CODE;
 }
@@ -222,6 +266,7 @@ export {
     createModelMismatchError,
     createProviderStreamError,
     createReasoningOnlyResponseError,
+    hostedModelAliasesAllowed,
     isModelMismatchCode,
     isProviderStreamFailureCode,
     servedModelMatchesRequested

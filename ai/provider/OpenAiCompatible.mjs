@@ -1,5 +1,5 @@
 import Base                                                          from './Base.mjs';
-import {assertServedModel, createProviderStreamError, createReasoningOnlyResponseError} from './createStreamFailureError.mjs';
+import {assertServedModel, createProviderStreamError, createReasoningOnlyResponseError, hostedModelAliasesAllowed} from './createStreamFailureError.mjs';
 import {createTimeoutError}                                          from './createTimeoutError.mjs';
 
 /**
@@ -274,7 +274,7 @@ class OpenAiCompatibleProvider extends Base {
      * @summary Shapes one parsed provider payload into the frame `stream()` consumes.
      *
      * @param {Object} raw Parsed OpenAI-compatible response payload.
-     * @returns {{content: String|null, reasoning: String, finishReason: String, error: Object|String|null, raw: Object}}
+     * @returns {{content: String|null, reasoning: String, finishReason: String, error: Object|String|null, model: String|undefined, raw: Object}}
      * @private
      */
     #describeFrame(raw) {
@@ -425,7 +425,8 @@ class OpenAiCompatibleProvider extends Base {
                     lane    : 'chat',
                     requested: this.modelName,
                     host    : this.host,
-                    modelName: this.modelName
+                    modelName: this.modelName,
+                    allowDateAlias: hostedModelAliasesAllowed(this.host)
                 });
                 parsedFrames++;
                 if (frame.error) {
