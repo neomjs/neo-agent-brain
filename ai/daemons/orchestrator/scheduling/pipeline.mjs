@@ -235,6 +235,12 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
  * @returns {{candidates: Object[], errors: Object[], winner: Object|null}}
  */
 export function runSchedulingPipeline({registry, context, services, runtime}) {
+    // A running tenant slice outlasts the bootstrap rank's coverage TTL, and the picker never evaluates a
+    // running lane. Keyed on the lane RUNNING, so only a profile that owns and enables it reaches the resolver.
+    if (context.state?.['tenant-repo-sync']?.running) {
+        services.maintenanceBackpressureService.warmConfiguredTenantRepoLabels?.();
+    }
+
     const {candidates, errors} = collectDueCandidates({registry, context});
 
     recordSchedulingErrors({errors, healthService: services.healthService, writeLog: runtime.writeLog});

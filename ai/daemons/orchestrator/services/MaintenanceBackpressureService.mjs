@@ -760,19 +760,21 @@ export class MaintenanceBackpressureService extends Base {
      * sufficient: on a first deployment the first decision would run against an unresolved
      * snapshot, rank the bootstrap lane as ordinary, and hand the heavy lease to a more-stale REM
      * cycle for its full duration — losing precisely the decision the class exists to win. Steady
-     * state still refreshes lazily off the TTL; the synchronous predicate fails safe while that
-     * refresh is pending rather than dispatching from stale coverage.
+     * state refreshes ahead of the TTL on the poll cadence ({@link warmConfiguredTenantRepoLabels});
+     * the synchronous predicate fails safe while a refresh of an expired snapshot is pending rather
+     * than dispatching from stale coverage.
      *
      * A resolver failure leaves the previous snapshot in place rather than downgrading coverage,
      * and never rejects — boot must not be blocked by a resolver outage.
      *
      * @param {Number} [now=Date.now()] Clock seam.
+     * @param {Number} [maxAgeMs=CONFIGURED_TENANT_REPO_LABELS_TTL_MS] Age from which the snapshot is refreshed.
      * @returns {Promise<String[]|null>} The current snapshot once any needed refresh settles.
      * @protected
      */
-    ensureConfiguredTenantRepoLabels(now = Date.now()) {
+    ensureConfiguredTenantRepoLabels(now = Date.now(), maxAgeMs = CONFIGURED_TENANT_REPO_LABELS_TTL_MS) {
         if (this.configuredTenantRepoLabelsRefresh) return this.configuredTenantRepoLabelsRefresh;
-        if (this.configuredTenantRepoLabels !== null && now - this.configuredTenantRepoLabelsAt < CONFIGURED_TENANT_REPO_LABELS_TTL_MS) {
+        if (this.configuredTenantRepoLabels !== null && now - this.configuredTenantRepoLabelsAt < maxAgeMs) {
             return Promise.resolve(this.configuredTenantRepoLabels);
         }
 
@@ -808,6 +810,18 @@ export class MaintenanceBackpressureService extends Base {
         this.ensureConfiguredTenantRepoLabels(now);
 
         return true;
+    }
+
+    /**
+     * @summary Refreshes the configured-coverage snapshot once it is half its TTL old; the scheduling
+     * pipeline calls it every poll. The predicate refreshes only when the tenant lane is evaluated, and
+     * a running lane is not, so the decision after a slice longer than the TTL would read an expired
+     * snapshot, fail safe, and re-rank the lane bootstrap-critical.
+     * @param {Number} [now=Date.now()] Clock seam.
+     * @returns {Promise<String[]|null>} The snapshot once any refresh settles.
+     */
+    warmConfiguredTenantRepoLabels(now = Date.now()) {
+        return this.ensureConfiguredTenantRepoLabels(now, CONFIGURED_TENANT_REPO_LABELS_TTL_MS / 2)
     }
 
     /**
