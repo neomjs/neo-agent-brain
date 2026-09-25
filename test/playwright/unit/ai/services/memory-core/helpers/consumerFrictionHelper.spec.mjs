@@ -16,6 +16,7 @@ setup({
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {MODEL_MISMATCH_CODE, isProviderStreamFailureCode} from '../../../../../../../ai/provider/createStreamFailureError.mjs';
 
 /**
  * @summary Unit coverage for the Brain-Pillar Consumer-Friction Helper (#11447 V1). ticket-ref-ok: names the contract this file exists to verify
@@ -70,6 +71,32 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
         const reasoningOnly = Object.assign(new Error('context has nothing to do with it'), {code: 'REASONING_ONLY_RESPONSE'});
 
         expect(categorizeInvocationError(reasoningOnly), 'the typed code wins over the message regex').toBe('reasoning-only-response');
+
+        const modelMismatch = Object.assign(new Error('served model is foreign'), {code: MODEL_MISMATCH_CODE});
+
+        expect(categorizeInvocationError(modelMismatch)).toBe('model-mismatch');
+    });
+
+    test('MODEL_MISMATCH is a deterministic friction symptom', () => {
+        const {emitConsumerFriction, getAggregatedFrictions} = helper;
+
+        expect(isProviderStreamFailureCode(MODEL_MISMATCH_CODE)).toBe(true);
+
+        emitConsumerFriction({
+            assetRef                 : 'openAiCompatible:configured',
+            consumer                 : 'OpenAiCompatible',
+            model                    : 'configured',
+            symptom                  : 'model-mismatch',
+            emissionPoint            : 'post-invocation-failure',
+            inputBytes               : 10,
+            contextLimitTokens       : 128000,
+            serviceDomain            : 'other',
+            note                     : 'served model differs from requested model'
+        });
+
+        expect(getAggregatedFrictions()).toEqual([
+            expect.objectContaining({symptom: 'model-mismatch', suggestionKind: 'unknown', count: 1})
+        ])
     });
 
     test('deriveSuggestionKind maps symptoms to enum-backed suggestions', () => {

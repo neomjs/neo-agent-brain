@@ -29,6 +29,10 @@ import {
     isProviderTimeoutCode
 }                           from '../../provider/createTimeoutError.mjs';
 import {
+    assertServedModel,
+    isModelMismatchCode
+}                           from '../../provider/createStreamFailureError.mjs';
+import {
     bytesToTokens,
     emitConsumerFriction
 }                           from './helpers/consumerFrictionHelper.mjs';
@@ -720,7 +724,7 @@ class TextEmbeddingService extends Base {
     // Provider TASKS in flight, not posts. One multi-input POST is one task per input, and the budget
     // is written in tasks, so admission counts the same unit. The gate owns that count and the
     // interactive-headroom ceiling; this queue keeps only its ORDERING — selection among waiting posts
-    // is a concern the native path never had, so it is not the duplication #200 set out to remove.
+    // is a concern the native path never had, so it is not duplication with the native path.
     #openAiAdmission = new EmbeddingAdmission({
         resolveBudget   : () => resolveEmbeddingTaskBudget(aiConfig.localModels.embedding.parallel),
         createAbortError: getEmbeddingAbortError
@@ -1522,12 +1526,31 @@ class TextEmbeddingService extends Base {
 
                         rejectOnce(httpError);
                     } else {
+                        let result;
                         try {
-                            const result = JSON.parse(body);
-                            resolveOnce(result);
+                            result = JSON.parse(body);
                         } catch (e) {
                             rejectOnce(new Error(`Failed to parse openAiCompatible response: ${e.message}`));
+                            return;
                         }
+
+                        try {
+                            assertServedModel({
+                                payload            : result,
+                                provider           : 'openAiCompatible',
+                                lane               : 'embedding',
+                                requested          : embeddingModel,
+                                host,
+                                modelName          : embeddingModel,
+                                replacementRequired: this.#shouldAssertOpenAiCompatibleEmbeddingContext(),
+                                log                : (...args) => logger.warn(...args)
+                            });
+                        } catch (e) {
+                            rejectOnce(e);
+                            return;
+                        }
+
+                        resolveOnce(result);
                     }
                 });
                 res.on('error', error => rejectOnce(isCallerAbortError(error, signal) ? getEmbeddingAbortError(signal, operationLabel) : error));
@@ -1564,6 +1587,10 @@ class TextEmbeddingService extends Base {
         } catch (err) {
             if (isCallerAbortError(err, signal)) {
                 throw getEmbeddingAbortError(signal, operationLabel);
+            }
+
+            if (isModelMismatchCode(err?.code)) {
+                this.#emitOpenAiCompatibleModelMismatchFriction(inputData, err, embeddingModel);
             }
 
             // Shape C (HTTP 404): the model is not resident at the provider (sustained eviction / never
@@ -1668,6 +1695,29 @@ class TextEmbeddingService extends Base {
             });
         } catch (frictionError) {
             logger.warn('[TextEmbeddingService] Failed to emit embedding timeout friction.', frictionError.message);
+        }
+    }
+
+    #emitOpenAiCompatibleModelMismatchFriction(inputData, err, embeddingModel) {
+        const estimate = this.#getOpenAiCompatibleInputEstimate(inputData);
+
+        try {
+            emitConsumerFriction({
+                assetRef                 : `openAiCompatible:${embeddingModel}`,
+                consumer                 : 'TextEmbeddingService.openAiCompatible',
+                model                    : embeddingModel,
+                symptom                  : 'model-mismatch',
+                emissionPoint            : 'post-invocation-failure',
+                suggestionKind           : 'unknown',
+                inputBytes               : estimate.inputBytes,
+                inputTokensEstimate      : estimate.inputTokensEstimate,
+                contextLimitTokens       : aiConfig.localModels.embedding.contextLimitTokens,
+                safeProcessingLimitTokens: aiConfig.localModels.embedding.safeProcessingLimitTokens,
+                serviceDomain            : 'memory-core',
+                note                     : `Served model '${err?.served}' does not match requested model '${err?.requested}'.`
+            });
+        } catch (frictionError) {
+            logger.warn('[TextEmbeddingService] Failed to emit embedding model-mismatch friction.', frictionError.message);
         }
     }
 

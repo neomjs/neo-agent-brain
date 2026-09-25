@@ -21,6 +21,7 @@ import http                       from 'http';
 import os                         from 'os';
 import path                       from 'path';
 import aiConfig                   from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
+import logger                    from '../../../../../../ai/mcp/server/memory-core/logger.mjs';
 import {buildEmbeddingProbeBlock} from '../../../../../../ai/services/shared/embeddingProbe.mjs';
 import {
     clearLmsEmbeddingInputSuffixCache,
@@ -32,6 +33,7 @@ import {
     clearAggregatedFrictions,
     getAggregatedFrictions
 } from '../../../../../../ai/services/memory-core/helpers/consumerFrictionHelper.mjs';
+import {MODEL_MISMATCH_CODE} from '../../../../../../ai/provider/createStreamFailureError.mjs';
 
 async function waitForCondition(condition, message, timeoutMs = 250) {
     const start = Date.now();
@@ -135,6 +137,12 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
                 if (serverBehavior === 'succeed') {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }));
+                } else if (serverBehavior === 'succeed-with-mismatched-model') {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ model: 'other', data: [{ embedding: [0.1, 0.2, 0.3] }] }));
+                } else if (serverBehavior === 'succeed-with-hosted-alias') {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ model: 'gpt-4o-2024-08-06', data: [{ embedding: [0.1, 0.2, 0.3] }] }));
                 } else if (serverBehavior === 'lms-server-start-succeed') {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({
@@ -560,6 +568,66 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         const result = await TextEmbeddingService.embedText('hello', 'openAiCompatible');
         expect(result).toEqual([0.1, 0.2, 0.3]);
         expect(requestCount, `observed requests=${JSON.stringify(allRequests)}`).toBe(1);
+    });
+
+    test('a served model mismatch rejects before an embedding vector is returned', async () => {
+        serverBehavior                         = 'succeed-with-mismatched-model';
+        aiConfig.openAiCompatible.embeddingModel = 'configured';
+
+        const error = await TextEmbeddingService.embedText('hello', 'openAiCompatible').then(() => null, err => err);
+
+        expect(error?.code).toBe(MODEL_MISMATCH_CODE);
+        expect(error).toMatchObject({requested: 'configured', served: 'other', lane: 'embedding'})
+    });
+
+    test('a hosted date alias is accepted for an embedding response', async () => {
+        serverBehavior                         = 'succeed-with-hosted-alias';
+        aiConfig.openAiCompatible.embeddingModel = 'gpt-4o';
+
+        expect(await TextEmbeddingService.embedText('hello', 'openAiCompatible')).toEqual([0.1, 0.2, 0.3])
+    });
+
+    test('an absent served model is non-verdict and warns once per process', async () => {
+        const originalWarn = logger.warn,
+              warnings     = [];
+
+        serverBehavior                         = 'succeed';
+        aiConfig.openAiCompatible.embeddingModel = 'missing-embedding-model';
+        logger.warn = (...args) => warnings.push(args.join(' '));
+
+        try {
+            expect(await TextEmbeddingService.embedText('first', 'openAiCompatible')).toEqual([0.1, 0.2, 0.3]);
+            expect(await TextEmbeddingService.embedText('second', 'openAiCompatible')).toEqual([0.1, 0.2, 0.3])
+        } finally {
+            logger.warn = originalWarn
+        }
+
+        expect(warnings.filter(message => message.includes('missing-embedding-model'))).toHaveLength(1)
+    });
+
+    test('an LM Studio served model mismatch carries the replacement-required action', async () => {
+        const originalUnitTestMode = Neo.config.unitTestMode,
+              originalLmsEnabled   = aiConfig.orchestrator.lms.enabled;
+
+        try {
+            Neo.config.unitTestMode                 = false;
+            aiConfig.orchestrator.lms.enabled        = true;
+            aiConfig.orchestrator.lms.port          = String(testPort);
+            aiConfig.openAiCompatible.embeddingModel = 'configured';
+            serverBehavior                          = 'succeed-with-mismatched-model';
+            TextEmbeddingService.openAiCompatibleLoadedModelsProbe = async () => [{
+                id           : 'configured',
+                contextLength: aiConfig.localModels.embedding.contextLimitTokens
+            }];
+
+            const error = await TextEmbeddingService.embedText('hello', 'openAiCompatible').then(() => null, err => err);
+
+            expect(error?.code).toBe(MODEL_MISMATCH_CODE);
+            expect(error?.action).toBe('replacement-required')
+        } finally {
+            Neo.config.unitTestMode          = originalUnitTestMode;
+            aiConfig.orchestrator.lms.enabled = originalLmsEnabled
+        }
     });
 
     test('lms server start-compatible single embedding uses the standard OpenAI-compatible endpoint', async () => {

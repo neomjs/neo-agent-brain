@@ -1,5 +1,5 @@
 import Base                                                          from './Base.mjs';
-import {createProviderStreamError, createReasoningOnlyResponseError} from './createStreamFailureError.mjs';
+import {assertServedModel, createProviderStreamError, createReasoningOnlyResponseError} from './createStreamFailureError.mjs';
 import {createTimeoutError}                                          from './createTimeoutError.mjs';
 
 /**
@@ -283,6 +283,7 @@ class OpenAiCompatibleProvider extends Base {
             reasoning   : this.#getChoiceReasoning(raw),
             finishReason: this.#getChoiceFinishReason(raw),
             error       : raw?.error ?? null,
+            model       : raw?.model,
             raw
         };
     }
@@ -418,6 +419,14 @@ class OpenAiCompatibleProvider extends Base {
                 if (!frame) {
                     return null;
                 }
+                assertServedModel({
+                    payload : frame.raw,
+                    provider: 'OpenAiCompatible',
+                    lane    : 'chat',
+                    requested: this.modelName,
+                    host    : this.host,
+                    modelName: this.modelName
+                });
                 parsedFrames++;
                 if (frame.error) {
                     throw createProviderStreamError({

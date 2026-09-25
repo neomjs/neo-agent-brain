@@ -3,7 +3,7 @@ import {createServer}                                           from 'node:http'
 import Neo                                                      from 'neo.mjs/src/Neo.mjs';
 import * as core                                                from 'neo.mjs/src/core/_export.mjs';
 import OpenAiCompatible                                         from '../../../../../ai/provider/OpenAiCompatible.mjs';
-import {PROVIDER_STREAM_ERROR_CODE, REASONING_ONLY_RESPONSE_CODE} from '../../../../../ai/provider/createStreamFailureError.mjs';
+import {MODEL_MISMATCH_CODE, PROVIDER_STREAM_ERROR_CODE, REASONING_ONLY_RESPONSE_CODE} from '../../../../../ai/provider/createStreamFailureError.mjs';
 
 /**
  * @summary `OpenAiCompatible.stream()` names the two endings that used to arrive as an empty string.
@@ -178,4 +178,64 @@ test('a stream with neither content nor reasoning still ends silently — that e
     } finally {
         server.close()
     }
+});
+
+test('a mismatched served model in an SSE frame throws before content delivery', async () => {
+    const server = await serveFrames([sse({model: 'other', choices: [{delta: {content: 'foreign'}}]})]),
+          frames = [];
+
+    try {
+        const error = await rejectionOf(drain(provider(server).stream('x', {onProviderChunk: frame => frames.push(frame)})));
+
+        expect(error?.code).toBe(MODEL_MISMATCH_CODE);
+        expect(error).toMatchObject({requested: 'probe-model', served: 'other', lane: 'chat'});
+        expect(frames).toEqual([])
+    } finally {
+        server.close()
+    }
+});
+
+test('a mismatched served model in a non-SSE body throws before content delivery', async () => {
+    const server = await serve((request, response) => {
+        response.writeHead(200, {'Content-Type': 'application/json'});
+        response.end(JSON.stringify({model: 'other', choices: [{message: {content: 'foreign'}}]}))
+    });
+
+    try {
+        const error = await rejectionOf(drain(provider(server).stream('x')));
+
+        expect(error?.code).toBe(MODEL_MISMATCH_CODE);
+        expect(error).toMatchObject({requested: 'probe-model', served: 'other', lane: 'chat'})
+    } finally {
+        server.close()
+    }
+});
+
+test('a hosted date alias is accepted as the requested chat model', async () => {
+    const server = await serveFrames([sse({model: 'gpt-4o-2024-08-06', choices: [{delta: {content: 'ok'}}]})]),
+          instance = Neo.create(OpenAiCompatible, {host: hostOf(server), modelName: 'gpt-4o'});
+
+    try {
+        expect(await drain(instance.stream('x'))).toEqual(['ok'])
+    } finally {
+        server.close()
+    }
+});
+
+test('a missing served model is non-verdict and warns once per process', async () => {
+    const originalWarn = console.warn,
+          warnings     = [],
+          server       = await serveFrames([contentFrame('one'), contentFrame('two')]),
+          instance     = Neo.create(OpenAiCompatible, {host: hostOf(server), modelName: 'missing-chat-model'});
+
+    console.warn = (...args) => warnings.push(args.join(' '));
+
+    try {
+        expect(await drain(instance.stream('x'))).toEqual(['one', 'two'])
+    } finally {
+        console.warn = originalWarn;
+        server.close()
+    }
+
+    expect(warnings.filter(message => message.includes('missing-chat-model'))).toHaveLength(1)
 });

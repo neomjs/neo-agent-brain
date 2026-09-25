@@ -64,6 +64,7 @@ jobs:
                   test/playwright/unit/ai/services/graph/providerReadinessHelper.spec.mjs
                   test/playwright/unit/ai/graph/SQLiteWalSizeLimit.spec.mjs
                   test/playwright/unit/ai/provider/OpenAiCompatibleStreamFailures.spec.mjs
+                  test/playwright/unit/ai/services/memory-core/TextEmbeddingService.retry.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/consumerFrictionHelper.spec.mjs
                   test/playwright/unit/ai/services/memory-core/MailboxService.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/defectObservationFold.spec.mjs

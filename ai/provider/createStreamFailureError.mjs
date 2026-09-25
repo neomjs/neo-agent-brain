@@ -20,6 +20,12 @@
  */
 const REASONING_ONLY_RESPONSE_CODE = 'REASONING_ONLY_RESPONSE';
 
+const MODEL_MISMATCH_CODE = 'MODEL_MISMATCH';
+
+const HOSTED_MODEL_DATE_SUFFIX_RE = /-\d{4}-\d{2}-\d{2}$/;
+
+const missingServedModelWarningKeys = new Set();
+
 /**
  * Caller-detectable code for an error the provider reported inside an otherwise successful response.
  * @type {String}
@@ -81,6 +87,104 @@ function createProviderStreamError({provider, operationLabel, error, host, model
     return streamError;
 }
 
+function normalizeModelId(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function servedModelMatchesRequested(requested, served) {
+    const requestedId = normalizeModelId(requested),
+          servedId    = normalizeModelId(served);
+
+    if (!requestedId || !servedId) {
+        return false;
+    }
+
+    if (requestedId === servedId) {
+        return true;
+    }
+
+    return HOSTED_MODEL_DATE_SUFFIX_RE.test(servedId) &&
+        servedId.replace(HOSTED_MODEL_DATE_SUFFIX_RE, '') === requestedId;
+}
+
+function createModelMismatchError({
+    provider,
+    lane,
+    requested,
+    served,
+    host,
+    modelName,
+    replacementRequired = false
+}) {
+    const error = new Error(
+        `[${provider}] ${lane} response served model '${served}' for requested model '${requested}' (host=${host}, model=${modelName})`
+    );
+
+    error.code      = MODEL_MISMATCH_CODE;
+    error.provider  = provider;
+    error.lane      = lane;
+    error.requested = requested;
+    error.served    = served;
+
+    if (replacementRequired) {
+        error.action = 'replacement-required';
+        error.operatorDiagnostic = {
+            code   : 'LMS_REPLACEMENT_REQUIRED',
+            summary: `LM Studio loaded-model replacement requires an explicit operator action: ${served}`
+        };
+    }
+
+    return error;
+}
+
+function warnMissingServedModel({provider, lane, requested, log}) {
+    const key = `${provider}|${lane}|${normalizeModelId(requested)}`;
+
+    if (missingServedModelWarningKeys.has(key)) {
+        return false;
+    }
+
+    missingServedModelWarningKeys.add(key);
+
+    const write = typeof log === 'function' ? log : (...args) => console.warn(...args);
+
+    write(`[${provider}] ${lane} response did not include model; requested='${requested}'; identity not asserted.`);
+
+    return true;
+}
+
+function assertServedModel({
+    payload,
+    provider,
+    lane,
+    requested,
+    host,
+    modelName,
+    replacementRequired = false,
+    log
+}) {
+    const served = normalizeModelId(payload?.model);
+
+    if (!served) {
+        warnMissingServedModel({provider, lane, requested, log});
+        return null;
+    }
+
+    if (!servedModelMatchesRequested(requested, served)) {
+        throw createModelMismatchError({
+            provider,
+            lane,
+            requested,
+            served,
+            host,
+            modelName,
+            replacementRequired
+        });
+    }
+
+    return served;
+}
+
 /**
  * The two codes this module mints. Module-private for the reason {@link Neo.ai.provider.createTimeoutError}
  * gives: an exported Set is a shared mutable classifier; the predicate is the only thing that crosses.
@@ -88,7 +192,8 @@ function createProviderStreamError({provider, operationLabel, error, host, model
  */
 const PROVIDER_STREAM_FAILURE_CODES = Object.freeze(new Set([
     PROVIDER_STREAM_ERROR_CODE,
-    REASONING_ONLY_RESPONSE_CODE
+    REASONING_ONLY_RESPONSE_CODE,
+    MODEL_MISMATCH_CODE
 ]));
 
 /**
@@ -105,10 +210,19 @@ function isProviderStreamFailureCode(code) {
     return PROVIDER_STREAM_FAILURE_CODES.has(code);
 }
 
+function isModelMismatchCode(code) {
+    return code === MODEL_MISMATCH_CODE;
+}
+
 export {
+    MODEL_MISMATCH_CODE,
     PROVIDER_STREAM_ERROR_CODE,
     REASONING_ONLY_RESPONSE_CODE,
+    assertServedModel,
+    createModelMismatchError,
     createProviderStreamError,
     createReasoningOnlyResponseError,
-    isProviderStreamFailureCode
+    isModelMismatchCode,
+    isProviderStreamFailureCode,
+    servedModelMatchesRequested
 };
