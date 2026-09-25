@@ -6,6 +6,7 @@ import Neo             from 'neo.mjs/src/Neo.mjs';
 import * as core       from 'neo.mjs/src/core/_export.mjs';
 import {TASK_REGISTRY} from '../../../../../../../ai/daemons/orchestrator/scheduling/registry.mjs';
 import {MaintenanceBackpressureService} from '../../../../../../../ai/daemons/orchestrator/services/MaintenanceBackpressureService.mjs';
+import {registerWaiterSync}             from '../../../../../../../ai/daemons/orchestrator/services/heavyMaintenanceWaiterLedger.mjs';
 import {
     buildOrchestratorSchedulingOptions,
     buildSchedulingContext,
@@ -399,7 +400,8 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
                     context: makeContext({
                         now      : 1_000_000,
                         state    : {dream: {lastRunAt: 0}, 'tenant-repo-sync': {lastRunAt: 990_000, running}},
-                        intervals: {dream: 10_000, tenantRepoSync: 10_000}
+                        intervals: {dream: 10_000, tenantRepoSync: 10_000},
+                        enables  : {tenantRepoSync: true}
                     }),
                     services,
                     runtime: makeRuntime()
@@ -430,7 +432,9 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
                 backpressure.destroy()
             });
 
-            test('only a running tenant lane warms the snapshot, so a profile that does not run it never resolves coverage', () => {
+            // The snapshot also goes cold in the polls after the lane YIELDS (#504): the lane is idle,
+            // not running, and the expired snapshot's fail-safe re-granted rank 1b within a minute.
+            test('an owned and enabled tenant lane warms the snapshot every poll; an unowned or disabled one never resolves coverage', () => {
                 const warmed   = [];
                 const services = makeServices({
                     maintenanceBackpressureService: {
@@ -438,14 +442,116 @@ test.describe('orchestrator/scheduling/pipeline (#11862/#11900)', () => {
                         warmConfiguredTenantRepoLabels: () => warmed.push(true)
                     }
                 });
-                const poll = state => runSchedulingPipeline({registry: [], context: makeContext({state}), services, runtime: makeRuntime()});
+                const owned = [makeCandidateDescriptor({taskName: 'tenant-repo-sync'})];
+                const poll  = ({registry = owned, enables = {tenantRepoSync: true}, state = {}} = {}) =>
+                    runSchedulingPipeline({registry, context: makeContext({state, enables}), services, runtime: makeRuntime()});
 
-                poll({});
-                poll({'tenant-repo-sync': {running: false}});
-                expect(warmed, 'idle, disabled or unowned: the resolver is never reached').toHaveLength(0);
+                poll({registry: []});
+                poll({enables: {}});
+                poll({enables: {tenantRepoSync: false}, state: {'tenant-repo-sync': {running: true}}});
+                expect(warmed, 'unowned or disabled: the resolver is never reached, running or not').toHaveLength(0);
 
-                poll({'tenant-repo-sync': {running: true}});
-                expect(warmed).toHaveLength(1);
+                poll({state: {'tenant-repo-sync': {running: false}}});
+                poll({state: {'tenant-repo-sync': {running: true}}});
+                expect(warmed, 'owned and enabled: idle after a yield and mid-slice alike').toHaveLength(2);
+            });
+        });
+
+        // A yield at admission only makes the picked winner abstain (#504): the pipeline dispatches one
+        // candidate per poll, so the waiter it stepped aside for was never dispatched and the next poll
+        // re-picked the same winner. Promotion at selection is what runs it. The ledger keeps real
+        // time, so these arms do too.
+        test.describe('a starving waiter is promoted at selection (#504)', () => {
+            const NOW = Date.now(), MIN = 60_000;
+
+            function fairnessPoll({promote = true, waiterDeferredMs, manifest = null, registryNames = ['memory-summary-backfill', 'dream'], state}) {
+                const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'promote-waiter-'));
+
+                if (manifest) {
+                    fs.writeFileSync(path.join(dataDir, 'tenant-repo-sync-revisions.json'), JSON.stringify(manifest));
+                }
+
+                const backpressure = Neo.create(MaintenanceBackpressureService, {
+                    dataDir,
+                    writeLog                           : () => {},
+                    resolveConfiguredTenantRepoLabelsFn: async () => ['a/one']
+                });
+
+                backpressure.configuredTenantRepoLabels   = ['a/one'];
+                backpressure.configuredTenantRepoLabelsAt = NOW;
+
+                registerWaiterSync({
+                    leasePath    : backpressure.resolveHeavyMaintenanceLeasePath(),
+                    taskName     : 'dream',
+                    deferredSince: new Date(NOW - waiterDeferredMs).toISOString(),
+                    reasonCode   : 'heavy-maintenance-backpressure',
+                    now          : NOW
+                });
+
+                const started  = [];
+                const services = makeServices({
+                    maintenanceBackpressureService: {
+                        ...makeServices().maintenanceBackpressureService,
+                        isHeavyMaintenanceTask : () => true,
+                        isBootstrapCriticalTask: taskName => backpressure.isBootstrapCriticalTask(taskName),
+                        ...(promote && {findStarvingWaiterToPromote: options => backpressure.findStarvingWaiterToPromote(options)})
+                    },
+                    processSupervisorService: {runTask(taskName) { started.push(taskName); return true }}
+                });
+                const result = runSchedulingPipeline({
+                    registry: registryNames.map(taskName => makeCandidateDescriptor({taskName})),
+                    context : makeContext({
+                        now      : NOW,
+                        state,
+                        intervals: {summarySweep: MIN, dream: 60 * MIN, tenantRepoSync: MIN},
+                        enables  : {tenantRepoSync: true}
+                    }),
+                    services,
+                    runtime: makeRuntime()
+                });
+
+                backpressure.destroy();
+
+                return {result, started}
+            }
+
+            // The short-cadence lane out-scores the dream on staleness (3 cadences overdue against 1.5).
+            const contention = {'memory-summary-backfill': {lastRunAt: NOW - 3 * MIN}, dream: {lastRunAt: NOW - 90 * MIN}};
+
+            test('the poll dispatches the waiter the winner would have yielded to', () => {
+                const {result, started} = fairnessPoll({waiterDeferredMs: 31 * MIN, state: contention});
+
+                expect(result.winner.taskName).toBe('dream');
+                expect(started).toEqual(['dream'])
+            });
+
+            test('CONTROL — without the promotion the short-cadence lane keeps the slot', () => {
+                const {result} = fairnessPoll({promote: false, waiterDeferredMs: 31 * MIN, state: contention});
+
+                expect(result.winner.taskName).toBe('memory-summary-backfill')
+            });
+
+            test('a waiter below the starvation bound is not promoted', () => {
+                const {result} = fairnessPoll({waiterDeferredMs: 5 * MIN, state: contention});
+
+                expect(result.winner.taskName).toBe('memory-summary-backfill')
+            });
+
+            test('the rank gate holds: a bootstrap-critical winner is not displaced by an ordinary waiter', () => {
+                const {result} = fairnessPoll({
+                    waiterDeferredMs: 31 * MIN,
+                    registryNames   : ['tenant-repo-sync', 'dream'],
+                    manifest        : {revisions: {'a/one': {lastIngestedRev: null, partialProgressAt: null, consecutiveFailures: 0}}},
+                    state           : {'tenant-repo-sync': {lastRunAt: NOW - 2 * MIN}, dream: {lastRunAt: NOW - 90 * MIN}}
+                });
+
+                expect(result.winner.taskName).toBe('tenant-repo-sync')
+            });
+
+            test('a waiter that is not a candidate this poll is not promoted', () => {
+                const {result} = fairnessPoll({waiterDeferredMs: 31 * MIN, registryNames: ['memory-summary-backfill'], state: contention});
+
+                expect(result.winner.taskName).toBe('memory-summary-backfill')
             });
         });
     });

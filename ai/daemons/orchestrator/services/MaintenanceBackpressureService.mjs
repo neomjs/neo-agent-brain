@@ -825,6 +825,53 @@ export class MaintenanceBackpressureService extends Base {
     }
 
     /**
+     * @summary Names the registered waiter the scheduling pipeline should dispatch instead of the
+     * candidate it picked, or `null`. The selection-time twin of the admission fairness gate in
+     * {@link #acquireLeaseAndExecute}: the same ledger and the same {@link findWaiterToYieldTo}
+     * rule (rank gate, then the starvation bound), read for the would-be winner. The admission gate
+     * can only make a winner abstain, and the pipeline dispatches one candidate per poll, so a
+     * waiter that never wins selection never runs (#504); naming it here is what gets it
+     * dispatched. Only a waiter that is itself a surviving candidate this poll is named; one that
+     * is not due, is running, or conflicts stays with the admission gate's record.
+     *
+     * Fail-open like the admission gate: an unreadable ledger logs and names nobody.
+     *
+     * @param {Object} options
+     * @param {String} options.winnerTaskName The candidate selection would otherwise dispatch.
+     * @param {String[]} [options.candidateTaskNames=[]] Task names still eligible in this poll.
+     * @param {Number} [options.now=Date.now()] Clock seam; the ledger's clock, never the picker's.
+     * @returns {String|null} The waiter's task name, or `null`.
+     */
+    findStarvingWaiterToPromote({winnerTaskName, candidateTaskNames = [], now = Date.now()} = {}) {
+        if (!winnerTaskName || !this.isHeavyMaintenanceTask(winnerTaskName) || candidateTaskNames.length === 0) {
+            return null;
+        }
+
+        try {
+            const {waiters} = listActiveWaitersSync({
+                leasePath   : this.resolveHeavyMaintenanceLeasePath(),
+                staleAfterMs: WAITER_ENTRY_STALE_AFTER_MS,
+                now
+            });
+
+            const yieldTo = findWaiterToYieldTo({
+                taskName            : winnerTaskName,
+                priorityZero        : this.isPriorityZeroTask(winnerTaskName),
+                bootstrapCritical   : this.isBootstrapCriticalTask(winnerTaskName),
+                ownDeferredSince    : this.taskStateService?.getTaskState?.(winnerTaskName)?.deferralStreakStartedAt ?? null,
+                waiters             : waiters.filter(waiter => candidateTaskNames.includes(waiter.taskName)),
+                fairnessYieldAfterMs: AiConfig.orchestrator.heavyMaintenanceLease.fairnessYieldAfterMs,
+                now
+            });
+
+            return yieldTo?.taskName ?? null;
+        } catch (e) {
+            this.writeLog('ERROR', `[Orchestrator] Waiter promotion check failed for ${winnerTaskName}: ${e.message} — selecting without it.`);
+            return null;
+        }
+    }
+
+    /**
      * @summary Whether the task is bootstrap-critical: initializing durable state the plane
      * cannot function without.
      *

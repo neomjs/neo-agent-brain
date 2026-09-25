@@ -27,8 +27,10 @@
  * @param {Object} options.policyContext Additional policy state. Recognized fields:
  *   `runningHeavyTasks` (Set) + `isHeavyMaintenanceConflict` (fn) for the heavy-conflict filter;
  *   and for the final selector: `now` (epoch ms), `taskMeta` (`{[taskName]: {lastRunAt, cadenceMs}}`),
- *   `priorityZeroTasks` (String[]), and `isBootstrapCriticalTask` (`(taskName) => Boolean`, the
- *   live per-poll oracle that ranks an uninitialized corpus above ordinary enrichment). When
+ *   `priorityZeroTasks` (String[]), `isBootstrapCriticalTask` (`(taskName) => Boolean`, the
+ *   live per-poll oracle that ranks an uninitialized corpus above ordinary enrichment), and
+ *   `findStarvingWaiter` (`({winnerTaskName, candidateTaskNames}) => String|null`, the ledger read
+ *   that names the registered waiter the picked winner would only abstain for at admission). When
  *   `taskMeta` is absent the selector degrades to registry-order, preserving legacy
  *   `selectFirstCandidate` behavior.
  * @returns {Object|null} The winning candidate, or null if no candidate survives the pipeline.
@@ -127,6 +129,12 @@ function filterUnmetDependencies(candidates, runningSet) {
  *      entry simply expires before it runs. Ranking here means the bootstrap task actually
  *      executes. Admission-side fairness remains the second line of defence for holders that are
  *      already running.
+ *   1c. **Fairness promotion (#504)** — the same placement argument, applied to the fairness gate
+ *      itself: the eligible representative (bootstrap or staleness) is swapped for the registered
+ *      waiter it would abstain for at admission, when that waiter is itself a candidate this poll.
+ *      The rank gate and the starvation bound are the ledger's (`findWaiterToYieldTo`), read through
+ *      `policyContext.findStarvingWaiter`; a bootstrap-critical or priority-0 winner is never
+ *      displaced by an ordinary waiter.
  *   2. **Staleness-ratio (eligible set only)** — among candidates carrying `taskMeta` (the
  *      lease-competing heavy tasks plus `golden-path`), the most overdue by `(now - lastRunAt) /
  *      cadenceMs` is the single eligible representative, so a weeks-stale `golden-path` or a
@@ -149,10 +157,31 @@ function filterUnmetDependencies(candidates, runningSet) {
 function selectByPriority(candidates, policyContext = {}) {
     if (candidates.length === 0) return null;
 
-    const {taskMeta, now, priorityZeroTasks, isBootstrapCriticalTask} = policyContext;
+    const {taskMeta, now, priorityZeroTasks, isBootstrapCriticalTask, findStarvingWaiter} = policyContext;
 
     // Legacy / no-metadata path: registry-order priority (earlier descriptors win).
     if (!taskMeta) return candidates[0];
+
+    // Fairness promotion (#504): the eligible representative may owe its slot to a registered
+    // waiter it would only abstain for at admission — the same rank gate and starvation bound, read
+    // here for the would-be winner. An admission-side yield spends the poll without dispatching
+    // anybody; promoting the waiter at selection is what gets it dispatched. Fail-open like the
+    // bootstrap oracle: a throwing or absent seam leaves the representative as picked. The seam
+    // reads the ledger on its own clock; `now` here is the scheduling clock and stays out of it.
+    const promote = representative => {
+        if (!representative || typeof findStarvingWaiter !== 'function') return representative;
+
+        try {
+            const waiterName = findStarvingWaiter({
+                winnerTaskName    : representative.taskName,
+                candidateTaskNames: candidates.filter(candidate => taskMeta[candidate.taskName]).map(candidate => candidate.taskName)
+            });
+
+            return candidates.find(candidate => candidate.taskName === waiterName && taskMeta[candidate.taskName]) ?? representative;
+        } catch {
+            return representative;
+        }
+    };
 
     // Priority-0: data-safety tasks win unconditionally; registry order among them.
     if (Array.isArray(priorityZeroTasks) && priorityZeroTasks.length > 0) {
@@ -172,7 +201,7 @@ function selectByPriority(candidates, policyContext = {}) {
             }
         });
 
-        if (bootstrapWinner) return bootstrapWinner;
+        if (bootstrapWinner) return promote(bootstrapWinner);
     }
 
     // Staleness reorders ONLY the eligible set (candidates carrying `taskMeta` — the
@@ -191,6 +220,8 @@ function selectByPriority(candidates, policyContext = {}) {
             topEligible = candidate;
         }
     }
+
+    topEligible = promote(topEligible);
 
     // Registry-order winner among the non-eligible candidates plus the one eligible representative.
     for (const candidate of candidates) {
