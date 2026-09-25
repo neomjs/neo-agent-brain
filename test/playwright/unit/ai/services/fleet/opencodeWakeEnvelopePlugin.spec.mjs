@@ -42,11 +42,14 @@ test.describe('opencodeWakeEnvelopePlugin (#15394)', () => {
         tmpRoot  = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-wake-envelope-'));
         savedEnv = {
             XDG_DATA_HOME            : process.env.XDG_DATA_HOME,
+            NEO_AGENT_IDENTITY       : process.env.NEO_AGENT_IDENTITY,
             OPENCODE_SERVER_USERNAME : process.env.OPENCODE_SERVER_USERNAME,
             OPENCODE_SERVER_PASSWORD : process.env.OPENCODE_SERVER_PASSWORD,
             NEO_WAKE_PROBE_TIMEOUT_MS: process.env.NEO_WAKE_PROBE_TIMEOUT_MS
         };
 
+        // A seat's launch env carries its identity; the plant stamps it and writes nothing without one.
+        process.env.NEO_AGENT_IDENTITY       = '@neo-seat-test';
         process.env.OPENCODE_SERVER_USERNAME = 'opencode';
         process.env.OPENCODE_SERVER_PASSWORD = 'test-secret';
 

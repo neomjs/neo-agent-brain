@@ -1146,6 +1146,8 @@ async function deliverViaCodexAppServer(subscription, digest, evidenceLabel = ''
  *    TUI/CLI sessions where it loads (its child-session retarget guard stays authoritative
  *    there). Both producers write the IDENTICAL shape for the same session, so
  *    last-writer-wins is a no-op; a third producer must update this contract, never drift it.
+ *    The shape is declared once as `OPENCODE_SEAT_ENVELOPE_FIELDS` (`localWakeAdapters.mjs`), and
+ *    `opencodeSeatEnvelopeParity.spec.mjs` runs both producers' real output through the reader.
  *
  * Probe evidence (2026-07-18, seat `@neo-kimi-phoebe`, OpenCode desktop 1.18.3): embedded
  * server on a random localhost port, basic auth accepted from the seat's spawn env, and a
