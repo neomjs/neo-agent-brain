@@ -250,6 +250,37 @@ test('date alias tolerance is opt-in for hosted endpoints', () => {
     expect(servedModelMatchesRequested('configured', 'configured-2024-08-06')).toBe(false)
 });
 
+test('a PUBLIC host with no declared alias contract earns no tolerance (#480 RA-2)', () => {
+    // The defect this pins: tolerance used to be derived from a host's SHAPE — public scheme, not
+    // loopback, not RFC1918 — so anything reachable over public HTTPS qualified, including a
+    // self-hosted gateway on a public name and a bare example host. Behind such a host a wrong
+    // resident was indistinguishable from a date stamp, which is the exact hole the served-model
+    // assertion was merged to close. Trust has to come from a declared contract, not a hostname.
+    //
+    // `https://example.com/v1` is the arm that matters: it is unambiguously public and unambiguously
+    // not a model provider, so it is the shortest path from "looks hosted" to "wrong resident
+    // admitted". If this ever returns true again, the predicate has regressed to shape.
+    expect(hostedModelAliasesAllowed('https://example.com/v1')).toBe(false);
+    expect(hostedModelAliasesAllowed('https://gateway.example.com/openai/v1')).toBe(false);
+
+    // Same host, declared: the decision follows the contract, not the shape.
+    expect(hostedModelAliasesAllowed('https://api.openai.com/v1')).toBe(true);
+
+    // A path or query that merely MENTIONS a declared host must not inherit its contract.
+    expect(hostedModelAliasesAllowed('https://evil.test/proxy?to=api.openai.com')).toBe(false);
+    expect(hostedModelAliasesAllowed('https://api.openai.com.evil.test/v1')).toBe(false);
+
+    // Unparseable input stays default-deny rather than throwing through the response path.
+    expect(hostedModelAliasesAllowed('not a url')).toBe(false);
+    expect(hostedModelAliasesAllowed(undefined)).toBe(false);
+
+    // And the end-to-end consequence: a date-stamped served id from an undeclared public host is a
+    // MODEL_MISMATCH, not a tolerated alias.
+    expect(servedModelMatchesRequested('gpt-4o', 'gpt-4o-2024-08-06', {
+        allowDateAlias: hostedModelAliasesAllowed('https://example.com/v1')
+    })).toBe(false)
+});
+
 test('a missing served model is non-verdict and warns once per process', async () => {
     const originalWarn = console.warn,
           warnings     = [],

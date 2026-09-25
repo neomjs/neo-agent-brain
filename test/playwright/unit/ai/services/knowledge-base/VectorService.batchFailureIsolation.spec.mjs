@@ -18,6 +18,8 @@ setup({
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+import http           from 'http';
+import aiConfig       from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
 import {
     OPENAI_COMPATIBLE_REQUEST_TIMEOUT_CODE,
     PROVIDER_TIMEOUT_CODE
@@ -142,21 +144,66 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         expect(result).toEqual({embedded: 0, settled: 0, remaining: 0, skipped: 0, yielded: false});
     });
 
-    test('a served-model mismatch leaves the persisted vector count unchanged (#480)', async () => {
-        const spy    = createSpyCollection(),
-              chunks = makeChunks(1),
-              before = spy.upsertedIds.length;
+    test('a served-model mismatch from the REAL response parse leaves the persisted vector count unchanged (#480 RA-3)', async () => {
+        // The stub this replaces threw a synthetic MODEL_MISMATCH from `embedTexts`, which is the seam
+        // the served-model guard does NOT live behind. The real guard is in `TextEmbeddingService`,
+        // on the parsed provider response — so a stubbed throw made this arm pass unconditionally: it
+        // would have stayed green even if the genuine mismatched `/v1/embeddings` response were parsed
+        // and admitted. It asserted the batch-isolation consequence of a verdict it supplied itself,
+        // which is why the parse itself is now driven end to end.
+        //
+        // The claim under test is unchanged and is the one that matters operationally: a wrong resident
+        // must cost the corpus nothing. A served model that disagrees is refused BEFORE a vector
+        // exists, so the collection never sees an upsert.
+        const spy      = createSpyCollection(),
+              chunks   = makeChunks(1),
+              before   = spy.upsertedIds.length,
+              server   = http.createServer((req, res) => {
+                  let body = '';
 
-        TextEmbeddingService.embedTexts = async () => {
-            const error = new Error('served model does not match the requested model');
-            error.code = MODEL_MISMATCH_CODE;
-            throw error
-        };
+                  req.on('data', chunk => body += chunk);
+                  req.on('end', () => {
+                      // A well-formed embedding response that simply reports the WRONG model. Nothing
+                      // here is an error: the refusal has to come from identity, not from a failure shape.
+                      res.writeHead(200, {'Content-Type': 'application/json'});
+                      res.end(JSON.stringify({model: 'other', data: [{embedding: [0.1, 0.2, 0.3]}]}))
+                  })              }),
+              originalHost          = aiConfig.openAiCompatible.host,
+              originalUnitTestMode  = Neo.config.unitTestMode;
 
-        await KB_VectorService.embedChunks({collection: spy, chunksToProcess: chunks}).catch(() => {});
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
-        expect(spy.upsertedIds).toHaveLength(before);
-        expect(spy.calls.upsert).toBe(0)
+        try {
+            aiConfig.openAiCompatible.host = `http://127.0.0.1:${server.address().port}`;
+
+            // The real singleton, not a stub: this is the arm's whole point. `originalEmbedTexts` is the
+            // describe-scope capture of the untouched method, so restoring it here undoes the `beforeEach`
+            // stub rather than re-capturing it. `unitTestMode` off so the genuine HTTP request is issued
+            // and the genuine response parse runs.
+            TextEmbeddingService.embedTexts = originalEmbedTexts;
+            Neo.config.unitTestMode          = false;
+
+            const observed = await KB_VectorService
+                .embedChunks({collection: spy, chunksToProcess: chunks})
+                .then(() => null, error => error);
+
+            // The refusal must be the identity verdict, and it must have come from the parse. The batch
+            // abort is the wrapper this file already tests elsewhere; what is new here is its `cause`,
+            // because a stubbed throw would have put a verdict there that the parser never produced.
+            expect(observed?.cause?.code,
+                `expected MODEL_MISMATCH as the batch-abort cause, got ${observed?.cause?.code}: ${observed?.cause?.message}`
+            ).toBe(MODEL_MISMATCH_CODE);
+
+            // The served identity the parser read, as opposed to one the test supplied.
+            expect(observed?.cause).toMatchObject({served: 'other', lane: 'embedding'});
+
+            expect(spy.upsertedIds).toHaveLength(before);
+            expect(spy.calls.upsert).toBe(0)
+        } finally {
+            Neo.config.unitTestMode       = originalUnitTestMode;
+            aiConfig.openAiCompatible.host = originalHost;
+            server.close()
+        }
     });
 
     test('#16972 a rejected-class refusal costs ONE batch dispatch, and isolation still runs', async () => {

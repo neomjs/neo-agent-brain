@@ -90,22 +90,46 @@ function createProviderStreamError({provider, operationLabel, error, host, model
     return streamError;
 }
 
-const LOCAL_MODEL_HOSTNAME_RE  = /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1|host\.docker\.internal)$/i,
-      PRIVATE_MODEL_HOSTNAME_RE = /^(?:10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.|169\.254\.|fc|fd|fe80:)/i;
+/**
+ * @summary Hosted endpoints whose PUBLISHED contract appends a calendar version to served model ids.
+ *
+ * The admission bar is deliberately high, because this set is the only thing that keeps a
+ * date-stamped served id from reading as a wrong resident — and a wrong resident is the exact
+ * failure the surrounding assertion exists to catch. A host earns a place here by publishing
+ * dated snapshots as part of its contract, not by being reachable over public HTTPS.
+ *
+ * That distinction is the whole point. The previous predicate asked whether a host *looked* hosted
+ * — public scheme, not loopback, not RFC1918 — so every public endpoint qualified, including a
+ * self-hosted gateway on a public name and a bare `https://example.com/v1`. A wrong resident behind
+ * such a host was then indistinguishable from a date stamp, which is the hole this assertion was
+ * merged to close. Deriving trust from a hostname's shape is not a contract.
+ *
+ * `api.openai.com` qualifies: dated snapshots (`gpt-4o-2024-08-06`) are a documented, routine part
+ * of its served ids. Hosts whose ids are versioned rather than dated are absent on purpose —
+ * `generativelanguage.googleapis.com` and `api.mistral.ai` publish `-002` / `-2402` style versions,
+ * and admitting them would tolerate a suffix that never indicated a different build.
+ *
+ * Adding a host is a deliberate act: cite the vendor's published model-id contract in the entry.
+ * @type {Set<String>}
+ */
+const DATE_ALIAS_CONTRACT_HOSTS = new Set([
+    'api.openai.com'
+]);
 
 /**
- * @summary Returns whether a model endpoint is a public hosted HTTPS service.
+ * @summary Returns whether a model endpoint's DECLARED contract permits a hosted date alias.
+ *
+ * Default-deny. A local or self-hosted endpoint is not in the set, which is the correct answer for
+ * it without needing a second rule: a local server that reports a dated model id is reporting a
+ * different resident, not a snapshot of the requested one.
  * @param {String} host Configured provider host.
- * @returns {Boolean} True only for a public HTTPS endpoint.
+ * @returns {Boolean} True only for a host with a declared date-alias contract.
  */
 function hostedModelAliasesAllowed(host) {
     try {
-        const url      = new URL(host),
-              hostname = url.hostname.replace(/^\\[|\\]$/g, '').toLowerCase();
+        const {hostname} = new URL(host);
 
-        return url.protocol === 'https:' &&
-            !LOCAL_MODEL_HOSTNAME_RE.test(hostname) &&
-            !PRIVATE_MODEL_HOSTNAME_RE.test(hostname)
+        return DATE_ALIAS_CONTRACT_HOSTS.has(hostname.toLowerCase())
     } catch {
         return false
     }
