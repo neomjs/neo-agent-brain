@@ -91,10 +91,10 @@ const PROTECTED_EDGE_TYPE_SET = new Set(PROTECTED_EDGE_TYPES);
 
 /**
  * The labels whose nodes exist only through their edges, so an edgeless one has faded and
- * `GraphService#getOrphanedNodes` may return it. A `CONCEPT` is created with the edge that names it:
- * REM extraction links it to the sessions that discuss it, and the Concept Ontology creates it as an
- * edge's target stub. A label joins only when its writers create it with edges and no other service
- * owns its lifecycle.
+ * `GraphService#getOrphanedNodes` may return it. REM extraction creates a `CONCEPT` with the edge
+ * that names it; the Concept Ontology's sync creates its concepts with the ontology's edges, or
+ * edgeless when the ontology declares none, which the ownership rule below keeps. A label joins only
+ * when its writers create it with edges and no other service owns its lifecycle.
  *
  * A node an ingestor projects carries that ingestor's `payloadHash`, and the ingestor owns it: the
  * Concept Ontology's `ConceptIngestor.syncConceptsToGraph()` re-derives every concept it declares on
