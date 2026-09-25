@@ -116,18 +116,11 @@ export const NeoWakeEnvelope = async (ctx) => {
         return port;
     };
 
-    // The seat identity in the wire's `@handle` spelling (the boot hook's rule), or null.
-    const canonicalIdentity = value => {
-        const bare = typeof value === 'string' ? value.trim().replace(/^@+/, '') : '';
-
-        return bare ? `@${bare}` : null;
-    };
-
     // The launch env's identity first; else the one the envelope being replaced carries (a Dock
     // launch bypasses the seat wrapper that sources it). Identity is the one field read from disk:
     // it is per-seat and never changes, unlike the coordinates below, which are never adopted.
     const resolveIdentity = async () => {
-        const fromEnv = canonicalIdentity(process.env.NEO_AGENT_IDENTITY);
+        const fromEnv = launchIdentity();
 
         if (fromEnv) return fromEnv;
 
@@ -351,5 +344,26 @@ export const NeoWakeEnvelope = async (ctx) => {
         }
     };
 };
+
+/**
+ * @summary A seat identity in the wire's `@handle` spelling (the boot hook's rule), or null.
+ * @param {*} value A raw identity.
+ * @returns {String|null}
+ */
+function canonicalIdentity(value) {
+    const bare = typeof value === 'string' ? value.trim().replace(/^@+/, '') : '';
+
+    return bare ? `@${bare}` : null;
+}
+
+/**
+ * @summary The seat identity the launch env names, or null. The Brain reads this env through the
+ * `stopHook.projection.agentId` leaf, but a plant runs inside OpenCode, where no AiConfig exists
+ * (the Kimi hook's `readAgentIdentity` reads it the same way).
+ * @returns {String|null}
+ */
+function launchIdentity() {
+    return canonicalIdentity(process.env.NEO_AGENT_IDENTITY);
+}
 
 export default NeoWakeEnvelope;
