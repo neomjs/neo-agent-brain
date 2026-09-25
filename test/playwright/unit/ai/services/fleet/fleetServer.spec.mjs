@@ -824,6 +824,7 @@ test.describe('composed Fleet S1 server', () => {
                 plane                       : {id: 'neo-local-canonical', dataRoot},
                 auth                        : {seatTokenRegistryPath: member('seat-tokens/registry.json')},
                 wakeDaemonHeartbeatAlivePath: member('wake-daemon/heartbeat.alive'),
+                remRunStateDir              : member('rem-runs'),
                 heartbeatConcurrencyLockPath: member('heartbeat-concurrency.lock'),
                 fleet                       : {
                     dataDir     : member('fleet'),
@@ -922,6 +923,8 @@ test.describe('Fleet S1 wire policy', () => {
             fleetGoldenPath       : 'awaiting-s3',
             defineAgent           : 'awaiting-s4',
             configureAgent        : 'awaiting-s4',
+            adoptAgent            : 'awaiting-s4',
+            releaseAgent          : 'awaiting-s4',
             setRepo               : 'awaiting-s4',
             setAvatar             : 'awaiting-s4',
             markFleetCaughtUp     : 'awaiting-s4',
