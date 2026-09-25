@@ -161,6 +161,30 @@ test.describe('Neo.ai.services.memory-core.FileSystemIngestor', () => {
         }
     });
 
+    test('resolves a split-tree reference in exactly one root, and reports a path both roots hold', () => {
+        const
+            brainRoot  = fs.mkdtempSync(path.join(os.tmpdir(), 'split-tree-brain-')),
+            engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'split-tree-engine-')),
+            roots      = [brainRoot, engineRoot];
+
+        try {
+            fs.outputFileSync(path.join(brainRoot, 'ai', 'Brain.mjs'), '');
+            fs.outputFileSync(path.join(engineRoot, 'src', 'Engine.mjs'), '');
+            fs.outputFileSync(path.join(brainRoot, 'README.md'), '');
+            fs.outputFileSync(path.join(engineRoot, 'README.md'), '');
+
+            expect(FileSystemIngestor.resolveSplitTreeReference('ai/Brain.mjs', roots)).toMatchObject({valid: true, nodeId: 'file-ai/Brain.mjs'});
+            expect(FileSystemIngestor.resolveSplitTreeReference('src/Engine.mjs', roots)).toMatchObject({valid: true, nodeId: 'file-src/Engine.mjs'});
+            expect(FileSystemIngestor.resolveSplitTreeReference('README.md', roots)).toMatchObject({valid: false, code: 'AMBIGUOUS_FILE'});
+            expect(FileSystemIngestor.resolveSplitTreeReference('src/Gone.mjs', roots)).toMatchObject({valid: false, code: 'MISSING_FILE'});
+            // the default roots are this checkout and the installed Engine package
+            expect(FileSystemIngestor.resolveSplitTreeReference('src/Neo.mjs')).toMatchObject({valid: true, nodeId: 'file-src/Neo.mjs'})
+        } finally {
+            fs.removeSync(brainRoot);
+            fs.removeSync(engineRoot)
+        }
+    });
+
     test('should dynamically ignore high-noise path patterns while preserving structural mapping', async () => {
         const stats = {
             pathNodesUpserted: 0,

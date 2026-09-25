@@ -166,8 +166,9 @@ class ConceptIngestor extends Base {
     /**
      * Normalizes author-facing JSONL edges into runtime graph identities. File
      * references are admitted only through FileSystemIngestor's existence and
-     * projectability boundary. Duplicate normalized tuples are explicit integrity
-     * findings rather than last-write-wins ambiguity.
+     * projectability boundary, against the pre-split tree the ontology was written
+     * for: this checkout, then the Engine package. Duplicate normalized tuples are
+     * explicit integrity findings rather than last-write-wins ambiguity.
      * @param {String} conceptId
      * @param {Object[]} outboundEdges
      * @returns {{edges: Object[], findings: Object[]}}
@@ -206,7 +207,7 @@ class ConceptIngestor extends Base {
             }
 
             if (target.startsWith('file:')) {
-                const resolution = FileSystemIngestor.resolveFileReference(target.slice(5));
+                const resolution = FileSystemIngestor.resolveSplitTreeReference(target.slice(5));
 
                 if (!resolution.valid) {
                     findings.push(this.createIntegrityFinding(conceptId, edge, resolution.code, resolution.reason));
@@ -408,7 +409,7 @@ class ConceptIngestor extends Base {
             // against its canonical FileSystemIngestor identity so the edge can move
             // in place without losing its id or decayed weight.
             if (adoptLegacy && typeof tupleTarget === 'string' && tupleTarget.startsWith('file:')) {
-                const resolution = FileSystemIngestor.resolveFileReference(tupleTarget.slice(5));
+                const resolution = FileSystemIngestor.resolveSplitTreeReference(tupleTarget.slice(5));
 
                 if (resolution.valid) tupleTarget = resolution.nodeId
             }

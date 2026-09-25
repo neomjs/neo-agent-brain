@@ -1,14 +1,17 @@
 import fs              from 'fs';
 import path            from 'path';
+import {createRequire} from 'module';
 import {fileURLToPath} from 'url';
 import Base            from 'neo.mjs/src/core/Base.mjs';
 import crypto          from 'crypto';
 import GraphService    from './GraphService.mjs';
 import logger          from '../../mcp/server/memory-core/logger.mjs';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-const neoRootDir = path.resolve(__dirname, '../../../');
+const __filename    = fileURLToPath(import.meta.url);
+const __dirname     = path.dirname(__filename);
+const neoRootDir    = path.resolve(__dirname, '../../../');
+// The Engine package this checkout depends on: with the Brain, it holds the tree the neo repository held before the split.
+const engineRootDir = path.dirname(createRequire(import.meta.url).resolve('neo.mjs/package.json'));
 
 /**
  * @summary Ingests the physical Neo project structure into Native Graph nodes.
@@ -61,6 +64,34 @@ class FileSystemIngestor extends Base {
         }
 
         return !isDirectory && this.ignoreExts.includes(path.extname(relativePath).toLowerCase());
+    }
+
+    /**
+     * @summary Resolves a reference authored against the neo repository as it was before the Brain
+     * split: in this checkout first, then in the Engine package.
+     *
+     * The split moved whole directories, so a path exists in exactly one of the two. A path both hold
+     * is reported `AMBIGUOUS_FILE` instead of being resolved by precedence, and a path neither holds
+     * keeps the first root's finding.
+     * @param {String}   relativePath Repository-relative file path.
+     * @param {String[]} [roots] The roots to try, in order; injectable for focused tests.
+     * @returns {Object} The {@link #resolveFileReference} shape.
+     */
+    resolveSplitTreeReference(relativePath, roots=[neoRootDir, engineRootDir]) {
+        const
+            resolutions = roots.map(root => this.resolveFileReference(relativePath, root)),
+            resolved    = resolutions.filter(resolution => resolution.valid);
+
+        if (resolved.length > 1) {
+            return {
+                valid       : false,
+                code        : 'AMBIGUOUS_FILE',
+                reason      : `File reference exists in more than one repository root: ${resolved[0].relativePath}`,
+                relativePath: resolved[0].relativePath
+            }
+        }
+
+        return resolved[0] || resolutions[0]
     }
 
     /**
