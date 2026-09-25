@@ -11,8 +11,10 @@ live target. Never bind, copy, move, or rsync it over the Docker plane.
 ## Topology
 
 - `container-plane`: the Docker Orchestrator owns every graph/corpus task.
-- `host-edge`: a graphless launchd Orchestrator initially owns only LM Studio
-  supervision on `127.0.0.1:1234`.
+- `host-edge`: a graphless launchd Orchestrator owns LM Studio supervision on
+  `127.0.0.1:1234` and the Neural Link bridge on `127.0.0.1:8081` — the one hub
+  every seat's Neural Link MCP server and the cockpit dial, respawned by the
+  orchestrator's liveness probe when it dies.
 - `com.neomjs.agent-os-wake`: the separate signed Shape-B receiver owns
   final-mile wake delivery on host port `3199`.
 

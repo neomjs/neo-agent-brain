@@ -101,6 +101,8 @@ jobs:
                   test/playwright/unit/ai/services/knowledge-base/SearchService.spec.mjs
                   test/playwright/unit/ai/scripts/maintenance/syncKnowledgeBase.spec.mjs
                   test/playwright/unit/ai/services/memory-core/HealthService.starvationFold.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/HostEdgePosture.spec.mjs
+                  test/playwright/unit/ai/deploy/ParityPlaneVolumeScoping.spec.mjs
 
             - name: Verify community host authority boundary
               run: >-

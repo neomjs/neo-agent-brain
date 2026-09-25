@@ -74,15 +74,17 @@ export function resolveHostEdgeStateDir({homeDir = os.homedir(), platform = proc
  * 1. **Role** — `host-edge`. Declared, never inherited: the leaf carries no default, so a launcher
  *    that omits this refuses rather than silently claiming the container's authority.
  * 2. **Placement** — `deploymentMode=local` plus a state root outside the checkout plane.
- * 3. **Lane closure** — every lane this role does not own turned OFF explicitly, and the one lane
+ * 3. **Lane closure** — every lane this role does not own turned OFF explicitly, and the lanes
  *    the topology elects for it turned ON. The authority filter would already drop a foreign lane,
  *    but an unstated flag leaves the operator reading a config default that the filter silently
  *    overrides; stating the closure makes the elected lane set legible in one place.
  *
- * LM Studio supervision is the host edge's one elected lane (ticket-ref-ok: ADR 0019 §10.7 elects it).
- * A contributor without
- * LM Studio installed sets `NEO_ORCHESTRATOR_LMS_ENABLED=false` — every key here yields to an
- * explicit environment value, so that is a one-variable opt-out with no fork of this profile.
+ * The host edge elects two lanes: LM Studio supervision (ticket-ref-ok: ADR 0019 §10.7 elects it)
+ * and the Neural Link bridge, the loopback WebSocket hub every seat's MCP server and the cockpit
+ * dial on one port. A contributor without LM Studio installed sets
+ * `NEO_ORCHESTRATOR_LMS_ENABLED=false`, one who runs a bridge by hand sets
+ * `NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED=false` — every key here yields to an explicit environment
+ * value, so each is a one-variable opt-out with no fork of this profile.
  *
  * @param {Object} [options]
  * @param {String} [options.stateDir=resolveHostEdgeStateDir()] Runtime state root.
@@ -95,8 +97,14 @@ export function buildHostEdgeEnv({stateDir = resolveHostEdgeStateDir()} = {}) {
         NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE: 'host-edge',
         [HOST_EDGE_STATE_DIR_ENV]            : stateDir,
 
-        // 3. Lane closure — the one elected host-edge lane…
+        // 3. Lane closure — the two elected host-edge lanes: LM Studio supervision, and the Neural
+        // Link bridge (`taskDefinitions.mjs` `neuralLinkBridge`, on the Neural Link provider's port).
+        // The bridge binds loopback, so only a host process can own the one every seat's MCP server
+        // and the cockpit dial; a seat cannot spawn it (its MCP server runs from an engine checkout,
+        // which carries no bridge script), and the container orchestrator's bridge would be
+        // unreachable from the host.
         NEO_ORCHESTRATOR_LMS_ENABLED            : 'true',
+        NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED      : 'true',
 
         // …and everything else off. Container-plane + shared-primitive lanes (Docker owns them).
         //
@@ -116,7 +124,6 @@ export function buildHostEdgeEnv({stateDir = resolveHostEdgeStateDir()} = {}) {
         NEO_ORCHESTRATOR_BRIDGE_DAEMON_ENABLED   : 'false',
         NEO_ORCHESTRATOR_DEV_SERVER_ENABLED      : 'false',
         NEO_ORCHESTRATOR_MLX_ENABLED             : 'false',
-        NEO_ORCHESTRATOR_NL_BRIDGE_ENABLED       : 'false',
         NEO_ORCHESTRATOR_OLLAMA_ENABLED          : 'false',
         NEO_ORCHESTRATOR_PRIMARY_DEV_SYNC_ENABLED: 'false',
         NEO_ORCHESTRATOR_SWARM_HEARTBEAT_ENABLED : 'false'
