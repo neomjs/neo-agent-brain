@@ -8,6 +8,7 @@ import {
     boundUtf8Tail,
     createDeploymentStateSnapshot,
     readDeploymentStateSnapshot,
+    selectLastServiceDeath,
     writeDeploymentStateSnapshot
 } from '../../../../../../../ai/services/memory-core/helpers/deploymentStateBridgeStore.mjs';
 
@@ -35,6 +36,20 @@ test.describe('deploymentStateBridgeStore', () => {
                 missingSections        : []
             }
         });
+    });
+
+    test('selects the newest death only from a fresh service snapshot', () => {
+        const death = {at: '2024-03-09T16:00:01.000Z', exitCode: 137, oomKilled: true};
+
+        expect(selectLastServiceDeath({
+            ok: true,
+            snapshot: {services: [{serviceKey: 'mc-server', deaths: [death]}]}
+        }, 'mc-server')).toEqual(death);
+        expect(selectLastServiceDeath({
+            ok: false,
+            status: 'stale',
+            snapshot: {services: [{serviceKey: 'mc-server', deaths: [death]}]}
+        }, 'mc-server')).toBeNull();
     });
 
     test('carries additive bridge diagnostics and self-heal status when provided, null by default (#14163 AC2)', () => {

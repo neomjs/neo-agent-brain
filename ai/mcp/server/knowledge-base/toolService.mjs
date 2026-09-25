@@ -8,7 +8,10 @@ import SearchService                 from '../../../services/knowledge-base/Sear
 import ToolService                   from '../../ToolService.mjs';
 import AiConfig                      from '../../../config.mjs';
 import kbConfig                      from './config.mjs';
-import {readDeploymentStateSnapshot} from '../../../services/memory-core/helpers/deploymentStateBridgeStore.mjs';
+import {
+    readDeploymentStateSnapshot,
+    selectLastServiceDeath
+} from '../../../services/memory-core/helpers/deploymentStateBridgeStore.mjs';
 import {
     projectVectorGenerationHealth,
     resolveVectorGenerationElectionDir
@@ -57,6 +60,31 @@ const listTransportVisibleTools = ({cursor=0, limit} = {}) => {
     };
 };
 
+/**
+ * @summary Composes the Knowledge Base health response with deployment death observability.
+ * @param {Object} options
+ * @param {Object} options.health Base Knowledge Base health response.
+ * @param {Object} options.plane Observed plane identity.
+ * @param {Object|null} [options.vectorGeneration=null] Vector-generation health.
+ * @param {Object|null} [options.deploymentInspection=null] Current deployment snapshot inspection.
+ * @param {String} [options.serviceKey='kb-server'] Compose service key.
+ * @returns {Object}
+ */
+export function composeKnowledgeBaseHealthcheck({
+    health,
+    plane,
+    vectorGeneration = null,
+    deploymentInspection = null,
+    serviceKey = 'kb-server'
+}) {
+    return {
+        ...health,
+        plane,
+        vectorGeneration,
+        lastDeath: selectLastServiceDeath(deploymentInspection, serviceKey)
+    };
+}
+
 const serviceMapping = {
     ask_knowledge_base   : SearchService           .ask                .bind(SearchService),
     get_class_hierarchy  : QueryService            .getClassHierarchy  .bind(QueryService),
@@ -66,9 +94,11 @@ const serviceMapping = {
     // manifest's observed column). Read from the SAME per-server config the boot assertion
     // verified (`Server.aiConfig` === this singleton) — never a second Provider, so a custom
     // child overlay can never verify one identity and report another.
-    healthcheck                  : async () => ({
-        ...await HealthService.healthcheck(),
-        plane           : {id: kbConfig.plane.id, dataRoot: kbConfig.plane.dataRoot},
+    healthcheck                  : async () => composeKnowledgeBaseHealthcheck({
+        health              : await HealthService.healthcheck(),
+        plane               : {id: kbConfig.plane.id, dataRoot: kbConfig.plane.dataRoot},
+        deploymentInspection: await readDeploymentInspection(),
+        serviceKey          : 'kb-server',
         // Elected + parked vector-generation identities (never throws; `missing` on a plane that
         // has not declared an election) — acceptance for a generation cutover reads this block.
         vectorGeneration: await projectVectorGenerationHealth({

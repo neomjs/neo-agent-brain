@@ -103,6 +103,23 @@ export function createDeploymentStateSnapshot({
 }
 
 /**
+ * @summary Selects the newest bounded death record for one service from a fresh snapshot.
+ * @param {Object} inspection Deployment snapshot inspection.
+ * @param {String} serviceKey Compose service key.
+ * @returns {Object|null}
+ */
+export function selectLastServiceDeath(inspection, serviceKey) {
+    if (inspection?.ok !== true || typeof serviceKey !== 'string') return null;
+
+    const service = (Array.isArray(inspection.snapshot?.services) ? inspection.snapshot.services : [])
+        .find(entry => entry?.serviceKey === serviceKey);
+
+    return Array.isArray(service?.deaths) && service.deaths.length > 0
+        ? service.deaths[0]
+        : null;
+}
+
+/**
  * @summary Writes a deployment-state snapshot atomically.
  * @param {Object} options
  * @param {String} options.filePath Destination JSON file.

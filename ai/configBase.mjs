@@ -1472,7 +1472,7 @@ class ConfigBase extends ConfigProvider {
                  * identity and operation allowlisting. The holder exposes two separate
                  * capability envelopes over the same runtime handle:
                  *
-                 * - `readOperations`: logs / stats / inspect for observability.
+                  * - `readOperations`: logs / stats / inspect / events for observability.
                  * - `lifecycleOperations`: restart for recovery, plus update-memory-limit — the
                  *   store-class ceiling raise, which must land on the RUNNING container because a
                  *   store's restart mid-ingestion is the harm the raise exists to avoid.
@@ -1504,7 +1504,7 @@ class ConfigBase extends ConfigProvider {
                     socketPath                  : leaf('/var/run/docker.sock', 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_SOCKET_PATH', 'string'),
                     composeProject              : leaf(null, 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_COMPOSE_PROJECT', 'string'),
                     allowedServices             : leaf(['chroma', 'kb-server', 'mc-server', 'local-model'], 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_ALLOWED_SERVICES', 'csv'),
-                    readOperations              : leaf(['inspect', 'logs', 'stats'], 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_READ_OPERATIONS', 'csv'),
+                    readOperations              : leaf(['inspect', 'logs', 'stats', 'events'], 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_READ_OPERATIONS', 'csv'),
                     lifecycleOperations         : leaf(['restart', 'update-memory-limit'], 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_LIFECYCLE_OPERATIONS', 'csv'),
                     timeoutMs                   : leaf(5000, 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_TIMEOUT_MS', 'number'),
                     responseMaxBytes            : leaf(1024 * 1024, 'NEO_ORCHESTRATOR_RUNTIME_ACCESS_RESPONSE_MAX_BYTES', 'number'),
@@ -1526,6 +1526,9 @@ class ConfigBase extends ConfigProvider {
                  * `NEO_DEPLOYMENT_STATE_BRIDGE_STALE_AFTER_MS`,
                  * `NEO_DEPLOYMENT_STATE_BRIDGE_MAX_BYTES`,
                  * `NEO_DEPLOYMENT_STATE_BRIDGE_ALLOWED_SERVICES`,
+                 * `NEO_DEPLOYMENT_STATE_BRIDGE_INCLUDE_EVENTS`,
+                 * `NEO_DEPLOYMENT_STATE_BRIDGE_EVENT_LOOKBACK_MS`,
+                 * `NEO_DEPLOYMENT_STATE_BRIDGE_RECENT_DEATH_LIMIT`,
                  * `NEO_DEPLOYMENT_STATE_BRIDGE_INCLUDE_LOGS`,
                  * `NEO_DEPLOYMENT_STATE_BRIDGE_LOG_TAIL`,
                  * `NEO_DEPLOYMENT_STATE_BRIDGE_LOG_MAX_BYTES`,
@@ -1542,6 +1545,9 @@ class ConfigBase extends ConfigProvider {
                     staleAfterMs    : leaf(2 * 60 * 1000, 'NEO_DEPLOYMENT_STATE_BRIDGE_STALE_AFTER_MS', 'number'),
                     maxSnapshotBytes: leaf(256 * 1024, 'NEO_DEPLOYMENT_STATE_BRIDGE_MAX_BYTES', 'number'),
                     allowedServices : leaf([], 'NEO_DEPLOYMENT_STATE_BRIDGE_ALLOWED_SERVICES', 'csv'),
+                    includeEvents   : leaf(true, 'NEO_DEPLOYMENT_STATE_BRIDGE_INCLUDE_EVENTS', 'boolean'),
+                    eventLookbackMs : leaf(5 * 60 * 1000, 'NEO_DEPLOYMENT_STATE_BRIDGE_EVENT_LOOKBACK_MS', 'number'),
+                    recentDeathLimit: leaf(10, 'NEO_DEPLOYMENT_STATE_BRIDGE_RECENT_DEATH_LIMIT', 'number'),
                     includeLogs     : leaf(true, 'NEO_DEPLOYMENT_STATE_BRIDGE_INCLUDE_LOGS', 'boolean'),
                     logTail         : leaf(120, 'NEO_DEPLOYMENT_STATE_BRIDGE_LOG_TAIL', 'number'),
                     logMaxBytes     : leaf(32 * 1024, 'NEO_DEPLOYMENT_STATE_BRIDGE_LOG_MAX_BYTES', 'number'),

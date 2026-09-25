@@ -11,6 +11,7 @@ import {
     classifyDirectProbeOutcome,
     DeploymentStateBridgeService,
     deriveEmbeddingProbeSweepDisagreementInterval,
+    foldDockerDeathEvents,
     summarizeProbeReliability
 } from '../../../../../../../ai/daemons/orchestrator/services/DeploymentStateBridgeService.mjs';
 import {ContainerHealthDiagnosisService} from '../../../../../../../ai/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs';
@@ -38,9 +39,12 @@ const OBSERVED_AT = 1710000000000;
 const BRIDGE_CONFIG_PATHS = [
     'orchestrator.deploymentStateBridge.allowedServices',
     'orchestrator.deploymentStateBridge.bearerTokenFile',
-    'orchestrator.deploymentStateBridge.directProbeUrls',
-    'orchestrator.deploymentStateBridge.includeLogs',
-    'orchestrator.deploymentStateBridge.logTail',
+     'orchestrator.deploymentStateBridge.directProbeUrls',
+     'orchestrator.deploymentStateBridge.includeEvents',
+     'orchestrator.deploymentStateBridge.includeLogs',
+     'orchestrator.deploymentStateBridge.eventLookbackMs',
+     'orchestrator.deploymentStateBridge.recentDeathLimit',
+     'orchestrator.deploymentStateBridge.logTail',
     'orchestrator.deploymentStateBridge.logMaxBytes',
     'orchestrator.deploymentStateBridge.statsSampleWindow',
     'orchestrator.deploymentStateBridge.providerResidencyServiceKeys',
@@ -148,9 +152,12 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
         restoreRuntimeAccessConfig = snapshotAiConfig(AiConfig, RUNTIME_ACCESS_CONFIG_PATHS);
 
         Object.assign(AiConfig.orchestrator.deploymentStateBridge, {
-            allowedServices             : [],
-            includeLogs                 : true,
-            logTail                     : 120,
+             allowedServices             : [],
+             includeEvents               : false,
+             includeLogs                 : true,
+             eventLookbackMs             : 5 * 60 * 1000,
+             recentDeathLimit            : 10,
+             logTail                     : 120,
             logMaxBytes                 : 32 * 1024,
             statsSampleWindow           : 2,
             providerResidencyServiceKeys: ['local-model', 'model'],
@@ -168,7 +175,22 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
         restoreRuntimeAccessConfig?.();
     });
 
+    test('folds OOM and clean die events into bounded, newest-first death records', () => {
+        const deaths = foldDockerDeathEvents([
+            {action: 'oom', containerId: 'container-old', atMs: 1710000000000},
+            {action: 'die', containerId: 'container-old', atMs: 1710000001000, exitCode: 137},
+            {action: 'die', containerId: 'container-clean', atMs: 1710000002000, exitCode: 0}
+        ], [], 2);
+
+        expect(deaths).toEqual([
+            {at: '2024-03-09T16:00:02.000Z', exitCode: 0, oomKilled: false},
+            {at: '2024-03-09T16:00:01.000Z', exitCode: 137, oomKilled: true}
+        ]);
+    });
+
     test('collects bounded read-observe state and diagnosis for allowlisted services', async () => {
+        AiConfig.orchestrator.deploymentStateBridge.includeEvents = true;
+
         const calls                = [];
         const runtimeAccessService = {
             async readObserve(request) {
@@ -185,6 +207,13 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
                     return {
                         data : statsSample({cpuPercent: 390, memoryPercent: 75}),
                         proof: {operation: 'stats'}
+                    };
+                }
+
+                if (request.operation === 'events') {
+                    return {
+                        data : {events: []},
+                        proof: {operation: 'events'}
                     };
                 }
 
@@ -228,7 +257,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
         expect(snapshot.services[0].logs.incarnationBounded).toBe(false);
         expect(snapshot.services[0].logs.text).toBe(diagnoseArgs.logs.text);
 
-        expect(calls.map(call => call.operation)).toEqual(['inspect', 'stats', 'logs']);
+        expect(calls.map(call => call.operation)).toEqual(['inspect', 'stats', 'logs', 'events']);
         expect(snapshot.services).toHaveLength(1);
         expect(snapshot.services[0]).toMatchObject({
             serviceKey: 'model',
@@ -246,12 +275,19 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
                 truncated: false,
                 tail     : 120
             },
+            deaths: [],
+            deathRead: {
+                status            : 'available',
+                source            : 'docker-events',
+                limit             : 10,
+                unavailableReason : null
+            },
             diagnosis: {
                 serviceKey : 'model',
                 status     : 'unhealthy',
                 sampleCount: 1
             },
-            proofs: [{operation: 'inspect'}, {operation: 'stats'}, {operation: 'logs'}]
+             proofs: [{operation: 'inspect'}, {operation: 'stats'}, {operation: 'logs'}, {operation: 'events'}]
         });
         expect(snapshot.recoveryRuns).toMatchObject({
             status : 'available',
@@ -277,6 +313,167 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
                 degradedServiceCount: 0,
                 broadLookupFailure  : false
             }
+        });
+    });
+
+    test('publishes event-derived deaths with a bounded read receipt', async () => {
+        AiConfig.orchestrator.deploymentStateBridge.includeEvents    = true;
+        AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit = 2;
+
+        const calls = [],
+              runtimeAccessService = {
+                  async readObserve(request) {
+                      calls.push(request);
+
+                      if (request.operation === 'inspect') {
+                          return {data: {State: {Status: 'running'}}, proof: {operation: 'inspect'}};
+                      }
+
+                      if (request.operation === 'stats') {
+                          return {data: statsSample(), proof: {operation: 'stats'}};
+                      }
+
+                      if (request.operation === 'logs') {
+                          return {data: {logs: '', tail: request.tail}, proof: {operation: 'logs'}};
+                      }
+
+                      return {
+                          data : {
+                              events: [
+                                  {action: 'oom', containerId: 'old-container', atMs: OBSERVED_AT - 2000},
+                                  {action: 'die', containerId: 'old-container', atMs: OBSERVED_AT - 1000, exitCode: 137}
+                              ]
+                          },
+                          proof: {operation: 'events'}
+                      };
+                  }
+              },
+              service = createService({
+                  runtimeAccessService,
+                  diagnosisService: {diagnose: () => ({status: 'healthy'})}
+              }),
+              snapshot = await service.collectSnapshot();
+
+        expect(calls.map(call => call.operation)).toEqual(['inspect', 'stats', 'logs', 'events']);
+        expect(snapshot.services[0]).toMatchObject({
+            deaths: [{at: new Date(OBSERVED_AT - 1000).toISOString(), exitCode: 137, oomKilled: true}],
+            deathRead: {
+                status            : 'available',
+                source            : 'docker-events',
+                limit             : 2,
+                unavailableReason : null
+            }
+        });
+    });
+
+    test('retains the death record when a later bounded event window is empty', async () => {
+        AiConfig.orchestrator.deploymentStateBridge.includeEvents = true;
+        let eventRead = 0;
+
+        const runtimeAccessService = {
+                async readObserve(request) {
+                    if (request.operation === 'inspect') {
+                        return {data: {State: {Status: 'running'}}, proof: {operation: 'inspect'}};
+                    }
+
+                    if (request.operation === 'stats') {
+                        return {data: statsSample(), proof: {operation: 'stats'}};
+                    }
+
+                    if (request.operation === 'logs') {
+                        return {data: {logs: '', tail: request.tail}, proof: {operation: 'logs'}};
+                    }
+
+                    eventRead += 1;
+
+                    return {
+                        data: {
+                            appliedSince: new Date(OBSERVED_AT - 1000).toISOString(),
+                            appliedUntil: new Date(OBSERVED_AT).toISOString(),
+                            events      : eventRead === 1
+                                ? [
+                                    {action: 'oom', containerId: 'old-container', atMs: OBSERVED_AT - 2000},
+                                    {action: 'die', containerId: 'old-container', atMs: OBSERVED_AT - 1000, exitCode: 137}
+                                ]
+                                : []
+                        },
+                        proof: {operation: 'events'}
+                    };
+                }
+            },
+            service = createService({
+                runtimeAccessService,
+                diagnosisService: {diagnose: () => ({status: 'healthy'})}
+            }),
+            first  = await service.collectSnapshot(),
+            second = await service.collectSnapshot();
+
+        expect(first.services[0].deaths).toHaveLength(1);
+        expect(second.services[0].deaths).toEqual(first.services[0].deaths);
+        expect(second.services[0].deathRead.status).toBe('available');
+    });
+
+    test('publishes an unavailable death read instead of an empty history', async () => {
+        AiConfig.orchestrator.deploymentStateBridge.includeEvents = true;
+
+        const runtimeAccessService = {
+                async readObserve(request) {
+                    if (request.operation === 'inspect') {
+                        return {data: {State: {Status: 'running'}}, proof: {operation: 'inspect'}};
+                    }
+
+                    if (request.operation === 'stats') {
+                        return {data: statsSample(), proof: {operation: 'stats'}};
+                    }
+
+                    if (request.operation === 'logs') {
+                        return {data: {logs: '', tail: request.tail}, proof: {operation: 'logs'}};
+                    }
+
+                    const error = new Error('socket read failed');
+                    error.reason = 'docker-socket-unavailable';
+                    throw error;
+                }
+            },
+            service  = createService({runtimeAccessService, diagnosisService: {diagnose: () => ({status: 'healthy'})}}),
+            snapshot = await service.collectSnapshot();
+
+        expect(snapshot.services[0]).toMatchObject({
+            deaths    : null,
+            deathRead: {
+                status           : 'unavailable',
+                unavailableReason: 'docker-socket-unavailable'
+            }
+        });
+    });
+
+    test('an explicit read-operations override disables event collection cleanly', async () => {
+        AiConfig.orchestrator.deploymentStateBridge.includeEvents = true;
+        AiConfig.orchestrator.deploymentRuntimeAccess.readOperations = ['inspect', 'logs', 'stats'];
+
+        const calls                = [],
+              runtimeAccessService = {
+                  async readObserve(request) {
+                      calls.push(request);
+
+                      if (request.operation === 'inspect') {
+                          return {data: {State: {Status: 'running'}}, proof: {operation: 'inspect'}};
+                      }
+
+                      if (request.operation === 'stats') {
+                          return {data: statsSample(), proof: {operation: 'stats'}};
+                      }
+
+                      return {data: {logs: '', tail: request.tail}, proof: {operation: 'logs'}};
+                  }
+              },
+              service  = createService({runtimeAccessService, diagnosisService: {diagnose: () => ({status: 'healthy'})}}),
+              snapshot = await service.collectSnapshot();
+
+        expect(calls.map(call => call.operation)).toEqual(['inspect', 'stats', 'logs']);
+        expect(snapshot.services[0]).toMatchObject({
+            deaths   : null,
+            deathRead: {status: 'disabled', unavailableReason: 'channel-disabled'}
         });
     });
 

@@ -851,6 +851,20 @@ components:
           description: Overall health status of the server. `unhealthy` means ChromaDB is unreachable; `degraded` means ChromaDB is reachable but corpus or provider readiness is incomplete.
           enum: [healthy, degraded, unhealthy]
           example: "healthy"
+        lastDeath:
+          type: object
+          nullable: true
+          description: "Newest bounded Docker death record for the Knowledge Base service; null when no fresh death record is available."
+          properties:
+            at:
+              type: string
+              format: date-time
+            exitCode:
+              type: integer
+              nullable: true
+            oomKilled:
+              type: boolean
+          required: [at, exitCode, oomKilled]
         timestamp:
           type: string
           format: date-time

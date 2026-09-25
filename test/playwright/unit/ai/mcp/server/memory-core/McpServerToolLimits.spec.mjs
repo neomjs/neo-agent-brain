@@ -339,6 +339,16 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
         expect(clear.details).toContain('All features are operational');
     });
 
+    test('healthcheck declares the bounded last-death diagnostic', async () => {
+        const {tools} = await toolService.listTools(),
+              schema = tools.find(item => item.name === 'healthcheck').outputSchema.properties.lastDeath;
+
+        expect(schema.nullable).toBe(true);
+        expect(schema.properties.at.type).toBe('string');
+        expect(schema.properties.exitCode.type).toBe('integer');
+        expect(schema.properties.oomKilled.type).toBe('boolean');
+    });
+
     test('healthcheck composition degrades only a stalled drain and preserves stronger verdicts (#16305)', () => {
         const plane        = {id: 'test-plane', dataRoot: '/test-data'};
         const pendingDrain = {
@@ -431,6 +441,24 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
         expect(breached.status).toBe('degraded');
         expect(breached.details).not.toContain('All features are operational');
         expect(breached.details.at(-1)).toContain('source-check-overdue')
+    });
+
+    test('healthcheck surfaces the latest Memory Core death without changing the verdict', () => {
+        const death = {at: '2024-03-09T16:00:01.000Z', exitCode: 137, oomKilled: true},
+              result = toolService.composeMemoryCoreHealthcheck({
+                  health          : {status: 'healthy', details: ['All features are operational']},
+                  memoryWalDrain  : {state: 'caught-up', pendingDrainDepth: 0, oldestPendingAgeMs: null, stallThresholdMs: 1},
+                  plane           : {id: 'test-plane', dataRoot: '/test-data'},
+                  serviceKey      : 'mc-server',
+                  deploymentInspection: {
+                      ok      : true,
+                      status  : 'available',
+                      snapshot: {services: [{serviceKey: 'mc-server', deaths: [death]}]}
+                  }
+              });
+
+        expect(result.lastDeath).toEqual(death);
+        expect(result.status).toBe('healthy');
     });
 
     test('healthcheck projects current degraded backup maintenance without trusting stale bridge state (#17068)', async () => {

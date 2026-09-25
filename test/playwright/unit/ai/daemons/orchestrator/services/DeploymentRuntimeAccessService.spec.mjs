@@ -19,7 +19,7 @@ const BASE_CONFIG = {
     socketPath                  : '/var/run/docker.sock',
     composeProject              : 'neo',
     allowedServices             : ['chroma', 'kb-server', 'mc-server', 'local-model'],
-    readOperations              : ['inspect', 'logs', 'stats'],
+    readOperations              : ['inspect', 'logs', 'stats', 'events'],
     lifecycleOperations         : ['restart'],
     timeoutMs                   : 5000,
     responseMaxBytes            : 1024 * 1024,
@@ -53,6 +53,7 @@ function createService({
     },
     statsData = {cpu_stats: {}},
     logText = 'ready',
+    eventBody = '',
     requestError = null
 } = {}) {
     const calls = [];
@@ -80,6 +81,10 @@ function createService({
 
         if (request.path.includes('/stats?')) {
             return {statusCode: 200, headers: {}, body: JSON.stringify(statsData)};
+        }
+
+        if (request.path.startsWith('/events?')) {
+            return {statusCode: 200, headers: {}, body: eventBody};
         }
 
         if (request.path.includes('/restart?')) {
@@ -196,6 +201,43 @@ test.describe('Neo.ai.daemons.services.DeploymentRuntimeAccessService', () => {
         expect(calls.some(call => call.path === '/containers/container-abc/stats?stream=false')).toBe(true);
     });
 
+    test('readObserve events stays bounded and returns parsed death evidence', async () => {
+        const eventBody = [
+            JSON.stringify({status: 'oom', id: 'old-container', time: 1710000000, Actor: {ID: 'old-container'}}),
+            JSON.stringify({status: 'die', id: 'old-container', time: 1710000001, Actor: {ID: 'old-container', Attributes: {exitCode: '137'}}})
+        ].join('\n');
+        const {service, calls} = createService({eventBody});
+        const result = await service.readObserve({
+            serviceKey: 'mc-server',
+            operation : 'events',
+            since     : '2024-03-09T16:00:00.000Z',
+            until     : '2024-03-09T16:00:02.000Z'
+        });
+
+        expect(result.data).toMatchObject({
+            appliedSince: '2024-03-09T16:00:00.000Z',
+            appliedUntil: '2024-03-09T16:00:02.000Z',
+            bounded     : true
+        });
+        expect(result.data.events).toHaveLength(2);
+        expect(result.data.events[0]).toMatchObject({action: 'oom', containerId: 'old-container', atMs: 1710000000000});
+        expect(result.data.events[1]).toMatchObject({action: 'die', containerId: 'old-container', atMs: 1710000001000, exitCode: 137});
+        expect(result.proof.auditLabel).toBe('read-observe:events');
+
+        const eventPath = decodeURIComponent(calls.find(call => call.path.startsWith('/events?')).path);
+
+        expect(eventPath).toContain('"event":["oom","die"]');
+        expect(eventPath).toContain('com.docker.compose.service=mc-server');
+        expect(eventPath).toContain('com.docker.compose.project=neo');
+    });
+
+    test('event reads refuse an unbounded window', async () => {
+        const {service, calls} = createService();
+
+        await expect(service.readObserve({serviceKey: 'mc-server', operation: 'events'}))
+            .rejects.toMatchObject({reason: 'runtime-event-window-required'});
+        expect(calls.some(call => call.path.startsWith('/events?'))).toBe(false);
+    });
     test('a valid incarnation interval reaches the Docker query AND is echoed as applied', async () => {
         const {service, calls} = createService({logText: 'FATAL ERROR'});
 
@@ -495,7 +537,7 @@ test.describe('Neo.ai.daemons.services.DeploymentRuntimeAccessService', () => {
                 mechanism           : 'docker-socket',
                 composeProject      : 'prod',
                 allowedServices     : ['chroma', 'kb-server', 'mc-server', 'local-model'],
-                readOperations      : ['inspect', 'logs', 'stats'],
+                readOperations      : ['inspect', 'logs', 'stats', 'events'],
                 lifecycleOperations : ['restart'],
                 auditMode           : 'metadata',
                 socketPathConfigured: true,

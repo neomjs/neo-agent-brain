@@ -102,6 +102,31 @@ test.describe('Neo.ai.mcp.server.knowledge-base.Server', () => {
         }
     });
 
+    test('healthcheck surfaces the latest Knowledge Base death without changing the verdict', async () => {
+        const {composeKnowledgeBaseHealthcheck, listTools} = await import('../../../../../../../ai/mcp/server/knowledge-base/toolService.mjs'),
+              death = {at: '2024-03-09T16:00:01.000Z', exitCode: 137, oomKilled: true},
+              result = composeKnowledgeBaseHealthcheck({
+                  health: {status: 'healthy', details: ['All features are operational']},
+                  plane : {id: 'test-plane', dataRoot: '/test-data'},
+                  deploymentInspection: {
+                      ok: true,
+                      status: 'available',
+                      snapshot: {services: [{serviceKey: 'kb-server', deaths: [death]}]}
+                  }
+              });
+
+        expect(result.lastDeath).toEqual(death);
+        expect(result.status).toBe('healthy');
+
+        const {tools} = await listTools(),
+              schema = tools.find(item => item.name === 'healthcheck').outputSchema.properties.lastDeath;
+
+        expect(schema.nullable).toBe(true);
+        expect(schema.properties.at.type).toBe('string');
+        expect(schema.properties.exitCode.type).toBe('integer');
+        expect(schema.properties.oomKilled.type).toBe('boolean');
+    });
+
     test('#15886: the plane-identity assertion names its ORIGIN server, not the shared class name', async () => {
         const serverInstance = await createServerWithoutBoot();
 

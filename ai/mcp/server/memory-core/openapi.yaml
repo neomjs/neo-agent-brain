@@ -3793,6 +3793,20 @@ components:
           type: string
           enum: [healthy, degraded, unhealthy]
           example: "healthy"
+        lastDeath:
+          type: object
+          nullable: true
+          description: "Newest bounded Docker death record for the Memory Core service; null when no fresh death record is available."
+          properties:
+            at:
+              type: string
+              format: date-time
+            exitCode:
+              type: integer
+              nullable: true
+            oomKilled:
+              type: boolean
+          required: [at, exitCode, oomKilled]
         timestamp:
           type: string
           format: date-time
