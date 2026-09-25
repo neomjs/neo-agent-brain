@@ -726,6 +726,7 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
         ]);
         expect(completion.properties.queueDisposition.enum).toContain('not-applicable');
         expect(completion.properties.queueWaitMs.nullable).toBe(true);
+        expect(completion.properties.failureStage.enum).toEqual(['provider', 'queue', 'dispatch', 'unknown']);
 
         const reaped = doc.components.schemas.ProviderActivityReaped;
 

@@ -69,7 +69,7 @@ export function getProviderActivityContext() {
 }
 
 const ACTIVITY_ROLES       = new Set(['chat', 'embedding', 'unknown']);
-const FAILURE_STAGES       = new Set(['provider', 'queue', 'unknown']);
+const FAILURE_STAGES       = new Set(['provider', 'queue', 'dispatch', 'unknown']);
 const PRIORITIES           = new Set(['batch', 'interactive', 'unknown']);
 const PROVIDERS            = new Set(['gemini', 'ollama', 'openAiCompatible', 'unknown']);
 const QUEUE_DISPOSITIONS   = new Set(['neo-queued', 'not-applicable', 'unknown']);
@@ -651,7 +651,7 @@ export function getProviderActivityMetrics(db, {sinceTs, limit, now = Date.now()
             completedAt : new Date(row.completed_at).toISOString(),
             executionMs : row.execution_ms ?? null,
             success     : row.success === 1,
-            failureStage: row.failure_stage ?? null
+            failureStage: row.failure_stage === null ? null : normalizeEnum(row.failure_stage, FAILURE_STAGES)
         })),
         reaped: reapedRows.map(row => ({
             ...projectBase(row),
