@@ -77,6 +77,7 @@ jobs:
                   test/playwright/unit/playwrightConfigUnit.spec.mjs
                   test/playwright/unit/chromaOwnership.spec.mjs
                   test/playwright/unit/deploy/DeploySourceRepository.spec.mjs
+                  test/playwright/unit/ai/deploy/DeclaredHeapCeilings.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/ConversationCorpusSource.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/SourceRegistry.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/SourcePathsConfig.spec.mjs
