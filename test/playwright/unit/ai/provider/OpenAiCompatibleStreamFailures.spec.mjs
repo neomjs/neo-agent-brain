@@ -266,6 +266,15 @@ test('a PUBLIC host with no declared alias contract earns no tolerance (#480 RA-
     // Same host, declared: the decision follows the contract, not the shape.
     expect(hostedModelAliasesAllowed('https://api.openai.com/v1')).toBe(true);
 
+    // A declared provider's ORIGIN is HTTPS *and* the hostname. The same hostname over plaintext
+    // is a different endpoint — unauthenticated as that provider and unprotected in transit — and
+    // must earn no tolerance. This is the arm that convicts the regression from dropping the shape
+    // heuristic: the protocol check went with it, so `http://api.openai.com/v1` inherited a
+    // tolerance it never earned, and a date-stamped served id from a plaintext endpoint became
+    // indistinguishable from a snapshot of the model actually requested.
+    expect(hostedModelAliasesAllowed('http://api.openai.com/v1')).toBe(false);
+    expect(hostedModelAliasesAllowed('ftp://api.openai.com/v1')).toBe(false);
+
     // A path or query that merely MENTIONS a declared host must not inherit its contract.
     expect(hostedModelAliasesAllowed('https://evil.test/proxy?to=api.openai.com')).toBe(false);
     expect(hostedModelAliasesAllowed('https://api.openai.com.evil.test/v1')).toBe(false);

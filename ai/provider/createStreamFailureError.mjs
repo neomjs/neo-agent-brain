@@ -127,9 +127,17 @@ const DATE_ALIAS_CONTRACT_HOSTS = new Set([
  */
 function hostedModelAliasesAllowed(host) {
     try {
-        const {hostname} = new URL(host);
+        const url = new URL(host);
 
-        return DATE_ALIAS_CONTRACT_HOSTS.has(hostname.toLowerCase())
+        // The protocol is half the contract, not a detail of the hostname check. A declared
+        // provider's ORIGIN is `https://` plus its hostname; admitting the same hostname over
+        // plaintext admits an endpoint whose responses are neither authenticated as that provider
+        // nor protected in transit, and a date-suffixed model id arriving from one is exactly the
+        // wrong-resident signal the surrounding assertion exists to catch. Dropping this check
+        // alongside the old shape heuristic is what let `http://api.openai.com/v1` inherit the
+        // tolerance it never earned.
+        return url.protocol === 'https:' &&
+            DATE_ALIAS_CONTRACT_HOSTS.has(url.hostname.replace(/^\[|\]$/g, '').toLowerCase())
     } catch {
         return false
     }
