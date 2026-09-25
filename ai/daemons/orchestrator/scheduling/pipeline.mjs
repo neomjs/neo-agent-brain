@@ -235,9 +235,11 @@ export function buildOrchestratorSchedulingOptions({orchestrator, config, now, r
  * @returns {{candidates: Object[], errors: Object[], winner: Object|null}}
  */
 export function runSchedulingPipeline({registry, context, services, runtime}) {
-    // A running tenant slice outlasts the bootstrap rank's coverage TTL, and the picker never evaluates a
-    // running lane. Keyed on the lane RUNNING, so only a profile that owns and enables it reaches the resolver.
-    if (context.state?.['tenant-repo-sync']?.running) {
+    // The bootstrap rank's coverage snapshot outlives its TTL whenever the lane is not evaluated: a
+    // running slice, and the polls after it yields (#504). Warmed on every poll of a profile that owns
+    // the lane (it is in this registry) and enables it — the boot prewarm's own boundary — so a host
+    // edge or a disabled lane never reaches the resolver.
+    if (context.enables?.tenantRepoSync && registry.some(descriptor => descriptor?.taskName === 'tenant-repo-sync')) {
         services.maintenanceBackpressureService.warmConfiguredTenantRepoLabels?.();
     }
 
@@ -275,6 +277,12 @@ export function runSchedulingPipeline({registry, context, services, runtime}) {
             // never be dispatched at all. Optional-chained so a service build without the predicate
             // degrades to staleness ordering.
             isBootstrapCriticalTask: services.maintenanceBackpressureService.isBootstrapCriticalTask?.bind(
+                services.maintenanceBackpressureService
+            ),
+            // Selection-time fairness (#504): the same reasoning as the bootstrap rank. The admission
+            // gate's yield to a starving waiter only makes the winner abstain, so the waiter is
+            // promoted here, where dispatch is decided.
+            findStarvingWaiter: services.maintenanceBackpressureService.findStarvingWaiterToPromote?.bind(
                 services.maintenanceBackpressureService
             )
         }
