@@ -176,10 +176,12 @@ test.describe('dispatchFleetRequest — the app↔fleet wire allowlist + routing
             // session summaries + one agent's mailbox mirror + the whoami identity-bootstrap) plus
             // the two explicit write verbs. Catch-up mark is process-local only; compose persists
             // payload while the server stamps identity. Adopt / release record who launches a seat.
-            ['adoptAgent', 'composeOperatorMessage', 'configureAgent', 'connectTenant', 'defineAgent', 'fleetActivity', 'fleetDeploymentState', 'fleetHistory', 'fleetMailboxMirror', 'fleetMemories', 'fleetRoster', 'fleetRuntimeStatus', 'fleetSessionMemories', 'fleetStatus', 'fleetTasks', 'fleetWakeRoutes', 'getAgent', 'getBootIdentity', 'listAgents', 'listTenants', 'markFleetCaughtUp', 'releaseAgent', 'removeAgent', 'resolveViewerIdentity', 'restartAgent', 'setAvatar', 'setRepo', 'startAgent', 'stopAgent'].sort()
+            ['adoptAgent', 'composeOperatorMessage', 'configureAgent', 'connectTenant', 'defineAgent', 'fleetActivity', 'fleetDeploymentState', 'fleetGoldenPath', 'fleetHistory', 'fleetMailboxMirror', 'fleetMemories', 'fleetRoster', 'fleetRuntimeStatus', 'fleetSessionMemories', 'fleetStatus', 'fleetTasks', 'fleetWakeRoutes', 'getAgent', 'getBootIdentity', 'listAgents', 'listTenants', 'markFleetCaughtUp', 'releaseAgent', 'removeAgent', 'resolveViewerIdentity', 'restartAgent', 'setAvatar', 'setRepo', 'startAgent', 'stopAgent'].sort()
         );
         // the deployment's task picture — bounded read-observe over the existing truth verbs, no resolver seam
         expect(FLEET_WIRE_METHODS).toContain('fleetTasks');
+        // the computed Golden Path with its admission — the producer's route passed through, never re-ranked
+        expect(FLEET_WIRE_METHODS).toContain('fleetGoldenPath');
         // the bounded, redacted projection of the orchestrator's deployment-state snapshot (#314) — the plane
         // cards' read-observe truth; observe-only, no actuator, no paths, no config, no logs
         expect(FLEET_WIRE_METHODS).toContain('fleetDeploymentState');
