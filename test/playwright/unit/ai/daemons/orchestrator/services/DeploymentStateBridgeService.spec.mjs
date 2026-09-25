@@ -264,7 +264,9 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
             status    : 'available',
             inspect   : {
                 image: 'ollama',
-                state: {status: 'running', health: 'unhealthy'}
+                // Named `currentRun` since #466's third Fix bullet: these are the run happening now,
+                // not the death that preceded a restart. The cause of a restart is in `deaths`.
+                currentRun: {status: 'running', health: 'unhealthy'}
             },
             stats: {
                 cpuPercent   : 390,
@@ -483,53 +485,69 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService', () => {
     // every service, every cycle. This arm is the property that containment buys: the channel degrades,
     // and everything else still lands.
     test('an INVALID event-channel leaf degrades only that channel, and the rest of the snapshot still writes', async () => {
-        AiConfig.orchestrator.deploymentStateBridge.includeEvents       = true;
-        AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit    = 0;   // the integer-limit validator rejects this
-        AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs     = -1;  // and so does the lookback validator
-        AiConfig.orchestrator.deploymentRuntimeAccess.readOperations     = ['inspect', 'events', 'logs', 'stats'];
+        // This arm writes two shared leaves, so it restores BOTH itself. The suite's own save/restore
+        // lists are per-describe-block, and the block that snapshots `BRIDGE_CONFIG_PATHS` does NOT
+        // snapshot the runtime-access list — so an arm here that relied on a distant list leaked its
+        // `readOperations` override into a log-head test three thousand lines away and turned it red.
+        // An arm that mutates shared config cleans up after itself; it does not assume the block it
+        // happens to sit in will do it.
+        const originalReadOperations = AiConfig.orchestrator.deploymentRuntimeAccess.readOperations,
+              originalLimit         = AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit,
+              originalLookback      = AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs;
 
-        const calls                = [],
-              runtimeAccessService = {
-                  async readObserve(request) {
-                      calls.push(request);
+        try {
+            AiConfig.orchestrator.deploymentStateBridge.includeEvents   = true;
+            AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit = 0;   // the integer-limit validator rejects this
+            AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs  = -1;  // and so does the lookback validator
+            AiConfig.orchestrator.deploymentRuntimeAccess.readOperations  = ['inspect', 'events', 'logs', 'stats'];
 
-                      if (request.operation === 'inspect') {
-                          return {data: {State: {Status: 'running'}}, proof: {operation: 'inspect'}};
+            const calls                = [],
+                  runtimeAccessService = {
+                      async readObserve(request) {
+                          calls.push(request);
+
+                          if (request.operation === 'inspect') {
+                              return {data: {State: {Status: 'running'}}, proof: {operation: 'inspect'}};
+                          }
+
+                          if (request.operation === 'stats') {
+                              return {data: statsSample(), proof: {operation: 'stats'}};
+                          }
+
+                          return {data: {logs: '', tail: request.tail}, proof: {operation: 'logs'}};
                       }
+                  },
+                  service  = createService({runtimeAccessService, diagnosisService: {diagnose: () => ({status: 'healthy'})}}),
+                  // The arm Grace named: not "does it degrade" but "does the SNAPSHOT still come back".
+                  // `collectSnapshot` is the same seam every other arm here reads, so a difference in
+                  // the result is attributable to the containment and not to a different entry point.
+                  snapshot = await service.collectSnapshot();
 
-                      if (request.operation === 'stats') {
-                          return {data: statsSample(), proof: {operation: 'stats'}};
-                      }
+            // The channel is off and says so, distinct from a read failure and from a disabled channel.
+            expect(snapshot.services[0]).toMatchObject({
+                deaths   : null,
+                deathRead: {status: 'unavailable', unavailableReason: 'event-config-invalid'}
+            });
 
-                      return {data: {logs: '', tail: request.tail}, proof: {operation: 'logs'}};
-                  }
-              },
-              service  = createService({runtimeAccessService, diagnosisService: {diagnose: () => ({status: 'healthy'})}}),
-              // The arm Grace named: not "does it degrade" but "does the SNAPSHOT still come back".
-              // `collectSnapshot` is the same seam every other arm here reads, so a difference in the
-              // result is attributable to the containment and not to a different entry point.
-              snapshot = await service.collectSnapshot();
+            // The rest of the service record survived — this is the whole point of containment.
+            expect(calls.map(call => call.operation)).toContain('inspect');
+            expect(snapshot.services[0].serviceKey).toBeTruthy();
+            expect(snapshot.generatedAt).toBeTruthy();
 
-        // The channel is off and says so, distinct from a read failure and from a disabled channel.
-        expect(snapshot.services[0]).toMatchObject({
-            deaths   : null,
-            deathRead: {status: 'unavailable', unavailableReason: 'event-config-invalid'}
-        });
+            // And a corrected leaf recovers on its own: the cursor and history were left untouched, so the
+            // next poll with a valid limit publishes normally. A containment that wedged the channel
+            // shut would satisfy the arm above and still be a defect.
+            AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit = 10;
+            AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs  = 5 * 60 * 1000;
 
-        // The rest of the service record survived — this is the whole point of containment.
-        expect(calls.map(call => call.operation)).toContain('inspect');
-        expect(snapshot.services[0].serviceKey).toBeTruthy();
-        expect(snapshot.generatedAt).toBeTruthy();
+            const recovered = await service.collectSnapshot();
 
-        // And a corrected leaf recovers on its own: the cursor and history were left untouched, so the
-        // next poll with a valid limit publishes normally. A containment that wedged the channel
-        // shut would satisfy the arm above and still be a defect.
-        AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit = 10;
-        AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs  = 5 * 60 * 1000;
-
-        const recovered = await service.collectSnapshot();
-
-        expect(recovered.services[0].deathRead.status).not.toBe('unavailable')
+            expect(recovered.services[0].deathRead.status).not.toBe('unavailable')
+        } finally {
+            AiConfig.orchestrator.deploymentRuntimeAccess.readOperations  = originalReadOperations;
+            AiConfig.orchestrator.deploymentStateBridge.recentDeathLimit = originalLimit;
+            AiConfig.orchestrator.deploymentStateBridge.eventLookbackMs  = originalLookback;
+        }
     });
 
     test('a logs read that landed on a DIFFERENT container is never incarnation-bounded', async () => {
@@ -3695,7 +3713,7 @@ test.describe('probeReliability reaches the service record', () => {
         }).collectServiceSnapshot({serviceKey: 'mc-server', observedAt: OBSERVED_AT});
 
         // Deleting the production assignment turns THIS red; the helper tests would not notice.
-        expect(snapshot.inspect.state.probeReliability).toMatchObject({
+        expect(snapshot.inspect.currentRun.probeReliability).toMatchObject({
             status      : 'available',
             sampleCount : 5,
             failureCount: 4,
@@ -3704,15 +3722,15 @@ test.describe('probeReliability reaches the service record', () => {
 
         // Published BESIDE the runtime's own verdict, never folded into it — the recovery lane and
         // the two-channel evidence pairing both depend on `health` keeping its exact prior meaning.
-        expect(snapshot.inspect.state.health).toBe('healthy');
+        expect(snapshot.inspect.currentRun.health).toBe('healthy');
     });
 
     test('a container with no declared healthcheck records not-applicable, not silence', async () => {
         const snapshot = await bridgeFor(undefined)
             .collectServiceSnapshot({serviceKey: 'mc-server', observedAt: OBSERVED_AT});
 
-        expect(snapshot.inspect.state.probeReliability).toMatchObject({status: 'not-applicable'});
-        expect(snapshot.inspect.state.health).toBeNull();
+        expect(snapshot.inspect.currentRun.probeReliability).toMatchObject({status: 'not-applicable'});
+        expect(snapshot.inspect.currentRun.health).toBeNull();
     });
 });
 

@@ -876,7 +876,7 @@ export class DeploymentStateBridgeService extends Base {
                 // says what it decided. A reader chasing one will look where the other lives.
                 startup: await this.readStartupLogHead({
                     serviceKey,
-                    incarnationStartedAt: inspectSummary?.state?.startedAt ?? null
+                    incarnationStartedAt: inspectSummary?.currentRun?.startedAt ?? null
                 })
             }),
             // Consumes the SAME `nodeCommand` observation the heap attribution uses, rather than
@@ -895,7 +895,7 @@ export class DeploymentStateBridgeService extends Base {
             resolvedConfig  = this.readResolvedConfig({
                 serviceKey,
                 nodeCommand         : inspectSummary?.nodeCommand ?? null,
-                incarnationStartedAt: inspectSummary?.state?.startedAt ?? null
+                incarnationStartedAt: inspectSummary?.currentRun?.startedAt ?? null
             });
 
         // Remembered HERE rather than at the read above, because the heap observation rides ON the
@@ -2676,7 +2676,17 @@ function summarizeInspect(inspect) {
         // image-name proxy gets invented.
         declaredHeapCeilingMb: parseDeclaredHeapCeilingMb(inspect.Config?.Cmd),
         nodeCommand          : isNodeCommand(inspect.Config?.Cmd),
-        state                : {
+        // Named `currentRun`, not `state`, and that is the whole of #466's third Fix bullet. A
+        // container runtime's `State` block describes the run that is happening NOW, so after an OOM
+        // kill and restart it reports the NEW run's `ExitCode: 0` and `OOMKilled: false` — which is
+        // how seven hours of work got built on "the process exited cleanly" for a container that had
+        // been killed. A reader who sees an unqualified `exitCode` under a service has no way to know
+        // which run it describes, and the wrong default assumption is the dangerous one.
+        //
+        // The cause of a restart is in `deaths[]` beside this, and it is the only place it is
+        // trustworthy. These fields stay, because a current run's own exit status is real
+        // information; they are named so it cannot be mistaken for the death that preceded it.
+        currentRun: {
             status    : state.Status || null,
             health    : state.Health?.Status || null,
             startedAt : state.StartedAt || null,
