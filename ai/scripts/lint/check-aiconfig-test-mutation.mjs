@@ -282,6 +282,74 @@ export function codeMask(line, state, lineIndex) {
 
 const DB_PATH_MUTATION_GLOBAL = new RegExp(DB_PATH_MUTATION.source, 'g');
 
+/*
+ * The GENERAL shared-config write: a config-shaped root, ANY leaf, an assignment. This is what ADR
+ * 0019's B4 clause actually names — "runtime writes to `AiConfig`" — where `DB_PATH_MUTATION` above
+ * is the narrow DB-path subset that was implemented under the B4 label.
+ *
+ * That gap is the defect: the rule carrying the B4 id detected DB paths only, so a spec that wrote
+ * `openAiCompatible.host` (or any of the other ~145 leaves) was invisible to a gate the ADR
+ * advertised as covering it. An audit of "is B4 enforced?" against the ADR returned a false assurance,
+ * which is worse than an absent guard — it converts an audit question into a wrong answer.
+ *
+ * MEASURED at the time of writing, via this file's own `codeMask` and root shape: **598 writes across
+ * 146 distinct leaves in 53 spec files** under `test/`, of which 30 hits already carry an allowlist
+ * entry. The concentration is the load-bearing fact: the top seven files hold ~336 of them
+ * (`TextEmbeddingService.retry.spec` 80, `Orchestrator.spec` 64, `Orchestrator.invariants.spec` 44,
+ * `GoldenPathSynthesizer.spec` 44, `RemDigestion.spec` 44, `DeploymentStateBridgeService.spec` 39,
+ * `TextEmbeddingService.spec` 21), and the dominant leaf class is config-VARYING tuning knobs —
+ * `openAiCompatible.*` retry/timeout leaves, `vectorDimension`, `remSleepBatchLimit` — which is
+ * precisely the class this file's own header already names as having no by-construction story yet.
+ *
+ * **So this rule is deliberately NOT gating.** Turning it on today would red seven files whose correct
+ * fix is an injected config snapshot, not an escape marker, and a gate that gets muted within a day
+ * teaches the next reader the gate is optional. It ships as a measured, tested, REPORT-ONLY rule: the
+ * count is printed on every run so the surface stops being invisible, and promoting it to gating is a
+ * separate, deliberate step once those files have a real isolation story. Per-leaf escape markers are
+ * explicitly NOT that story — they are how a class of 146 leaves becomes 146 unexamined exemptions.
+ */
+export const SHARED_CONFIG_MUTATION = new RegExp(
+    `(?<![\\w$])${CONFIG_ROOT}(?![\\w$])` +                    // a config-shaped root, same grammar as the DB-path rule
+    `(?:\\.[A-Za-z_$][\\w$]*|\\[[\\s]*['"\`][^'"\`]+['"\`]\\s*\\])+` + // ANY leaf: dotted or string-literal bracket
+    `\\s*=(?![=>])`                                             // assignment, excluding `==` / `===` / `=>`
+);
+
+const SHARED_CONFIG_MUTATION_GLOBAL = new RegExp(SHARED_CONFIG_MUTATION.source, 'g');
+
+/**
+ * @summary Scans file content for ANY write through a config-shaped `*Config` root — the B4 clause's
+ * full scope, as opposed to {@link findDbPathMutations}'s DB-path subset.
+ *
+ * Report-only by design; see the `SHARED_CONFIG_MUTATION` comment for the measured count and the
+ * sequencing rationale. Exported and unit-tested so the promotion to a gating rule is a wiring change
+ * in one place rather than a re-derivation.
+ *
+ * @param {String} content
+ * @returns {Object[]} `[{line, text, leaf}]` — one entry per offending line (1-based line numbers).
+ */
+export function findSharedConfigMutations(content) {
+    const lines = content.split('\n'),
+          state = {source: content},
+          hits  = [];
+
+    lines.forEach((line, index) => {
+        if (line.includes(ESCAPE_MARKER)) {
+            return
+        }
+
+        const mask = codeMask(line, state, index);
+
+        for (const match of line.matchAll(SHARED_CONFIG_MUTATION_GLOBAL)) {
+            if (mask[match.index]) {
+                hits.push({line: index + 1, text: line.trim(), leaf: match[0].replace(/^[\w$]+/, '').replace(/\s*=(?![=>]).*$/, '')});
+                break
+            }
+        }
+    });
+
+    return hits
+}
+
 /**
  * @summary Scans file content for Class-A DB-path `AiConfig` mutations whose root token sits in code.
  * @param {String} content
@@ -401,10 +469,12 @@ export function findCloneCaptures(content) {
  * @type {ReadonlyArray<{id: String, detect: Function}>}
  */
 export const ADR_0019_RULES = Object.freeze([
-    Object.freeze({id: 'B4', detect: findDbPathMutations})
+    Object.freeze({id: 'B4-DB-PATH', detect: findDbPathMutations, gating: true}),
+    Object.freeze({id: 'B4-SHARED-CONFIG', detect: findSharedConfigMutations, gating: false})
 ]);
 
-const B4_RULE = ADR_0019_RULES[0];
+const GATING_RULE = ADR_0019_RULES.find(rule => rule.gating),
+      REPORT_ONLY_RULE = ADR_0019_RULES.find(rule => !rule.gating);
 
 /**
  * @summary Scans one file's content for both rules, applying the allowlist to Class-A only.
@@ -423,12 +493,19 @@ const B4_RULE = ADR_0019_RULES[0];
  * @param {String} content
  * @param {Object} [options]
  * @param {Set<String>} [options.allowlist=ALLOWLIST]
- * @returns {{dbPathHits: Object[], cloneHits: Object[]}}
+ * @returns {{dbPathHits: Object[], sharedConfigHits: Object[], cloneHits: Object[]}}
  */
 export function scanFileContent(file, content, {allowlist = ALLOWLIST} = {}) {
     return {
-        dbPathHits: allowlist.has(file) ? [] : B4_RULE.detect(content),
-        cloneHits : findCloneCaptures(content)
+        // Gating: the DB-path class, honestly named. `dbPathHits` keeps its field name so the allowlist
+        // scoping below stays scoped to what it always was — a DB-PATH justification.
+        dbPathHits: allowlist.has(file) ? [] : GATING_RULE.detect(content),
+        // Report-only: the full B4 clause's surface. The allowlist does NOT suppress this, and that is
+        // deliberate: an allowlist entry justifies a DB-PATH mutation specifically, and extending that
+        // reasoning to an unrelated leaf is how a narrow exemption becomes a blanket bypass. Reported
+        // rather than gating, so an allowlisted file still shows its shared-config writes.
+        sharedConfigHits: REPORT_ONLY_RULE.detect(content),
+        cloneHits        : findCloneCaptures(content)
     }
 }
 
@@ -482,8 +559,9 @@ function main() {
         process.exit(0);
     }
 
-    const violations      = [],
-          cloneViolations = [];
+    const violations        = [],
+          cloneViolations   = [],
+          sharedConfigWrites = [];
 
     for (const file of files) {
         let content;
@@ -494,10 +572,33 @@ function main() {
             continue
         }
 
-        const {dbPathHits, cloneHits} = scanFileContent(file, content);
+        const {dbPathHits, cloneHits, sharedConfigHits} = scanFileContent(file, content);
 
         dbPathHits.forEach(({line, text}) => violations.push(`${file}:${line}: ${text}`));
         cloneHits.forEach(({line, text}) => cloneViolations.push(`${file}:${line}: ${text}`));
+        sharedConfigHits.forEach(({line, text, leaf}) => sharedConfigWrites.push({file, line, text, leaf}));
+    }
+
+    // REPORT-ONLY, deliberately outside the exit decision. The count is printed on every run because
+    // the whole defect this rule addresses was that the surface was INVISIBLE — a gate that says
+    // "0 violations" while 598 writes sit behind a narrower rule is a false assurance, and printing
+    // the number is the cheapest way to stop it being one again. It does not fail the build, because
+    // turning it on today would red seven files whose correct fix is an injected config snapshot.
+    const distinctLeaves = new Set(sharedConfigWrites.map(write => write.leaf));
+
+    console.log(`check-aiconfig-test-mutation: ${files.length} test file(s) scanned, ` +
+        `${violations.length} new DB-path violation(s), ${sharedConfigWrites.length} shared-config write(s) ` +
+        `across ${distinctLeaves.size} leaf/leaves (REPORT-ONLY, ADR-0019 B4 full scope).`);
+
+    if (!quiet && sharedConfigWrites.length > 0) {
+        console.log(`\n  B4 full scope — ${sharedConfigWrites.length} write(s) through a shared *Config root. Not gating yet;`);
+        console.log('  see the SHARED_CONFIG_MUTATION comment for the sequencing rationale. Top leaves:');
+
+        [...distinctLeaves]
+            .map(leaf => ({leaf, n: sharedConfigWrites.filter(write => write.leaf === leaf).length}))
+            .sort((left, right) => right.n - left.n)
+            .slice(0, 10)
+            .forEach(({leaf, n}) => console.log(`    ${String(n).padStart(4)}  ${leaf}`));
     }
 
     if (cloneViolations.length > 0) {
@@ -528,7 +629,8 @@ function main() {
         process.exit(1);
     }
 
-    console.log(`check-aiconfig-test-mutation: ${files.length} test file(s) scanned, 0 new violations.`);
+    console.log(`check-aiconfig-test-mutation: ${files.length} test file(s) scanned, 0 gating violation(s) ` +
+        `(DB-path + restore-capture). ${sharedConfigWrites.length} shared-config write(s) reported above.`);
 }
 
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]) === __filename;

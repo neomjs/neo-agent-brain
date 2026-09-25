@@ -4,7 +4,7 @@
 
 | Attribute | Value |
 |---|---|
-| **Status** | Accepted — 2026-06-04 (graduated at Discussion #12453; published by PR #12458, and the reactive Provider it decides is live on `dev` — `ai/config.mjs` registers the Tier-1 singleton over 307 `leaf()` declarations in `ai/configBase.mjs`) |
+| **Status** | Accepted — 2026-06-04 (graduated at Discussion #12453; published by PR #12458, and the reactive Provider it decides is live on `dev` — `ai/config.mjs` registers the Tier-1 singleton over 307 `leaf()` declarations in `ai/configBase.mjs`). **Amended 2026-09-25 (#508) — the B4 row's guard claim was a false assurance and now says so:** the rule carrying the B4 id detected the DB-path subset only, so auditing "is B4 enforced?" against this table returned a wrong answer. The row is now marked **PARTIAL** with both halves named, the full-scope detector ships as a report-only rule that prints its measured count on every run, and promoting it to gating waits on the seven specs that hold ~336 of the 598 writes growing a real injection story rather than a per-leaf escape marker. |
 | **Author** | @neo-opus-grace (Claude Opus 4.8) drafting; architecture via Discussion #12453 swarm |
 | **Graduated from** | Discussion #12453 — *"AiConfig is a reactive Provider SSOT — eliminate the `ai/`-wide read-then-re-implement antipattern cluster"* (cross-family quorum: Claude `[AUTHOR_SIGNAL]` + GPT `[GRADUATION_APPROVED]` + GPT §5.2 STEP_BACK) |
 | **Implementation** | Epic #12456, sub #1 (#12457 — this ADR + the turn-loaded AGENTS.md trigger); sub #2 = the fail-build lint |
@@ -61,7 +61,7 @@ A reviewer checks a config-touching diff against this list; the lint (sub #2) me
 | B1 | exporting config values/subtrees (`export const X = AiConfig.Y`) | `[guarded: lint-config-template-ssot]` | consumers import `AiConfig` and read at use site |
 | B2 | `const X = AiConfig.Y` pointers | `[guarded: lint-config-template-ssot]` — primitive/formula captures; live proxy subtrees remain valid | read inline — alias only if used 3+ times in one scope |
 | B3 | defensive `?.` on `AiConfig` reads | `[guarded: check-aiconfig-antipatterns, lint-config-template-ssot]` | the SSOT guarantees the tree; let it fail loud |
-| **B4 ⭐** | **SAFETY-CRITICAL — runtime writes to `AiConfig`** (see §4) | `[guarded: check-aiconfig-test-mutation]` — scans `test/**` only, so `ai/**` remains unenforced (§4) | tests isolate by construction (`UNIT_TEST_MODE`); NEVER mutate the shared singleton |
+| **B4 ⭐** | **SAFETY-CRITICAL — runtime writes to `AiConfig`** (see §4) | **PARTIAL** — `[gated: check-aiconfig-test-mutation]` enforces the **DB-path subset** only (`storagePaths` / `database` / `collections` / `logPath`); the **full B4 scope is report-only** (`598` writes across `146` leaves measured in `test/**`, printed on every run, not gating). Both scan `test/**` only, so `ai/**` remains unenforced (§4) | tests isolate by construction (`UNIT_TEST_MODE`); NEVER mutate the shared singleton |
 | B5 | passing `AiConfig` values into other consumers' configs (`Orchestrator → buildTaskDefinitions({chromaPort, …})`, 14 threaded args) | `[guarded: lint-config-template-ssot]` — statically recognisable pass-throughs | the consumer imports `AiConfig` and reads it (see §5 for the C1×B5 resolution) |
 
 ### Group C — boundary / duplication
