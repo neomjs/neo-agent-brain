@@ -30,6 +30,9 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
     let tmpRoot;
     let logger;
 
+    /** @summary The corpus-relative path the shard index records for a note in chunk 1. */
+    const notePath = file => path.relative(issueSyncConfig.contentRoot, path.join(issueSyncConfig.releaseNotesDir, 'chunk-1', file)).split(path.sep).join('/');
+
     test.beforeAll(async () => {
         aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         issueSyncConfig = aiConfig.issueSync;
@@ -102,7 +105,38 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
         }));
     });
 
-    test('syncNotes skips pruned warm-cache releases instead of writing undefined markdown', async () => {
+    test('syncNotes keeps a pruned warm-cache release whose note is on disk, without rewriting it', async () => {
+        const start    = new Date(issueSyncConfig.syncStartDate).getTime();
+        const inWindow = new Date(start + 86400000).toISOString();
+        const metadata = {
+            releases: {
+                vCached: {publishedAt: inWindow, contentHash: 'cached-hash'}
+            }
+        };
+
+        GraphqlService.query = async () => ({
+            repository: {
+                latestRelease: {tagName: 'vCached', publishedAt: inWindow}
+            }
+        });
+
+        await ReleaseNotesSyncer.fetchAndCacheReleases(metadata);
+
+        const releaseDir = issueSyncConfig.releaseNotesDir;
+        await fs.emptyDir(releaseDir);
+        await fs.outputFile(path.join(releaseDir, 'chunk-1', 'vCached.md'), 'on disk');
+
+        const stats = await ReleaseNotesSyncer.syncNotes(metadata);
+
+        expect(stats.count).toBe(0);
+        expect(ReleaseNotesSyncer.releases.vCached.contentHash).toBe('cached-hash');
+        expect(await fs.readFile(path.join(releaseDir, 'chunk-1', 'vCached.md'), 'utf-8')).toBe('on disk');
+
+        const indexData = await fs.readJson(path.join(releaseDir, '_index.json'));
+        expect(indexData.items.vCached).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1', path: notePath('vCached.md')});
+    });
+
+    test('syncNotes fails on a pruned release whose note is missing, writing neither markdown nor an index', async () => {
         const start    = new Date(issueSyncConfig.syncStartDate).getTime();
         const inWindow = new Date(start + 86400000).toISOString();
         const metadata = {
@@ -122,18 +156,80 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
         const releaseDir = issueSyncConfig.releaseNotesDir;
         await fs.emptyDir(releaseDir);
 
+        await expect(ReleaseNotesSyncer.syncNotes(metadata)).rejects.toThrow('vCached: no body to write');
+        expect(await fs.pathExists(path.join(releaseDir, 'chunk-1', 'vCached.md'))).toBe(false);
+        expect(await fs.pathExists(path.join(releaseDir, '_index.json'))).toBe(false);
+    });
+
+    test('when notes are wanted, a cache whose notes are not on disk fetches the history with bodies', async () => {
+        const start    = new Date(issueSyncConfig.syncStartDate).getTime();
+        const inWindow = new Date(start + 86400000).toISOString();
+        // The published corpus caches every release as {publishedAt} only
+        const metadata = {releases: {vIn: {publishedAt: inWindow}}};
+        const queries  = [];
+
+        GraphqlService.query = async query => {
+            if (query.includes('FetchLatestRelease')) {
+                queries.push('latest');
+                return {repository: {latestRelease: {tagName: 'vIn', publishedAt: inWindow}}}
+            }
+
+            queries.push('releases');
+            return {repository: {releases: {
+                nodes   : [{tagName: 'vIn', name: 'In', description: 'body', publishedAt: inWindow}],
+                pageInfo: {hasNextPage: false, endCursor: null}
+            }}}
+        };
+
+        const releaseDir = issueSyncConfig.releaseNotesDir;
+        await fs.emptyDir(releaseDir);
+
+        await ReleaseNotesSyncer.fetchAndCacheReleases(metadata, {needNotes: true});
+        expect(queries).toEqual(['latest', 'releases']);
+
         const stats = await ReleaseNotesSyncer.syncNotes(metadata);
 
-        expect(stats.count).toBe(0);
-        expect(stats.synced).toEqual([]);
-        expect(ReleaseNotesSyncer.releases.vCached.contentHash).toBe('cached-hash');
-        const filename = 'vCached'.startsWith(issueSyncConfig.releaseFilenamePrefix)
-            ? 'vCached'
-            : issueSyncConfig.releaseFilenamePrefix + 'vCached';
-        expect(await fs.pathExists(path.join(releaseDir, 'chunk-1', `${filename}.md`))).toBe(false);
+        expect(stats.synced).toEqual(['vIn']);
+        expect(await fs.readFile(path.join(releaseDir, 'chunk-1', 'vIn.md'), 'utf-8')).toContain('body');
+        expect(ReleaseNotesSyncer.releases.vIn.contentHash).toMatch(/^[0-9a-f]{64}$/);
 
-        const indexData = await fs.readJson(path.join(releaseDir, '_index.json'));
-        expect(indexData.items.vCached).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1'});
+        // With the note on disk and hashed, the same cache takes the fast path again
+        queries.length = 0;
+        await ReleaseNotesSyncer.fetchAndCacheReleases({releases: {vIn: {publishedAt: inWindow, contentHash: 'h'}}}, {needNotes: true});
+        expect(queries).toEqual(['latest']);
+    });
+
+    test('an origin with no in-window release gets no release-notes folder and no index', async () => {
+        const start    = new Date(issueSyncConfig.syncStartDate).getTime();
+        const preFloor = new Date(start - 86400000).toISOString();
+
+        ReleaseNotesSyncer.releases       = {vOld: {tagName: 'vOld', name: 'Old', publishedAt: preFloor, description: 'old'}};
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'vOld', publishedAt: preFloor}];
+
+        const releaseDir = issueSyncConfig.releaseNotesDir;
+        await fs.remove(releaseDir);
+
+        const stats = await ReleaseNotesSyncer.syncNotes({});
+
+        expect(stats).toEqual({count: 0, synced: []});
+        expect(await fs.pathExists(releaseDir)).toBe(false);
+    });
+
+    test('a note that cannot be written fails syncNotes and caches no hash for it', async () => {
+        const start    = new Date(issueSyncConfig.syncStartDate).getTime();
+        const inWindow = new Date(start + 86400000).toISOString();
+
+        ReleaseNotesSyncer.releases       = {vBad: {tagName: 'vBad', name: 'Bad', publishedAt: inWindow, description: 'x'}};
+        ReleaseNotesSyncer.sortedReleases = [{tagName: 'vBad', publishedAt: inWindow}];
+
+        const releaseDir = issueSyncConfig.releaseNotesDir;
+        await fs.emptyDir(releaseDir);
+        // A file where the chunk directory belongs makes the note unwritable
+        await fs.writeFile(path.join(releaseDir, 'chunk-1'), '');
+
+        await expect(ReleaseNotesSyncer.syncNotes({})).rejects.toThrow('vBad');
+        expect(ReleaseNotesSyncer.releases.vBad.contentHash).toBeUndefined();
+        expect(await fs.pathExists(path.join(releaseDir, '_index.json'))).toBe(false);
     });
 
     test('syncNotes generates ordinal pathing and updates _index.json correctly', async () => {
@@ -168,8 +264,8 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
         expect(await fs.pathExists(indexPath)).toBe(true);
 
         const indexData = await fs.readJson(indexPath);
-        expect(indexData.items['v1.0.0']).toEqual({ itemIndex: 0, chunk: 1, chunkDir: 'chunk-1' });
-        expect(indexData.items['v1.1.0']).toEqual({ itemIndex: 1, chunk: 1, chunkDir: 'chunk-1' });
+        expect(indexData.items['v1.0.0']).toEqual({ itemIndex: 0, chunk: 1, chunkDir: 'chunk-1', path: notePath('v1.0.0.md') });
+        expect(indexData.items['v1.1.0']).toEqual({ itemIndex: 1, chunk: 1, chunkDir: 'chunk-1', path: notePath('v1.1.0.md') });
     });
 
     test('cold fetch spans the full release history — no syncStartDate early-exit or filter on sortedReleases', async () => {
@@ -234,7 +330,7 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
 
         // vNew indexes at 0 WITHIN the floored notes set — not its index (1) in the full sortedReleases.
         const indexData = await fs.readJson(path.join(releaseDir, '_index.json'));
-        expect(indexData.items['vNew']).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1'});
+        expect(indexData.items['vNew']).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1', path: notePath('vNew.md')});
         expect(indexData.items['vOld']).toBeUndefined();
         expect(await fs.pathExists(path.join(releaseDir, 'chunk-1', 'vNew.md'))).toBe(true);
         expect(await fs.pathExists(path.join(releaseDir, 'chunk-1', 'vOld.md'))).toBe(false);

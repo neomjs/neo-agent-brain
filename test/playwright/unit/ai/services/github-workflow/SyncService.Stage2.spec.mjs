@@ -251,20 +251,23 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         })
     });
 
-    test('conversation corpus emits only the three conversation facets after release bucketing', async () => {
-        let releaseNoteCalls = 0,
+    test('the corpus emits the conversation facets and the release notes, fetching releases with their notes in view', async () => {
+        let fetchOptions     = null,
+            releaseNoteCalls = 0,
             pushCalls        = 0,
             deriveCalls      = 0;
 
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
+        ReleaseNotesSyncer.fetchAndCacheReleases = async (metadata, options) => { fetchOptions = options };
         ReleaseNotesSyncer.syncNotes = async () => { releaseNoteCalls++ };
         IssueSyncer.pushToGitHub = async () => { pushCalls++ };
         SyncService.rebuildContentIndexesAndSeo = async () => { deriveCalls++ };
 
         const result = await SyncService.emitConversationCorpus();
 
-        expect(result.facetOutcomes.map(({name}) => name)).toEqual(['releases', 'issues', 'discussions', 'pulls']);
-        expect(releaseNoteCalls).toBe(0);
+        expect(result.facetOutcomes.map(({name}) => name)).toEqual(['releases', 'issues', 'releaseNotes', 'discussions', 'pulls']);
+        expect(fetchOptions).toEqual({needNotes: true});
+        expect(releaseNoteCalls).toBe(1);
         expect(pushCalls).toBe(0);
         expect(deriveCalls).toBe(0);
     });
