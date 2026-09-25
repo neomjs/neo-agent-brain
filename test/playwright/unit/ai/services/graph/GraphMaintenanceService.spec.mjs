@@ -161,7 +161,8 @@ test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
             'MESSAGE:gc-severed'       : 'MESSAGE',
             'SYSTEM_CLOCK:gc'          : 'SYSTEM_CLOCK',
             'kb-tenant-manifest:gc'    : 'KnowledgeBaseTenantManifest',
-            'nl-transaction-archive:gc': 'nl-transaction-archive'
+            'nl-transaction-archive:gc': 'nl-transaction-archive',
+            'FUTURE_RECORD:gc'         : 'FUTURE_RECORD' // a label nobody has named yet
         };
 
         Object.entries(records).forEach(([id, label]) => GraphService.db.addNode({id, label, properties: {}}));
@@ -172,6 +173,16 @@ test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
 
         expect(Object.keys(records).filter(id => !orphaned.includes(id) && nodeRow(id)), 'every record stays out of the orphan query and in storage')
             .toEqual(Object.keys(records))
+    });
+
+    test('a concept an ingestor projects is its ingestor\'s, while an unowned edgeless concept is still collectable', async () => {
+        GraphService.db.addNode({id: 'drag-and-drop-gc', label: 'CONCEPT', properties: {payloadHash: 'hash-of-the-declared-row'}});
+        GraphService.db.addNode({id: 'CONCEPT:gc-faded', label: 'CONCEPT', properties: {}});
+
+        const orphaned = GraphService.getOrphanedNodes();
+
+        expect(orphaned, 'the projected concept is re-derived by its ingestor, never collected').not.toContain('drag-and-drop-gc');
+        expect(orphaned, 'a faded, unowned concept is still collectable').toContain('CONCEPT:gc-faded')
     });
 
     test('an orphan loses its vectors only together with its node', async () => {
