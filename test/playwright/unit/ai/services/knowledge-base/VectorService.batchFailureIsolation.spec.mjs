@@ -144,6 +144,51 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         expect(result).toEqual({embedded: 0, settled: 0, remaining: 0, skipped: 0, yielded: false});
     });
 
+    // The non-vacuity control @neo-gpt asked for. Without it the mismatch arm above is
+    // unfalsifiable in the way that matters: a response the dense-index guard refuses produces the
+    // SAME zero upserts as a response the identity guard refuses, so the assertion would hold whether
+    // or not the served-model check worked. This arm proves the path is reachable — when the served
+    // model AGREES, the vector lands. Only then does the mismatch arm's zero mean "the identity
+    // guard refused it" rather than "something else refused it first".
+    test('CONTROL — a served model that AGREES reaches the collection, so the zero above is the identity guard', async () => {
+        const spy    = createSpyCollection(),
+              chunks = makeChunks(1),
+              before = spy.upsertedIds.length,
+              server = http.createServer((req, res) => {
+                  let body = '';
+
+                  req.on('data', chunk => body += chunk);
+                  req.on('end', () => {
+                      res.writeHead(200, {'Content-Type': 'application/json'});
+                      // Well-formed AND agreeing: `index` present, model echoing the request.
+                      res.end(JSON.stringify({
+                          model: aiConfig.openAiCompatible.embeddingModel,
+                          data  : [{index: 0, embedding: [0.1, 0.2, 0.3]}]
+                      }))
+                  })
+              }),
+              originalHost         = aiConfig.openAiCompatible.host,
+              originalUnitTestMode = Neo.config.unitTestMode;
+
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+        try {
+            aiConfig.openAiCompatible.host = `http://127.0.0.1:${server.address().port}`;
+            TextEmbeddingService.embedTexts = originalEmbedTexts;
+            Neo.config.unitTestMode          = false;
+
+            const result = await KB_VectorService.embedChunks({collection: spy, chunksToProcess: chunks});
+
+            expect(spy.upsertedIds.length, 'an agreeing served model MUST reach the collection').toBeGreaterThan(before);
+            expect(spy.calls.upsert).toBeGreaterThan(0);
+            expect(result.embedded).toBeGreaterThan(0)
+        } finally {
+            Neo.config.unitTestMode       = originalUnitTestMode;
+            aiConfig.openAiCompatible.host = originalHost;
+            server.close()
+        }
+    });
+
     test('a served-model mismatch from the REAL response parse leaves the persisted vector count unchanged (#480 RA-3)', async () => {
         // The stub this replaces threw a synthetic MODEL_MISMATCH from `embedTexts`, which is the seam
         // the served-model guard does NOT live behind. The real guard is in `TextEmbeddingService`,
@@ -165,8 +210,14 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
                   req.on('end', () => {
                       // A well-formed embedding response that simply reports the WRONG model. Nothing
                       // here is an error: the refusal has to come from identity, not from a failure shape.
+                      // `index: 0` is REQUIRED for this response to be a valid embedding reply.
+                      // Without it the dense-index guard refuses the batch before the identity check
+                      // is ever reached, so the model-AGREES control below would have been proving
+                      // the wrong thing: the zero-upsert assertion would hold while the identity
+                      // guard was bypassed entirely. A witness that cannot fail for the right reason
+                      // is not a witness (@480 RA-2).
                       res.writeHead(200, {'Content-Type': 'application/json'});
-                      res.end(JSON.stringify({model: 'other', data: [{embedding: [0.1, 0.2, 0.3]}]}))
+                      res.end(JSON.stringify({model: 'other', data: [{index: 0, embedding: [0.1, 0.2, 0.3]}]}))
                   })              }),
               originalHost          = aiConfig.openAiCompatible.host,
               originalUnitTestMode  = Neo.config.unitTestMode;
