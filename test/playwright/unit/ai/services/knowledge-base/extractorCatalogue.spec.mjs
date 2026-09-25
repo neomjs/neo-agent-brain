@@ -112,6 +112,11 @@ test.describe('immutable extractor catalogue (#261)', () => {
             deltaSafe        : true,
             requiresHierarchy: false
         }, {
+            extractorId      : 'ReleaseNotesCorpusSource',
+            version          : '1.0.0',
+            deltaSafe        : false,
+            requiresHierarchy: false
+        }, {
             extractorId      : 'SkillSource',
             version          : '1.0.0',
             deltaSafe        : false,

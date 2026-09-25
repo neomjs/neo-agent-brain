@@ -53,6 +53,9 @@ jobs:
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/pipeline.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/services/coreCorpusProjection.spec.mjs
                   test/playwright/unit/ai/services/github-workflow/IssueSyncer.spec.mjs
+                  test/playwright/unit/ai/services/github-workflow/ReleaseNotesSyncer.spec.mjs
+                  test/playwright/unit/ai/services/github-workflow/SyncService.Stage2.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/syncGithubWorkflow.spec.mjs
                   test/playwright/unit/ai/services/github-workflow/Round2DispositionRelation.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/scheduling/communityReconciliation.spec.mjs
                   test/playwright/unit/ai/daemons/orchestrator/services/CommunityReconciliationService.spec.mjs
@@ -65,6 +68,8 @@ jobs:
                   test/playwright/unit/ai/graph/SQLiteWalSizeLimit.spec.mjs
                   test/playwright/unit/ai/provider/OpenAiCompatibleStreamFailures.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/consumerFrictionHelper.spec.mjs
+                  test/playwright/unit/ai/services/shared/providerActivityLedger.spec.mjs
+                  test/playwright/unit/ai/services/memory-core/MemoryCoreRecorderService.spec.mjs
                   test/playwright/unit/ai/services/memory-core/MailboxService.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/defectObservationFold.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/sandmanHandoffStore.spec.mjs
@@ -80,9 +85,12 @@ jobs:
                   test/playwright/unit/deploy/DeploySourceRepository.spec.mjs
                   test/playwright/unit/ai/deploy/DeclaredHeapCeilings.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/ConversationCorpusSource.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/source/ReleaseNotesCorpusSource.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/SourceRegistry.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/source/SourcePathsConfig.spec.mjs
                   test/playwright/unit/ai/services/knowledge-base/extractorCatalogue.spec.mjs
+                  test/playwright/unit/ai/services/knowledge-base/QueryService.queryDocuments.spec.mjs
+                  test/playwright/unit/ai/deploy/KbTenantBootstrapContract.spec.mjs
                   test/playwright/unit/ai/configBase.spec.mjs
                   test/playwright/unit/ai/services/fleet/fleetPrLaneActivityAdapter.spec.mjs
                   test/playwright/unit/ai/services/fleet/wireFleetActivityReadSource.spec.mjs

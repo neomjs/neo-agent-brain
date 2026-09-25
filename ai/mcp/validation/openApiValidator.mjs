@@ -28,6 +28,10 @@ function normalizeOpenApiJsonSchema(node) {
         return node;
     }
 
+    if (node.nullable === true && Array.isArray(node.enum) && !node.enum.includes(null)) {
+        node.enum.push(null);
+    }
+
     if (Array.isArray(node)) {
         node.forEach(normalizeOpenApiJsonSchema);
         return node;

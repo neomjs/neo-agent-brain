@@ -101,7 +101,7 @@ test.describe('deploy/cloud/kb-config.yaml — tenant bootstrap contract', () =>
         // assert; the territory globs are the profile's own business.
         const corpus = normalized.find(repo => repo.repoSlug === 'github-content-sync');
 
-        expect(corpus.extractionProfile.routes.map(route => route.extractorId)).toEqual(['ConversationCorpusSource']);
+        expect(corpus.extractionProfile.routes.map(route => route.extractorId)).toEqual(['ConversationCorpusSource', 'ReleaseNotesCorpusSource']);
 
         // The Neo repo is deliberately absent: `kbSync` already ingests it through the source
         // extractors, and a pull-mode entry for the same repo declares no parser, so it produced a

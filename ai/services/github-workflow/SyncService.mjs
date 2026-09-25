@@ -125,13 +125,11 @@ class SyncService extends Base {
      * @param {Object} [options]
      * @param {Boolean} [options.pushLocalChanges=true] Whether locally-authored issue changes may
      * be pushed to GitHub before the pull. Scheduled CI emission passes `false` and remains read-only.
-     * @param {Boolean} [options.includeReleaseNotes=true] Whether release-note Markdown is materialized.
      * @param {Boolean} [options.deriveContent=true] Whether Portal indexes and SEO are derived.
      * @returns {Promise<object>} Statistics for the emitted generated content, plus `facetOutcomes`.
      */
     async emitGeneratedContentAndDerive({
         pushLocalChanges = true,
-        includeReleaseNotes = true,
         deriveContent = true
     } = {}) {
         const
@@ -172,7 +170,7 @@ class SyncService extends Base {
         //    caught failure as an independent one. Caught and independent are different properties, and
         //    isolation is only sound over the dependency graph.
         await facet('releases', ['releases', 'releasesLastFetched'], async () => {
-            await ReleaseNotesSyncer.fetchAndCacheReleases(metadata);
+            await ReleaseNotesSyncer.fetchAndCacheReleases(metadata, {needNotes: true});
 
             // Cached HERE rather than at the end of the chain. These two assignments used to live after
             // every facet had run, so any later throw discarded a fetch that had already succeeded and
@@ -231,12 +229,9 @@ class SyncService extends Base {
             }
         });
 
-        // 5. Sync release notes only for the repository-owned generated-content path. Corpus-only
-        // emission still fetched the full release history above because the three conversation
-        // facets require it for closed-item bucketing; it never materializes release-note files.
-        const releaseStats = includeReleaseNotes
-            ? await dependentFacet('releaseNotes', ['releases'], () => ReleaseNotesSyncer.syncNotes(metadata))
-            : null;
+        // 5. Sync release notes, in every mode: a reader of the corpus alone has them too. The release
+        //    fetch above brought the bodies whenever a note is missing on disk.
+        const releaseStats = await dependentFacet('releaseNotes', ['releases'], () => ReleaseNotesSyncer.syncNotes(metadata));
 
         // 6. Sync discussions
         const discussionStats = await dependentFacet('discussions', ['discussions'], () => DiscussionSyncer.syncDiscussions(metadata));
@@ -364,18 +359,18 @@ class SyncService extends Base {
     }
 
     /**
-     * @summary Emits one origin-qualified conversation corpus without consumer derivation or delivery.
+     * @summary Emits one origin-qualified corpus — the conversations and the release notes — without
+     * consumer derivation or delivery.
      *
-     * Release history remains the prerequisite for issue, discussion and pull bucketing, while
-     * release-note files, Portal/SEO output, local-to-GitHub issue pushes and git publication stay
-     * outside this producer-only boundary.
-     * @returns {Promise<object>} Conversation facet statistics and truthful aggregate outcome.
+     * Release history remains the prerequisite for issue, discussion and pull bucketing, and the
+     * notes are written beside the conversations, so a reader of the corpus alone has them. Portal/SEO
+     * output, local-to-GitHub issue pushes and git publication stay outside this producer-only boundary.
+     * @returns {Promise<object>} Facet statistics and truthful aggregate outcome.
      */
     async emitConversationCorpus() {
         return this.emitGeneratedContentAndDerive({
-            deriveContent     : false,
-            includeReleaseNotes: false,
-            pushLocalChanges  : false
+            deriveContent   : false,
+            pushLocalChanges: false
         });
     }
 
