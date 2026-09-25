@@ -35,7 +35,8 @@ jobs:
 
             - name: Materialize Brain-owned install projections
               # `prepare` runs the config bootstrap and then the skills materializer for this
-              # checkout (INIT_CWD is the workspace); there is no `postinstall` any more (#482).
+              # checkout (INIT_CWD is the workspace). Never `postinstall`: npm runs a dependency's
+              # postinstall inside every consumer's install.
               run: npm run prepare
 
             - name: Verify the received unit collection

@@ -2,7 +2,7 @@ import {spawnSync}                              from 'node:child_process';
 import {existsSync, readFileSync, realpathSync} from 'node:fs';
 import path                                     from 'node:path';
 import process                                  from 'node:process';
-import {fileURLToPath}                          from 'node:url';
+import {fileURLToPath, pathToFileURL}           from 'node:url';
 
 const
     __filename = fileURLToPath(import.meta.url),
@@ -18,7 +18,7 @@ const
  * every consumer's install, and `neo-agent-skills-materialize` resolves its target from `INIT_CWD`,
  * the consumer's root — so every consumer that installed the Brain got the Brain's skills façade
  * written into ITS `.agents/skills` / `.claude/skills`, and the Institution's pack stage died on
- * the symlink race between that write and its own (#482). A registry or tarball install never
+ * the symlink race between that write and its own. A registry or tarball install never
  * runs `prepare`; a git-dependency install runs it in a cache clone with `INIT_CWD` naming the
  * consumer's root, which {@link isDependencyBuild} recognises and skips.
  *
@@ -146,6 +146,8 @@ export function runPrepare({root=repoRoot, env=process.env, spawnFn=spawnSync}={
     return {skipped, stage: 'done', status: 0}
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+// Entry identity by realpath on both sides, the Brain's own sibling form: `import.meta.url` is already
+// resolved, so a symlinked invocation path would otherwise compare unequal and run nothing.
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
     process.exitCode = runPrepare().status
 }

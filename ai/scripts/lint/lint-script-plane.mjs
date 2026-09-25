@@ -129,7 +129,7 @@ export const UNRESOLVED_EDGE_LEDGER = Object.freeze([
     'ai/scripts/maintenance/defragChromaDB.mjs::dynamic-import::loadConfig',
     // The preflight's ticket-archaeology detector lives in `neo-agent-skills`, whose `exports` map
     // names no module path, so the file is resolved through the package manifest's `bin`
-    // declaration and imported by URL at module scope (#482). The target is one file inside one
+    // declaration and imported by URL at module scope. The target is one file inside one
     // installed package, verified to exist before the import; the closure cannot name it because
     // the specifier is computed, not because it is unknown.
     'ai/scripts/agent-preflight.mjs::dynamic-import::<module-scope>'

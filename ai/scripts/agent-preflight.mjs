@@ -31,9 +31,9 @@ const
 /**
  * @summary The ticket-archaeology detector the reusable PR baseline runs, resolved through the
  * skills package's own `bin` declaration. The package exports no module path (its `exports` map
- * names only the manifest), and the Engine's copy was deleted when the guard moved there
- * (neomjs/neo#18905), so a static import of either is a broken preflight at every Engine pin past
- * 2026-08-28 (#482). Reading the manifest's `bin` follows the package if its entrypoint moves.
+ * names only the manifest), and the Engine no longer carries a copy since the guard moved to the
+ * skills package, so a static import of either path is a preflight that dies at import. Reading
+ * the manifest's `bin` follows the package if its entrypoint moves.
  * @returns {String} Absolute path of `check-ticket-archaeology.mjs` inside `neo-agent-skills`.
  */
 function resolveArchaeologyDetector() {
