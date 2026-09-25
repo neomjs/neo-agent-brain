@@ -1,4 +1,6 @@
 import {setup} from '../../../../setup.mjs';
+import os     from 'os';
+import path   from 'path';
 
 const appName = 'HealthServiceTest';
 
@@ -2532,25 +2534,51 @@ test.describe('HealthService #10783 — buildWakeFeaturesBlock', () => {
     test('both files missing → fully defensive defaults, no throw', async () => {
         // Worst-case observability: brand new install, daemon never started, gate never written.
         // Block must not throw; surfaces all-defensive shape.
-        const result = await buildWakeFeaturesBlock();
+        //
+        // The delivery leg is pointed at a path that does not exist so this assertion is about the
+        // BLOCK'S SHAPE and not about whatever dispatch records the host running the suite happens
+        // to have. A health test that reads the real receiver directory passes or fails with the
+        // host's wake history, which is the opposite of a unit test.
+        // RESTORE, never `delete`. Playwright reuses a worker process across spec files, so
+        // deleting this removes the value `playwright.config.unit.mjs` gave the worker and every
+        // later `healthcheck()` in that worker reads the host's real dispatch records again — the
+        // exact leak the config line exists to close. Capture and put back.
+        const previousRecordsDir                    = process.env.NEO_WAKE_RECEIVER_RECORDS_DIR;
 
-        expect(result).toEqual({
-            gateState    : 'unknown',
-            gateTrippedAt: null,
-            gateTrippedBy: null,
-            daemonRunning: false,
-            // Names what the read actually did. `no-pulse-file` is exactly ENOENT — never a claim
-            // about configuration, which this block does not consult. It separates a read that
-            // answered from one that could not happen, the same conflation the subscription note
-            // below refuses, one field over.
-            livenessReason       : 'no-pulse-file',
-            lastPulseAt          : null,
-            secondsSinceLastPulse: null,
-            // Arming reports `null`, never `false`, when it cannot determine: a healthcheck with no
-            // bound identity has no row to answer about, and claiming "not armed" there would
-            // manufacture an alarm out of a missing instrument rather than a real condition.
-            subscription         : {armed: null, reason: 'unbound-identity'}
-        });
+        process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = path.join(os.tmpdir(), 'no-such-wake-records');
+
+        try {
+            const result = await buildWakeFeaturesBlock();
+
+            expect(result).toEqual({
+                gateState    : 'unknown',
+                gateTrippedAt: null,
+                gateTrippedBy: null,
+                daemonRunning: false,
+                // Names what the read actually did. `no-pulse-file` is exactly ENOENT — never a claim
+                // about configuration, which this block does not consult. It separates a read that
+                // answered from one that could not happen, the same conflation the subscription note
+                // below refuses, one field over.
+                livenessReason       : 'no-pulse-file',
+                lastPulseAt          : null,
+                secondsSinceLastPulse: null,
+                // Arming reports `null`, never `false`, when it cannot determine: a healthcheck with no
+                // bound identity has no row to answer about, and claiming "not armed" there would
+                // manufacture an alarm out of a missing instrument rather than a real condition.
+                subscription         : {armed: null, reason: 'unbound-identity'},
+                // Absent records directory — a MEASURED absence of dispatch attempts, and explicitly
+                // not a claim that any seat is reachable. It reports readable with no subscriptions
+                // rather than an empty-but-healthy verdict, so "nothing was ever dispatched" and
+                // "everything is fine" cannot read the same.
+                delivery             : {deliveryReadable: true, deliveryReadReason: 'no-records', subscriptions: {}}
+            });
+        } finally {
+            if (previousRecordsDir === undefined) {
+                delete process.env.NEO_WAKE_RECEIVER_RECORDS_DIR
+            } else {
+                process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = previousRecordsDir
+            }
+        }
     });
 
     test('explicit `now` parameter overrides Date.now() for deterministic seconds-since calculation', async () => {

@@ -5,6 +5,7 @@ import {fileURLToPath}          from 'url';
 import aiConfig                 from '../../mcp/server/memory-core/config.mjs';
 import Base                     from 'neo.mjs/src/core/Base.mjs';
 import {isBundleRestorable}     from './helpers/bundleIntegrity.mjs';
+import {readWakeDelivery}      from './wakeDeliveryReader.mjs';
 import {readDeployedRevision}   from '../shared/deployedRevision.mjs';
 import RuntimeFreshnessService  from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
 import ChromaManager            from './managers/ChromaManager.mjs';
@@ -526,7 +527,48 @@ export async function buildWakeFeaturesBlock(now = Date.now()) {
         }
     }
 
-    return {...gateBlock, ...livenessBlock, subscription: await buildSubscriptionArmingBlock()};
+    return {
+        ...gateBlock,
+        ...livenessBlock,
+        subscription: await buildSubscriptionArmingBlock(),
+        delivery    : await buildWakeDeliveryBlock()
+    };
+}
+
+/**
+ * @summary Projects the wake receiver's own dispatch outcome — the leg `subscription.armed` cannot reach.
+ *
+ * **`armed` and `delivery` answer different questions and the block reports both.** `armed` is the
+ * Memory-Core-side verdict: does this seat hold an active, deliverable, correctly-signed row that
+ * the manifest build would accept. It is a statement about INTENT plus route admission, and it says
+ * nothing about whether a wake has ever landed. A seat can be armed on every one of those gates and
+ * still fail every dispatch — which is exactly what happened for nineteen days on one seat whose
+ * subscription reported `active` and `routeDeliverable: true` through 114 consecutive failures.
+ * Nothing was wrong with the subscription. Nothing was reading the outcome.
+ *
+ * So this block answers the only question that catches that class: what did the receiver actually
+ * do? `state` is `unreachable` when the most recent attempts concluded `failed` or `unknown`,
+ * `reachable` only on an observed `delivered`, and `unknown` in every other case — including an
+ * unreadable records directory. The loud direction is inherited from
+ * `wakeSubscriptionStatusPolicy`, which settled the absent-status case the same way; it simply does
+ * not reach a row that is present, active, and unreachable, because that row is unambiguous and
+ * unambiguous is not the same as reachable.
+ *
+ * The reader is import-level rather than injected so the health surface cannot disagree with any
+ * other consumer about what counts as a failure. See `wakeDeliveryReader` for the state-directory
+ * contract this inherits — a host convention, and a reported gap rather than a settled one.
+ *
+ * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object}>}
+ */
+async function buildWakeDeliveryBlock() {
+    try {
+        return await readWakeDelivery();
+    } catch (e) {
+        // The projection is observability. Losing it must not cost the caller the rest of the wake
+        // block — and an exception here is by definition a question that could not be answered, so
+        // it degrades in the same direction as an unreadable directory.
+        return {deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}};
+    }
 }
 
 /**
