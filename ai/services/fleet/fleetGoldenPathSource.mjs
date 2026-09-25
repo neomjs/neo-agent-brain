@@ -14,6 +14,7 @@
  */
 
 import fs                              from 'node:fs';
+import AiConfig                        from '../../config.mjs';
 import {validateComputedRouteResult}   from '../graph/computedRouteResult.mjs';
 import {
     CORPUS_PROJECTION_CONSUMER,
@@ -106,15 +107,15 @@ export function readComputedRouteAxis(routePath, {exists = fs.existsSync, readFi
 
 /**
  * @summary Resolve the corpus-projection admission for the computed Golden Path — the same
- * contract the Context Frontier read applies, for this consumer. A disabled gate admits; an
+ * contract the Context Frontier read applies, for this consumer. The projection leaves are read
+ * here, at the use site (ADR 0019): a disabled gate admits by the contract's own word; an
  * unreadable receipt is evaluated as absent, which the contract refuses on its own terms.
- * @param {Object} options
- * @param {Object} options.config `aiConfig.orchestrator.corpusProjection` (enabled, receiptPath, sourceRepository, sourceRef).
+ * @param {Object} [options]
  * @param {Function} [options.readReceipt]
  * @returns {Promise<Object>} `{admitted, fallback, reasonCode, requiredFacets, staleFacets}`
  */
-export async function readProjectionAdmission({config, readReceipt = readCorpusProjectionReceipt} = {}) {
-    if (!config?.enabled) {
+export async function readProjectionAdmission({readReceipt = readCorpusProjectionReceipt} = {}) {
+    if (!AiConfig.orchestrator.corpusProjection.enabled) {
         return {
             admitted      : true,
             fallback      : 'current',
@@ -127,7 +128,7 @@ export async function readProjectionAdmission({config, readReceipt = readCorpusP
     let receipt = null;
 
     try {
-        receipt = await readReceipt(config.receiptPath)
+        receipt = await readReceipt(AiConfig.orchestrator.corpusProjection.receiptPath)
     } catch (error) {
         console.warn(`[fleet] golden path: corpus projection receipt unavailable: ${redactReadFailure(error) ?? 'no legible error'}`)
     }
@@ -135,8 +136,8 @@ export async function readProjectionAdmission({config, readReceipt = readCorpusP
     return evaluateCorpusProjectionAdmission({
         consumer                : CORPUS_PROJECTION_CONSUMER.computedGoldenPath,
         receipt,
-        expectedSourceRepository: config.sourceRepository,
-        expectedSourceRef       : config.sourceRef
+        expectedSourceRepository: AiConfig.orchestrator.corpusProjection.sourceRepository,
+        expectedSourceRef       : AiConfig.orchestrator.corpusProjection.sourceRef
     })
 }
 
@@ -144,9 +145,8 @@ export async function readProjectionAdmission({config, readReceipt = readCorpusP
  * @summary Create one process-lifetime Golden Path source.
  * @param {Object} options
  * @param {String} options.routePath Absolute path of the synthesizer's `computed-route.json`.
- * @param {Object} options.projectionConfig The resolved `orchestrator.corpusProjection` config.
  * @param {Function} options.getRemPipelineState The Memory Core `get_rem_pipeline_state` operation.
- * @param {Function} [options.readReceipt]
+ * @param {Function} [options.readAdmission] The admission read; the production read resolves its leaves itself.
  * @param {Function} [options.now]
  * @param {Function} [options.exists]
  * @param {Function} [options.readFile]
@@ -154,10 +154,9 @@ export async function readProjectionAdmission({config, readReceipt = readCorpusP
  */
 export function createFleetGoldenPathSource({
     routePath,
-    projectionConfig,
     getRemPipelineState,
-    readReceipt = readCorpusProjectionReceipt,
-    now         = () => Date.now(),
+    readAdmission = readProjectionAdmission,
+    now           = () => Date.now(),
     exists,
     readFile
 } = {}) {
@@ -211,7 +210,7 @@ export function createFleetGoldenPathSource({
                 capturedAt        = new Date(nowMs).toISOString(),
                 routeAxis         = readComputedRouteAxis(routePath, {exists, readFile, nowMs}),
                 [admission, rem]  = await Promise.all([
-                    readProjectionAdmission({config: projectionConfig, readReceipt}),
+                    readAdmission(),
                     readRemAxis()
                 ]);
 

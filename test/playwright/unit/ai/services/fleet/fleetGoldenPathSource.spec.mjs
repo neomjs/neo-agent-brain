@@ -67,11 +67,19 @@ function remState() {
     return {undigested: 990, digested: 1010, sessionNodes: 4769, topologyConflicts: 0, recentCycles: []}
 }
 
+/**
+ * @summary An admission as the contract answers it when the projection gate is off.
+ * @returns {Object}
+ */
+function gateDisabledAdmission() {
+    return {admitted: true, fallback: 'current', reasonCode: 'projection-gate-disabled', requiredFacets: ['issues', 'discussions'], staleFacets: []}
+}
+
 function createSource(overrides = {}) {
     return createFleetGoldenPathSource({
         routePath          : ROUTE,
-        projectionConfig   : {enabled: false},
         getRemPipelineState: async () => remState(),
+        readAdmission      : async () => gateDisabledAdmission(),
         now                : () => NOW_MS,
         ...fileSeams(JSON.stringify(sidecar())),
         ...overrides
@@ -122,26 +130,19 @@ test.describe('fleet golden path source — the sidecar axis', () => {
 });
 
 test.describe('fleet golden path source — the admission axis', () => {
-    test('a disabled projection gate admits by the contract\'s own word', async () => {
-        await expect(readProjectionAdmission({config: {enabled: false}})).resolves.toMatchObject({
-            admitted: true, fallback: 'current', reasonCode: 'projection-gate-disabled'
-        })
+    test('the production read resolves its own projection leaves; under the test profile the gate is off and admits by the contract\'s own word', async () => {
+        // the receipt seam must not be consulted while the gate is off — a read that reached it would throw here
+        await expect(readProjectionAdmission({readReceipt: async () => {throw new Error('receipt read while the gate is off')}}))
+            .resolves.toEqual(gateDisabledAdmission())
     });
 
-    test('an absent or unreadable receipt withholds with the contract\'s reason, falling back to last known good', async () => {
-        const config = {enabled: true, receiptPath: '/plane/receipt.json', sourceRepository: 'neomjs/neo', sourceRef: 'dev'};
+    test('a withheld admission rides the envelope as the contract gave it, never re-stated', async () => {
+        const withheld = {admitted: false, fallback: 'last-known-good', reasonCode: 'freshness-sla-breached', requiredFacets: ['issues', 'discussions'], staleFacets: []},
+              envelope = await createSource({readAdmission: async () => withheld}).readGoldenPath();
 
-        const absent = await readProjectionAdmission({config, readReceipt: async () => null});
-
-        expect(absent.admitted).toBe(false);
-        expect(absent.fallback).toBe('last-known-good');
-        expect(typeof absent.reasonCode).toBe('string');
-        expect(absent.reasonCode.length).toBeGreaterThan(0);
-
-        const unreadable = await readProjectionAdmission({config, readReceipt: async () => {throw new Error('EACCES /plane/receipt.json')}});
-
-        expect(unreadable.admitted).toBe(false);
-        expect(unreadable.fallback).toBe('last-known-good')
+        expect(envelope.admission).toEqual(withheld);
+        expect(envelope.sources.admission).toEqual({state: 'withheld', reason: 'freshness-sla-breached'});
+        expect(envelope.capability.state).toBe('wired')
     })
 });
 
@@ -199,7 +200,6 @@ test.describe('fleet golden path — the bridge and the wire', () => {
 
         const wired = wireFleetGoldenPathSource({
             routePath          : ROUTE,
-            projectionConfig   : {enabled: false},
             getRemPipelineState: async () => remState(),
             now                : () => NOW_MS,
             bridge,

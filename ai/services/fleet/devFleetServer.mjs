@@ -392,11 +392,11 @@ async function boot() {
 
     // The Golden Path view reads the synthesizer's own artifact — the computed-route.v1 sidecar
     // beside the handoff, a plane member on the shared data root — plus the corpus-projection
-    // admission from its receipt and the REM pipeline state through the same operation boundary
-    // as the sources above. Nothing is ranked here; the pane shows the producer's route as written.
+    // admission (the source reads its own projection leaves) and the REM pipeline state through
+    // the same operation boundary as the sources above. Nothing is ranked here; the pane shows
+    // the producer's route as written.
     wireFleetGoldenPathSource({
         routePath          : path.join(path.dirname(memoryCoreConfig.handoffFilePath), 'computed-route.json'),
-        projectionConfig   : AiConfig.orchestrator.corpusProjection,
         getRemPipelineState: args => callHistoryOperation('get_rem_pipeline_state', args)
     });
 
