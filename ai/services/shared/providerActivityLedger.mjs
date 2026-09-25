@@ -69,7 +69,7 @@ export function getProviderActivityContext() {
 }
 
 const ACTIVITY_ROLES       = new Set(['chat', 'embedding', 'unknown']);
-const FAILURE_STAGES       = new Set(['provider', 'queue', 'dispatch', 'unknown']);
+const FAILURE_STAGES       = new Set(['provider', 'queue', 'unknown']);
 const PRIORITIES           = new Set(['batch', 'interactive', 'unknown']);
 const PROVIDERS            = new Set(['gemini', 'ollama', 'openAiCompatible', 'unknown']);
 const QUEUE_DISPOSITIONS   = new Set(['neo-queued', 'not-applicable', 'unknown']);

@@ -3579,7 +3579,7 @@ components:
         queueWaitMs:      {type: integer, nullable: true, minimum: 0}
         executionMs:      {type: integer, nullable: true, minimum: 0}
         success:          {type: boolean}
-        failureStage:     {type: string, enum: [provider, queue, dispatch, unknown], nullable: true}
+        failureStage:     {type: string, enum: [provider, queue, unknown], nullable: true}
 
     RemPipelineStateResponse:
       type: object

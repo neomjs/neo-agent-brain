@@ -14,13 +14,17 @@ setup({
 });
 
 import {test, expect}          from '@playwright/test';
+import Ajv                     from 'ajv';
 import {CallToolRequestSchema} from '@modelcontextprotocol/sdk/types.js';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import fs             from 'fs';
-import path           from 'path';
-import * as yaml     from 'js-yaml';
-import {buildOutputZodSchema} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
+import Neo                     from 'neo.mjs/src/Neo.mjs';
+import * as core               from 'neo.mjs/src/core/_export.mjs';
+import fs                      from 'fs';
+import path                    from 'path';
+import * as yaml               from 'js-yaml';
+import {
+    buildOutputZodSchema,
+    toOpenApiJsonSchema
+} from '../../../../../../ai/mcp/validation/openApiValidator.mjs';
 import {
     beginProviderActivity,
     completeProviderActivity
@@ -576,7 +580,7 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
         expect(rows.some(row => row.tool === 'missing_memory_core_tool' && row.success === 0 && row.failure_stage === 'dispatch')).toBe(true);
     });
 
-    test('validates persisted provider failure stages through a real MCP tools/call (#487)', async () => {
+    test('validates a successful null provider stage through a real MCP tools/call with the published AJV schema (#487)', async () => {
         const openApiDocument = yaml.load(fs.readFileSync(
             path.resolve(process.cwd(), 'ai/mcp/server/memory-core/openapi.yaml'),
             'utf8'
@@ -584,9 +588,10 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
         const operation = Object.values(openApiDocument.paths)
             .flatMap(pathItem => Object.values(pathItem))
             .find(item => item.operationId === 'get_memory_core_tool_metrics');
-        const outputSchema = buildOutputZodSchema(openApiDocument, operation);
-        const Server       = (await import('../../../../../../ai/mcp/server/memory-core/Server.mjs')).default;
-        const originalBoot = Server.prototype.boot;
+        const outputSchema   = toOpenApiJsonSchema(buildOutputZodSchema(openApiDocument, operation)),
+              validateOutput = new Ajv({strict: false}).compile(outputSchema),
+              Server         = (await import('../../../../../../ai/mcp/server/memory-core/Server.mjs')).default,
+              originalBoot   = Server.prototype.boot;
         let   serverInstance;
 
         Server.prototype.boot = async () => {};
@@ -605,32 +610,31 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
                 }
             });
 
-            const now        = Date.now(),
-                  dispatchId = beginProviderActivity(MemoryCoreRecorderService.db, {
-                      service        : 'memory-core',
-                      provider       : 'ollama',
-                      role           : 'embedding',
-                      operationStage : 'unknown',
-                      model          : 'dispatch-model',
-                      enqueuedAt     : now - 2_000,
-                      startedAt      : now - 1_900,
+            const now       = Date.now(),
+                  successId = beginProviderActivity(MemoryCoreRecorderService.db, {
+                      service         : 'memory-core',
+                      provider        : 'ollama',
+                      role            : 'embedding',
+                      operationStage  : 'unknown',
+                      model           : 'success-model',
+                      enqueuedAt      : now - 2_000,
+                      startedAt       : now - 1_900,
                       queueDisposition: 'not-applicable'
                   }),
-                  legacyId    = beginProviderActivity(MemoryCoreRecorderService.db, {
-                      service        : 'memory-core',
-                      provider       : 'ollama',
-                      role           : 'embedding',
-                      operationStage : 'unknown',
-                      model          : 'legacy-model',
-                      enqueuedAt     : now - 1_000,
-                      startedAt      : now - 900,
+                  legacyId  = beginProviderActivity(MemoryCoreRecorderService.db, {
+                      service         : 'memory-core',
+                      provider        : 'ollama',
+                      role            : 'embedding',
+                      operationStage  : 'unknown',
+                      model           : 'legacy-model',
+                      enqueuedAt      : now - 1_000,
+                      startedAt       : now - 900,
                       queueDisposition: 'not-applicable'
                   });
 
-            completeProviderActivity(MemoryCoreRecorderService.db, dispatchId, {
-                completedAt : now - 1_800,
-                success     : false,
-                failureStage: 'dispatch'
+            completeProviderActivity(MemoryCoreRecorderService.db, successId, {
+                completedAt: now - 1_800,
+                success    : true
             });
             completeProviderActivity(MemoryCoreRecorderService.db, legacyId, {
                 completedAt : now - 800,
@@ -645,18 +649,20 @@ test.describe('Neo.ai.services.memory-core.MemoryCoreRecorderService', () => {
 
             const response = await handlers.get(CallToolRequestSchema)({
                 params: {
-                    name      : 'get_memory_core_tool_metrics',
+                    name     : 'get_memory_core_tool_metrics',
                     arguments: {
                         sinceMs: 60_000,
                         limit  : 5
                     }
                 }
             });
-            const result      = outputSchema.parse(response.structuredContent),
-                  completions = result.providerActivity.recentCompletions;
 
             expect(response.isError).toBe(false);
-            expect(completions.find(row => row.activityId === dispatchId).failureStage).toBe('dispatch');
+            expect(validateOutput(response.structuredContent), JSON.stringify(validateOutput.errors)).toBe(true);
+
+            const completions = response.structuredContent.providerActivity.recentCompletions;
+
+            expect(completions.find(row => row.activityId === successId).failureStage).toBe(null);
             expect(completions.find(row => row.activityId === legacyId).failureStage).toBe('unknown');
         } finally {
             serverInstance?.destroy();

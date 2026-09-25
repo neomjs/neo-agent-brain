@@ -180,32 +180,6 @@ test.describe('providerActivityLedger', () => {
         })).toBe(true);
     });
 
-    test('preserves dispatch as a provider failure stage', () => {
-        const id = beginProviderActivity(db, {
-            service        : 'memory-core',
-            provider       : 'ollama',
-            role           : 'embedding',
-            operationStage : 'unknown',
-            model          : 'dispatch-model',
-            priority       : 'interactive',
-            enqueuedAt     : 100,
-            startedAt      : 110,
-            queueDisposition: 'not-applicable'
-        });
-
-        completeProviderActivity(db, id, {
-            completedAt : 200,
-            success     : false,
-            failureStage: 'dispatch'
-        });
-
-        expect(db.prepare(`
-            SELECT failure_stage
-              FROM provider_activity_log
-             WHERE activity_id = ?
-        `).get(id).failure_stage).toBe('dispatch');
-    });
-
     test('swallows recorder failures so lifecycle observation stays behavior-neutral', () => {
         const lifecycle = createProviderActivityLifecycle({
             recorder: {

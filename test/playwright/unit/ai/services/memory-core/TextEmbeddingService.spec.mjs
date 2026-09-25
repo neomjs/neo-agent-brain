@@ -389,13 +389,13 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
             recorder   = {
                 // A double must REFUSE what the real one refuses. A permissive fake accepted
                 // `failureStage: 'admission'` — a value the shared ledger normalizes to `unknown`
-                // (`providerActivityLedger.mjs`: `FAILURE_STAGES = provider | queue | dispatch | unknown`) — so
+                // (`providerActivityLedger.mjs`: `FAILURE_STAGES = provider | queue | unknown`) — so
                 // the suite was green while the persisted stage was the least informative one
                 // available. @neo-gpt found it by replaying the production contract instead of the
                 // injected seam. Mirrored here so the double cannot bless an unsupported value again.
                 assertSupportedStage(outcome) {
                     if (outcome?.failureStage !== undefined &&
-                        !['provider', 'queue', 'dispatch', 'unknown'].includes(outcome.failureStage)) {
+                        !['provider', 'queue', 'unknown'].includes(outcome.failureStage)) {
                         throw new Error(`unsupported failureStage: ${outcome.failureStage}`)
                     }
                 },
@@ -494,7 +494,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
      *
      * The arm that was missing, and its absence is why an invented `failureStage: 'admission'`
      * shipped green: nothing drove the abort path, so nothing could observe the value. The shared
-     * ledger admits only `provider | queue | dispatch | unknown` and silently normalizes anything else to
+     * ledger admits only `provider | queue | unknown` and silently normalizes anything else to
      * `unknown` — a bespoke stage does not fail, it degrades to the least informative answer while
      * the producer's own comment claims precision it never achieved.
      *
@@ -510,7 +510,7 @@ test.describe('TextEmbeddingService #11965 Sub-2 — native Ollama dispatch', ()
             recorder   = {
                 assertSupportedStage(outcome) {
                     if (outcome?.failureStage !== undefined &&
-                        !['provider', 'queue', 'dispatch', 'unknown'].includes(outcome.failureStage)) {
+                        !['provider', 'queue', 'unknown'].includes(outcome.failureStage)) {
                         throw new Error(`unsupported failureStage: ${outcome.failureStage}`)
                     }
                 },

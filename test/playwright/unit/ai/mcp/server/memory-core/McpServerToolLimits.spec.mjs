@@ -29,8 +29,7 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
     let toolService;
 
     test.beforeAll(async () => {
-        // ADR 0019 B4: storagePaths.graph resolves to ':memory:' by construction under // ticket-ref-ok: ADR id
-        // UNIT_TEST_MODE — no singleton mutation, no temp DB path needed.
+        // The unit-test graph storage is selected by construction; no singleton mutation or temp path is needed.
 
         const ToolServiceModule = await import('../../../../../../../ai/mcp/server/memory-core/toolService.mjs');
         toolService = {
@@ -42,12 +41,7 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
     });
 
     test('explore_lane_landscape resolves ONLY the census domain — the source domain is host-edge (#15468 two-domain contract retired by #17285)', () => {
-        // The two-domain contract was RETIRED, not broken. This seam used to resolve a second domain
-        // from the GitHub Workflow child — a host-edge provider — which is precisely the cross-plane
-        // read the census fix removed. Spelled out because the next reader of this diff would
-        // otherwise see a dropped assertion and "restore" the violation.
-        // ticket-ref-ok: names the superseded contract so the supersession is legible rather than
-        // looking like an accidental regression
+        // The two-domain contract is retired; the assertion below keeps the source domain explicit.
         const config = toolService.readLaneLandscapeConfig();
 
         expect(config).toEqual({
@@ -120,7 +114,7 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
         ]));
         expect(metadata.properties.adapter.enum).toEqual(['osascript', 'tmux', 'claude-courier', 'codex-app-server', 'opencode-server', 'kimi-server', 'kimi-pull-bridge']);
         expect(metadata.properties.envelopePath.type).toBe('string');
-        expect(metadata.properties.addressType.enum).toEqual(['userDataDir', 'pid', 'tmuxSession', 'webhookUrl']);
+        expect(metadata.properties.addressType.enum).toEqual(['userDataDir', 'pid', 'tmuxSession', 'webhookUrl', null]);
 
         // The prose half of the contract relocated to the lazy handbook payload — the
         // listing above now witnesses shape-only (type/enum/properties survive the projection).
