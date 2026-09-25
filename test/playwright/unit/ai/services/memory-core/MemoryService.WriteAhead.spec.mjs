@@ -63,7 +63,7 @@ test.describe('Neo.ai.services.memory-core.MemoryService.writeAhead', () => {
         // services — `ai/mcp/server/memory-core/mcp-server.mjs:5` and `ai/services.mjs:24` — import
         // it at module load. Without it the graph write path throws `Neo.get is not a function`,
         // which is a harness gap rather than a defect: the suite was booting services along a path
-        // production never uses.
+        // production never uses. Tracked in #523.
         await import('neo.mjs/src/manager/Instance.mjs');
 
         GraphService         = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
