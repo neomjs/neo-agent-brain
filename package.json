@@ -56,8 +56,7 @@
         "runtime-inspection"
     ],
     "scripts": {
-        "postinstall": "neo-agent-skills-materialize",
-        "prepare": "node ./ai/scripts/setup/initServerConfigs.mjs",
+        "prepare": "node ./ai/scripts/setup/prepare.mjs",
         "agent-preflight": "node ./ai/scripts/agent-preflight.mjs",
         "ai:analyze-nl-telemetry": "node ./ai/scripts/diagnostics/analyzeNlTelemetry.mjs",
         "ai:check-backup-integrity": "node ./ai/scripts/maintenance/backupCorruptionTimeline.mjs",
@@ -107,7 +106,7 @@
         "js-yaml": "^5.4.2",
         "micromatch": "4.0.8",
         "neo-agent-skills": "^0.1.14",
-        "neo.mjs": "https://github.com/neomjs/neo/archive/17b59aad8f95c55c916fd6bb8bd6a0f43bd2d687.tar.gz",
+        "neo.mjs": "https://github.com/neomjs/neo/archive/7f16355a9bf6bc7cdf7cbf94873b649711298f28.tar.gz",
         "playwright": "1.63.0",
         "semver": "^7.8.5",
         "ws": "^8.21.0",
