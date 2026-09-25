@@ -65,6 +65,7 @@ jobs:
                   test/playwright/unit/src/fleet/contract/fleetContract.spec.mjs
                   test/playwright/unit/ai/services/neural-link/ConnectionService.spec.mjs
                   test/playwright/unit/ai/services/graph/SemanticGraphExtractor.spec.mjs
+                  test/playwright/unit/ai/services/graph/GraphMaintenanceService.spec.mjs
                   test/playwright/unit/ai/services/graph/providerReadinessHelper.spec.mjs
                   test/playwright/unit/ai/graph/SQLiteWalSizeLimit.spec.mjs
                   test/playwright/unit/ai/provider/OpenAiCompatibleStreamFailures.spec.mjs
