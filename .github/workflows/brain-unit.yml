@@ -73,6 +73,11 @@ jobs:
                   test/playwright/unit/ai/services/memory-core/MailboxService.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/defectObservationFold.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/sandmanHandoffStore.spec.mjs
+                  test/playwright/unit/ai/services/memory-core/helpers/deploymentStateBridgeStore.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/services/DeploymentRuntimeAccessService.spec.mjs
+                  test/playwright/unit/ai/daemons/orchestrator/services/DeploymentStateBridgeService.spec.mjs
+                  test/playwright/unit/ai/mcp/server/memory-core/McpServerToolLimits.spec.mjs
+                  test/playwright/unit/ai/mcp/server/knowledge-base/Server.spec.mjs
                   test/playwright/unit/ai/scripts/maintenance/backup.spec.mjs
                   test/playwright/unit/ai/scripts/maintenance/restore.spec.mjs
                   test/playwright/unit/ai/services/github-workflow/DiscussionReconciliationService.spec.mjs
