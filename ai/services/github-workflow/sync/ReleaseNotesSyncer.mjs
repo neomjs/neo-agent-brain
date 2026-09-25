@@ -12,6 +12,12 @@ import contentPath, {contentBucketDir, chunkNumberFor} from '../shared/contentPa
 const issueSyncConfig = aiConfig.issueSync;
 
 /**
+ * @param {String} filePath
+ * @returns {Promise<Boolean>}
+ */
+const exists = filePath => fs.access(filePath).then(() => true, () => false);
+
+/**
  * @summary Handles the fetching and local synchronization of GitHub Release notes.
  *
  * This service is responsible for:
@@ -59,6 +65,45 @@ class ReleaseNotesSyncer extends Base {
     }
 
     /**
+     * @param {String} tagName
+     * @param {Number} itemIndex The release's index among the in-window notes
+     * @returns {String} The note's file path
+     * @private
+     */
+    #notePath(tagName, itemIndex) {
+        const
+            {releaseFilenamePrefix} = issueSyncConfig,
+            filename                = tagName.startsWith(releaseFilenamePrefix) ? tagName : releaseFilenamePrefix + tagName;
+
+        return contentPath({
+            contentRoot: issueSyncConfig.contentRoot,
+            repoSlug   : aiConfig.repo,
+            originRoot : issueSyncConfig.originRoot,
+            type       : 'release-notes',
+            filename   : `${filename}.md`,
+            itemIndex
+        })
+    }
+
+    /**
+     * @summary Whether every in-window release already has its note on disk and a cached `contentHash`.
+     * @param {Object[]} releases Cached releases, ascending by `publishedAt`
+     * @returns {Promise<Boolean>}
+     * @private
+     */
+    async #notesMaterialized(releases) {
+        const startDate = new Date(issueSyncConfig.syncStartDate);
+
+        for (const [itemIndex, release] of releases.filter(r => new Date(r.publishedAt) >= startDate).entries()) {
+            if (!release.contentHash || !await exists(this.#notePath(release.tagName, itemIndex))) {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    /**
      * Fetches the full release history from GitHub using a two-phase approach.
      *
      * The two phases are necessary because the GitHub GraphQL `releases` endpoint does not
@@ -70,10 +115,15 @@ class ReleaseNotesSyncer extends Base {
      * reference for closed Issues/PRs/Discussions; release-NOTES are floored to `syncStartDate`
      * downstream in `syncNotes`.
      *
+     * The fast path hands `syncNotes` releases without bodies, so with `needNotes` it also requires
+     * every in-window note on disk with a cached `contentHash`; otherwise the full fetch brings the bodies.
+     *
      * @param {object} metadata The sync metadata containing the cached releases.
+     * @param {Object} [options={}]
+     * @param {Boolean} [options.needNotes=false] Whether `syncNotes` runs on this fetch's releases.
      * @returns {Promise<void>}
      */
-    async fetchAndCacheReleases(metadata) {
+    async fetchAndCacheReleases(metadata, {needNotes=false}={}) {
         logger.info('Checking for new releases...');
 
         const cachedReleases = metadata.releases || {};
@@ -97,9 +147,15 @@ class ReleaseNotesSyncer extends Base {
                 cachedReleaseArray.sort((a, b) => new Date(a.publishedAt) - new Date(b.publishedAt));
                 const cachedLatest = cachedReleaseArray[cachedReleaseArray.length - 1];
 
-                if (latestRelease && cachedLatest &&
+                const upToDate = latestRelease && cachedLatest &&
                     latestRelease.tagName === cachedLatest.tagName &&
-                    latestRelease.publishedAt === cachedLatest.publishedAt) {
+                    latestRelease.publishedAt === cachedLatest.publishedAt;
+
+                if (!upToDate) {
+                    logger.info(`New release detected: ${latestRelease?.tagName} (cached was: ${cachedLatest?.tagName})`);
+                } else if (needNotes && !await this.#notesMaterialized(cachedReleaseArray)) {
+                    logger.info('Release notes are missing on disk, fetching the release history with bodies.');
+                } else {
                     logger.info(`✅ Releases are up-to-date (latest: ${latestRelease.tagName})`);
                     this.releases = Object.fromEntries(cachedReleaseArray.map(release => [release.tagName, release]));
                     this.sortedReleases = cachedReleaseArray.map(r => ({
@@ -108,8 +164,6 @@ class ReleaseNotesSyncer extends Base {
                     }));
                     return;
                 }
-
-                logger.info(`New release detected: ${latestRelease.tagName} (cached was: ${cachedLatest?.tagName})`);
             } catch (e) {
                 logger.warn(`Could not check latest release, falling back to full fetch: ${e.message}`);
             }
@@ -180,15 +234,18 @@ class ReleaseNotesSyncer extends Base {
 
     /**
      * Saves release notes from GitHub as local Markdown files, using content hashing to avoid
-     * unnecessary writes.
+     * unnecessary writes. A note counts as current only while its file is on disk, and a release's
+     * `contentHash` is recorded only once its note is. Any in-window release that cannot be written,
+     * or that has neither a body nor its note, fails the call before the index is written, so a
+     * partial set never reads as complete.
      * @param {object} metadata The sync metadata containing cached release hashes.
      * @returns {Promise<object>} Statistics about the operation ({count: number, synced: string[]}).
+     * @throws {Error} Naming every in-window release whose note could not be synced.
      */
     async syncNotes(metadata) {
         logger.info('📄 Syncing release notes...');
-        const baseDir    = issueSyncConfig.contentRoot;
         const releaseDir = contentBucketDir({
-            contentRoot: baseDir,
+            contentRoot: issueSyncConfig.contentRoot,
             repoSlug   : aiConfig.repo,
             originRoot : issueSyncConfig.originRoot,
             type       : 'release-notes'
@@ -212,6 +269,7 @@ class ReleaseNotesSyncer extends Base {
 
         const cachedReleases = metadata.releases || {};
         const startDate      = new Date(issueSyncConfig.syncStartDate);
+        const failures       = [];
 
         // Release-notes content is floored to syncStartDate even though the bucketing reference
         // (`sortedReleases`) now spans the full history: we only write notes for in-window releases,
@@ -221,79 +279,62 @@ class ReleaseNotesSyncer extends Base {
 
         for (const release of Object.values(this.releases)) {
             if (new Date(release.publishedAt) < startDate) continue;
+
+            const itemIndex   = notesReleases.findIndex(r => r.tagName === release.tagName);
+            const chunkNumber = chunkNumberFor(itemIndex);
+            const filePath    = this.#notePath(release.tagName, itemIndex);
+            // Read before anything below assigns it: `metadata.releases` can hold these very objects
+            const cachedHash  = cachedReleases[release.tagName]?.contentHash;
+
             try {
-                const itemIndex   = notesReleases.findIndex(r => r.tagName === release.tagName);
-                const chunkNumber = chunkNumberFor(itemIndex);
+                if (release.metadataOnly) {
+                    if (!cachedHash || !await exists(filePath)) {
+                        failures.push(`${release.tagName}: no body to write`);
+                        continue;
+                    }
 
-                const filename = release.tagName.startsWith(issueSyncConfig.releaseFilenamePrefix)
-                    ? release.tagName
-                    : issueSyncConfig.releaseFilenamePrefix + release.tagName;
+                    release.contentHash = cachedHash;
+                } else {
+                    const frontmatter = {
+                        tagName     : release.tagName,
+                        name        : release.name,
+                        publishedAt : release.publishedAt,
+                        isPrerelease: release.isPrerelease || false,
+                        isDraft     : release.isDraft || false
+                    };
 
-                const filePath = contentPath({
-                    contentRoot: baseDir,
-                    repoSlug   : aiConfig.repo,
-                    originRoot : issueSyncConfig.originRoot,
-                    type       : 'release-notes',
-                    filename   : `${filename}.md`,
-                    itemIndex
-                });
+                    // GraphQL returns 'description' not 'body'
+                    const body        = `# ${release.name}\n\n${release.description || ''}`;
+                    const content     = matter.stringify(body, frontmatter);
+                    const currentHash = this.#calculateContentHash(content);
+
+                    if (cachedHash !== currentHash || !await exists(filePath)) {
+                        await fs.mkdir(path.dirname(filePath), { recursive: true });
+                        await fs.writeFile(filePath, content, 'utf-8');
+                        logger.debug(`✅ Synced release notes for ${release.tagName}`);
+                        stats.count++;
+                        stats.synced.push(release.tagName);
+                    }
+
+                    release.contentHash = currentHash;
+                }
 
                 indexMap.items[release.tagName] = {
                     itemIndex,
                     chunk   : chunkNumber,
                     chunkDir: `chunk-${chunkNumber}`
                 };
-
-                const cachedRelease = cachedReleases[release.tagName];
-
-                if (release.metadataOnly) {
-                    if (cachedRelease?.contentHash) {
-                        logger.debug(`Skipping release notes for ${release.tagName}, cached metadata has no body fields.`);
-                        release.contentHash = cachedRelease.contentHash;
-                    } else {
-                        logger.warn(`⚠️ Cannot sync release notes for ${release.tagName}: cached metadata has no body fields or contentHash.`);
-                    }
-                    continue;
-                }
-
-                const frontmatter = {
-                    tagName     : release.tagName,
-                    name        : release.name,
-                    publishedAt : release.publishedAt,
-                    isPrerelease: release.isPrerelease || false,
-                    isDraft     : release.isDraft || false
-                };
-
-                // GraphQL returns 'description' not 'body'
-                const body        = `# ${release.name}\n\n${release.description || ''}`;
-                const content     = matter.stringify(body, frontmatter);
-                const currentHash = this.#calculateContentHash(content);
-
-                // Store the hash on the release object for the main loop to cache later
-                release.contentHash = currentHash;
-
-                if (cachedRelease && cachedRelease.contentHash === currentHash) {
-                    logger.debug(`Skipping release notes for ${release.tagName}, content unchanged.`);
-                    continue;
-                }
-
-                await fs.mkdir(path.dirname(filePath), { recursive: true });
-                await fs.writeFile(filePath, content, 'utf-8');
-                logger.debug(`✅ Synced release notes for ${release.tagName}`);
-                stats.count++;
-                stats.synced.push(release.tagName);
             } catch (e) {
-                logger.warn(`⚠️ Could not sync release notes for ${release.tagName}: ${e.message}`);
+                failures.push(`${release.tagName}: ${e.message}`);
             }
         }
 
-        try {
-            const indexFilePath = path.join(releaseDir, '_index.json');
-            await fs.writeFile(indexFilePath, JSON.stringify(indexMap, null, 2), 'utf-8');
-            logger.info('✅ Synced _index.json for release-notes');
-        } catch (e) {
-            logger.warn(`⚠️ Could not sync _index.json for release notes: ${e.message}`);
+        if (failures.length > 0) {
+            throw new Error(`Release notes not synced (${failures.length}): ${failures.join('; ')}`);
         }
+
+        await fs.writeFile(path.join(releaseDir, '_index.json'), JSON.stringify(indexMap, null, 2), 'utf-8');
+        logger.info('✅ Synced _index.json for release-notes');
 
         return stats;
     }

@@ -56,14 +56,14 @@ import {
  * agent MCP surface: clean-slate emission can span
  * ~8.5k issues + ~2.8k PRs + ~165 discussions + ~166 release notes and must stay
  * behind the shared heavy-maintenance lease rather than an MCP request timeout.
- * `--corpus-only` instead emits the three conversation facets into an explicitly declared external
- * corpus root, with a corpus-local shared lease and no git publication or consumer derivation.
+ * `--corpus-only` instead emits the three conversation facets and the release notes into an explicitly
+ * declared external corpus root, with a corpus-local shared lease and no git publication or consumer derivation.
  *
  * Corpus publishers pin a Brain checkout by immutable commit, run `npm ci` and `npm run prepare`,
  * then invoke this script from that installation. `NEO_MCP_GITHUB_OWNER` and `NEO_MCP_GITHUB_REPO`
  * select the source (defaults: `neomjs` / `neo`); `GH_TOKEN` supplies GitHub read access.
  * `NEO_MCP_GITHUB_CONTENT_ROOT` must name an existing absolute destination outside the runtime.
- * The destination owns shared `_index.json`, `<repo>/{issues,pulls,discussions,archive}/...`, and
+ * The destination owns shared `_index.json`, `<repo>/{issues,pulls,discussions,archive,release-notes}/...`, and
  * `<repo>/.sync-metadata.json`. Publish all of them in one revision only after exit 0. Any nonzero
  * exit, including partial facet failure or a held lease, forbids publication of that attempt.
  * `.corpus-sync.lock` is transient and must not be published. Progress stays in the destination;
@@ -176,7 +176,7 @@ async function assertCorpusDestination() {
         if (error.code !== 'ENOENT') throw error;
     }
 
-    for (const key of ['issuesDir', 'discussionsDir', 'pullsDir', 'archiveRoot', 'metadataFile']) {
+    for (const key of ['issuesDir', 'discussionsDir', 'pullsDir', 'archiveRoot', 'releaseNotesDir', 'metadataFile']) {
         const target = await resolveDestinationPath(GH_Config.issueSync[key]);
         if (!contains(origin, target)) throw new Error(`Corpus ${key} escapes its origin root.`);
     }

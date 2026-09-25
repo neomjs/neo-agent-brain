@@ -117,6 +117,7 @@ function corpusAcquisitionPreload({fail = false} = {}) {
       import GraphqlService from ${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/GraphqlService.mjs')).href)};
       ${fail ? "GraphqlService.query = async () => { throw new Error('controlled acquisition failure') };" : `
       GraphqlService.query = async query => {
+        if (query.includes('FetchLatestRelease')) return {repository:{latestRelease:{tagName:'v1.0.0',publishedAt:'2026-01-03T00:00:00Z'}}};
         if (query.includes('FetchReleases')) return {repository:{releases:{nodes:[{tagName:'v1.0.0',name:'v1.0.0',description:'fixture',publishedAt:'2026-01-03T00:00:00Z',url:'https://example.test/release'}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchIssuesForSync')) return {rateLimit:{cost:1,remaining:5000,resetAt:'2026-01-04T00:00:00Z'},repository:{issues:{nodes:[${JSON.stringify(issue)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
         if (query.includes('FetchDiscussionsForSync')) return {repository:{discussions:{nodes:[${JSON.stringify(discussion)}],pageInfo:{hasNextPage:false,endCursor:null}}}};
@@ -125,9 +126,7 @@ function corpusAcquisitionPreload({fail = false} = {}) {
       };`}
       const {default: SyncService} = await import(${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs')).href)});
       for (const name of ['rebuildContentIndexesAndSeo', 'autoPushGeneratedContent']) SyncService[name] = async () => { throw new Error(name + ' must not run') };
-      const {default: ReleaseNotesSyncer} = await import(${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/sync/ReleaseNotesSyncer.mjs')).href)});
       const {default: IssueSyncer} = await import(${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/sync/IssueSyncer.mjs')).href)});
-      ReleaseNotesSyncer.syncNotes = async () => { throw new Error('syncNotes must not run') };
       IssueSyncer.pushToGitHub = async () => { throw new Error('pushToGitHub must not run') };
     `;
     return `data:text/javascript,${encodeURIComponent(source)}`;
@@ -361,10 +360,18 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
 
             expect(result.code).toBe(1);
             expect(result.stdout).toContain('Corpus issuesDir escapes its origin root.');
+
+            const notes = await runCorpusGuardChild({
+                contentRoot: corpusRoot,
+                env         : {NEO_MCP_GITHUB_RELEASE_NOTES_DIR: path.join(outsideRoot, 'release-notes')}
+            });
+
+            expect(notes.code).toBe(1);
+            expect(notes.stdout).toContain('Corpus releaseNotesDir escapes its origin root.');
         });
     });
 
-    test('actual corpus CLI emits all conversation facets into the external destination only', async () => {
+    test('actual corpus CLI emits all conversation facets and the release notes into the external destination only', async () => {
         await withOwnedFixture(async ({corpusRoot}) => {
             await fs.mkdir(corpusRoot);
             const result = await runCliChild({
@@ -387,7 +394,10 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
             ]));
             const metadata = JSON.parse(await fs.readFile(path.join(origin, '.sync-metadata.json'), 'utf8'));
             expect(metadata.issues['101'].path).toBe('neo/issues/chunk-1/issue-101.md');
-            await expect(fs.access(path.join(origin, 'release-notes'))).rejects.toThrow();
+            await expect(fs.readFile(path.join(origin, 'release-notes/chunk-1/v1.0.0.md'), 'utf8')).resolves.toContain('fixture');
+            const notesIndex = JSON.parse(await fs.readFile(path.join(origin, 'release-notes/_index.json'), 'utf8'));
+            expect(notesIndex.items['v1.0.0']).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1'});
+            expect(metadata.releases['v1.0.0'].contentHash).toMatch(/^[0-9a-f]{64}$/);
 
             const second = await runCliChild({
                 args: ['--corpus-only'], contentRoot: corpusRoot,
@@ -401,6 +411,24 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
             expect(combined).toHaveLength(6);
             expect(combined.filter(entry => entry.repoSlug === 'neo')).toEqual(index);
             expect(combined.filter(entry => entry.repoSlug === 'neo-agent-brain')).toHaveLength(3);
+        });
+    });
+
+    test('actual corpus CLI writes the notes for a corpus whose metadata caches releases without them', async () => {
+        await withOwnedFixture(async ({corpusRoot}) => {
+            const origin = path.join(corpusRoot, 'neo');
+
+            // The published corpus's shape: every release cached as {publishedAt} only, the latest current
+            await fs.mkdir(origin, {recursive: true});
+            await fs.writeFile(path.join(origin, '.sync-metadata.json'), JSON.stringify({
+                lastSync: null, issues: {}, pulls: {}, discussions: {},
+                releases: {'v1.0.0': {publishedAt: '2026-01-03T00:00:00Z'}}
+            }));
+
+            const result = await runCliChild({args: ['--corpus-only'], contentRoot: corpusRoot, preload: corpusAcquisitionPreload()});
+
+            expect(result.code, result.stderr).toBe(0);
+            await expect(fs.readFile(path.join(origin, 'release-notes/chunk-1/v1.0.0.md'), 'utf8')).resolves.toContain('fixture');
         });
     });
 
