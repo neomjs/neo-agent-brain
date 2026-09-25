@@ -651,7 +651,7 @@ export function getProviderActivityMetrics(db, {sinceTs, limit, now = Date.now()
             completedAt : new Date(row.completed_at).toISOString(),
             executionMs : row.execution_ms ?? null,
             success     : row.success === 1,
-            failureStage: row.failure_stage ?? null
+            failureStage: row.failure_stage === null ? null : normalizeEnum(row.failure_stage, FAILURE_STAGES)
         })),
         reaped: reapedRows.map(row => ({
             ...projectBase(row),

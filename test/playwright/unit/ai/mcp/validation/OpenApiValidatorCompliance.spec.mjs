@@ -644,7 +644,7 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
         expect(route).toEqual({
             nullable: true,
             type    : 'string',
-            enum    : ['direct', 'broadcast']
+            enum    : ['direct', 'broadcast', null]
         });
         expect(() => new Ajv({strict: false}).compile(schema)).not.toThrow();
     });
@@ -726,6 +726,19 @@ test.describe('OpenApiValidator: strict-client JSON-Schema compliance', () => {
         ]);
         expect(completion.properties.queueDisposition.enum).toContain('not-applicable');
         expect(completion.properties.queueWaitMs.nullable).toBe(true);
+        expect(completion.properties.failureStage.enum).toEqual(['provider', 'queue', 'unknown']);
+
+        const publishedFailureStage = schema.properties.providerActivity.properties.recentCompletions.items.properties.failureStage,
+              publishedAddressType  = toOpenApiJsonSchema(buildZodSchema(
+                  doc,
+                  doc.paths['/wake-subscriptions/manage'].post
+              )).properties.harnessTargetMetadata.properties.addressType,
+              ajv                   = new Ajv({strict: false});
+
+        expect(publishedFailureStage.enum).toEqual(['provider', 'queue', 'unknown', null]);
+        expect(publishedAddressType.enum).toEqual(['userDataDir', 'pid', 'tmuxSession', 'webhookUrl', null]);
+        expect(ajv.validate(publishedFailureStage, null)).toBe(true);
+        expect(ajv.validate(publishedAddressType, null)).toBe(true);
 
         const reaped = doc.components.schemas.ProviderActivityReaped;
 
