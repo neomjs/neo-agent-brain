@@ -32,6 +32,7 @@ import {
     clearAggregatedFrictions,
     getAggregatedFrictions
 } from '../../../../../../ai/services/memory-core/helpers/consumerFrictionHelper.mjs';
+import {MODEL_MISMATCH_CODE} from '../../../../../../ai/provider/createStreamFailureError.mjs';
 
 async function waitForCondition(condition, message, timeoutMs = 250) {
     const start = Date.now();
@@ -135,6 +136,15 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
                 if (serverBehavior === 'succeed') {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3] }] }));
+                } else if (serverBehavior === 'succeed-with-mismatched-model') {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ model: 'other', data: [{ embedding: [0.1, 0.2, 0.3] }] }));
+                } else if (serverBehavior === 'succeed-with-local-date-alias') {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({
+                        model: `${aiConfig.openAiCompatible.embeddingModel}-2024-08-06`,
+                        data : [{ embedding: [0.1, 0.2, 0.3] }]
+                    }));
                 } else if (serverBehavior === 'lms-server-start-succeed') {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({
@@ -560,6 +570,25 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
         const result = await TextEmbeddingService.embedText('hello', 'openAiCompatible');
         expect(result).toEqual([0.1, 0.2, 0.3]);
         expect(requestCount, `observed requests=${JSON.stringify(allRequests)}`).toBe(1);
+    });
+
+    test('a served model mismatch rejects before an embedding vector is returned', async () => {
+        serverBehavior                         = 'succeed-with-mismatched-model';
+        const requested                       = aiConfig.openAiCompatible.embeddingModel,
+              error                          = await TextEmbeddingService.embedText('hello', 'openAiCompatible').then(() => null, err => err);
+
+        expect(error?.code).toBe(MODEL_MISMATCH_CODE);
+        expect(error).toMatchObject({requested, served: 'other', lane: 'embedding'})
+    });
+
+    test('a local embedding endpoint rejects a dated model id', async () => {
+        serverBehavior                         = 'succeed-with-local-date-alias';
+        const requested                       = aiConfig.openAiCompatible.embeddingModel,
+              served                          = `${requested}-2024-08-06`,
+              error                           = await TextEmbeddingService.embedText('hello', 'openAiCompatible').then(() => null, err => err);
+
+        expect(error?.code).toBe(MODEL_MISMATCH_CODE);
+        expect(error).toMatchObject({requested, served, lane: 'embedding'})
     });
 
     test('lms server start-compatible single embedding uses the standard OpenAI-compatible endpoint', async () => {

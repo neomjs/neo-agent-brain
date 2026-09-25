@@ -18,10 +18,13 @@ setup({
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+import http           from 'http';
+import aiConfig       from '../../../../../../ai/mcp/server/memory-core/config.template.mjs';
 import {
     OPENAI_COMPATIBLE_REQUEST_TIMEOUT_CODE,
     PROVIDER_TIMEOUT_CODE
 } from '../../../../../../ai/provider/createTimeoutError.mjs';
+import {MODEL_MISMATCH_CODE} from '../../../../../../ai/provider/createStreamFailureError.mjs';
 import {KB_VECTOR_EMBED_PROVIDER_CIRCUIT_OPEN}
     from '../../../../../../ai/services/knowledge-base/helpers/embedFailureClassification.mjs';
 import {EMBEDDING_INPUT_TRUNCATED_CODE}
@@ -139,6 +142,119 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         expect(providerCalls, 'nothing to embed must reach the provider zero times').toBe(0);
         expect(spy.upsertedIds, 'and nothing may be written').toEqual([]);
         expect(result).toEqual({embedded: 0, settled: 0, remaining: 0, skipped: 0, yielded: false});
+    });
+
+    // The non-vacuity control @neo-gpt asked for. Without it the mismatch arm above is
+    // unfalsifiable in the way that matters: a response the dense-index guard refuses produces the
+    // SAME zero upserts as a response the identity guard refuses, so the assertion would hold whether
+    // or not the served-model check worked. This arm proves the path is reachable — when the served
+    // model AGREES, the vector lands. Only then does the mismatch arm's zero mean "the identity
+    // guard refused it" rather than "something else refused it first".
+    test('CONTROL — a served model that AGREES reaches the collection, so the zero above is the identity guard', async () => {
+        const spy    = createSpyCollection(),
+              chunks = makeChunks(1),
+              before = spy.upsertedIds.length,
+              server = http.createServer((req, res) => {
+                  let body = '';
+
+                  req.on('data', chunk => body += chunk);
+                  req.on('end', () => {
+                      res.writeHead(200, {'Content-Type': 'application/json'});
+                      // Well-formed AND agreeing: `index` present, model echoing the request.
+                      res.end(JSON.stringify({
+                          model: aiConfig.openAiCompatible.embeddingModel,
+                          data  : [{index: 0, embedding: [0.1, 0.2, 0.3]}]
+                      }))
+                  })
+              }),
+              originalHostFn      = TextEmbeddingService.openAiCompatibleHostFn,
+              originalUnitTestMode = Neo.config.unitTestMode;
+
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+        try {
+            TextEmbeddingService.openAiCompatibleHostFn = () => `http://127.0.0.1:${server.address().port}`;
+            TextEmbeddingService.embedTexts = originalEmbedTexts;
+            Neo.config.unitTestMode          = false;
+
+            const result = await KB_VectorService.embedChunks({collection: spy, chunksToProcess: chunks});
+
+            expect(spy.upsertedIds.length, 'an agreeing served model MUST reach the collection').toBeGreaterThan(before);
+            expect(spy.calls.upsert).toBeGreaterThan(0);
+            expect(result.embedded).toBeGreaterThan(0)
+        } finally {
+            Neo.config.unitTestMode       = originalUnitTestMode;
+            TextEmbeddingService.openAiCompatibleHostFn = originalHostFn;
+            server.close()
+        }
+    });
+
+    test('a served-model mismatch from the REAL response parse leaves the persisted vector count unchanged (#480 RA-3)', async () => {
+        // The stub this replaces threw a synthetic MODEL_MISMATCH from `embedTexts`, which is the seam
+        // the served-model guard does NOT live behind. The real guard is in `TextEmbeddingService`,
+        // on the parsed provider response — so a stubbed throw made this arm pass unconditionally: it
+        // would have stayed green even if the genuine mismatched `/v1/embeddings` response were parsed
+        // and admitted. It asserted the batch-isolation consequence of a verdict it supplied itself,
+        // which is why the parse itself is now driven end to end.
+        //
+        // The claim under test is unchanged and is the one that matters operationally: a wrong resident
+        // must cost the corpus nothing. A served model that disagrees is refused BEFORE a vector
+        // exists, so the collection never sees an upsert.
+        const spy      = createSpyCollection(),
+              chunks   = makeChunks(1),
+              before   = spy.upsertedIds.length,
+              server   = http.createServer((req, res) => {
+                  let body = '';
+
+                  req.on('data', chunk => body += chunk);
+                  req.on('end', () => {
+                      // A well-formed embedding response that simply reports the WRONG model. Nothing
+                      // here is an error: the refusal has to come from identity, not from a failure shape.
+                      // `index: 0` is REQUIRED for this response to be a valid embedding reply.
+                      // Without it the dense-index guard refuses the batch before the identity check
+                      // is ever reached, so the model-AGREES control below would have been proving
+                      // the wrong thing: the zero-upsert assertion would hold while the identity
+                      // guard was bypassed entirely. A witness that cannot fail for the right reason
+                      // is not a witness (@480 RA-2).
+                      res.writeHead(200, {'Content-Type': 'application/json'});
+                      res.end(JSON.stringify({model: 'other', data: [{index: 0, embedding: [0.1, 0.2, 0.3]}]}))
+                  })              }),
+              originalHostFn       = TextEmbeddingService.openAiCompatibleHostFn,
+              originalUnitTestMode  = Neo.config.unitTestMode;
+
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+        try {
+            TextEmbeddingService.openAiCompatibleHostFn = () => `http://127.0.0.1:${server.address().port}`;
+
+            // The real singleton, not a stub: this is the arm's whole point. `originalEmbedTexts` is the
+            // describe-scope capture of the untouched method, so restoring it here undoes the `beforeEach`
+            // stub rather than re-capturing it. `unitTestMode` off so the genuine HTTP request is issued
+            // and the genuine response parse runs.
+            TextEmbeddingService.embedTexts = originalEmbedTexts;
+            Neo.config.unitTestMode          = false;
+
+            const observed = await KB_VectorService
+                .embedChunks({collection: spy, chunksToProcess: chunks})
+                .then(() => null, error => error);
+
+            // The refusal must be the identity verdict, and it must have come from the parse. The batch
+            // abort is the wrapper this file already tests elsewhere; what is new here is its `cause`,
+            // because a stubbed throw would have put a verdict there that the parser never produced.
+            expect(observed?.cause?.code,
+                `expected MODEL_MISMATCH as the batch-abort cause, got ${observed?.cause?.code}: ${observed?.cause?.message}`
+            ).toBe(MODEL_MISMATCH_CODE);
+
+            // The served identity the parser read, as opposed to one the test supplied.
+            expect(observed?.cause).toMatchObject({served: 'other', lane: 'embedding'});
+
+            expect(spy.upsertedIds).toHaveLength(before);
+            expect(spy.calls.upsert).toBe(0)
+        } finally {
+            Neo.config.unitTestMode       = originalUnitTestMode;
+            TextEmbeddingService.openAiCompatibleHostFn = originalHostFn;
+            server.close()
+        }
     });
 
     test('#16972 a rejected-class refusal costs ONE batch dispatch, and isolation still runs', async () => {
