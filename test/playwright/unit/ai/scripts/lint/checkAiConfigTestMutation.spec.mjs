@@ -4,7 +4,7 @@ import {existsSync, mkdirSync, rmSync, writeFileSync}                           
 import path                                                                                                from 'node:path';
 import process                                                                                             from 'node:process';
 import {fileURLToPath}                                                                                     from 'node:url';
-import {findDbPathMutations, findCloneCaptures, scanFileContent, ADR_0019_RULES, ALLOWLIST, ESCAPE_MARKER} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {findDbPathMutations, findSharedConfigMutations, findCloneCaptures, scanFileContent, ADR_0019_RULES, ALLOWLIST, ESCAPE_MARKER} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..');
 
@@ -16,9 +16,53 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
  * inline escape marker.
  */
 test.describe('check-aiconfig-test-mutation guard', () => {
-    test('B4 lives on the executable mutation rule object', () => {
-        expect(ADR_0019_RULES.map(rule => rule.id)).toEqual(['B4']);
-        expect(ADR_0019_RULES[0].detect).toBe(findDbPathMutations)
+    test('B4 is TWO rules with honest ids, and only the DB-path subset gates', () => {
+        // The ids are the point. A rule labelled `B4` that detects DB paths only made "is B4
+        // enforced?" — asked against ADR 0019's own table — return a false assurance, which is worse
+        // than an absent guard. The gating subset now says what it gates, and the full-scope rule
+        // exists, is tested, and is honestly marked not-yet-gating.
+        expect(ADR_0019_RULES.map(rule => rule.id)).toEqual(['B4-DB-PATH', 'B4-SHARED-CONFIG']);
+        expect(ADR_0019_RULES[0].detect).toBe(findDbPathMutations);
+        expect(ADR_0019_RULES[0].gating).toBe(true);
+        expect(ADR_0019_RULES[1].detect).toBe(findSharedConfigMutations);
+        expect(ADR_0019_RULES[1].gating, 'promoting this to gating is a deliberate later step, not a default').toBe(false)
+    });
+
+    test('the full-scope rule catches a shared-config write the DB-path rule cannot see', () => {
+        // The defect this rule exists to name, pinned as a red-first arm: a write to a NON-DB leaf is
+        // invisible to the gating rule and visible to the report-only one. If this ever stops holding,
+        // the two rules have converged or the general detector has regressed.
+        const write = "aiConfig.openAiCompatible.host = `http://127.0.0.1:${port}`;";
+
+        expect(findDbPathMutations(write), 'the gating subset genuinely cannot see this leaf').toEqual([]);
+        expect(findSharedConfigMutations(write).map(hit => hit.line)).toEqual([1]);
+        expect(findSharedConfigMutations(write)[0].leaf, 'the leaf is reported so a baseline can be reasoned about').toBeTruthy()
+    });
+
+    test('the full-scope rule ignores comments, comparisons, arrows and capture-reads', () => {
+        // Same discrimination the DB-path rule makes, and the reason a report-only count of 598 is
+        // trustworthy rather than inflated. A probe that cannot tell code from prose would report
+        // every doc comment in the suite as a violation.
+        expect(findSharedConfigMutations('// aiConfig.openAiCompatible.host = 1')).toEqual([]);
+        expect(findSharedConfigMutations("const s = 'aiConfig.openAiCompatible.host = 1';")).toEqual([]);
+        expect(findSharedConfigMutations('if (aiConfig.orchestrator.deploymentMode === "x") {}')).toEqual([]);
+        expect(findSharedConfigMutations('const run = () => aiConfig.vectorDimension;')).toEqual([]);
+        expect(findSharedConfigMutations('const original = aiConfig.ollama.host;')).toEqual([])
+    });
+
+    test('the full-scope rule honors the escape marker, and the allowlist does NOT suppress it', () => {
+        // The allowlist's entries justify a DB-PATH mutation specifically. Letting one suppress the
+        // full-scope rule would make a narrow, stated exemption a blanket bypass — the failure this
+        // file's own header warns about. So an allowlisted file still reports its shared-config writes.
+        const allowlisted = [...ALLOWLIST][0];
+
+        expect(allowlisted, 'the allowlist is non-empty, so this is a real assertion').toBeTruthy();
+        expect(scanFileContent(allowlisted, 'aiConfig.data.logPath = tmp;').dbPathHits,
+            'the allowlist still suppresses the gating DB-path rule it was written for').toEqual([]);
+        expect(scanFileContent(allowlisted, 'aiConfig.openAiCompatible.host = 1;').sharedConfigHits.length,
+            'and does NOT extend that reasoning to an unrelated leaf').toBe(1);
+        expect(findSharedConfigMutations(`aiConfig.openAiCompatible.host = 1; // ${ESCAPE_MARKER}: justified`).length,
+            'the escape marker is the sanctioned relief valve here too').toBe(0)
     });
 
     test('flags storagePaths / database / collections / logPath assignments', () => {
