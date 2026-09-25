@@ -147,6 +147,8 @@ test.describe('Neo.ai.services.graph.GraphMaintenanceService', () => {
     test('an edgeless session summary is not an orphan: the node and its vector both stay', async () => {
         GraphService.db.addNode({id: 'summary_gc-session', label: 'SESSION_SUMMARY', properties: {semanticVectorId: 'summary_gc-session'}});
 
+        expect(GraphService.getOrphanedNodes(), 'the orphan query skips it').not.toContain('summary_gc-session');
+
         await GraphMaintenanceService.runGarbageCollection();
 
         expect(nodeRow('summary_gc-session'), 'the summary node stays').toBeDefined();
