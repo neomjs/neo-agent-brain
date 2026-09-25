@@ -238,6 +238,7 @@ class ReleaseNotesSyncer extends Base {
      * `contentHash` is recorded only once its note is. Any in-window release that cannot be written,
      * or that has neither a body nor its note, fails the call before the index is written, so a
      * partial set never reads as complete. With nothing in window, it writes nothing: no folder, no index.
+     * Each index item names its note's `path`, so a reader takes a note's identity from the index.
      * @param {object} metadata The sync metadata containing cached release hashes.
      * @returns {Promise<object>} Statistics about the operation ({count: number, synced: string[]}).
      * @throws {Error} Naming every in-window release whose note could not be synced.
@@ -329,7 +330,9 @@ class ReleaseNotesSyncer extends Base {
                 indexMap.items[release.tagName] = {
                     itemIndex,
                     chunk   : chunkNumber,
-                    chunkDir: `chunk-${chunkNumber}`
+                    chunkDir: `chunk-${chunkNumber}`,
+                    // Relative to the content root, as the corpus root index's rows are
+                    path    : path.relative(issueSyncConfig.contentRoot, filePath).split(path.sep).join('/')
                 };
             } catch (e) {
                 failures.push(`${release.tagName}: ${e.message}`);

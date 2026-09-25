@@ -30,6 +30,9 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
     let tmpRoot;
     let logger;
 
+    /** @summary The corpus-relative path the shard index records for a note in chunk 1. */
+    const notePath = file => path.relative(issueSyncConfig.contentRoot, path.join(issueSyncConfig.releaseNotesDir, 'chunk-1', file)).split(path.sep).join('/');
+
     test.beforeAll(async () => {
         aiConfig = (await import('../../../../../../ai/mcp/server/github-workflow/config.template.mjs')).default;
         issueSyncConfig = aiConfig.issueSync;
@@ -130,7 +133,7 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
         expect(await fs.readFile(path.join(releaseDir, 'chunk-1', 'vCached.md'), 'utf-8')).toBe('on disk');
 
         const indexData = await fs.readJson(path.join(releaseDir, '_index.json'));
-        expect(indexData.items.vCached).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1'});
+        expect(indexData.items.vCached).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1', path: notePath('vCached.md')});
     });
 
     test('syncNotes fails on a pruned release whose note is missing, writing neither markdown nor an index', async () => {
@@ -261,8 +264,8 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
         expect(await fs.pathExists(indexPath)).toBe(true);
 
         const indexData = await fs.readJson(indexPath);
-        expect(indexData.items['v1.0.0']).toEqual({ itemIndex: 0, chunk: 1, chunkDir: 'chunk-1' });
-        expect(indexData.items['v1.1.0']).toEqual({ itemIndex: 1, chunk: 1, chunkDir: 'chunk-1' });
+        expect(indexData.items['v1.0.0']).toEqual({ itemIndex: 0, chunk: 1, chunkDir: 'chunk-1', path: notePath('v1.0.0.md') });
+        expect(indexData.items['v1.1.0']).toEqual({ itemIndex: 1, chunk: 1, chunkDir: 'chunk-1', path: notePath('v1.1.0.md') });
     });
 
     test('cold fetch spans the full release history — no syncStartDate early-exit or filter on sortedReleases', async () => {
@@ -327,7 +330,7 @@ test.describe('Neo.ai.services.github-workflow.sync.ReleaseNotesSyncer', () => {
 
         // vNew indexes at 0 WITHIN the floored notes set — not its index (1) in the full sortedReleases.
         const indexData = await fs.readJson(path.join(releaseDir, '_index.json'));
-        expect(indexData.items['vNew']).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1'});
+        expect(indexData.items['vNew']).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1', path: notePath('vNew.md')});
         expect(indexData.items['vOld']).toBeUndefined();
         expect(await fs.pathExists(path.join(releaseDir, 'chunk-1', 'vNew.md'))).toBe(true);
         expect(await fs.pathExists(path.join(releaseDir, 'chunk-1', 'vOld.md'))).toBe(false);

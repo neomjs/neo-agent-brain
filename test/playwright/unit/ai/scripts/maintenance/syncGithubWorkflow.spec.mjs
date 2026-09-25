@@ -398,7 +398,8 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
             expect(metadata.issues['101'].path).toBe('neo/issues/chunk-1/issue-101.md');
             await expect(fs.readFile(path.join(origin, 'release-notes/chunk-1/v1.0.0.md'), 'utf8')).resolves.toContain('fixture');
             const notesIndex = JSON.parse(await fs.readFile(path.join(origin, 'release-notes/_index.json'), 'utf8'));
-            expect(notesIndex.items['v1.0.0']).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1'});
+            // Each note's corpus-relative path, the form the root index uses: a reader takes identity from the index
+            expect(notesIndex.items['v1.0.0']).toEqual({itemIndex: 0, chunk: 1, chunkDir: 'chunk-1', path: 'neo/release-notes/chunk-1/v1.0.0.md'});
             expect(metadata.releases['v1.0.0'].contentHash).toMatch(/^[0-9a-f]{64}$/);
 
             const second = await runCliChild({
