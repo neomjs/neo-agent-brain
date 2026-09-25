@@ -167,13 +167,13 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
                       }))
                   })
               }),
-              originalHost         = aiConfig.openAiCompatible.host,
+              originalHostFn      = TextEmbeddingService.openAiCompatibleHostFn,
               originalUnitTestMode = Neo.config.unitTestMode;
 
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
         try {
-            aiConfig.openAiCompatible.host = `http://127.0.0.1:${server.address().port}`;
+            TextEmbeddingService.openAiCompatibleHostFn = () => `http://127.0.0.1:${server.address().port}`;
             TextEmbeddingService.embedTexts = originalEmbedTexts;
             Neo.config.unitTestMode          = false;
 
@@ -184,7 +184,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
             expect(result.embedded).toBeGreaterThan(0)
         } finally {
             Neo.config.unitTestMode       = originalUnitTestMode;
-            aiConfig.openAiCompatible.host = originalHost;
+            TextEmbeddingService.openAiCompatibleHostFn = originalHostFn;
             server.close()
         }
     });
@@ -219,13 +219,13 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
                       res.writeHead(200, {'Content-Type': 'application/json'});
                       res.end(JSON.stringify({model: 'other', data: [{index: 0, embedding: [0.1, 0.2, 0.3]}]}))
                   })              }),
-              originalHost          = aiConfig.openAiCompatible.host,
+              originalHostFn       = TextEmbeddingService.openAiCompatibleHostFn,
               originalUnitTestMode  = Neo.config.unitTestMode;
 
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 
         try {
-            aiConfig.openAiCompatible.host = `http://127.0.0.1:${server.address().port}`;
+            TextEmbeddingService.openAiCompatibleHostFn = () => `http://127.0.0.1:${server.address().port}`;
 
             // The real singleton, not a stub: this is the arm's whole point. `originalEmbedTexts` is the
             // describe-scope capture of the untouched method, so restoring it here undoes the `beforeEach`
@@ -252,7 +252,7 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
             expect(spy.calls.upsert).toBe(0)
         } finally {
             Neo.config.unitTestMode       = originalUnitTestMode;
-            aiConfig.openAiCompatible.host = originalHost;
+            TextEmbeddingService.openAiCompatibleHostFn = originalHostFn;
             server.close()
         }
     });

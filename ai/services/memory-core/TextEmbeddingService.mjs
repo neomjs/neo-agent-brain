@@ -713,7 +713,20 @@ class TextEmbeddingService extends Base {
          * @member {Function|null} openAiCompatibleLoadedModelsProbe=null
          * @protected
          */
-        openAiCompatibleLoadedModelsProbe: null
+        openAiCompatibleLoadedModelsProbe: null,
+        /**
+         * Resolver seam for the OpenAI-compatible endpoint. Defaults to the canonical AiConfig leaf.
+         *
+         * The host was read inline at four sites, so a test needing a real endpoint had exactly one
+         * way to point this service at it: write `aiConfig.openAiCompatible.host` on the shared
+         * singleton. ADR 0019 B4 calls that safety-critical — the write routes to shared state, so a
+         * missed cleanup or a test order means the next consumer reads the test's endpoint. This is
+         * the sanctioned alternative: isolate the CONSUMER, never mutate the config.
+         * @member {Function} openAiCompatibleHostFn_=() => aiConfig.openAiCompatible.host
+         * @protected
+         * @reactive
+         */
+        openAiCompatibleHostFn_: () => aiConfig.openAiCompatible.host
     }
 
     #openAiCompatiblePostQueue        = [];
@@ -1099,7 +1112,7 @@ class TextEmbeddingService extends Base {
         // the LM Studio gate. Normalised to the same row shape so the identity comparison below is
         // one code path rather than two.
         const ids = await helper.fetchOpenAiCompatibleModelIds({
-            host: aiConfig.openAiCompatible.host,
+            host: this.openAiCompatibleHostFn(),
             timeoutMs
         });
 
@@ -1182,7 +1195,7 @@ class TextEmbeddingService extends Base {
             return false;
         }
 
-        return Boolean(aiConfig.openAiCompatible.host && aiConfig.openAiCompatible.embeddingModel);
+        return Boolean(this.openAiCompatibleHostFn() && aiConfig.openAiCompatible.embeddingModel);
     }
 
     /**
@@ -1209,7 +1222,7 @@ class TextEmbeddingService extends Base {
         }
 
         const
-            host    = aiConfig.openAiCompatible.host,
+            host    = this.openAiCompatibleHostFn(),
             lmsPort = aiConfig.orchestrator.lms.port;
 
         let endpointUrl;
@@ -1464,11 +1477,15 @@ class TextEmbeddingService extends Base {
             providerActivityLifecycle
         } = options;
         const {
-            host,
             apiKey,
             unloadRetryDelayMs    = 500,
             contentionRetryDelayMs = 1000
         } = aiConfig.openAiCompatible;
+        // Through the seam, not destructured off the config block: a destructuring read binds a bare
+        // `host` that never reads as a member expression, so it slips past a grep for the leaf — which
+        // is how the one site that actually issues the request stayed invisible behind three that
+        // only looked like the whole surface.
+        const host           = this.openAiCompatibleHostFn();
         const embeddingModel = aiConfig.openAiCompatible.embeddingModel;
 
         try {
