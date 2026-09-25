@@ -22,6 +22,7 @@ import {
     OPENAI_COMPATIBLE_REQUEST_TIMEOUT_CODE,
     PROVIDER_TIMEOUT_CODE
 } from '../../../../../../ai/provider/createTimeoutError.mjs';
+import {MODEL_MISMATCH_CODE} from '../../../../../../ai/provider/createStreamFailureError.mjs';
 import {KB_VECTOR_EMBED_PROVIDER_CIRCUIT_OPEN}
     from '../../../../../../ai/services/knowledge-base/helpers/embedFailureClassification.mjs';
 import {EMBEDDING_INPUT_TRUNCATED_CODE}
@@ -139,6 +140,23 @@ test.describe('VectorService.embedChunks — one failing batch must not strand t
         expect(providerCalls, 'nothing to embed must reach the provider zero times').toBe(0);
         expect(spy.upsertedIds, 'and nothing may be written').toEqual([]);
         expect(result).toEqual({embedded: 0, settled: 0, remaining: 0, skipped: 0, yielded: false});
+    });
+
+    test('a served-model mismatch leaves the persisted vector count unchanged (#480)', async () => {
+        const spy    = createSpyCollection(),
+              chunks = makeChunks(1),
+              before = spy.upsertedIds.length;
+
+        TextEmbeddingService.embedTexts = async () => {
+            const error = new Error('served model does not match the requested model');
+            error.code = MODEL_MISMATCH_CODE;
+            throw error
+        };
+
+        await KB_VectorService.embedChunks({collection: spy, chunksToProcess: chunks}).catch(() => {});
+
+        expect(spy.upsertedIds).toHaveLength(before);
+        expect(spy.calls.upsert).toBe(0)
     });
 
     test('#16972 a rejected-class refusal costs ONE batch dispatch, and isolation still runs', async () => {

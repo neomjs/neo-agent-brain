@@ -16,18 +16,18 @@ setup({
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {MODEL_MISMATCH_CODE, isProviderStreamFailureCode} from '../../../../../../../ai/provider/createStreamFailureError.mjs';
 
 /**
- * @summary Unit coverage for the Brain-Pillar Consumer-Friction Helper (#11447 V1). ticket-ref-ok: names the contract this file exists to verify
+ * @summary Unit coverage for the Brain-Pillar Consumer-Friction Helper.
  *
  * The helper is module-singleton state — tests MUST `clearAggregatedFrictions()` in
- * `beforeEach` to prevent cross-test pollution. Per `feedback_symmetric_spec_cleanup`,
- * shared mutable state across tests requires symmetric reset discipline.
+ * `beforeEach` to prevent cross-test pollution. Shared mutable state across tests requires
+ * symmetric reset discipline.
  *
- * Schema verified against Discussion #11444 graduation contract (Round-2 + Round-3 ticket-ref-ok: the schema authority
- * consensus): structured `ConsumerFriction` with `suggestionKind`, token-based durable
- * metrics, `(assetRef, consumer, symptom)` aggregation tuple, `serviceDomain` provenance,
- * `firstSeenAt`/`lastSeenAt`/`count` aggregation fields.
+ * The contract is a structured `ConsumerFriction` record with `suggestionKind`, token-based
+ * durable metrics, an `(assetRef, consumer, symptom)` aggregation tuple, `serviceDomain`
+ * provenance, and `firstSeenAt`/`lastSeenAt`/`count` aggregation fields.
  *
  * @see ai/services/memory-core/helpers/consumerFrictionHelper.mjs
  */
@@ -70,6 +70,32 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
         const reasoningOnly = Object.assign(new Error('context has nothing to do with it'), {code: 'REASONING_ONLY_RESPONSE'});
 
         expect(categorizeInvocationError(reasoningOnly), 'the typed code wins over the message regex').toBe('reasoning-only-response');
+
+        const modelMismatch = Object.assign(new Error('served model is foreign'), {code: MODEL_MISMATCH_CODE});
+
+        expect(categorizeInvocationError(modelMismatch)).toBe('model-mismatch');
+    });
+
+    test('MODEL_MISMATCH is a deterministic friction symptom', () => {
+        const {emitConsumerFriction, getAggregatedFrictions} = helper;
+
+        expect(isProviderStreamFailureCode(MODEL_MISMATCH_CODE)).toBe(true);
+
+        emitConsumerFriction({
+            assetRef                 : 'openAiCompatible:configured',
+            consumer                 : 'OpenAiCompatible',
+            model                    : 'configured',
+            symptom                  : 'model-mismatch',
+            emissionPoint            : 'post-invocation-failure',
+            inputBytes               : 10,
+            contextLimitTokens       : 128000,
+            serviceDomain            : 'other',
+            note                     : 'served model differs from requested model'
+        });
+
+        expect(getAggregatedFrictions()).toEqual([
+            expect.objectContaining({symptom: 'model-mismatch', suggestionKind: 'unknown', count: 1})
+        ])
     });
 
     test('deriveSuggestionKind maps symptoms to enum-backed suggestions', () => {
@@ -81,6 +107,7 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
         expect(deriveSuggestionKind('semantic-confusion')).toBe('extract-anchor');
         expect(deriveSuggestionKind('timeout')).toBe('unknown');
         expect(deriveSuggestionKind('reasoning-only-response'), 'no substrate-side action fixes a model channel').toBe('unknown');
+        expect(deriveSuggestionKind('model-mismatch')).toBe('unknown');
         expect(deriveSuggestionKind('unrecognized-symptom')).toBe('unknown');
     });
 
@@ -469,11 +496,10 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
     test('emitConsumerFriction loud-fails on non-positive-finite contextLimitTokens (#12116 AC2)', () => {
         const {emitConsumerFriction, getAggregatedFrictions} = helper;
 
-        // Direct emitter contract: #12116 AC2 requires the same loud-fail discipline ticket-ref-ok: names the AC under test
-        // on emitConsumerFriction itself, not only on the invokeWithGuardrail wrapper.
-        // Pre-fix the emitter happily recorded a friction entry with undefined
-        // contextLimitTokens, silently corrupting the friction-feed downstream
-        // (cross-family reviewer's empirical falsifier on PR #12121 cycle-1). ticket-ref-ok: provenance of the falsifier
+        // Direct emitter contract: the same loud-fail discipline applies to
+        // emitConsumerFriction itself, not only to the invokeWithGuardrail wrapper.
+        // Invalid context limits are rejected before aggregation, so downstream consumers
+        // never receive a corrupted friction row.
         const baseInput = {
             assetRef     : 'session:emit-loud-fail',
             consumer     : 'SemanticGraphExtractor',
@@ -498,8 +524,9 @@ test.describe.serial('Neo.ai.services.memory-core.helpers.ConsumerFrictionHelper
     test('invokeWithGuardrail loud-fails on non-positive-finite contextLimitTokens (#12116 AC1)', async () => {
         const {invokeWithGuardrail, getAggregatedFrictions} = helper;
 
-        // Pre-#12116 the NaN-silent-skip hole let undefined/null/NaN bypass the ticket-ref-ok: the before-state this arm pins
-        // Angle-2 pre-check (Math.floor(undefined * 0.75) === NaN; `n > NaN`
+        // Invalid context limits must fail loudly at the pre-check rather than let
+        // a NaN comparison silently skip the guard. The Angle-2 pre-check
+        // (Math.floor(undefined * 0.75) === NaN; `n > NaN`
         // === false), then the invocation proceeded unguarded and the friction
         // record stored undefined for contextLimitTokens — silently corrupting
         // the friction feed. Loud-fail at entry forbids the silent-skip path

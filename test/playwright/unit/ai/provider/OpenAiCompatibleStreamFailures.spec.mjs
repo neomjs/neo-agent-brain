@@ -3,15 +3,15 @@ import {createServer}                                           from 'node:http'
 import Neo                                                      from 'neo.mjs/src/Neo.mjs';
 import * as core                                                from 'neo.mjs/src/core/_export.mjs';
 import OpenAiCompatible                                         from '../../../../../ai/provider/OpenAiCompatible.mjs';
-import {PROVIDER_STREAM_ERROR_CODE, REASONING_ONLY_RESPONSE_CODE} from '../../../../../ai/provider/createStreamFailureError.mjs';
+import {MODEL_MISMATCH_CODE, PROVIDER_STREAM_ERROR_CODE, REASONING_ONLY_RESPONSE_CODE, hostedModelAliasesAllowed, servedModelMatchesRequested} from '../../../../../ai/provider/createStreamFailureError.mjs';
 
 /**
- * @summary `OpenAiCompatible.stream()` names the two endings that used to arrive as an empty string.
+ * @summary `OpenAiCompatible.stream()` names provider response failures that used to arrive silently.
  *
- * LM Studio answers a JSON schema it cannot compile with an error frame inside a 200 stream, and it
- * serves Qwen3.6 with every token on `delta.reasoning_content`; both left `generate()` resolving to
- * `''` with nothing thrown, so the Tri-Vector extractor filed them as `context-overflow`. The stream
- * now throws a coded error for each, and the controls pin the endings that must stay silent.
+ * LM Studio answers a JSON schema it cannot compile with an error frame inside a 200 stream, serves
+ * Qwen3.6 with every token on `delta.reasoning_content`, and can answer a request with a different
+ * `model`. Each boundary now has a typed failure, while the controls pin the endings that must stay
+ * silent and the hosted/local model-alias policy.
  *
  * Tests drive a real local HTTP server, like the Ollama sibling: the behaviour lives in how frames
  * are consumed, not in the arguments `fetch` receives.
@@ -178,4 +178,92 @@ test('a stream with neither content nor reasoning still ends silently — that e
     } finally {
         server.close()
     }
+});
+
+test('a mismatched served model in an SSE frame throws before content delivery', async () => {
+    const server = await serveFrames([sse({model: 'other', choices: [{delta: {content: 'foreign'}}]})]),
+          frames = [];
+
+    try {
+        const error = await rejectionOf(drain(provider(server).stream('x', {onProviderChunk: frame => frames.push(frame)})));
+
+        expect(error?.code).toBe(MODEL_MISMATCH_CODE);
+        expect(error).toMatchObject({requested: 'probe-model', served: 'other', lane: 'chat'});
+        expect(error?.action).toBeUndefined();
+        expect(error?.operatorDiagnostic).toBeUndefined();
+        expect(error?.message).not.toMatch(/lms unload|lms load|operator action/i);
+        expect(frames).toEqual([])
+    } finally {
+        server.close()
+    }
+});
+
+test('a mismatched served model in a non-SSE body throws before content delivery', async () => {
+    const server = await serve((request, response) => {
+        response.writeHead(200, {'Content-Type': 'application/json'});
+        response.end(JSON.stringify({model: 'other', choices: [{message: {content: 'foreign'}}]}))
+    });
+
+    try {
+        const error = await rejectionOf(drain(provider(server).stream('x')));
+
+        expect(error?.code).toBe(MODEL_MISMATCH_CODE);
+        expect(error).toMatchObject({requested: 'probe-model', served: 'other', lane: 'chat'})
+    } finally {
+        server.close()
+    }
+});
+
+test('a hosted endpoint accepts a dated model alias', async () => {
+    const server       = await serveFrames([sse({model: 'gpt-4o-2024-08-06', choices: [{delta: {content: 'ok'}}]})]),
+          originalFetch = globalThis.fetch,
+          instance      = Neo.create(OpenAiCompatible, {host: 'https://api.openai.com/v1', modelName: 'gpt-4o'});
+
+    globalThis.fetch = (_url, options) => originalFetch(hostOf(server), options);
+
+    try {
+        expect(await drain(instance.stream('x'))).toEqual(['ok'])
+    } finally {
+        globalThis.fetch = originalFetch;
+        server.close()
+    }
+});
+
+test('a local endpoint rejects a dated model id', async () => {
+    const server   = await serveFrames([sse({model: 'probe-model-2024-08-06', choices: [{delta: {content: 'foreign'}}]})]),
+          instance = Neo.create(OpenAiCompatible, {host: hostOf(server), modelName: 'probe-model'});
+
+    try {
+        const error = await rejectionOf(drain(instance.stream('x')));
+
+        expect(error?.code).toBe(MODEL_MISMATCH_CODE);
+        expect(error).toMatchObject({requested: 'probe-model', served: 'probe-model-2024-08-06', lane: 'chat'})
+    } finally {
+        server.close()
+    }
+});
+
+test('date alias tolerance is opt-in for hosted endpoints', () => {
+    expect(hostedModelAliasesAllowed('https://api.openai.com/v1')).toBe(true);
+    expect(hostedModelAliasesAllowed('http://127.0.0.1:1234/v1')).toBe(false);
+    expect(servedModelMatchesRequested('gpt-4o', 'gpt-4o-2024-08-06', {allowDateAlias: true})).toBe(true);
+    expect(servedModelMatchesRequested('configured', 'configured-2024-08-06')).toBe(false)
+});
+
+test('a missing served model is non-verdict and warns once per process', async () => {
+    const originalWarn = console.warn,
+          warnings     = [],
+          server       = await serveFrames([contentFrame('one'), contentFrame('two')]),
+          instance     = Neo.create(OpenAiCompatible, {host: hostOf(server), modelName: 'missing-chat-model'});
+
+    console.warn = (...args) => warnings.push(args.join(' '));
+
+    try {
+        expect(await drain(instance.stream('x'))).toEqual(['one', 'two'])
+    } finally {
+        console.warn = originalWarn;
+        server.close()
+    }
+
+    expect(warnings.filter(message => message.includes('missing-chat-model'))).toHaveLength(1)
 });

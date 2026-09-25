@@ -33,7 +33,7 @@
  * (`Math.ceil(Buffer.byteLength(payload) / 3)`) because the codebase has no canonical
  * provider-specific tokenizer and REM payloads are code/JSON/log dense. Bytes are retained on
  * the record as evidence; tokens are the durable LLM-relevant contract.
- * Future V2 may integrate with Model-Stats registry (ADR 0012) for per-provider tokenization. ticket-ref-ok: load-bearing ADR design-pointer (mirrors the @see below).
+ * Future V2 may integrate with Model-Stats registry for per-provider tokenization.
  *
  * @see learn/agentos/decisions/0012-model-stats-framework.md
  * @see ai/services/graph/GoldenPathSynthesizer.mjs (handoff section consumer)
@@ -41,7 +41,7 @@
  * @see ai/services/memory-core/SessionService.mjs#summarizeSession (canonical emitter — Memory Core)
  */
 
-import {REASONING_ONLY_RESPONSE_CODE, isProviderStreamFailureCode} from '../../../provider/createStreamFailureError.mjs';
+import {MODEL_MISMATCH_CODE, REASONING_ONLY_RESPONSE_CODE, isProviderStreamFailureCode} from '../../../provider/createStreamFailureError.mjs';
 import {PROVIDER_TIMEOUT_CODE}                                     from '../../../provider/createTimeoutError.mjs';
 
 /**
@@ -49,7 +49,7 @@ import {PROVIDER_TIMEOUT_CODE}                                     from '../../.
  * @property {String} assetRef Graph node ID of the substrate causing friction (sessionId, documentId, etc.) — first member of aggregation tuple.
  * @property {String} consumer Service name (e.g. 'SemanticGraphExtractor', 'SessionService.summarizeSession') — second member of aggregation tuple.
  * @property {String} model Consumer model identifier (e.g. 'google/gemma-4-26b-a4b', 'qwen3-8b').
- * @property {'context-overflow' | 'parse-failure' | 'token-budget-exceeded' | 'semantic-confusion' | 'timeout' | 'size-precheck-skip' | 'reasoning-only-response'} symptom Friction symptom enum — third member of aggregation tuple.
+ * @property {'context-overflow' | 'parse-failure' | 'token-budget-exceeded' | 'semantic-confusion' | 'timeout' | 'size-precheck-skip' | 'reasoning-only-response' | 'model-mismatch'} symptom Friction symptom enum — third member of aggregation tuple.
  * @property {'pre-invocation' | 'post-invocation-failure'} emissionPoint When the friction was detected.
  * @property {'split-document' | 'compress-payload' | 'extract-anchor' | 'reduce-review-cycle' | 'schema-repair' | 'unknown'} suggestionKind Enum-backed structured suggestion for substrate-evolution action.
  * @property {Number} inputBytes Raw byte size of the payload that triggered the friction — evidence.
@@ -63,7 +63,7 @@ import {PROVIDER_TIMEOUT_CODE}                                     from '../../.
  * @property {String} [note] Optional bounded prose (e.g. truncation diagnostics, raw error tail).
  */
 
-const DETERMINISTIC_SYMPTOMS = new Set(['size-precheck-skip', 'context-overflow', 'reasoning-only-response']);
+const DETERMINISTIC_SYMPTOMS = new Set(['size-precheck-skip', 'context-overflow', 'reasoning-only-response', 'model-mismatch']);
 
 const VALID_SYMPTOMS = new Set([
     'context-overflow',
@@ -72,7 +72,8 @@ const VALID_SYMPTOMS = new Set([
     'semantic-confusion',
     'timeout',
     'size-precheck-skip',
-    'reasoning-only-response'
+    'reasoning-only-response',
+    'model-mismatch'
 ]);
 
 const VALID_SUGGESTION_KINDS = new Set([
@@ -154,13 +155,14 @@ export function bytesToTokens(bytes) {
  * message regex remains a fallback for non-coded error paths.
  *
  * @param {*} err The caught error (or thrown value).
- * @returns {'context-overflow' | 'parse-failure' | 'timeout' | 'reasoning-only-response'} The categorized symptom.
+ * @returns {'context-overflow' | 'parse-failure' | 'timeout' | 'reasoning-only-response' | 'model-mismatch'} The categorized symptom.
  */
 export function categorizeInvocationError(err) {
     const msg = String(err?.message || err || '');
 
     if (err?.code === PROVIDER_TIMEOUT_CODE)                    return 'timeout';
     if (err?.code === REASONING_ONLY_RESPONSE_CODE)             return 'reasoning-only-response';
+    if (err?.code === MODEL_MISMATCH_CODE)                      return 'model-mismatch';
     if (/context|overflow|too large|maximum|exceed/i.test(msg)) return 'context-overflow';
     if (/timeout|aborted|timed[ -]out/i.test(msg))              return 'timeout';
     return 'parse-failure';
