@@ -854,10 +854,17 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
 
         await ConceptIngestor.syncConceptsToGraph();
 
-        const fileNode = GraphService.db.nodes.get('file-src/Neo.mjs');
+        const
+            fileNode      = GraphService.db.nodes.get('file-src/Neo.mjs'),
+            engineVersion = createRequire(import.meta.url)('neo.mjs/package.json').version;
+
         expect(fileNode).toBeDefined();
         expect(fileNode.label).toBe('FILE');
         expect(GraphService.db.nodes.get('file:src/Neo.mjs')).toBeNull();
+        // an Engine path resolves in the Engine package at its pinned version, recorded on the stub and the edge
+        expect(fileNode.properties).toMatchObject({root: 'neo.mjs', rootVersion: engineVersion});
+        expect(getOwnedEdges('a').find(edge => edge.target === 'file-src/Neo.mjs').properties)
+            .toMatchObject({targetRoot: 'neo.mjs', targetRootVersion: engineVersion});
 
         const extNode = GraphService.db.nodes.get('ext:react-hooks');
         expect(extNode).toBeDefined();

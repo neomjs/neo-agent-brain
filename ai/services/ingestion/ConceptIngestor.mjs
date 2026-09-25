@@ -194,6 +194,7 @@ class ConceptIngestor extends Base {
             }
 
             let target     = edge.target,
+                rootFields = null,
                 targetSpec = null;
 
             if (typeof target !== 'string' || target.length === 0) {
@@ -214,14 +215,18 @@ class ConceptIngestor extends Base {
                     continue;
                 }
 
-                target = resolution.nodeId;
+                // The root the file resolved in (and its pinned version) is data on the edge and the stub.
+                rootFields = {targetRoot: resolution.root, ...(resolution.rootVersion ? {targetRootVersion: resolution.rootVersion} : {})};
+                target     = resolution.nodeId;
                 targetSpec = {
                     id        : target,
                     name      : resolution.relativePath,
                     type      : 'FILE',
                     properties: {
                         isConceptEdgeStub: true,
-                        path             : resolution.relativePath
+                        path             : resolution.relativePath,
+                        root             : resolution.root,
+                        ...(resolution.rootVersion ? {rootVersion: resolution.rootVersion} : {})
                     }
                 }
             } else if (target.startsWith('ext:')) {
@@ -266,6 +271,7 @@ class ConceptIngestor extends Base {
             edges.push({
                 note  : edge.note,
                 source: conceptId,
+                rootFields,
                 target,
                 targetSpec,
                 tupleKey,
@@ -315,10 +321,14 @@ class ConceptIngestor extends Base {
         };
 
         delete properties.note;
+        delete properties.targetRoot;
+        delete properties.targetRootVersion;
 
         if (edge.note) {
             properties.note = edge.note
         }
+
+        Object.assign(properties, edge.rootFields);
 
         return properties
     }

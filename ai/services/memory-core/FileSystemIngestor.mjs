@@ -7,11 +7,20 @@ import crypto          from 'crypto';
 import GraphService    from './GraphService.mjs';
 import logger          from '../../mcp/server/memory-core/logger.mjs';
 
-const __filename    = fileURLToPath(import.meta.url);
-const __dirname     = path.dirname(__filename);
-const neoRootDir    = path.resolve(__dirname, '../../../');
-// The Engine package this checkout depends on: with the Brain, it holds the tree the neo repository held before the split.
-const engineRootDir = path.dirname(createRequire(import.meta.url).resolve('neo.mjs/package.json'));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+const neoRootDir = path.resolve(__dirname, '../../../');
+const require    = createRequire(import.meta.url);
+
+/**
+ * The named roots a reference authored against the pre-split neo repository resolves in, in order:
+ * this checkout, then the Engine package at the version this checkout pins. A reference to a file a
+ * newer Engine added reads `MISSING_FILE` at that version. A third root joins only by ticket.
+ */
+const SPLIT_TREE_ROOTS = Object.freeze([
+    Object.freeze({name: 'neo-agent-brain', dir: neoRootDir}),
+    Object.freeze({name: 'neo.mjs', dir: path.dirname(require.resolve('neo.mjs/package.json')), version: require('neo.mjs/package.json').version})
+]);
 
 /**
  * @summary Ingests the physical Neo project structure into Native Graph nodes.
@@ -68,30 +77,37 @@ class FileSystemIngestor extends Base {
 
     /**
      * @summary Resolves a reference authored against the neo repository as it was before the Brain
-     * split: in this checkout first, then in the Engine package.
+     * split, in the `SPLIT_TREE_ROOTS` order.
      *
-     * The split moved whole directories, so a path exists in exactly one of the two. A path both hold
-     * is reported `AMBIGUOUS_FILE` instead of being resolved by precedence, and a path neither holds
-     * keeps the first root's finding.
+     * The split moved whole directories, so a path exists in exactly one root. A path two roots hold is
+     * reported `AMBIGUOUS_FILE` instead of being resolved by precedence, and a path no root holds keeps
+     * the first root's finding. A resolved reference names its root (and the root's version, where one
+     * is pinned) as data; its identity stays `file-<relativePath>`.
      * @param {String}   relativePath Repository-relative file path.
-     * @param {String[]} [roots] The roots to try, in order; injectable for focused tests.
-     * @returns {Object} The {@link #resolveFileReference} shape.
+     * @param {Object[]} [roots=SPLIT_TREE_ROOTS] `{name, dir, version}` rows, in order; injectable for focused tests.
+     * @returns {Object} The {@link #resolveFileReference} shape, plus `root` and `rootVersion` when valid.
      */
-    resolveSplitTreeReference(relativePath, roots=[neoRootDir, engineRootDir]) {
+    resolveSplitTreeReference(relativePath, roots=SPLIT_TREE_ROOTS) {
         const
-            resolutions = roots.map(root => this.resolveFileReference(relativePath, root)),
-            resolved    = resolutions.filter(resolution => resolution.valid);
+            resolutions = roots.map(root => ({root, resolution: this.resolveFileReference(relativePath, root.dir)})),
+            resolved    = resolutions.filter(({resolution}) => resolution.valid);
 
         if (resolved.length > 1) {
             return {
                 valid       : false,
                 code        : 'AMBIGUOUS_FILE',
-                reason      : `File reference exists in more than one repository root: ${resolved[0].relativePath}`,
-                relativePath: resolved[0].relativePath
+                reason      : `File reference exists in more than one repository root (${resolved.map(({root}) => root.name).join(', ')}): ${resolved[0].resolution.relativePath}`,
+                relativePath: resolved[0].resolution.relativePath
             }
         }
 
-        return resolved[0] || resolutions[0]
+        if (resolved.length === 0) {
+            return resolutions[0].resolution
+        }
+
+        const {root, resolution} = resolved[0];
+
+        return {...resolution, root: root.name, ...(root.version ? {rootVersion: root.version} : {})}
     }
 
     /**

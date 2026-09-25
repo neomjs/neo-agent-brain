@@ -20,6 +20,9 @@ import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
 import fs              from 'fs-extra';
 import path            from 'path';
 import os              from 'os';
+import {createRequire} from 'module';
+
+const require = createRequire(import.meta.url);
 
 test.describe('Neo.ai.services.memory-core.FileSystemIngestor', () => {
     let GraphService;
@@ -165,7 +168,7 @@ test.describe('Neo.ai.services.memory-core.FileSystemIngestor', () => {
         const
             brainRoot  = fs.mkdtempSync(path.join(os.tmpdir(), 'split-tree-brain-')),
             engineRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'split-tree-engine-')),
-            roots      = [brainRoot, engineRoot];
+            roots      = [{name: 'brain', dir: brainRoot}, {name: 'engine', dir: engineRoot, version: '9.9.9'}];
 
         try {
             fs.outputFileSync(path.join(brainRoot, 'ai', 'Brain.mjs'), '');
@@ -173,12 +176,15 @@ test.describe('Neo.ai.services.memory-core.FileSystemIngestor', () => {
             fs.outputFileSync(path.join(brainRoot, 'README.md'), '');
             fs.outputFileSync(path.join(engineRoot, 'README.md'), '');
 
-            expect(FileSystemIngestor.resolveSplitTreeReference('ai/Brain.mjs', roots)).toMatchObject({valid: true, nodeId: 'file-ai/Brain.mjs'});
-            expect(FileSystemIngestor.resolveSplitTreeReference('src/Engine.mjs', roots)).toMatchObject({valid: true, nodeId: 'file-src/Engine.mjs'});
+            const brainOnly = FileSystemIngestor.resolveSplitTreeReference('ai/Brain.mjs', roots);
+
+            expect(brainOnly).toMatchObject({valid: true, nodeId: 'file-ai/Brain.mjs', root: 'brain'});
+            expect(brainOnly, 'an unversioned root records no version').not.toHaveProperty('rootVersion');
+            expect(FileSystemIngestor.resolveSplitTreeReference('src/Engine.mjs', roots)).toMatchObject({valid: true, nodeId: 'file-src/Engine.mjs', root: 'engine', rootVersion: '9.9.9'});
             expect(FileSystemIngestor.resolveSplitTreeReference('README.md', roots)).toMatchObject({valid: false, code: 'AMBIGUOUS_FILE'});
             expect(FileSystemIngestor.resolveSplitTreeReference('src/Gone.mjs', roots)).toMatchObject({valid: false, code: 'MISSING_FILE'});
-            // the default roots are this checkout and the installed Engine package
-            expect(FileSystemIngestor.resolveSplitTreeReference('src/Neo.mjs')).toMatchObject({valid: true, nodeId: 'file-src/Neo.mjs'})
+            // the default roots are this checkout, then the installed Engine package at its pinned version
+            expect(FileSystemIngestor.resolveSplitTreeReference('src/Neo.mjs')).toMatchObject({valid: true, nodeId: 'file-src/Neo.mjs', root: 'neo.mjs', rootVersion: require('neo.mjs/package.json').version})
         } finally {
             fs.removeSync(brainRoot);
             fs.removeSync(engineRoot)
