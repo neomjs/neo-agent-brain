@@ -623,7 +623,11 @@ test.describe.serial('TextEmbeddingService #11393/#11402/#12487/#12509 — openA
             const error = await TextEmbeddingService.embedText('hello', 'openAiCompatible').then(() => null, err => err);
 
             expect(error?.code).toBe(MODEL_MISMATCH_CODE);
-            expect(error?.action).toBe('replacement-required')
+            expect(error?.action).toBe('replacement-required');
+            expect(error?.operatorDiagnostic).toEqual({
+                code   : 'LMS_REPLACEMENT_REQUIRED',
+                summary: "LM Studio served model 'other' for requested model 'configured'; unload the served model and load the requested model before retrying"
+            })
         } finally {
             Neo.config.unitTestMode          = originalUnitTestMode;
             aiConfig.orchestrator.lms.enabled = originalLmsEnabled

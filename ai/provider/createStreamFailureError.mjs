@@ -130,7 +130,7 @@ function createModelMismatchError({
         error.action = 'replacement-required';
         error.operatorDiagnostic = {
             code   : 'LMS_REPLACEMENT_REQUIRED',
-            summary: `LM Studio loaded-model replacement requires an explicit operator action: ${served}`
+            summary: `LM Studio served model '${served}' for requested model '${requested}'; unload the served model and load the requested model before retrying`.slice(0, 1600)
         };
     }
 
