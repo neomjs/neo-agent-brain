@@ -1,5 +1,13 @@
 import {expect, test}                                      from '@playwright/test';
 import {createHash}                                        from 'node:crypto';
+import {execFile}                                         from 'node:child_process';
+import {mkdtempSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
+import {tmpdir}                                           from 'node:os';
+import {join}                                              from 'node:path';
+import {promisify}                                         from 'node:util';
+
+const execFileAsync = promisify(execFile);
+const PLANT_SOURCE  = '../../../../../../ai/services/fleet/opencodeWakeEnvelopePlugin.mjs';
 import {OPENCODE_SEAT_SERVERS, generateOpenCodeSeatConfig} from '../../../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
 
 // Pure function — imported directly (no fs / spawn / env / Neo runtime), so the suite has no
@@ -246,5 +254,92 @@ test.describe('generateOpenCodeSeatConfig (OpenCode seat scaffold emission)', ()
             'neo-mjs-memory-core', 'neo-mjs-github-workflow', 'neo-mjs-knowledge-base', 'neo-mjs-neural-link'
         ]);
         OPENCODE_SEAT_SERVERS.forEach(server => expect(server.script.startsWith('ai/mcp/server/')).toBe(true));
+    });
+});
+
+test.describe('the generated wake hook installs the wake-envelope plant', () => {
+    const
+        plantSource = readFileSync(new URL(PLANT_SOURCE, import.meta.url)),
+        seatHome    = () => mkdtempSync(join(tmpdir(), 'seat-home-'));
+
+    /**
+     * @summary Run the generated hook the way a seat's launcher does, and return what it reported.
+     * @param {String} home
+     * @param {Object} [env]
+     * @returns {Promise<Object>}
+     */
+    async function runHook(home, env = {}) {
+        const {files} = generateOpenCodeSeatConfig({...PARAMS, wakeHookPath: join(home, 'write-wake-envelope.mjs')});
+        const hook    = join(home, 'write-wake-envelope.mjs');
+
+        writeFileSync(hook, files.find(file => file.path === hook).content);
+
+        const {stdout, stderr} = await execFileAsync(process.execPath, [
+            hook, '--data-home', home, '--port', '4096', '--session-id', 'ses_test', '--project-id', 'p1', '--directory', home
+        ], {
+            env: {
+                ...process.env,
+                NEO_AGENT_IDENTITY      : 'neo-preview',
+                OPENCODE_SERVER_USERNAME: 'u',
+                OPENCODE_SERVER_PASSWORD: 'p',
+                XDG_CONFIG_HOME         : join(home, 'config'),
+                ...env
+            }
+        });
+
+        return {stdout, stderr}
+    }
+
+    test('a freshly provisioned seat carries the plant, byte-equivalent to its source', async () => {
+        // The real-output discipline: assert on what the hook WRITES, not on the string it emits. A
+        // hook can contain every correct instruction and still install nothing.
+        const home   = seatHome(),
+              result = await runHook(home),
+              planted = join(home, 'config', 'opencode', 'plugins', 'neo-wake-envelope.mjs');
+
+        expect(result.stdout, 'the hook says it installed the plant').toContain('plant installed at');
+        expect(readFileSync(planted).equals(plantSource), 'and the installed bytes are the source bytes').toBe(true)
+    });
+
+    test('a second run is idempotent, and a hand-edited install is reported rather than clobbered', async () => {
+        const home    = seatHome(),
+              planted = join(home, 'config', 'opencode', 'plugins', 'neo-wake-envelope.mjs');
+
+        await runHook(home);
+        expect((await runHook(home)).stdout, 'an unchanged install is reported as current').toContain('already current');
+
+        writeFileSync(planted, Buffer.concat([readFileSync(planted), Buffer.from('HAND EDIT\n')]));
+        const edited = readFileSync(planted),
+              result  = await runHook(home);
+
+        expect(result.stdout + result.stderr, 'drift is reported').toContain('DIFFERS from the generator');
+        expect(result.stdout + result.stderr, 'and says it was left alone').toContain('left untouched');
+        expect(readFileSync(planted).equals(edited), 'the hand edit survives — a generator that clobbered a file it did not place would be worse than the drift').toBe(true)
+    });
+
+    test('a second wake-envelope plant in the same directory is reported as ambiguous', async () => {
+        // Observed on a live seat: a hand-installed `.mjs` beside an older `.js`. OpenCode loads every
+        // plugin it finds and nothing records which won, so the hook names the others rather than
+        // deciding — which file is authoritative is not its call.
+        const home   = seatHome(),
+              dir    = join(home, 'config', 'opencode', 'plugins'),
+              result = await runHook(home);
+
+        writeFileSync(join(dir, 'neo-wake-envelope.js'), '// older plant\n');
+        const second = await runHook(home);
+
+        expect(second.stdout + second.stderr, 'the sibling is named').toContain('OTHER wake-envelope plants present');
+        expect(second.stdout + second.stderr).toContain('neo-wake-envelope.js');
+        expect(readdirSync(dir).length, 'and it is reported, not removed').toBe(2)
+    });
+
+    test('an unset XDG_CONFIG_HOME warns loudly instead of skipping quietly', async () => {
+        // The shared-root hazard: without a per-seat config home the path resolves outside the seat, and
+        // a silent skip would be indistinguishable from a healthy install.
+        const home   = seatHome(),
+              result = await runHook(home, {XDG_CONFIG_HOME: ''});
+
+        expect(result.stdout + result.stderr, 'the missing seat boundary is named').toContain('XDG_CONFIG_HOME is unset');
+        expect(result.stdout + result.stderr, 'and the plant is reported as not installed').toContain('was NOT installed')
     });
 });
