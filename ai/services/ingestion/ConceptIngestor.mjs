@@ -166,8 +166,9 @@ class ConceptIngestor extends Base {
     /**
      * Normalizes author-facing JSONL edges into runtime graph identities. File
      * references are admitted only through FileSystemIngestor's existence and
-     * projectability boundary. Duplicate normalized tuples are explicit integrity
-     * findings rather than last-write-wins ambiguity.
+     * projectability boundary, against the pre-split tree the ontology was written
+     * for: this checkout, then the Engine package. Duplicate normalized tuples are
+     * explicit integrity findings rather than last-write-wins ambiguity.
      * @param {String} conceptId
      * @param {Object[]} outboundEdges
      * @returns {{edges: Object[], findings: Object[]}}
@@ -193,6 +194,7 @@ class ConceptIngestor extends Base {
             }
 
             let target     = edge.target,
+                rootFields = null,
                 targetSpec = null;
 
             if (typeof target !== 'string' || target.length === 0) {
@@ -206,21 +208,25 @@ class ConceptIngestor extends Base {
             }
 
             if (target.startsWith('file:')) {
-                const resolution = FileSystemIngestor.resolveFileReference(target.slice(5));
+                const resolution = FileSystemIngestor.resolveSplitTreeReference(target.slice(5));
 
                 if (!resolution.valid) {
                     findings.push(this.createIntegrityFinding(conceptId, edge, resolution.code, resolution.reason));
                     continue;
                 }
 
-                target = resolution.nodeId;
+                // The root the file resolved in (and its pinned version) is data on the edge and the stub.
+                rootFields = {targetRoot: resolution.root, ...(resolution.rootVersion ? {targetRootVersion: resolution.rootVersion} : {})};
+                target     = resolution.nodeId;
                 targetSpec = {
                     id        : target,
                     name      : resolution.relativePath,
                     type      : 'FILE',
                     properties: {
                         isConceptEdgeStub: true,
-                        path             : resolution.relativePath
+                        path             : resolution.relativePath,
+                        root             : resolution.root,
+                        ...(resolution.rootVersion ? {rootVersion: resolution.rootVersion} : {})
                     }
                 }
             } else if (target.startsWith('ext:')) {
@@ -265,6 +271,7 @@ class ConceptIngestor extends Base {
             edges.push({
                 note  : edge.note,
                 source: conceptId,
+                rootFields,
                 target,
                 targetSpec,
                 tupleKey,
@@ -314,10 +321,14 @@ class ConceptIngestor extends Base {
         };
 
         delete properties.note;
+        delete properties.targetRoot;
+        delete properties.targetRootVersion;
 
         if (edge.note) {
             properties.note = edge.note
         }
+
+        Object.assign(properties, edge.rootFields);
 
         return properties
     }
@@ -408,7 +419,7 @@ class ConceptIngestor extends Base {
             // against its canonical FileSystemIngestor identity so the edge can move
             // in place without losing its id or decayed weight.
             if (adoptLegacy && typeof tupleTarget === 'string' && tupleTarget.startsWith('file:')) {
-                const resolution = FileSystemIngestor.resolveFileReference(tupleTarget.slice(5));
+                const resolution = FileSystemIngestor.resolveSplitTreeReference(tupleTarget.slice(5));
 
                 if (resolution.valid) tupleTarget = resolution.nodeId
             }

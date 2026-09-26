@@ -19,6 +19,7 @@ import * as core                               from 'neo.mjs/src/core/_export.mj
 import fs                                      from 'fs';
 import path                                    from 'path';
 import os                                      from 'os';
+import {createRequire}                         from 'module';
 import {snapshotAiConfig, TestLifecycleHelper} from '../../services/memory-core/util.mjs';
 
 test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
@@ -853,10 +854,17 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
 
         await ConceptIngestor.syncConceptsToGraph();
 
-        const fileNode = GraphService.db.nodes.get('file-src/Neo.mjs');
+        const
+            fileNode      = GraphService.db.nodes.get('file-src/Neo.mjs'),
+            engineVersion = createRequire(import.meta.url)('neo.mjs/package.json').version;
+
         expect(fileNode).toBeDefined();
         expect(fileNode.label).toBe('FILE');
         expect(GraphService.db.nodes.get('file:src/Neo.mjs')).toBeNull();
+        // an Engine path resolves in the Engine package at its pinned version, recorded on the stub and the edge
+        expect(fileNode.properties).toMatchObject({root: 'neo.mjs', rootVersion: engineVersion});
+        expect(getOwnedEdges('a').find(edge => edge.target === 'file-src/Neo.mjs').properties)
+            .toMatchObject({targetRoot: 'neo.mjs', targetRootVersion: engineVersion});
 
         const extNode = GraphService.db.nodes.get('ext:react-hooks');
         expect(extNode).toBeDefined();
@@ -911,8 +919,17 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         expect(second.edgesReplaced).toBe(0);
     });
 
-    test('should project the complete repository fixture with all 182 source-owned relationships', async () => {
-        ConceptService.defaultConceptsDir = path.resolve(process.cwd(), '.neo-ai-data/concepts');
+    test('should project every resolvable relationship of the complete repository fixture', async () => {
+        // The repository ontology stayed in the Engine at the split; the Brain reads it through its Engine dependency.
+        ConceptService.defaultConceptsDir = path.join(path.dirname(createRequire(import.meta.url).resolve('neo.mjs/package.json')), '.neo-ai-data/concepts');
+
+        // One declared row names a file that no longer exists in either root: the REM digestion
+        // it points at moved to `src/evolution/RemDigestion.mjs`. Every other file reference
+        // resolves in this checkout or in the Engine package.
+        const
+            declared = 182,
+            stale    = ['MISSING_FILE file:ai/daemons/orchestrator/services/DreamService.mjs'],
+            live     = declared - stale.length;
 
         const first      = await ConceptIngestor.syncConceptsToGraph();
         const firstEdges = GraphService.db.edges.items
@@ -923,9 +940,9 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
         ]));
 
         expect(first.conceptsProcessed).toBe(65);
-        expect(first.integrityFindings).toHaveLength(0);
+        expect(first.integrityFindings.map(finding => `${finding.code} ${finding.target}`)).toEqual(stale);
         expect(first.errors).toHaveLength(0);
-        expect(firstEdges).toHaveLength(182);
+        expect(firstEdges).toHaveLength(live);
         expect(firstEdges.filter(edge => edge.type === 'REQUIRES')).toHaveLength(14);
         expect(GraphService.db.nodes.items.some(node => node.id.startsWith('file:'))).toBe(false);
 
@@ -935,8 +952,8 @@ test.describe('Neo.ai.daemons.services.ConceptIngestor', () => {
 
         expect(second.conceptsSkipped).toBe(65);
         expect(second.edgesReplaced).toBe(0);
-        expect(second.edgesUnchanged).toBe(182);
-        expect(secondEdges).toHaveLength(182);
+        expect(second.edgesUnchanged).toBe(live);
+        expect(secondEdges).toHaveLength(live);
 
         secondEdges.forEach(edge => {
             expect({id: edge.id, weight: edge.properties.weight}).toEqual(firstState.get(`${edge.source}|${edge.target}|${edge.type}`))

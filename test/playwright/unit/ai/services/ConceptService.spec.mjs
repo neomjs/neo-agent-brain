@@ -13,15 +13,17 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
-import ConceptService from '../../../../../ai/services/ConceptService.mjs';
-import fs             from 'fs';
-import path           from 'path';
-import os             from 'os';
+import {test, expect}  from '@playwright/test';
+import Neo             from 'neo.mjs/src/Neo.mjs';
+import * as core       from 'neo.mjs/src/core/_export.mjs';
+import ConceptService  from '../../../../../ai/services/ConceptService.mjs';
+import fs              from 'fs';
+import path            from 'path';
+import os              from 'os';
+import {createRequire} from 'module';
 
-const productionConceptsDir = path.resolve(process.cwd(), '.neo-ai-data/concepts');
+// The production ontology stayed in the Engine at the split; the Brain reads it through its Engine dependency.
+const productionConceptsDir = path.join(path.dirname(createRequire(import.meta.url).resolve('neo.mjs/package.json')), '.neo-ai-data/concepts');
 
 /**
  * Creates a temporary concepts directory with test JSONL files.
