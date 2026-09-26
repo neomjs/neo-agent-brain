@@ -1,10 +1,11 @@
 import {test, expect}                                                                                      from '@playwright/test';
 import {spawnSync}                                                                                         from 'node:child_process';
-import {existsSync, mkdirSync, rmSync, writeFileSync}                                                      from 'node:fs';
+import {existsSync, mkdirSync, readFileSync, rmSync, writeFileSync}                                             from 'node:fs';
 import path                                                                                                from 'node:path';
 import process                                                                                             from 'node:process';
 import {fileURLToPath}                                                                                     from 'node:url';
-import {findDbPathMutations, findCloneCaptures, scanFileContent, ADR_0019_RULES, ALLOWLIST, ESCAPE_MARKER} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {findDbPathMutations, findSharedConfigMutations, findCloneCaptures, scanFileContent, ADR_0019_RULES, ALLOWLIST, ESCAPE_MARKER} from '../../../../../../ai/scripts/lint/check-aiconfig-test-mutation.mjs';
+import {createAdr0019GuardRegistry, validateAdr0019GuardOwnership}                                                  from '../../../../../../ai/scripts/lint/lint-config-template-ssot.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..');
 
@@ -16,9 +17,117 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
  * inline escape marker.
  */
 test.describe('check-aiconfig-test-mutation guard', () => {
-    test('B4 lives on the executable mutation rule object', () => {
-        expect(ADR_0019_RULES.map(rule => rule.id)).toEqual(['B4']);
-        expect(ADR_0019_RULES[0].detect).toBe(findDbPathMutations)
+    test('B4 is TWO rules sharing ONE catalog id, and only the DB-path subset gates', () => {
+        // A rule labelled `B4` that detects DB paths only made "is B4 enforced?" — asked against
+        // the catalog's own table — return a false assurance, which is worse than an absent guard.
+        // The full-scope rule therefore exists, is tested, and is honestly marked not-yet-gating.
+        //
+        // The halves do NOT get suffixed ids. `id` is the CATALOG KEY: the two-way ownership check
+        // parses catalog id cells with `/\b([A-C]\d+)\b/`, so `B4-DB-PATH` parses as `B4` and a
+        // second suffixed rule collides into `duplicate-row`. One antipattern, one row, one id —
+        // the half is carried by `scope` and by `gating`, which is what the scanner branches on anyway.
+        expect(ADR_0019_RULES.map(rule => rule.id)).toEqual(['B4', 'B4']);
+        expect(ADR_0019_RULES.map(rule => rule.scope), 'the half stays nameable without breaking the catalog grammar').toEqual(['db-path-subset', 'full']);
+        expect(ADR_0019_RULES[0].detect).toBe(findDbPathMutations);
+        expect(ADR_0019_RULES[0].gating).toBe(true);
+        expect(ADR_0019_RULES[1].detect).toBe(findSharedConfigMutations);
+        expect(ADR_0019_RULES[1].gating, 'promoting this to gating is a deliberate later step, not a default').toBe(false)
+    });
+
+    test('these ids resolve against the antipattern catalog in both directions', () => {
+        // The red-first arm for the CI red this PR shipped with: a suffixed rule id is executable
+        // and self-consistent, and still fails the catalog's ownership check — `unverifiable-tag`
+        // on the ADR row, then `guard-id-missing-from-adr` per half. Asserting the two-way relation
+        // here costs milliseconds; the same drift cost a 44s lint job in CI, twice.
+        const adrSource = readFileSync(path.resolve(repoRoot, 'learn/agentos/decisions/0019-aiconfig-reactive-provider-ssot.md'), 'utf8'),
+              {violations} = validateAdr0019GuardOwnership({adrSource});
+
+        expect(violations, JSON.stringify(violations, null, 2)).toEqual([]);
+
+        // Non-vacuity: the check must still be able to fail, or the arm above proves nothing. The
+        // real registry with ONLY this guard's ids suffixed is the exact regression this PR shipped,
+        // and it must red in both directions.
+        const suffixedRegistry = new Map([...createAdr0019GuardRegistry()].map(([guard, ids]) => [
+            guard, guard === 'check-aiconfig-test-mutation' ? new Set(['B4-DB-PATH', 'B4-SHARED-CONFIG']) : ids
+        ])),
+              {violations: suffixed} = validateAdr0019GuardOwnership({adrSource, guardRegistry: suffixedRegistry});
+
+        expect(suffixed.map(violation => violation.kind).sort(), 'a suffixed catalog id is unexpressible, and the check says so').toEqual([
+            'guard-id-missing-from-adr',
+            'guard-id-missing-from-adr',
+            'overstates-enforcement'
+        ])
+    });
+
+    test('the full-scope rule catches a shared-config write the DB-path rule cannot see', () => {
+        // The defect this rule exists to name, pinned as a red-first arm: a write to a NON-DB leaf is
+        // invisible to the gating rule and visible to the report-only one. If this ever stops holding,
+        // the two rules have converged or the general detector has regressed.
+        const write = "aiConfig.openAiCompatible.host = `http://127.0.0.1:${port}`;";
+
+        expect(findDbPathMutations(write), 'the gating subset genuinely cannot see this leaf').toEqual([]);
+        expect(findSharedConfigMutations(write).map(hit => hit.line)).toEqual([1]);
+        expect(findSharedConfigMutations(write)[0].leaf, 'the leaf is reported so a baseline can be reasoned about').toBeTruthy()
+    });
+
+    test('an Object.assign through a config root is a write, and says which form it is', () => {
+        // Red-first for the review finding that named this rule's own thesis against it: a scope
+        // labelled `full` that cannot see `Object.assign(<config root>, …)` repeats the original
+        // defect at a smaller size, because every key of that call is still a `[[Set]]` on the proxy
+        // and still routes to the provider's `setData`. The form is on the hit because one call can
+        // write many leaves — a per-hit count is a lower bound on leaves touched, never a census.
+        const assign = "Object.assign(AiConfig.orchestrator.intervals, savedIntervals);";
+
+        expect(findDbPathMutations(assign), 'the DB-path subset does not see this either').toEqual([]);
+
+        const [hit] = findSharedConfigMutations(assign);
+
+        expect(hit.line, 'the assign call is a write').toBe(1);
+        expect(hit.form).toBe('assign-call');
+        expect(hit.leaf, 'the leaf is the CONFIG path, not the callee').toBe('AiConfig.orchestrator.intervals');
+        expect(findSharedConfigMutations("aiConfig.openAiCompatible.host = 'x';").at(0).form, 'the plain form stays distinguishable').toBe('assignment')
+    });
+
+    test('a config value merely PASSED to a call is a read, not an assign-write', () => {
+        // The false positive this arm's own first implementation produced: a bare `,<object literal>`
+        // alternative on the assignment pattern also matches `foo(KB_Config.data, {a: 1})`, which
+        // inflates the census with reads. Anchoring on the callee is the only thing that separates
+        // them, and the count is only a receipt while that stays true.
+        expect(findSharedConfigMutations('foo(AiConfig.orchestrator.intervals, {a: 1});')).toEqual([]);
+        expect(findSharedConfigMutations('await setTimeout(50, AiConfig.batchSize, 1);')).toEqual([])
+    });
+
+    test('a comment or a string mentioning Object.assign is not a write', () => {
+        // The same discrimination every other arm makes: the point of naming a second form is not to
+        // make the detector trigger-happy about the word.
+        expect(findSharedConfigMutations('// Object.assign(KB_Config.data, {batchSize: 1})')).toEqual([]);
+        expect(findSharedConfigMutations('const s = "Object.assign(KB_Config.data, {})";')).toEqual([])
+    });
+
+    test('the full-scope rule ignores comments, comparisons, arrows and capture-reads', () => {
+        // Same discrimination the DB-path rule makes, and the reason a report-only count of 598 is
+        // trustworthy rather than inflated. A probe that cannot tell code from prose would report
+        // every doc comment in the suite as a violation.
+        expect(findSharedConfigMutations('// aiConfig.openAiCompatible.host = 1')).toEqual([]);
+        expect(findSharedConfigMutations("const s = 'aiConfig.openAiCompatible.host = 1';")).toEqual([]);
+        expect(findSharedConfigMutations('if (aiConfig.orchestrator.deploymentMode === "x") {}')).toEqual([]);
+        expect(findSharedConfigMutations('const run = () => aiConfig.vectorDimension;')).toEqual([]);
+        expect(findSharedConfigMutations('const original = aiConfig.ollama.host;')).toEqual([])
+    });
+
+    test('the full-scope rule honors the escape marker, and the allowlist does NOT suppress it', () => {
+        // The allowlist's entries justify a DB-PATH mutation specifically. Letting one suppress the
+        // full-scope rule would make a narrow, stated exemption a blanket bypass — the failure this
+        // file's own header warns about. So an allowlisted file still reports its shared-config writes.
+        const allowlisted = [...ALLOWLIST][0];
+
+        expect(allowlisted, 'the allowlist is non-empty, so this is a real assertion').toBeTruthy();
+        expect(scanFileContent(allowlisted, 'aiConfig.data.logPath = tmp;').dbPathHits,
+            'the allowlist still suppresses the gating DB-path rule it was written for').toEqual([]);
+        expect(scanFileContent(allowlisted, 'aiConfig.openAiCompatible.host = 1;').sharedConfigHits.length,
+            'and does NOT extend that reasoning to an unrelated leaf').toBe(1);
+        expect(findSharedConfigMutations(`aiConfig.openAiCompatible.host = 1; // ${ESCAPE_MARKER}: justified`).length,
+            'the escape marker is the sanctioned relief valve here too').toBe(0)
     });
 
     test('flags storagePaths / database / collections / logPath assignments', () => {
