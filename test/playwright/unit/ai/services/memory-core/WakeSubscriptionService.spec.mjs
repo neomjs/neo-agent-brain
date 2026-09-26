@@ -3300,6 +3300,46 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(reviewer.reviewLoad.loops[0]).toMatchObject({pr: 201, returned: true});
         });
 
+        test('#552 — the trail read is bound to its horizon: a ping older than the window is not an open loop, one inside it is', async () => {
+            const DAY = 24 * 60 * 60 * 1000;
+
+            seedAgent('@neo-h-reviewer');
+            seedActivity('@neo-h-reviewer', {timestamp: iso(T0ms - 2 * 60 * 1000)});
+
+            // Outside the 30-day window: the derivation never saw it before, the read never fetches it now.
+            seedReviewPing({id: 'H-OLD', from: '@neo-h-reviewer', sentAt: iso(T0ms - 31 * DAY),
+                subject: '[review-posted][CHANGES_REQUESTED][PR #301 @ aaa0000001] stale trail'});
+            // Inside the window: the one open loop.
+            seedReviewPing({id: 'H-NEW', from: '@neo-h-reviewer', sentAt: iso(T0ms - 29 * DAY),
+                subject: '[review-posted][CHANGES_REQUESTED][PR #302 @ bbb0000002] live trail'});
+
+            const {agents} = await WakeSubscriptionService.whoIsOnline({verbose: true, now: new Date(T0)});
+            const reviewer = agents.find(a => a.identity === '@neo-h-reviewer');
+
+            expect(reviewer.reviewLoad.open).toBe(1);
+            expect(reviewer.reviewLoad.loops.map(loop => loop.pr)).toEqual([302]);
+        });
+
+        test('#552 — the trail read and the label reads ride indexes the storage declares', async () => {
+            const sqlite = GraphService.db.storage.db;
+            const names  = sqlite.prepare(`
+                SELECT name FROM sqlite_master
+                WHERE type = 'index' AND name IN ('idx_nodes_label', 'idx_nodes_message_sent_at')
+                ORDER BY name
+            `).all().map(row => row.name);
+
+            expect(names).toEqual(['idx_nodes_label', 'idx_nodes_message_sent_at']);
+
+            // The planner takes the partial index for the service's own read shape.
+            const plan = sqlite.prepare(`
+                EXPLAIN QUERY PLAN
+                SELECT json_extract(data, '$.properties.from') FROM Nodes
+                WHERE id LIKE 'MESSAGE:%' AND json_extract(data, '$.properties.sentAt') >= ?
+            `).all(iso(T0ms)).map(row => row.detail).join(' | ');
+
+            expect(plan).toContain('idx_nodes_message_sent_at');
+        });
+
         test('#17225 AC4 — non-disposition mentions of the magic words neither open nor close a loop', async () => {
             seedAgent('@neo-ac4-robust');
             seedActivity('@neo-ac4-robust', {timestamp: iso(T0ms - 2 * 60 * 1000)});

@@ -103,6 +103,17 @@ class SQLite extends Base {
             );
         `);
 
+        // Two expression indexes over the JSON column, for the reads every tool boundary makes:
+        // the label scans (\`json_extract(data, '$.label') = ?\` — AgentIdentity, WAKE_SUBSCRIPTION,
+        // MESSAGE, …) and the mailbox trail's horizon read in \`who_is_online\`. Without them
+        // each read parses every row's blob; on a 240k-node plane the identity scan alone took
+        // 0.56 s and the trail read 1.3 s per call. SQLite maintains both on write; ~5 MB together.
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_nodes_label ON Nodes(json_extract(data, '$.label'));
+            CREATE INDEX IF NOT EXISTS idx_nodes_message_sent_at
+                ON Nodes(json_extract(data, '$.properties.sentAt')) WHERE id LIKE 'MESSAGE:%';
+        `);
+
         // We store the structured relationships natively
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS Edges (
