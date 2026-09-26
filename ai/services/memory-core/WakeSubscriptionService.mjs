@@ -998,12 +998,14 @@ class WakeSubscriptionService extends Base {
         let rows;
 
         try {
+            // The two predicates are exactly the partial index's shape; a label predicate here is
+            // redundant (MailboxService alone writes `MESSAGE:` ids) and steered the planner onto
+            // the label index, a scan of every message instead of the horizon's range.
             rows = sqlite.prepare(`
                 SELECT json_extract(data, '$.properties.from', '$.properties.sentAt', '$.properties.subject', '$.properties.to') AS fields
                 FROM Nodes
                 WHERE id LIKE 'MESSAGE:%'
                   AND json_extract(data, '$.properties.sentAt') >= ?
-                  AND json_extract(data, '$.label') = 'MESSAGE'
             `).all(new Date(nowMs - REVIEW_LOAD_TRAIL_HORIZON_MS).toISOString());
         } catch (error) {
             logger.warn(`[WakeSubscription] who_is_online: review-lifecycle trail read failed: ${error?.message ?? error}`);
