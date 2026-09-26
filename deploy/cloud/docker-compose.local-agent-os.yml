@@ -59,8 +59,26 @@ services:
       NEO_MCP_ALLOWED_HOSTS: mc-server,ingress
       # Distinct from the kb-server path: one writer per path (see the kb-server note).
       NEO_AUTH_PAT_DISK_CACHE_PATH: /app/.neo-ai-data/auth/mc-pat-validation-cache.json
+      # The signed wake receiver runs on the HOST (ADR 0019 §10.7, the final-mile boundary); this
+      # container only READS its dispatch records, so the served healthcheck's delivery leg reports
+      # what the receiver measured instead of `no-records`. The value is the container side of the
+      # read-only bind below; the reader falls back to a home-directory convention this container
+      # does not have, which is why the path is stated.
+      NEO_WAKE_RECEIVER_RECORDS_DIR: /app/wake-receiver-records
     secrets:
       - mcp-auth-token
+    # The receiver's records directory: `<the receiver's --state-dir>/records`, the LaunchAgent's own
+    # argument on this machine. The env file supplies it as NEO_WAKE_RECEIVER_RECORDS_HOST_DIR — a
+    # missing variable fails the render (`:?`), a missing directory fails `up` (no host path is
+    # created), and the container cannot write through it. Local profile only: cloud, parity and
+    # test planes own no host wake lane.
+    volumes:
+      - type: bind
+        source: "${NEO_WAKE_RECEIVER_RECORDS_HOST_DIR:?set NEO_WAKE_RECEIVER_RECORDS_HOST_DIR to the wake receiver's --state-dir/records in the env file}"
+        target: /app/wake-receiver-records
+        read_only: true
+        bind:
+          create_host_path: false
     # `healthcheck.test` is a LIST, so this override REPLACES the base command rather than extending
     # it — every argument the base carries must be restated here or it is silently dropped from the
     # rendered plane. `--expected-status healthy,degraded` is one of them: without it a Memory Core
