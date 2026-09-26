@@ -76,7 +76,7 @@ function isValidGraphNodeId(id) {
     return typeof id === 'string' && id.length > 0;
 }
 
-// Exemption by type. A message's own edges are exempt by SOURCE instead: see decayGlobalTopology.
+// Exemption by type. A message's own edges are exempt by SOURCE instead: see isMessageRecordEdge.
 export const PROTECTED_EDGE_TYPES = Object.freeze([
     'ADVANCED_BY',   // business layer: goal→work advancement is history, never scent; zombie-priority is handled by explicit retirement reweight (ai/graph/businessSchema.mjs), not decay
     'ATTRIBUTED_TO', // direction layer: motion→direction attribution is measurement substrate — a velocity number built on decaying edges rots invisibly; fact-class per the direction contract (ai/graph/directionSchema.mjs)
@@ -89,6 +89,19 @@ export const PROTECTED_EDGE_TYPES = Object.freeze([
     'RESOLVES'
 ]);
 const PROTECTED_EDGE_TYPE_SET = new Set(PROTECTED_EDGE_TYPES);
+
+const MESSAGE_ID_PREFIX = 'MESSAGE:';
+
+/**
+ * An edge a MESSAGE node sources is the sender's record (reply, thread, ticket, tag and session links):
+ * decayGlobalTopology neither decays nor prunes it, and getInboundStructuralSupport counts it as total,
+ * never decaying, support. Message ids carry the prefix by construction (MailboxService).
+ * @param {Object} edge `{source}` as cached or stored.
+ * @returns {Boolean}
+ */
+function isMessageRecordEdge(edge) {
+    return typeof edge?.source === 'string' && edge.source.startsWith(MESSAGE_ID_PREFIX);
+}
 
 /**
  * The labels whose nodes exist only through their edges, so an edgeless one has faded and
@@ -970,7 +983,7 @@ class GraphService extends Base {
      * and run the decay again — five runs in 37 minutes.
      *
      * Beside {@link PROTECTED_EDGE_TYPES}, every edge a MESSAGE node sources is exempt from decay and
-     * pruning: reply, thread, ticket, tag and session links are the sender's record, never scent.
+     * pruning (`isMessageRecordEdge`): the sender's record, never scent.
      *
      * @param {Number} decayFactor
      * @param {Number} pruningThreshold
@@ -1004,7 +1017,7 @@ class GraphService extends Base {
             SET data = json_set(data, '$.properties.weight',
                                 MAX(COALESCE(CAST(json_extract(data, '$.properties.weight') AS REAL), 1.0) * ?, 0.1))
             WHERE type NOT IN (${protectedEdgePlaceholders})
-              AND substr(source, 1, 8) <> 'MESSAGE:'
+              AND substr(source, 1, ${MESSAGE_ID_PREFIX.length}) <> '${MESSAGE_ID_PREFIX}'
         `);
         decayStmt.run(decayFactor, ...PROTECTED_EDGE_TYPES);
 
@@ -1013,7 +1026,7 @@ class GraphService extends Base {
             DELETE
             FROM Edges
             WHERE type NOT IN (${protectedEdgePlaceholders})
-              AND substr(source, 1, 8) <> 'MESSAGE:'
+              AND substr(source, 1, ${MESSAGE_ID_PREFIX.length}) <> '${MESSAGE_ID_PREFIX}'
               AND COALESCE(CAST(json_extract(data, '$.properties.weight') AS REAL), 1.0) < ?
         `);
         const info = pruneStmt.run(...PROTECTED_EDGE_TYPES, pruningThreshold);
@@ -1382,8 +1395,9 @@ class GraphService extends Base {
     /**
      * @summary Returns one RLS-safe inbound-support projection for Golden Path scoring and
      * Discussion liveness. Total support preserves existing structural scoring; decaying support
-     * excludes protected fact edges and Golden Path's own `frontier → GUIDES` output so archaeology
-     * or a prior route cannot masquerade as current swarm motion. The same visible inbound projection
+     * excludes protected fact edges, a message's record edges (`isMessageRecordEdge`) and Golden
+     * Path's own `frontier → GUIDES` output so archaeology or a prior route cannot masquerade as
+     * current swarm motion. The same visible inbound projection
      * exposes open-blocker and parent facts, keeping admission and cold-start inheritance cache-safe.
      *
      * Root, source node, and edge must all be visible at the cache return boundary. `BLOCKS`,
@@ -1438,7 +1452,7 @@ class GraphService extends Base {
                 support.totalEdgeCount++;
 
                 const isGoldenPathOutput = edge.type === 'GUIDES' && edge.source === 'frontier';
-                if (!PROTECTED_EDGE_TYPE_SET.has(edge.type) && !isGoldenPathOutput) {
+                if (!PROTECTED_EDGE_TYPE_SET.has(edge.type) && !isGoldenPathOutput && !isMessageRecordEdge(edge)) {
                     support.decayingWeight += weight;
                     support.decayingEdgeCount++
                 }

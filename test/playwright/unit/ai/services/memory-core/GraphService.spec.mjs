@@ -394,16 +394,19 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         await GraphService.upsertNode({id: 'merge-handoff',  type: 'CONCEPT'});
         await GraphService.upsertNode({id: 'AmbientSource',  type: 'TEST_NODE'});
         await GraphService.upsertNode({id: 'AmbientTarget',  type: 'TEST_NODE'});
+        await GraphService.upsertNode({id: 'memory-1',       type: 'AGENT_MEMORY'});
         GraphService.linkNodes('MESSAGE:child', 'MESSAGE:parent', 'IN_REPLY_TO', 0.05);
         GraphService.linkNodes('MESSAGE:child', 'merge-handoff', 'TAGGED_CONCEPT', 1.0);
+        GraphService.linkNodes('memory-1',      'merge-handoff', 'TAGGED_CONCEPT', 1.0); // the same type from a memory stays scent
         GraphService.linkNodes('AmbientSource', 'AmbientTarget', 'RELATES_TO', 0.05);
 
         GraphService.decayGlobalTopology(0.98, 0.2, true);
 
-        const rows = GraphService.db.storage.db.prepare("SELECT source, type, json_extract(data, '$.properties.weight') AS w FROM Edges ORDER BY type").all();
+        const rows = GraphService.db.storage.db.prepare("SELECT source, type, json_extract(data, '$.properties.weight') AS w FROM Edges ORDER BY type, source").all();
         expect(rows).toEqual([
             {source: 'MESSAGE:child', type: 'IN_REPLY_TO',    w: 0.05},
-            {source: 'MESSAGE:child', type: 'TAGGED_CONCEPT', w: 1}
+            {source: 'MESSAGE:child', type: 'TAGGED_CONCEPT', w: 1},
+            {source: 'memory-1',      type: 'TAGGED_CONCEPT', w: 0.98}
         ]);
     });
 
@@ -463,11 +466,14 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         GraphService.linkNodes('parent-source', 'discussion-15105', 'PARENT_OF', 1);
         GraphService.linkNodes('blocker-source', 'discussion-15105', 'BLOCKS', 5);
         GraphService.linkNodes('discussion-15105', 'outbound-target', 'RELATES_TO', 7);
+        // a message's record edge is total support, never decaying support: the decay leaves it alone
+        await GraphService.upsertNode({id: 'MESSAGE:record', type: 'MESSAGE'});
+        GraphService.linkNodes('MESSAGE:record', 'discussion-15105', 'DISCUSSED_IN', 4);
 
         expect(GraphService.getInboundStructuralSupport({id: 'discussion-15105'})).toEqual({
-            totalWeight      : protectedEdgeTypes.length + 6,
+            totalWeight      : protectedEdgeTypes.length + 10,
             decayingWeight   : 3,
-            totalEdgeCount   : protectedEdgeTypes.length + 3,
+            totalEdgeCount   : protectedEdgeTypes.length + 4,
             decayingEdgeCount: 2,
             hasOpenBlocker   : true,
             parentId         : 'parent-source'
