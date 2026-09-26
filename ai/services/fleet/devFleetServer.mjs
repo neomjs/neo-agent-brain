@@ -72,6 +72,7 @@ import {wireFleetActivityReadSource}                                     from '.
 import {wireFleetCatchUpSource}                                          from './wireFleetCatchUpSource.mjs';
 import {wireFleetTasksSource}                                            from './wireFleetTasksSource.mjs';
 import {wireFleetGoldenPathSource}                                       from './wireFleetGoldenPathSource.mjs';
+import {wireFleetGraphSceneSource}                                       from './wireFleetGraphSceneSource.mjs';
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
@@ -399,6 +400,20 @@ async function boot() {
     wireFleetGoldenPathSource({
         getComputedRoute   : args => callHistoryOperation('get_computed_route', args),
         getRemPipelineState: args => callHistoryOperation('get_rem_pipeline_state', args)
+    });
+
+    // The 3D graph's scene feed collects the neighbourhood the cockpit renders. Its seeds ride the
+    // same `get_computed_route` answer the Golden Path view above already reads, so the scene and the
+    // path it grows from cannot disagree about which route is current. Collection rides the two graph
+    // operations the plane already exposes — `get_node` per row, `get_neighbors` per hop. Both are
+    // RLS-filtered by the projection's own gate, so a withheld row or edge is absent because the
+    // graph decided the reader may not see it, not because this feed reinvents a filter; the source
+    // states what that means for `completeness`. The lambdas name their parameter because the two
+    // operations take an id object, not a passthrough argument list.
+    wireFleetGraphSceneSource({
+        getComputedRoute: args => callHistoryOperation('get_computed_route', args),
+        getNode         : id => callHistoryOperation('get_node', {id}),
+        getNeighbors    : id => callHistoryOperation('get_neighbors', {id})
     });
 
     // The memories DRILL-IN rides the same operation boundary one level deeper: the single
