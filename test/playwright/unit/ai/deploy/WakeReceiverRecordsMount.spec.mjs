@@ -42,6 +42,19 @@ test.describe('the local mc-server reads the wake receiver records through a rea
         expect(bind.bind?.create_host_path, 'Compose must not create an empty host path').toBe(false);
     });
 
+    test('the local runbook names the source variable, the directory, and the receiver-less case before the plane starts', () => {
+        const
+            runbook = fs.readFileSync(path.join(repoRoot, 'ai/scripts/lifecycle/local-agent-os/README.md'), 'utf8'),
+            start   = runbook.indexOf('## Start the container plane'),
+            section = runbook.slice(start, runbook.indexOf('\n## ', start + 1));
+
+        expect(start, 'the plane-start section exists').toBeGreaterThan(-1);
+        expect(section, 'the .env prerequisite is named where the plane starts').toContain(`${SOURCE_VAR}=`);
+        expect(section, 'the records directory is derived from the receiver state dir, one declaration').toContain(`${SOURCE_VAR}=\${NEO_WAKE_RECEIVER_STATE_DIR}/records`);
+        expect(section, 'the directory is created before up, with the mode the receiver accepts').toMatch(/mkdir -p -m 0700 "[^"]*\/records"/);
+        expect(section, 'a receiver-less deployment is told what its delivery leg reads').toContain('`no-records`');
+    });
+
     test('no other profile mounts the records or sets the env', () => {
         for (const name of otherProfiles) {
             const services = readCompose(path.join(cloudDir, name)).services || {};

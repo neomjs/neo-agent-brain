@@ -118,6 +118,33 @@ A missing file makes Compose refuse to start, which is deliberate — loud at th
 one moment someone can act, rather than a silent fallback that restores the
 single-clone dependency.
 
+**Name the wake receiver's records directory in `.env` before `up`.** The local
+overlay binds it read-only into `mc-server` (`NEO_WAKE_RECEIVER_RECORDS_DIR`), so the
+served healthcheck's delivery leg reports what the receiver measured instead of
+`no-records`. Compose refuses the render without the variable and refuses `up`
+without the directory (no host path is created) — deliberate, for the same reason
+as the token. The receiver starts three sections later and creates its state
+directory on boot (`WakeReceiverState.init()`, recursive, mode 0700), which accepts
+a records directory created here first. One declaration, two consumers: the
+receiver's `--state-dir` and this bind derive from the same variable, so a moved
+state directory can never leave the bind reading an old one.
+
+```sh
+# .env — the receiver's state dir (the value `## Install the host edge` exports)
+# and the records directory the local plane reads; Compose derives the second.
+NEO_WAKE_RECEIVER_STATE_DIR=${HOME}/Library/Application Support/Neo/AgentOS/wake/state
+NEO_WAKE_RECEIVER_RECORDS_HOST_DIR=${NEO_WAKE_RECEIVER_STATE_DIR}/records
+```
+
+```sh
+mkdir -p -m 0700 "${HOME}/Library/Application Support/Neo/AgentOS/wake/state/records"
+```
+
+**A deployment without a receiver** — the containerized half alone, or a Windows
+host (no wake delivery, see the [platform matrix](#platform-matrix)) — declares
+the same variable and creates the same empty directory on purpose: its delivery
+leg then reads `no-records`, which is true for it.
+
 **Resolve the channel to a commit first.** Compose maps one operator pin to both
 internal Docker arguments, and the source stage refuses a mutable ref (#16635) —
 a branch name makes the fetch layer cache-stable, so the build would package
