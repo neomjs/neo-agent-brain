@@ -1,5 +1,6 @@
 import {createHash}   from 'crypto';
 import fs             from 'fs/promises';
+import {existsSync}   from 'fs';
 import matter         from 'gray-matter';
 import path           from 'path';
 import Base           from 'neo.mjs/src/core/Base.mjs';
@@ -821,6 +822,78 @@ export async function scanPullRequestCorpus({pullsDir, archiveRoot, sources}) {
 }
 
 /**
+ * @summary Builds the refusal an unknown origin gets: named, coded, never answered from the default.
+ * @param {String} origin The origin as requested.
+ * @param {String} reason Why it is unknown here.
+ * @returns {Error} `code: 'unknown-origin'`, `origin` echoed.
+ */
+function createUnknownOriginError(origin, reason) {
+    const error = new Error(`PullRequestHistoryService: unknown-origin "${origin}" — ${reason}`);
+
+    error.code   = 'unknown-origin';
+    error.origin = origin;
+
+    return error
+}
+
+/**
+ * @summary Resolves the repository and corpus roots one bird view reads, from an optional `owner/repo` origin.
+ *
+ * Without an origin the configured repository and the pre-split corpus roots apply, unchanged — a
+ * single-repository plane never notices this function. With one, the owner must be the plane's configured
+ * owner (the corpus holds one owner's repositories), the repo must be a corpus origin — a
+ * `<contentRoot>/<repo>/pulls` directory, the per-slug layout the tenant corpus publishes — or the
+ * configured repository itself, and the corpus roots become that slug's `pulls` and `archive`
+ * directories. Anything else is refused by name (`unknown-origin`) rather than answered from the
+ * default: a bird view over the wrong repository is worse than none.
+ *
+ * @param {Object} options
+ * @param {String} [options.origin] `owner/repo` as the caller asked.
+ * @param {String} options.owner Configured owner.
+ * @param {String} options.repo Configured repository.
+ * @param {String} options.pullsDir Configured active-corpus root, used without an origin.
+ * @param {String} options.archiveRoot Configured archive root, used without an origin.
+ * @param {String|null} options.contentRoot The per-origin corpus root (`fleet.contentRoot`).
+ * @param {Function} [options.exists=existsSync] Filesystem seam for the slug check.
+ * @returns {{owner: String, repo: String, pullsDir: String, archiveRoot: String, origin: String|null}}
+ */
+export function resolvePullRequestOrigin({origin, owner, repo, pullsDir, archiveRoot, contentRoot, exists = existsSync}) {
+    if (origin === undefined || origin === null || origin === '') {
+        return {owner, repo, pullsDir, archiveRoot, origin: null}
+    }
+
+    const match = typeof origin === 'string' ? origin.match(/^([\w.-]+)\/([\w.-]+)$/) : null;
+
+    if (!match) {
+        throw createUnknownOriginError(origin, 'expected the form "owner/repo"')
+    }
+
+    const [, requestedOwner, requestedRepo] = match;
+
+    if (requestedOwner !== owner) {
+        throw createUnknownOriginError(origin, `this plane holds ${owner}'s repositories`)
+    }
+
+    const slugPulls = contentRoot ? path.join(contentRoot, requestedRepo, 'pulls') : null;
+
+    if (slugPulls && exists(slugPulls)) {
+        return {
+            owner,
+            repo       : requestedRepo,
+            pullsDir   : slugPulls,
+            archiveRoot: path.join(contentRoot, requestedRepo, 'archive'),
+            origin
+        }
+    }
+
+    if (requestedRepo === repo) {
+        return {owner, repo, pullsDir, archiveRoot, origin}
+    }
+
+    throw createUnknownOriginError(origin, `no corpus origin "${requestedRepo}" under ${contentRoot ?? 'an unset content root'}`)
+}
+
+/**
  * @summary Fetches all published release cuts and resolves `[previous cut, selected cut)`.
  * @param {Object} options
  * @returns {Promise<Object>}
@@ -1360,6 +1433,8 @@ class PullRequestHistoryService extends Base {
      * @param {String} [options.release] Release tag whose preceding cut defines the start boundary.
      * @param {Date|String|Number} [options.windowStart] Explicit inclusive start.
      * @param {Date|String|Number} [options.windowEnd] Explicit exclusive end.
+     * @param {String} [options.origin] `owner/repo` of a tenant repository the plane's corpus holds; absent,
+     *   the configured repository (see {@link resolvePullRequestOrigin}).
      * @param {Object} deps Memory-owned runner/model plus injectable GitHub/filesystem test seams.
      * @returns {Promise<Object>} Source-complete, cite-backed, non-authoritative Bird View envelope.
      */
@@ -1374,7 +1449,9 @@ class PullRequestHistoryService extends Base {
         pullsDir = aiConfig.issueSync.pullsDir,
         archiveRoot = aiConfig.issueSync.archiveRoot,
         productNameDenylist = aiConfig.issueSync.productNameDenylist,
-        scanCorpus = scanPullRequestCorpus
+        scanCorpus = scanPullRequestCorpus,
+        contentRoot = aiConfig.fleet.contentRoot,
+        originExists = existsSync
     } = {}) {
         options = options || {};
 
@@ -1389,6 +1466,12 @@ class PullRequestHistoryService extends Base {
         if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
             throw new Error('PullRequestHistoryService: an injected valid Date `now` is required')
         }
+
+        // The origin decides which repository the live reads, the release window and the corpus roots
+        // address; an unknown one is refused here, before any read.
+        ({owner, repo, pullsDir, archiveRoot} = resolvePullRequestOrigin({
+            origin: options.origin, owner, repo, pullsDir, archiveRoot, contentRoot, exists: originExists
+        }));
 
         const request         = await resolveRequest({options, query, owner, repo}),
               partition       = `repository:${owner}/${repo}:${request.resolution}`,
