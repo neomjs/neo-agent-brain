@@ -667,6 +667,42 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         }
     });
 
+    test('ISSUE and PULL_REQUEST nodes carry the author and assignee logins the corpus holds', async () => {
+        const
+            root  = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-ingestor-ownership-')),
+            write = (file, lines) => fs.writeFileSync(path.join(root, file), ['---', ...lines, '---', '# body'].join('\n'));
+
+        fs.mkdirSync(path.join(root, 'issues'), {recursive: true});
+        fs.mkdirSync(path.join(root, 'pulls'),  {recursive: true});
+        write('issues/issue-9301.md', ['id: 9301', 'title: Held', 'state: OPEN', 'author: neo-opus-grace', 'assignees:', '  - neo-fable-clio', '  - neo-opus-ada']);
+        write('issues/issue-9302.md', ['id: 9302', 'title: Unheld', 'state: OPEN', 'author: neo-opus-vega']);
+        write('pulls/pr-9303.md',     ['number: 9303', 'title: Synced PR', 'state: MERGED', 'author: neo-opus-vega']);
+        write('pulls/pr-9304.md',     ['number: 9304', 'title: Assigned PR', 'state: OPEN', 'author: neo-fable', 'assignees:', '  - neo-fable']);
+
+        StorageRouter.getGraphCollection = async () => ({
+            get   : async () => ({ids: [], metadatas: []}),
+            upsert: async () => {}
+        });
+
+        try {
+            await IssueIngestor.ingestIssueStates({contentRoot: root, strict: true});
+            await IssueIngestor.ingestPullRequestFeedback({contentRoot: root, strict: true});
+
+            const node = id => graphNodes.find(item => item.id === id).properties;
+
+            expect(node('issue-9301')).toMatchObject({author: 'neo-opus-grace', assignees: ['neo-fable-clio', 'neo-opus-ada']});
+            // an issue without assignees writes an empty list, so a sync after an unassignment replaces the old holders
+            expect(node('issue-9302')).toMatchObject({author: 'neo-opus-vega', assignees: []});
+            expect(node('pr-9303')).toMatchObject({author: 'neo-opus-vega'});
+            // the PR corpus carries no assignees key: absent stays absent, never an asserted empty list
+            expect(node('pr-9303')).not.toHaveProperty('assignees');
+            expect(node('pr-9304')).toMatchObject({author: 'neo-fable', assignees: ['neo-fable']})
+        } finally {
+            StorageRouter.getGraphCollection = _originalGetGraphCollection;
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
     test('strict projection input rejects an otherwise-swallowed facet parse failure (#17627)', async () => {
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-ingestor-projection-invalid-'));
 
