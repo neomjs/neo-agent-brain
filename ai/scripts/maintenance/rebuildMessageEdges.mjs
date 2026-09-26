@@ -19,8 +19,10 @@ import {pathToFileURL} from 'node:url';
  *
  * Identity is decided inside the insert (`INSERT … WHERE NOT EXISTS`), and the counts are the rows it
  * changed. `--types` names the edge types to link (all four by default): the tag edges are tens of
- * thousands and feed concept scoring, so they can be applied on their own decision. Dry-run by default
- * with the database opened read-only; `--db-path` is explicit and mandatory.
+ * thousands and feed concept scoring, so they can be applied on their own decision. The message ids
+ * are read up front and each node fetched by id, so no cursor is open on the connection when a batch
+ * flushes (better-sqlite3 refuses a write while a statement iterates). Dry-run by default with the
+ * database opened read-only; `--db-path` is explicit and mandatory.
  */
 
 /**
@@ -54,12 +56,14 @@ export function targetsOf(value) {
  * @param {Object}   options.db            Open better-sqlite3 handle; read-only unless `apply`.
  * @param {Boolean}  [options.apply=false] Write; otherwise count only.
  * @param {String[]} [options.types]       Edge types to link; every other field is skipped. Default: all four.
+ * @param {Number}   [options.batchSize=1000] Writes per transaction.
  * @returns {{messages: Number, types: Object}} Per type: `{fields, linked, present, missingTarget, conceptsCreated}`.
  */
-export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIELDS.map(entry => entry.type)}) {
+export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIELDS.map(entry => entry.type), batchSize = WRITE_BATCH_SIZE}) {
     const
         fields     = MESSAGE_EDGE_FIELDS.filter(entry => types.includes(entry.type)),
-        messages   = db.prepare("SELECT id, data FROM Nodes WHERE id LIKE 'MESSAGE:%'").iterate(),
+        messageIds = db.prepare("SELECT id FROM Nodes WHERE id LIKE 'MESSAGE:%'").pluck().all(),
+        readNode   = db.prepare('SELECT data FROM Nodes WHERE id = ?').pluck(),
         nodeExists = db.prepare('SELECT 1 FROM Nodes WHERE id = ?').pluck(),
         edgeExists = db.prepare('SELECT 1 FROM Edges WHERE source = ? AND target = ? AND type = ? LIMIT 1').pluck(),
         insertEdge = apply && db.prepare(`
@@ -76,13 +80,17 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
     const flush = db.transaction(ops => { ops.forEach(op => op()); });
     const queue = op => {
         pending.push(op);
-        if (pending.length >= WRITE_BATCH_SIZE) {
+        if (pending.length >= batchSize) {
             flush(pending);
             pending = [];
         }
     };
 
-    for (const {id: messageId, data} of messages) {
+    for (const messageId of messageIds) {
+        const data = readNode.get(messageId);
+
+        if (data === undefined) continue;
+
         const props = JSON.parse(data)?.properties || {};
 
         result.messages++;

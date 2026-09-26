@@ -153,6 +153,16 @@ test.describe('rebuildMessageEdges maintenance script', () => {
         expect(liveNode('a-tag')).toBeNull();
     });
 
+    test('an apply that crosses the write batch size flushes without a cursor open on the connection', () => {
+        const count = 1001;
+        seedLive({nodes: [message('MESSAGE:parent', {}), ...Array.from({length: count}, (_, i) => message(`MESSAGE:child-${i}`, {inReplyTo: 'MESSAGE:parent'}))]});
+
+        const result = runRebuildMessageEdges({dbPath, apply: true, types: ['IN_REPLY_TO'], logger: quiet});
+
+        expect(result.types.IN_REPLY_TO).toEqual({fields: count, linked: count, present: 0, missingTarget: 0, conceptsCreated: 0});
+        expect(liveEdges()).toHaveLength(count);
+    });
+
     test('targetsOf reads one string or every string entry of an array, nothing else', () => {
         expect(targetsOf('MESSAGE:x')).toEqual(['MESSAGE:x']);
         expect(targetsOf(['a', '', 3, null, 'b'])).toEqual(['a', 'b']);
