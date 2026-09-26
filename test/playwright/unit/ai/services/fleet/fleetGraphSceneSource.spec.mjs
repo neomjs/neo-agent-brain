@@ -35,74 +35,135 @@ function node(id, overrides = {}) {
 }
 
 /**
- * @summary One edge as a read returns it, with the target the RLS filter may withhold.
- * @param {String} from
- * @param {String} to
- * @param {String} [type='RELATES_TO']
+ * @summary One edge as the live answer carries it: its own endpoints and its relation.
+ *
+ * The live `get_neighbors` answer names `source`, `target` and `relationship` per neighbour, and
+ * answers an edge from BOTH of its endpoints — which is why the source reads direction off the edge
+ * rather than off which node it asked about, and why it deduplicates.
+ *
+ * @param {String} source
+ * @param {String} target
+ * @param {String} [relationship]
  * @returns {Object}
  */
-function edge(from, to, type = 'RELATES_TO') {
-    return {from, to, type}
+function edge(source, target, relationship = null) {
+    return {source, target, relationship}
 }
 
 /**
- * @summary A `computed-route.v1` sidecar whose two ranked items are the scene's default seeds.
+ * @summary The `get_computed_route` ANSWER, recorded from a live call — an envelope, not a sidecar.
+ *
+ * The operation answers `{status, reason, details, route, admission}` where `status` is one of
+ * `available | missing | …` and freshness is nested at `route.route.status`. An earlier fixture here
+ * was a flat `{status: 'fresh', items: [{ref}]}`, which is the shape the SOURCE expected rather than
+ * the shape the operation produces: `status === 'fresh'` can never hold, so every wired read answered
+ * `route-not-fresh` and no arm could see it. The item id is `id`, not `ref`.
+ *
  * @param {Object} [overrides]
  * @returns {Object}
  */
 function sidecar(overrides = {}) {
     return {
-        schemaVersion     : 'computed-route.v1',
-        status            : 'fresh',
-        notAuthority      : true,
-        capturedAt        : '2026-09-26T08:30:00.000Z',
-        expiresAt         : '2026-09-26T10:30:00.000Z',
-        routeVersion      : 'route-v7',
-        items             : [
-            {rank: 1, ref: 'pr-101', title: 'first route item'},
-            {rank: 2, ref: 'issue-202', title: 'second route item'}
-        ],
+        status   : 'available',
+        reason   : null,
+        details  : null,
+        admission: {admitted: true},
+        route    : {
+            route: {
+                kind  : 'handoff',
+                items : [
+                    {id: 'pr-101', title: 'first route item', rank: 1},
+                    {id: 'issue-202', title: 'second route item', rank: 2}
+                ]
+            }
+        },
         ...overrides
     }
 }
 
 /**
- * @summary A stub graph keyed the way the real one is: devindex stores PR/issue nodes as
- * `owner/repo#number`, and the seam receives that qualified id.
+ * @summary A route envelope carrying the given ids — the only supported way to choose seeds.
  *
- * The key space is qualified BY CONSTRUCTION here rather than per fixture. Several early arms passed
- * a graph keyed by bare ids, so the walk collected zero nodes — and the assertions stayed green,
- * because `toBeLessThanOrEqual` and "edges are empty" are both satisfied by an empty scene. A stub
- * that can be written wrong is a stub that hides the bug it is standing in for.
+ * Writing `{items: [...]}` as an override of the answer does NOT work and fails silently: `items` is
+ * nested at `route.route.items`, so a top-level override leaves the real items in place and the arm
+ * quietly walks nodes its graph does not hold. That is how the budget arm ended up asserting against
+ * an empty scene.
  *
- * `visible` withholds ids (the RLS / scope case); `absent` makes the seam 404 them; `edges` is the
- * adjacency the read walks.
+ * @param {String[]} ids
+ * @returns {Object}
+ */
+function routeWith(ids) {
+    return sidecar({route: {route: {kind: 'handoff', items: ids.map((id, index) => ({id, rank: index + 1}))}}})
+}
+
+/**
+ * @summary The answer when the operation will not serve a route — its own reason, not an exception.
+ * @param {String} [status]
+ * @param {String} [reason]
+ * @returns {Object}
+ */
+function noRoute(status = 'missing', reason = 'route-not-found') {
+    return {status, reason, details: null, route: null, admission: {admitted: true}}
+}
+
+/**
+ * @summary A stub graph shaped from RECORDED live answers: bare ids, and neighbours carrying their own
+ * `source`, `target` and `relationship`.
+ *
+ * Two earlier versions of this fixture were wrong in the direction that mattered. It first keyed its
+ * graph by QUALIFIED ids, on the source's own claim that "the seam is keyed by the qualified id" —
+ * which made the spec structurally impossible to write wrong and, for that reason, agreed with a
+ * contract the plane does not honour: live `get_node('issue-9853')` answers the node while
+ * `get_node('neomjs/neo#issue-9853')` answers `{result: null}`. Then its neighbour response was an
+ * invented `{nodes: [{id}]}`. The lesson is not "tighten the stub against the source" — it is that a
+ * stub must be transcribed from the wire, because a stub derived from the thing under test cannot
+ * disagree with it.
+ *
  * @param {Object} graph
  * @returns {Object}
  */
-function stubGraph({nodes = [], edges = [], visible = null, absent = []} = {}) {
+function stubGraph({nodes = [], edges = [], visible = null, absent = [], refusing = false} = {}) {
     const
-        allowed = visible ? new Set(visible.map(qualify)) : null,
-        gone    = new Set(absent.map(qualify));
+        allowed = visible ? new Set(visible) : null,
+        gone    = new Set(absent);
 
     return {
         getNode      : async id => {
+            if (refusing) {
+                // A live seat with no graph store loaded raises here rather than answering null.
+                throw new Error('getAdjacentNodes of null')
+            }
+
             if (gone.has(id)) {
-                throw new Error('404 not found')
+                return null
             }
 
             if (allowed && !allowed.has(id)) {
                 return null
             }
 
-            return nodes.find(candidate => qualify(candidate.id) === id) ?? null
+            return nodes.find(candidate => candidate.id === id) ?? null
         },
-        // The documented `get_neighbors` response shape: `{neighbors: [{id}]}`. Reading a `nodes`
-        // key here instead is what an invented stub shape looks like, and it passes every arm.
-        getNeighbors : async (id, depth) => ({
-            neighbors: edges.filter(row => qualify(row.from) === id).map(row => ({id: qualify(row.to)})),
-            depth
-        })
+        getNeighbors : async id => {
+            if (refusing) {
+                throw new Error('getAdjacentNodes of null')
+            }
+
+            return {
+                neighbors: edges
+                    .filter(row => row.source === id || row.target === id)
+                    .map(row => ({
+                        // The record's own identity is the NEIGHBOUR — the other endpoint — while
+                        // `source`/`target` carry the edge's direction, so an INBOUND edge is visible
+                        // from the node that did not originate it.
+                        id          : row.source === id ? row.target : row.source,
+                        source      : row.source,
+                        target      : row.target,
+                        relationship: row.relationship ?? null,
+                        weight      : 1
+                    }))
+            }
+        }
     }
 }
 
@@ -154,7 +215,7 @@ test.describe('fleetGraphSceneSource', () => {
               }),
               {scene} = await createFleetGraphSceneSource(seams({
                   graph,
-                  route : sidecar({items: [{rank: 1, ref: 'issue-300'}, {rank: 2, ref: 'issue-301'}]})
+                  route : routeWith(['issue-300', 'issue-301'])
               })).readGraphScene({depth: 2, maxNodes: 4});
 
         expect(scene.completeness, 'a budget cut is declared').toBe('truncated');
@@ -276,12 +337,84 @@ test.describe('fleetGraphSceneSource', () => {
             }),
             {capability, scene} = await createFleetGraphSceneSource(seams({
                 graph,
-                route: sidecar({items: [{rank: 1, ref: 'pr-101'}]})
+                route: routeWith(['pr-101'])
             })).readGraphScene({});
 
         expect(capability.state, 'the read still answers').toBe('current');
         expect(scene.nodes.map(entry => entry.id), 'and the surviving node is still there').toEqual(['neomjs/neo#pr-101']);
         expect(scene.edges, 'with no edge left dangling to the 404').toEqual([])
+    });
+
+    test('a route the operation will not serve is degraded with ITS reason, not unavailable', async () => {
+        // The operation answers an envelope whose `status` is `available | missing | …`, with
+        // freshness nested at `route.route.status`. An earlier version compared the TOP level to
+        // 'fresh', which can never hold, so every wired read answered `route-not-fresh` — and a flat
+        // `{status: 'fresh'}` fixture hid it. There is also no graph to be `unavailable` from when
+        // only the route is missing, so the severity was wrong twice.
+        const {capability, scene} = await createFleetGraphSceneSource(
+            seams({graph: stubGraph(), route: noRoute('missing', 'route-not-found')})
+        ).readGraphScene({});
+
+        expect(capability, 'the operation\'s own reason is passed through').toEqual({
+            state : 'degraded',
+            reason: 'route-not-found'
+        });
+        expect(scene).toBeNull()
+    });
+
+    test('a seam that RAISES is a degraded partial read, not a scope cut and not unavailable', async () => {
+        // The distinction an outage turns on. `get_node` answers `null` for a row the reader may not
+        // see and RAISES when the store cannot answer at all. Collapsing those reports an
+        // infrastructure failure as a permission — and `complete` on top of it would launder the
+        // outage into a fact about the graph.
+        const graph  = stubGraph({nodes: [node('pr-101')], edges: [], refusing: true}),
+              source = createFleetGraphSceneSource(seams({graph, route: routeWith(['pr-101'])})),
+              {capability} = await source.readGraphScene({});
+
+        expect(capability.state, 'a refusal is not a permission').toBe('degraded');
+        expect(capability.reason, 'and it names the seam that refused').toBe('graph-node-read-failed');
+        expect(capability.state, 'never `unavailable`, which would claim there is no scene').not.toBe('unavailable')
+    });
+
+    test('depth d is the d-hop neighbourhood, not (d-1)', async () => {
+        // The seeds are hop zero, so the loop runs `depth + 1` levels. Bounding at `level < depth`
+        // made `depth: 1` — the default — return the seeds alone while still reporting `depth: 1`,
+        // and the scene still claimed `complete` with the first ring missing.
+        const ring = (prefix, count) => Array.from({length: count}, (unused, index) => node(`${prefix}-${index}`)),
+              first = ring('r1', 2),
+              graph = stubGraph({
+                  nodes: [node('seed'), ...first, ...ring('r2', 2)],
+                  edges: [
+                      ...first.map(entry => edge('seed', entry.id)),
+                      ...ring('r2', 2).map(entry => edge(first[0].id, entry.id))
+                  ]
+              }),
+              source = createFleetGraphSceneSource(seams({graph, route: routeWith(['seed'])})),
+              oneHop = await source.readGraphScene({depth: 1}),
+              twoHop = await source.readGraphScene({depth: 2});
+
+        expect(oneHop.scene.nodes.map(entry => entry.id), 'depth 1 reaches the first ring and no further').toEqual([
+            'neomjs/neo#r1-0', 'neomjs/neo#r1-1', 'neomjs/neo#seed'
+        ]);
+        expect(twoHop.scene.nodes.length, 'depth 2 reaches the second').toBe(5)
+    });
+
+    test('an inbound edge keeps its own direction and is counted once', async () => {
+        // The operation answers an edge from BOTH of its endpoints and names the direction on the
+        // edge. Deriving `{from: the node we asked about, to: the neighbour}` reverses every inbound
+        // edge, and charging the budget for both sightings spends it twice on unique links.
+        const graph = stubGraph({
+                nodes : [node('a'), node('b')],
+                edges : [edge('a', 'b', 'GUIDES')]
+            }),
+            {scene} = await createFleetGraphSceneSource(
+                seams({graph, route: routeWith(['a', 'b'])})
+            ).readGraphScene({depth: 1});
+
+        expect(scene.edges, 'one edge, oriented as the graph orients it, with its relation').toEqual([
+            {from: 'neomjs/neo#a', to: 'neomjs/neo#b', type: 'GUIDES'}
+        ]);
+        expect(scene.counts.edges, 'seen from both endpoints but charged once').toBe(1)
     });
 
     test('an unwired slot is a distinct, honest state from a wired empty one', () => {

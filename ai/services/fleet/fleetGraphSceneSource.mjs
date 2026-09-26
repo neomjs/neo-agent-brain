@@ -33,26 +33,29 @@ import {createHash}               from 'node:crypto';
  * therefore qualified at projection, and edges are re-qualified to match, so an edge always points
  * at an id the scene actually contains.
  *
- * **The seam is keyed by the qualified id.** `getNode` and `getNeighbors` receive `origin#id`, never a
- * bare one, because a seam that understood only bare ids could not tell two repositories' `pr-101`
- * apart — which is the collision the qualification exists to prevent, reintroduced at the last hop.
- * Qualification is idempotent, so a graph that already stores qualified ids round-trips unchanged.
+ * **The seam is keyed by the graph's own id.** `get_node` and `get_neighbors` receive a bare id
+ * (`issue-9853`), never `origin#id`: the graph stores bare ids, so a seam asked for a qualified one
+ * answers `{result: null}` for a row it holds, and every row past the seeds would read as a scope cut.
+ * Qualification is applied to the EMITTED scene, which is the only place the origin is known.
  *
- * ## What an edge in a scene is, and is not
+ * ## What an edge in a scene is
  *
- * An emitted edge is **adjacency presence** — `{from, to}` — and deliberately carries no relation
- * label. The graph's neighbour projection drops every edge property except `weight` (the same
- * constraint `conceptNeighborhoodProbe` documents when it reads raw edge rows for a reason the
- * projection cannot serve), so a `type` read through that seam is not weak data, it is *absent* data.
- * Defaulting it to a placeholder would render every real edge in the cockpit as the same invented
- * relation, which is the one failure this feed cannot afford: a viewer cannot tell a fabricated label
- * from a real one. A future feed that needs relation semantics reads raw edge rows, as the probe
- * does, and says so in its own contract.
+ * An emitted edge is `{from, to}` plus a `type` when the seam supplied one. The neighbour operation
+ * names the relation as `relationship` and the edge's own endpoints as `source` / `target`, so both
+ * are passed through rather than reconstructed — deriving `{from: the node we asked about, to: the
+ * neighbour}` reverses every INBOUND edge, and with both endpoints expanded it emits each edge twice,
+ * spending the edge budget twice on a graph of unique links.
  *
- * `completeness` is therefore scoped honestly too: it describes the **RLS-filtered projection** this
- * read walked, not the raw graph behind it. Edge-RLS is a surface distinct from node-RLS — an edge
- * between two visible nodes can itself be withheld — so "complete" means "everything the projection
- * would show this reader", and the pane must not read it as "everything that exists".
+ * When a projection carries no `relationship` the key is ABSENT rather than defaulted. An earlier
+ * draft defaulted it, on a misreading of `conceptNeighborhoodProbe`'s note: that note narrows edge
+ * *properties* to `weight`, not the edge *type*. A placeholder relation is the one thing a viewer
+ * cannot distinguish from a real one, so the honest shape is present-or-absent.
+ *
+ * `completeness` is scoped to the RLS-filtered projection this read walked, not the raw graph behind
+ * it. Edge-RLS is a surface distinct from node-RLS — an edge between two visible nodes can itself be
+ * withheld — so "complete" means "everything the projection would show this reader", and a pane must
+ * not read it as "everything that exists". A seam that RAISES is neither of the two cuts: the read is
+ * `degraded` with the operation's reason and hands over the partial scene it did resolve.
  *
  * ## Bounds
  *
@@ -126,10 +129,14 @@ export function projectNeighbourhood({
         linked  = edges
             .map(row => ({
                 from: qualifyNodeId(row.from, origin),
-                to  : qualifyNodeId(row.to, origin)
+                to  : qualifyNodeId(row.to, origin),
+                // Passed through only when the seam supplied one. The neighbour operation names the
+                // relation as `relationship`; when a projection does not carry it the key is ABSENT
+                // rather than defaulted, because a placeholder relation would render as a real one.
+                ...(row.type ? {type: row.type} : {})
             }))
             .filter(row => present.has(row.from) && present.has(row.to))
-            .sort((a, b) => a.from !== b.from ? (a.from < b.from ? -1 : 1) : a.to < b.to ? -1 : a.to > b.to ? 1 : 0),
+            .sort((a, b) => a.from !== b.from ? (a.from < b.from ? -1 : 1) : a.to !== b.to ? (a.to < b.to ? -1 : 1) : 0),
         keptEdges = linked.slice(0, maxEdges),
         budget    = {maxNodes, maxEdges, maxBytes};
 
@@ -182,9 +189,16 @@ export function projectNeighbourhood({
  * @param {String} [input.reason] Why the read is not current, when it is not.
  * @returns {{state: String, reason: String|null}}
  */
-export function resolveSceneRead({measurable, seeded, found = 0, reason = null}) {
+export function resolveSceneRead({measurable, seeded, found = 0, reason = null, partial = false}) {
     if (!measurable) {
         return {state: 'unavailable', reason: reason ?? 'source-unreachable'}
+    }
+
+    // A seam that RAISED is neither a scope cut nor a whole-scene failure: whatever resolved before
+    // it is still true. `degraded` with the reason hands the partial scene over, where `unavailable`
+    // would claim there is no scene at all and `complete` would launder an outage into a fact.
+    if (partial) {
+        return {state: 'degraded', reason: reason ?? 'graph-seam-refused'}
     }
 
     if (!seeded || found === 0) {
@@ -246,20 +260,35 @@ export function createFleetGraphSceneSource({
             // A node the seam refuses — RLS, or a 404 — is a SCOPE CUT and is dropped, not raised: one
             // withheld row must not collapse a whole neighbourhood to `unavailable`, which would
             // tell the viewer its view failed when in fact it is merely smaller than it asked for.
+            // A seam that THREW is not a seam that withheld. The graph operations answer `null` for a
+            // row the reader may not see, and raise when the store itself cannot answer — collapsing
+            // the two would report an infrastructure outage as a permission, which is the one
+            // confusion this feed exists to avoid. So a refusal is tracked, not swallowed.
+            let seamRefused = null;
+
             const readNode = async id => {
                 try {
-                    return await getNode(id) ?? null
-                } catch {
-                    return null
+                    return {row: await getNode(id) ?? null}
+                } catch (error) {
+                    seamRefused ??= 'graph-node-read-failed';
+
+                    return {row: null}
                 }
             };
             const readAdjacency = async id => {
                 try {
+                    // The await and the member access are kept as separate statements on purpose.
+                    // Written as `await getNeighbors(id)?.neighbors`, the optional chaining applies to
+                    // the PROMISE rather than to the resolved answer, so the expression is
+                    // `await (promise.neighbors)` — always `undefined`, hence always an empty walk.
+                    // It failed silently: no throw, no error path, just a scene with no edges.
                     const answer = await getNeighbors(id);
 
-                    return (answer?.neighbors ?? []).map(entry => entry?.id).filter(Boolean)
-                } catch {
-                    return []
+                    return {neighbours: answer?.neighbors ?? []}
+                } catch (error) {
+                    seamRefused ??= 'graph-neasons-refused';
+
+                    return {neighbours: []}
                 }
             };
 
@@ -276,9 +305,17 @@ export function createFleetGraphSceneSource({
                 }
             }
 
-            if (!route || route.status !== 'fresh') {
+            // The operation answers an ENVELOPE, not a sidecar: `{status, reason, details, route,
+            // admission}` with `status` one of `available | missing | …` and freshness nested at
+            // `route.route.status`. Reading `status === 'fresh'` here can never be true, so every wired
+            // read answered `route-not-fresh`. The sibling route source already reduces this exact
+            // shape; the item id is `id`, not `ref`. A route the operation will not serve is DEGRADED
+            // with its own reason, not `unavailable` — there is no graph to be unavailable from.
+            const items = route?.status === 'available' ? route.route?.route?.items ?? null : null;
+
+            if (!items) {
                 return {
-                    capability: {state: 'unavailable', reason: route ? 'route-not-fresh' : 'route-missing'},
+                    capability: {state: 'degraded', reason: route?.reason ?? 'route-answer-malformed'},
                     scene     : null,
                     snapshotId: null,
                     capturedAt: new Date(now()).toISOString()
@@ -286,39 +323,74 @@ export function createFleetGraphSceneSource({
             }
 
             const
-                seedIds = (seeds ?? route.items ?? []).map(item => qualifyNodeId(item.ref ?? item, origin)),
+                // The seam is keyed by the graph's OWN id — bare, as `issue-9853`. Qualification is
+                // applied to the EMITTED scene, never to the request: a seam asked for
+                // `owner/repo#issue-9853` answers `{result: null}` for a row it holds, which would make
+                // every row past the seeds read as a scope cut.
+                entries = (seeds ?? items).map(item => {
+                    const bare = String(item?.id ?? item);
+
+                    return {bare, id: qualifyNodeId(bare, origin)}
+                }),
+                seedIds = entries.map(entry => entry.id),
                 found   = [],
                 links   = [],
-                queue   = [...seedIds],
+                linkKeys = new Set(),
+                queue   = entries.map(entry => entry.bare),
+                byId    = new Map(entries.map(entry => [entry.bare, entry.id])),
                 seen    = new Set(seedIds);
 
-            // Breadth-first, one hop per level, to the depth the caller asked for. The projection is
-            // single-hop by contract, so the DEPTH is this loop and not the seam — a seam handed a
-            // depth it cannot honour would be a fiction, and a fiction here would read as a bound that
-            // is not being applied. The budget in rows and bytes is the only bound this feed can
-            // honour honestly, so it is the one the scene reports.
-            for (let level = 0; level < depth && queue.length; level++) {
+            // Breadth-first, one hop per level. The loop runs `depth + 1` levels because the SEEDS are
+            // hop zero: `level <= depth` resolves the seeds at level 0 and their neighbours at level
+            // `depth`, so `depth: 1` is the one-hop neighbourhood. Bounding at `level < depth` instead
+            // made `depth: d` answer the (d−1)-hop neighbourhood while reporting `depth: d` — the
+            // second ring was silently missing and the scene still claimed to be complete.
+
+            for (let level = 0; level <= depth && queue.length; level++) {
                 const atLevel = queue.splice(0, queue.length);
 
-                for (const id of atLevel) {
-                    const row = await readNode(id);
+                for (const bare of atLevel) {
+                    const {row} = await readNode(bare);
 
                     if (row) {
                         found.push(row)
                     }
 
-                    for (const neighbour of await readAdjacency(id)) {
-                        const qualified = qualifyNodeId(neighbour, origin);
+                    for (const neighbour of (await readAdjacency(bare)).neighbours) {
+                        const
+                            // The operation carries the edge's own direction and relation: `source` and
+                            // `target` name the real endpoints and `relationship` names the relation.
+                            // Deriving `{from: the node we asked about, to: the neighbour}` instead —
+                            // which is what this walk did — REVERSES every inbound edge, and with both
+                            // endpoints expanded it emits each edge twice, spending the budget twice.
+                            from = byId.get(String(neighbour?.source ?? bare)) ?? qualifyNodeId(bare, origin),
+                            to   = byId.get(String(neighbour?.target)) ?? qualifyNodeId(String(neighbour?.id ?? ''), origin),
+                            type = neighbour?.relationship ?? null;
+
+                        if (!byId.has(String(neighbour?.target)) && neighbour?.id) {
+                            byId.set(String(neighbour.id), qualifyNodeId(String(neighbour.id), origin))
+                        }
 
                         // The link is recorded whether or not the target is newly discovered: a hop
                         // back to a node already in the scene is still an edge the scene must draw,
                         // and dropping it because the node was "already seen" would silently delete
                         // every cycle and every cross-link in the graph.
-                        links.push({from: id, to: qualified});
+                        //
+                        // Deduplicated, because the operation answers an edge from BOTH of its
+                        // endpoints: a walk that expands both ends sees every link twice, and charging
+                        // the edge budget for both spends it on a graph of unique links. Keyed on the
+                        // oriented pair, so a genuine parallel edge with a different `type` is still
+                        // two edges rather than one.
+                        const key = from + '\u0000' + to + '\u0000' + (type ?? '');
 
-                        if (!seen.has(qualified)) {
-                            seen.add(qualified);
-                            queue.push(qualified)
+                        if (!linkKeys.has(key)) {
+                            linkKeys.add(key);
+                            links.push(type ? {from, to, type} : {from, to})
+                        }
+
+                        if (!seen.has(to)) {
+                            seen.add(to);
+                            queue.push(String(neighbour?.id ?? neighbour?.target))
                         }
                     }
                 }
@@ -332,7 +404,9 @@ export function createFleetGraphSceneSource({
                 resolved  = resolveSceneRead({
                     measurable: true,
                     seeded    : seedIds.length > 0,
-                    found     : projected.counts.nodes
+                    found     : projected.counts.nodes,
+                    partial   : Boolean(seamRefused),
+                    reason    : seamRefused
                 });
 
             return {
