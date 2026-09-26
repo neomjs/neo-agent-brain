@@ -84,6 +84,7 @@ jobs:
                   test/playwright/unit/ai/mcp/server/knowledge-base/Server.spec.mjs
                   test/playwright/unit/ai/scripts/maintenance/backup.spec.mjs
                   test/playwright/unit/ai/scripts/maintenance/restore.spec.mjs
+                  test/playwright/unit/ai/scripts/maintenance/restoreReceipts.spec.mjs
                   test/playwright/unit/ai/services/github-workflow/DiscussionReconciliationService.spec.mjs
                   test/playwright/unit/ai/services/github-workflow/community/githubDiscussionObservations.spec.mjs
                   test/playwright/unit/ai/services/github-workflow/community/githubDiscussionReconciliation.spec.mjs
