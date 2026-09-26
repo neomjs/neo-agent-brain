@@ -3340,6 +3340,36 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(plan).toContain('idx_nodes_message_sent_at');
         });
 
+        test('#555 — the activity-recency read rides the AGENT_MEMORY index the storage declares', async () => {
+            const sqlite = GraphService.db.storage.db;
+            const names  = sqlite.prepare(`
+                SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_nodes_agent_memory_recency'
+            `).all().map(row => row.name);
+
+            expect(names).toEqual(['idx_nodes_agent_memory_recency']);
+
+            // The service's recency read, in its own shape: one MAX per agent over that agent's rows.
+            const recencyPlan = sqlite.prepare(`
+                EXPLAIN QUERY PLAN
+                SELECT MAX(json_extract(data, '$.properties.timestamp')) AS latest
+                FROM Nodes
+                WHERE json_extract(data, '$.label') = 'AGENT_MEMORY'
+                  AND json_extract(data, '$.properties.agentIdentity') = ?
+            `).all('@neo-recency').map(row => row.detail).join(' | ');
+
+            expect(recencyPlan).toContain('idx_nodes_agent_memory_recency');
+
+            // Equivalence control: the projection over the indexed read still reads the seeded recency.
+            seedAgent('@neo-recency');
+            seedActivity('@neo-recency', {timestamp: iso(T0ms - 3 * 60 * 1000)});
+            seedActivity('@neo-recency', {timestamp: iso(T0ms - 90 * 1000)});
+
+            const {agents} = await WakeSubscriptionService.whoIsOnline({verbose: true, now: new Date(T0)});
+            const entry    = agents.find(a => a.identity === '@neo-recency');
+
+            expect(entry.online).toBe(true);
+        });
+
         test('#17225 AC4 — non-disposition mentions of the magic words neither open nor close a loop', async () => {
             seedAgent('@neo-ac4-robust');
             seedActivity('@neo-ac4-robust', {timestamp: iso(T0ms - 2 * 60 * 1000)});
