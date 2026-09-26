@@ -1,5 +1,4 @@
 import {expect, test} from '@playwright/test';
-import FleetControlBridge from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
 import {
     createFleetGraphSceneSource,
     projectNeighbourhood,
@@ -7,8 +6,21 @@ import {
     resolveSceneRead
 } from '../../../../../../ai/services/fleet/fleetGraphSceneSource.mjs';
 import {wireFleetGraphSceneSource} from '../../../../../../ai/services/fleet/wireFleetGraphSceneSource.mjs';
-import {FLEET_METHOD_SCOPE_CLASSES, FLEET_S1_METHOD_POLICY} from '../../../../../../ai/services/fleet/fleetServerPolicy.mjs';
-import {FLEET_WIRE_METHODS} from '../../../../../../src/fleet/contract/wire.mjs';
+
+// `FleetControlBridge` and the policy ledgers reach `neo.mjs`, whose modules call `Neo.gatekeep` at
+// module-evaluation time. They are loaded DYNAMICALLY, after the framework entrypoint has established
+// the global it assigns (`Neo = globalThis.Neo = Object.assign({...})`), because a static import
+// hoists above any statement here and would evaluate those modules against whatever ambient state the
+// worker happened to inherit. That inheritance is real and it is order-dependent: the sibling spec
+// makes the same static imports and passes, because a different spec ran first in that worker and left
+// the global behind. Three arms of THIS spec failed with `ReferenceError: Neo is not defined` purely
+// because of which worker they landed in — an arm that runs or does not depending on file order is not
+// an arm.
+await import('neo.mjs/src/Neo.mjs');
+
+const {default: FleetControlBridge} = await import('../../../../../../ai/services/fleet/FleetControlBridge.mjs');
+const {FLEET_METHOD_SCOPE_CLASSES, FLEET_S1_METHOD_POLICY} = await import('../../../../../../ai/services/fleet/fleetServerPolicy.mjs');
+const {FLEET_WIRE_METHODS} = await import('../../../../../../src/fleet/contract/wire.mjs');
 
 const
     NOW    = '2026-09-26T09:00:00.000Z',
@@ -263,6 +275,45 @@ test.describe('fleetGraphSceneSource', () => {
         expect(snapshotId, 'the snapshot a future token would bind').toMatch(/\S/)
     });
 
+    test('an emitted edge carries the relation the operation supplied, and invents none', async () => {
+        // The live neighbour answer names the relation as `relationship`, so it is PRESENT data and
+        // belongs in the scene — an earlier draft dropped it on a misreading of
+        // `conceptNeighborhoodProbe`'s note, which narrows edge PROPERTIES to `weight`, not the edge
+        // TYPE. The invariant worth keeping is the narrower one: whatever the operation does not supply
+        // is ABSENT rather than defaulted, because a placeholder relation is the one label a viewer
+        // cannot distinguish from a real one.
+        const withRelation = stubGraph({
+                nodes : [node('pr-101'), node('issue-202')],
+                edges : [edge('pr-101', 'issue-202', 'GUIDES')]
+            }),
+            bare = stubGraph({
+                nodes : [node('pr-101'), node('issue-202')],
+                edges : [edge('pr-101', 'issue-202')]
+            }),
+            source = createFleetGraphSceneSource(seams({graph: withRelation})),
+            {scene} = await source.readGraphScene({depth: 1});
+
+        expect(scene.edges, 'a supplied relation is passed through, not dropped').toEqual([
+            {from: 'neomjs/neo#pr-101', to: 'neomjs/neo#issue-202', type: 'GUIDES'}
+        ]);
+
+        const {scene: unrel} = await createFleetGraphSceneSource(seams({graph: bare})).readGraphScene({depth: 1});
+
+        expect('type' in unrel.edges[0], 'and an absent relation is absent, never a placeholder').toBe(false)
+    });
+
+    test('v1 declares no continuation token, and the read carries the snapshot a v2 would bind', async () => {
+        // The decision recorded for this feed: budgets are mandatory and a continuation is deferred
+        // to a v2 that binds a snapshot identity. This arm fails the day a `continuation` field
+        // appears without that binding — which is the point of pinning the absence. The snapshot
+        // identity lives on the ENVELOPE, not the scene, so it survives a read that has no scene.
+        const graph = stubGraph({nodes: [node('pr-101')], edges: []}),
+              {scene, snapshotId} = await createFleetGraphSceneSource(seams({graph})).readGraphScene({});
+
+        expect('continuation' in scene, 'a stateless wire gets no token').toBe(false);
+        expect(snapshotId, 'the snapshot a future token would bind').toMatch(/\S/)
+    });
+
     test('an emitted edge is adjacency presence and never an invented relation', async () => {
         // The graph's neighbour projection drops every edge property except `weight`, so a `type` read
         // through this seam is ABSENT data, not weak data. An earlier draft defaulted it to
@@ -448,8 +499,8 @@ test.describe('fleetGraphSceneSource — pure projection', () => {
         const nodes = [node('pr-101', {origin: 'neomjs/neo'}), node('issue-7', {origin: 'neomjs/neo'}), node('issue-3', {origin: 'neomjs/other'})],
               edges = [edge('pr-101', 'issue-7'), edge('pr-101', 'issue-3')],
               input = {seedIds: ['neomjs/neo#pr-101'], maxNodes: 10, maxEdges: 10, maxBytes: 4096},
-              straight = projectNeighbourhood({...input, nodes, edges}),
-              shuffled  = projectNeighbourhood({...input, nodes: [...nodes].reverse(), edges: [...edges].reverse()});
+              straight = projectNeighbourhood({...input, nodes, edges: links}),
+              shuffled  = projectNeighbourhood({...input, nodes: [...nodes].reverse(), edges: [...links].reverse()});
 
         expect(shuffled, 'arrival order is not scene order').toEqual(straight);
         expect(straight.nodes.map(entry => entry.id), 'ids are origin-qualified, and sorted').toEqual([
