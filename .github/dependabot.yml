@@ -5,8 +5,8 @@
 # is deliberate — do not add one without changing the policy it encodes.
 #
 # GROUPED, because ungrouped daily updates open a PR per dependency and the queue stops being read.
-# `github-actions` is here because nothing else updates the pinned action versions, and this
-# repository carries ten workflows.
+# `github-actions` is here because nothing else updates the pinned action versions, or the Skills
+# release tag `shared-pr-baseline.yml` calls.
 #
 # NOT FULL COVERAGE, deliberately recorded: `neo.mjs` is a tarball URL pinned to a commit, and
 # Dependabot's npm ecosystem cannot bump that form. It stays a manual move; a reader who mistakes

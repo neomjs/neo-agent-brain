@@ -1,0 +1,29 @@
+# The Brain owns only the event trigger, its permissions, the team roster input and the Skills release it
+# calls. The called workflow owns every job, so their implementation cannot drift here. Product CI
+# (brain-unit.yml, brain-integration.yml and the lint workflows) stays separate: governance never gates the build.
+
+name: Shared PR Baseline
+
+# The called PR-body job reads the pull request live, so it declares `pull-requests: read`, and a called job
+# may not hold more than its caller grants. Both grants stay read-only.
+permissions:
+  contents: read
+  pull-requests: read
+
+# Unfiltered by branch or path, so every PR emits a terminal result once these jobs are required contexts. The
+# callee reads the pull request live: a body-only `edited` and a draft's `ready_for_review` must re-run it, and
+# GitHub's default activity types carry neither.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+jobs:
+  baseline:
+    name: Shared PR Baseline
+    # A published Skills release, named by its tag and never by a commit SHA; dependabot moves the tag.
+    uses: neomjs/neo-agent-skills/.github/workflows/reusable-pr-baseline.yml@v0.1.19
+    # The roster tells the commit-authorship job whose commits are an agent's. The callee reads it at the
+    # roster repository's `dev` (its `team_roster_ref` default), never from the pull request under review.
+    with:
+      team_roster_repository: neomjs/neo-agent-brain
+      team_roster_path: ai/graph/agentCoAuthorEmails.mjs

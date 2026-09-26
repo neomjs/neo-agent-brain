@@ -97,11 +97,11 @@
         "chromadb": "3.5.0",
         "commander": "^15.0.0",
         "cors": "2.8.6",
-        "dotenv": "^18.0.2",
+        "dotenv": "^18.0.3",
         "express": "5.2.1",
         "express-rate-limit": "8.7.0",
         "fast-glob": "^3.3.3",
-        "fs-extra": "^11.3.6",
+        "fs-extra": "^11.4.1",
         "gray-matter": "^4.0.3",
         "js-yaml": "^5.4.2",
         "micromatch": "4.0.8",
@@ -119,7 +119,7 @@
         "catharsis": "0.11.0",
         "chalk": "^6.0.0",
         "postcss": "^8.5.28",
-        "sass": "^1.104.1"
+        "sass": "^1.105.0"
     },
     "overrides": {
         "gray-matter": {

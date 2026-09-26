@@ -332,6 +332,16 @@ async function deliverOpenCode({digest, effects, meta, record, signal}) {
 }
 
 /**
+ * The OpenCode seat envelope's required string fields, beside the integer `port`. The reader below
+ * validates against this list, and both producers (the seat-config boot hook and the OpenCode plant)
+ * are pinned to it by `opencodeSeatEnvelopeParity.spec.mjs`, because the plant runs outside this repo
+ * and cannot import it. This envelope carries no owner epoch: `pid` / `pidStartedAt` belong to the
+ * kimi-pull-bridge envelope `consumeWakeOutbox.mjs` reads.
+ * @type {String[]}
+ */
+export const OPENCODE_SEAT_ENVELOPE_FIELDS = Object.freeze(['agentIdentity', 'hostname', 'sessionId', 'projectId', 'directory', 'username', 'password']);
+
+/**
  * @summary Reads and validates the OpenCode seat envelope used as route authority.
  * @private
  */
@@ -339,16 +349,8 @@ async function readOpenCodeEnvelope(effects, envelopePath) {
     const envelope                                                                             = await readJson(effects.fs, envelopePath, 'opencode-server seat envelope');
     const {agentIdentity, hostname, port, sessionId, projectId, directory, username, password} = envelope;
 
-    for (const [key, value] of Object.entries({
-        agentIdentity,
-        hostname,
-        sessionId,
-        projectId,
-        directory,
-        username,
-        password
-    })) {
-        if (typeof value !== 'string' || value.length === 0) {
+    for (const key of OPENCODE_SEAT_ENVELOPE_FIELDS) {
+        if (typeof envelope[key] !== 'string' || envelope[key].length === 0) {
             throw new Error(`opencode-server envelope requires '${key}'`);
         }
     }
