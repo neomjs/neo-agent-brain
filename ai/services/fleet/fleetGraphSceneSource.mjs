@@ -370,8 +370,16 @@ export function createFleetGraphSceneSource({
                             // Deriving `{from: the node we asked about, to: the neighbour}` instead —
                             // which is what this walk did — REVERSES every inbound edge, and with both
                             // endpoints expanded it emits each edge twice, spending the budget twice.
-                            from = byId.get(String(neighbour?.source ?? bare)) ?? qualifyNodeId(bare, origin),
-                            to   = byId.get(String(neighbour?.target)) ?? qualifyNodeId(String(neighbour?.id ?? ''), origin),
+                            // Resolve BOTH endpoints off the EDGE, never off the node we happened to
+                            // ask about. An INBOUND edge names a `source` that is not this node and is
+                            // usually outside the read, so a `?? qualifyNodeId(bare)` fallback on the
+                            // source made `from` collapse onto the expanded node and produced a
+                            // self-loop (`issue-19235 -> issue-19235`) for every inbound edge. The
+                            // fallback now qualifies the edge's own endpoint; if that endpoint is not
+                            // in the scene the projector drops the link as dangling, which is the
+                            // honest outcome — a cross-link to a node this read did not include.
+                            from = byId.get(String(neighbour?.source)) ?? qualifyNodeId(String(neighbour?.source ?? ''), origin),
+                            to   = byId.get(String(neighbour?.target)) ?? qualifyNodeId(String(neighbour?.target ?? ''), origin),
                             type = neighbour?.relationship ?? null;
 
                         if (!byId.has(String(neighbour?.target)) && neighbour?.id) {

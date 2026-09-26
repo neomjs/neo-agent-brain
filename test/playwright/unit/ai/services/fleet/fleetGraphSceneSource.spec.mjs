@@ -422,6 +422,39 @@ test.describe('fleetGraphSceneSource', () => {
         expect(twoHop.scene.nodes.length, 'depth 2 reaches the second').toBe(5)
     });
 
+    test('an inbound edge never becomes a self-loop, in-scene or not', async () => {
+        // Round 2, measured with the plane's own answer: an inbound edge names a `source` that is not
+        // the node we asked about, and usually is not in the read either. Resolving the source with a
+        // `?? qualifyNodeId(askedAbout)` fallback collapsed `from` onto the expanded node, so every
+        // inbound edge came back as `issue-19235 -> issue-19235` with a real relation attached. Both
+        // endpoints are now read off the EDGE, never off the node we happened to ask about.
+        //
+        // The two cases differ and both matter: in-scene, the link draws in the graph's direction;
+        // out-of-scene, it is dropped as a dangling cross-link rather than drawn backwards.
+        const outside = await createFleetGraphSceneSource(seams({
+                graph: stubGraph({
+                    nodes : [node('issue-19235')],
+                    edges : [edge('issue-7', 'issue-19235', 'GUIDES')]
+                }),
+                route: routeWith(['issue-19235'])
+            })).readGraphScene({depth: 1});
+
+        expect(outside.scene.edges.every(link => link.from !== link.to), 'no self-loop').toBe(true);
+        expect(outside.scene.edges, 'an out-of-scene inbound edge is dropped, not drawn backwards').toEqual([]);
+
+        const inside = await createFleetGraphSceneSource(seams({
+                graph: stubGraph({
+                    nodes : [node('issue-19235'), node('issue-7')],
+                    edges : [edge('issue-7', 'issue-19235', 'GUIDES')]
+                }),
+                route: routeWith(['issue-7'])
+            })).readGraphScene({depth: 1});
+
+        expect(inside.scene.edges, 'an in-scene inbound edge keeps the graph\'s direction').toEqual([
+            {from: 'neomjs/neo#issue-7', to: 'neomjs/neo#issue-19235', type: 'GUIDES'}
+        ])
+    });
+
     test('an inbound edge keeps its own direction and is counted once', async () => {
         // The operation answers an edge from BOTH of its endpoints and names the direction on the
         // edge. Deriving `{from: the node we asked about, to: the neighbour}` reverses every inbound
