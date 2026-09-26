@@ -7,17 +7,18 @@ import PullRequestHistoryService from '../../../services/github-workflow/PullReq
 import GraphService              from '../../../services/memory-core/GraphService.mjs';
 import HealthService, {
     foldHeavyMaintenanceStarvation,
-    foldServiceMemoryPressure
+    foldServiceMemoryPressure,
+    noteHealthAdvisory
 }                                                      from '../../../services/memory-core/HealthService.mjs';
-import MemoryService                 from '../../../services/memory-core/MemoryService.mjs';
-import SessionService                from '../../../services/memory-core/SessionService.mjs';
-import SummaryService                from '../../../services/memory-core/SummaryService.mjs';
-import {getAuthValidationStaleness}  from '../shared/services/AuthService.mjs';
-import MailboxService                from '../../../services/memory-core/MailboxService.mjs';
-import PermissionService             from '../../../services/memory-core/PermissionService.mjs';
-import WakeSubscriptionService       from '../../../services/memory-core/WakeSubscriptionService.mjs';
-import TurnPresenceService           from '../../../services/memory-core/TurnPresenceService.mjs';
-import MemoryCoreRecorderService     from '../../../services/memory-core/MemoryCoreRecorderService.mjs';
+import MemoryService                from '../../../services/memory-core/MemoryService.mjs';
+import SessionService               from '../../../services/memory-core/SessionService.mjs';
+import SummaryService               from '../../../services/memory-core/SummaryService.mjs';
+import {getAuthValidationStaleness} from '../shared/services/AuthService.mjs';
+import MailboxService               from '../../../services/memory-core/MailboxService.mjs';
+import PermissionService            from '../../../services/memory-core/PermissionService.mjs';
+import WakeSubscriptionService      from '../../../services/memory-core/WakeSubscriptionService.mjs';
+import TurnPresenceService          from '../../../services/memory-core/TurnPresenceService.mjs';
+import MemoryCoreRecorderService    from '../../../services/memory-core/MemoryCoreRecorderService.mjs';
 import {
     readDeploymentStateSnapshot,
     selectLastServiceDeath
@@ -28,12 +29,12 @@ import {
     markNlTransactionReplayed,
     saveNlTransaction
 } from '../../../services/memory-core/helpers/nlTransactionArchiveStore.mjs';
-import {readSandmanHandoff}    from '../../../services/memory-core/helpers/sandmanHandoffStore.mjs';
-import {readComputedRoute}     from '../../../services/memory-core/helpers/computedRouteStore.mjs';
+import {readSandmanHandoff}              from '../../../services/memory-core/helpers/sandmanHandoffStore.mjs';
+import {readComputedRoute}               from '../../../services/memory-core/helpers/computedRouteStore.mjs';
 import {COMPUTED_ROUTE_SIDECAR_FILENAME} from '../../../services/graph/computedRouteResult.mjs';
-import {exploreLaneLandscape}  from '../../../services/graph/exploreLaneLandscape.mjs';
-import {exploreMemoryHistory}  from '../../../services/memory-core/helpers/exploreMemoryHistory.mjs';
-import {makeChatModelGenerate} from '../../../services/memory-core/helpers/chatModelGenerate.mjs';
+import {exploreLaneLandscape}            from '../../../services/graph/exploreLaneLandscape.mjs';
+import {exploreMemoryHistory}            from '../../../services/memory-core/helpers/exploreMemoryHistory.mjs';
+import {makeChatModelGenerate}           from '../../../services/memory-core/helpers/chatModelGenerate.mjs';
 import {
     makeLandscapeCensusSource,
     makeRefusingCensusPageReader
@@ -298,11 +299,13 @@ async function readCorpusProjectionFreshness(now = Date.now()) {
  * @summary Reconciles base Memory Core health with measured WAL and orchestrator maintenance state.
  *
  * A fresh asynchronous backlog is expected and leaves the base verdict unchanged. Once the shared
- * drain classifier reports `stalled`, or the current orchestrator bridge reports degraded backup
- * maintenance, the composed response cannot still claim every feature is operational:
- * healthy/degraded becomes degraded, an existing unhealthy verdict wins, and the details name the
- * observed cause. Stale/unavailable bridge state is explicit but cannot authorize a current backup
- * degradation. This projection is diagnostic-only and never repairs either subsystem.
+ * drain classifier reports `stalled`, the server serves with impaired recall and the composed
+ * `status` becomes `degraded` (an existing `unhealthy` verdict wins). A degraded backup, a stale
+ * corpus projection or provider admission served from the validation cache are advisories on a
+ * serving plane: `status` is untouched, `posture` reads `attention`, `advisories[]` names the axis
+ * with its reason codes, the all-clear line withdraws, and the details name the observed cause.
+ * Stale/unavailable bridge state is explicit but cannot authorize a current backup advisory. This
+ * projection is diagnostic-only and never repairs either subsystem.
  *
  * @param {Object} options
  * @param {Object} options.health Base HealthService response.
@@ -352,59 +355,64 @@ export function composeMemoryCoreHealthcheck({
         drainStalled   = memoryWalDrain.state === 'stalled',
         backupDegraded = backupHealth?.status === 'degraded',
         projectionDegraded = corpusProjectionFreshness?.posture === 'degraded',
-        // Admission staleness (a provider validation outage being survived on cached identities)
-        // degrades the verdict the SAME way the other partial-health signals do: the plane serves,
-        // and the truth label says so. Read per-call so the signal clears the moment any fresh
-        // provider validation lands.
+        // Admission staleness (a provider validation outage being survived on cached identities) is
+        // an advisory like the maintenance signals: the plane serves, and the operator reads the
+        // outage under `posture` / `advisories`. Read per-call so the signal clears the moment any
+        // fresh provider validation lands.
         authDegraded   = getAuthValidationStaleness().size > 0;
 
-    let composed = response;
+    // `status` is the serving verdict and only a serving impairment moves it (a stalled embed drain:
+    // writes the reader cannot yet recall). Backup durability, corpus projection freshness and
+    // admission staleness are advisories on the same payload; see HealthService#noteHealthAdvisory.
+    let composed = {
+        ...response,
+        posture   : health.posture ?? 'clear',
+        advisories: Array.isArray(health.advisories) ? [...health.advisories] : [],
+        details   : Array.isArray(health.details) ? [...health.details] : []
+    };
 
-    if (drainStalled || backupDegraded || projectionDegraded || authDegraded) {
-        const details = Array.isArray(health.details)
-            ? health.details.filter(detail => detail !== ALL_FEATURES_OPERATIONAL_DETAIL)
-            : [];
+    if (drainStalled) {
+        composed.status  = health.status === 'unhealthy' ? 'unhealthy' : 'degraded';
+        composed.details = composed.details.filter(detail => detail !== ALL_FEATURES_OPERATIONAL_DETAIL);
+        composed.details.push(
+            `Memory WAL embed drain is stalled: ${memoryWalDrain.pendingDrainDepth} pending records; ` +
+            `oldest pending age ${memoryWalDrain.oldestPendingAgeMs} ms exceeds the ` +
+            `${memoryWalDrain.stallThresholdMs} ms threshold.`
+        )
+    }
 
-        if (drainStalled) {
-            details.push(
-                `Memory WAL embed drain is stalled: ${memoryWalDrain.pendingDrainDepth} pending records; ` +
-                `oldest pending age ${memoryWalDrain.oldestPendingAgeMs} ms exceeds the ` +
-                `${memoryWalDrain.stallThresholdMs} ms threshold.`
-            )
-        }
+    if (backupDegraded) {
+        const reasonCodes = Array.isArray(backupHealth.reasonCodes) && backupHealth.reasonCodes.length > 0
+            ? backupHealth.reasonCodes.join(', ')
+            : 'see maintenance.backup';
 
-        if (backupDegraded) {
-            const reasonCodes = Array.isArray(backupHealth.reasonCodes) && backupHealth.reasonCodes.length > 0
-                ? backupHealth.reasonCodes.join(', ')
-                : 'see maintenance.backup';
+        noteHealthAdvisory(composed, {axis: 'backup', state: 'degraded', reasonCodes: backupHealth.reasonCodes ?? []});
+        composed.details.push(`Backup maintenance is degraded: ${reasonCodes}.`)
+    }
 
-            details.push(`Backup maintenance is degraded: ${reasonCodes}.`)
-        }
+    if (projectionDegraded) {
+        const reasonCodes = Array.isArray(corpusProjectionFreshness.reasonCodes) &&
+            corpusProjectionFreshness.reasonCodes.length > 0
+            ? corpusProjectionFreshness.reasonCodes.join(', ')
+            : 'see corpusProjectionFreshness';
 
-        if (projectionDegraded) {
-            const reasonCodes = Array.isArray(corpusProjectionFreshness.reasonCodes) &&
-                corpusProjectionFreshness.reasonCodes.length > 0
-                ? corpusProjectionFreshness.reasonCodes.join(', ')
-                : 'see corpusProjectionFreshness';
+        noteHealthAdvisory(composed, {
+            axis       : 'corpusProjectionFreshness',
+            state      : 'degraded',
+            reasonCodes: corpusProjectionFreshness.reasonCodes ?? []
+        });
+        composed.details.push(`Core corpus projection freshness is degraded: ${reasonCodes}.`)
+    }
 
-            details.push(`Core corpus projection freshness is degraded: ${reasonCodes}.`)
-        }
+    if (authDegraded) {
+        const rows = [...getAuthValidationStaleness().entries()]
+            .map(([mode, {since, user}]) => `${mode} (identity '${user}', stale since ${new Date(since).toISOString()})`);
 
-        if (authDegraded) {
-            const rows = [...getAuthValidationStaleness().entries()]
-                .map(([mode, {since, user}]) => `${mode} (identity '${user}', stale since ${new Date(since).toISOString()})`);
-
-            details.push(
-                'Provider PAT admission is degraded — identities are being served from the ' +
-                `validation cache while the provider cannot be asked: ${rows.join('; ')}.`
-            )
-        }
-
-        composed = {
-            ...response,
-            status: health.status === 'unhealthy' ? 'unhealthy' : 'degraded',
-            details
-        }
+        noteHealthAdvisory(composed, {axis: 'providerAdmission', state: 'stale', modes: rows});
+        composed.details.push(
+            'Provider PAT admission is degraded — identities are being served from the ' +
+            `validation cache while the provider cannot be asked: ${rows.join('; ')}.`
+        )
     }
 
     // Heavy-maintenance starvation rides the SAME request-fresh deployment inspection and folds at
@@ -412,9 +420,10 @@ export function composeMemoryCoreHealthcheck({
     // container-health controllers — and deliberately NOT into `HealthService`'s own payload:
     // `ensureHealthy()` gates tool admission on that payload, and a starved maintenance lane must
     // never block capabilities it does not affect (semantic recall stays dispatchable while this
-    // composed surface reports degraded). Per-tool-call composition makes the consumption
-    // request-fresh by construction — no cache can blind the verdict. All degradation-authority
-    // guards (fresh degraded receipt only; unknown/disabled/stale/unavailable never degrade;
+    // composed surface carries the starvation advisory under `posture` / `advisories`; `status` is
+    // untouched). Per-tool-call composition makes the consumption request-fresh by construction —
+    // no cache can blind the verdict. All advisory-authority guards (fresh degraded receipt only;
+    // unknown is recorded as inconclusive; disabled/stale/unavailable never raise the posture;
     // unhealthy wins; the all-clear line is withdrawn) live in the pure fold.
     try {
         const starvationPayload = {...composed};
@@ -529,7 +538,7 @@ const serviceMapping = {
         // Fresh bridge truth only. `composeMemoryCoreHealthcheck` keeps stale/unavailable
         // observations explicit but prevents either from authorizing a backup degradation.
         deploymentInspection: await readDeploymentInspection(),
-        serviceKey             : 'mc-server',
+        serviceKey          : 'mc-server',
         // The starvation receipt is bounded by ITS OWN producer's cadence, never by the bridge's
         // write-staleness clock: the snapshot is rewritten every 30s, the receipt only every
         // watchdog run, so one leaf governing both made the verdict readable 2 minutes in 10

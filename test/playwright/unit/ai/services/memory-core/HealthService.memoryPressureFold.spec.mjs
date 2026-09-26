@@ -73,11 +73,17 @@ test.describe('foldServiceMemoryPressure (#17121)', () => {
         return {observation, payload};
     }
 
-    test('a fresh at-cap service degrades the composed health an operator reads', () => {
+    test('a fresh at-cap service raises the posture an operator reads, and leaves the serving verdict alone', () => {
         const {observation, payload} = fold(makeInspection({services: [makeService()]}));
 
         expect(observation.state).toBe('consumed-degraded');
-        expect(payload.status).toBe('degraded');
+        // The plane serves through a ceiling incident, so `status` stays `healthy`; the ceiling
+        // is the operator's to look at, under `posture` / `advisories`.
+        expect(payload.status).toBe('healthy');
+        expect(payload.posture).toBe('attention');
+        expect(payload.advisories).toHaveLength(1);
+        expect(payload.advisories[0]).toMatchObject({axis: 'serviceMemoryPressure', state: 'consumed-degraded'});
+        expect(payload.advisories[0].atCap[0].serviceKey).toBe('embedding-model');
         // The all-clear line is withdrawn: "all features are operational" and "a lane is pinned at its
         // ceiling" cannot both be true in one response.
         expect(payload.details).not.toContain('All features are operational');
@@ -223,7 +229,7 @@ test.describe('foldServiceMemoryPressure (#17121)', () => {
         expect(fold(makeInspection({})).observation.state).toBe('absent');
     });
 
-    test('one at-cap service among healthy ones still degrades, and only it is named', () => {
+    test('one at-cap service among healthy ones still raises the posture, and only it is named', () => {
         const {observation, payload} = fold(makeInspection({
             services: [
                 makeService({disposition: 'below', serviceKey: 'chat-model'}),
@@ -232,7 +238,8 @@ test.describe('foldServiceMemoryPressure (#17121)', () => {
             ]
         }));
 
-        expect(payload.status).toBe('degraded');
+        expect(payload.status).toBe('healthy');
+        expect(payload.posture).toBe('attention');
         expect(observation.atCap.map(entry => entry.serviceKey)).toEqual(['embedding-model']);
     });
 });

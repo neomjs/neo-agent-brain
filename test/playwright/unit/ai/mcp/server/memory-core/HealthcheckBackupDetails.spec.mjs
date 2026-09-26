@@ -89,4 +89,36 @@ test.describe('memory-core healthcheck — the backup detail line derives from t
             'Backup maintenance is degraded: see maintenance.backup.'
         );
     });
+
+    // The operator's ruling: a serving Memory Core says so. A degraded backup is an advisory
+    // beside the serving verdict, never the verdict itself; the all-clear line still withdraws.
+    test('#557 — a degraded backup leaves status healthy, raises posture, and lists the advisory with its codes', async () => {
+        const composed = await compose(['off-host-durability-unmet', 'backup-retry-exhausted']);
+
+        expect(composed.status).toBe('healthy');
+        expect(composed.posture).toBe('attention');
+        expect(composed.advisories).toEqual([
+            {axis: 'backup', state: 'degraded', reasonCodes: ['off-host-durability-unmet', 'backup-retry-exhausted']}
+        ]);
+        expect(composed.details).not.toContain('All features are operational');
+        expect(backupDetailOf(composed)).toBe(
+            'Backup maintenance is degraded: off-host-durability-unmet, backup-retry-exhausted.'
+        );
+    });
+
+    test('#557 — a stalled WAL embed drain is a serving impairment and still reads degraded', async () => {
+        const {composeMemoryCoreHealthcheck} = await import(
+            '../../../../../../../ai/mcp/server/memory-core/toolService.mjs'
+        );
+        const composed = composeMemoryCoreHealthcheck({
+            ...baseArgs([]),
+            deploymentInspection: {ok: true, status: 'available', snapshot: {maintenance: {health: {status: 'healthy', reasonCodes: [], staleAfterMs: null}}}},
+            memoryWalDrain      : {state: 'stalled', pendingDrainDepth: 3, oldestPendingAgeMs: 999, stallThresholdMs: 1}
+        });
+
+        expect(composed.status).toBe('degraded');
+        expect(composed.posture).toBe('clear');
+        expect(composed.advisories).toEqual([]);
+        expect(composed.details.join('\n')).toContain('Memory WAL embed drain is stalled');
+    });
 });
