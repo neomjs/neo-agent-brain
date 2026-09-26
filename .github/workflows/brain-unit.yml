@@ -126,6 +126,9 @@ jobs:
                   test/playwright/unit/ai/services/fleet/fleetGoldenPathSource.spec.mjs
                   test/playwright/unit/ai/services/fleet/dispatchFleetRequest.spec.mjs
                   test/playwright/unit/ai/services/fleet/fleetServer.spec.mjs
+                  test/playwright/unit/ai/services/fleet/opencodeWakeEnvelopePlugin.spec.mjs
+                  test/playwright/unit/ai/daemons/wake/localWakeAdapters.spec.mjs
+                  test/playwright/unit/ai/daemons/wake/opencodeSeatEnvelopeParity.spec.mjs
                   test/playwright/unit/ai/services/memory-core/helpers/computedRouteStore.spec.mjs
 
             - name: Verify community host authority boundary

@@ -20,16 +20,25 @@
  *
  * ```json
  * {
- *   "hostname" : "127.0.0.1",
- *   "port"     : 55673,
- *   "sessionId": "ses_…",
- *   "projectId": "…",
- *   "directory": "…",
- *   "username" : "…",
- *   "password" : "…",
- *   "updatedAt": "…"
+ *   "agentIdentity": "@seat-login",
+ *   "hostname"     : "127.0.0.1",
+ *   "port"         : 55673,
+ *   "sessionId"    : "ses_…",
+ *   "projectId"    : "…",
+ *   "directory"    : "…",
+ *   "username"     : "…",
+ *   "password"     : "…",
+ *   "updatedAt"    : "…"
  * }
  * ```
+ *
+ * The daemon's reader (`localWakeAdapters.mjs`, `OPENCODE_SEAT_ENVELOPE_FIELDS`) refuses an envelope
+ * without `agentIdentity` and compares it with the route's owner, so this writer stamps it. It comes
+ * from the seat's launch env (`NEO_AGENT_IDENTITY`, which the seat wrapper sources from the seat's
+ * `.env`). A Dock launch bypasses the wrapper, so the identity of the envelope being replaced is
+ * carried over. With neither, the writer does not write: replacing an envelope with one the reader
+ * must refuse turns a working route into a silent failure. The envelope carries no owner epoch —
+ * `pid` / `pidStartedAt` belong to the kimi-pull-bridge envelope, a different artifact.
  *
  * The wake daemon's `deliverViaOpencodeServer` (`ai/daemons/wake/daemon.mjs`) re-reads this
  * envelope on every delivery, so the embedded server's random per-boot port and the live
@@ -107,8 +116,30 @@ export const NeoWakeEnvelope = async (ctx) => {
         return port;
     };
 
+    // The launch env's identity first; else the one the envelope being replaced carries (a Dock
+    // launch bypasses the seat wrapper that sources it). Identity is the one field read from disk:
+    // it is per-seat and never changes, unlike the coordinates below, which are never adopted.
+    const resolveIdentity = async () => {
+        const fromEnv = launchIdentity();
+
+        if (fromEnv) return fromEnv;
+
+        try {
+            return canonicalIdentity(JSON.parse(await fs.readFile(envelopePath, 'utf8'))?.agentIdentity);
+        } catch (_) {
+            return null;
+        }
+    };
+
     const writeEnvelope = async (sessionId, port) => {
+        const agentIdentity = await resolveIdentity();
+
+        if (!agentIdentity) {
+            throw new Error('no seat identity: NEO_AGENT_IDENTITY is unset and the current envelope names none, so the envelope is left as it is — launch the seat through its wrapper');
+        }
+
         const envelope = {
+            agentIdentity,
             hostname : '127.0.0.1',
             port,
             sessionId,
@@ -313,5 +344,26 @@ export const NeoWakeEnvelope = async (ctx) => {
         }
     };
 };
+
+/**
+ * @summary A seat identity in the wire's `@handle` spelling (the boot hook's rule), or null.
+ * @param {*} value A raw identity.
+ * @returns {String|null}
+ */
+function canonicalIdentity(value) {
+    const bare = typeof value === 'string' ? value.trim().replace(/^@+/, '') : '';
+
+    return bare ? `@${bare}` : null;
+}
+
+/**
+ * @summary The seat identity the launch env names, or null. The Brain reads this env through the
+ * `stopHook.projection.agentId` leaf, but a plant runs inside OpenCode, where no AiConfig exists
+ * (the Kimi hook's `readAgentIdentity` reads it the same way).
+ * @returns {String|null}
+ */
+function launchIdentity() {
+    return canonicalIdentity(process.env.NEO_AGENT_IDENTITY);
+}
 
 export default NeoWakeEnvelope;
