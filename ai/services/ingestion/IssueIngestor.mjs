@@ -279,6 +279,8 @@ class IssueIngestor extends Base {
      * into the Native Graph database. Re-asserts edge weights for OPEN issues, heavily discounting
      * any nodes structurally blocked via BLOCKED_BY relationships to prevent GraphRAG hallucinations.
      * Upserts textual issue embeddings into the localized `neo_graph_nodes` SQLite vector collection.
+     * Each ISSUE node carries its `author` login and its `assignees` logins, an empty list when none
+     * hold it, so the next sync after an unassignment replaces the old holders.
      * @param {Object} [options]
      * @param {String} [options.contentRoot=DEFAULT_CONTENT_ROOT] Exact-revision materialized corpus root.
      * @param {Boolean} [options.strict=false] True rejects any otherwise-swallowed facet error so a
@@ -349,8 +351,10 @@ class IssueIngestor extends Base {
                             name      : meta.title || issueId,
                             state     : meta.state,
                             properties: {
-                                state : meta.state,
-                                labels: Array.isArray(meta.labels) ? meta.labels : [],
+                                state    : meta.state,
+                                labels   : Array.isArray(meta.labels) ? meta.labels : [],
+                                author   : meta.author || null,
+                                assignees: Array.isArray(meta.assignees) ? meta.assignees : [],
                                 ...projectionMetadata
                             },
                             updatedAt: meta.updatedAt || meta.createdAt
@@ -712,7 +716,9 @@ class IssueIngestor extends Base {
 
     /**
      * @summary Performs dual-path semantic mining on active and archived PR review documents to extract heuristic tags.
-     * Parses `[KB_GAP]`, `[TOOLING_GAP]`, and `[RETROSPECTIVE]` tags.
+     * Parses `[KB_GAP]`, `[TOOLING_GAP]`, and `[RETROSPECTIVE]` tags. Each PULL_REQUEST node carries its
+     * `author` login, and `assignees` only where the synced frontmatter holds that key: an absent key
+     * projects nothing rather than an empty list the corpus never asserted.
      * @param {Object} [options]
      * @param {String} [options.contentRoot=DEFAULT_CONTENT_ROOT] Exact-revision materialized corpus root.
      * @param {Boolean} [options.strict=false] True rejects directory/frontmatter errors for truthful facet completion.
@@ -771,7 +777,11 @@ class IssueIngestor extends Base {
                             name      : meta.title || prId,
                             state     : meta.state,
                             updatedAt : meta.updatedAt || meta.createdAt,
-                            properties: projectionMetadata
+                            properties: {
+                                author: meta.author || null,
+                                ...(Array.isArray(meta.assignees) ? {assignees: meta.assignees} : {}),
+                                ...projectionMetadata
+                            }
                         });
 
                         // Lexical scanning for tags
