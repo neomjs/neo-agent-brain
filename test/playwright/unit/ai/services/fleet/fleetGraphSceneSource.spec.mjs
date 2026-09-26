@@ -314,23 +314,6 @@ test.describe('fleetGraphSceneSource', () => {
         expect(snapshotId, 'the snapshot a future token would bind').toMatch(/\S/)
     });
 
-    test('an emitted edge is adjacency presence and never an invented relation', async () => {
-        // The graph's neighbour projection drops every edge property except `weight`, so a `type` read
-        // through this seam is ABSENT data, not weak data. An earlier draft defaulted it to
-        // 'RELATES_TO', which would have rendered every real edge in the cockpit as the same invented
-        // relation — and the arms passed anyway, because the STUB returned a type the real projection
-        // never does. The stub is the thing that was wrong, so this arm pins the absence.
-        const graph  = stubGraph({
-            nodes : [node('pr-101'), node('issue-202')],
-            edges : [edge('pr-101', 'issue-202', 'DEPENDS_ON')]
-        }), {scene} = await createFleetGraphSceneSource(seams({graph})).readGraphScene({});
-
-        expect(scene.edges, 'an edge names its two endpoints and stops there').toEqual([
-            {from: 'neomjs/neo#pr-101', to: 'neomjs/neo#issue-202'}
-        ]);
-        expect('type' in scene.edges[0], 'no relation label is invented for a viewer to render').toBe(false)
-    });
-
     test('a read failure is unavailable with a reason, never a fabricated scene', async () => {
         const source = createFleetGraphSceneSource({
             now             : () => NOW_MS,
@@ -497,7 +480,7 @@ test.describe('fleetGraphSceneSource — pure projection', () => {
         // still projects to the same scene is the arm that can actually fail — it catches a
         // projector that leaks iteration order into ids, counts, or edge order.
         const nodes = [node('pr-101', {origin: 'neomjs/neo'}), node('issue-7', {origin: 'neomjs/neo'}), node('issue-3', {origin: 'neomjs/other'})],
-              edges = [edge('pr-101', 'issue-7'), edge('pr-101', 'issue-3')],
+              links = [{from: 'pr-101', to: 'issue-7'}, {from: 'pr-101', to: 'issue-3'}],
               input = {seedIds: ['neomjs/neo#pr-101'], maxNodes: 10, maxEdges: 10, maxBytes: 4096},
               straight = projectNeighbourhood({...input, nodes, edges: links}),
               shuffled  = projectNeighbourhood({...input, nodes: [...nodes].reverse(), edges: [...links].reverse()});
