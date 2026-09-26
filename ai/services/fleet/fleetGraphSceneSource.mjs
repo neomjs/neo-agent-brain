@@ -356,6 +356,13 @@ export function createFleetGraphSceneSource({
                         found.push(row)
                     }
 
+                    // The FINAL ring is resolved but not expanded: asking the graph for the
+                    // adjacency of a node at the depth boundary buys a ring the walk will never read,
+                    // which is a real call against a real store for a ring the scene cannot contain.
+                    if (level === depth) {
+                        continue
+                    }
+
                     for (const neighbour of (await readAdjacency(bare)).neighbours) {
                         const
                             // The operation carries the edge's own direction and relation: `source` and
