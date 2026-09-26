@@ -70,6 +70,40 @@ test.describe('check-aiconfig-test-mutation guard', () => {
         expect(findSharedConfigMutations(write)[0].leaf, 'the leaf is reported so a baseline can be reasoned about').toBeTruthy()
     });
 
+    test('an Object.assign through a config root is a write, and says which form it is', () => {
+        // Red-first for the review finding that named this rule's own thesis against it: a scope
+        // labelled `full` that cannot see `Object.assign(<config root>, …)` repeats the original
+        // defect at a smaller size, because every key of that call is still a `[[Set]]` on the proxy
+        // and still routes to the provider's `setData`. The form is on the hit because one call can
+        // write many leaves — a per-hit count is a lower bound on leaves touched, never a census.
+        const assign = "Object.assign(AiConfig.orchestrator.intervals, savedIntervals);";
+
+        expect(findDbPathMutations(assign), 'the DB-path subset does not see this either').toEqual([]);
+
+        const [hit] = findSharedConfigMutations(assign);
+
+        expect(hit.line, 'the assign call is a write').toBe(1);
+        expect(hit.form).toBe('assign-call');
+        expect(hit.leaf, 'the leaf is the CONFIG path, not the callee').toBe('AiConfig.orchestrator.intervals');
+        expect(findSharedConfigMutations("aiConfig.openAiCompatible.host = 'x';").at(0).form, 'the plain form stays distinguishable').toBe('assignment')
+    });
+
+    test('a config value merely PASSED to a call is a read, not an assign-write', () => {
+        // The false positive this arm's own first implementation produced: a bare `,<object literal>`
+        // alternative on the assignment pattern also matches `foo(KB_Config.data, {a: 1})`, which
+        // inflates the census with reads. Anchoring on the callee is the only thing that separates
+        // them, and the count is only a receipt while that stays true.
+        expect(findSharedConfigMutations('foo(AiConfig.orchestrator.intervals, {a: 1});')).toEqual([]);
+        expect(findSharedConfigMutations('await setTimeout(50, AiConfig.batchSize, 1);')).toEqual([])
+    });
+
+    test('a comment or a string mentioning Object.assign is not a write', () => {
+        // The same discrimination every other arm makes: the point of naming a second form is not to
+        // make the detector trigger-happy about the word.
+        expect(findSharedConfigMutations('// Object.assign(KB_Config.data, {batchSize: 1})')).toEqual([]);
+        expect(findSharedConfigMutations('const s = "Object.assign(KB_Config.data, {})";')).toEqual([])
+    });
+
     test('the full-scope rule ignores comments, comparisons, arrows and capture-reads', () => {
         // Same discrimination the DB-path rule makes, and the reason a report-only count of 598 is
         // trustworthy rather than inflated. A probe that cannot tell code from prose would report

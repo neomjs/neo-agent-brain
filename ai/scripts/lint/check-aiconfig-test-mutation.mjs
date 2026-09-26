@@ -288,25 +288,22 @@ const DB_PATH_MUTATION_GLOBAL = new RegExp(DB_PATH_MUTATION.source, 'g');
  * is the narrow DB-path subset that was implemented under the B4 label.
  *
  * That gap is the defect: the rule carrying the B4 id detected DB paths only, so a spec that wrote
- * `openAiCompatible.host` (or any of the other ~145 leaves) was invisible to a gate the ADR
+ * `openAiCompatible.host` (or any other leaf outside that subset) was invisible to a gate the ADR
  * advertised as covering it. An audit of "is B4 enforced?" against the ADR returned a false assurance,
  * which is worse than an absent guard — it converts an audit question into a wrong answer.
  *
- * MEASURED at the time of writing, via this file's own `codeMask` and root shape: **598 writes across
- * 146 distinct leaves in 53 spec files** under `test/`, of which 30 hits already carry an allowlist
- * entry. The concentration is the load-bearing fact: the top seven files hold ~336 of them
- * (`TextEmbeddingService.retry.spec` 80, `Orchestrator.spec` 64, `Orchestrator.invariants.spec` 44,
- * `GoldenPathSynthesizer.spec` 44, `RemDigestion.spec` 44, `DeploymentStateBridgeService.spec` 39,
- * `TextEmbeddingService.spec` 21), and the dominant leaf class is config-VARYING tuning knobs —
+ * The surface is real and concentrated: the dominant leaf class is config-VARYING tuning knobs —
  * `openAiCompatible.*` retry/timeout leaves, `vectorDimension`, `remSleepBatchLimit` — which is
- * precisely the class this file's own header already names as having no by-construction story yet.
+ * precisely the class this file's own header already names as having no by-construction story yet. The
+ * guard prints the current measured count on every run; that printout is the receipt, and no number
+ * written here is one.
  *
- * **So this rule is deliberately NOT gating.** Turning it on today would red seven files whose correct
+ * **So this rule is deliberately NOT gating.** Turning it on today would red the files whose correct
  * fix is an injected config snapshot, not an escape marker, and a gate that gets muted within a day
  * teaches the next reader the gate is optional. It ships as a measured, tested, REPORT-ONLY rule: the
- * count is printed on every run so the surface stops being invisible, and promoting it to gating is a
- * separate, deliberate step once those files have a real isolation story. Per-leaf escape markers are
- * explicitly NOT that story — they are how a class of 146 leaves becomes 146 unexamined exemptions.
+ * surface stops being invisible, and promoting it to gating is a separate, deliberate step once those
+ * files have a real isolation story. Per-leaf escape markers are explicitly NOT that story — they are
+ * how a class of leaves becomes a class of unexamined exemptions.
  */
 export const SHARED_CONFIG_MUTATION = new RegExp(
     `(?<![\\w$])${CONFIG_ROOT}(?![\\w$])` +                    // a config-shaped root, same grammar as the DB-path rule
@@ -314,15 +311,39 @@ export const SHARED_CONFIG_MUTATION = new RegExp(
     `\\s*=(?![=>])`                                             // assignment, excluding `==` / `===` / `=>`
 );
 
-const SHARED_CONFIG_MUTATION_GLOBAL = new RegExp(SHARED_CONFIG_MUTATION.source, 'g');
+/**
+ * The `Object.assign(<config root>…)` write form, kept as its OWN pattern rather than an alternation
+ * on {@link SHARED_CONFIG_MUTATION}: a bare `,<object literal>` alternative also matches any call that
+ * merely PASSES a config value alongside a literal (`foo(KB_Config.data, {a: 1})`), which is a read.
+ * Anchoring on the callee is the only thing that separates the write from the read.
+ */
+export const SHARED_CONFIG_ASSIGN_CALL = new RegExp(
+    `\\bObject\\.assign\\s*\\(\\s*(?<![\\w$])${CONFIG_ROOT}(?![\\w$])` + // `Object.assign(<config root>…`
+    `(?:\\.[A-Za-z_$][\\w$]*|\\[[\\s]*['"\`][^'"\`]+['"\`]\\s*\\])*` +   // any depth of leaf path, including none
+    `\\s*,`
+);
+
+const SHARED_CONFIG_MUTATION_GLOBAL   = new RegExp(SHARED_CONFIG_MUTATION.source, 'g'),
+      SHARED_CONFIG_ASSIGN_CALL_GLOBAL = new RegExp(SHARED_CONFIG_ASSIGN_CALL.source, 'g');
 
 /**
  * @summary Scans file content for ANY write through a config-shaped `*Config` root — the B4 clause's
  * full scope, as opposed to {@link findDbPathMutations}'s DB-path subset.
  *
- * Report-only by design; see the `SHARED_CONFIG_MUTATION` comment for the measured count and the
- * sequencing rationale. Exported and unit-tested so the promotion to a gating rule is a wiring change
- * in one place rather than a re-derivation.
+ * Two write forms are recognised, because each key of an `Object.assign(<config root>, …)` is still a
+ * `[[Set]]` on the hierarchical proxy and therefore still routes to the owning provider's `setData`:
+ * `assignment` (`<root>.<leaf> = …`) and `assign-call` (`Object.assign(<root>.<leaf>, {…})`). A hit's
+ * `form` says which, because the two have different blast radii — one `assign-call` can write many
+ * leaves, so a per-hit count is a lower bound on leaves touched, never a census.
+ *
+ * **Out of static reach, deliberately.** A subtree bound to a local first (`const s = AiConfig.x;
+ * s.y = 1`) and any computed key (`root[key] = 1`) are invisible here, exactly as they are for the
+ * DB-path rule. A spec that wants to mutate config in isolation goes through an injected snapshot
+ * instead; that is the sanctioned form, not a gap this detector is trying to close.
+ *
+ * Report-only by design. Exported and unit-tested so the promotion to a gating rule is a wiring change
+ * in one place rather than a re-derivation. Run it for the CURRENT disposition — the guard prints the
+ * live measured count on every run, and no number in a comment or a decision record is a receipt.
  *
  * @param {String} content
  * @returns {Object[]} `[{line, text, leaf}]` — one entry per offending line (1-based line numbers).
@@ -339,10 +360,22 @@ export function findSharedConfigMutations(content) {
 
         const mask = codeMask(line, state, index);
 
-        for (const match of line.matchAll(SHARED_CONFIG_MUTATION_GLOBAL)) {
-            if (mask[match.index]) {
-                hits.push({line: index + 1, text: line.trim(), leaf: match[0].replace(/^[\w$]+/, '').replace(/\s*=(?![=>]).*$/, '')});
-                break
+        // Two patterns, two forms, one per hit. `SHARED_CONFIG_ASSIGN_CALL` is scanned on the same
+        // masked line so a mention in a comment or a string cannot register either way.
+        for (const [pattern, form] of [[SHARED_CONFIG_MUTATION_GLOBAL, 'assignment'], [SHARED_CONFIG_ASSIGN_CALL_GLOBAL, 'assign-call']]) {
+            for (const match of line.matchAll(pattern)) {
+                if (mask[match.index]) {
+                    hits.push({
+                        line : index + 1,
+                        text : line.trim(),
+                        leaf : form === 'assign-call'
+                            // the call carries the config path, not the callee: `Object.assign(` is noise here
+                            ? match[0].slice(match[0].indexOf('(') + 1).replace(/\s*,\s*$/, '')
+                            : match[0].replace(/^[\w$]+/, '').replace(/\s*=(?![=>]).*$/, ''),
+                        form
+                    });
+                    break
+                }
             }
         }
     });
@@ -583,19 +616,22 @@ function main() {
 
         dbPathHits.forEach(({line, text}) => violations.push(`${file}:${line}: ${text}`));
         cloneHits.forEach(({line, text}) => cloneViolations.push(`${file}:${line}: ${text}`));
-        sharedConfigHits.forEach(({line, text, leaf}) => sharedConfigWrites.push({file, line, text, leaf}));
+        sharedConfigHits.forEach(hit => sharedConfigWrites.push({file, ...hit}));
     }
 
     // REPORT-ONLY, deliberately outside the exit decision. The count is printed on every run because
     // the whole defect this rule addresses was that the surface was INVISIBLE — a gate that says
-    // "0 violations" while 598 writes sit behind a narrower rule is a false assurance, and printing
-    // the number is the cheapest way to stop it being one again. It does not fail the build, because
-    // turning it on today would red seven files whose correct fix is an injected config snapshot.
-    const distinctLeaves = new Set(sharedConfigWrites.map(write => write.leaf));
+    // "0 violations" while the real number of writes sits behind a narrower rule is a false
+    // assurance, and printing the number is the cheapest way to stop it being one again. It does not
+    // fail the build, because turning it on today would red the files whose correct fix is an
+    // injected config snapshot.
+    const distinctLeaves = new Set(sharedConfigWrites.map(write => write.leaf)),
+          assignCalls    = sharedConfigWrites.filter(write => write.form === 'assign-call').length;
 
     console.log(`check-aiconfig-test-mutation: ${files.length} test file(s) scanned, ` +
         `${violations.length} new DB-path violation(s), ${sharedConfigWrites.length} shared-config write(s) ` +
-        `across ${distinctLeaves.size} leaf/leaves (REPORT-ONLY, ADR-0019 B4 full scope).`);
+        `across ${distinctLeaves.size} leaf/leaves (REPORT-ONLY, ADR-0019 B4 scope: ` +
+        `${sharedConfigWrites.length - assignCalls} assignment, ${assignCalls} Object.assign).`);
 
     if (!quiet && sharedConfigWrites.length > 0) {
         console.log(`\n  B4 full scope — ${sharedConfigWrites.length} write(s) through a shared *Config root. Not gating yet;`);
