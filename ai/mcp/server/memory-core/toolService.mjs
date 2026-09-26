@@ -299,11 +299,13 @@ async function readCorpusProjectionFreshness(now = Date.now()) {
  * @summary Reconciles base Memory Core health with measured WAL and orchestrator maintenance state.
  *
  * A fresh asynchronous backlog is expected and leaves the base verdict unchanged. Once the shared
- * drain classifier reports `stalled`, or the current orchestrator bridge reports degraded backup
- * maintenance, the composed response cannot still claim every feature is operational:
- * healthy/degraded becomes degraded, an existing unhealthy verdict wins, and the details name the
- * observed cause. Stale/unavailable bridge state is explicit but cannot authorize a current backup
- * degradation. This projection is diagnostic-only and never repairs either subsystem.
+ * drain classifier reports `stalled`, the server serves with impaired recall and the composed
+ * `status` becomes `degraded` (an existing `unhealthy` verdict wins). A degraded backup, a stale
+ * corpus projection or provider admission served from the validation cache are advisories on a
+ * serving plane: `status` is untouched, `posture` reads `attention`, `advisories[]` names the axis
+ * with its reason codes, the all-clear line withdraws, and the details name the observed cause.
+ * Stale/unavailable bridge state is explicit but cannot authorize a current backup advisory. This
+ * projection is diagnostic-only and never repairs either subsystem.
  *
  * @param {Object} options
  * @param {Object} options.health Base HealthService response.
@@ -418,9 +420,10 @@ export function composeMemoryCoreHealthcheck({
     // container-health controllers — and deliberately NOT into `HealthService`'s own payload:
     // `ensureHealthy()` gates tool admission on that payload, and a starved maintenance lane must
     // never block capabilities it does not affect (semantic recall stays dispatchable while this
-    // composed surface reports degraded). Per-tool-call composition makes the consumption
-    // request-fresh by construction — no cache can blind the verdict. All degradation-authority
-    // guards (fresh degraded receipt only; unknown/disabled/stale/unavailable never degrade;
+    // composed surface carries the starvation advisory under `posture` / `advisories`; `status` is
+    // untouched). Per-tool-call composition makes the consumption request-fresh by construction —
+    // no cache can blind the verdict. All advisory-authority guards (fresh degraded receipt only;
+    // unknown is recorded as inconclusive; disabled/stale/unavailable never raise the posture;
     // unhealthy wins; the all-clear line is withdrawn) live in the pure fold.
     try {
         const starvationPayload = {...composed};
