@@ -124,6 +124,7 @@ jobs:
                   test/playwright/unit/ai/daemons/orchestrator/HostEdgePosture.spec.mjs
                   test/playwright/unit/ai/deploy/ParityPlaneVolumeScoping.spec.mjs
                   test/playwright/unit/ai/deploy/PlaneDataRootMount.spec.mjs
+                  test/playwright/unit/ai/deploy/WakeReceiverRecordsMount.spec.mjs
                   test/playwright/unit/ai/scripts/setup/prepare.spec.mjs
                   test/playwright/unit/ai/services/fleet/fleetGoldenPathSource.spec.mjs
                   test/playwright/unit/ai/services/fleet/dispatchFleetRequest.spec.mjs
