@@ -1324,6 +1324,14 @@ paths:
         revisit decisions across completed pull requests while retaining exact PR/comment/review drill-down.
       tags: [Memories]
       parameters:
+        - name: origin
+          in: query
+          required: false
+          description: "`owner/repo` of the tenant repository to read (for example `neomjs/neo-agent-brain`). The owner must be the plane's configured owner and the repository a corpus origin the plane holds (`<contentRoot>/<repo>/pulls`), or the configured repository itself; anything else is refused with `unknown-origin` naming the origin, never answered from the default. Absent, the configured repository applies, as before."
+          schema:
+            type: string
+            pattern: "^[\\w.-]+/[\\w.-]+$"
+            example: "neomjs/neo-agent-brain"
         - name: resolution
           in: query
           required: false
