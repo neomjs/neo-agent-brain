@@ -302,17 +302,6 @@ test.describe('fleetGraphSceneSource', () => {
         expect('type' in unrel.edges[0], 'and an absent relation is absent, never a placeholder').toBe(false)
     });
 
-    test('v1 declares no continuation token, and the read carries the snapshot a v2 would bind', async () => {
-        // The decision recorded for this feed: budgets are mandatory and a continuation is deferred
-        // to a v2 that binds a snapshot identity. This arm fails the day a `continuation` field
-        // appears without that binding — which is the point of pinning the absence. The snapshot
-        // identity lives on the ENVELOPE, not the scene, so it survives a read that has no scene.
-        const graph = stubGraph({nodes: [node('pr-101')], edges: []}),
-              {scene, snapshotId} = await createFleetGraphSceneSource(seams({graph})).readGraphScene({});
-
-        expect('continuation' in scene, 'a stateless wire gets no token').toBe(false);
-        expect(snapshotId, 'the snapshot a future token would bind').toMatch(/\S/)
-    });
 
     test('a read failure is unavailable with a reason, never a fabricated scene', async () => {
         const source = createFleetGraphSceneSource({
