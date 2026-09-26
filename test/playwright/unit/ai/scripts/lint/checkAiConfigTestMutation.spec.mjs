@@ -19,14 +19,13 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 test.describe('check-aiconfig-test-mutation guard', () => {
     test('B4 is TWO rules sharing ONE catalog id, and only the DB-path subset gates', () => {
         // A rule labelled `B4` that detects DB paths only made "is B4 enforced?" — asked against
-        // ADR 0019's own table — return a false assurance, which is worse than an absent guard. The
-        // full-scope rule therefore exists, is tested, and is honestly marked not-yet-gating.
+        // the catalog's own table — return a false assurance, which is worse than an absent guard.
+        // The full-scope rule therefore exists, is tested, and is honestly marked not-yet-gating.
         //
-        // The halves do NOT get suffixed ids. `id` is the ADR-0019 catalog KEY: the two-way
-        // ownership check parses catalog id cells with `/\b([A-C]\d+)\b/`, so `B4-DB-PATH` parses
-        // as `B4` and a second suffixed rule collides into `duplicate-row`. One antipattern, one
-        // row, one id — the half is carried by `scope` and by `gating`, which is what the scanner
-        // branches on anyway.
+        // The halves do NOT get suffixed ids. `id` is the CATALOG KEY: the two-way ownership check
+        // parses catalog id cells with `/\b([A-C]\d+)\b/`, so `B4-DB-PATH` parses as `B4` and a
+        // second suffixed rule collides into `duplicate-row`. One antipattern, one row, one id —
+        // the half is carried by `scope` and by `gating`, which is what the scanner branches on anyway.
         expect(ADR_0019_RULES.map(rule => rule.id)).toEqual(['B4', 'B4']);
         expect(ADR_0019_RULES.map(rule => rule.scope), 'the half stays nameable without breaking the catalog grammar').toEqual(['db-path-subset', 'full']);
         expect(ADR_0019_RULES[0].detect).toBe(findDbPathMutations);
@@ -35,7 +34,7 @@ test.describe('check-aiconfig-test-mutation guard', () => {
         expect(ADR_0019_RULES[1].gating, 'promoting this to gating is a deliberate later step, not a default').toBe(false)
     });
 
-    test('these ids resolve against ADR 0019 in both directions', () => {
+    test('these ids resolve against the antipattern catalog in both directions', () => {
         // The red-first arm for the CI red this PR shipped with: a suffixed rule id is executable
         // and self-consistent, and still fails the catalog's ownership check — `unverifiable-tag`
         // on the ADR row, then `guard-id-missing-from-adr` per half. Asserting the two-way relation
