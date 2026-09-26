@@ -3810,8 +3810,31 @@ components:
       properties:
         status:
           type: string
+          description: "The SERVING verdict only: `unhealthy` when the server cannot serve (database unreachable, a startup dependency not ready), `degraded` when it serves with impaired recall (a failed or stale embedding canary, a stalled WAL embed drain), `healthy` otherwise. Maintenance posture never moves this field; read `posture` / `advisories` for it."
           enum: [healthy, degraded, unhealthy]
           example: "healthy"
+        posture:
+          type: string
+          description: "The maintenance posture beside the serving verdict: `clear` when no advisory is open, `attention` when at least one is. A `healthy` status with `attention` is a serving plane the operator should look at, not a server that fails."
+          enum: [clear, attention]
+          example: "clear"
+        advisories:
+          type: array
+          description: "Open advisories, one per axis that reports a problem while the server serves: backup durability (`backup`), heavy-maintenance starvation (`heavyMaintenanceStarvation`), a service at its memory ceiling (`serviceMemoryPressure`), core corpus projection freshness (`corpusProjectionFreshness`), provider admission served from the validation cache (`providerAdmission`). Each entry carries the axis's own state and reason codes; `details` names the same items in prose. Empty when `posture` is `clear`."
+          items:
+            type: object
+            properties:
+              axis:
+                type: string
+                enum: [backup, heavyMaintenanceStarvation, serviceMemoryPressure, corpusProjectionFreshness, providerAdmission]
+              state:
+                type: string
+                description: "The axis's own state word (`degraded`, `consumed-degraded`, `consumed-unknown`, `stale`)."
+              reasonCodes:
+                type: array
+                items:
+                  type: string
+            required: [axis, state]
         lastDeath:
           type: object
           description: "Newest bounded Docker death record for the Memory Core service, carrying HOW it was observed. `status` separates 'could not observe' from 'observed, and there is none' — the distinction the served-health surface exists to preserve, and the one an OOM-killed container reading as a clean exit made invisible."

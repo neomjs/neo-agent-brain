@@ -41,14 +41,14 @@ function makeReceipt({posture = 'degraded', checkedAgoMs = 1000, breaches, holde
         waiterCount    : breaches?.length ?? 0,
         unreadableCount: 0,
         leaseHolder    : 'dream',
-        // Omitted unless a caller supplies it: a receipt from a producer that predates #415 carries no key.
+        // Omitted unless a caller supplies it: a receipt from an older producer carries no key.
         ...(holderYield === undefined ? {} : {holderYield}),
         breaches       : breaches ?? [{taskName: 'backup', priorityZero: true, bootstrapCritical: false, deferredSince: new Date(NOW - 7_200_000).toISOString(), starvedForMs: 7_200_000, leaseHolder: 'dream'}]
     };
 }
 
 test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed aggregate-health matrix (#17049)', () => {
-    test('a FRESH degraded receipt degrades aggregate health and preserves the receipt details', () => {
+    test('a FRESH degraded receipt raises the posture, preserves the receipt details, and leaves the serving verdict alone', () => {
         const payload = makePayload();
 
         foldHeavyMaintenanceStarvation({
@@ -58,7 +58,13 @@ test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed agg
             staleAfterMs: STALE_AFTER_MS
         });
 
-        expect(payload.status).toBe('degraded');
+        // A starved maintenance lane is a fact about maintenance, not about whether the server
+        // answers; `status` stays `healthy` and the advisory carries the receipt's facts.
+        expect(payload.status).toBe('healthy');
+        expect(payload.posture).toBe('attention');
+        expect(payload.advisories).toHaveLength(1);
+        expect(payload.advisories[0]).toMatchObject({axis: 'heavyMaintenanceStarvation', state: 'consumed-degraded', leaseHolder: 'dream'});
+        expect(payload.advisories[0].breaches[0].taskName).toBe('backup');
         expect(payload.details).toHaveLength(1);
         expect(payload.details[0]).toContain('backup deferred since');
         expect(payload.details[0]).toContain('lease holder: dream');
@@ -171,7 +177,8 @@ test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed agg
             staleAfterMs: derived
         });
 
-        expect(payload.status).toBe('degraded');
+        expect(payload.status).toBe('healthy');
+        expect(payload.posture).toBe('attention');
         expect(payload.heavyMaintenanceStarvation).toMatchObject({state: 'consumed-degraded'});
     });
 
@@ -182,9 +189,9 @@ test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed agg
         const cadenceMs = 10 * 60 * 1000,
               derived   = cadenceMs * 2;
 
-        for (const [checkedAgoMs, expectedState, expectedStatus] of [
-            [cadenceMs * 2,     'consumed-degraded', 'degraded'],
-            [cadenceMs * 2 + 1, 'receipt-stale',     'healthy']
+        for (const [checkedAgoMs, expectedState, expectedPosture] of [
+            [cadenceMs * 2,     'consumed-degraded', 'attention'],
+            [cadenceMs * 2 + 1, 'receipt-stale',     undefined]
         ]) {
             const payload = makePayload();
 
@@ -195,7 +202,10 @@ test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed agg
                 staleAfterMs: derived
             });
 
-            expect(payload.status).toBe(expectedStatus);
+            // The serving verdict never moves; a fresh degraded receipt raises the posture,
+            // a stale one leaves the payload as it came (no posture written by the fold).
+            expect(payload.status).toBe('healthy');
+            expect(payload.posture).toBe(expectedPosture);
             expect(payload.heavyMaintenanceStarvation.state).toBe(expectedState);
         }
     });
@@ -283,11 +293,13 @@ test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed agg
     test('recovery is latch-free: a degraded fold followed by a healthy receipt on the next evaluation reads clean', () => {
         const first = makePayload();
         foldHeavyMaintenanceStarvation({payload: first, inspection: makeInspection({receipt: makeReceipt()}), now: NOW, staleAfterMs: STALE_AFTER_MS});
-        expect(first.status).toBe('degraded');
+        expect(first.status).toBe('healthy');
+        expect(first.posture).toBe('attention');
 
         const second = makePayload();
         foldHeavyMaintenanceStarvation({payload: second, inspection: makeInspection({receipt: makeReceipt({posture: 'healthy', breaches: []})}), now: NOW, staleAfterMs: STALE_AFTER_MS});
         expect(second.status).toBe('healthy');
+        expect(second.posture).toBeUndefined();
         expect(second.details).toEqual([]);
     });
 
@@ -303,7 +315,8 @@ test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed agg
             staleAfterMs: STALE_AFTER_MS
         });
 
-        expect(payload.status).toBe('degraded');
+        expect(payload.status).toBe('healthy');
+        expect(payload.posture).toBe('attention');
         expect(payload.details).not.toContain('All features are operational');
         expect(payload.details).toContain('Connected to the orchestrator-managed ChromaDB instance');
     });
@@ -346,11 +359,14 @@ test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed agg
 
         const healthyBase = {status: 'healthy', details: ['Connected to the orchestrator-managed ChromaDB instance', 'All features are operational']};
 
-        // Fresh degraded receipt at the COMPOSED surface: degraded, all-clear withdrawn, receipt in
-        // details — this is what the MCP healthcheck tool, Docker healthcheck, and container-health
-        // controllers observe.
+        // Fresh degraded receipt at the COMPOSED surface, under the serving-only status: the verdict stays healthy,
+        // the posture reads attention with the starvation advisory, the all-clear line withdraws, the
+        // receipt is in details — this is what the MCP healthcheck tool, Docker healthcheck, and
+        // container-health controllers observe.
         const degradedResponse = compose(healthyBase, 'degraded');
-        expect(degradedResponse.status).toBe('degraded');
+        expect(degradedResponse.status).toBe('healthy');
+        expect(degradedResponse.posture).toBe('attention');
+        expect(degradedResponse.advisories.map(entry => entry.axis)).toEqual(['heavyMaintenanceStarvation']);
         expect(degradedResponse.details).not.toContain('All features are operational');
         expect(degradedResponse.details.some(detail => detail.includes('Heavy-maintenance starvation: backup'))).toBe(true);
         expect(degradedResponse.heavyMaintenanceStarvation).toMatchObject({state: 'consumed-degraded', posture: 'degraded', leaseHolder: 'dream'});
@@ -361,6 +377,8 @@ test.describe('HealthService.foldHeavyMaintenanceStarvation — the consumed agg
         expect(healthyBase.details).toContain('All features are operational');
         const clearResponse = compose(healthyBase, 'healthy');
         expect(clearResponse.status).toBe('healthy');
+        expect(clearResponse.posture).toBe('clear');
+        expect(clearResponse.advisories).toEqual([]);
         expect(clearResponse.details).toContain('All features are operational');
         expect(clearResponse.heavyMaintenanceStarvation.state).toBe('consumed-clear');
 
@@ -466,9 +484,10 @@ test.describe('composeMemoryCoreHealthcheck — admission-staleness is a CONSUME
             deploymentInspection: {ok: false, status: 'unavailable'}
         });
 
-        // Baseline without staleness: the empty registry must compose healthy — proving the
-        // signal's PRESENCE, not the import, is what degrades.
+        // Baseline without staleness: the empty registry must compose clear — proving the
+        // signal's PRESENCE, not the import, is what raises the posture.
         expect(compose().status).toBe('healthy');
+        expect(compose().posture).toBe('clear');
 
         const registry = getAuthValidationStaleness();
         registry.set('github-pat', {since: Date.now(), user: 'eos'});
@@ -476,7 +495,10 @@ test.describe('composeMemoryCoreHealthcheck — admission-staleness is a CONSUME
         try {
             const degradedResponse = compose();
 
-            expect(degradedResponse.status).toBe('degraded');
+            // Identities served from the validation cache is an advisory on a serving plane.
+            expect(degradedResponse.status).toBe('healthy');
+            expect(degradedResponse.posture).toBe('attention');
+            expect(degradedResponse.advisories.map(entry => entry.axis)).toEqual(['providerAdmission']);
             expect(degradedResponse.details.some(detail => detail.includes('Provider PAT admission is degraded'))).toBe(true);
             expect(degradedResponse.details.some(detail => detail.includes("'eos'"))).toBe(true);
             // The base payload was never mutated (upstream cache stays pristine).

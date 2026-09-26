@@ -5,7 +5,7 @@ import {fileURLToPath}          from 'url';
 import aiConfig                 from '../../mcp/server/memory-core/config.mjs';
 import Base                     from 'neo.mjs/src/core/Base.mjs';
 import {isBundleRestorable}     from './helpers/bundleIntegrity.mjs';
-import {readWakeDelivery}      from './wakeDeliveryReader.mjs';
+import {readWakeDelivery}       from './wakeDeliveryReader.mjs';
 import {readDeployedRevision}   from '../shared/deployedRevision.mjs';
 import RuntimeFreshnessService  from '../../mcp/server/shared/services/RuntimeFreshnessService.mjs';
 import ChromaManager            from './managers/ChromaManager.mjs';
@@ -1017,28 +1017,53 @@ export async function buildRemPipelineState({sessionId, axisTimeoutMs = aiConfig
 }
 
 /**
- * @summary Folds per-service memory-ceiling dispositions into an aggregate health payload.
+ * @summary Records a maintenance advisory on a health payload without touching its serving verdict.
+ *
+ * `status` answers one question — does the Memory Core serve — and the operator reads it as exactly
+ * that. A maintenance lane behind schedule, a backup that has not reached off-host durability, a
+ * service at its memory ceiling: each is a fact the operator wants named, none of them is a reason
+ * to say the server does not serve. They ride `posture` (`clear` → `attention`) and `advisories[]`,
+ * each entry naming its `axis` and carrying the reason codes of the axis it came from, and they
+ * withdraw the all-clear line, because "all features are operational" and an open advisory cannot
+ * coexist in one response. Idempotent on `posture`; additive on `advisories`.
+ *
+ * @param {Object} payload Health payload (mutated: `posture`, `advisories`, `details`).
+ * @param {Object} advisory `{axis, state, …}` — the axis name and whatever the axis reports.
+ * @returns {Object} The advisory as recorded.
+ */
+export function noteHealthAdvisory(payload, advisory) {
+    payload.posture    = 'attention';
+    payload.advisories = [...(Array.isArray(payload.advisories) ? payload.advisories : []), advisory];
+    payload.details    = (Array.isArray(payload.details) ? payload.details : [])
+        .filter(detail => detail !== 'All features are operational');
+
+    return advisory
+}
+
+/**
+ * @summary Folds per-service memory-ceiling dispositions into a health payload as an advisory.
  *
  * A container pinned AT its memory limit thrashes on page faults — alive, answering every probe, and
  * doing no useful work. The orchestrator's diagnosis already detects this and publishes an `at-cap`
  * disposition on the service record; before this fold, nothing an operator reads consumed it, so the
  * aggregate surface reported healthy throughout the incident.
  *
- * Degradation authority is bounded exactly as the starvation sibling bounds it, and for the same
- * reason: only a FRESH `at-cap` disposition from an `available` snapshot may degrade. `below` and
- * `unknown` never degrade — `unknown` in particular is the reading that says the ceiling question
- * could not be answered, and degrading on it would convert blindness into a verdict. A stale record,
- * or a stale / schema-degraded / unavailable snapshot, carries bytes but no authority. The fold only
- * moves `healthy` → `degraded`, so `unhealthy` wins by construction.
+ * Advisory authority is bounded exactly as the starvation sibling bounds it, and for the same
+ * reason: only a FRESH `at-cap` disposition from an `available` snapshot may raise `posture`. `below`
+ * and `unknown` never do — `unknown` in particular is the reading that says the ceiling question
+ * could not be answered, and acting on it would convert blindness into a verdict. A stale record,
+ * or a stale / schema-degraded / unavailable snapshot, carries bytes but no authority. The serving
+ * verdict (`status`) is never touched here: the plane serves through a ceiling incident, and the
+ * operator reads the ceiling under `posture` / `advisories` (see {@link noteHealthAdvisory}).
  *
  * Deliberately NOT folded into `HealthService`'s own payload: `ensureHealthy()` gates tool admission
  * on that payload, and a lane at its memory ceiling must never withdraw capabilities it does not
- * affect. Semantic recall stays dispatchable while this composed surface reports degraded — the same
- * boundary the starvation fold holds, for the same reason.
+ * affect. Semantic recall stays dispatchable while this composed surface carries the advisory — the
+ * same boundary the starvation fold holds, for the same reason.
  *
  * @param {Object} options
- * @param {Object} options.payload Aggregate health payload (mutated: `status`, `details`, and the
- *   `serviceMemoryPressure` consumed-observation descriptor).
+ * @param {Object} options.payload Aggregate health payload (mutated: `posture`, `advisories`, `details`,
+ *   and the `serviceMemoryPressure` consumed-observation descriptor).
  * @param {Object|null} options.inspection `readDeploymentStateSnapshot()` result, or null when the read threw.
  * @param {Number} options.now Epoch-ms clock for record freshness.
  * @param {Number} options.staleAfterMs Freshness bound applied to each record's `observedAt`.
@@ -1122,13 +1147,7 @@ export function foldServiceMemoryPressure({payload, inspection, now, staleAfterM
                     threshold : service.memoryPressure?.receipt?.threshold ?? null
                 }));
 
-                if (payload.status === 'healthy') {
-                    payload.status = 'degraded';
-                }
-
-                // A degraded verdict withdraws the all-clear line a cached-healthy payload carries —
-                // the two statements cannot coexist in one response.
-                payload.details = payload.details.filter(detail => detail !== 'All features are operational');
+                noteHealthAdvisory(payload, {axis: 'serviceMemoryPressure', state: observation.state, atCap: observation.atCap});
                 payload.details.push(
                     `Service memory at ceiling: ${observation.atCap.map(entry =>
                         `${entry.serviceKey} sustained ${entry.minPercent}% of its ${entry.scope} limit ` +
@@ -1146,25 +1165,25 @@ export function foldServiceMemoryPressure({payload, inspection, now, staleAfterM
 }
 
 /**
- * @summary Folds the orchestrator's heavy-maintenance starvation verdict into an aggregate health payload.
+ * @summary Folds the orchestrator's heavy-maintenance starvation verdict into a health payload as an advisory.
  *
  * Consumes the deployment-state snapshot's `heavyMaintenanceStarvation` section (the starvation
  * watchdog's four-posture receipt) under every guard the contract names: only a PRESENT receipt from
- * an `available` snapshot, with its own FRESH `checkedAt`, and `posture === 'degraded'` may degrade
- * aggregate health. `healthy` / `disabled` / `unknown` postures change nothing — an inconclusive
- * observation never authorizes degradation. A stale receipt, or a stale / schema-degraded /
- * unavailable snapshot, cannot degrade either. An existing non-`healthy` verdict is never touched:
- * the fold only ever moves `healthy` → `degraded`, so `unhealthy` wins by construction. Recovery
- * needs no clearing logic — the watchdog recomputes its verdict from the live ledger each check, so
- * a non-degraded receipt simply stops the fold from firing and cached-unhealthy semantics upstream
- * guarantee a fresh re-read.
+ * an `available` snapshot, with its own FRESH `checkedAt`, and `posture === 'degraded'` may raise the
+ * payload's `posture`. `healthy` / `disabled` postures change nothing; a fresh `unknown` is recorded
+ * as an advisory too, because an inconclusive reading may not ride the all-clear line. A stale
+ * receipt, or a stale / schema-degraded / unavailable snapshot, carries no authority. The serving
+ * verdict (`status`) is never touched: a starved maintenance lane is a fact about maintenance, not
+ * about whether the server answers (see {@link noteHealthAdvisory}). Recovery needs no clearing
+ * logic — the watchdog recomputes its verdict from the live ledger each check, so a non-degraded
+ * receipt simply stops the fold from firing.
  *
  * Pure and injectable so the consumption matrix is unit-testable: the caller supplies the snapshot
  * inspection and the clock; this function owns only the decision.
  *
  * @param {Object} options
- * @param {Object} options.payload Aggregate health payload (mutated: `status`, `details`, and the
- *   `heavyMaintenanceStarvation` consumed-observation descriptor).
+ * @param {Object} options.payload Aggregate health payload (mutated: `posture`, `advisories`, `details`,
+ *   and the `heavyMaintenanceStarvation` consumed-observation descriptor).
  * @param {Object|null} options.inspection `readDeploymentStateSnapshot()` result, or null when the read threw.
  * @param {Number} options.now Epoch-ms clock for receipt freshness.
  * @param {Number} options.staleAfterMs Freshness bound applied to the RECEIPT's `checkedAt`, sized
@@ -1202,12 +1221,12 @@ export function foldHeavyMaintenanceStarvation({payload, inspection, now, staleA
             // older producer, so a consumer never mistakes "not carried" for "not observed".
             observation.holderYield = receipt.holderYield ?? null;
 
-            if (payload.status === 'healthy') {
-                payload.status = 'degraded';
-            }
-            // A degraded verdict withdraws the all-clear line a cached-healthy payload carries —
-            // the two statements cannot coexist in one response.
-            payload.details = payload.details.filter(detail => detail !== 'All features are operational');
+            noteHealthAdvisory(payload, {
+                axis       : 'heavyMaintenanceStarvation',
+                state      : observation.state,
+                breaches   : observation.breaches,
+                leaseHolder: observation.leaseHolder
+            });
             const holderYield = receipt.holderYield
                 ? `; holder's last cycle: yielded ${receipt.holderYield.leaseYielded ?? 'unknown'}, cause ${receipt.holderYield.observedYieldCause ?? 'none observed'}, at ${receipt.holderYield.cycleAt ?? 'unknown'}`
                 : '';
@@ -1219,7 +1238,7 @@ export function foldHeavyMaintenanceStarvation({payload, inspection, now, staleA
             // degrade, and it may equally not ride the all-clear line into a green report. Folding
             // it into `consumed-clear` asserted exactly the claim it cannot support.
             observation.state = 'consumed-unknown';
-            payload.details   = payload.details.filter(detail => detail !== 'All features are operational');
+            noteHealthAdvisory(payload, {axis: 'heavyMaintenanceStarvation', state: observation.state});
             payload.details.push('Heavy-maintenance starvation: the watchdog could not determine a verdict — starvation state is unknown, not clear.');
         } else {
             observation.state = 'consumed-clear';
@@ -2315,6 +2334,11 @@ class HealthService extends Base {
     } = {}) {
         const payload = {
             status          : 'healthy',
+            // The serving verdict above and the maintenance posture below are two answers on purpose:
+            // `status` says whether the server serves, `posture` / `advisories` carry what the operator
+            // should look at while it does (see noteHealthAdvisory).
+            posture         : 'clear',
+            advisories      : [],
             timestamp       : new Date().toISOString(),
             runtimeFreshness: await this.resolveRuntimeFreshness(),
             session         : {

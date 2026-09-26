@@ -317,12 +317,16 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
                 deploymentInspection  : {ok: true, status: 'available', snapshot: {generatedAt: now, services}}
             });
 
-        const degraded = compose([atCapService]);
+        const atCap = compose([atCapService]);
 
-        expect(degraded.status).toBe('degraded');
-        expect(degraded.serviceMemoryPressure.state).toBe('consumed-degraded');
-        expect(degraded.details).not.toContain('All features are operational');
-        expect(degraded.details.at(-1)).toContain('embedding-model');
+        // The operator's ruling: the ceiling is an advisory on a serving plane — `status` stays
+        // `healthy`, `posture` and `advisories` carry the consumed disposition, the all-clear line withdraws.
+        expect(atCap.status).toBe('healthy');
+        expect(atCap.posture).toBe('attention');
+        expect(atCap.advisories.map(entry => entry.axis)).toEqual(['serviceMemoryPressure']);
+        expect(atCap.serviceMemoryPressure.state).toBe('consumed-degraded');
+        expect(atCap.details).not.toContain('All features are operational');
+        expect(atCap.details.at(-1)).toContain('embedding-model');
 
         // The control: the same call shape with a below disposition must leave the verdict alone, so
         // this case cannot pass by degrading unconditionally.
@@ -335,7 +339,7 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
 
     test('healthcheck declares the bounded last-death diagnostic', async () => {
         const {tools} = await toolService.listTools(),
-              schema = tools.find(item => item.name === 'healthcheck').outputSchema.properties.lastDeath;
+              schema  = tools.find(item => item.name === 'healthcheck').outputSchema.properties.lastDeath;
 
         // The status vocabulary is what makes a healthcheck honest about its own reachability, so it
         // is part of the contract rather than an implementation detail: a consumer has to be able to
@@ -438,18 +442,21 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
             }
         });
 
-        expect(breached.status).toBe('degraded');
+        // Projection staleness is an advisory on a serving plane, never the serving verdict.
+        expect(breached.status).toBe('healthy');
+        expect(breached.posture).toBe('attention');
+        expect(breached.advisories.map(entry => entry.axis)).toEqual(['corpusProjectionFreshness']);
         expect(breached.details).not.toContain('All features are operational');
         expect(breached.details.at(-1)).toContain('source-check-overdue')
     });
 
     test('healthcheck surfaces the latest Memory Core death without changing the verdict', () => {
-        const death = {at: '2024-03-09T16:00:01.000Z', exitCode: 137, oomKilled: true},
+        const death  = {at: '2024-03-09T16:00:01.000Z', exitCode: 137, oomKilled: true},
               result = toolService.composeMemoryCoreHealthcheck({
-                  health          : {status: 'healthy', details: ['All features are operational']},
-                  memoryWalDrain  : {state: 'caught-up', pendingDrainDepth: 0, oldestPendingAgeMs: null, stallThresholdMs: 1},
-                  plane           : {id: 'test-plane', dataRoot: '/test-data'},
-                  serviceKey      : 'mc-server',
+                  health              : {status: 'healthy', details: ['All features are operational']},
+                  memoryWalDrain      : {state: 'caught-up', pendingDrainDepth: 0, oldestPendingAgeMs: null, stallThresholdMs: 1},
+                  plane               : {id: 'test-plane', dataRoot: '/test-data'},
+                  serviceKey          : 'mc-server',
                   deploymentInspection: {
                       ok      : true,
                       status  : 'available',
@@ -461,16 +468,16 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
         expect(result.status).toBe('healthy');
     });
 
-    // Grace's RA-1: a bare `null` answers both "could not read" and "read it, nothing died", and a
+    // A reviewer's finding: a bare `null` answers both "could not read" and "read it, nothing died", and a
     // consumer cannot tell them apart. That is this ticket's incident one layer up — every observer
     // reporting a clean exit for a container that had been OOM-killed — so the four states the
     // original single `null` collapsed are pinned separately here and in the Knowledge Base spec.
     test.describe('the last-death projection keeps "not observed" apart from "observed, none" (#466 RA-1)', () => {
         const project = (deploymentInspection, channelEnabled) => toolService.composeMemoryCoreHealthcheck({
-            health               : {status: 'healthy', details: ['ok']},
-            memoryWalDrain       : {state: 'caught-up', pendingDrainDepth: 0, oldestPendingAgeMs: null, stallThresholdMs: 1},
-            plane                : {id: 'test-plane', dataRoot: '/test-data'},
-            serviceKey           : 'mc-server',
+            health        : {status: 'healthy', details: ['ok']},
+            memoryWalDrain: {state: 'caught-up', pendingDrainDepth: 0, oldestPendingAgeMs: null, stallThresholdMs: 1},
+            plane         : {id: 'test-plane', dataRoot: '/test-data'},
+            serviceKey    : 'mc-server',
             deploymentInspection,
             ...(channelEnabled === undefined ? {} : {deathChannelEnabled: channelEnabled})
         });
@@ -499,7 +506,7 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
 
             // Byte-identical inspection to the observed-none case below; only the channel flag differs.
             // If these two read the same, a plane that deliberately switched the channel off would be
-            // indistinguishable from one that lost it — which is the whole class RA-1 is about.
+            // indistinguishable from one that lost it — which is the whole class that finding is about.
             expect(result.lastDeath).toEqual({status: 'disabled', record: null, reason: 'event-channel-disabled'});
             expect(result.status, 'a deliberately off channel is not a health failure').toBe('healthy')
         });
@@ -571,7 +578,12 @@ test.describe('Neo.ai.mcp.server.memory-core Tool limits', () => {
             deploymentInspection: inspection
         });
 
-        expect(degraded.status).toBe('degraded');
+        // A degraded backup is an advisory beside a healthy serving verdict.
+        expect(degraded.status).toBe('healthy');
+        expect(degraded.posture).toBe('attention');
+        expect(degraded.advisories).toEqual([
+            {axis: 'backup', state: 'degraded', reasonCodes: ['backup-retry-exhausted', 'backup-last-run-failed']}
+        ]);
         expect(degraded.maintenance).toEqual({
             observationStatus: 'available',
             backup           : inspection.snapshot.maintenance.health
