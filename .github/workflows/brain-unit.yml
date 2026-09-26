@@ -126,6 +126,7 @@ jobs:
                   test/playwright/unit/ai/deploy/PlaneDataRootMount.spec.mjs
                   test/playwright/unit/ai/scripts/setup/prepare.spec.mjs
                   test/playwright/unit/ai/services/fleet/fleetGoldenPathSource.spec.mjs
+                  test/playwright/unit/ai/services/fleet/fleetGraphSceneSource.spec.mjs
                   test/playwright/unit/ai/services/fleet/dispatchFleetRequest.spec.mjs
                   test/playwright/unit/ai/services/ConceptService.spec.mjs
                   test/playwright/unit/ai/services/ingestion/ConceptIngestor.spec.mjs

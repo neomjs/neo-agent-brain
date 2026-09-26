@@ -152,6 +152,14 @@ class FleetControlBridge extends Base {
      * @member {Object|null} goldenPathSource=null
      */
     goldenPathSource = null
+
+    /**
+     * @summary The bounded graph-neighbourhood source around the viewer's Golden Path route, wired
+     * like `goldenPathSource` (no static default — the orchestrator wires the live source); unwired,
+     * `fleetGraphScene` answers `unavailable` rather than an empty graph.
+     * @member {Object|null} graphSceneSource=null
+     */
+    graphSceneSource = null
     /**
      * Per-agent mailbox-mirror **read-observe** source — an injected collaborator exposing
      * `readMailboxMirror({subjectAgentId, limit, offset})` that returns the S1 mirror snapshot
@@ -665,6 +673,28 @@ class FleetControlBridge extends Base {
                 route     : null,
                 rem       : null,
                 sources   : {}
+            };
+    }
+
+    /**
+     * @summary READ-OBSERVE: read a bounded, origin-qualified graph neighbourhood around the
+     * authenticated viewer's Golden Path route — the substrate the cockpit's 3D graph renders. The
+     * scene always reports the budget it was read under and whether it is whole, because a viewer
+     * that cannot tell a capped neighbourhood from a complete one renders a slice as though it were
+     * the graph; a neighbour the viewer may not see leaves with its edges and is NOT reported as
+     * truncation, because a permission is not a budget. The source envelope passes through
+     * untouched; an unwired source is named as unavailable, never as an empty graph.
+     * @param {Object} [params]
+     * @returns {Promise<Object>|Object}
+     */
+    fleetGraphScene(params = {}) {
+        return typeof this.graphSceneSource?.readGraphScene === 'function'
+            ? this.graphSceneSource.readGraphScene(params)
+            : {
+                capability: {state: 'unavailable', reason: 'fleet graph scene source not wired'},
+                scene     : null,
+                snapshotId: null,
+                capturedAt: null
             };
     }
 

@@ -13,7 +13,7 @@ export const FLEET_WIRE_METHODS = Object.freeze([
     'startAgent', 'stopAgent', 'restartAgent', 'removeAgent', 'fleetStatus', 'fleetRuntimeStatus',
     'getBootIdentity', 'fleetActivity', 'fleetHistory', 'fleetMemories', 'fleetSessionMemories', 'fleetRoster', 'fleetMailboxMirror', 'connectTenant', 'listTenants',
     'composeOperatorMessage', 'markFleetCaughtUp', 'resolveViewerIdentity', 'fleetWakeRoutes', 'fleetTasks',
-    'fleetDeploymentState', 'fleetGoldenPath'
+    'fleetDeploymentState', 'fleetGoldenPath', 'fleetGraphScene'
 ]);
 
 /**
