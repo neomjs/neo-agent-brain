@@ -455,6 +455,27 @@ test.describe('fleetGraphSceneSource', () => {
         ])
     });
 
+    test('depth 2 reaches the outside endpoint of an inbound edge', async () => {
+        // The register-and-enqueue half, which the self-loop fix alone did not cover. Two ordering
+        // defects at once: a guard that tested `byId.has(target)` while writing `byId.set(id)` never
+        // registered a first-seen neighbour, and testing `seen.has(to)` enqueued nothing for an inbound
+        // edge, because there `to` IS the node just expanded. So the outside endpoint stayed unknown
+        // to the walk and its edge could never be drawn at any depth.
+        const graph = stubGraph({
+                nodes : [node('issue-19235'), node('issue-7')],
+                edges : [edge('issue-7', 'issue-19235', 'GUIDES')]
+            }),
+            {scene} = await createFleetGraphSceneSource(
+                seams({graph, route: routeWith(['issue-19235'])})
+            ).readGraphScene({depth: 2});
+
+        expect(scene.nodes.map(entry => entry.id), 'the far endpoint is a one-hop neighbour, so depth 2 includes it')
+            .toEqual(['neomjs/neo#issue-19235', 'neomjs/neo#issue-7']);
+        expect(scene.edges, 'and its edge is drawable rather than dropped as dangling').toEqual([
+            {from: 'neomjs/neo#issue-7', to: 'neomjs/neo#issue-19235', type: 'GUIDES'}
+        ])
+    });
+
     test('an inbound edge keeps its own direction and is counted once', async () => {
         // The operation answers an edge from BOTH of its endpoints and names the direction on the
         // edge. Deriving `{from: the node we asked about, to: the neighbour}` reverses every inbound

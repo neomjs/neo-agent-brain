@@ -364,37 +364,34 @@ export function createFleetGraphSceneSource({
                     }
 
                     for (const neighbour of (await readAdjacency(bare)).neighbours) {
-                        const
-                            // The operation carries the edge's own direction and relation: `source` and
-                            // `target` name the real endpoints and `relationship` names the relation.
-                            // Deriving `{from: the node we asked about, to: the neighbour}` instead —
-                            // which is what this walk did — REVERSES every inbound edge, and with both
-                            // endpoints expanded it emits each edge twice, spending the budget twice.
-                            // Resolve BOTH endpoints off the EDGE, never off the node we happened to
-                            // ask about. An INBOUND edge names a `source` that is not this node and is
-                            // usually outside the read, so a `?? qualifyNodeId(bare)` fallback on the
-                            // source made `from` collapse onto the expanded node and produced a
-                            // self-loop (`issue-19235 -> issue-19235`) for every inbound edge. The
-                            // fallback now qualifies the edge's own endpoint; if that endpoint is not
-                            // in the scene the projector drops the link as dangling, which is the
-                            // honest outcome — a cross-link to a node this read did not include.
-                            from = byId.get(String(neighbour?.source)) ?? qualifyNodeId(String(neighbour?.source ?? ''), origin),
-                            to   = byId.get(String(neighbour?.target)) ?? qualifyNodeId(String(neighbour?.target ?? ''), origin),
-                            type = neighbour?.relationship ?? null;
+                        // The record's own `id` is ALWAYS the other endpoint of the edge — the
+                        // one-hop neighbour, whoever originated the edge. So it is registered and
+                        // enqueued FIRST, and the edge's own `source` / `target` are qualified
+                        // directly afterwards.
+                        //
+                        // Order matters and getting it wrong is what produced two defects at once. A
+                        // guard that tested `byId.has(target)` while writing `byId.set(id)` never
+                        // registered a first-seen neighbour, and testing `seen.has(to)` enqueued
+                        // nothing for an INBOUND edge, because there `to` is the node already
+                        // expanded. Both left the outside endpoint unknown to the walk, so the
+                        // scene dropped edges it should have carried.
+                        const otherId = String(neighbour?.id ?? '');
 
-                        if (!byId.has(String(neighbour?.target)) && neighbour?.id) {
-                            byId.set(String(neighbour.id), qualifyNodeId(String(neighbour.id), origin))
+                        if (otherId && !byId.has(otherId)) {
+                            byId.set(otherId, qualifyNodeId(otherId, origin))
                         }
 
-                        // The link is recorded whether or not the target is newly discovered: a hop
-                        // back to a node already in the scene is still an edge the scene must draw,
-                        // and dropping it because the node was "already seen" would silently delete
-                        // every cycle and every cross-link in the graph.
-                        //
-                        // Deduplicated, because the operation answers an edge from BOTH of its
-                        // endpoints: a walk that expands both ends sees every link twice, and charging
-                        // the edge budget for both spends it on a graph of unique links. Keyed on the
-                        // oriented pair, so a genuine parallel edge with a different `type` is still
+                        const
+                            // Read off the EDGE, never off the node we happened to ask about: an
+                            // inbound edge names a `source` that is not this node, so a fallback onto
+                            // the expanded node produced a self-loop for every inbound edge.
+                            from = byId.get(String(neighbour?.source)) ?? qualifyNodeId(String(neighbour?.source ?? ''), origin),
+                            to   = byId.get(String(neighbour?.target)) ?? qualifyNodeId(String(neighbour?.target ?? ''), origin),
+                            type = neighbour?.relationship ?? null,
+                            other = otherId ? byId.get(otherId) : null;
+
+                        // Deduplicated on the oriented pair, because the operation answers an edge from
+                        // BOTH of its endpoints. A genuine parallel edge with a different `type` stays
                         // two edges rather than one.
                         const key = from + '\u0000' + to + '\u0000' + (type ?? '');
 
@@ -403,9 +400,12 @@ export function createFleetGraphSceneSource({
                             links.push(type ? {from, to, type} : {from, to})
                         }
 
-                        if (!seen.has(to)) {
-                            seen.add(to);
-                            queue.push(String(neighbour?.id ?? neighbour?.target))
+                        // Expand the OTHER endpoint — a hop back to a node already in the scene is
+                        // still a link the scene must draw, and keying this off `to` would enqueue
+                        // the node just expanded and nothing else.
+                        if (other && !seen.has(other)) {
+                            seen.add(other);
+                            queue.push(otherId)
                         }
                     }
                 }
