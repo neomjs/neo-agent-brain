@@ -515,8 +515,8 @@ class FleetLifecycleService extends Base {
         // Agent identity: every FM-spawned harness carries the definition's canonical GitHub login
         // under the FIXED NEO_AGENT_IDENTITY var (a cross-process contract — the MCP identity
         // resolution chain reads this exact name). The Fleet id remains the instance/process/home
-        // key and cannot impersonate a distinct provider identity. Reserved class #4: launch.env can
-        // never pre-load it (guard above).
+        // key and cannot impersonate a distinct provider identity. It is a reserved slot: launch.env
+        // can never pre-load it (guard above).
         env[AGENT_IDENTITY_ENV_VAR] = agentIdentity;
 
         // The child's working directory: the agent's provisioned repo checkout when the caller supplies
@@ -1171,14 +1171,15 @@ class FleetLifecycleService extends Base {
                 '--project-id', session.projectID,
                 '--directory', route.directory
             ];
-            // The generated hook needs only benign process-runtime vars plus its own server
-            // credential pair. Repository/MCP/Bridge credentials belong to the harness child and
-            // must not fan out into this auxiliary process.
+            // The generated hook needs only benign process-runtime vars, the seat identity it stamps
+            // into the envelope (it refuses to run without one), and its own server credential pair.
+            // Repository/MCP/Bridge credentials belong to the harness child and must not fan out here.
             const hookEnv = {};
 
             for (const key of AMBIENT_ENV_ALLOWLIST) {
                 if (env[key] !== undefined) hookEnv[key] = env[key];
             }
+            hookEnv[AGENT_IDENTITY_ENV_VAR]  = env[AGENT_IDENTITY_ENV_VAR];
             hookEnv.OPENCODE_SERVER_USERNAME = env.OPENCODE_SERVER_USERNAME;
             hookEnv.OPENCODE_SERVER_PASSWORD = env.OPENCODE_SERVER_PASSWORD;
 

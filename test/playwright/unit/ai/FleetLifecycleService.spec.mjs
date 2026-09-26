@@ -18,9 +18,10 @@ import fs                from 'fs';
 import os                from 'os';
 import path              from 'path';
 
-import Neo                   from 'neo.mjs/src/Neo.mjs';
-import * as core             from 'neo.mjs/src/core/_export.mjs';
-import FleetLifecycleService from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import Neo                          from 'neo.mjs/src/Neo.mjs';
+import * as core                    from 'neo.mjs/src/core/_export.mjs';
+import FleetLifecycleService        from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import {generateOpenCodeSeatConfig} from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
 
 let nextPid = 1000;
 
@@ -418,14 +419,15 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
             hookCalls.push({command, args, opts});
             fs.mkdirSync(path.dirname(envelopePath), {recursive: true});
             fs.writeFileSync(envelopePath, JSON.stringify({
-                hostname : '127.0.0.1',
-                port     : 45678,
-                sessionId: 'ses_owner',
-                projectId: 'project_owner',
-                directory: fs.realpathSync(cwd),
-                username : opts.env.OPENCODE_SERVER_USERNAME,
-                password : opts.env.OPENCODE_SERVER_PASSWORD,
-                updatedAt: new Date().toISOString()
+                agentIdentity: `@${opts.env.NEO_AGENT_IDENTITY}`,
+                hostname     : '127.0.0.1',
+                port         : 45678,
+                sessionId    : 'ses_owner',
+                projectId    : 'project_owner',
+                directory    : fs.realpathSync(cwd),
+                username     : opts.env.OPENCODE_SERVER_USERNAME,
+                password     : opts.env.OPENCODE_SERVER_PASSWORD,
+                updatedAt    : new Date().toISOString()
             }));
             fs.chmodSync(envelopePath, 0o600);
             callback(null, '', '');
@@ -471,6 +473,11 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         expect(hookCalls[0].opts.env.NEO_FLEET_BRIDGE_TOKEN).toBeUndefined();
         expect(hookCalls[0].opts.env.NEO_MCP_REMOTE_TOKEN).toBeUndefined();
         expect(hookCalls[0].opts.env.GH_TOKEN).toBeUndefined();
+        // Beyond the verbatim ambient allowlist, the hook receives exactly the identity it stamps and
+        // its own server credential pair.
+        expect(Object.keys(hookCalls[0].opts.env).filter(key => hookCalls[0].opts.env[key] !== process.env[key]).sort())
+            .toEqual(['NEO_AGENT_IDENTITY', 'OPENCODE_SERVER_PASSWORD', 'OPENCODE_SERVER_USERNAME']);
+        expect(hookCalls[0].opts.env.NEO_AGENT_IDENTITY).toBe('open-owner');
 
         const ready = FleetLifecycleService.status('open-owner');
         expect(ready.wakeRoute).toMatchObject({
@@ -485,6 +492,62 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
             state: 'degraded', port: null, sessionId: null, projectId: null
         });
         expect(fs.existsSync(envelopePath)).toBe(false);
+
+        FleetLifecycleService.processes.clear();
+        fs.rmSync(root, {recursive: true, force: true});
+    });
+
+    test('Fleet-managed OpenCode runs the REAL generated wake hook with the env it builds, and the envelope carries the seat identity', async () => {
+        // The arm above fakes the hook, so it cannot see what the generated script refuses: the
+        // real hook throws without NEO_AGENT_IDENTITY. Only the real script, run by the real
+        // execFile with the env the service builds, proves the route can reach `ready`.
+        const
+            root  = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-opencode-real-hook-')),
+            cwd   = path.join(root, 'repo'),
+            agent = curatedAgent('open-real', 'opencode'),
+            spawn = install({agents: {'open-real': agent}, creds: {}}),
+            envs  = [];
+
+        fs.mkdirSync(cwd);
+        FleetLifecycleService.instanceRoot       = path.join(root, 'instances');
+        FleetLifecycleService.harnessBinaryPaths = {opencode: process.execPath};
+
+        const
+            launch       = FleetLifecycleService.resolveLaunch(agent, {cwd}),
+            hookPath     = path.join(launch.instanceHome, 'write-wake-envelope.mjs'),
+            envelopePath = path.join(launch.instanceHome, 'opencode', 'wake-envelope.json'),
+            {files}      = generateOpenCodeSeatConfig({
+                agentosRuntimeRoot: root,
+                targetRepoRoot    : cwd,
+                seatEnvFile       : path.join(cwd, '.env'),
+                memoryDir         : path.join(launch.instanceHome, 'memory'),
+                nodeBinary        : process.execPath,
+                wakeHookPath      : hookPath
+            });
+
+        fs.mkdirSync(launch.instanceHome, {recursive: true});
+        fs.writeFileSync(hookPath, files.find(file => file.path === hookPath).content);
+
+        FleetLifecycleService.fetchFn = async () => ({
+            ok  : true,
+            json: async () => ({id: 'ses_real', projectID: 'project_real', directory: fs.realpathSync(cwd)})
+        });
+        // Records the env, then runs the real hook through the real execFile.
+        FleetLifecycleService.openCodeHookExecFileFn = (command, args, opts, callback) => {
+            envs.push(opts.env);
+            return execFile(command, args, opts, callback);
+        };
+
+        FleetLifecycleService.start('open-real', {cwd});
+        spawn.calls[0].child.stdout.emit('data', Buffer.from('opencode server listening on http://127.0.0.1:45679\n'));
+
+        await expect.poll(() => FleetLifecycleService.status('open-real').wakeRoute?.state, {timeout: 10000}).not.toBe('starting');
+        expect(FleetLifecycleService.status('open-real').wakeRoute).toMatchObject({state: 'ready', reason: null, sessionId: 'ses_real'});
+        expect(envs).toHaveLength(1);
+        expect(JSON.parse(fs.readFileSync(envelopePath, 'utf8')).agentIdentity).toBe('@open-real');
+
+        spawn.calls[0].child.emit('exit', 0, 'SIGTERM');
+        await expect.poll(() => FleetLifecycleService.status('open-real').state).toBe('stopped');
 
         FleetLifecycleService.processes.clear();
         fs.rmSync(root, {recursive: true, force: true});
