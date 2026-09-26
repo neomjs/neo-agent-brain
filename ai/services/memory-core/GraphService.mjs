@@ -76,6 +76,7 @@ function isValidGraphNodeId(id) {
     return typeof id === 'string' && id.length > 0;
 }
 
+// Exemption by type. A message's own edges are exempt by SOURCE instead: see isMessageRecordEdge.
 export const PROTECTED_EDGE_TYPES = Object.freeze([
     'ADVANCED_BY',   // business layer: goal→work advancement is history, never scent; zombie-priority is handled by explicit retirement reweight (ai/graph/businessSchema.mjs), not decay
     'ATTRIBUTED_TO', // direction layer: motion→direction attribution is measurement substrate — a velocity number built on decaying edges rots invisibly; fact-class per the direction contract (ai/graph/directionSchema.mjs)
@@ -88,6 +89,19 @@ export const PROTECTED_EDGE_TYPES = Object.freeze([
     'RESOLVES'
 ]);
 const PROTECTED_EDGE_TYPE_SET = new Set(PROTECTED_EDGE_TYPES);
+
+const MESSAGE_ID_PREFIX = 'MESSAGE:';
+
+/**
+ * An edge a MESSAGE node sources is the sender's record (reply, thread, ticket, tag and session links):
+ * decayGlobalTopology neither decays nor prunes it, and getInboundStructuralSupport counts it as total,
+ * never decaying, support. Message ids carry the prefix by construction (MailboxService).
+ * @param {Object} edge `{source}` as cached or stored.
+ * @returns {Boolean}
+ */
+function isMessageRecordEdge(edge) {
+    return typeof edge?.source === 'string' && edge.source.startsWith(MESSAGE_ID_PREFIX);
+}
 
 /**
  * The labels whose nodes exist only through their edges, so an edgeless one has faded and
@@ -963,6 +977,14 @@ class GraphService extends Base {
      * Applies geometric weight decay mapping to existing graph relationships over time.
      * Enforces a 24-hour algorithmic lock to prevent amnesia under high execution frequency.
      *
+     * The lock reads its clock from storage, never from the node cache: the cache is lazy and
+     * requester-scoped, and a clock another writer removed or advanced must still be seen. A
+     * collector that deleted the cached clock once made every following cycle re-create it blank
+     * and run the decay again — five runs in 37 minutes.
+     *
+     * Beside {@link PROTECTED_EDGE_TYPES}, every edge a MESSAGE node sources is exempt from decay and
+     * pruning (`isMessageRecordEdge`): the sender's record, never scent.
+     *
      * @param {Number} decayFactor
      * @param {Number} pruningThreshold
      * @param {Boolean} force Bypass the 24-hour lock (used strictly for manual forcing/tuning)
@@ -972,22 +994,12 @@ class GraphService extends Base {
             return;
         }
 
-        // Initialize or fetch the global _SYSTEM_STATE node for cycle tracking
-        let systemNode = this.db.nodes.get('_SYSTEM_STATE');
-        if (!systemNode) {
-            this.upsertGlobalNode({
-                id         : '_SYSTEM_STATE',
-                type       : 'SYSTEM_CLOCK',
-                name       : 'Global System Clock',
-                description: 'Tracks algorithmic time intervals for global physics.'
-            });
-            systemNode = this.db.nodes.get('_SYSTEM_STATE');
-        }
-
-        const systemProperties = systemNode.isRecord ? systemNode.get('properties') : systemNode.properties;
-        const lastDecayedAt    = systemProperties?.lastDecayedAt || 0;
-        const now              = Date.now();
-        const hoursElapsed     = (now - lastDecayedAt) / 3600000;
+        const
+            sqlite        = this.db.storage.db,
+            clockRow      = sqlite.prepare(`SELECT json_extract(data, '$.properties.lastDecayedAt') AS lastDecayedAt FROM Nodes WHERE id = ?`).get('_SYSTEM_STATE'),
+            lastDecayedAt = Number(clockRow?.lastDecayedAt) || 0,
+            now           = Date.now(),
+            hoursElapsed  = (now - lastDecayedAt) / 3600000;
 
         // 24-hour Algorithmic Lock
         if (!force && hoursElapsed < 24) {
@@ -999,20 +1011,22 @@ class GraphService extends Base {
 
         const protectedEdgePlaceholders = PROTECTED_EDGE_TYPES.map(() => '?').join(', ');
 
-        // Shield durable structural/provenance edges completely from decay and pruning.
-        const decayStmt = this.db.storage.db.prepare(`
+        // Shield durable structural/provenance edges, and every edge a message sources, from decay and pruning.
+        const decayStmt = sqlite.prepare(`
             UPDATE Edges
             SET data = json_set(data, '$.properties.weight',
                                 MAX(COALESCE(CAST(json_extract(data, '$.properties.weight') AS REAL), 1.0) * ?, 0.1))
             WHERE type NOT IN (${protectedEdgePlaceholders})
+              AND substr(source, 1, ${MESSAGE_ID_PREFIX.length}) <> '${MESSAGE_ID_PREFIX}'
         `);
         decayStmt.run(decayFactor, ...PROTECTED_EDGE_TYPES);
 
         // Prune dead pathways permanently mapping via physical SQL
-        const pruneStmt = this.db.storage.db.prepare(`
+        const pruneStmt = sqlite.prepare(`
             DELETE
             FROM Edges
             WHERE type NOT IN (${protectedEdgePlaceholders})
+              AND substr(source, 1, ${MESSAGE_ID_PREFIX.length}) <> '${MESSAGE_ID_PREFIX}'
               AND COALESCE(CAST(json_extract(data, '$.properties.weight') AS REAL), 1.0) < ?
         `);
         const info = pruneStmt.run(...PROTECTED_EDGE_TYPES, pruningThreshold);
@@ -1022,14 +1036,14 @@ class GraphService extends Base {
         // acknowledgement advances lastSyncId past the changed edges and RAM keeps pre-decay weights.
         this.db.syncCache();
 
-        // Commit global clock update
+        // Commit the global clock. upsertNode lazy-loads the row before merging, so an existing clock
+        // keeps its other fields, and a missing one is created here.
         this.upsertGlobalNode({
-            id        : '_SYSTEM_STATE',
-            type      : systemNode.isRecord ? systemNode.get('label') : systemNode.label,
-            properties: {
-                ...(systemProperties || {}),
-                lastDecayedAt: now
-            }
+            id         : '_SYSTEM_STATE',
+            type       : 'SYSTEM_CLOCK',
+            name       : 'Global System Clock',
+            description: 'Tracks algorithmic time intervals for global physics.',
+            properties : {lastDecayedAt: now}
         });
 
         logger.info(`[GraphService] Ambient Decay complete. Pruned ${info.changes} dead pathways.`);
@@ -1381,8 +1395,9 @@ class GraphService extends Base {
     /**
      * @summary Returns one RLS-safe inbound-support projection for Golden Path scoring and
      * Discussion liveness. Total support preserves existing structural scoring; decaying support
-     * excludes protected fact edges and Golden Path's own `frontier → GUIDES` output so archaeology
-     * or a prior route cannot masquerade as current swarm motion. The same visible inbound projection
+     * excludes protected fact edges, a message's record edges (`isMessageRecordEdge`) and Golden
+     * Path's own `frontier → GUIDES` output so archaeology or a prior route cannot masquerade as
+     * current swarm motion. The same visible inbound projection
      * exposes open-blocker and parent facts, keeping admission and cold-start inheritance cache-safe.
      *
      * Root, source node, and edge must all be visible at the cache return boundary. `BLOCKS`,
@@ -1437,7 +1452,7 @@ class GraphService extends Base {
                 support.totalEdgeCount++;
 
                 const isGoldenPathOutput = edge.type === 'GUIDES' && edge.source === 'frontier';
-                if (!PROTECTED_EDGE_TYPE_SET.has(edge.type) && !isGoldenPathOutput) {
+                if (!PROTECTED_EDGE_TYPE_SET.has(edge.type) && !isGoldenPathOutput && !isMessageRecordEdge(edge)) {
                     support.decayingWeight += weight;
                     support.decayingEdgeCount++
                 }

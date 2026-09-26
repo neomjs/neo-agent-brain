@@ -371,6 +371,56 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         expect(systemNode.properties.lastDecayedAt).toBeGreaterThan(0);
     });
 
+    test('decayGlobalTopology reads its clock from storage, so another writer\'s run holds the lock (#537)', async () => {
+        const now = Date.now();
+        await GraphService.upsertNode({id: '_SYSTEM_STATE', type: 'SYSTEM_CLOCK', properties: {lastDecayedAt: now - 48 * 3600000}});
+        await GraphService.upsertNode({id: 'DecaySource', type: 'TEST_NODE'});
+        await GraphService.upsertNode({id: 'DecayTarget', type: 'TEST_NODE'});
+        GraphService.linkNodes('DecaySource', 'DecayTarget', 'RELATES_TO', 1);
+
+        // Another process ran the decay a minute ago: storage moves, this process's cached copy does not.
+        const sqlite = GraphService.db.storage.db;
+        sqlite.prepare("UPDATE Nodes SET data = json_set(data, '$.properties.lastDecayedAt', ?) WHERE id = '_SYSTEM_STATE'").run(now - 60000);
+
+        GraphService.decayGlobalTopology();
+
+        expect(sqlite.prepare("SELECT json_extract(data, '$.properties.weight') AS w FROM Edges WHERE source = 'DecaySource'").get().w).toBe(1);
+        expect(sqlite.prepare("SELECT json_extract(data, '$.properties.lastDecayedAt') AS t FROM Nodes WHERE id = '_SYSTEM_STATE'").get().t).toBe(now - 60000);
+    });
+
+    test('decayGlobalTopology neither decays nor prunes the edges a message sources (#537)', async () => {
+        await GraphService.upsertNode({id: 'MESSAGE:child',  type: 'MESSAGE'});
+        await GraphService.upsertNode({id: 'MESSAGE:parent', type: 'MESSAGE'});
+        await GraphService.upsertNode({id: 'merge-handoff',  type: 'CONCEPT'});
+        await GraphService.upsertNode({id: 'AmbientSource',  type: 'TEST_NODE'});
+        await GraphService.upsertNode({id: 'AmbientTarget',  type: 'TEST_NODE'});
+        await GraphService.upsertNode({id: 'memory-1',       type: 'AGENT_MEMORY'});
+        GraphService.linkNodes('MESSAGE:child', 'MESSAGE:parent', 'IN_REPLY_TO', 0.05);
+        GraphService.linkNodes('MESSAGE:child', 'merge-handoff', 'TAGGED_CONCEPT', 1.0);
+        GraphService.linkNodes('memory-1',      'merge-handoff', 'TAGGED_CONCEPT', 1.0); // the same type from a memory stays scent
+        GraphService.linkNodes('AmbientSource', 'AmbientTarget', 'RELATES_TO', 0.05);
+
+        GraphService.decayGlobalTopology(0.98, 0.2, true);
+
+        const rows = GraphService.db.storage.db.prepare("SELECT source, type, json_extract(data, '$.properties.weight') AS w FROM Edges ORDER BY type, source").all();
+        expect(rows).toEqual([
+            {source: 'MESSAGE:child', type: 'IN_REPLY_TO',    w: 0.05},
+            {source: 'MESSAGE:child', type: 'TAGGED_CONCEPT', w: 1},
+            {source: 'memory-1',      type: 'TAGGED_CONCEPT', w: 0.98}
+        ]);
+    });
+
+    test('getOrphanedNodes never returns the decay clock (#515, #520, #537)', async () => {
+        await GraphService.upsertNode({id: '_SYSTEM_STATE', type: 'SYSTEM_CLOCK', properties: {lastDecayedAt: Date.now()}});
+        await GraphService.upsertNode({id: 'DisposableConcept', type: 'CONCEPT'});
+
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        const orphaned = GraphService.getOrphanedNodes();
+        expect(orphaned).toContain('DisposableConcept');
+        expect(orphaned).not.toContain('_SYSTEM_STATE');
+    });
+
     test('decayGlobalTopology preserves factual RESOLVES edges while pruning weak ambient edges (#12644)', async () => {
         await GraphService.upsertNode({id: 'pr-12644', type: 'PULL_REQUEST'});
         await GraphService.upsertNode({id: 'issue-12644', type: 'ISSUE'});
@@ -416,11 +466,14 @@ test.describe('Neo.ai.services.memory-core.GraphService', () => {
         GraphService.linkNodes('parent-source', 'discussion-15105', 'PARENT_OF', 1);
         GraphService.linkNodes('blocker-source', 'discussion-15105', 'BLOCKS', 5);
         GraphService.linkNodes('discussion-15105', 'outbound-target', 'RELATES_TO', 7);
+        // a message's record edge is total support, never decaying support: the decay leaves it alone
+        await GraphService.upsertNode({id: 'MESSAGE:record', type: 'MESSAGE'});
+        GraphService.linkNodes('MESSAGE:record', 'discussion-15105', 'DISCUSSED_IN', 4);
 
         expect(GraphService.getInboundStructuralSupport({id: 'discussion-15105'})).toEqual({
-            totalWeight      : protectedEdgeTypes.length + 6,
+            totalWeight      : protectedEdgeTypes.length + 10,
             decayingWeight   : 3,
-            totalEdgeCount   : protectedEdgeTypes.length + 3,
+            totalEdgeCount   : protectedEdgeTypes.length + 4,
             decayingEdgeCount: 2,
             hasOpenBlocker   : true,
             parentId         : 'parent-source'
