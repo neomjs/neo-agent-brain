@@ -15,7 +15,7 @@ import {buildWakeDigest, getHighestWakePriority}                                
 import {HEARTBEAT_PULSE_ENTITY_PREFIX, HEARTBEAT_PULSE_ENTITY_TYPE, match, matchHeartbeatPulse} from './heartbeatPulseEvaluator.mjs';
 import {resolveResidentFamilyById}                                                              from '../graph/agentFamilyResolution.mjs';
 import {PRESENCE_STATES}                                                                        from '../fleet/fleetPresenceStateAdapter.mjs';
-import {deriveReviewLoad}                                                                       from './helpers/reviewLoadProjection.mjs';
+import {deriveReviewLoad, REVIEW_LOAD_TRAIL_HORIZON_MS}                                         from './helpers/reviewLoadProjection.mjs';
 import {readActiveWakeSubscriptionObservations}                                                 from './readActiveWakeSubscriptionIdentities.mjs';
 import {
     activeWakeSubscriptionStatusSql,
@@ -70,7 +70,7 @@ const COMPOSED_HOST_AXES = Object.freeze(['throttle', 'lifecycle', 'liveness']);
  * `manage_wake_subscription` MCP tool surface — the graph-backed substrate for
  * cross-harness autonomous wake delivery.
  *
- * Subscriptions are graph-resident (durable across MCP server restarts per ADR 0002 §6.6.2; ticket-ref-ok: decision-record authority, not issue archaeology)
+ * Subscriptions are graph-resident (durable across MCP server restarts per ADR 0002 [not-ticket-ref: decision-record authority] §6.6.2)
  * with a write-through in-memory cache for sub-millisecond trigger evaluation.
  * Per-agent ownership is enforced via `RequestContextService.getAgentIdentityNodeId()`
  * and an explicit `SUBSCRIBES_TO` edge from the AgentIdentity node to the WAKE_SUBSCRIPTION
@@ -474,7 +474,7 @@ class WakeSubscriptionService extends Base {
 
     /**
      * Unified entry point for the `manage_wake_subscription` MCP tool. Dispatches to
-     * action-specific handlers per ADR 0002 §6.6. ticket-ref-ok: decision-record authority, not issue archaeology
+     * action-specific handlers per ADR 0002 [not-ticket-ref: decision-record authority] §6.6.
      *
      * @param {Object} opts
      * @param {String} opts.action One of 'subscribe' | 'unsubscribe' | 'update' | 'list' | 'resync' | 'poll-digest' | 'resume' | 'rotate-key' | 'fleet-identities'
@@ -976,9 +976,11 @@ class WakeSubscriptionService extends Base {
      * itself is pure ({@link module:ai/services/memory-core/helpers/reviewLoadProjection}), and the
      * served envelope names the trail's blind class — a review that never pinged is invisible here.
      *
-     * The scan is BOUND at the SQL layer: the `MESSAGE:` id-prefix prefilter rides the primary-key
-     * index (the mailbox's own production read pattern), so memory-class rows — the dominant row
-     * class — never reach the JSON walk. Availability is tri-state by construction: a missing
+     * The read is BOUND at the SQL layer to the projection's own horizon (`deriveReviewLoad` drops
+     * older rows before any loop state exists, so nothing it derives changes), and it rides the
+     * partial `sentAt` index over `MESSAGE:` rows (`SQLite.mjs`): one `json_extract` per row
+     * projects the four fields the derivation reads, so no blob is parsed in JS and rows outside
+     * the horizon are never touched. Availability is tri-state by construction: a missing
      * store handle or a thrown read returns `{available: false, reason}` rather than an empty
      * derivation, because absence of observation must never render as a counted zero — and a
      * failed trail read never takes the roster answer down with it.
@@ -997,9 +999,12 @@ class WakeSubscriptionService extends Base {
 
         try {
             rows = sqlite.prepare(`
-                SELECT data FROM Nodes
-                WHERE id LIKE 'MESSAGE:%' AND json_extract(data, '$.label') = 'MESSAGE'
-            `).all();
+                SELECT json_extract(data, '$.properties.from', '$.properties.sentAt', '$.properties.subject', '$.properties.to') AS fields
+                FROM Nodes
+                WHERE id LIKE 'MESSAGE:%'
+                  AND json_extract(data, '$.properties.sentAt') >= ?
+                  AND json_extract(data, '$.label') = 'MESSAGE'
+            `).all(new Date(nowMs - REVIEW_LOAD_TRAIL_HORIZON_MS).toISOString());
         } catch (error) {
             logger.warn(`[WakeSubscription] who_is_online: review-lifecycle trail read failed: ${error?.message ?? error}`);
             return unavailable(`the review-lifecycle trail read failed: ${error?.message ?? error}`)
@@ -1009,14 +1014,9 @@ class WakeSubscriptionService extends Base {
 
         for (const row of rows) {
             try {
-                const properties = JSON.parse(row.data).properties ?? {};
+                const [from, sentAt, subject, to] = JSON.parse(row.fields);
 
-                messages.push({
-                    from   : properties.from,
-                    sentAt : properties.sentAt,
-                    subject: properties.subject,
-                    to     : properties.to
-                });
+                messages.push({from, sentAt, subject, to});
             } catch (error) {
                 logger.warn(`[WakeSubscription] who_is_online: skipped unparseable MESSAGE row: ${error.message}`);
             }
@@ -1359,7 +1359,7 @@ class WakeSubscriptionService extends Base {
         const now            = new Date().toISOString();
 
         // Shape B requires an HMAC signing key for webhook authenticity.
-            // Per ADR 0002 §6.2.3 the server generates and returns it once at subscribe-time; ticket-ref-ok: decision-record authority, not issue archaeology
+            // Per ADR 0002 [not-ticket-ref: decision-record authority] §6.2.3 the server generates and returns it once at subscribe-time.
         // it is stored in the node's harnessTargetMetadata for subsequent verification.
         let signingKey;
         if (harnessTarget === 'a2a-webhook') {
@@ -1839,7 +1839,7 @@ class WakeSubscriptionService extends Base {
      * starting from `sinceLogId`. Returns the matching event payloads as data; the
      * channel-specific re-emission (MCP notifications / webhook POST / daemon dispatch)
      * is the responsibility of Shape A/B/C consumers wiring this output to their
-     * delivery surfaces. Per ADR 0002 §6.1.6 + §6.6.2. ticket-ref-ok: decision-record authority, not issue archaeology
+     * delivery surfaces. Per ADR 0002 [not-ticket-ref: decision-record authority] §6.1.6 + §6.6.2.
      *
      * @param {Object} opts
      * @param {String} opts.subscriptionId
@@ -1880,7 +1880,7 @@ class WakeSubscriptionService extends Base {
      * property the push path documents. An empty answer is a CLOSED state carrying its reason,
      * always distinguishable from a transport failure — absence of signal, never a verdict.
      *
-     * Per ADR 0002 §6.1.6 + §6.6.2 (resync's authority) + ADR 0038 §2.5.1 row 6. ticket-ref-ok: decision-record authority, not issue archaeology
+     * Per ADR 0002 [not-ticket-ref: decision-record authority] §6.1.6 + §6.6.2 (resync's authority) + ADR 0038 [not-ticket-ref: decision-record authority] §2.5.1 row 6.
      *
      * @param {Object} opts
      * @param {String} opts.subscriptionId
@@ -1992,7 +1992,7 @@ class WakeSubscriptionService extends Base {
 
     /**
      * Retrieves the specific GraphLog log_id for an entity, to anchor the wake event
-     * per ADR 0002 §6.1.6. ticket-ref-ok: decision-record authority, not issue archaeology
+     * per ADR 0002 [not-ticket-ref: decision-record authority] §6.1.6.
      * @protected
      * @param {String} entityId
      * @returns {Number|null}
@@ -2140,7 +2140,7 @@ class WakeSubscriptionService extends Base {
     }
 
     /**
-     * Wraps a payload in the standard wake notification envelope per ADR 0002 §6.1.1-§6.1.3. ticket-ref-ok: decision-record authority, not issue archaeology
+     * Wraps a payload in the standard wake notification envelope per ADR 0002 [not-ticket-ref: decision-record authority] §6.1.1-§6.1.3.
      * @protected
      * @param {String} eventType One of `wake/sent_to_me`, `wake/task_state_changed`, `wake/permission_granted`, `wake/heartbeat_pulse`
      * @param {Object} subscription Cached WAKE_SUBSCRIPTION entry (provides `id` + `agentIdentity`)
