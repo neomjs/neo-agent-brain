@@ -466,11 +466,18 @@ export function findCloneCaptures(content) {
  * The restore-capture detector is intentionally absent: it is a separate correctness class and
  * does not claim an AiConfig catalog id. Keeping B4 on the detector object prevents a detached
  * file-level id list from agreeing with comments while the executable rule changes underneath it.
- * @type {ReadonlyArray<{id: String, detect: Function}>}
+ *
+ * `id` is the ADR-0019 CATALOG KEY, not a free label: `lint-config-template-ssot.mjs`'s
+ * two-way ownership check parses the catalog's id cells with `/\b([A-C]\d+)\b/` and resolves every
+ * registry id back to a row, so an id carrying a scope suffix (`B4-DB-PATH`) parses as `B4` and
+ * two such rules collide into a `duplicate-row`. One antipattern, one catalog row, one id — the
+ * half is therefore carried by `scope` (and by `gating`, which is what the scanner actually
+ * branches on), never by the id.
+ * @type {ReadonlyArray<{id: String, scope: String, detect: Function, gating: Boolean}>}
  */
 export const ADR_0019_RULES = Object.freeze([
-    Object.freeze({id: 'B4-DB-PATH', detect: findDbPathMutations, gating: true}),
-    Object.freeze({id: 'B4-SHARED-CONFIG', detect: findSharedConfigMutations, gating: false})
+    Object.freeze({id: 'B4', scope: 'db-path-subset',  detect: findDbPathMutations,     gating: true}),
+    Object.freeze({id: 'B4', scope: 'full',           detect: findSharedConfigMutations, gating: false})
 ]);
 
 const GATING_RULE = ADR_0019_RULES.find(rule => rule.gating),
