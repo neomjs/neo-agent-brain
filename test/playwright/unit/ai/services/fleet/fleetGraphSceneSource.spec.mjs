@@ -254,10 +254,14 @@ test.describe('fleetGraphSceneSource', () => {
             {scene} = await createFleetGraphSceneSource(seams({graph})).readGraphScene({depth: 2});
 
         expect(scene.counts.edges, 'the source hands its walked links to the projector').toBe(3);
-        expect(scene.edges, 'and a cycle back to a seen node is still an edge').toEqual([
+        // Sorted by `from`, then `to`, ascending — which is why the cycle out of issue-7 leads and
+        // why pr-101's two links order issue-7 before issue-9. An earlier version of this arm
+        // hand-wrote issue-9 first and contradicted the sort the projector documents; the
+        // implementation was right and the expectation was wrong.
+        expect(scene.edges, 'a cycle back to a seen node is still an edge').toEqual([
             {from: 'neomjs/neo#issue-7', to: 'neomjs/neo#pr-101'},
-            {from: 'neomjs/neo#pr-101', to: 'neomjs/neo#issue-9'},
-            {from: 'neomjs/neo#pr-101', to: 'neomjs/neo#issue-7'}
+            {from: 'neomjs/neo#pr-101', to: 'neomjs/neo#issue-7'},
+            {from: 'neomjs/neo#pr-101', to: 'neomjs/neo#issue-9'}
         ])
     });
 
