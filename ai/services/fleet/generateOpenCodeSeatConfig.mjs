@@ -1,3 +1,4 @@
+import {readFileSync}                                                                          from 'node:fs';
 import path                                                                                     from 'node:path';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                                                          from './mcpServers.mjs';
 import {MEMORY_LAYER_BOOT_FILES, renderAboutThisLayerMd, renderIdentityMd, renderMemoryIndexMd} from './seatMemoryLayerTemplate.mjs';
@@ -35,6 +36,19 @@ export const OPENCODE_SEAT_SERVERS = Object.freeze([
  * 2. **Seat personal.** Identity + credentials load via `--env-file` from the seat's OWN `.env`
  *    (`NEO_AGENT_IDENTITY`, `GH_TOKEN`, provider keys). Node's `--env-file` never overwrites
  *    already-set vars, so explicit `environment` entries win where a caller needs them to.
+ *
+ *    **This generator emits TWO artifacts that install the wake lane, not one.** The first is the
+ *    `write-wake-envelope` hook, emitted whenever `wakeHookPath` is given. The second is the wake-envelope
+ *    PLANT — `ai/services/fleet/opencodeWakeEnvelopePlugin.mjs`, inlined into that hook as base64 and
+ *    installed by it into `<XDG_CONFIG_HOME>/opencode/plugins/` on every launch. The plant is what
+ *    publishes the envelope on each new session, so without it the hook writes a file nothing reads. That
+ *    is the "two producers, one contract" statement at `ai/daemons/wake/daemon.mjs` finally having an
+ *    installer behind it rather than a hand-copy step in a runbook.
+ *
+ *    The install is **report-and-skip**: a differing file is reported and left alone, a second
+ *    wake-envelope plant in the same directory is named, and an unset `XDG_CONFIG_HOME` warns loudly. A
+ *    generator that silently overwrote or deleted a file it did not place would be a worse failure than
+ *    the drift it exists to surface.
  *
  *    **`XDG_DATA_HOME` is the seat-separation seam — not the OpenCode project list.** Provisioning a
  *    second seat on one machine means giving it its own data home, because that is what separates the
@@ -260,6 +274,27 @@ function renderSeatPointersMd() {
  * @returns {String}
  * @private
  */
+/**
+ * @summary The seat-side wake-envelope PLANT, read from disk once at module load and inlined into the
+ * generated wake hook as a base64 payload.
+ *
+ * Two artifacts come out of this generator now: the `write-wake-envelope` hook, and — through it — the
+ * OpenCode plugin that publishes the envelope on every new session. The plant is inlined rather than
+ * copied at seat-launch time because a hook that read it from the Brain checkout would make a seat's
+ * wake lane depend on a repository the seat does not necessarily have, and because a byte-equality
+ * assertion in the spec needs the emitted bytes to be knowable without running the hook.
+ *
+ * Base64 rather than a template literal: the plant is ~19 KB of JavaScript, and embedding source in a
+ * generated string literal invites escaping that would break the byte-equality contract silently.
+ * @type {String}
+ */
+const WAKE_ENVELOPE_PLANT_BASE64 = readFileSync(
+    new URL('./opencodeWakeEnvelopePlugin.mjs', import.meta.url)
+).toString('base64');
+
+/** @type {String} The file name OpenCode auto-loads a plugin from. */
+const PLANT_FILE_NAME = 'neo-wake-envelope.mjs';
+
 function renderWakeHook() {
     return [
         '#!/usr/bin/env node',
@@ -333,6 +368,71 @@ function renderWakeHook() {
         'await fs.chmod(envelopePath, 0o600);',
         '',
         'console.log(`write-wake-envelope: envelope written for session ${envelope.sessionId} (port ${envelope.port})`);',
+        '',
+        '// --- the wake-envelope PLANT -----------------------------------------------------------------',
+        '// The OpenCode plugin that publishes the envelope above on every new top-level session. Without',
+        '// it a seat publishes once per hand-copied file and never again, which is why installing it used',
+        '// to be a manual step. The generator inlines it as base64, so this hook needs no Brain checkout.',
+        '',
+        'const PLANT_BASE64 = \'' + WAKE_ENVELOPE_PLANT_BASE64 + '\';',
+        'const PLANT_NAME   = \'' + PLANT_FILE_NAME + '\';',
+        'const plant        = Buffer.from(PLANT_BASE64, \'base64\');',
+        'const configHome   = process.env.XDG_CONFIG_HOME;',
+        '',
+        'if (!configHome) {',
+        '    // Loudly. A shared-root fallback is the hazard here: the path would resolve outside this seat',
+        '    // and every seat would fight over one file, while a silent skip would look like a healthy',
+        '    // install — the failure mode this whole change exists to remove.',
+        '    console.warn(',
+        '        \'write-wake-envelope: XDG_CONFIG_HOME is unset — the wake-envelope plant was NOT installed. \' +',
+        '        \'Without a per-seat config home its path resolves outside this seat.\'',
+        '    );',
+        '} else {',
+        '    const pluginsDir = path.join(configHome, \'opencode\', \'plugins\');',
+        '    const plantPath  = path.join(pluginsDir, PLANT_NAME);',
+        '',
+        '    await fs.mkdir(pluginsDir, {recursive: true});',
+        '',
+        '    let installed = null;',
+        '',
+        '    try {',
+        '        installed = await fs.readFile(plantPath);',
+        '    } catch {',
+        '        installed = null',
+        '    }',
+        '',
+        '    if (installed === null) {',
+        '        const plantTmp = `${plantPath}.${process.pid}.tmp`;',
+        '',
+        '        await fs.writeFile(plantTmp, plant);',
+        '        await fs.rename(plantTmp, plantPath);',
+        '        console.log(`write-wake-envelope: wake-envelope plant installed at ${plantPath}`);',
+        '    } else if (installed.equals(plant)) {',
+        '        console.log(`write-wake-envelope: wake-envelope plant already current at ${plantPath}`);',
+        '    } else {',
+        '        // Reported, never clobbered. A generator that silently overwrote — or deleted — a file it',
+        '        // did not place would be a worse failure than the drift it exists to surface, and a',
+        '        // hand-edited install is a person\'s decision to reconcile.',
+        '        console.warn(',
+        '            `write-wake-envelope: wake-envelope plant DIFFERS from the generator and was left \` +',
+        '            `untouched: ${plantPath} (${installed.length}B installed, ${plant.length}B generated)`',
+        '        );',
+        '    }',
+        '',
+        '    // A second wake-envelope plant in the same directory is an ambiguous install: OpenCode loads',
+        '    // every plugin it finds and nothing records which one won. Report the names rather than',
+        '    // resolving it — which file is authoritative is not this hook\'s call.',
+        '    const siblings = (await fs.readdir(pluginsDir)).filter(',
+        '        name => /wake-envelope/.test(name) && name !== PLANT_NAME',
+        '    );',
+        '',
+        '    if (siblings.length) {',
+        '        console.warn(',
+        '            `write-wake-envelope: OTHER wake-envelope plants present in ${pluginsDir}: \` +',
+        '            `${siblings.join(\', \')} — the loaded one is not determined by this hook`',
+        '        );',
+        '    }',
+        '}',
         ''
     ].join('\n');
 }
