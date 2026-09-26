@@ -183,7 +183,7 @@ test.describe('dispatchFleetRequest — the app↔fleet wire allowlist + routing
         // the computed Golden Path with its admission — the producer's route passed through, never re-ranked
         expect(FLEET_WIRE_METHODS).toContain('fleetGoldenPath');
         expect(FLEET_WIRE_METHODS).toContain('fleetGraphScene');
-        // the bounded, redacted projection of the orchestrator's deployment-state snapshot (#314) — the plane
+        // the bounded, redacted projection of the orchestrator's deployment-state snapshot — the plane
         // cards' read-observe truth; observe-only, no actuator, no paths, no config, no logs
         expect(FLEET_WIRE_METHODS).toContain('fleetDeploymentState');
         expect(FLEET_WIRE_METHODS).toContain('getBootIdentity');   // the read-observe verbs ride the wire; the lifecycle-write restart actuator does NOT (R3)

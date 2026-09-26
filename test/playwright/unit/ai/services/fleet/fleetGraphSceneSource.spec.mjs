@@ -235,6 +235,32 @@ test.describe('fleetGraphSceneSource', () => {
         expect(scene, 'and hands over no graph rather than an empty one it cannot vouch for').toBeNull()
     });
 
+    test('a read through the source emits the edges it walked, cycles included', async () => {
+        // The arm whose absence let a real defect through: `readGraphScene` collected nodes from the
+        // adjacency it walked and never handed the links to the projector, so the feed emitted a graph
+        // with NO edges at all — and every earlier edge assertion passed, because each one called
+        // `projectNeighbourhood` DIRECTLY. Two arms here had asserted `edges` is empty, which an
+        // edge-less feed satisfies for the wrong reason.
+        //
+        // So: assert edges through the SOURCE, and assert a cycle survives, because a hop back to an
+        // already-seen node is still a link and is the first thing a "only queue new nodes" walk drops.
+        const graph = stubGraph({
+                nodes : [node('pr-101'), node('issue-7'), node('issue-9')],
+                edges : [edge('pr-101', 'issue-7'), edge('issue-7', 'pr-101'), edge('pr-101', 'issue-9')]
+            }),
+            // depth 2, not the default 1: at depth 1 the neighbours are DISCOVERED but never resolved,
+            // so they are legitimately absent from the scene and their links correctly drop as
+            // dangling. The cycle only exists once issue-7 is itself walked.
+            {scene} = await createFleetGraphSceneSource(seams({graph})).readGraphScene({depth: 2});
+
+        expect(scene.counts.edges, 'the source hands its walked links to the projector').toBe(3);
+        expect(scene.edges, 'and a cycle back to a seen node is still an edge').toEqual([
+            {from: 'neomjs/neo#issue-7', to: 'neomjs/neo#pr-101'},
+            {from: 'neomjs/neo#pr-101', to: 'neomjs/neo#issue-9'},
+            {from: 'neomjs/neo#pr-101', to: 'neomjs/neo#issue-7'}
+        ])
+    });
+
     test('a 404 on one node is a scope cut, not a read failure', async () => {
         // The distinction that keeps a transient absence from reading as an outage: one row the seam
         // will not answer for must shrink the neighbourhood, not collapse it. Reporting `unavailable`

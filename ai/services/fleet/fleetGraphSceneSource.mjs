@@ -95,7 +95,7 @@ export function qualifyNodeId(id, origin = DEFAULT_ORIGIN) {
  * @param {Object} input
  * @param {String[]} input.seedIds Origin-qualified ids the neighbourhood was collected around.
  * @param {Object[]} [input.nodes] Graph rows as `getNode` returns them, origin-implicit.
- * @param {Object[]} [input.edges] Adjacency rows as `{from, to, type}`.
+ * @param {Object[]} [input.edges] Adjacency rows as `{from, to}` — adjacency presence, no relation.
  * @param {Number} [input.maxNodes]
  * @param {Number} [input.maxEdges]
  * @param {Number} [input.maxBytes]
@@ -288,6 +288,7 @@ export function createFleetGraphSceneSource({
             const
                 seedIds = (seeds ?? route.items ?? []).map(item => qualifyNodeId(item.ref ?? item, origin)),
                 found   = [],
+                links   = [],
                 queue   = [...seedIds],
                 seen    = new Set(seedIds);
 
@@ -309,6 +310,12 @@ export function createFleetGraphSceneSource({
                     for (const neighbour of await readAdjacency(id)) {
                         const qualified = qualifyNodeId(neighbour, origin);
 
+                        // The link is recorded whether or not the target is newly discovered: a hop
+                        // back to a node already in the scene is still an edge the scene must draw,
+                        // and dropping it because the node was "already seen" would silently delete
+                        // every cycle and every cross-link in the graph.
+                        links.push({from: id, to: qualified});
+
                         if (!seen.has(qualified)) {
                             seen.add(qualified);
                             queue.push(qualified)
@@ -320,7 +327,7 @@ export function createFleetGraphSceneSource({
             const
                 collected = found.filter((row, index) => found.findIndex(candidate => candidate.id === row.id) === index),
                 projected = projectNeighbourhood({
-                    seedIds, nodes: collected, maxNodes, maxEdges, maxBytes, origin
+                    seedIds, nodes: collected, edges: links, maxNodes, maxEdges, maxBytes, origin
                 }),
                 resolved  = resolveSceneRead({
                     measurable: true,
