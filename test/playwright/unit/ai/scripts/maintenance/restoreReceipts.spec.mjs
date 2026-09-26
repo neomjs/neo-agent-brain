@@ -15,7 +15,8 @@ import path           from 'path';
 import {
     MAILBOX_EDGE_TYPES,
     resolveGraphJsonl,
-    runRestoreReceipts
+    runRestoreReceipts,
+    validateGraphJsonl
 } from '../../../../../../ai/scripts/maintenance/restoreReceipts.mjs';
 
 /**
@@ -94,8 +95,8 @@ test.describe('restoreReceipts maintenance script', () => {
 
         const result = await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, logger: quiet});
 
-        expect(result.receipts.edges).toEqual({matched: 2, filled: 2, alreadySet: 1, missingLive: 0});
-        expect(result.receipts.nodes).toEqual({matched: 2, filled: 1, alreadySet: 1, missingLive: 0});
+        expect(result.receipts.edges).toEqual({matched: 2, filled: 2, alreadySet: 1, missingLive: 0, duplicateInBundle: 0});
+        expect(result.receipts.nodes).toEqual({matched: 2, filled: 1, alreadySet: 1, missingLive: 0, duplicateInBundle: 0});
         expect(liveEdges()).toEqual([
             {id: 're-derived-id', source: 'MESSAGE:m1', target: '@a', type: 'DELIVERED_TO', readAt: '2026-09-25T11:00:00.000Z', archivedAt: '2026-09-25T12:00:00.000Z'},
             {id: 'fresh-mark',    source: 'MESSAGE:m1', target: '@b', type: 'DELIVERED_TO', readAt: '2026-09-25T22:00:00.000Z', archivedAt: null}
@@ -113,7 +114,7 @@ test.describe('restoreReceipts maintenance script', () => {
 
         const result = await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, edgeTypes: [...MAILBOX_EDGE_TYPES], logger: quiet});
 
-        expect(result.receipts.edges).toEqual({matched: 0, filled: 0, alreadySet: 0, missingLive: 1});
+        expect(result.receipts.edges).toEqual({matched: 0, filled: 0, alreadySet: 0, missingLive: 1, duplicateInBundle: 0});
         expect(result.edges.requested).toEqual([]);
         expect(liveEdges()).toEqual([]);
     });
@@ -132,8 +133,8 @@ test.describe('restoreReceipts maintenance script', () => {
 
         const first = await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, edgeTypes: ['AGENT_TURN_PRESENCE'], logger: quiet});
 
-        expect(first.edges.types.AGENT_TURN_PRESENCE).toEqual({bundle: 3, live: 0, absentLive: 3, restorable: 2, missingEndpoint: 1, inserted: 2});
-        expect(first.edges.types.TAGGED_CONCEPT).toEqual({bundle: 1, live: 0, absentLive: 1, restorable: 1, missingEndpoint: 0, inserted: 0});
+        expect(first.edges.types.AGENT_TURN_PRESENCE).toEqual({bundle: 3, live: 0, absentLive: 3, restorable: 2, missingEndpoint: 1, duplicateInBundle: 0, inserted: 2});
+        expect(first.edges.types.TAGGED_CONCEPT).toEqual({bundle: 1, live: 0, absentLive: 1, restorable: 1, missingEndpoint: 0, duplicateInBundle: 0, inserted: 0});
 
         const inserted = liveEdges().filter(row => row.type === 'AGENT_TURN_PRESENCE');
         expect(inserted.map(row => [row.source, row.target])).toEqual([['@a', 'turn-1'], ['@b', 'turn-1']]);
@@ -142,7 +143,7 @@ test.describe('restoreReceipts maintenance script', () => {
 
         const second = await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, edgeTypes: ['AGENT_TURN_PRESENCE'], logger: quiet});
 
-        expect(second.edges.types.AGENT_TURN_PRESENCE).toEqual({bundle: 3, live: 2, absentLive: 1, restorable: 0, missingEndpoint: 1, inserted: 0});
+        expect(second.edges.types.AGENT_TURN_PRESENCE).toEqual({bundle: 3, live: 2, absentLive: 1, restorable: 0, missingEndpoint: 1, duplicateInBundle: 0, inserted: 0});
         expect(liveEdges().filter(row => row.type === 'AGENT_TURN_PRESENCE')).toHaveLength(2);
     });
 
@@ -160,10 +161,59 @@ test.describe('restoreReceipts maintenance script', () => {
 
         const result = await runRestoreReceipts({dbPath, source: path.dirname(path.dirname(jsonlPath)), edgeTypes: ['AGENT_TURN_PRESENCE'], logger: quiet});
 
-        expect(result.receipts.edges).toEqual({matched: 1, filled: 1, alreadySet: 0, missingLive: 0});
-        expect(result.receipts.nodes).toEqual({matched: 1, filled: 1, alreadySet: 0, missingLive: 0});
-        expect(result.edges.types.AGENT_TURN_PRESENCE).toEqual({bundle: 1, live: 0, absentLive: 1, restorable: 1, missingEndpoint: 0, inserted: 0});
+        expect(result.receipts.edges).toEqual({matched: 1, filled: 1, alreadySet: 0, missingLive: 0, duplicateInBundle: 0});
+        expect(result.receipts.nodes).toEqual({matched: 1, filled: 1, alreadySet: 0, missingLive: 0, duplicateInBundle: 0});
+        expect(result.edges.types.AGENT_TURN_PRESENCE).toEqual({bundle: 1, live: 0, absentLive: 1, restorable: 1, missingEndpoint: 0, duplicateInBundle: 0, inserted: 0});
         expect({edges: liveEdges(), node: liveNode('MESSAGE:m1')}).toEqual(before);
+    });
+
+    test('two bundle rows for one identity in one batch insert one edge; the first bundle row wins', async () => {
+        seedLive([node('@a', 'AgentIdentity'), node('@b', 'AgentIdentity')]);
+        writeBundle([
+            edge('first-id',  '@a', '@b', 'RELATES_TO', {weight: 0.9}),
+            edge('second-id', '@a', '@b', 'RELATES_TO', {weight: 0.1})
+        ]);
+
+        const result = await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, edgeTypes: ['RELATES_TO'], logger: quiet});
+
+        expect(result.edges.types.RELATES_TO).toEqual({bundle: 2, live: 0, absentLive: 1, restorable: 1, missingEndpoint: 0, duplicateInBundle: 1, inserted: 1});
+        const rows = liveEdges();
+        expect(rows).toHaveLength(1);
+        expect(rows[0].id).toBe('first-id');
+    });
+
+    test('two bundle receipts for one live field fill it once with the first value', async () => {
+        seedLive([
+            node('MESSAGE:m1', 'MESSAGE', {readAt: null}), node('@a', 'AgentIdentity'),
+            edge('live-id', 'MESSAGE:m1', '@a', 'DELIVERED_TO', {readAt: null})
+        ]);
+        writeBundle([
+            node('MESSAGE:m1', 'MESSAGE', {readAt: '2026-09-25T10:00:00.000Z'}),
+            node('MESSAGE:m1', 'MESSAGE', {readAt: '2026-09-25T09:00:00.000Z'}),
+            edge('bundle-a', 'MESSAGE:m1', '@a', 'DELIVERED_TO', {readAt: '2026-09-25T11:00:00.000Z'}),
+            edge('bundle-b', 'MESSAGE:m1', '@a', 'DELIVERED_TO', {readAt: '2026-09-25T12:00:00.000Z'})
+        ]);
+
+        const result = await runRestoreReceipts({dbPath, source: jsonlPath, apply: true, logger: quiet});
+
+        expect(result.receipts.edges).toEqual({matched: 2, filled: 1, alreadySet: 0, missingLive: 0, duplicateInBundle: 1});
+        expect(result.receipts.nodes).toEqual({matched: 2, filled: 1, alreadySet: 0, missingLive: 0, duplicateInBundle: 1});
+        expect(liveEdges()[0].readAt).toBe('2026-09-25T11:00:00.000Z');
+        expect(liveNode('MESSAGE:m1').readAt).toBe('2026-09-25T10:00:00.000Z');
+    });
+
+    test('a malformed record after more than one batch of fills refuses the run before any write', async () => {
+        const count = 1001;
+        seedLive(Array.from({length: count}, (_, i) => node(`MESSAGE:m${i}`, 'MESSAGE', {readAt: null})));
+        writeBundle(Array.from({length: count}, (_, i) => node(`MESSAGE:m${i}`, 'MESSAGE', {readAt: '2026-09-25T10:00:00.000Z'})));
+        fs.appendFileSync(jsonlPath, '{"type":"node","data":{"id":"MESSAGE:broken"\n');
+
+        await expect(runRestoreReceipts({dbPath, source: jsonlPath, apply: true, logger: quiet})).rejects.toThrow(`:${count + 1} does not parse`);
+        await expect(validateGraphJsonl(jsonlPath)).rejects.toThrow('nothing was written');
+
+        const db = openDb();
+        expect(db.prepare("SELECT COUNT(*) AS n FROM Nodes WHERE json_extract(data, '$.properties.readAt') IS NOT NULL").get().n).toBe(0);
+        db.close();
     });
 
     test('a bundle directory resolves to its one graph JSONL; none or two refuse', async () => {

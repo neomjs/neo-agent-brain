@@ -19,6 +19,15 @@ import {pathToFileURL} from 'node:url';
  * inserted where no live row shares their `(source, target, type)` and both endpoints exist. The three
  * mailbox carriers are never inserted: the projection owns them.
  *
+ * Identity is decided inside the statements, not by a read that a later write could stale: the insert
+ * is `INSERT … WHERE NOT EXISTS (same identity)`, the fill is `UPDATE … WHERE the field IS NULL`, and
+ * the counts are the rows those statements changed. The Edges table has no unique index on the
+ * identity, and a bundle can hold several rows for one identity; the first bundle row wins, the rest
+ * are counted as `duplicateInBundle`. The whole source is parsed before the first write, so a
+ * malformed record refuses the run instead of ending it after committed batches; a failure past that
+ * point still returns the committed counts on the error (`error.committed`), and a rerun is safe
+ * because every write is conditional on the live state.
+ *
  * Dry-run by default: the database is opened read-only, so nothing can be written without `--apply`.
  * The database path is explicit and mandatory; nothing is inferred from the checkout or the cwd.
  */
@@ -75,11 +84,44 @@ export async function* readGraphRecords(file) {
 }
 
 /**
+ * @summary Parses the whole source once, before any write, and refuses it on the first malformed record.
+ * @param {String} file Graph JSONL path.
+ * @returns {Promise<{records: Number}>}
+ * @throws {Error} Naming the 1-based line of the first record that does not parse or has no `type`/`data.id`.
+ */
+export async function validateGraphJsonl(file) {
+    const lines = readline.createInterface({input: fs.createReadStream(file, {encoding: 'utf8'}), crlfDelay: Infinity});
+    let   lineNumber = 0,
+          records    = 0;
+
+    for await (const line of lines) {
+        lineNumber++;
+        if (!line.trim()) continue;
+
+        let record;
+        try {
+            record = JSON.parse(line);
+        } catch (error) {
+            throw new Error(`${file}:${lineNumber} does not parse (${error.message}); nothing was written`);
+        }
+
+        if ((record?.type !== 'node' && record?.type !== 'edge') || typeof record?.data?.id !== 'string') {
+            throw new Error(`${file}:${lineNumber} is not a node or edge record with an id; nothing was written`);
+        }
+
+        records++;
+    }
+
+    return {records};
+}
+
+/**
  * @summary Fills null receipt fields and inserts absent edges from the bundle into an open live graph.
  *
  * Receipts are matched by identity, never by row id: a delivery edge by `(source, target, 'DELIVERED_TO')`,
  * a direct-message receipt by the `MESSAGE` node id. Every non-mailbox edge type is counted against the
  * live graph so the dry run reports which types the graph lost; only the `edgeTypes` named are inserted.
+ * The source is validated in full before the first write; the first bundle row for an identity wins.
  * @param {Object}   options
  * @param {Object}   options.db                Open better-sqlite3 handle; read-only unless `apply`.
  * @param {String}   options.jsonl             Graph JSONL path.
@@ -110,12 +152,18 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
             `UPDATE Edges SET data = json_set(data, '$.properties.${field}', ?) WHERE id = ? AND json_extract(data, '$.properties.${field}') IS NULL`)])),
         setNodeField   = Object.fromEntries(RECEIPT_FIELDS.map(field => [field, apply && db.prepare(
             `UPDATE Nodes SET data = json_set(data, '$.properties.${field}', ?) WHERE id = ? AND json_extract(data, '$.properties.${field}') IS NULL`)])),
-        insertEdge     = apply && db.prepare('INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (?, ?, ?, ?, ?, ?)');
+        insertEdge     = apply && db.prepare(`
+            INSERT INTO Edges (id, user_id, source, target, type, data)
+            SELECT ?, ?, ?, ?, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM Edges WHERE source = ? AND target = ? AND type = ?)`);
 
     const
-        ledger  = () => ({matched: 0, filled: 0, alreadySet: 0, missingLive: 0}),
+        ledger  = () => ({matched: 0, filled: 0, alreadySet: 0, missingLive: 0, duplicateInBundle: 0}),
         result  = {receipts: {edges: ledger(), nodes: ledger()}, edges: {requested, types: {}}},
-        typeRow = type => result.edges.types[type] ??= {bundle: 0, live: liveTypeCounts.get(type) || 0, absentLive: 0, restorable: 0, missingEndpoint: 0, inserted: 0};
+        typeRow = type => result.edges.types[type] ??= {bundle: 0, live: liveTypeCounts.get(type) || 0, absentLive: 0, restorable: 0, missingEndpoint: 0, duplicateInBundle: 0, inserted: 0},
+        seenTriples = new Set(),
+        seenFills   = new Set(),
+        identity    = (source, target, type) => `${source}\u0000${target}\u0000${type}`;
 
     let pending = [];
 
@@ -128,73 +176,92 @@ export async function restoreReceipts({db, jsonl, apply = false, edgeTypes = []}
         }
     };
 
-    const fillFields = (book, liveRow, bundleProps, write) => {
+    // Counts are logical in a dry run and actual in an apply: a write that changed no row (the field was
+    // filled meanwhile, or the identity appeared) takes its count back.
+    const fillFields = (book, rowKey, liveRow, bundleProps, write) => {
         RECEIPT_FIELDS.forEach(field => {
             const value = bundleProps[field];
             if (value == null) return;
             if (liveRow[field] != null) {
                 book.alreadySet++;
-            } else {
-                book.filled++;
-                apply && queue(() => write(field, value));
+                return;
             }
+            const key = `${rowKey}\u0000${field}`;
+            if (seenFills.has(key)) {
+                book.duplicateInBundle++;
+                return;
+            }
+            seenFills.add(key);
+            book.filled++;
+            apply && queue(() => { if (write(field, value).changes === 0) book.filled--; });
         });
     };
 
-    for await (const record of readGraphRecords(jsonl)) {
-        const {type: kind, data} = record;
+    await validateGraphJsonl(jsonl);
 
-        if (kind === 'node') {
-            const props = data?.properties || {};
-            if (data?.label !== 'MESSAGE' || RECEIPT_FIELDS.every(field => props[field] == null)) continue;
+    try {
+        for await (const record of readGraphRecords(jsonl)) {
+            const {type: kind, data} = record;
 
-            const live = findMessage.get(data.id);
-            if (!live) { result.receipts.nodes.missingLive++; continue; }
+            if (kind === 'node') {
+                const props = data?.properties || {};
+                if (data?.label !== 'MESSAGE' || RECEIPT_FIELDS.every(field => props[field] == null)) continue;
 
-            result.receipts.nodes.matched++;
-            fillFields(result.receipts.nodes, live, props, (field, value) => setNodeField[field].run(value, data.id));
-            continue;
+                const live = findMessage.get(data.id);
+                if (!live) { result.receipts.nodes.missingLive++; continue; }
+
+                result.receipts.nodes.matched++;
+                fillFields(result.receipts.nodes, data.id, live, props, (field, value) => setNodeField[field].run(value, data.id));
+                continue;
+            }
+
+            if (kind !== 'edge' || !data?.type) continue;
+
+            const {id, source, target, type, properties = {}} = data;
+
+            if (type === 'DELIVERED_TO') {
+                if (RECEIPT_FIELDS.every(field => properties[field] == null)) continue;
+
+                const rows = findDeliveries.all(source, target);
+                if (rows.length === 0) { result.receipts.edges.missingLive++; continue; }
+
+                result.receipts.edges.matched++;
+                rows.forEach(row => fillFields(result.receipts.edges, row.id, row, properties, (field, value) => setEdgeField[field].run(value, row.id)));
+                continue;
+            }
+
+            if (MAILBOX_EDGE_TYPES.includes(type)) continue;
+
+            const row = typeRow(type);
+            row.bundle++;
+
+            const triple = identity(source, target, type);
+            if (seenTriples.has(triple)) { row.duplicateInBundle++; continue; }
+            seenTriples.add(triple);
+
+            if (edgeExists.get(source, target, type)) continue;
+
+            row.absentLive++;
+
+            if (!nodeExists.get(source) || !nodeExists.get(target)) { row.missingEndpoint++; continue; }
+
+            row.restorable++;
+
+            if (apply && requested.includes(type)) {
+                queue(() => {
+                    const edgeId = edgeIdTaken.get(id) ? globalThis.crypto.randomUUID() : id;
+                    row.inserted += insertEdge.run(edgeId, properties.userId ?? null, source, target, type, JSON.stringify({id: edgeId, source, target, type, properties}), source, target, type).changes;
+                });
+            }
         }
 
-        if (kind !== 'edge' || !data?.type) continue;
-
-        const {id, source, target, type, properties = {}} = data;
-
-        if (type === 'DELIVERED_TO') {
-            if (RECEIPT_FIELDS.every(field => properties[field] == null)) continue;
-
-            const rows = findDeliveries.all(source, target);
-            if (rows.length === 0) { result.receipts.edges.missingLive++; continue; }
-
-            result.receipts.edges.matched++;
-            rows.forEach(row => fillFields(result.receipts.edges, row, properties, (field, value) => setEdgeField[field].run(value, row.id)));
-            continue;
+        if (pending.length > 0) {
+            flush(pending);
         }
-
-        if (MAILBOX_EDGE_TYPES.includes(type)) continue;
-
-        const row = typeRow(type);
-        row.bundle++;
-
-        if (edgeExists.get(source, target, type)) continue;
-
-        row.absentLive++;
-
-        if (!nodeExists.get(source) || !nodeExists.get(target)) { row.missingEndpoint++; continue; }
-
-        row.restorable++;
-
-        if (apply && requested.includes(type)) {
-            row.inserted++;
-            queue(() => {
-                const edgeId = edgeIdTaken.get(id) ? globalThis.crypto.randomUUID() : id;
-                insertEdge.run(edgeId, properties.userId ?? null, source, target, type, JSON.stringify({id: edgeId, source, target, type, properties}));
-            });
-        }
-    }
-
-    if (pending.length > 0) {
-        flush(pending);
+    } catch (error) {
+        // Whatever flushed before the failure is committed; the counts say exactly what. A rerun is safe.
+        error.committed = apply ? structuredClone(result) : null;
+        throw error;
     }
 
     return result;
@@ -223,6 +290,11 @@ export async function runRestoreReceipts({dbPath, source, apply = false, edgeTyp
 
         logResult(result, {apply, logger});
         return result;
+    } catch (error) {
+        if (error.committed) {
+            logger.error(`[restoreReceipts] APPLY FAILED after committed writes; rerun is safe (every write is conditional on the live state): ${JSON.stringify(error.committed)}`);
+        }
+        throw error;
     } finally {
         db.close();
     }
