@@ -59,6 +59,13 @@ const __dirname  = path.dirname(__filename);
  * @returns {Promise<void>}
  */
 function spawnAsync(cmd, args, identity = null, hostPlatform = process.platform, harnessStateDir) {
+    if (typeof cmd !== 'string' || cmd.length === 0) {
+        throw new TypeError('spawnAsync: cmd must be a non-empty string');
+    }
+    if (!Array.isArray(args) || !args.every(arg => typeof arg === 'string')) {
+        throw new TypeError('spawnAsync: args must be an array of strings');
+    }
+
     return new Promise((resolve, reject) => {
         const spawnRequest  = createSpawnRequest(cmd, args, hostPlatform);
         const proc          = spawn(spawnRequest.cmd, spawnRequest.args, spawnRequest.options);
