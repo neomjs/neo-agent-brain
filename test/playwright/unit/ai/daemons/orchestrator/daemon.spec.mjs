@@ -43,24 +43,24 @@ test.describe('ai/daemons/orchestrator/daemon.mjs (#11006/#11009)', () => {
             // as a mystery rather than a lock.
             const dir     = leaseDir(),
                   profile = 'container-plane';
+            let   at  = Date.parse('2026-10-01T18:00:00.000Z');
+            const now = () => at;
 
             // The predecessor: same identity this process will present, then it "dies" — nothing pulses it.
-            acquireAuthorityLease({dir, profile});
+            acquireAuthorityLease({dir, profile, now});
 
             let sleptMs = 0;
 
             const handle = await acquireAuthorityLeaseSurvivingSelfSuccession({
                 dir,
                 profile,
+                now,
                 // The wait is what corroborates death: a dead predecessor stops pulsing, so its lease goes
-                // stale. Injected rather than real so the test does not sleep a minute — but note it must
-                // actually advance PAST the freshness window for the second claim to succeed, which is why
-                // the assertion below checks the duration and not merely that sleep was called.
-                // Records the requested duration but sleeps a SHORT REAL interval, because the lease's
-                // freshness check reads real time — a zero-wait stub leaves the predecessor fresh and the
-                // retry refuses, which is exactly how the first version of this test failed. The window is
-                // tiny so the real wait stays negligible while genuinely elapsing past it.
-                sleep: async ms => { sleptMs = ms; await new Promise(r => setTimeout(r, 60)); },
+                // stale. The stub advances the shared clock by the requested duration, so the retry finds the
+                // lease stale because time PASSED; a stub that only records the call leaves it fresh, which is
+                // how the first version of this test failed. No real time is involved, so a slow runner can no
+                // longer make the first claim find the lease already stale.
+                sleep: async ms => { sleptMs = ms; at += ms },
                 ttlMs: 40
             });
 
@@ -76,18 +76,21 @@ test.describe('ai/daemons/orchestrator/daemon.mjs (#11006/#11009)', () => {
             // refuses exactly as before. Without this, "wait and retry" would be indistinguishable from
             // deleting the refusal.
             const dir     = leaseDir(),
-                  profile = 'container-plane',
-                  holder  = acquireAuthorityLease({dir, profile});
+                  profile = 'container-plane';
+            let   at  = Date.parse('2026-10-01T18:00:00.000Z');
+            const now = () => at,
+                  holder  = acquireAuthorityLease({dir, profile, now});
 
             await expect(acquireAuthorityLeaseSurvivingSelfSuccession({
                 dir,
                 profile,
-                // The wait must ELAPSE past the window and the holder must pulse inside it, so the lease is
+                now,
+                // The clock must pass the window and the holder must pulse at that moment, so the lease is
                 // fresh at the retry *because of the pulse* — the signature of a live process. An earlier
                 // version pulsed without elapsing, which left the lease fresh at 0ms and would have passed
                 // with the pulse removed entirely: a control that cannot fail proves nothing. The paired
                 // test above is the proof this one discriminates — identical timing, no pulse, acquires.
-                sleep: async () => { await new Promise(r => setTimeout(r, 60)); holder.pulse(); },
+                sleep: async ms => { at += ms; holder.pulse() },
                 ttlMs: 40
             })).rejects.toThrow(/is held by/);
 
