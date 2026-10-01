@@ -1,5 +1,6 @@
 import Base                             from 'neo.mjs/src/core/Base.mjs';
 import FleetLifecycleService            from './FleetLifecycleService.mjs';
+import {armFleetSeatWake}               from './armFleetSeatWake.mjs';
 import {assertRepoSlug}                 from './deriveAgentRepoPath.mjs';
 import {inspectFleetRepos}              from './inspectFleetRepos.mjs';
 import {launchRefusalOf}                from '../../../src/fleet/contract/launchAuthority.mjs';
@@ -55,7 +56,8 @@ function repoCoordinates({repoSlug, cloneUrl}, caller) {
  * `managedRoot` or re-wiring the registry / lifecycle singletons at each call site.
  *
  * It **composes** the merged Fleet Manager primitives without modifying them:
- * - `startAgent(id)` → {@link Neo.ai.services.fleet.startAgentProvisioned} (provision-then-start);
+ * - `startAgent(id)` → {@link Neo.ai.services.fleet.startAgentProvisioned} (provision-then-start), then
+ *   `armFleetSeatWake` for a GUI seat's wake route;
  * - `fleetRepoStatus()` → {@link Neo.ai.services.fleet.inspectFleetRepos} (fleet repo observability),
  *
  * each fed the resolved `managedRoot` + the lifecycle service — the registry is derived from the
@@ -136,6 +138,18 @@ class FleetManager extends Base {
      * @member {Object|null} presenceStateOptions=null
      */
     presenceStateOptions = null
+    /**
+     * Seat wake-arming composer seam. Defaults (via {@link getWakeArmFn}) to `armFleetSeatWake`;
+     * inject a recording stub for tests. Plain field, mirroring {@link provisionAndStartFn}.
+     * @member {Function|null} wakeArmFn=null
+     */
+    wakeArmFn = null
+    /**
+     * Tenant collaborator for wake arming. `null` ⇒ the `FleetTenantService` singleton is imported
+     * lazily, only when a started seat actually targets a tenant. Plain field.
+     * @member {Object|null} tenantService=null
+     */
+    tenantService = null
 
     /**
      * @summary Returns the composing entrypoint's resolved fleet-managed checkout root.
@@ -187,11 +201,63 @@ class FleetManager extends Base {
     async startAgent(agentId) {
         this.assertStartPermitted('startAgent', agentId);
 
-        return this.getProvisionAndStartFn()({
+        const status = await this.getProvisionAndStartFn()({
             lifecycleService: this.getLifecycleService(),
             managedRoot     : this.getManagedRoot(),
             agentId
         });
+
+        return this.armSeatWake(agentId, status)
+    }
+
+    /**
+     * @returns {Function} the seat wake-arming composer (injected stub or `armFleetSeatWake`).
+     * @protected
+     */
+    getWakeArmFn() {
+        return this.wakeArmFn || armFleetSeatWake
+    }
+
+    /**
+     * @summary Arms the wake route of a seat {@link startAgent} has just started, and records the
+     * outcome on the seat's lifecycle record so its status says whether a peer can wake it.
+     *
+     * Never fails the start it follows: a refusal or an error becomes `wakeRoute: {state: 'unarmed',
+     * reason}` beside a running seat. The receiver coordinates and the attached plane arrive through
+     * {@link wakeStateOptions}, injected by the composing entrypoint like its sibling read paths.
+     * @param {String} agentId Registry agent id.
+     * @param {Object} status The lifecycle status `startAgent` produced.
+     * @returns {Promise<Object>} `status`, plus `wakeRoute` when a GUI wake applies to the seat.
+     */
+    async armSeatWake(agentId, status) {
+        const
+            lifecycle = this.getLifecycleService(),
+            registry  = lifecycle.getRegistry(),
+            agent     = registry.getDefinition?.(agentId) ?? registry.getAgent(agentId),
+            options   = this.wakeStateOptions || {};
+
+        let wakeRoute;
+
+        try {
+            wakeRoute = await this.getWakeArmFn()({
+                agent,
+                instanceHome : status?.instanceHome,
+                planeBase    : options.planeBase,
+                receiverBase : options.wakeReceiverBase,
+                manifestPath : options.wakeReceiverManifestPath,
+                tenantService: agent?.mcpTarget?.kind === 'tenant'
+                    ? this.tenantService ?? (await import('./FleetTenantService.mjs')).default
+                    : null
+            })
+        } catch (error) {
+            wakeRoute = {state: 'unarmed', reason: `wake arming failed: ${error?.message ?? error}`}
+        }
+
+        if (!wakeRoute) return status;
+
+        lifecycle.setWakeRoute?.(agentId, wakeRoute);
+
+        return {...status, wakeRoute}
     }
 
     /**

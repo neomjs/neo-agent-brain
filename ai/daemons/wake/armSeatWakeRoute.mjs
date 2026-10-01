@@ -103,6 +103,26 @@ export async function resolveInstanceTuple({
 }
 
 /**
+ * @summary Checks a caller-supplied instance tuple the way {@link resolveInstanceTuple} checks its own:
+ * a seat that cannot name itself, or an address that is not absolute, is a named skip, never a route.
+ * @param {Object} tuple `{identity, instanceAddress, instanceType}`
+ * @returns {{identity: String, instanceAddress: String, instanceType: String}|{skipped: true, reason: String}}
+ */
+export function validateKnownTuple({identity, instanceAddress, instanceType} = {}) {
+    const bare = toBareIdentity(identity);
+
+    if (!bare) {
+        return {skipped: true, reason: 'the supplied tuple names no identity'};
+    }
+
+    if (instanceType !== INSTANCE_TYPE || typeof instanceAddress !== 'string' || !path.isAbsolute(instanceAddress)) {
+        return {skipped: true, reason: `the supplied tuple is not an absolute ${INSTANCE_TYPE} address`};
+    }
+
+    return {identity: `@${bare}`, instanceAddress, instanceType}
+}
+
+/**
  * @summary Arms this seat's wake route: publishes its subscriptions into the receiver manifest.
  *
  * **Subscriptions are read over the Memory Core's MCP surface, never by opening a graph database by
@@ -124,6 +144,9 @@ export async function resolveInstanceTuple({
  * @param {Object} options
  * @param {Function} options.listSubscriptions Returns this seat's subscription records (the MCP call).
  * @param {String} options.manifestPath Absolute manifest destination the receiver reads.
+ * @param {Object} [options.tuple] An already-known `{identity, instanceAddress, instanceType}`. A
+ *     caller that launched the seat knows the address its window runs at, so the convention-directory
+ *     derivation is skipped rather than allowed to guess a different one.
  * @param {Object} [options.env=process.env] Environment source.
  * @param {String} [options.harness='claude'] Harness key for tuple derivation.
  * @param {String} [options.homeDir] Overrides `os.homedir()` for deterministic tests.
@@ -137,6 +160,7 @@ export async function resolveInstanceTuple({
 export async function armSeatWakeRoute({
     listSubscriptions,
     manifestPath,
+    tuple: knownTuple,
     env        = process.env,
     harness    = 'claude',
     homeDir,
@@ -153,7 +177,9 @@ export async function armSeatWakeRoute({
         return {armed: false, reason: 'no manifest path was supplied'};
     }
 
-    const tuple = await resolveInstanceTuple({env, fs, harness, homeDir});
+    const tuple = knownTuple
+        ? validateKnownTuple(knownTuple)
+        : await resolveInstanceTuple({env, fs, harness, homeDir});
 
     if (tuple.skipped) {
         return {armed: false, reason: tuple.reason};

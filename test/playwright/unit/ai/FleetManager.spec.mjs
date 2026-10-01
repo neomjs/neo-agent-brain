@@ -16,6 +16,7 @@ import {test, expect}          from '@playwright/test';
 import Neo                     from 'neo.mjs/src/Neo.mjs';
 import * as core               from 'neo.mjs/src/core/_export.mjs';
 import FleetManager            from '../../../../ai/services/fleet/FleetManager.mjs';
+import {armFleetSeatWake}      from '../../../../ai/services/fleet/armFleetSeatWake.mjs';
 import {inspectFleetRepos}     from '../../../../ai/services/fleet/inspectFleetRepos.mjs';
 import {startAgentProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 
@@ -28,6 +29,9 @@ function reset() {
     FleetManager.lifecycleService    = null;
     FleetManager.provisionAndStartFn = null;
     FleetManager.repoStatusFn        = null;
+    FleetManager.wakeArmFn           = null;
+    FleetManager.tenantService       = null;
+    FleetManager.wakeStateOptions    = null;
 }
 
 // Singleton-stateful service → serial, with env + injected-field reset per case.
@@ -157,5 +161,69 @@ test.describe('Neo.ai.services.fleet.FleetManager', () => {
     test('seams default to the real composers (a no-injection construction wires them)', () => {
         expect(FleetManager.getProvisionAndStartFn()).toBe(startAgentProvisioned);
         expect(FleetManager.getRepoStatusFn()).toBe(inspectFleetRepos);
+        expect(FleetManager.getWakeArmFn()).toBe(armFleetSeatWake);
+    });
+});
+
+test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', () => {
+    const TENANT_AGENT = {id: 'agent-a', harnessType: 'codex-desktop', githubUsername: 'neo-agent-a', mcpTarget: {kind: 'tenant', tenantId: 'local'}};
+
+    function startWith({agent = TENANT_AGENT, arm}) {
+        const recorded  = [],
+              armCalls  = [],
+              tenants   = {marker: 'tenant-service'},
+              lifecycle = {
+                  getRegistry : () => ({getAgent: () => agent}),
+                  setWakeRoute: (id, route) => { recorded.push({id, route}); return true }
+              };
+
+        FleetManager.managedRoot         = '/managed/root';
+        FleetManager.lifecycleService    = lifecycle;
+        FleetManager.tenantService       = tenants;
+        FleetManager.provisionAndStartFn = async () => ({state: 'running', instanceHome: '/agents/agent-a/harness/codex-desktop'});
+        FleetManager.wakeStateOptions    = {planeBase: 'http://127.0.0.1:3102', wakeReceiverBase: 'http://host.docker.internal:3199', wakeReceiverManifestPath: '/host/wake/routes.json'};
+        FleetManager.wakeArmFn           = async args => { armCalls.push(args); return arm(args) };
+
+        return {recorded, armCalls, tenants, status: FleetManager.startAgent('agent-a')}
+    }
+
+    test.beforeEach(() => reset());
+    test.afterEach(() => reset());
+
+    test('a started seat is armed with the entrypoint\'s receiver coordinates, and the route is recorded', async () => {
+        const route                                 = {state: 'ready', reason: null, adapter: 'osascript', addressType: 'userDataDir', instanceAddress: '/p', subscriptionId: 'WAKE_SUB:x'},
+              {recorded, armCalls, tenants, status} = startWith({arm: () => route});
+
+        expect(await status).toEqual({state: 'running', instanceHome: '/agents/agent-a/harness/codex-desktop', wakeRoute: route});
+        expect(armCalls[0]).toEqual({
+            agent        : TENANT_AGENT,
+            instanceHome : '/agents/agent-a/harness/codex-desktop',
+            planeBase    : 'http://127.0.0.1:3102',
+            receiverBase : 'http://host.docker.internal:3199',
+            manifestPath : '/host/wake/routes.json',
+            tenantService: tenants
+        });
+        expect(recorded).toEqual([{id: 'agent-a', route}]);
+    });
+
+    test('an arming error never fails the start: the seat runs, unarmed, with the cause', async () => {
+        const {recorded, status} = startWith({arm: () => { throw new Error('receiver unreachable') }});
+
+        expect(await status).toMatchObject({state: 'running', wakeRoute: {state: 'unarmed', reason: 'wake arming failed: receiver unreachable'}});
+        expect(recorded[0].route.state).toBe('unarmed');
+    });
+
+    test('a family with no GUI wake leaves the status and the record untouched', async () => {
+        const {recorded, status} = startWith({agent: {...TENANT_AGENT, harnessType: 'opencode'}, arm: () => null});
+
+        expect(await status).toEqual({state: 'running', instanceHome: '/agents/agent-a/harness/codex-desktop'});
+        expect(recorded).toEqual([]);
+    });
+
+    test('a resident seat is handed no tenant service', async () => {
+        const {armCalls, status} = startWith({agent: {...TENANT_AGENT, mcpTarget: null}, arm: () => ({state: 'unarmed', reason: 'resident'})});
+
+        await status;
+        expect(armCalls[0].tenantService).toBeNull();
     });
 });

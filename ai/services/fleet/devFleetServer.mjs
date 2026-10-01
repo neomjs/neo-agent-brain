@@ -232,7 +232,12 @@ async function boot() {
             // manifest coordinate is mode-independent truth: the `fleet.wakeReceiverManifestPath`
             // leaf binds the SAME `NEO_WAKE_RECEIVER_MANIFEST` export the runbook materializes the
             // receiver's plist from. Declared-empty ⇒ no local wake lane ⇒ arming typed-unobserved.
-            wakeReceiverManifestPath: AiConfig.fleet.wakeReceiverManifestPath
+            wakeReceiverManifestPath: AiConfig.fleet.wakeReceiverManifestPath,
+            // A GUI seat started here is armed against THIS plane (FleetManager.armSeatWake): the
+            // plane its route must live on, and the receiver address that plane can reach.
+            // Host mode binds neither, so its seats stay unarmed with that reason.
+            planeBase,
+            wakeReceiverBase: AiConfig.fleet.wakeReceiverBase.trim()
         };
 
         console.log(`[fleet] wake-state seam bound to the containerized plane at ${planeBase} (subscription axis plane-side; delivery liveness ${fleetWakeStreamConsumer ? 'observed from the composed wake stream' : 'unarmed — no fleet-surface credential declared'}; terminal receipts honest-unknown)`)
