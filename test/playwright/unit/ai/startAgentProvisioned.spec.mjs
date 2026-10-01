@@ -1,4 +1,5 @@
 import {test, expect}          from '@playwright/test';
+import {CREDENTIAL_FAMILIES}   from '../../../../ai/services/fleet/redactCredentials.mjs';
 import {startAgentProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 
 // Pure composer — imported directly with injected stubs (no fs / git / Neo runtime), so the suite has
@@ -276,6 +277,40 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         expect(lifecycle.calls.start).toHaveLength(1);
         expect(status.repos).toEqual([{repoSlug: 'neomjs/missing', state: 'failed', reason: 'ensureAgentRepo: clone failed'}]);
+    });
+
+    test('a failed repository\'s reason carries no credential and stays bounded, for every family the redactor knows', async () => {
+        const agents = repoAgent('a');
+
+        // one failing repository per family, the secret leading a 4 KB message: redaction, not the bound,
+        // is what has to remove it
+        agents.a.metadata.repos = CREDENTIAL_FAMILIES.map(({name}) => ({repoSlug: `canary/${name}`, cloneUrl: `https://github.com/canary/${name}.git`}));
+
+        const lifecycle  = makeLifecycle({agents}),
+              ensureRepo = async ({repoSlug}) => {
+                  const family = CREDENTIAL_FAMILIES.find(({name}) => repoSlug === `canary/${name}`);
+                  if (family) throw new Error(`fatal: unable to access ${family.sample} ${'x'.repeat(4096)}`);
+                  return {repoPath: '/managed/a/neomjs/neo'}
+              },
+              status     = await startAgentProvisioned({
+                  lifecycleService  : lifecycle,
+                  agentId           : 'a',
+                  managedRoot       : '/managed',
+                  ensureRepo,
+                  prepareWorkspace  : makePrepareWorkspace(),
+                  agentosRuntimeRoot: '/installed/neo'
+              });
+
+        expect(lifecycle.calls.start).toHaveLength(1);
+        expect(status.repos.map(({repoSlug, state}) => ({repoSlug, state}))).toEqual(agents.a.metadata.repos.map(({repoSlug}) => ({repoSlug, state: 'failed'})));
+
+        CREDENTIAL_FAMILIES.forEach(({secret}, index) => {
+            const {reason} = status.repos[index];
+
+            expect(reason.startsWith('fatal: unable to access')).toBe(true);
+            expect(reason).not.toContain(secret);
+            expect(reason.length).toBeLessThanOrEqual(240)
+        })
     });
 
     test('a working checkout that cannot be cloned still refuses the start, and no other repository is tried', async () => {

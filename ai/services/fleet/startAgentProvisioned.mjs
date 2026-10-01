@@ -2,6 +2,7 @@ import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from './mcpServers.mjs';
 import {ensureAgentRepo}               from './ensureAgentRepo.mjs';
 import {launchRefusalOf}               from '../../../src/fleet/contract/launchAuthority.mjs';
 import {prepareManagedAgentWorkspace}  from './prepareManagedAgentWorkspace.mjs';
+import {redactReadFailure}             from './redactReadFailure.mjs';
 import path                            from 'node:path';
 import {fileURLToPath}                 from 'node:url';
 
@@ -110,7 +111,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @returns {Promise<Object>} the agent's lifecycle status (see `FleetLifecycleService.status`). A prepared
  *   seat's status also carries `seatInstructions`, the preparer's decision about its instructions file,
  *   so whoever starts the seat sees why it got, kept or lost one. A seat with other repositories also
- *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`.
+ *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, where a failed entry's
+ *   `reason` is the failure's credential-redacted, bounded diagnostic.
  * @throws {Error} when `lifecycleService` / `agentId` is missing, the agent is unknown or has no GitHub
  *   PAT stored (refused before any checkout), `managedRoot`
  *   is absent for a repo-bearing agent, a repo-bearing raw launch override would bypass curated
@@ -237,7 +239,8 @@ export async function startAgentProvisioned({
 
     // The seat's other repositories go beside the working checkout, with the same PAT. One that fails is
     // reported on the status and the launch goes on: the working checkout is the seat's cwd and its gate,
-    // while the others are only places it reaches into.
+    // while the others are only places it reaches into. A failure here is response data, out of the
+    // dispatcher's sanitizer's reach, and a clone error can echo the PAT.
     const repos = [];
 
     for (const {repoSlug, cloneUrl} of agent.metadata?.repos ?? []) {
@@ -245,7 +248,7 @@ export async function startAgentProvisioned({
             await ensureRepo({managedRoot, agentId, repoSlug, cloneUrl, credential: resolvedCredential, cloneRepo});
             repos.push({repoSlug, state: 'prepared'})
         } catch (error) {
-            repos.push({repoSlug, state: 'failed', reason: error.message})
+            repos.push({repoSlug, state: 'failed', reason: redactReadFailure(error) ?? 'no legible error'})
         }
     }
 
