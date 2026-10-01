@@ -1068,3 +1068,113 @@ test.describe.serial('FleetControlBridge + wire — the remote-tenant surface', 
         })
     })
 })
+
+/**
+ * A seat's own plane credential, one per (plane, seat). The tenant store keeps one bearer per plane,
+ * which the seat probe admits for one identity only, so a plane served to several seats needs each
+ * seat's own credential. Nothing persists before the probe proves the identity, and nothing returns it.
+ */
+test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane credentials', () => {
+    const
+        PLANE   = 'http://127.0.0.1:3102',
+        STORE   = () => path.join(tmpDir, 'seat-plane-credentials.enc'),
+        AS_SEAT = async ({expectedIdentity}) => ({
+            ok       : true,
+            status   : 200,
+            resources: {'memory-core': {ok: true, status: 200, identity: expectedIdentity}, 'knowledge-base': {ok: true, status: 200}}
+        })
+
+    test.beforeEach(() => {
+        sequence++
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `fleet-seat-plane-${sequence}-`))
+        FleetTenantService.dataDir   = tmpDir
+        FleetRegistryService.dataDir = tmpDir
+    })
+
+    test.afterEach(() => {
+        FleetTenantService.dataDir   = null
+        FleetTenantService.probeFn   = null
+        FleetRegistryService.dataDir = null
+        fs.rmSync(tmpDir, {force: true, recursive: true})
+    })
+
+    test('a credential proven to be the seat is stored encrypted, resolves for that seat and plane only, and is never returned', async () => {
+        FleetTenantService.probeFn = AS_SEAT
+
+        const stored = await FleetTenantService.storeSeatPlaneCredential({planeBase: `${PLANE}/`, agentId: 'neo-gpt-sophie', identity: 'neo-gpt-sophie', credential: PAT})
+
+        expect(stored).toEqual({status: 'stored', endpoint: PLANE, agentId: 'neo-gpt-sophie'})
+        expect(JSON.stringify(stored)).not.toContain(PAT)
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'})).toBe(PAT)
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-opus-ada'})).toBeNull()
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: 'https://elsewhere.example.com', agentId: 'neo-gpt-sophie'})).toBeNull()
+        expect(fs.readFileSync(STORE()).includes(Buffer.from(PAT))).toBe(false)
+        expect(fs.statSync(STORE()).mode & 0o777).toBe(0o600)
+    })
+
+    test('two seats on one plane each keep their own credential', async () => {
+        FleetTenantService.probeFn = AS_SEAT
+
+        await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie', identity: '@neo-gpt-sophie', credential: 'sophie-plane-pat'})
+        await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy', identity: '@neo-gpt-emmy', credential: 'emmy-plane-pat'})
+
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'})).toBe('sophie-plane-pat')
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy'})).toBe('emmy-plane-pat')
+    })
+
+    test('another identity, a rejected bearer and an unreachable plane each persist nothing', async () => {
+        const cases = [
+            [async () => ({ok: true, status: 200, resources: {'memory-core': {ok: true, identity: '@someone-else'}, 'knowledge-base': {ok: true}}}), 'the credential resolves to another identity'],
+            [async () => ({ok: false, status: 401}), 'tenant rejected the credential'],
+            [async () => { throw new Error(`refused ${PAT}`) }, 'plane endpoint unreachable']
+        ]
+
+        for (const [probe, reason] of cases) {
+            FleetTenantService.probeFn = probe
+
+            expect(await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie', identity: '@neo-gpt-sophie', credential: PAT}))
+                .toEqual({status: 'rejected', reason})
+            expect(fs.existsSync(STORE())).toBe(false)
+        }
+    })
+
+    test('an invalid plane, seat id or credential is refused before the probe sees anything', async () => {
+        let probed = 0
+
+        FleetTenantService.probeFn = async args => { probed++; return AS_SEAT(args) }
+
+        for (const params of [
+            {planeBase: 'http://plane.example.com', agentId: 'neo-gpt-sophie', identity: '@neo-gpt-sophie', credential: PAT},
+            {planeBase: PLANE, agentId: '../neo-gpt-sophie', identity: '@neo-gpt-sophie', credential: PAT},
+            {planeBase: PLANE, agentId: 'Neo-Gpt-Sophie', identity: '@neo-gpt-sophie', credential: PAT},
+            {planeBase: PLANE, agentId: 'neo-gpt-sophie', identity: '', credential: PAT},
+            {planeBase: PLANE, agentId: 'neo-gpt-sophie', identity: '@neo-gpt-sophie', credential: '  '}
+        ]) {
+            expect((await FleetTenantService.storeSeatPlaneCredential(params)).status).toBe('rejected')
+        }
+
+        expect(probed).toBe(0)
+        expect(fs.existsSync(STORE())).toBe(false)
+    })
+
+    test('a seat credential leaves the tenant bearers untouched, and a corrupt seat store refuses a write without changing it', async () => {
+        FleetTenantService.probeFn = AS_SEAT
+
+        const tenant = await FleetTenantService.connectTenant({tenantUrl: 'https://tenant.example.com', credential: 'tenant-bearer'})
+
+        await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie', identity: '@neo-gpt-sophie', credential: PAT})
+        expect(FleetTenantService.resolveMcpCredential(tenant.id)).toBe('tenant-bearer')
+
+        fs.writeFileSync(STORE(), 'not ciphertext', {mode: 0o600})
+
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'})).toBeNull()
+        expect(await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy', identity: '@neo-gpt-emmy', credential: 'x'}))
+            .toEqual({status: 'rejected', reason: 'seat plane credential could not be persisted'})
+        expect(fs.readFileSync(STORE(), 'utf8')).toBe('not ciphertext')
+    })
+
+    test('the seat credential is never reachable over the Fleet wire', async () => {
+        await expect(dispatchFleetRequest({method: 'resolveSeatPlaneCredential', params: {}, protocol: createFleetWireOffer()})).resolves
+            .toMatchObject({ok: false, state: FLEET_WIRE_RESPONSE_STATES.unsupportedMethod})
+    })
+})

@@ -9,6 +9,7 @@ import {
 import Base                        from 'neo.mjs/src/core/Base.mjs';
 import AiConfig                    from '../../config.mjs';
 import {resolveFleetCredentialKey} from './FleetRegistryService.mjs';
+import {assertSeatSegment}         from './deriveAgentRepoPath.mjs';
 import {
     normalizeAgentIdentity,
     normalizeSecureMcpEndpoint,
@@ -20,6 +21,10 @@ import {
 // The loopback-http exception, URL-credential rejection, canonical endpoint form and the two
 // resource URLs beneath it live in ./mcpWireParsing.mjs — one endpoint-boundary policy shared with
 // the plane mailbox client and the seat's plane target.
+
+const
+    TENANT_CREDENTIALS     = 'tenant-credentials.enc',
+    SEAT_PLANE_CREDENTIALS = 'seat-plane-credentials.enc';
 
 /**
  * @summary The CLOSED public vocabulary for a failed connect.
@@ -70,6 +75,8 @@ function rejectionReasonFor(status) {
  * Storage layout (under the same data-dir precedent as the registry):
  * - `tenants.json`             — public descriptors only; safe to render anywhere.
  * - `tenant-credentials.enc`   — the encrypted `{tenantId: providerBearer}` map (AES-256-GCM, `0600`).
+ * - `seat-plane-credentials.enc` — each seat's own credential per plane, `{endpoint: {agentId:
+ *   credential}}`, written only after a probe proves it is the seat's (same encryption and mode).
  */
 class FleetTenantService extends Base {
     static config = {
@@ -293,6 +300,97 @@ class FleetTenantService extends Base {
     }
 
     /**
+     * @summary Stores one seat's own credential for one plane, after proving that it resolves to that
+     * seat. A plane admits a seat only as itself, and a seat's checkout PAT is never plane authority
+     * (see {@link probeSeatCredential}), so every seat on a plane carries a credential of its own: on a
+     * provider-PAT plane, an identity-only PAT. Nothing persists before the probe proves the identity;
+     * the credential is kept encrypted beside the tenant bearers and never returned.
+     * @param {Object} params
+     * @param {String} params.planeBase The plane the credential is for.
+     * @param {String} params.agentId Registry agent id.
+     * @param {String} params.identity The seat's identity the credential must resolve to.
+     * @param {String} params.credential Never returned.
+     * @returns {Promise<Object>} `{status: 'stored', endpoint, agentId}`, or `{status: 'rejected',
+     *     reason}` with a reason from a closed vocabulary.
+     */
+    async storeSeatPlaneCredential({planeBase, agentId, identity, credential} = {}) {
+        const
+            endpoint = this.normalizeEndpoint(planeBase),
+            expected = normalizeAgentIdentity(identity);
+
+        if (!endpoint) {
+            return {status: 'rejected', reason: 'planeBase must be a valid http(s) URL'}
+        }
+
+        try {
+            assertSeatSegment(agentId, 'agentId', 'FleetTenantService.storeSeatPlaneCredential')
+        } catch {
+            return {status: 'rejected', reason: 'a seat id and its identity are required'}
+        }
+
+        if (!expected) {
+            return {status: 'rejected', reason: 'a seat id and its identity are required'}
+        }
+
+        if (typeof credential !== 'string' || credential.trim() === '') {
+            return {status: 'rejected', reason: 'credential (the seat\'s own plane credential) is required'}
+        }
+
+        let probe;
+
+        try {
+            probe = await this.getProbeFn()({endpoint, credential, expectedIdentity: expected})
+        } catch {
+            return {status: 'rejected', reason: 'plane endpoint unreachable'}
+        }
+
+        if (!probe?.ok) {
+            return {status: 'rejected', reason: rejectionReasonFor(probe?.status)}
+        }
+
+        if (probe.resources?.['memory-core']?.identity !== expected) {
+            return {status: 'rejected', reason: 'the credential resolves to another identity'}
+        }
+
+        try {
+            const record = this.readSeatPlaneCredentialsForMutation();
+
+            record[endpoint] = {...record[endpoint], [agentId]: credential};
+            this.publishAtomically(path.join(this.getDataDir(), SEAT_PLANE_CREDENTIALS), this.encrypt(JSON.stringify(record)))
+        } catch {
+            return {status: 'rejected', reason: 'seat plane credential could not be persisted'}
+        }
+
+        return {status: 'stored', endpoint, agentId}
+    }
+
+    /**
+     * @summary The stored plane credential of one seat, for the Node-side start that presents it.
+     * Brain-internal only: this method is NOT on any wire allowlist and must never be added to one.
+     * @param {Object} params
+     * @param {String} params.planeBase
+     * @param {String} params.agentId
+     * @returns {String|null} `null` for an unknown plane or seat, or an unreadable store.
+     */
+    resolveSeatPlaneCredential({planeBase, agentId} = {}) {
+        const endpoint = this.normalizeEndpoint(planeBase);
+
+        if (!endpoint) return null;
+
+        let record;
+
+        try {
+            record = this.readSeatPlaneCredentialsForMutation()
+        } catch {
+            return null
+        }
+
+        const credential = record[endpoint]?.[agentId];
+
+        return typeof credential === 'string' && credential.trim() ? credential : null
+    }
+
+    /**
      * @summary Resolve one tenant's stored provider bearer for the Node-side transport that presents it.
      * Brain-internal only: this method is NOT on any wire allowlist and must never be added to one.
      * @param {String} tenantId
@@ -440,17 +538,35 @@ class FleetTenantService extends Base {
     }
 
     /**
-     * @summary Strict mutation snapshot for the encrypted credential record. Missing is empty;
-     * existing unreadable/wrong-key/non-record ciphertext throws and must remain byte-identical.
+     * @summary Strict mutation snapshot for the encrypted credential record.
      * @returns {Object} Null-prototype credential record.
      * @protected
      */
     readCredentialsForMutation() {
-        const file = path.join(this.getDataDir(), 'tenant-credentials.enc');
-        let   raw;
+        return this.readEncryptedRecord(TENANT_CREDENTIALS)
+    }
+
+    /**
+     * @summary Strict mutation snapshot of the seat plane credentials, `{endpoint: {agentId: credential}}`.
+     * @returns {Object} Null-prototype record.
+     * @protected
+     */
+    readSeatPlaneCredentialsForMutation() {
+        return this.readEncryptedRecord(SEAT_PLANE_CREDENTIALS)
+    }
+
+    /**
+     * @summary Strict snapshot of one encrypted record under the data dir. Missing is empty; existing
+     * unreadable/wrong-key/non-record ciphertext throws and must remain byte-identical.
+     * @param {String} filename
+     * @returns {Object} Null-prototype record.
+     * @protected
+     */
+    readEncryptedRecord(filename) {
+        let raw;
 
         try {
-            raw = fs.readFileSync(file)
+            raw = fs.readFileSync(path.join(this.getDataDir(), filename))
         } catch (error) {
             if (error?.code === 'ENOENT') return Object.create(null);
 
@@ -460,7 +576,7 @@ class FleetTenantService extends Base {
         const parsed = JSON.parse(this.decrypt(raw));
 
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            throw new TypeError('FleetTenantService: tenant-credentials.enc must contain a credential record.')
+            throw new TypeError(`FleetTenantService: ${filename} must contain a credential record.`)
         }
 
         return Object.assign(Object.create(null), parsed)
@@ -492,7 +608,7 @@ class FleetTenantService extends Base {
      */
     writeCredentials(map) {
         this.publishAtomically(
-            path.join(this.getDataDir(), 'tenant-credentials.enc'),
+            path.join(this.getDataDir(), TENANT_CREDENTIALS),
             this.encrypt(JSON.stringify(map))
         );
     }
