@@ -47,6 +47,7 @@ test.describe('dispatchFleetRequest — the app↔fleet wire allowlist + routing
             removeAgent   : async id => { calls.push(['removeAgent', id]);  return {success: true, id}; },
             fleetStatus   : () => { calls.push(['fleetStatus']); return [{id: 'a'}]; },
             setRepo       : payload => { calls.push(['setRepo', payload]); return {id: payload.id, metadata: {repo: payload}}; },
+            setRepos      : payload => { calls.push(['setRepos', payload]); return {id: payload.id, metadata: {repos: payload.repos}}; },
             setAvatar     : payload => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
             // resolver seams that MUST be unreachable over the wire (they return lifecycle-powerful singletons):
             getManager : () => { calls.push(['getManager']);  return {DANGER: 'lifecycle'}; },
@@ -77,6 +78,14 @@ test.describe('dispatchFleetRequest — the app↔fleet wire allowlist + routing
 
         expect(res).toMatchObject({ok: true, result: {id: 'alice', metadata: {repo: payload}}, state: FLEET_WIRE_RESPONSE_STATES.ok});
         expect(calls).toEqual([['setRepo', payload]]);
+    });
+
+    test('routes setRepos, forwarding the single payload to the bridge', async () => {
+        const payload = {id: 'alice', repos: [{repoSlug: 'neomjs/neo-agent-brain'}]},
+              res     = await dispatchFleetRequest(wireRequest('setRepos', payload), bridge);
+
+        expect(res).toMatchObject({ok: true, result: {id: 'alice', metadata: {repos: payload.repos}}, state: FLEET_WIRE_RESPONSE_STATES.ok});
+        expect(calls).toEqual([['setRepos', payload]]);
     });
 
     test('routes configureAgent as one payload and preserves the domain outcome', async () => {
@@ -176,7 +185,7 @@ test.describe('dispatchFleetRequest — the app↔fleet wire allowlist + routing
             // session summaries + one agent's mailbox mirror + the whoami identity-bootstrap) plus
             // the two explicit write verbs. Catch-up mark is process-local only; compose persists
             // payload while the server stamps identity. Adopt / release record who launches a seat.
-            ['adoptAgent', 'composeOperatorMessage', 'configureAgent', 'connectTenant', 'defineAgent', 'fleetActivity', 'fleetDeploymentState', 'fleetGoldenPath', 'fleetGraphScene', 'fleetHistory', 'fleetMailboxMirror', 'fleetMemories', 'fleetRoster', 'fleetRuntimeStatus', 'fleetSessionMemories', 'fleetStatus', 'fleetTasks', 'fleetWakeRoutes', 'getAgent', 'getBootIdentity', 'listAgents', 'listTenants', 'markFleetCaughtUp', 'releaseAgent', 'removeAgent', 'resolveViewerIdentity', 'restartAgent', 'setAvatar', 'setRepo', 'startAgent', 'stopAgent'].sort()
+            ['adoptAgent', 'composeOperatorMessage', 'configureAgent', 'connectTenant', 'defineAgent', 'fleetActivity', 'fleetDeploymentState', 'fleetGoldenPath', 'fleetGraphScene', 'fleetHistory', 'fleetMailboxMirror', 'fleetMemories', 'fleetRoster', 'fleetRuntimeStatus', 'fleetSessionMemories', 'fleetStatus', 'fleetTasks', 'fleetWakeRoutes', 'getAgent', 'getBootIdentity', 'listAgents', 'listTenants', 'markFleetCaughtUp', 'releaseAgent', 'removeAgent', 'resolveViewerIdentity', 'restartAgent', 'setAvatar', 'setRepo', 'setRepos', 'startAgent', 'stopAgent'].sort()
         );
         // the deployment's task picture — bounded read-observe over the existing truth verbs, no resolver seam
         expect(FLEET_WIRE_METHODS).toContain('fleetTasks');

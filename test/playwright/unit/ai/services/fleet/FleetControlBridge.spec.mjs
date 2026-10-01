@@ -45,6 +45,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             removeAgent    : async id => { calls.push(['removeAgent', id]);  return {success: true, id}; },
             fleetRepoStatus: ()       => { calls.push(['fleetRepoStatus']);  return [{id: 'alice', repo: 'clean'}]; },
             setRepo        : payload  => { calls.push(['setRepo', payload]);   return {id: payload.id, metadata: {repo: payload}}; },
+            setRepos       : payload  => { calls.push(['setRepos', payload]);  return {id: payload.id, metadata: {repos: payload.repos}}; },
             setAvatar      : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
             adoptAgent     : payload  => { calls.push(['adoptAgent', payload]);   return {id: payload.id, launchOwner: 'fleet'}; },
             releaseAgent   : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; }
@@ -405,6 +406,12 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         const payload = {id: 'alice', cloneUrl: 'https://github.com/x/y.git', repoSlug: 'x/y'};
         expect(FleetControlBridge.setRepo(payload)).toEqual({id: 'alice', metadata: {repo: payload}});
         expect(calls).toEqual([['setRepo', payload]]);
+    });
+
+    test('setRepos delegates the single payload to the manager definition-update (fleet authority)', () => {
+        const payload = {id: 'alice', repos: [{repoSlug: 'neomjs/neo-agent-brain'}]};
+        expect(FleetControlBridge.setRepos(payload)).toEqual({id: 'alice', metadata: {repos: payload.repos}});
+        expect(calls).toEqual([['setRepos', payload]]);
     });
 
     test('setAvatar delegates the single payload to the manager definition-update (fleet authority)', () => {
