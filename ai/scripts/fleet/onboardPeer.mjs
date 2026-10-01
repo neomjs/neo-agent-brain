@@ -363,6 +363,24 @@ export function defineRequestOf(intent, env = process.env) {
 }
 
 /**
+ * @summary Commit the intent's working repository, stopping on a refusal: the Fleet answers one as
+ * data, so without this check the commit would launch a seat without its repository.
+ * @param {Object} fleet  The Fleet bridge ({@link createOnboardingFleetBridge}).
+ * @param {Object} intent A valid intent from {@link buildOnboardingIntent} that carries a repo.
+ * @returns {Promise<Object>} The updated public definition.
+ */
+export async function commitRepoSegment(fleet, intent) {
+    const {cloneUrl, repoSlug} = intent.repo,
+          outcome              = await fleet.setRepo({id: intent.agentId, cloneUrl, repoSlug});
+
+    if (outcome?.status !== 'accepted') {
+        throw new Error(`the Fleet refused repo ${repoSlug}: ${outcome?.reason ?? 'no reason given'}`)
+    }
+
+    return outcome.agent
+}
+
+/**
  * @summary The pure two-phase decision: given the intent and the OBSERVED facts, decide the
  * current phase and the exact per-segment delta. Facts arrive observed (the CLI gathers them;
  * tests inject them) so the planner stays side-effect-free: `agent` (the registry's public
@@ -784,7 +802,7 @@ async function main() {
         }
 
         if (segment.key === 'repo') {
-            await fleet.setRepo({id: intent.agentId, cloneUrl: intent.repo.cloneUrl, repoSlug: intent.repo.repoSlug});
+            await commitRepoSegment(fleet, intent);
             console.log(`  [DONE] repo — ${intent.repo.repoSlug}`);
         }
     }
