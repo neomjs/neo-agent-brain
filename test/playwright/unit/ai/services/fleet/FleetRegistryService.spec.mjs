@@ -366,12 +366,13 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
             id: 'desk', mcpServers: {'github-workflow': true}
         }).mcpServers).toBeNull();
         const before = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');
+        // a GitHub seat holds no GitLab PAT, so its GitLab workflow server has nothing to run with
         expect(() => FleetRegistryService.configureAgent({
             id: 'desk', mcpServers: {'gitlab-workflow': true}
-        })).toThrow("FleetRegistryService.configureAgent: MCP server 'gitlab-workflow' is enabled but unsupported");
+        })).toThrow("FleetRegistryService.configureAgent: MCP server 'gitlab-workflow' needs a seat bound to a GitLab instance");
         expect(() => FleetRegistryService.defineAgent({
             githubUsername: 'desk-two', harnessType: 'claude-desktop', credential: PAT, mcpServers: {'gitlab-workflow': true}
-        })).toThrow("FleetRegistryService.defineAgent: MCP server 'gitlab-workflow' is enabled but unsupported");
+        })).toThrow("FleetRegistryService.defineAgent: MCP server 'gitlab-workflow' needs a seat bound to a GitLab instance");
         expect(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).toBe(before);
         expect(FleetRegistryService.getAgent('desk-two')).toBeNull();
         expect(FleetRegistryService.defineAgent({

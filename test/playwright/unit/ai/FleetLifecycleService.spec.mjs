@@ -1321,6 +1321,70 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(keys(tenant)).toEqual(['neural-link', 'github-workflow']);
     });
 
+    test("the default producer gives the GitLab workflow server its plane slots and never a GitLab seat value", () => {
+        install();
+        FleetLifecycleService.residentMcpEnvSource = null;
+        const records = FleetLifecycleService.resolveResidentMcpEnvironment({
+            id        : 'a', harnessType: 'claude-desktop', forge: 'gitlab', forgeHost: 'https://gitlab.example.com',
+            mcpServers: {'github-workflow': false, 'gitlab-workflow': true}
+        });
+        expect(Object.keys(records)).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'gitlab-workflow']);
+        expect(records['gitlab-workflow'].NEO_PLANE_DATA_ROOT).toBe(AiConfig.plane.dataRoot);
+        // the host's own GitLab host, token and project are config; a seat's are injected at spawn
+        expect(Object.keys(records['gitlab-workflow']).filter(key => key.startsWith('NEO_GITLAB_'))).toEqual([]);
+    });
+
+    test('a GitLab seat starts with its own PAT, instance and project in the GitLab slots, never under GH_TOKEN', async () => {
+        const
+            ORIGIN    = 'https://gitlab.example.com',
+            spawnStub = install({agents: {a: agentDef('a', {
+                harnessType: 'claude-desktop', forge: 'gitlab', forgeHost: ORIGIN,
+                mcpServers : {'github-workflow': false, 'gitlab-workflow': true},
+                metadata   : {repo: {repoSlug: 'group/sub/project', cloneUrl: `${ORIGIN}/group/sub/project.git`, forge: 'gitlab'}}
+            })}}),
+            calls     = [];
+        FleetLifecycleService.instanceRoot = DESKTOP_ROOT;
+        FleetLifecycleService.harnessBinaryPaths = {'claude-desktop': process.execPath};
+        FleetLifecycleService.residentMcpEnvSource = key => {
+            calls.push(key);
+            return {NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')};
+        };
+        await FleetLifecycleService.start('a');
+        const env = spawnStub.calls[0].opts.env;
+        expect(calls).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'gitlab-workflow']);
+        expect(env).toMatchObject({NEO_GITLAB_PAT: FIXTURE_PAT, NEO_GITLAB_HOST: ORIGIN, NEO_GITLAB_PROJECT: 'group/sub/project'});
+        expect(env.GH_TOKEN).toBeUndefined();
+        await FleetLifecycleService.stop('a');
+        // a host GitLab token in the envelope is refused, never spawned
+        FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane'), NEO_GITLAB_PAT: 'host-token'});
+        expect(() => FleetLifecycleService.start('a')).toThrow(/reserved resident MCP/);
+        expect(spawnStub.calls).toHaveLength(1);
+    });
+
+    test("a GitLab seat's project is named only when its working repository is on the seat's instance", async () => {
+        const
+            gitlab    = (id, cloneUrl) => agentDef(id, {
+                forge   : 'gitlab', forgeHost: 'https://gitlab.example.com',
+                metadata: {launch: LAUNCH, repo: {repoSlug: 'group/project', cloneUrl, forge: 'gitlab'}}
+            }),
+            spawnStub = install({agents: {
+                on : gitlab('on',  'git@gitlab.example.com:group/project.git'),
+                off: gitlab('off', 'https://gitlab.other.example/group/project.git')
+            }});
+        await FleetLifecycleService.start('on');
+        await FleetLifecycleService.start('off');
+        expect(spawnStub.calls[0].opts.env.NEO_GITLAB_PROJECT).toBe('group/project');
+        expect(spawnStub.calls[1].opts.env).not.toHaveProperty('NEO_GITLAB_PROJECT');
+        expect(spawnStub.calls[1].opts.env.NEO_GITLAB_PAT).toBe(FIXTURE_PAT);
+    });
+
+    test('SECURITY: a launch env cannot pre-load a GitLab seat slot', () => {
+        for (const key of ['NEO_GITLAB_PAT', 'NEO_GITLAB_HOST', 'NEO_GITLAB_PROJECT']) {
+            install({agents: {a: agentDef('a', {metadata: {launch: {command: 'x', args: [], env: {[key]: 'spoofed'}}}})}, creds: {}});
+            expect(() => FleetLifecycleService.start('a'), key).toThrow(/collides with a reserved env slot/);
+        }
+    });
+
     test('accepts only the exact adapter grammar for every supported harness family', async () => {
         install();
         FleetLifecycleService.harnessBinaryPaths = {

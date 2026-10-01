@@ -482,7 +482,7 @@ export async function prepareManagedAgentWorkspace({
     let plan;
     try {
         plan = createManagedAgentWorkspacePlan({
-            agent    : {id: agent.id, harnessType: agent.harnessType},
+            agent    : {id: agent.id, harnessType: agent.harnessType, ...(agent.forge ? {forge: agent.forge} : {})},
             mcpMatrix: resolveMatrix(agent.mcpServers),
             mcpTarget
         })
