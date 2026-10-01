@@ -11,12 +11,12 @@ setup({
     }
 });
 
-import {test, expect}    from '@playwright/test';
-import {execFile, spawn} from 'child_process';
-import {EventEmitter}    from 'events';
-import fs                from 'fs';
-import os                from 'os';
-import path              from 'path';
+import {test, expect}                  from '@playwright/test';
+import {execFile, execFileSync, spawn} from 'child_process';
+import {EventEmitter}                  from 'events';
+import fs                              from 'fs';
+import os                              from 'os';
+import path                            from 'path';
 
 import Neo                          from 'neo.mjs/src/Neo.mjs';
 import * as core                    from 'neo.mjs/src/core/_export.mjs';
@@ -44,6 +44,10 @@ class FakeChild extends EventEmitter {
         this.signals.push(signal);
         queueMicrotask(() => this.emit('exit', 0, signal));
         return true;
+    }
+
+    unref() {
+        this.unrefed = true
     }
 }
 
@@ -135,6 +139,11 @@ function install({agents = {}, creds = {}} = {}) {
     FleetLifecycleService.harnessBinaryPaths = null;
     FleetLifecycleService.codexDesktopCapabilityProbeFn = null;
     FleetLifecycleService.codexDesktopCleanupFn         = null;
+    // Seat-lease seams: no spec reads or signals a host process unless it opts in.
+    FleetLifecycleService.processInspectFn  = () => null;
+    FleetLifecycleService.processSignalFn   = () => { throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
+    FleetLifecycleService.adoptedExitPollMs = 5;
+    FleetLifecycleService.leasesAdopted     = false;
     return spawnStub;
 }
 
@@ -1603,5 +1612,209 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(spawn.calls[0].opts.env.GH_TOKEN).toBe(repositoryPat);
         expect(spawn.calls[0].opts.env.NEO_MCP_REMOTE_TOKEN).toBe(planePat);
         expect(spawn.calls[0].opts.env.GH_TOKEN).not.toBe(spawn.calls[0].opts.env.NEO_MCP_REMOTE_TOKEN)
+    });
+});
+
+// A seat outlives the Fleet server: the app-bundle families spawn detached and lease their pid; a
+// later Fleet server re-adopts a lease the live process still matches, and Stop ends it.
+test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', () => {
+    const
+        LEASE_FILE   = '.neo-fleet-seat-lease.json',
+        STARTED_AT   = 'Thu Oct  1 09:00:00 2026',
+        CHECKOUT     = '/srv/checkouts/seat/neomjs/neo',
+        CRASHPAD     = '/Applications/ChatGPT.app/Contents/Frameworks/Codex Framework.framework/Helpers/browser_crashpad_handler',
+        curatedAgent = (id, harnessType) => ({id, githubUsername: id, harnessType, metadata: {}});
+
+    /** One registered seat under a fresh agents root; returns its derived harness home. */
+    function installSeat(harnessType) {
+        const
+            root  = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-seat-survival-')),
+            spawn = install({agents: {seat: curatedAgent('seat', harnessType)}}),
+            home  = path.join(root, 'seat', 'harness', harnessType);
+
+        fs.mkdirSync(home, {recursive: true});
+        FleetLifecycleService.instanceRoot        = root;
+        FleetLifecycleService.harnessBinaryPaths  = {[harnessType]: process.execPath, codex: '/bin/sh'};
+        FleetLifecycleService.registry.listAgents = () => [{id: 'seat'}];
+        FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({available: true, reason: null, crashpadExecutable: CRASHPAD});
+
+        return {spawn, home, profile: harnessType === 'codex-desktop' ? path.join(home, 'electron-profile') : home}
+    }
+
+    /** The lease a previous Fleet server left behind. */
+    function writeLease(home, extra = {}) {
+        fs.writeFileSync(path.join(home, LEASE_FILE), JSON.stringify({
+            version  : 1, agentId: 'seat', harnessType: 'claude-desktop', pid: 4242, pidStartedAt: STARTED_AT,
+            startedAt: '2026-10-01T09:00:00.000Z', cwd: null, ...extra
+        }))
+    }
+
+    /** A host process table behind both seams: `pid → {alive, startedAt, command, dieOn}`. */
+    function stubProcessTable(rows) {
+        const signals = [];
+
+        FleetLifecycleService.processInspectFn = pid => rows[pid]?.alive ? {startedAt: rows[pid].startedAt, command: rows[pid].command} : null;
+        FleetLifecycleService.processSignalFn  = (pid, signal) => {
+            if (!rows[pid]?.alive) throw Object.assign(new Error('no such process'), {code: 'ESRCH'});
+            if (signal === 0) return;
+            signals.push(signal);
+            if (rows[pid].dieOn?.includes(signal)) rows[pid].alive = false
+        };
+
+        return signals
+    }
+
+    test('an app-bundle seat spawns detached with no pipe held by the Fleet server; a CLI seat keeps its held stdin', () => {
+        for (const harnessType of ['antigravity', 'claude-desktop', 'codex-desktop']) {
+            const {spawn} = installSeat(harnessType);
+
+            FleetLifecycleService.start('seat', {cwd: CHECKOUT});
+
+            expect(spawn.calls[0].opts.detached, harnessType).toBe(true);
+            expect(spawn.calls[0].opts.stdio, harnessType).toBe('ignore');
+            expect(spawn.calls[0].child.unrefed, harnessType).toBe(true)
+        }
+
+        const {spawn} = installSeat('codex');
+
+        FleetLifecycleService.start('seat');
+
+        expect(spawn.calls[0].opts.detached).toBeUndefined();
+        expect(spawn.calls[0].opts.stdio).toEqual(['pipe', 'ignore', 'pipe']);
+        expect(spawn.calls[0].child.unrefed).toBeUndefined()
+    });
+
+    test('an app-bundle seat leases its pid at spawn without a secret, and drops the lease when it stops', async () => {
+        const {home} = installSeat('claude-desktop');
+
+        FleetLifecycleService.processInspectFn = () => ({startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${home}`});
+
+        const
+            {pid} = FleetLifecycleService.start('seat'),
+            raw   = fs.readFileSync(path.join(home, LEASE_FILE), 'utf8');
+
+        expect(Object.keys(JSON.parse(raw)).sort()).toEqual(['agentId', 'cwd', 'harnessType', 'pid', 'pidStartedAt', 'startedAt', 'version']);
+        expect(JSON.parse(raw)).toMatchObject({agentId: 'seat', harnessType: 'claude-desktop', pid, pidStartedAt: STARTED_AT});
+        expect(raw).not.toContain(FIXTURE_PAT);
+        expect(raw).not.toContain('bridge_seat_token');
+
+        await FleetLifecycleService.stop('seat');
+
+        expect(fs.existsSync(path.join(home, LEASE_FILE))).toBe(false)
+    });
+
+    test('a fresh Fleet server re-adopts a seat whose lease the live process matches: running, adopted, the leased pid', () => {
+        const {home, profile} = installSeat('claude-desktop');
+
+        // The seat can write its own lease: a command it names is never what the status reports.
+        writeLease(home, {launchCommand: '/tmp/planted', authCommand: '/tmp/planted'});
+        stubProcessTable({4242: {alive: true, startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${profile}`}});
+
+        expect(FleetLifecycleService.status('seat')).toMatchObject({
+            state: 'running', running: true, adopted: true, pid: 4242, instanceHome: home, launchCommand: process.execPath, authCommand: null
+        });
+        expect(FleetLifecycleService.listRunning().map(row => row.id)).toEqual(['seat'])
+    });
+
+    test('a lease whose pid is gone, reused or on another profile is removed, and the agent reads stopped with why', () => {
+        const cases = {
+            gone   : () => ({}),
+            reused : profile => ({4242: {alive: true, startedAt: 'Thu Oct  1 09:30:00 2026', command: `${process.execPath} --user-data-dir=${profile}`}}),
+            foreign: () => ({4242: {alive: true, startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=/elsewhere`}})
+        };
+
+        for (const [name, rows] of Object.entries(cases)) {
+            const {home, profile} = installSeat('claude-desktop');
+
+            writeLease(home);
+            stubProcessTable(rows(profile));
+
+            expect(FleetLifecycleService.status('seat'), name).toMatchObject({
+                state: 'stopped', running: false, adopted: false, failureReason: 'the seat exited while no Fleet server supervised it'
+            });
+            expect(fs.existsSync(path.join(home, LEASE_FILE)), name).toBe(false)
+        }
+    });
+
+    test('Stop ends an adopted seat by pid: SIGTERM, then SIGKILL when the seat lingers', async () => {
+        for (const [dieOn, sent] of [[['SIGTERM'], ['SIGTERM']], [['SIGKILL'], ['SIGTERM', 'SIGKILL']]]) {
+            const {home, profile} = installSeat('claude-desktop');
+
+            writeLease(home);
+
+            const signals = stubProcessTable({4242: {alive: true, startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${profile}`, dieOn}});
+
+            expect(await FleetLifecycleService.stop('seat')).toMatchObject({success: true, state: 'stopped'});
+            expect(signals).toEqual(sent);
+            expect(fs.existsSync(path.join(home, LEASE_FILE))).toBe(false)
+        }
+    });
+
+    test('an adopted Codex Desktop seat still runs its exact-profile helper finalizer on Stop', async () => {
+        const
+            {home, profile} = installSeat('codex-desktop'),
+            cleanups        = [];
+
+        FleetLifecycleService.codexDesktopCleanupFn = async options => {
+            cleanups.push(options);
+            return {terminated: [], escalated: []}
+        };
+        writeLease(home, {harnessType: 'codex-desktop', cwd: CHECKOUT});
+        stubProcessTable({4242: {alive: true, startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${profile} --open-project=${CHECKOUT}`, dieOn: ['SIGTERM']}});
+
+        expect(await FleetLifecycleService.stop('seat')).toMatchObject({success: true, state: 'stopped', cleanupUnresolved: false});
+        expect(cleanups).toEqual([{electronProfile: profile, crashpadExecutable: CRASHPAD}])
+    });
+
+    test('an adopted seat that exits on its own reads stopped on the next read, and its lease is gone', () => {
+        const
+            {home, profile} = installSeat('claude-desktop'),
+            rows            = {4242: {alive: true, startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${profile}`}};
+
+        writeLease(home);
+        stubProcessTable(rows);
+
+        expect(FleetLifecycleService.isRunning('seat')).toBe(true);
+
+        rows[4242].alive = false;
+
+        expect(FleetLifecycleService.status('seat')).toMatchObject({state: 'stopped', running: false, adopted: true});
+        expect(fs.existsSync(path.join(home, LEASE_FILE))).toBe(false)
+    });
+
+    test('REAL-PROCESS: an app-bundle seat leaves the Fleet server\'s process group; a fresh server adopts and stops it', async () => {
+        const
+            root    = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-seat-real-')),
+            fakeApp = path.join(root, 'fake-app.mjs'),
+            pgidOf  = pid => execFileSync('ps', ['-o', 'pgid=', '-p', String(pid)], {encoding: 'utf8'}).trim();
+
+        // A desktop stand-in: it ignores its argv, the profile flag included, and lives until signalled.
+        fs.writeFileSync(fakeApp, `#!${process.execPath}\nsetInterval(() => {}, 1 << 30);\n`, {mode: 0o755});
+        fs.mkdirSync(path.join(root, 'seat', 'harness', 'claude-desktop'), {recursive: true});
+
+        install({agents: {seat: curatedAgent('seat', 'claude-desktop')}});
+        FleetLifecycleService.instanceRoot        = root;
+        FleetLifecycleService.harnessBinaryPaths  = {'claude-desktop': fakeApp};
+        FleetLifecycleService.registry.listAgents = () => [{id: 'seat'}];
+        FleetLifecycleService.spawnFn             = null;  // the REAL child_process.spawn
+        FleetLifecycleService.processInspectFn    = null;  // the REAL ps read
+        FleetLifecycleService.processSignalFn     = null;  // the REAL process.kill
+        FleetLifecycleService.sigkillTimeoutMs    = 2000;
+
+        const {pid} = FleetLifecycleService.start('seat');
+
+        try {
+            expect(pgidOf(pid)).toBe(String(pid));                // its own group leader,
+            expect(pgidOf(pid)).not.toBe(pgidOf(process.pid));    // outside the Fleet server's group
+
+            FleetLifecycleService.processes.clear();              // a fresh Fleet server process
+            FleetLifecycleService.leasesAdopted = false;
+
+            expect(FleetLifecycleService.status('seat')).toMatchObject({running: true, adopted: true, pid});
+            expect(await FleetLifecycleService.stop('seat')).toMatchObject({success: true, state: 'stopped'});
+            expect(() => process.kill(pid, 0)).toThrow()
+        } finally {
+            try { process.kill(pid, 'SIGKILL') } catch {}
+        }
     });
 });

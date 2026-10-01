@@ -136,6 +136,32 @@ const HARNESS_AUTH_MARKERS = {
     'codex-desktop': 'auth.json'
 };
 
+// The families whose seat outlives this server: stdin-indifferent, so no pipe held here is their
+// liveness (see "Seat survival" in the class summary).
+const SURVIVING_HARNESS_TYPES = new Set(['antigravity', 'claude-desktop', 'codex-desktop']);
+
+const SEAT_LEASE_FILE = '.neo-fleet-seat-lease.json';
+
+/**
+ * @summary Read a live process's start time and command line through `ps`. The start time pins a
+ * pid to one process, so a reused pid never passes for the seat that held it; the fixed locale and
+ * zone render that time identically for the server that leases it and the one that later checks it.
+ * @param {Number} pid
+ * @returns {{startedAt: String, command: String}|null} `null` when no such process answers.
+ * @private
+ */
+function inspectProcess(pid) {
+    const options = {encoding: 'utf8', env: {PATH: process.env.PATH ?? '/usr/bin:/bin', LC_ALL: 'C', TZ: 'UTC'}};
+
+    try {
+        const startedAt = execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], options).trim();
+
+        return startedAt ? {startedAt, command: execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], options).trim()} : null
+    } catch {
+        return null
+    }
+}
+
 /**
  * @class Neo.ai.services.fleet.FleetLifecycleService
  * @extends Neo.core.Base
@@ -172,6 +198,11 @@ const HARNESS_AUTH_MARKERS = {
  * per-family long-lived mode args. Stdout is discarded except for Fleet-managed OpenCode, whose
  * exact listening banner is the authoritative bound-port surface for the supervisor-owned wake
  * bootstrap; stderr is drained byte-counted as below.
+ *
+ * **Seat survival (the app-bundle families):** those seats spawn detached into their own process
+ * group with no stdio held here, so a teardown of this server's group never reaches them, and each
+ * leaves a secret-free lease in its harness home. A later server re-adopts a seat whose live process
+ * still matches its lease ({@link adoptLeasedSeats}); Stop then signals it by pid.
  *
  * **Child env (minimal by construction):** the child receives ONLY the `AMBIENT_ENV_ALLOWLIST`
  * process-runtime vars — never a full parent-env copy, so ambient operator secrets cannot leak into
@@ -329,6 +360,34 @@ class FleetLifecycleService extends Base {
      * @member {Function|null} codexDesktopCleanupFn=null
      */
     codexDesktopCleanupFn = null
+
+    /**
+     * Process inspection behind the seat lease: `(pid) => {startedAt, command}|null`. Defaults to a
+     * `ps` read; injectable so unit specs never inspect host processes.
+     * @member {Function|null} processInspectFn=null
+     */
+    processInspectFn = null
+
+    /**
+     * Signal delivery to an adopted seat, which has no child handle: `(pid, signal) => void`.
+     * Defaults to `process.kill`; injectable so unit specs never signal host processes.
+     * @member {Function|null} processSignalFn=null
+     */
+    processSignalFn = null
+
+    /**
+     * Poll interval while `stop` waits for an adopted seat to exit.
+     * @member {Number} adoptedExitPollMs=100
+     */
+    adoptedExitPollMs = 100
+
+    /**
+     * Whether this process has read the seat leases yet: adoption runs once, before the first
+     * lifecycle read or write.
+     * @member {Boolean} leasesAdopted=false
+     * @private
+     */
+    leasesAdopted = false
 
     /**
      * Supervised processes keyed by agent id. Records carry NO secret.
@@ -514,8 +573,14 @@ class FleetLifecycleService extends Base {
         // harness CLIs treat ignored/EOF'd stdin as session-end and exit immediately (probed on the
         // exact binaries; see the class summary). Fleet-managed OpenCode is the one stdout consumer:
         // its listening banner carries the OS-assigned port needed by the owner-session bootstrap.
-        // Every other family retains stdout=ignore; stderr is drained byte-counted below.
-        const spawnOptions = {stdio: ['pipe', curatedOpenCode ? 'pipe' : 'ignore', 'pipe'], env};
+        // Every other family retains stdout=ignore; stderr is drained byte-counted below. A surviving
+        // (app-bundle) seat is the exception: its own group and no pipe, so it outlives this server.
+        const
+            survivesFleetExit = Boolean(launch.instanceHome) && SURVIVING_HARNESS_TYPES.has(agent.harnessType),
+            spawnOptions      = survivesFleetExit
+                ? {detached: true, stdio: 'ignore', env}
+                : {stdio: ['pipe', curatedOpenCode ? 'pipe' : 'ignore', 'pipe'], env};
+
         if (cwd != null) spawnOptions.cwd = cwd;
 
         let openCodeWakeRoute = null;
@@ -578,9 +643,18 @@ class FleetLifecycleService extends Base {
             finalizePromise         : null,
             wakeRoute               : openCodeWakeRoute,
             openCodeBootstrapStarted: false,
-            openCodeBootstrapTimer  : null
+            openCodeBootstrapTimer  : null,
+            // Seat survival: set by writeSeatLease for a leased seat; a later server's adopted record
+            // carries `adopted: true` instead of a child handle.
+            adopted     : false,
+            pidStartedAt: null
         };
         this.processes.set(id, record);
+
+        if (survivesFleetExit) {
+            child.unref?.();
+            this.writeSeatLease(record)
+        }
 
         if (openCodeWakeRoute) {
             this.observeOpenCodeWakeBootstrap(record, {env});
@@ -653,6 +727,8 @@ class FleetLifecycleService extends Base {
      * only when exact-profile Codex Desktop helper ownership remains unresolved.
      */
     stop(id) {
+        this.adoptLeasedSeats();
+
         const record = this.processes.get(id);
 
         if (record?.state === 'stopping' && record.finalizePromise) {
@@ -673,6 +749,14 @@ class FleetLifecycleService extends Base {
                 state            : record.state,
                 cleanupUnresolved: Boolean(record.cleanupUnresolved)
             }));
+        }
+
+        if (record?.adopted && !record.child && record.state === 'running') {
+            record.adoptedStop ??= this.stopAdoptedSeat(record).finally(() => {
+                record.adoptedStop = null
+            });
+
+            return record.adoptedStop
         }
 
         if (!record || !record.child || (record.state !== 'running' && !record.cleanupUnresolved)) {
@@ -736,7 +820,7 @@ class FleetLifecycleService extends Base {
      * Status snapshot for one agent (never carries a secret — `stderrBytes` is a count, not content;
      * `authRequired` checks a marker file's PRESENCE, never its content).
      * @param {String} id
-     * @returns {Object} `{id, state, running, pid, startedAt, uptimeMs, exitCode, exitedAt,
+     * @returns {Object} `{id, state, running, adopted, pid, startedAt, uptimeMs, exitCode, exitedAt,
      *     stderrBytes, authRequired, instanceHome, authHome, launchCommand, authCommand,
      *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute}` — `authRequired`
      *     is the LIVE per-home
@@ -750,16 +834,23 @@ class FleetLifecycleService extends Base {
      *     until/unless the probe answered); `failureReason` is a bounded lifecycle-owned reason,
      *     never raw child output. Fleet-managed OpenCode additionally carries a non-secret
      *     `wakeRoute` (`starting | ready | degraded`, owner tuple, envelope path); server
-     *     credentials remain env-only and never enter the record or projection.
+     *     credentials remain env-only and never enter the record or projection. `adopted` marks a
+     *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
+     *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`).
      */
     status(id) {
+        this.adoptLeasedSeats();
+
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null};
+
+        this.refreshAdoptedSeat(record);
 
         return {
             id,
             state            : record.state,
             running          : record.state === 'running',
+            adopted          : Boolean(record.adopted),
             pid              : record.pid,
             startedAt        : record.startedAt,
             uptimeMs         : record.state === 'running' && record.startedAt ? Date.now() - Date.parse(record.startedAt) : null,
@@ -806,6 +897,12 @@ class FleetLifecycleService extends Base {
      * @returns {Object[]} status of every currently-running agent.
      */
     listRunning() {
+        this.adoptLeasedSeats();
+
+        for (const record of this.processes.values()) {
+            this.refreshAdoptedSeat(record)
+        }
+
         return [...this.processes.values()].filter(record => record.state === 'running').map(record => this.status(record.id));
     }
 
@@ -814,10 +911,252 @@ class FleetLifecycleService extends Base {
      * @returns {Boolean} whether the agent's process is tracked as running.
      */
     isRunning(id) {
+        this.adoptLeasedSeats();
+        this.refreshAdoptedSeat(this.processes.get(id));
+
         return this.processes.get(id)?.state === 'running';
     }
 
+    /**
+     * @summary Re-adopt the seats a previous Fleet server started and left running. A registered
+     * app-bundle agent's lease is checked against the live process: the pid answers, its start time
+     * is the leased one, and its command line carries the profile this agent's home derives — never a
+     * profile the lease names. A verified seat becomes a `running` record marked `adopted`, with no
+     * child handle; a lease failing any check is removed and the agent reads `stopped` with why.
+     * Runs once per process, before its first lifecycle read or write.
+     */
+    adoptLeasedSeats() {
+        if (this.leasesAdopted) return;
+        this.leasesAdopted = true;
+
+        let agents;
+
+        try {
+            agents = this.getRegistry().listAgents?.() ?? []
+        } catch {
+            return
+        }
+
+        for (const {id} of agents) {
+            const agent = this.processes.has(id) ? null : this.getRegistry().getDefinition(id);
+
+            if (agent && !agent.metadata?.launch && SURVIVING_HARNESS_TYPES.has(agent.harnessType)) {
+                this.adoptLeasedSeat(agent)
+            }
+        }
+    }
+
     // ---- internals ----------------------------------------------------------
+
+    /**
+     * @summary Verify and adopt one agent's lease (see {@link adoptLeasedSeats}).
+     * @param {Object} agent Raw registry definition of an app-bundle agent.
+     * @private
+     */
+    adoptLeasedSeat(agent) {
+        const
+            {harnessType} = agent,
+            instanceHome  = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType}),
+            leasePath     = path.join(instanceHome, SEAT_LEASE_FILE),
+            record        = {id: agent.id, child: null, adopted: false, pid: null, startedAt: null, exitCode: null, signal: null, exitedAt: null, stderrBytes: 0, harnessType, instanceHome};
+        let launch, lease;
+
+        // The seat can write its own lease, so the lease supplies only what nothing else knows: the
+        // pid, its start time, startedAt and the checkout. Commands, profile and homes derive from
+        // the registry and AiConfig exactly as `start` derives them.
+        try {
+            lease      = JSON.parse(fs.readFileSync(leasePath, 'utf8'));
+            record.cwd = typeof lease.cwd === 'string' && path.isAbsolute(lease.cwd) ? lease.cwd : null;
+            launch     = deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath: this.getHarnessBinaryPath(harnessType), cwd: record.cwd})
+        } catch (error) {
+            if (error?.code === 'ENOENT') return;   // no lease: the seat never outlived a server
+        }
+
+        const
+            profileArg = launch?.args.find(arg => arg.startsWith('--user-data-dir=')),
+            live       = lease?.agentId === agent.id && Number.isInteger(lease.pid) && profileArg && this.isProcessAlive(lease.pid) && this.getProcessInspectFn()(lease.pid);
+
+        if (!live || live.startedAt !== lease.pidStartedAt || !live.command.includes(profileArg)) {
+            fs.rmSync(leasePath, {force: true});
+            this.processes.set(agent.id, {...record, state: 'stopped', failureReason: 'the seat exited while no Fleet server supervised it'});
+            return
+        }
+
+        const launchCommand = this.resolveExecutable(launch.command, process.env.PATH, record.cwd);
+
+        this.processes.set(agent.id, {
+            ...record,
+            adopted           : true,
+            pid               : lease.pid,
+            pidStartedAt      : lease.pidStartedAt,
+            state             : 'running',
+            startedAt         : typeof lease.startedAt === 'string' && !Number.isNaN(Date.parse(lease.startedAt)) ? lease.startedAt : null,
+            authHome          : launch.authHome ?? (HARNESS_AUTH_MARKERS[harnessType] ? instanceHome : null),
+            authCommand       : harnessType === 'codex-desktop' ? this.resolveExecutable(this.getHarnessBinaryPath('codex'), process.env.PATH, record.cwd) : null,
+            electronProfile   : launch.electronProfile ?? null,
+            crashpadExecutable: harnessType === 'codex-desktop' ? this.probeCrashpadExecutable(launchCommand) : null,
+            launchCommand,
+            binaryVersion     : null,
+            failureReason     : null,
+            cleanupUnresolved : false,
+            finalizePromise   : null,
+            wakeRoute         : null
+        })
+    }
+
+    /**
+     * @summary The exact Crashpad helper an adopted Codex Desktop seat's finalizer scopes to,
+     * re-proven from the installed bundle as `start` proves it.
+     * @param {String|null} binaryPath
+     * @returns {String|null} `null` when the bundle no longer proves one; Stop then skips the helper scan.
+     * @private
+     */
+    probeCrashpadExecutable(binaryPath) {
+        try {
+            const capability = binaryPath && this.getCodexDesktopCapabilityProbe()({binaryPath});
+
+            return capability?.available && path.isAbsolute(capability.crashpadExecutable || '') ? capability.crashpadExecutable : null
+        } catch {
+            return null
+        }
+    }
+
+    /**
+     * @summary Lease a surviving seat's pid in its harness home, with the facts only this spawn knows.
+     * A seat whose start time cannot be read gets no lease — a later server could not tell it from a
+     * reused pid — so it runs, but no later server adopts it.
+     * @param {Object} record Fresh lifecycle record of an app-bundle seat.
+     * @private
+     */
+    writeSeatLease(record) {
+        const pidStartedAt = record.pid != null ? this.getProcessInspectFn()(record.pid)?.startedAt : null;
+
+        if (!pidStartedAt) return;
+
+        const
+            leasePath = path.join(record.instanceHome, SEAT_LEASE_FILE),
+            tmpPath   = `${leasePath}.${process.pid}.tmp`;
+
+        try {
+            fs.writeFileSync(tmpPath, JSON.stringify({
+                version    : 1,
+                agentId    : record.id,
+                harnessType: record.harnessType,
+                pid        : record.pid,
+                pidStartedAt,
+                startedAt  : record.startedAt,
+                cwd        : record.cwd
+            }, null, 4), {mode: 0o600});
+            fs.renameSync(tmpPath, leasePath);
+            record.pidStartedAt = pidStartedAt
+        } catch {
+            fs.rmSync(tmpPath, {force: true})
+        }
+    }
+
+    /**
+     * @summary Drop a seat's lease once its process is gone; a no-op for seats that hold none.
+     * @param {Object} record
+     * @private
+     */
+    removeSeatLease(record) {
+        if (record.instanceHome && SURVIVING_HARNESS_TYPES.has(record.harnessType)) {
+            fs.rmSync(path.join(record.instanceHome, SEAT_LEASE_FILE), {force: true})
+        }
+    }
+
+    /**
+     * @summary Notice an adopted seat that exited on its own: there is no child `exit` event to
+     * announce it, so each read checks the leased process is still the seat's.
+     * @param {Object|undefined} record
+     * @private
+     */
+    refreshAdoptedSeat(record) {
+        if (record?.adopted && record.state === 'running' && !record.adoptedStop && !this.isSeatProcessLive(record)) {
+            void this.finalizeExitedProcess(record, {code: null, signal: null})
+        }
+    }
+
+    /**
+     * @summary Stop a seat this server adopted: SIGTERM by pid, SIGKILL after `sigkillTimeoutMs`,
+     * exit observed by polling. Nothing is signalled unless the pid is still the seat's own process.
+     * @param {Object} record Adopted running record.
+     * @returns {Promise<Object>} `{success, id, state, cleanupUnresolved}`, as {@link stop}.
+     * @private
+     */
+    async stopAdoptedSeat(record) {
+        const signal     = this.getProcessSignalFn();
+        let   exitSignal = null;
+
+        if (this.isSeatProcessLive(record)) {
+            for (const name of ['SIGTERM', 'SIGKILL']) {
+                try { signal(record.pid, name) } catch {}
+
+                if (await this.waitForAdoptedExit(record)) {
+                    exitSignal = name;
+                    break
+                }
+            }
+
+            if (!exitSignal) {
+                record.failureReason = 'the adopted seat did not exit after SIGKILL';
+                return {success: false, id: record.id, state: record.state, cleanupUnresolved: Boolean(record.cleanupUnresolved)}
+            }
+        }
+
+        await this.finalizeExitedProcess(record, {code: null, signal: exitSignal});
+
+        return {success: record.state === 'stopped', id: record.id, state: record.state, cleanupUnresolved: Boolean(record.cleanupUnresolved)}
+    }
+
+    /**
+     * @param {Object} record Adopted record.
+     * @returns {Promise<Boolean>} whether its pid exited within `sigkillTimeoutMs`.
+     * @private
+     */
+    async waitForAdoptedExit(record) {
+        const deadline = Date.now() + this.sigkillTimeoutMs;
+
+        while (this.isProcessAlive(record.pid)) {
+            if (Date.now() >= deadline) return false;
+            await new Promise(resolve => setTimeout(resolve, this.adoptedExitPollMs))
+        }
+
+        return true
+    }
+
+    /**
+     * @param {Object} record Adopted record.
+     * @returns {Boolean} whether its pid is alive AND still started at the leased time.
+     * @private
+     */
+    isSeatProcessLive(record) {
+        return this.isProcessAlive(record.pid) && this.getProcessInspectFn()(record.pid)?.startedAt === record.pidStartedAt
+    }
+
+    /**
+     * @param {Number} pid
+     * @returns {Boolean} whether a process answers signal 0 (`EPERM` means it exists).
+     * @private
+     */
+    isProcessAlive(pid) {
+        try {
+            this.getProcessSignalFn()(pid, 0);
+            return true
+        } catch (error) {
+            return error?.code === 'EPERM'
+        }
+    }
+
+    /** @returns {Function} process inspection behind the seat lease. @private */
+    getProcessInspectFn() {
+        return this.processInspectFn || inspectProcess;
+    }
+
+    /** @returns {Function} signal delivery to an adopted seat. @private */
+    getProcessSignalFn() {
+        return this.processSignalFn || ((pid, signal) => process.kill(pid, signal));
+    }
 
     /**
      * @summary Publish a safe, non-running `unavailable` record when Codex Desktop's installed
@@ -890,6 +1229,8 @@ class FleetLifecycleService extends Base {
         record.signal   = signal;
         record.exitedAt = new Date().toISOString();
         record.child    = null;
+
+        this.removeSeatLease(record);
 
         if (!record.electronProfile || !record.crashpadExecutable) {
             record.state           = 'stopped';
