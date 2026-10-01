@@ -1,4 +1,5 @@
 import {deriveAgentRepoPath} from './deriveAgentRepoPath.mjs';
+import {ensureSeatRoot}      from './ensureSeatRoot.mjs';
 import {inspectAgentRepo}    from './inspectAgentRepo.mjs';
 import {provisionAgentRepo}  from './provisionAgentRepo.mjs';
 
@@ -17,6 +18,10 @@ import {provisionAgentRepo}  from './provisionAgentRepo.mjs';
  * state read-only; `provisionAgentRepo` executes via an injectable clone seam. The `cloneRepo` seam is
  * passed through so the composed flow is unit-testable without a git binary; the default (un-injected)
  * path runs a real `git clone`.
+ *
+ * The managed root is made owner-only first ({@link Neo.ai.services.fleet.ensureSeatRoot}): a clone
+ * would otherwise create it with the process umask, and the harness homes beside the checkouts hold
+ * logins.
  *
  * Fleet Manager is single-writer (Scenario-C-zero per the MVP epic), so the inspect→provision sequence
  * is not TOCTOU-guarded — and does not need to be: `git clone` fails safe if the directory changed
@@ -37,8 +42,11 @@ import {provisionAgentRepo}  from './provisionAgentRepo.mjs';
  *   occupant, or a missing `cloneUrl` when a clone is required.
  */
 export async function ensureAgentRepo({managedRoot, agentId, repoSlug, cloneUrl, credential, cloneRepo} = {}) {
+    const repoPath = deriveAgentRepoPath({managedRoot, agentId, repoSlug});
+
+    ensureSeatRoot(managedRoot);
+
     const
-        repoPath   = deriveAgentRepoPath({managedRoot, agentId, repoSlug}),
         inspection = inspectAgentRepo({repoPath}),
         result     = await provisionAgentRepo({
             repoPath,
