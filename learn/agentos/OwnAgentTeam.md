@@ -380,6 +380,13 @@ The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that fami
    the identity line its memory index loaded and the absolute path of the memory directory
    it writes to (*(Claude)* `<seat>/memory`), and have it write one witness file there. The
    file must appear in the new directory and not in the old one.
+   For a Claude Desktop seat, switch to the **Code tab** and open the clone folder calculated
+   in step 2 before that turn. Start opens the isolated Desktop profile, but opening the app
+   alone does not select this repository. A scratch workspace does not load the clone's
+   memory pin or local MCP scope. Fleet's MCP definitions live under that clone's
+   project entry in `~/.claude.json`, with environment references resolved by the Code tab;
+   the Desktop profile itself carries no Fleet MCP rows. Opening the clone brings the copied
+   memory and the intended MCP servers into the same session.
 7. Rollback is the old launch. Nothing was moved, so nothing needs restoring.
 8. Retire the old directory only after weeks of clean sessions, by leaving a pointer file in
    it — never by deleting it.

@@ -302,17 +302,6 @@ export function mcpDeclarationRefusal({harnessType, mcpMatrix, tenant=false}) {
         return `MCP server '${unsupported}' is enabled but unsupported: ${MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[unsupported].unsupportedReason}`
     }
 
-    if (harnessType === 'claude-desktop') {
-        const secretServer = enabled.find(key => {
-            const {requiredRuntimeEnv, secretEnv=[]} = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
-            return requiredRuntimeEnv.some(name => secretEnv.includes(name))
-        });
-
-        if (secretServer) {
-            return `Claude Desktop cannot represent startup-required Fleet secret env for enabled MCP server '${secretServer}' without persisting secret bytes.`
-        }
-    }
-
     return null
 }
 

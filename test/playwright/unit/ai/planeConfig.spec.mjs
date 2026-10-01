@@ -3,6 +3,7 @@ import fs                 from 'node:fs';
 import os                 from 'node:os';
 import path               from 'node:path';
 import {fileURLToPath}    from 'node:url';
+import {spawnSync}        from 'node:child_process';
 import {load as yamlLoad} from 'js-yaml';
 import Neo                from 'neo.mjs/src/Neo.mjs';
 import 'neo.mjs/src/core/_export.mjs';
@@ -10,6 +11,7 @@ import ConfigProvider, {createConfigProxy} from '../../../../ai/ConfigProvider.m
 import {
     CANONICAL_PLANE_ID,
     UNKNOWN_PLANE_ID,
+    assertPlaneDataRootPlacement,
     assertPlaneCoherence,
     assertPlaneMemberCoherence,
     collectPlaneMembers,
@@ -25,6 +27,90 @@ import NlConfigBase, {
 } from '../../../../ai/mcp/server/neural-link/configBase.mjs';
 
 const specDir = path.dirname(fileURLToPath(import.meta.url));
+
+test.describe('installed plane placement', () => {
+    test('missing roots through symlinked ancestors still resolve inside the bundle', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-plane-symlink-'));
+        try {
+            const resources = path.join(root, 'Neo Harness.app/Contents/Resources');
+            fs.mkdirSync(resources, {recursive: true});
+            fs.symlinkSync(resources, path.join(root, 'alias'));
+            expect(() => assertPlaneDataRootPlacement(path.join(root, 'alias/not-created/data'))).toThrow(/application bundle/);
+            expect(fs.readdirSync(resources)).toEqual([]);
+        } finally { fs.rmSync(root, {recursive: true, force: true}) }
+    });
+
+    test('a read-only parent refuses before creating the plane root', () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-plane-readonly-'));
+        try {
+            fs.chmodSync(root, 0o555);
+            expect(() => assertPlaneDataRootPlacement(path.join(root, 'data'), {requireWritable: true})).toThrow(/read-only/);
+            expect(fs.readdirSync(root)).toEqual([]);
+        } finally { fs.chmodSync(root, 0o700); fs.rmSync(root, {recursive: true, force: true}) }
+    });
+
+    test('legacy snapshot providers inherit the early guard and honor externally placed env', () => {
+        const root   = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-plane-snapshot-'));
+        const bundle = path.join(root, 'Fixture.app/Contents/Resources/data');
+        const code   = `import Neo from 'neo.mjs/src/Neo.mjs'; import 'neo.mjs/src/core/_export.mjs';
+            import ConfigProvider, {leaf} from './ai/ConfigProvider.mjs';
+            const snapshot = Neo.create(ConfigProvider, {data:{plane:{dataRoot:leaf(${JSON.stringify(bundle)}, 'NEO_PLANE_DATA_ROOT')}}});
+            console.log(snapshot.getData('plane.dataRoot'));`;
+        try {
+            const invoke = dataRoot => spawnSync(process.execPath, ['--input-type=module', '--eval', code], {
+                cwd: path.resolve(specDir, '../../../..'), env: {...process.env, NEO_PLANE_DATA_ROOT: dataRoot}, encoding: 'utf8'
+            });
+            const bad = invoke(bundle), good = invoke(path.join(root, 'placed'));
+            expect(bad.status).not.toBe(0);
+            expect(bad.stderr).toMatch(/application bundle/);
+            expect(good.status, good.stderr).toBe(0);
+            expect(good.stdout).toContain(path.join(root, 'placed'));
+            expect(fs.existsSync(bundle)).toBe(false);
+        } finally { fs.rmSync(root, {recursive: true, force: true}) }
+    });
+
+    test('a bundle root refuses coherence, while an externally placed profile is accepted', () => {
+        expect(() => assertPlaneCoherence({
+            planeId : CANONICAL_PLANE_ID,
+            dataRoot: '/Applications/Neo Harness.app/Contents/Resources/organism/.neo-ai-data'
+        })).toThrow(/application bundle/);
+        expect(assertPlaneCoherence({planeId: CANONICAL_PLANE_ID, dataRoot: '/tmp/placed-plane'}).dataRoot)
+            .toBe('/tmp/placed-plane');
+    });
+
+    test('config import refuses before the first persistence consumer can write', () => {
+        const root     = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-plane-placement-'));
+        const dataRoot = path.join(root, 'Fixture.app/Contents/Resources/organism/.neo-ai-data');
+        const marker   = path.join(dataRoot, 'consumer-write');
+        const code     = `import Neo from 'neo.mjs/src/Neo.mjs';
+            import 'neo.mjs/src/core/_export.mjs';
+            import config from './ai/config.template.mjs';
+            import fs from 'node:fs';
+            fs.mkdirSync(config.plane.dataRoot, {recursive:true});
+            fs.writeFileSync(${JSON.stringify(marker)}, 'persisted');`;
+        try {
+            const result = spawnSync(process.execPath, ['--input-type=module', '--eval', code], {
+                cwd     : path.resolve(specDir, '../../../..'),
+                env     : {...process.env, NEO_PLANE_DATA_ROOT: dataRoot},
+                encoding: 'utf8', timeout: 10000
+            });
+            expect(result.stderr).toMatch(/application bundle/);
+            expect(result.status).not.toBe(0);
+            expect(fs.existsSync(dataRoot)).toBe(false);
+
+            const placed = spawnSync(process.execPath, ['--input-type=module', '--eval',
+                "import Neo from 'neo.mjs/src/Neo.mjs'; import 'neo.mjs/src/core/_export.mjs'; import config from './ai/config.template.mjs'; console.log(config.plane.dataRoot)"], {
+                cwd     : path.resolve(specDir, '../../../..'),
+                env     : {...process.env, NEO_PLANE_DATA_ROOT: path.join(root, 'placed')},
+                encoding: 'utf8', timeout: 10000
+            });
+            expect(placed.status, placed.stderr).toBe(0);
+            expect(placed.stdout).toContain(path.join(root, 'placed'));
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true});
+        }
+    });
+});
 
 test.describe('ai/planeConfig — the config layer\'s plane helpers', () => {
     test('the module reads NO environment — the leaf owns env binding, alone', () => {

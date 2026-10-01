@@ -170,6 +170,11 @@ The shape now: **one exported constant** (`CANONICAL_PLANE_ID` — crossing the 
 
 ### 10.4 The F-invariant boot assertion
 
+**Early placement guard:** a provider declaring `plane.dataRoot` asserts its resolved placement
+after leaf/env compilation, before logging/WAL imports: bundle and read-only/inaccessible roots
+refuse construction, including legacy snapshots. An externally placed profile remains valid;
+the pure module anchor does not refuse merely because its code is packaged.
+
 `assertPlaneCoherence` (twin-side, pure, injectable): resolved `planeId` must be opaque; resolved `dataRoot` must be absolute (a relative root re-imports ambient-cwd resolution); and a NON-canonical `planeId` — a declared overlay — must not resolve, **symlink-transparently**, to the canonical durable root: identity-without-isolation would mutate the durable plane (the reconcile probe's symlink-escape class). The **member-coherence clause** (`assertPlaneMemberCoherence`, §10.5) extends the invariant to the member set: a declared member server walks its claimed `PLANE_MEMBER_PATHS` at the same boot point. Wired at the head of `BaseServer.runHealthcheckAndLogStatus()` — the building block every boot order calls after config load, so custom `boot()` overrides inherit it. Local wake-delivery files participate through their declared plane-member leaves when a local process owns that lane. ADR 0014 supplies the deployment taxonomy — wake delivery is local-only — rather than a separate file-freshness premise; the per-profile disposition is recorded in §10.7.
 
 ### 10.5 Member derivation: the A9/A2 decision rule + enforced coherence
@@ -188,6 +193,11 @@ Per-profile-pinned members (e.g. a canonical base/cloud default naming that prof
 A deployment manifest compares desired vs OBSERVED per service, so each process REPORTS its resolved `{plane.id, plane.dataRoot}` on its healthcheck payload (a tool-layer spread reading the SSOT at the use site). Host-side re-derivation cannot populate an observed column — it degrades the comparison to desired-vs-desired, which passes trivially and detects nothing.
 
 ### 10.7 Per-profile placement election (#15800)
+
+Claude Desktop resident MCP rows use `ConfigProvider.exportEnv()` at Start to transfer selected
+resolved runtime/plane-member slots across the process boundary. The clone's Code-tab local scope
+references them; tenant rows use native HTTP with a bearer reference. The Desktop profile carries
+no Fleet rows. This serialization is neither a defaults map nor a same-process config alias.
 
 The election is **per profile**, not one bind-versus-volume rule imposed on unlike workloads. `plane.id` remains opaque and never derives a filesystem path or port. The deployment profile declares placement; the runtime asserts the resolved identity/root and declared member set; static Compose coverage closes the profile-pinned leaves that are intentionally outside that walk.
 

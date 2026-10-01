@@ -1,6 +1,7 @@
 import {test, expect}                  from '@playwright/test';
 import {Client}                        from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport}          from '@modelcontextprotocol/sdk/client/stdio.js';
+import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {createMcpExpressApp}           from '@modelcontextprotocol/sdk/server/express.js';
 import {McpServer}                     from '@modelcontextprotocol/sdk/server/mcp.js';
 import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -55,7 +56,7 @@ const BOUNDED_APPLY_EFFECTS = new Set([
 let root, agentosRuntimeRoot, repoRoot, instanceRoot, hydrationCalls;
 
 test.beforeEach(async () => {
-    root          = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-fleet-workspace-'));
+    root          = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'neo-fleet-workspace-')));
     agentosRuntimeRoot  = path.join(root, 'installed-neo');
     repoRoot      = path.join(root, 'managed-repos');
     instanceRoot  = path.join(root, 'instances');
@@ -97,11 +98,17 @@ function options(agent, repoName = agent.id) {
         instanceRoot,
         agentosRuntimeRoot,
         nodePath        : NODE_PATH,
+        claudeConfigRoot: path.join(root, 'operator'),
         hydrateWorkspace: makeHydrate()
     };
 
     if (agent.harnessType === 'claude-desktop') {
-        result.remoteMcpCapability = claudeDesktopRemoteCapability(agentosRuntimeRoot)
+        result.remoteMcpCapability = claudeDesktopRemoteCapability(agentosRuntimeRoot);
+        result.claudeConfigRoot = path.join(root, 'operator');
+        result.residentMcpEnv = Object.fromEntries(['memory-core', 'knowledge-base', 'neural-link', 'github-workflow'].map(key => [key, {
+            NEO_PLANE_DATA_ROOT: path.join(root, 'placed-plane'),
+            ...(key === 'memory-core' ? {NEO_MEMORY_WAL_DIR: path.join(root, 'placed-plane/memory-wal')} : {})
+        }]));
     }
 
     return result
@@ -481,12 +488,11 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
         expect(() => createManagedAgentWorkspacePlan(logicalInput({
             harnessType: 'claude-desktop',
             mcpMatrix  : canonicalMcpMatrix({'github-workflow': true})
-        }))).toThrow(RangeError);
+        }))).not.toThrow();
     });
 
     test('the plan refuses an MCP declaration for exactly the reason the registry is told', () => {
         const declarations = [
-            {harnessType: 'claude-desktop', mcpMatrix: canonicalMcpMatrix({'github-workflow': true}), tenant: false},
             {harnessType: 'codex',          mcpMatrix: canonicalMcpMatrix({'gitlab-workflow': true}), tenant: false},
             {harnessType: 'antigravity',    mcpMatrix: canonicalMcpMatrix(),                          tenant: true}
         ];
@@ -502,7 +508,7 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
             })), declaration.harnessType).toThrow(`createManagedAgentWorkspacePlan: ${refusal}`)
         }
 
-        expect(mcpDeclarationRefusal({harnessType: 'claude-desktop', mcpMatrix: canonicalMcpMatrix()})).toBeNull();
+        expect(mcpDeclarationRefusal({harnessType: 'claude-desktop', mcpMatrix: canonicalMcpMatrix({'github-workflow': true})})).toBeNull();
         expect(mcpDeclarationRefusal({harnessType: 'claude-code', mcpMatrix: canonicalMcpMatrix({'github-workflow': true}), tenant: true})).toBeNull()
     });
 
@@ -728,6 +734,64 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
 });
 
 test.describe('prepareManagedAgentWorkspace', () => {
+    test('Claude Desktop Code-tab scope preserves foreign projects and carries placed env by reference', async () => {
+        const opts     = options(makeAgent('claude-desktop', {mcpServers: {'github-workflow': true}}));
+        const filePath = path.join(opts.claudeConfigRoot, '.claude.json');
+        const foreign  = {custom: 7, projects: {'/foreign': {mcpServers: {foreign: {command: 'keep'}}},
+            [opts.targetRepoRoot]: {hasTrustDialogAccepted: true, disabledMcpServers: ['neo-mjs-neural-link'], mcpServers: {other: {command: 'keep'}}}}};
+        await fs.mkdir(opts.claudeConfigRoot, {recursive: true});
+        await fs.writeFile(filePath, JSON.stringify(foreign));
+        const result = await prepareManagedAgentWorkspace(opts);
+        const config = JSON.parse(await read(filePath));
+        expect(config.custom).toBe(7);
+        expect(config.projects['/foreign']).toEqual(foreign.projects['/foreign']);
+        expect(config.projects[opts.targetRepoRoot].hasTrustDialogAccepted).toBe(true);
+        expect(config.projects[opts.targetRepoRoot].disabledMcpServers).toEqual(['neo-mjs-neural-link']);
+        const rows = config.projects[opts.targetRepoRoot].mcpServers;
+        expect(rows.other).toEqual({command: 'keep'});
+        expect(rows['neo-mjs-memory-core'].env.NEO_PLANE_DATA_ROOT).toBe('${NEO_PLANE_DATA_ROOT}');
+        expect(rows['neo-mjs-memory-core'].env.NEO_MEMORY_WAL_DIR).toBe('${NEO_MEMORY_WAL_DIR}');
+        expect(rows['neo-mjs-github-workflow'].env.GH_TOKEN).toBe('${GH_TOKEN}');
+        expect(JSON.parse(await read(path.join(result.instanceHome, 'claude_desktop_config.json'))).mcpServers).toEqual({});
+        config.projects['/foreign'].operatorEdit = true;
+        await fs.writeFile(filePath, JSON.stringify(config));
+        await prepareManagedAgentWorkspace(opts);
+        expect(JSON.parse(await read(filePath)).projects['/foreign'].operatorEdit).toBe(true);
+        rows['neo-mjs-memory-core'].command = '/operator-edited';
+        await fs.writeFile(filePath, JSON.stringify(config));
+        const edited = await read(filePath);
+        await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+        expect(await read(filePath)).toBe(edited);
+    });
+
+    test('Claude Desktop tenant rows use native HTTP in the Code-tab scope without a bridge proof', async () => {
+        const opts = options(makeAgent('claude-desktop'));
+        opts.mcpTarget = tenantTarget();
+        delete opts.remoteMcpCapability;
+        const result = await prepareManagedAgentWorkspace(opts);
+        const config = JSON.parse(await read(path.join(opts.claudeConfigRoot, '.claude.json')));
+        expect(config.projects[opts.targetRepoRoot].mcpServers['neo-mjs-memory-core']).toEqual({
+            type   : 'http', url: 'https://tenant.example.com/agentos/mc/mcp',
+            headers: {Authorization: 'Bearer ${NEO_MCP_REMOTE_TOKEN}'}
+        });
+        expect(JSON.stringify(result)).not.toContain('stdioToStreamableHttp');
+    });
+
+    test('Claude Desktop retires exact legacy Desktop rows, preserving foreign profile content', async () => {
+        const opts     = options(makeAgent('claude-desktop', {mcpServers: {'neural-link': false}}));
+        const home     = path.join(instanceRoot, 'agent-a/harness/claude-desktop');
+        const filePath = path.join(home, 'claude_desktop_config.json');
+        await fs.mkdir(home, {recursive: true});
+        const legacy = {preferences: {keep: true}, mcpServers: {foreign: {command: 'keep'}}};
+        for (const key of ['memory-core', 'knowledge-base']) legacy.mcpServers[`neo-mjs-${key}`] = {
+            command: NODE_PATH, args: [path.join(agentosRuntimeRoot, `ai/mcp/server/${key}/mcp-server.mjs`)],
+            env    : {NEO_AGENT_IDENTITY: 'agent-a'}
+        };
+        await fs.writeFile(filePath, JSON.stringify(legacy));
+        await prepareManagedAgentWorkspace(opts);
+        expect(JSON.parse(await read(filePath))).toEqual({preferences: {keep: true}, mcpServers: {foreign: {command: 'keep'}}});
+    });
+
     test('Node execution mode belongs only to the selected Electron executable', () => {
         const runtime = {execPath: '/app/Electron', versions: {electron: '43.5.0'}};
 
@@ -747,7 +811,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
                 codex           : path.join(opts.targetRepoRoot, '.codex/config.toml'),
                 'codex-desktop' : path.join(opts.targetRepoRoot, '.codex/config.toml'),
                 'claude-code'   : path.join(first.instanceHome, 'mcp-config.json'),
-                'claude-desktop': path.join(first.instanceHome, 'claude_desktop_config.json'),
+                'claude-desktop': path.join(opts.claudeConfigRoot, '.claude.json'),
                 'kimi-code'     : path.join(opts.targetRepoRoot, '.kimi-code/mcp.json'),
                 opencode        : path.join(opts.targetRepoRoot, 'opencode.jsonc')
             }[harnessType];
@@ -1363,7 +1427,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             .toBe(transportHash(await read(projectPath)));
 
         // The previous rendering: the old header, and `enabled = true` closing every switched-on table.
-        let table = null;
+        let   table    = null;
         const previous = (await read(projectPath)).split('\n').map(line => {
             const header = line.match(/^\[mcp_servers\."(neo-mjs-[^"]+)"\]$/);
 
@@ -1577,24 +1641,25 @@ test.describe('prepareManagedAgentWorkspace', () => {
         }
 
         const
-            configPath = path.join(result.instanceHome, 'claude_desktop_config.json'),
+            configPath = path.join(opts.claudeConfigRoot, '.claude.json'),
             raw        = await read(configPath),
-            nl         = JSON.parse(raw).mcpServers['neo-mjs-neural-link'];
+            nl         = JSON.parse(raw).projects[opts.targetRepoRoot].mcpServers['neo-mjs-neural-link'];
 
         expect(nl.env).toEqual({
-            NEO_AGENT_IDENTITY: 'agent-a'
+            NEO_AGENT_IDENTITY    : '${NEO_AGENT_IDENTITY}',
+            NEO_PLANE_DATA_ROOT   : '${NEO_PLANE_DATA_ROOT}',
+            NEO_FLEET_BRIDGE_TOKEN: '${NEO_FLEET_BRIDGE_TOKEN}'
         });
-        expect(raw).not.toContain('NEO_FLEET_BRIDGE_TOKEN');
         expect(raw).not.toContain('secret-token-value');
     });
 
     test('Claude Desktop: an existing explicit NL projection is preserved as a divergence', async () => {
         const opts       = options(makeAgent('claude-desktop')),
               result     = await prepareManagedAgentWorkspace(opts),
-              configPath = path.join(result.instanceHome, 'claude_desktop_config.json'),
+              configPath = path.join(opts.claudeConfigRoot, '.claude.json'),
               config     = JSON.parse(await read(configPath));
 
-        config.mcpServers['neo-mjs-neural-link'].env.NEO_NL_TOOL_PROJECTION_MODE = 'harness-embedded';
+        config.projects[opts.targetRepoRoot].mcpServers['neo-mjs-neural-link'].env.NEO_NL_TOOL_PROJECTION_MODE = 'harness-embedded';
         const existing = JSON.stringify(config, null, 2) + '\n';
         await fs.writeFile(configPath, existing);
 
@@ -1609,12 +1674,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             configPath = path.join(result.instanceHome, 'claude_desktop_config.json'),
             config     = JSON.parse(await read(configPath));
 
-        expect(result.artifacts).toEqual([
-            {
-                path     : configPath,
-                status   : WORKSPACE_ARTIFACT_STATES.CREATED,
-                ownedKeys: 'mcpServers.neo-mjs-*'
-            },
+        expect(result.artifacts).toEqual(expect.arrayContaining([
             {
                 path     : path.join(instanceRoot, 'agent-a', 'memory'),
                 status   : WORKSPACE_ARTIFACT_STATES.CREATED,
@@ -1625,22 +1685,21 @@ test.describe('prepareManagedAgentWorkspace', () => {
                 status   : WORKSPACE_ARTIFACT_STATES.CREATED,
                 ownedKeys: 'autoMemoryDirectory'
             }
-        ]);
-        expect(Object.keys(config.mcpServers).sort()).toEqual([
+        ]));
+        expect(config.mcpServers).toEqual({});
+        const local = JSON.parse(await read(path.join(opts.claudeConfigRoot, '.claude.json'))).projects[opts.targetRepoRoot];
+        expect(Object.keys(local.mcpServers).sort()).toEqual([
             'neo-mjs-knowledge-base',
             'neo-mjs-memory-core'
         ]);
-        expect(config.mcpServers['neo-mjs-memory-core'].env).toEqual({NEO_AGENT_IDENTITY: 'agent-a'});
+        expect(local.mcpServers['neo-mjs-memory-core'].env.NEO_AGENT_IDENTITY).toBe('${NEO_AGENT_IDENTITY}');
     });
 
-    test('Claude Desktop refuses an enabled server whose startup requires secret env', async () => {
+    test('Claude Desktop represents an enabled GitHub server without writing the credential', async () => {
         const opts = options(makeAgent('claude-desktop', {mcpServers: {'github-workflow': true}}));
-
-        await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({
-            code: 'FLEET_WORKSPACE_UNSUPPORTED'
-        });
-        expect(hydrationCalls).toHaveLength(0);
-        await expect(fs.stat(instanceRoot)).rejects.toMatchObject({code: 'ENOENT'});
+        await prepareManagedAgentWorkspace(opts);
+        const local = JSON.parse(await read(path.join(opts.claudeConfigRoot, '.claude.json'))).projects[opts.targetRepoRoot];
+        expect(local.mcpServers['neo-mjs-github-workflow'].env.GH_TOKEN).toBe('${GH_TOKEN}');
     });
 
     for (const harnessType of ['claude-code', 'claude-desktop']) {
@@ -1967,30 +2026,11 @@ test.describe('prepareManagedAgentWorkspace', () => {
             }
         }, {
             harnessType: 'claude-desktop',
-            inspect    : async (opts, result) => {
-                const
-                    config = JSON.parse(await read(path.join(result.instanceHome, 'claude_desktop_config.json'))),
-                    bridge = path.join(agentosRuntimeRoot, 'ai/mcp/client/stdioToStreamableHttp.mjs');
-
+            inspect    : async opts => {
+                const config = JSON.parse(await read(path.join(opts.claudeConfigRoot, '.claude.json'))).projects[opts.targetRepoRoot];
                 expect(config.mcpServers['neo-mjs-memory-core']).toEqual({
-                    command: NODE_PATH,
-                    args   : [
-                        bridge,
-                        '--url',
-                        'https://tenant.example.com/agentos/mc/mcp',
-                        '--token-env',
-                        'NEO_MCP_REMOTE_TOKEN'
-                    ]
-                });
-                expect(config.mcpServers['neo-mjs-knowledge-base']).toEqual({
-                    command: NODE_PATH,
-                    args   : [
-                        bridge,
-                        '--url',
-                        'https://tenant.example.com/agentos/kb/mcp',
-                        '--token-env',
-                        'NEO_MCP_REMOTE_TOKEN'
-                    ]
+                    type   : 'http', url: 'https://tenant.example.com/agentos/mc/mcp',
+                    headers: {Authorization: 'Bearer ${NEO_MCP_REMOTE_TOKEN}'}
                 });
                 expect(config.mcpServers['neo-mjs-neural-link'].command).toBe(NODE_PATH)
             }
@@ -2050,11 +2090,15 @@ test.describe('prepareManagedAgentWorkspace', () => {
                 .toMatchObject({target: 'resident', transport: 'stdio'});
                 expect(JSON.stringify(result.mcpPlan)).not.toContain(['remote', 'http'].join('-'));
 
-            const receipt = JSON.parse(await read(path.join(result.instanceHome, '.neo-fleet-mcp-transport.json')));
+            const receipt = JSON.parse(await read(path.join(result.instanceHome, harnessType === 'claude-desktop'
+                ? '.neo-fleet-claude-project.json' : '.neo-fleet-mcp-transport.json')));
 
-            expect(Object.keys(receipt).sort()).toEqual(['adapter', 'artifact', 'projectionSha256', 'version']);
-            expect(receipt.adapter).toBe(harnessType);
-            expect(receipt.projectionSha256).toMatch(/^[a-f0-9]{64}$/);
+            if (harnessType === 'claude-desktop') expect(receipt.sha256).toMatch(/^[a-f0-9]{64}$/);
+            else {
+                expect(Object.keys(receipt).sort()).toEqual(['adapter', 'artifact', 'projectionSha256', 'version']);
+                expect(receipt.adapter).toBe(harnessType);
+                expect(receipt.projectionSha256).toMatch(/^[a-f0-9]{64}$/);
+            }
             expect(JSON.stringify(receipt)).not.toContain('tenant.example.com');
             expect(JSON.stringify(receipt)).not.toContain('NEO_MCP_REMOTE_TOKEN')
         }
@@ -2126,7 +2170,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
                 operatorBlock: strictOperatorBlock
             }, {
                 harnessType  : 'claude-desktop',
-                artifactPath : (opts, result) => path.join(result.instanceHome, 'claude_desktop_config.json'),
+                artifactPath : opts => path.join(opts.claudeConfigRoot, '.claude.json'),
                 operatorBlock: strictOperatorBlock
             }, {
                 harnessType  : 'kimi-code',
@@ -2152,11 +2196,13 @@ test.describe('prepareManagedAgentWorkspace', () => {
             opts.mcpTarget = tenantTarget();
             const firstRemote = await prepareManagedAgentWorkspace(opts);
             const firstSource = await read(artifactPath);
-            const receiptPath = path.join(firstRemote.instanceHome, '.neo-fleet-mcp-transport.json');
+            const receiptPath = path.join(firstRemote.instanceHome, entry.harnessType === 'claude-desktop'
+                ? '.neo-fleet-claude-project.json' : '.neo-fleet-mcp-transport.json');
 
             expect(firstSource, entry.harnessType).toContain(entry.operatorBlock);
             expect(firstSource, entry.harnessType).toContain('https://tenant.example.com/agentos/mc/mcp');
-            expect(JSON.parse(await read(receiptPath)).adapter).toBe(entry.harnessType);
+            if (entry.harnessType === 'claude-desktop') expect(JSON.parse(await read(receiptPath)).sha256).toMatch(/^[a-f0-9]{64}$/);
+            else expect(JSON.parse(await read(receiptPath)).adapter).toBe(entry.harnessType);
 
             const edited = firstSource.replace(
                 'https://tenant.example.com/agentos/mc/mcp',
@@ -2184,7 +2230,8 @@ test.describe('prepareManagedAgentWorkspace', () => {
             await prepareManagedAgentWorkspace(opts);
 
             expect(await read(artifactPath), entry.harnessType).toBe(localWithOperator);
-            await expect(fs.stat(receiptPath), entry.harnessType).rejects.toMatchObject({code: 'ENOENT'})
+            if (entry.harnessType === 'claude-desktop') expect((await fs.stat(receiptPath)).isFile()).toBe(true);
+            else await expect(fs.stat(receiptPath), entry.harnessType).rejects.toMatchObject({code: 'ENOENT'})
         }
     });
 
@@ -2255,106 +2302,66 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect(hydrationCalls).toHaveLength(0)
     });
 
-    test('Claude Desktop generated bridges list and call both ephemeral HTTP resources without leaking the bearer', async () => {
-        const
-            token   = 'plane-secret-that-must-never-reach-artifacts-or-argv',
-            fixture = await startBridgeFixture(token),
-            opts    = options(makeAgent('claude-desktop'), 'remote-desktop-live-bridge');
-
-        opts.agentosRuntimeRoot       = PROJECT_ROOT;
-        opts.remoteMcpCapability = claudeDesktopRemoteCapability(PROJECT_ROOT);
-        opts.mcpTarget           = tenantTarget(fixture.baseUrl);
-
+    test('Claude Desktop native HTTP rows list and call both ephemeral resources without leaking the bearer', async () => {
+        const token   = 'plane-secret-that-must-never-reach-artifacts-or-argv';
+        const fixture = await startBridgeFixture(token);
+        const opts    = options(makeAgent('claude-desktop'), 'remote-desktop-native-http');
+        opts.mcpTarget = tenantTarget(fixture.baseUrl);
+        delete opts.remoteMcpCapability;
         try {
-            const
-                result     = await prepareManagedAgentWorkspace(opts),
-                configPath = path.join(result.instanceHome, 'claude_desktop_config.json'),
-                raw        = await read(configPath),
-                config     = JSON.parse(raw);
-
+            const result = await prepareManagedAgentWorkspace(opts);
+            const raw    = await read(path.join(opts.claudeConfigRoot, '.claude.json'));
+            const rows   = JSON.parse(raw).projects[opts.targetRepoRoot].mcpServers;
             expect(raw).not.toContain(token);
             expect(JSON.stringify(result)).not.toContain(token);
-
-            for (const [serverName, resource] of [
-                ['neo-mjs-memory-core', 'mc'],
-                ['neo-mjs-knowledge-base', 'kb']
-            ]) {
-                const
-                    entry     = config.mcpServers[serverName],
-                    transport = new StdioClientTransport({
-                        command: entry.command,
-                        args   : entry.args,
-                        env    : {
-                            ...process.env,
-                            ...entry.env,
-                            NEO_MCP_REMOTE_TOKEN : token
-                        },
-                        stderr: 'pipe'
-                    }),
-                    client = new Client({
-                        name   : `claude-desktop-${resource}-bridge-test`,
-                        version: '1.0.0'
-                    }, {
-                        capabilities: {}
-                    });
-                let stderr = '';
-
-                transport.stderr.on('data', chunk => {
-                    stderr += chunk
+            for (const [name, resource] of [['neo-mjs-memory-core', 'mc'], ['neo-mjs-knowledge-base', 'kb']]) {
+                const entry = rows[name];
+                expect(entry.type).toBe('http');
+                expect(entry.command).toBeUndefined();
+                const client    = new Client({name: 'desktop-native-http-probe', version: '1.0.0'}, {capabilities: {}});
+                const transport = new StreamableHTTPClientTransport(new URL(entry.url), {
+                    requestInit: {headers: {Authorization: entry.headers.Authorization.replace('${NEO_MCP_REMOTE_TOKEN}', token)}}
                 });
-
-                expect(entry.args.join(' ')).not.toContain(token);
-
                 try {
                     await client.connect(transport);
-
-                    const {tools} = await client.listTools();
-                    const result  = await client.callTool({name: 'bridge_probe', arguments: {}});
-
-                    expect(tools.map(tool => tool.name)).toContain('bridge_probe');
-                    expect(result.content).toContainEqual({type: 'text', text: resource})
-                } finally {
-                    await client.close()
-                }
-
-                expect(stderr).not.toContain(token);
-                await expect.poll(fixture.sessionCount).toBe(0)
+                    expect((await client.listTools()).tools.map(tool => tool.name)).toContain('bridge_probe');
+                    expect((await client.callTool({name: 'bridge_probe', arguments: {}})).content)
+                        .toContainEqual({type: 'text', text: resource});
+                } finally { await transport.terminateSession(); await client.close() }
+                await expect.poll(fixture.sessionCount).toBe(0);
             }
-        } finally {
-            await fixture.close()
-        }
+        } finally { await fixture.close() }
     });
 
-    test('Claude Desktop remote transport rejects missing or drifted bridge capability before hydration', async () => {
-        const missingProof = options(makeAgent('claude-desktop'), 'remote-desktop-missing-proof');
-
-        missingProof.mcpTarget = tenantTarget();
-        delete missingProof.remoteMcpCapability;
-
-        await expect(prepareManagedAgentWorkspace(missingProof)).rejects.toMatchObject({
-            code: 'FLEET_WORKSPACE_UNSUPPORTED'
-        });
-
-        const wrongKind = options(makeAgent('claude-desktop'), 'remote-desktop-wrong-kind');
-
-        wrongKind.mcpTarget = tenantTarget();
-        wrongKind.remoteMcpCapability.bridge.kind = 'generic-proxy';
-
-        await expect(prepareManagedAgentWorkspace(wrongKind)).rejects.toMatchObject({
-            code: 'FLEET_WORKSPACE_UNSUPPORTED'
-        });
-
-        const missingBridge = options(makeAgent('claude-desktop'), 'remote-desktop-missing-bridge');
-
-        missingBridge.mcpTarget = tenantTarget();
-        await fs.rm(path.join(agentosRuntimeRoot, 'ai/mcp/client/stdioToStreamableHttp.mjs'));
-
-        await expect(prepareManagedAgentWorkspace(missingBridge)).rejects.toMatchObject({
-            code: 'FLEET_WORKSPACE_UNSUPPORTED'
-        });
-
+    test('Claude Desktop refuses missing placement before hydration and symlinked local scope before publication', async () => {
+        const missing = options(makeAgent('claude-desktop'));
+        missing.residentMcpEnv = {};
+        await expect(prepareManagedAgentWorkspace(missing)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_UNSUPPORTED'});
         expect(hydrationCalls).toHaveLength(0);
-        await expect(fs.stat(instanceRoot)).rejects.toMatchObject({code: 'ENOENT'})
+        const linked = options(makeAgent('claude-desktop'));
+        await fs.mkdir(linked.claudeConfigRoot, {recursive: true});
+        const original = path.join(root, 'foreign-config.json');
+        await fs.writeFile(original, '{"custom":true}');
+        await fs.symlink(original, path.join(linked.claudeConfigRoot, '.claude.json'));
+        await expect(prepareManagedAgentWorkspace(linked)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+        expect(await read(original)).toBe('{"custom":true}');
+    });
+
+    test('Claude Desktop refuses an observed shared-config rewrite without losing the concurrent change', async () => {
+        const opts       = options(makeAgent('claude-desktop'));
+        const configPath = path.join(opts.claudeConfigRoot, '.claude.json');
+        await fs.mkdir(opts.claudeConfigRoot, {recursive: true});
+        await fs.writeFile(configPath, '{"custom":1}');
+        let reads = 0;
+        opts.fileSystem = new Proxy(fs, {get(target, key) {
+            if (key === 'readFile') return async (filePath, ...args) => {
+                if (filePath === configPath && ++reads === 2) await fs.writeFile(configPath, '{"custom":2}');
+                return target.readFile(filePath, ...args);
+            };
+            return target[key];
+        }});
+        await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+        expect(await read(configPath)).toBe('{"custom":2}');
     });
 });
 

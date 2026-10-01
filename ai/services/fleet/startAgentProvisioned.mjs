@@ -161,8 +161,10 @@ export async function startAgentProvisioned({
         }
     }
 
-    // Every agent holds its GitHub PAT. Resolved once, before any checkout or config mutation, and
-    // handed to the spawn so it uses this exact value rather than a second read.
+    // Resolve the Desktop child envelope and seat PAT before any checkout/config mutation.
+    // The same resolved envelope names the rendered slots and supplies the eventual spawn.
+    const resolvedResidentMcpEnv = agent.harnessType === 'claude-desktop'
+        ? lifecycleService.resolveResidentMcpEnvironment(agent) : {};
     const resolvedCredential = registry.resolveCredential(agentId);
 
     // the creation test, applied to what is stored: a blank value written before the requirement
@@ -239,6 +241,7 @@ export async function startAgentProvisioned({
         instanceRoot       : instanceRoot ?? lifecycleService.getInstanceRoot?.(),
         agentosRuntimeRoot,
         nodePath,
+        ...(agent.harnessType === 'claude-desktop' ? {residentMcpEnv: resolvedResidentMcpEnv} : {}),
         remoteMcpCapability: remoteCapability,
         mcpTarget          : remotePlan && {
             kind            : 'tenant',
@@ -275,6 +278,7 @@ export async function startAgentProvisioned({
         startOptions: {
             cwd: prepared.targetRepoRoot,
             resolvedCredential,
+            ...(agent.harnessType === 'claude-desktop' ? {resolvedResidentMcpEnv} : {}),
             ...(target?.kind === 'tenant'
                 ? {resolvedMcpCredential, remoteMcpCapability: remoteCapability}
                 : {})
