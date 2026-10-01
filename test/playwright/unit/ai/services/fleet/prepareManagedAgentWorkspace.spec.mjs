@@ -45,6 +45,7 @@ const BOUNDED_APPLY_EFFECTS = new Set([
     'lstat',
     'mkdir',
     'readFile',
+    'realpath',
     'rename',
     'stat',
     'unlink',
@@ -104,6 +105,16 @@ function options(agent, repoName = agent.id) {
     }
 
     return result
+}
+
+/**
+ * @summary A real checkout directory reached through a symlinked parent, leaving home containment intact.
+ */
+async function symlinkedCodexOptions(harnessType = 'codex') {
+    await fs.mkdir(repoRoot, {recursive: true});
+    const alias = path.join(root, 'repo-alias');
+    await fs.symlink(await fs.realpath(repoRoot), alias, 'dir');
+    return {...options(makeAgent(harnessType)), mcpTarget: tenantTarget(), targetRepoRoot: path.join(alias, 'agent-a')}
 }
 
 function claudeDesktopRemoteCapability(checkout, nodePath=NODE_PATH) {
@@ -1138,6 +1149,90 @@ test.describe('prepareManagedAgentWorkspace', () => {
         });
     }
 
+
+    for (const harness of ['codex', 'codex-desktop']) {
+        test(`${harness}: canonical trust migrates an exact lexical block once and preserves resident settings`, async () => {
+            const opts = await symlinkedCodexOptions(harness),
+                  first = await prepareManagedAgentWorkspace(opts),
+                  home = harness === 'codex' ? first.instanceHome : path.join(first.instanceHome, 'codex-home'),
+                  homePath = path.join(home, 'config.toml'),
+                  realPath = await fs.realpath(opts.targetRepoRoot),
+                  canonicalHeader = `[projects.${JSON.stringify(realPath)}]`,
+                  lexicalHeader = `[projects.${JSON.stringify(opts.targetRepoRoot)}]`,
+                  initial = await read(homePath),
+                  resident = 'model = "resident-model"\n' + initial,
+                  legacy = resident.replace(canonicalHeader, lexicalHeader),
+                  authPath = path.join(home, 'auth.json'),
+                  auth = '{"fixture":"preserve resident login"}\n';
+
+            expect(initial).toContain(canonicalHeader);
+            expect(initial).not.toContain(lexicalHeader);
+            expect(realPath).not.toBe(opts.targetRepoRoot);
+            await fs.writeFile(homePath, legacy);
+            await fs.writeFile(authPath, auth);
+
+            const migrated = await prepareManagedAgentWorkspace(opts);
+
+            expect(migrated.artifacts.find(item => item.path === homePath).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+            expect(await read(homePath)).toBe(resident);
+            expect(await read(authPath)).toBe(auth);
+            expect((await prepareManagedAgentWorkspace(opts)).artifacts.every(item => item.status === WORKSPACE_ARTIFACT_STATES.MATCH)).toBe(true);
+            expect(await read(homePath)).toBe(resident);
+        });
+    }
+
+    for (const variant of ['untrusted', 'unexpected', 'mixed-legacy']) {
+        test(`canonical trust refuses ${variant} without overwriting a legacy home`, async () => {
+            const opts = await symlinkedCodexOptions(),
+                  first = await prepareManagedAgentWorkspace(opts),
+                  homePath = path.join(first.instanceHome, 'config.toml'),
+                  realPath = await fs.realpath(opts.targetRepoRoot),
+                  canonicalHeader = `[projects.${JSON.stringify(realPath)}]`,
+                  lexicalHeader = `[projects.${JSON.stringify(opts.targetRepoRoot)}]`;
+
+            let source = (await read(homePath)).replace(canonicalHeader, lexicalHeader);
+            if (variant === 'mixed-legacy') {
+                source = source.replace(lexicalHeader, 'model = "resident-model"\n' + lexicalHeader)
+            } else {
+                source += `\n${canonicalHeader}\ntrust_level = "${variant}"\n`
+            }
+            await fs.writeFile(homePath, source);
+
+            await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({
+                code: 'FLEET_WORKSPACE_DIVERGENT',
+                artifact: {ownedKeys: 'projects.<managed-repo>.trust_level'}
+            });
+            expect(await read(homePath)).toBe(source);
+        });
+    }
+
+    test('canonical trust preserves a resident grant instead of duplicating its table during migration', async () => {
+        const opts = await symlinkedCodexOptions(),
+              first = await prepareManagedAgentWorkspace(opts),
+              homePath = path.join(first.instanceHome, 'config.toml'),
+              realPath = await fs.realpath(opts.targetRepoRoot),
+              canonicalHeader = `[projects.${JSON.stringify(realPath)}]`,
+              lexicalHeader = `[projects.${JSON.stringify(opts.targetRepoRoot)}]`,
+              initial = await read(homePath),
+              source = initial.replace(canonicalHeader, lexicalHeader) + `\n${canonicalHeader}\ntrust_level = "trusted"\n`,
+              oldBlock = [
+                  '# Fleet-managed remote MCP project trust begin',
+                  lexicalHeader,
+                  'trust_level = "trusted"',
+                  '# Fleet-managed remote MCP project trust end'
+              ].join('\n'),
+              expected = source.replace(oldBlock, '');
+
+        await fs.writeFile(homePath, source);
+        await prepareManagedAgentWorkspace(opts);
+        expect(await read(homePath)).toBe(expected);
+        await prepareManagedAgentWorkspace(opts);
+        expect(await read(homePath)).toBe(expected);
+        opts.mcpTarget = null;
+        await prepareManagedAgentWorkspace(opts);
+        expect(await read(homePath)).toBe(expected);
+    });
+
     for (const [name, mutate] of [
         ['missing target trust', source => source.replace('trust_level = "trusted"', '# removed by resident')],
         ['wrong target', source => source.replace('[projects.', '[other_projects.')],
@@ -1302,8 +1397,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
         test.skip(!process.env.NEO_TEST_CODEX_BIN, 'Requires an installed Codex CLI.');
 
         const
-            // Codex trusts a project by its canonical path; the temp root may sit behind a symlink.
-            opts     = {...options(makeAgent('codex-desktop')), mcpTarget: tenantTarget(), targetRepoRoot: path.join(await fs.realpath(root), 'canonical-repo')},
+            opts     = await symlinkedCodexOptions('codex-desktop'),
             result   = await prepareManagedAgentWorkspace(opts),
             home     = path.join(result.instanceHome, 'codex-home'),
             homePath = path.join(home, 'config.toml'),
