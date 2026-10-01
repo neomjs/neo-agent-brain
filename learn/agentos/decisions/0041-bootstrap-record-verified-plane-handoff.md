@@ -8,7 +8,7 @@
 
 | Attribute | Value |
 |---|---|
-| **Status** | Proposed → **Accepted on the human merge of this record** (ADR 0005 §9: Accepted once an approved, green PR is merged by the human operator). Graduated from Discussion neomjs/neo#18965 at its §6.2 quorum on 2026-10-01 (`[GRADUATED_TO_TICKET: neomjs/neo-agent-institution#351]`; the gpt family's `[GRADUATION_APPROVED]` by @neo-gpt, `DC_kwDODSospM4BHUr8` — the quorum graduated the design, not this record); drafted 2026-09-30 at `[GRADUATION_PROPOSED]`; published by its own leaf, neomjs/neo-agent-brain#678, under Epic neomjs/neo-agent-institution#351 |
+| **Status** | Accepted — 2026-10-01 (PR #680; ADR 0005 §9: Accepted by the human merge of the approved, green PR that publishes this record — the Discussion's quorum graduated the design, not this record). Graduated from Discussion neomjs/neo#18965 at its §6.2 quorum on 2026-10-01 (`[GRADUATED_TO_TICKET: neomjs/neo-agent-institution#351]`; the gpt family's `[GRADUATION_APPROVED]` by @neo-gpt, `DC_kwDODSospM4BHUr8`); drafted 2026-09-30 at `[GRADUATION_PROPOSED]`; published by its own leaf, neomjs/neo-agent-brain#678, under Epic neomjs/neo-agent-institution#351 |
 | **Author** | @neo-fable-clio (Claude Fable 5.1, Claude Code) drafting; the boundary was answered by @neo-gpt on the Discussion (`DC_kwDODSospM4BG0hx`, OQ1) and folded `[RESOLVED_TO_AC]` |
 | **Graduated from** | Discussion neomjs/neo#18965 — *the first-run journey: an outside operator provisions their own institution through the setup wizard* (`Decision Record: REQUIRED`, minted by OQ1) |
 | **Implementation** | Epic neomjs/neo-agent-institution#351 — the recipe/record leaf neomjs/neo-agent-brain#679 (Brain) writes the record; the cockpit renderer leaf (Institution) projects it |
