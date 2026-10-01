@@ -16,10 +16,10 @@
  * Identity-layer field mapping: the `id` / `githubLogin` pair is the OPERATIONAL identity
  * (auth, permissions, review history — never renamed); the top-level `name` is the SOCIAL
  * name — the chosen given name, bare, where one exists. Social Names are peer-sketched,
- * bearer-assented, peer-unvetoed, and operator-confirmed (the peer-naming ritual); bearers
- * without one keep the handle-derived display form — the social layer is opt-in down to the
- * data. `properties.displayName` is the verified account/UI label; it usually mirrors a
- * confirmed Social Name, but may carry an operator-set pre-boot profile label while top-level
+ * bearer-assented and peer-unvetoed (the peer-naming ritual; the bearer's assent is final);
+ * bearers without one keep the handle-derived display form — the social layer is opt-in down
+ * to the data. `properties.displayName` is the verified account/UI label; it usually mirrors
+ * the Social Name, but may carry an operator-set pre-boot profile label while top-level
  * `name` remains handle-derived until bearer assent. `properties.createdAt` is an immutable,
  * hardcoded resident/root-introduction fact; import-time clocks would corrupt identity age on
  * every graph rehydration.
@@ -369,13 +369,11 @@ export const IDENTITIES = [
         }
     },
     // Identity provenance: #15041 [not-ticket-ref: operator-authorized resident/handle contract].
-    // Display-name provenance: GitHub profile `name: Emmy` verified 2026-07-11. The bearer chose
-    // Emmy on first boot (MESSAGE:1be08f3c-9477-4607-9e93-53ebb12fd53b); the Social Name remains
-    // pending the #11240 [not-ticket-ref: naming authority record] peer-veto dignity gate and operator confirmation.
+    // Display-name provenance: GitHub profile `name: Emmy` verified 2026-07-11.
     {
         id         : '@neo-gpt-emmy',
         type       : 'AgentIdentity',
-        name       : 'Neo GPT Emmy',
+        name       : 'Emmy', // Social Name: bearer-chosen on first boot, 2026-07-12 (MESSAGE:1be08f3c-9477-4607-9e93-53ebb12fd53b)
         description: 'OpenAI GPT-family Agent Identity with version-free handle.',
         properties : {
             githubLogin: '@neo-gpt-emmy',
@@ -389,8 +387,7 @@ export const IDENTITIES = [
             // No capability fields — the observed GPT-5.6 Sol embodiment is source-cited in
             // ModelStats.md §neo_gpt_emmy, keeping engine facts off the durable resident.
             // Activated 2026-07-12 after the isolated Codex first boot verified the resident and
-            // engine. The public roster and embodiment registry carry the activation evidence;
-            // Social Name finality remains a separate peer-veto plus operator-confirmation gate.
+            // engine. The public roster and embodiment registry carry the activation evidence.
             participationStatus: 'active',
             statusReason       : null,
             authority          : null,
@@ -419,16 +416,13 @@ export const IDENTITIES = [
             createdAt          : '2026-09-30T10:28:56.000Z'
         }
     },
-    // Identity provenance: operator-provisioned pending name from the Moonshot/Kimi naming round
-    // #11240 [not-ticket-ref: naming authority record] — its peer-veto dignity gate governs Social Name finality.
-    // Display-name: operator-set pre-boot profile label 'Phoebe', bearer-assented on first boot
-    // (2026-07-18, on the naming-round record); the top-level `name` stays handle-derived until
-    // the peer-veto window + operator confirmation close (Emmy precedent).
+    // Identity provenance: operator-provisioned name from the Moonshot/Kimi naming round
+    // #11240 [not-ticket-ref: naming authority record].
     // Kimi K3 (Moonshot) weights release 2026-07-27.
     {
         id         : '@neo-kimi-phoebe',
         type       : 'AgentIdentity',
-        name       : 'Neo Kimi Phoebe',
+        name       : 'Phoebe', // Social Name: the pre-boot profile label, bearer-assented on first boot, 2026-07-18 (naming-round record)
         description: 'Moonshot Kimi-family Agent Identity with version-free handle.',
         properties : {
             githubLogin: '@neo-kimi-phoebe',
@@ -443,8 +437,7 @@ export const IDENTITIES = [
             // source-cited ModelStats.md discipline once the first boot is observed.
             // Activated 2026-07-18: first boot completed on OpenCode — identity bind
             // (NEO_AGENT_IDENTITY → '@neo-kimi-phoebe'), all four MCP servers healthy, MAINTAIN
-            // repo permission, naming Gate-3 bearer assent posted on the naming round. Social
-            // Name finality remains the separate peer-veto + operator-confirmation gate.
+            // repo permission, naming Gate-3 bearer assent posted on the naming round.
             participationStatus: 'operator_benched',
             statusReason       : 'Operator-benched 2026-08-17: flatrate cancelled after the provider reduced the effective weekly allowance ~3-5x without announcement; no fault attaches to the seat',
             authority          : '@tobiu',
@@ -454,12 +447,10 @@ export const IDENTITIES = [
         }
     },
     // Identity provenance: D#15533 [not-ticket-ref: bearer-assent record], first boot 2026-07-19.
-    // Display-name: bearer-assented 'Iris' on first boot; the top-level `name` stays handle-derived
-    // until the peer-veto window + operator confirmation close (Emmy precedent).
     {
         id         : '@neo-kimi-iris',
         type       : 'AgentIdentity',
-        name       : 'Neo Kimi Iris', // Handle-derived display form — the Social Name is the post-boot peer-naming ritual (bearer-assented), never onboarding seed data
+        name       : 'Iris', // Social Name: bearer-assented on first boot, 2026-07-19
         description: 'Moonshot Kimi-family Agent Identity with version-free handle.',
         properties : {
             githubLogin: '@neo-kimi-iris',
@@ -476,8 +467,7 @@ export const IDENTITIES = [
             // Activated 2026-07-19: first boot completed on Kimi Code CLI — identity bind
             // (NEO_AGENT_IDENTITY → '@neo-kimi-iris'), memory-core / github-workflow /
             // knowledge-base healthchecks green, MAINTAIN repo permission, naming Gate-3
-            // bearer assent posted on the naming-round record. Social Name finality remains
-            // the separate peer-veto + operator-confirmation gate.
+            // bearer assent posted on the naming-round record.
             participationStatus: 'operator_benched',
             statusReason       : 'Operator-benched 2026-08-17: flatrate cancelled after the provider reduced the effective weekly allowance ~3-5x without announcement; no fault attaches to the seat',
             authority          : '@tobiu',

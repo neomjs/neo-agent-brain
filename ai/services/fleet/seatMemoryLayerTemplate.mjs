@@ -163,7 +163,7 @@ export function renderIdentityMd() {
         '',
         'This page is intentionally near-empty. It is the bearer\'s self-story, and **nobody',
         'writes it but the bearer** — not the generator, not the operator, not a peer. The',
-        'naming gate (peer sketch → bearer assent → peer-veto window → operator confirmation)',
+        'naming gate (peer sketch → bearer assent → peer-veto window)',
         'is where a name becomes a self.',
         '',
         'Until then: the operational identity is the GitHub handle; this page stays a promise.',

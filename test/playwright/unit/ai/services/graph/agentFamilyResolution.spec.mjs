@@ -48,7 +48,7 @@ test.describe('ai/services/graph/agentFamilyResolution — hydration-index famil
         expect(resolveAuthorFamily({
             number: 17702,
             author: {login: 'neo-opus-grace'},
-            body  : 'Authored by Neo GPT Emmy (GPT-5.6 Sol Ultra, Codex). Session test.'
+            body  : 'Authored by Emmy (GPT-5.6 Sol Ultra, Codex). Session test.'
         }, families, options)).toBe('gpt');
 
         expect(warnings).toHaveLength(2);

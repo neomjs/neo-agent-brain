@@ -1,10 +1,10 @@
-import {expect, test}                                      from '@playwright/test';
-import {createHash}                                        from 'node:crypto';
+import {expect, test}                                                    from '@playwright/test';
+import {createHash}                                                      from 'node:crypto';
 import {existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync} from 'node:fs';
-import {tmpdir}                                           from 'node:os';
-import {dirname, join}                                    from 'node:path';
+import {tmpdir}                                                          from 'node:os';
+import {dirname, join}                                                   from 'node:path';
 
-const PLANT_SOURCE  = '../../../../../../ai/services/fleet/opencodeWakeEnvelopePlugin.mjs';
+const PLANT_SOURCE = '../../../../../../ai/services/fleet/opencodeWakeEnvelopePlugin.mjs';
 import {OPENCODE_SEAT_SERVERS, generateOpenCodeSeatConfig, isUnmodifiedGeneration, stampWakeEnvelopePlant} from '../../../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
 
 // Imported directly — no Neo runtime — so the suite has no host side effects and each case is
@@ -117,7 +117,9 @@ test.describe('generateOpenCodeSeatConfig (OpenCode seat scaffold emission)', ()
         // file at a caller-resolved path. Sole differing artifact: `/seat/write-wake-envelope.mjs`.
         // Verified against `origin/dev` at `bea77518…` before rebasing, so this bump is attributable to
         // the hook and not to inherited drift.
-        expect(digest).toBe('73cfb2a6599bcab0c4b5d02954517ee9021fc206cb6114a2d42303e003490f57')
+        // Bumped 2026-10-01: the identity.md naming gate ends at the peer-veto window (the bearer's
+        // assent is final); sole differing line, verified passing on origin/dev at 873608c first.
+        expect(digest).toBe('15e6863d368691f73baf5c3162d2589e00f9220050334cf539a2d16d92568d13')
     });
 
     test('remote map replaces only selected servers with the exact OpenCode HTTP adapter grammar', () => {
@@ -300,9 +302,9 @@ test.describe('the wake-envelope plant is emitted as a SIBLING of the boot hook'
     }
 
     test('the caller-resolved path carries the plant, stamped and otherwise byte-equivalent to its source', () => {
-        const home = seatHome(),
+        const home    = seatHome(),
               {files} = provision(home),
-              plant  = files.find(file => file.path === plantIn(home));
+              plant   = files.find(file => file.path === plantIn(home));
 
         expect(plant, 'the plant is emitted at the caller-resolved path, not left to the hook').toBeTruthy();
         expect(
@@ -335,7 +337,7 @@ test.describe('the wake-envelope plant is emitted as a SIBLING of the boot hook'
         // merely untidy: it makes every plant edit a divergence on each seat's boot hook, and it can
         // only ever be installed by a LATER process than the one that boot created.
         const home    = seatHome(),
-              {files}  = provision(home),
+              {files} = provision(home),
               hook    = files.find(file => file.path.endsWith('write-wake-envelope.mjs')).content,
               base64  = hook.match(/[A-Za-z0-9+/]{500,}={0,2}/);
 
@@ -386,7 +388,7 @@ test.describe('the wake-envelope plant is emitted as a SIBLING of the boot hook'
 
     test('omitting wakePlantPath emits no plant, and the hook is unaffected', () => {
         const home    = seatHome(),
-              {files}  = generateOpenCodeSeatConfig({...PARAMS, wakeHookPath: join(home, 'write-wake-envelope.mjs')}),
+              {files} = generateOpenCodeSeatConfig({...PARAMS, wakeHookPath: join(home, 'write-wake-envelope.mjs')}),
               paths   = files.map(file => file.path);
 
         expect(paths.some(path => /plugins/.test(path)), 'no plugins path when the caller asks for none').toBe(false);

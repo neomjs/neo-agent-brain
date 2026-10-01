@@ -29,8 +29,8 @@ import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNo
  * engine-class input (flag or option key) is rejected loudly instead of ignored.
  *
  * **Why there is NO socialName-class parameter either (mirrors the Day-0 sibling):** Social
- * Names are the post-boot peer-naming ritual — peer-sketched, bearer-assented, peer-vetoable,
- * operator-confirmed — never seed data. The resident gets the handle-derived display form
+ * Names are the post-boot peer-naming ritual — peer-sketched, bearer-assented, peer-vetoable
+ * — never seed data. The resident gets the handle-derived display form
  * only; socialName-class inputs are rejected loudly.
  *
  * **Dry-run by default; `--write` is branch-guarded:** the default run PRINTS the four
