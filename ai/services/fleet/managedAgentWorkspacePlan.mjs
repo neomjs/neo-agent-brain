@@ -182,7 +182,7 @@ export function createManagedAgentWorkspacePlan(input={}) {
             }
         });
 
-    assertLogicalHarnessSupported({agent, mcpServers});
+    assertLogicalHarnessSupported({agent, mcpMatrix, tenant: mcpTarget !== null});
 
     return freezeRecursively({
         agent,
@@ -278,38 +278,58 @@ function normalizeLogicalMcpTarget(target) {
     }
 }
 
+/**
+ * @summary Why a harness cannot carry this MCP declaration, or `null` when it can.
+ * {@link createManagedAgentWorkspacePlan} refuses for these reasons and for two about the harness
+ * alone (no launch adapter, Antigravity). None needs a tenant URL, so the registry asks before it
+ * stores a declaration, and one that the next Start would refuse is rejected when it is made.
+ * @param {Object} declaration
+ * @param {String} declaration.harnessType Durable harness key.
+ * @param {Object<String, Boolean>} declaration.mcpMatrix Complete canonical MCP enablement matrix.
+ * @param {Boolean} [declaration.tenant=false] Memory Core and Knowledge Base target a tenant plane.
+ * @returns {String|null} The refusal reason.
+ */
+export function mcpDeclarationRefusal({harnessType, mcpMatrix, tenant=false}) {
+    if (tenant && !supportsTenantMcpTarget(harnessType)) {
+        return `harness '${harnessType}' has no proven secret-safe tenant MCP grammar.`
+    }
+
+    const
+        enabled     = MCP_SERVERS.map(entry => entry.key).filter(key => mcpMatrix[key]),
+        unsupported = enabled.find(key => MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key].unsupportedReason);
+
+    if (unsupported) {
+        return `MCP server '${unsupported}' is enabled but unsupported: ${MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[unsupported].unsupportedReason}`
+    }
+
+    if (harnessType === 'claude-desktop') {
+        const secretServer = enabled.find(key => {
+            const {requiredRuntimeEnv, secretEnv=[]} = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
+            return requiredRuntimeEnv.some(name => secretEnv.includes(name))
+        });
+
+        if (secretServer) {
+            return `Claude Desktop cannot represent startup-required Fleet secret env for enabled MCP server '${secretServer}' without persisting secret bytes.`
+        }
+    }
+
+    return null
+}
+
 /** @private */
-function assertLogicalHarnessSupported({agent, mcpServers}) {
+function assertLogicalHarnessSupported({agent, mcpMatrix, tenant}) {
     if (!LAUNCHABLE_HARNESS_TYPES.includes(agent.harnessType)) {
         throw new RangeError(`createManagedAgentWorkspacePlan: harness '${agent.harnessType}' has no launch/workspace adapter.`)
     }
 
-    if (mcpServers.some(server => server.target === 'tenant') &&
-        !supportsTenantMcpTarget(agent.harnessType)) {
-        throw new RangeError(`createManagedAgentWorkspacePlan: harness '${agent.harnessType}' has no proven secret-safe tenant MCP grammar.`)
-    }
+    const refusal = mcpDeclarationRefusal({harnessType: agent.harnessType, mcpMatrix, tenant});
 
-    const catalogUnsupported = mcpServers.find(server =>
-        server.enabled && MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[server.key].unsupportedReason);
-    if (catalogUnsupported) {
-        throw new RangeError(
-            `createManagedAgentWorkspacePlan: MCP server '${catalogUnsupported.key}' is enabled but unsupported: ` +
-            MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[catalogUnsupported.key].unsupportedReason
-        )
+    if (refusal) {
+        throw new RangeError(`createManagedAgentWorkspacePlan: ${refusal}`)
     }
 
     if (agent.harnessType === 'antigravity') {
         throw new RangeError('createManagedAgentWorkspacePlan: Antigravity 2.x exposes no proven contained per-resident MCP configuration root.')
-    }
-
-    if (agent.harnessType === 'claude-desktop') {
-        const secretServer = mcpServers.find(server => server.enabled &&
-            server.requiredRuntimeEnv.some(name => server.secretEnv.includes(name)));
-        if (secretServer) {
-            throw new RangeError(
-                `createManagedAgentWorkspacePlan: Claude Desktop cannot represent startup-required Fleet secret env for enabled MCP server '${secretServer.key}' without persisting secret bytes.`
-            )
-        }
     }
 }
 

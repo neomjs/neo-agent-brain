@@ -354,9 +354,35 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         expect(() => FleetRegistryService.configureAgent({
             id         : 'portable',
             harnessType: 'antigravity'
-        })).toThrow(/does not support tenant MCP targets/);
+        })).toThrow(/no proven secret-safe tenant MCP grammar/);
         expect(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).toBe(before);
         expect(FleetRegistryService.getAgent('portable').harnessType).toBe('claude-desktop')
+    });
+
+    test('a declaration the harness cannot carry is refused with the reason Start would give, and nothing is written', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'desk', harnessType: 'claude-desktop', credential: PAT});
+
+        const before = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');
+
+        expect(() => FleetRegistryService.configureAgent({
+            id: 'desk', mcpServers: {'github-workflow': true}
+        })).toThrow(/^FleetRegistryService\.configureAgent: Claude Desktop cannot represent .* 'github-workflow'/);
+        expect(() => FleetRegistryService.configureAgent({
+            id: 'desk', mcpServers: {'gitlab-workflow': true}
+        })).toThrow(/^FleetRegistryService\.configureAgent: MCP server 'gitlab-workflow' is enabled but unsupported/);
+        expect(() => FleetRegistryService.defineAgent({
+            githubUsername: 'desk-two', harnessType: 'claude-desktop', credential: PAT, mcpServers: {'github-workflow': true}
+        })).toThrow(/^FleetRegistryService\.defineAgent: Claude Desktop cannot represent/);
+        expect(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).toBe(before);
+        expect(FleetRegistryService.getAgent('desk-two')).toBeNull();
+
+        expect(FleetRegistryService.configureAgent({
+            id: 'desk', harnessType: 'claude-code', mcpServers: {'github-workflow': true}
+        }).mcpServers).toEqual({'github-workflow': true});
+        expect(() => FleetRegistryService.configureAgent({
+            id: 'desk', harnessType: 'claude-desktop'
+        })).toThrow(/Claude Desktop cannot represent/);
+        expect(FleetRegistryService.getAgent('desk').harnessType).toBe('claude-code')
     });
 
     test('target grammar rejects every transport, secret, or authority-bearing shape without a write', () => {
@@ -387,7 +413,7 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
             githubUsername: 'unsupported-remote',
             harnessType   : 'antigravity',
             mcpTarget     : {kind: 'tenant', tenantId: 'tenant-a'}
-        })).toThrow(/does not support tenant MCP targets/)
+        })).toThrow(/no proven secret-safe tenant MCP grammar/)
     });
 
     test('partial patches preserve unspecified config; all-default and null matrices persist as null', () => {

@@ -46,7 +46,7 @@ class GraphqlService extends Base {
         /**
          * Optional explicit token override for tests or controlled embedded callers. Outranks every
          * other source. Absent it, runtime auth reads `GH_TOKEN`/`GITHUB_TOKEN` and falls back to
-         * `gh auth token` for interactive use.
+         * `gh auth token` for interactive use, never for a seat (see {@link #getAuthToken}).
          * @member {String|null} authTokenOverride=null
          * @protected
          */
@@ -120,8 +120,13 @@ class GraphqlService extends Base {
      * **Invariant:** the raw token is never logged. On failure the message names the env vars to set,
      * because the previous message sent CI operators down an interactive path that cannot exist there.
      *
+     * **A seat never reaches the CLI.** When `NEO_AGENT_IDENTITY` names a seat, its token must come
+     * from the environment: `gh auth token` answers with the host keyring's account, which would act
+     * for the seat, so the method refuses instead.
+     *
      * @returns {Promise<String>} The authentication token.
-     * @throws {Error} When no credential is available from the override, the environment, or the CLI.
+     * @throws {Error} When no credential is available from the override, the environment, or the CLI,
+     *     or when a seat's environment carries none.
      * @private
      */
     async #getAuthToken() {
@@ -133,6 +138,13 @@ class GraphqlService extends Base {
 
         if (envToken) {
             return envToken;
+        }
+
+        const seat = process.env.NEO_AGENT_IDENTITY?.trim();
+
+        if (seat) {
+            logger.error(`No GitHub token for seat '${seat}': GH_TOKEN and GITHUB_TOKEN are unset, and the \`gh\` keyring fallback is refused.`);
+            throw new Error(`Could not authenticate with GitHub as '${seat}'. Set GH_TOKEN to this seat's own token; the \`gh\` keyring would act as the host's account.`);
         }
 
         if (this.#authToken) {

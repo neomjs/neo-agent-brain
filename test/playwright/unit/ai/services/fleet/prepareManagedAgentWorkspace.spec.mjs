@@ -17,6 +17,7 @@ import {
     createManagedAgentWorkspacePlan,
     prepareManagedAgentWorkspace
 } from '../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs';
+import {mcpDeclarationRefusal}                          from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {isUnmodifiedGeneration, stampWakeEnvelopePlant} from '../../../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
 import {deriveNodeRuntimeEnv}                           from '../../../../../../ai/services/fleet/deriveNodeRuntimeEnv.mjs';
 import {startAgentProvisioned}                          from '../../../../../../ai/services/fleet/startAgentProvisioned.mjs';
@@ -455,6 +456,28 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
             harnessType: 'claude-desktop',
             mcpMatrix  : canonicalMcpMatrix({'github-workflow': true})
         }))).toThrow(RangeError);
+    });
+
+    test('the plan refuses an MCP declaration for exactly the reason the registry is told', () => {
+        const declarations = [
+            {harnessType: 'claude-desktop', mcpMatrix: canonicalMcpMatrix({'github-workflow': true}), tenant: false},
+            {harnessType: 'codex',          mcpMatrix: canonicalMcpMatrix({'gitlab-workflow': true}), tenant: false},
+            {harnessType: 'antigravity',    mcpMatrix: canonicalMcpMatrix(),                          tenant: true}
+        ];
+
+        for (const declaration of declarations) {
+            const refusal = mcpDeclarationRefusal(declaration);
+
+            expect(refusal, declaration.harnessType).toEqual(expect.any(String));
+            expect(() => createManagedAgentWorkspacePlan(logicalInput({
+                harnessType: declaration.harnessType,
+                mcpMatrix  : declaration.mcpMatrix,
+                mcpTarget  : declaration.tenant ? tenantTarget() : null
+            })), declaration.harnessType).toThrow(`createManagedAgentWorkspacePlan: ${refusal}`)
+        }
+
+        expect(mcpDeclarationRefusal({harnessType: 'claude-desktop', mcpMatrix: canonicalMcpMatrix()})).toBeNull();
+        expect(mcpDeclarationRefusal({harnessType: 'claude-code', mcpMatrix: canonicalMcpMatrix({'github-workflow': true}), tenant: true})).toBeNull()
     });
 
     test('host apply accepts a structural clone and records only the bounded effect vocabulary', async () => {

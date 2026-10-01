@@ -16,6 +16,10 @@ setup({
 import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {execSync}     from 'node:child_process';
+import fs             from 'node:fs';
+import os             from 'node:os';
+import path           from 'node:path';
 
 /**
  * @summary Contract coverage for `GraphqlService.query` transient GitHub retry behavior.
@@ -394,7 +398,8 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — rest() authent
  * a CI consumer could depend on an authenticated `gh` CLI unnoticed until scheduled runs failed on
  * it, reporting a missing credential as advice to run an interactive login CI cannot perform.
  *
- * These cover the override and environment branches: override → `GH_TOKEN` → `GITHUB_TOKEN`.
+ * These cover the override and environment branches: override → `GH_TOKEN` → `GITHUB_TOKEN`, and
+ * the refusal that keeps a seat (`NEO_AGENT_IDENTITY` set) out of the CLI branch.
  *
  * **Scope limit, stated rather than implied:** the cached-CLI and CLI-shell-out branches are NOT
  * covered here, so this suite pins the *environment* precedence, not the full resolution order. A
@@ -413,6 +418,7 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — credential res
     let originalFetch;
     let originalGhToken;
     let originalGithubToken;
+    let originalIdentity;
 
     const QUERY = 'query TestQuery { viewer { login } }';
 
@@ -444,11 +450,14 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — credential res
         originalFetch             = globalThis.fetch;
         originalGhToken           = process.env.GH_TOKEN;
         originalGithubToken       = process.env.GITHUB_TOKEN;
+        originalIdentity          = process.env.NEO_AGENT_IDENTITY;
 
         GraphqlService.authTokenOverride = null;
 
+        // A seat's shell names its identity; the CLI branches below need the runner's not to.
         delete process.env.GH_TOKEN;
         delete process.env.GITHUB_TOKEN;
+        delete process.env.NEO_AGENT_IDENTITY;
     });
 
     test.afterEach(() => {
@@ -466,6 +475,12 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — credential res
             delete process.env.GITHUB_TOKEN;
         } else {
             process.env.GITHUB_TOKEN = originalGithubToken;
+        }
+
+        if (originalIdentity === undefined) {
+            delete process.env.NEO_AGENT_IDENTITY;
+        } else {
+            process.env.NEO_AGENT_IDENTITY = originalIdentity;
         }
     });
 
@@ -525,6 +540,33 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — credential res
         expect(seen.value).not.toContain('   ');
     });
 
+    test('a seat with no token in its environment is refused before the `gh` keyring is asked', async () => {
+        const
+            originalPath = process.env.PATH,
+            stubDir      = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-gh-stub-')),
+            marker       = path.join(stubDir, 'asked');
+
+        fs.writeFileSync(path.join(stubDir, 'gh'), `#!/bin/sh\ntouch "${marker}"\necho keyring-token\n`, {mode: 0o755});
+        process.env.PATH = `${stubDir}${path.delimiter}${originalPath}`;
+
+        try {
+            // The control: on this PATH, `gh auth token` reaches the stub and leaves the marker.
+            expect(execSync('gh auth token', {encoding: 'utf8'}).trim()).toBe('keyring-token');
+            fs.rmSync(marker);
+
+            process.env.NEO_AGENT_IDENTITY = 'neo-opus-ada';
+
+            const seen = captureAuthHeader();
+
+            await expect(GraphqlService.query(QUERY)).rejects.toThrow(/as 'neo-opus-ada'\. Set GH_TOKEN/);
+            expect(fs.existsSync(marker)).toBe(false);
+            expect(seen.value).toBeNull()
+        } finally {
+            process.env.PATH = originalPath;
+            fs.rmSync(stubDir, {recursive: true, force: true})
+        }
+    });
+
     /**
      * The no-credential error path, driven through a deterministic `gh` stand-in.
      *
@@ -580,8 +622,8 @@ test.describe('Neo.ai.services.github-workflow.GraphqlService — credential res
 
         const code = `
             const root = ${JSON.stringify(repoRoot)};
-            await import(root + '/src/Neo.mjs');
-            await import(root + '/src/core/_export.mjs');
+            await import('neo.mjs/src/Neo.mjs');
+            await import('neo.mjs/src/core/_export.mjs');
             const {default: GraphqlService} = await import(root + '/ai/services/github-workflow/GraphqlService.mjs');
 
             const seen = [];

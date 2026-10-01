@@ -1,12 +1,13 @@
-import crypto                                   from 'crypto';
-import fs                                       from 'fs';
-import path                                     from 'path';
-import aiConfig                                 from '../../config.mjs';
-import Base                                     from 'neo.mjs/src/core/Base.mjs';
-import {HARNESS_TYPES, supportsTenantMcpTarget} from '../../../src/fleet/contract/harnessTypes.mjs';
-import {writeFileAtomicSync}                    from '../shared/atomicFileWrite.mjs';
-import {normalizeMcpOverrides}                  from '../../../src/fleet/contract/mcpServers.mjs';
-import {normalizeMcpTarget}                     from './mcpServers.mjs';
+import crypto                                    from 'crypto';
+import fs                                        from 'fs';
+import path                                      from 'path';
+import aiConfig                                  from '../../config.mjs';
+import Base                                      from 'neo.mjs/src/core/Base.mjs';
+import {HARNESS_TYPES}                           from '../../../src/fleet/contract/harnessTypes.mjs';
+import {writeFileAtomicSync}                     from '../shared/atomicFileWrite.mjs';
+import {normalizeMcpOverrides, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
+import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePlan.mjs';
+import {normalizeMcpTarget}                      from './mcpServers.mjs';
 
 const
     LAUNCH_OWNERS           = Object.freeze(['external', 'fleet']),
@@ -324,8 +325,10 @@ class FleetRegistryService extends Base {
             matrix  = mcpServers === undefined ? null : normalizeMcpOverrides(mcpServers),
             target  = mcpTarget === undefined ? null : normalizeMcpTarget(mcpTarget);
 
-        if (target && !supportsTenantMcpTarget(harnessType)) {
-            throw new TypeError(`FleetRegistryService.defineAgent: harnessType '${harnessType}' does not support tenant MCP targets.`)
+        const refusal = mcpDeclarationRefusal({harnessType, mcpMatrix: resolveMcpMatrix(matrix), tenant: !!target});
+
+        if (refusal) {
+            throw new TypeError(`FleetRegistryService.defineAgent: ${refusal}`)
         }
 
         this.ensureLoaded();
@@ -435,7 +438,9 @@ class FleetRegistryService extends Base {
      * credentials, URLs, headers, launch fields, wake, hooks, identity, and generic config bags are
      * mechanically rejected. Unspecified fields are preserved. The returned public definition is canonical persisted readback, never request
      * echo. Controlled validation failures use the method prefix so FleetControlBridge can expose a
-     * safe rejected-domain reason while unexpected storage failures remain transport-sanitized.
+     * safe rejected-domain reason while unexpected storage failures remain transport-sanitized. A
+     * declaration the seat's harness cannot carry is one of them, with the reason Start would give
+     * ({@link mcpDeclarationRefusal}).
      * @param {Object} intent
      * @param {String} intent.id Existing registry id.
      * @param {String} [intent.harnessType] Registered durable harness key.
@@ -500,8 +505,10 @@ class FleetRegistryService extends Base {
 
         const nextHarnessType = Object.hasOwn(intent, 'harnessType') ? harnessType : existing.harnessType;
 
-        if (target && !supportsTenantMcpTarget(nextHarnessType)) {
-            reject(`harnessType '${nextHarnessType}' does not support tenant MCP targets.`)
+        const refusal = mcpDeclarationRefusal({harnessType: nextHarnessType, mcpMatrix: resolveMcpMatrix(matrix), tenant: !!target});
+
+        if (refusal) {
+            reject(refusal)
         }
 
         const tenantAssignee = target && this.findMcpTenantAssignee(target.tenantId, id);
