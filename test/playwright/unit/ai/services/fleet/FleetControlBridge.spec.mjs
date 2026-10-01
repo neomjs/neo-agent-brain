@@ -251,7 +251,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(FleetControlBridge.getBootIdentity()).toEqual({fact: null, classification: 'unknown', advisory: true, reason: 'no-boot-identity-source'});
     });
 
-    // ---- read-observe: the deployment-state projection (#314; advisory read verb; observe-only) ----
+    // ---- read-observe: the deployment-state projection (advisory read verb; observe-only) ----
 
     test('fleetDeploymentState returns the injected source projection verbatim — read-observe, params ignored', async () => {
         const projection = {state: 'ok', reason: null, generatedAt: 1000, ageMs: 5, services: [{serviceKey: 'mc-server'}], maintenance: {backup: null, starvation: null}};
@@ -444,16 +444,16 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         managerStub.fleetRuntimeStatus = () => { calls.push(['fleetRuntimeStatus']); return [{agentId: 'neo-gpt', state: 'running', running: true, confidence: 'observed'}]; };
 
         // the ONE join seam — injected here, so the spec pins the SEAM without depending on live root values
-        FleetControlBridge.identityResolver = login => {
-            calls.push(['resolveIdentityDisplay', login]);
+        FleetControlBridge.identityResolver = (login, options) => {
+            calls.push(['resolveIdentityDisplay', login, options]);
             return login === 'neo-gpt' ? {family: 'gpt', engineTag: 'GPT-5.6 Sol'} : {family: null, engineTag: null};
         };
 
         const dto = await FleetControlBridge.fleetRoster();
 
         // the resolver was consulted once per agent, keyed by githubUsername
-        expect(calls).toContainEqual(['resolveIdentityDisplay', 'neo-gpt']);
-        expect(calls).toContainEqual(['resolveIdentityDisplay', 'guest-agent']);
+        expect(calls).toContainEqual(['resolveIdentityDisplay', 'neo-gpt', {harnessType: 'codex'}]);
+        expect(calls).toContainEqual(['resolveIdentityDisplay', 'guest-agent', {harnessType: 'claude-code'}]);
 
         expect(dto.rows).toHaveLength(2);
         expect(dto.rows[0]).toMatchObject({
@@ -488,6 +488,26 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         // engineTag stays null until a truthful current-engine source exists (session/era metadata)
         expect(row.family).toBe('gpt');
         expect(row.engineTag).toBeNull();
+    });
+
+    test('fleetRoster derives unseeded families from the current definition and preserves seeded identity', async () => {
+        const guest = {id: 'new-seat', githubUsername: 'unseeded-seat', harnessType: 'codex-desktop'};
+        registryStub.listAgents = () => [
+            guest,
+            {id: 'any-provider', githubUsername: 'unseeded-open', harnessType: 'opencode'},
+            {id: 'known', githubUsername: 'neo-gpt', harnessType: 'claude-desktop'}
+        ];
+        managerStub.fleetRepoStatus    = () => [];
+        managerStub.fleetRuntimeStatus = () => [];
+
+        const rows = (await FleetControlBridge.fleetRoster()).rows;
+        expect(rows.map(({id, family}) => [id, family])).toEqual([
+            ['new-seat', 'gpt'], ['any-provider', null], ['known', 'gpt']
+        ]);
+        expect(rows[0].engineTag).toBeNull();
+        expect(rows[0].participationStatus).toBeNull();
+        guest.harnessType = 'claude-desktop';
+        expect((await FleetControlBridge.fleetRoster()).rows[0].family).toBe('claude');
     });
 
     test('fleetRoster stamps the start verb\'s own refusal: a released seat carries its words, every other seat null', async () => {

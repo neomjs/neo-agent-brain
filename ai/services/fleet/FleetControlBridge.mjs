@@ -851,7 +851,7 @@ class FleetControlBridge extends Base {
      *
      * Rides the authenticated `registryBridge` as a **read** verb; it carries NO lifecycle-write /
      * restart authority (the R3 read-observe ÷ lifecycle-write seam). An agent without an identity
-     * root resolves to null display facts — rendered unclassified / tagless, never guessed. Activity
+     * root can use its declared harness family; unknown families remain unclassified. Activity
      * stays on its own {@link #fleetActivity} verb; this DTO's activity capability is declared
      * accordingly rather than duplicated.
      * @returns {Object} the serializable cockpit DTO `{sources, capabilities, rows, events}`.
@@ -865,7 +865,7 @@ class FleetControlBridge extends Base {
 
         const agents = (registry.listAgents() ?? []).map(agent => ({
             ...agent,
-            ...resolve(agent.githubUsername ?? agent.id),
+            ...resolve(agent.githubUsername ?? agent.id, {harnessType: agent.harnessType}),
             launchable   : LAUNCHABLE_HARNESS_TYPES.includes(agent.harnessType),
             launchRefusal: launchRefusalOf(agent),
             authMode     : getHarnessAuthMode(agent.harnessType)

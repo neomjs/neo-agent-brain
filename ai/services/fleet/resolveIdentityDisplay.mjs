@@ -1,5 +1,6 @@
 import {IDENTITIES}                from '../../graph/identityRoots.mjs';
 import {resolveResidentFamilyById} from '../graph/agentFamilyResolution.mjs';
+import {resolveHarnessFamily}      from '../../../src/fleet/contract/harnessTypes.mjs';
 
 /**
  * @summary The ONE fleet↔identity join seam (the single ratified resolver site): maps a
@@ -27,10 +28,9 @@ import {resolveResidentFamilyById} from '../graph/agentFamilyResolution.mjs';
  * lifecycle write — the same hard-gate reading the wake-subscription liveness and heartbeat
  * target-discovery layers apply; heartbeat/recency signals are explicitly not valid substitutes.
  *
- * **Closed-set honesty:** an agent with no identity root (a guest / freshly-defined fleet agent
- * that is not a named maintainer) resolves to `{family: null, engineTag: null,
- * participationStatus: null}` — the cockpit's FamilyRail renders unknown families as
- * `unclassified`, so an unresolved identity degrades honestly instead of guessing.
+ * **Closed-set honesty:** a declared harness supplies display family only after the identity
+ * trail and root. Any-provider or unknown harnesses remain unclassified; engine and participation
+ * facts still require their own identity sources. This display fallback is not review authority.
  * @module ai/services/fleet/resolveIdentityDisplay
  */
 
@@ -50,14 +50,16 @@ const identityByLogin = new Map(
  * @summary Resolve a fleet agent's identity facts from the identity roots.
  * @param {String|null} agentIdOrLogin The agent's GitHub username or registry id, with or without
  *     a leading `@` (e.g. `neo-gpt`, `@neo-gpt`).
+ * @param {Object} [options] Registry display context.
+ * @param {String} [options.harnessType] Declared harness, used only after identity family sources.
  * @returns {{family: String|null, engineTag: String|null, participationStatus: String|null}} the
- *     identity facts; `family` is `null` when the agent has no identity root (rendered as
- *     unclassified, never guessed); `engineTag` is currently ALWAYS `null` (see the module
+ *     identity facts; `family` is null without an identity family or declared harness family
+ *     (rendered as unclassified, never guessed); `engineTag` is currently ALWAYS `null` (see the module
  *     summary — no truthful flat source exists), kept in the contract shape so the era-layer
  *     re-point changes no consumer; `participationStatus` is the root's authoritative
  *     participation fact (`null` when no root exists — unknown, never assumed active).
  */
-export function resolveIdentityDisplay(agentIdOrLogin) {
+export function resolveIdentityDisplay(agentIdOrLogin, {harnessType} = {}) {
     const node = typeof agentIdOrLogin === 'string'
         ? identityByLogin.get(agentIdOrLogin.replace(/^@/, ''))
         : null;
@@ -65,7 +67,8 @@ export function resolveIdentityDisplay(agentIdOrLogin) {
     return {
         // Era-chain-first (the identity trail owns the family fact); the flat identity-level
         // modelFamily remains the fallback for residents without a seed era (retirement-gated).
-        family             : node ? (resolveResidentFamilyById(node.id) ?? node.properties?.modelFamily ?? null) : null,
+        family             : (node ? (resolveResidentFamilyById(node.id) ?? node.properties?.modelFamily) : null)
+            ?? resolveHarnessFamily(harnessType),
         engineTag          : null,
         participationStatus: node?.properties?.participationStatus ?? null
     }

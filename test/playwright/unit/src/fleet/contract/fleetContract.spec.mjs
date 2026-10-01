@@ -86,6 +86,21 @@ test.describe('installed Fleet client contract', () => {
         expect(contract.resolveHarnessType('codex').tenantMcpTarget).toBe(true);
     });
 
+    test('public harness families stay explicit, caller-owned and unknown for any-provider harnesses', () => {
+        expect(contract.listHarnessTypes().map(({type, modelFamily}) => [type, modelFamily])).toEqual([
+            ['codex', 'gpt'], ['codex-desktop', 'gpt'],
+            ['claude-code', 'claude'], ['claude-desktop', 'claude'],
+            ['opencode', null], ['kimi-code', 'kimi'], ['antigravity', 'gemini'], ['native-neo', null]
+        ]);
+        expect(contract.resolveHarnessFamily('codex-desktop')).toBe('gpt');
+        const copy = contract.resolveHarnessType('codex-desktop');
+        copy.modelFamily = 'claude';
+        expect(contract.resolveHarnessFamily('codex-desktop')).toBe('gpt');
+        for (const type of ['opencode', 'native-neo', 'unknown', 'constructor', null, undefined]) {
+            expect(contract.resolveHarnessFamily(type)).toBeNull();
+        }
+    });
+
     test('preserves fail-closed negotiation and response validation', () => {
         const offer = contract.createFleetWireOffer();
         expect(contract.selectFleetWireContract(offer).ok).toBe(true);

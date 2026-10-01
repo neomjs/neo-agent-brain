@@ -44,7 +44,10 @@ test.describe('ai/services/fleet/resolveIdentityDisplay — the fleet↔identity
                   };
 
             expect(resolveIdentityDisplay(login)).toEqual(expected);
-            expect(resolveIdentityDisplay(node.id)).toEqual(expected)
+            expect(resolveIdentityDisplay(node.id)).toEqual(expected);
+            const harnessType = expected.family === 'gpt' ? 'claude-desktop' : 'codex-desktop';
+            expect(resolveIdentityDisplay(login, {harnessType})).toEqual(expected);
+            expect(resolveIdentityDisplay(node.id, {harnessType})).toEqual(expected)
         })
     });
 
@@ -63,6 +66,17 @@ test.describe('ai/services/fleet/resolveIdentityDisplay — the fleet↔identity
 
     test('an agent without an identity root resolves to null facts — unclassified/tagless, never guessed', () => {
         expect(resolveIdentityDisplay('freshly-defined-fleet-agent')).toEqual({family: null, engineTag: null, participationStatus: null})
+    });
+
+    test('an unseeded agent uses its declared harness only for display family', () => {
+        for (const [harnessType, family] of [
+            ['codex-desktop', 'gpt'], ['claude-code', 'claude'], ['kimi-code', 'kimi'],
+            ['antigravity', 'gemini'], ['opencode', null], ['native-neo', null], ['unknown', null]
+        ]) {
+            expect(resolveIdentityDisplay('freshly-defined-fleet-agent', {harnessType})).toEqual({
+                family, engineTag: null, participationStatus: null
+            });
+        }
     });
 
     test('non-string / absent input degrades to null facts, never throws', () => {
