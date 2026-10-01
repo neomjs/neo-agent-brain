@@ -33,6 +33,7 @@ function reset() {
     FleetManager.wakeArmFn           = null;
     FleetManager.tenantService       = null;
     FleetManager.wakeStateOptions    = null;
+    FleetManager.planeBase           = null;
 }
 
 // Singleton-stateful service → serial, with env + injected-field reset per case.
@@ -186,7 +187,8 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
         FleetManager.managedRoot         = '/managed/root';
         FleetManager.tenantService       = tenants;
         FleetManager.provisionAndStartFn = provision;
-        FleetManager.wakeStateOptions    = {planeBase: 'http://127.0.0.1:3102', wakeReceiverBase: 'http://host.docker.internal:3199', wakeReceiverManifestPath: '/host/wake/routes.json'};
+        FleetManager.planeBase           = 'http://127.0.0.1:3102';
+        FleetManager.wakeStateOptions    = {wakeReceiverBase: 'http://host.docker.internal:3199', wakeReceiverManifestPath: '/host/wake/routes.json'};
         FleetManager.wakeArmFn           = async args => { armCalls.push(args); return arm(args) };
         FleetManager.lifecycleService    = {
             getRegistry : () => ({getAgent: () => agent}),

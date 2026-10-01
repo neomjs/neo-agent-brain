@@ -93,6 +93,13 @@ class FleetManager extends Base {
      */
     managedRoot = null
     /**
+     * The plane this Fleet serves (`fleet.planeBase`), injected by the composing entrypoint in plane
+     * mode and `null` in host mode. A seat's Memory Core and Knowledge Base live there, and its wake
+     * route is armed against it. Plain field, like {@link managedRoot}.
+     * @member {String|null} planeBase=null
+     */
+    planeBase = null
+    /**
      * Lifecycle collaborator. Defaults (via {@link getLifecycleService}) to the `FleetLifecycleService`
      * singleton; inject a stub for tests. A plain field — the sibling-precedent shape for an injectable
      * seam (`FleetLifecycleService.registry`), not reactive config.
@@ -205,6 +212,7 @@ class FleetManager extends Base {
         const status = await this.getProvisionAndStartFn()({
             lifecycleService: this.getLifecycleService(),
             managedRoot     : this.getManagedRoot(),
+            planeBase       : this.planeBase,
             agentId
         });
 
@@ -224,8 +232,8 @@ class FleetManager extends Base {
      * outcome on the seat's lifecycle record so its status says whether a peer can wake it.
      *
      * Never fails the start it follows: a refusal or an error becomes `wakeRoute: {state: 'unarmed',
-     * reason}` beside a running seat. The receiver coordinates and the attached plane arrive through
-     * {@link wakeStateOptions}, injected by the composing entrypoint like its sibling read paths.
+     * reason}` beside a running seat. The receiver coordinates arrive through {@link wakeStateOptions}
+     * and the attached plane through {@link planeBase}, both injected by the composing entrypoint.
      * @param {String} agentId Registry agent id.
      * @param {Object} status The lifecycle status `startAgent` produced.
      * @returns {Promise<Object>} `status`, plus `wakeRoute` when a GUI wake applies to the seat.
@@ -243,7 +251,7 @@ class FleetManager extends Base {
             wakeRoute = await this.getWakeArmFn()({
                 agent,
                 instanceHome : status?.instanceHome,
-                planeBase    : options.planeBase,
+                planeBase    : this.planeBase,
                 receiverBase : options.wakeReceiverBase,
                 manifestPath : options.wakeReceiverManifestPath,
                 tenantService: agent?.mcpTarget?.kind === 'tenant'
