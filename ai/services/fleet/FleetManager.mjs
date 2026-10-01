@@ -629,11 +629,12 @@ class FleetManager extends Base {
             entries  = repos.map(entry => repoCoordinates(entry && typeof entry === 'object' ? entry : {}, caller)),
             ids      = entries.map(identity);
 
+        // worded for the operator, who reads these reasons in Accounts
         if (entries.length && !working?.repoSlug) {
-            throw new Error(`${caller}: the seat has no working repository; set it through setRepo first.`)
+            throw new Error(`${caller}: this seat has no working repository yet; set it first, then its other repositories.`)
         }
         if (ids.includes(identity(working ?? {}))) {
-            throw new Error(`${caller}: the working repository is set through setRepo, never listed here.`)
+            throw new Error(`${caller}: the working repository is already this seat's own; list only its other repositories.`)
         }
         if (new Set(ids).size !== ids.length) {
             throw new Error(`${caller}: a repository is listed twice.`)
