@@ -412,8 +412,23 @@ async function postOpenCodeDigest(effects, envelope, digest, signal) {
     );
 
     if (response.status !== 204) {
-        throw new Error(`opencode-server prompt_async expected HTTP 204, received ${response.status}`);
+        throw openCodePromptRefusal(response.status);
     }
+}
+
+/**
+ * @summary The error a `prompt_async` answer other than 204 becomes, for this adapter and the wake
+ * daemon's alike. A 404 is named: the server answered, but has no session by the id the envelope
+ * carries, so the coordinates are stale (the seat ended or replaced that session). That is the same
+ * class as a connection refusal whose coordinates never changed, and no retry fixes it either: the
+ * route never retargets another session on its own. Any other status keeps its plain reading.
+ * @param {Number} status
+ * @returns {Error}
+ */
+export function openCodePromptRefusal(status) {
+    return new Error(status === 404
+        ? 'opencode-server coordinates are stale: the server has no session by the id the envelope names (HTTP 404)'
+        : `opencode-server prompt_async expected HTTP 204, received ${status}`)
 }
 
 /**

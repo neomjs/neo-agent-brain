@@ -83,6 +83,7 @@ import {
     isHeavyDeltaPoll,
     shouldDeferFlush
 } from './flushDeferPolicy.mjs';
+import {openCodePromptRefusal} from './localWakeAdapters.mjs';
 import {
     claimUnwokenMessages,
     clampWatermark,
@@ -1270,7 +1271,7 @@ async function postOpenCodeDigest({hostname, port, sessionId, username, password
     });
 
     if (response.status !== 204) {
-        throw new Error(`opencode-server prompt_async expected HTTP 204, received ${response.status}`);
+        throw openCodePromptRefusal(response.status);
     }
 }
 
