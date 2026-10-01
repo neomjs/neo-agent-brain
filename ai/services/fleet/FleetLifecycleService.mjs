@@ -7,6 +7,7 @@ import AiConfig                                                     from '../../
 import {generateLocalBearerToken}                                   from '../../mcp/server/shared/helpers/localBearer.mjs';
 import Base                                                         from 'neo.mjs/src/core/Base.mjs';
 import {MCP_SERVERS}                                                from '../../../src/fleet/contract/mcpServers.mjs';
+import {listHarnessTypes}                                           from '../../../src/fleet/contract/harnessTypes.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                              from './mcpServers.mjs';
 import {deriveAgentInstanceHome}                                    from './deriveAgentInstanceHome.mjs';
 import {deriveHarnessLaunchSpec}                                    from './deriveHarnessLaunchSpec.mjs';
@@ -136,9 +137,9 @@ const HARNESS_AUTH_MARKERS = {
     'codex-desktop': 'auth.json'
 };
 
-// The families whose seat outlives this server: stdin-indifferent, so no pipe held here is their
-// liveness (see "Seat survival" in the class summary).
-const SURVIVING_HARNESS_TYPES = new Set(['antigravity', 'claude-desktop', 'codex-desktop']);
+// The families whose seat outlives this server: an app is stdin-indifferent, so no pipe held here is
+// its liveness (see "Seat survival" in the class summary). The catalog says which types run as an app.
+const SURVIVING_HARNESS_TYPES = new Set(listHarnessTypes().filter(entry => entry.runsAs === 'app').map(entry => entry.type));
 
 const SEAT_LEASE_FILE = '.neo-fleet-seat-lease.json';
 

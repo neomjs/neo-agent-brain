@@ -101,6 +101,32 @@ test.describe('installed Fleet client contract', () => {
         }
     });
 
+    test('each harness type names its product and whether it runs as an app or a command line', () => {
+        expect(contract.listHarnessTypes().map(({type, product, runsAs}) => [type, product, runsAs])).toEqual([
+            ['codex', 'codex', 'cli'], ['codex-desktop', 'codex', 'app'],
+            ['claude-code', 'claude', 'cli'], ['claude-desktop', 'claude', 'app'],
+            ['opencode', 'opencode', 'cli'], ['kimi-code', 'kimi-code', 'cli'],
+            ['antigravity', 'antigravity', 'app'], ['native-neo', 'native-neo', null]
+        ]);
+    });
+
+    test('products list one choice each, in catalog order, with their types as caller-owned copies', () => {
+        const products = contract.listHarnessProducts();
+
+        expect(products.map(({product, label, types}) => [product, label, types.map(entry => entry.type)])).toEqual([
+            ['codex', 'Codex', ['codex', 'codex-desktop']],
+            ['claude', 'Claude', ['claude-code', 'claude-desktop']],
+            ['opencode', 'OpenCode', ['opencode']],
+            ['kimi-code', 'Kimi Code', ['kimi-code']],
+            ['antigravity', 'Antigravity', ['antigravity']],
+            ['native-neo', 'Native', ['native-neo']]
+        ]);
+
+        products[0].types[0].runsAs = 'changed by caller';
+        expect(contract.listHarnessProducts()[0].types[0].runsAs).toBe('cli');
+        expect(contract.resolveHarnessType('codex').runsAs).toBe('cli');
+    });
+
     test('preserves fail-closed negotiation and response validation', () => {
         const offer = contract.createFleetWireOffer();
         expect(contract.selectFleetWireContract(offer).ok).toBe(true);
