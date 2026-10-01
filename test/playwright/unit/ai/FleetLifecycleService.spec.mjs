@@ -67,6 +67,9 @@ function makeSpawnStub() {
 /** Every agent holds a GitHub PAT; a known agent resolves this one unless `creds` names another. */
 const FIXTURE_PAT = 'ghp_fixture_only';
 
+/** App-bundle seats lease their pid in the harness home, so their agents root must be writable. */
+const DESKTOP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-desktop-instances-'));
+
 /** A minimal registry stub so lifecycle specs never touch the real on-disk credential store. */
 function makeRegistry(agents, creds) {
     return {
@@ -140,8 +143,9 @@ function install({agents = {}, creds = {}} = {}) {
     FleetLifecycleService.harnessBinaryPaths = null;
     FleetLifecycleService.codexDesktopCapabilityProbeFn = null;
     FleetLifecycleService.codexDesktopCleanupFn         = null;
-    // Seat-lease seams: no spec reads or signals a host process unless it opts in.
-    FleetLifecycleService.processInspectFn  = () => null;
+    // Seat-lease seams: no spec reads or signals a host process unless it opts in. Every stub child
+    // reads as born at one fixed time, so an app-bundle start can lease it.
+    FleetLifecycleService.processInspectFn  = () => ({startedAt: 'Thu Oct  1 08:00:00 2026', command: ''});
     FleetLifecycleService.processSignalFn   = () => { throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
     FleetLifecycleService.adoptedExitPollMs = 5;
     FleetLifecycleService.leasesAdopted     = false;
@@ -700,7 +704,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
             cwd   = '/srv/checkouts/peer-desktop/neomjs/neo',
             spawn = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: '/bin/sh'};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({
             available         : true,
@@ -731,7 +735,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
     test('codex-desktop refuses before capability probe/spawn when the final provisioned cwd is absent', () => {
         const spawn = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => {
             throw new Error('must not run');
@@ -744,7 +748,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
     test('codex-desktop capability failure publishes unavailable and never spawns', () => {
         const spawn = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({available: false, reason: 'updater-disable-predicate-missing'});
 
@@ -761,7 +765,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         const spawn  = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
         let   probed = false;
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: '/definitely/missing/codex'};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => {
             probed = true;
@@ -782,7 +786,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
             previous = process.env.CODEX_THREAD_ID,
             spawn    = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({
             available         : true,
@@ -829,7 +833,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         const spawn = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}}),
               calls = [];
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({
             available         : true,
@@ -855,7 +859,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         const spawn = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
         let releaseCleanup;
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({
             available         : true,
@@ -889,7 +893,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         const spawn           = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
         let   cleanupAttempts = 0;
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({
             available         : true,
@@ -918,7 +922,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
     test('codex-desktop child error after spawn preserves stop authority until helper cleanup succeeds', async () => {
         const spawn = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({
             available         : true,
@@ -937,7 +941,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
 
     test('curated claude-code derivation pins strict per-home MCP config plus stream-json mode', () => {
         const spawn = install({agents: {c2: curatedAgent('c2', 'claude-code')}, creds: {}});
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'claude-code': process.execPath};
 
         FleetLifecycleService.start('c2');
@@ -974,7 +978,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         const previous = process.env.ELECTRON_RUN_AS_NODE;
         const spawn    = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
 
-        FleetLifecycleService.instanceRoot       = '/srv/fleet/instances';
+        FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
         FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
         FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({
             available         : true,
@@ -1650,20 +1654,29 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         }))
     }
 
-    /** A host process table behind both seams: `pid → {alive, startedAt, command, dieOn}`. */
+    /**
+     * A host process table behind both seams: `pid → {alive, startedAt, command, dieOn, reusedOn, hidden}`.
+     * `reusedOn` hands the pid to a newer process on that signal; `hidden` makes a live row uninspectable.
+     */
     function stubProcessTable(rows) {
         const signals = [];
 
-        FleetLifecycleService.processInspectFn = pid => rows[pid]?.alive ? {startedAt: rows[pid].startedAt, command: rows[pid].command} : null;
+        FleetLifecycleService.processInspectFn = pid => rows[pid]?.alive && !rows[pid].hidden ? {startedAt: rows[pid].startedAt, command: rows[pid].command} : null;
         FleetLifecycleService.processSignalFn  = (pid, signal) => {
-            if (!rows[pid]?.alive) throw Object.assign(new Error('no such process'), {code: 'ESRCH'});
+            const row = rows[pid];
+
+            if (!row?.alive) throw Object.assign(new Error('no such process'), {code: 'ESRCH'});
             if (signal === 0) return;
             signals.push(signal);
-            if (rows[pid].dieOn?.includes(signal)) rows[pid].alive = false
+            if (row.dieOn?.includes(signal)) row.alive = false;
+            if (row.reusedOn === signal) row.startedAt = 'Thu Oct  1 09:45:00 2026'
         };
 
         return signals
     }
+
+    /** The leased seat's own main process, exactly as launched. */
+    const seatRow = (profile, extra = {}) => ({4242: {alive: true, startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${profile}`, ...extra}});
 
     test('an app-bundle seat spawns detached with no pipe held by the Fleet server; a CLI seat keeps its held stdin', () => {
         for (const harnessType of ['antigravity', 'claude-desktop', 'codex-desktop']) {
@@ -1717,20 +1730,16 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         expect(FleetLifecycleService.listRunning().map(row => row.id)).toEqual(['seat'])
     });
 
-    test('a lease whose pid is gone, reused, on another profile or named for another agent is removed, and the agent reads stopped with why', () => {
-        const
-            seatRow = profile => ({4242: {alive: true, startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${profile}`}}),
-            cases   = {
-                gone    : {rows: () => ({})},
-                reused  : {rows: profile => ({4242: {...seatRow(profile)[4242], startedAt: 'Thu Oct  1 09:30:00 2026'}})},
-                foreign : {rows: () => seatRow('/elsewhere')},
-                stranger: {rows: seatRow, lease: {agentId: 'another-seat'}}   // pid, start time and profile all match
-            };
+    test('a lease whose pid is free or now belongs to a newer process is removed, and the agent reads an observed stop with why', () => {
+        const cases = {
+            gone  : () => ({}),
+            reused: profile => seatRow(profile, {startedAt: 'Thu Oct  1 09:30:00 2026'})
+        };
 
-        for (const [name, {rows, lease}] of Object.entries(cases)) {
+        for (const [name, rows] of Object.entries(cases)) {
             const {home, profile} = installSeat('claude-desktop');
 
-            writeLease(home, lease);
+            writeLease(home);
             stubProcessTable(rows(profile));
 
             expect(FleetLifecycleService.status('seat'), name).toMatchObject({
@@ -1742,6 +1751,132 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
                 agentId      : 'seat', state: 'stopped', running: false, confidence: 'observed', source: 'fleet:runtimeStatus',
                 failureReason: 'the seat exited while no Fleet server supervised it'
             }])
+        }
+    });
+
+    test('a lease that is unreadable or names another agent is invalid: removed, and nothing is adopted', () => {
+        const cases = {
+            stranger  : home => writeLease(home, {agentId: 'another-seat'}),   // pid, start time and profile all match
+            unreadable: home => fs.writeFileSync(path.join(home, LEASE_FILE), '{"pid": 42')
+        };
+
+        for (const [name, plant] of Object.entries(cases)) {
+            const {home, profile} = installSeat('claude-desktop');
+
+            plant(home);
+            stubProcessTable(seatRow(profile));
+
+            expect(FleetLifecycleService.status('seat'), name).toMatchObject({state: 'stopped', adopted: false, failureReason: 'the seat lease is invalid'});
+            expect(fs.existsSync(path.join(home, LEASE_FILE)), name).toBe(false)
+        }
+    });
+
+    test('only the exact main process is adopted: a longer profile, an embedded profile, a helper or another program is held unidentified', () => {
+        const cases = {
+            prefix  : profile => `${process.execPath} --user-data-dir=${profile}-other`,
+            embedded: profile => `/unrelated/app --note=--user-data-dir=${profile}`,
+            helper  : profile => `/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper --type=renderer --user-data-dir=${profile}`,
+            program : profile => `/unrelated/app --user-data-dir=${profile}`
+        };
+
+        for (const [name, command] of Object.entries(cases)) {
+            const {home, profile} = installSeat('claude-desktop');
+
+            writeLease(home);
+            stubProcessTable(seatRow(profile, {command: command(profile)}));
+
+            expect(FleetLifecycleService.status('seat'), name).toMatchObject({
+                state: 'failed', running: false, failureReason: 'the leased seat process is alive but cannot be identified as this seat'
+            });
+            expect(fs.existsSync(path.join(home, LEASE_FILE)), name).toBe(true);
+            expect(() => FleetLifecycleService.start('seat'), name).toThrow(/alive but cannot be identified/)
+        }
+    });
+
+    test('a seat that cannot be inspected while its pid answers is held, never taken for exited, and runs again once identified', async () => {
+        const
+            {home, profile} = installSeat('claude-desktop'),
+            rows            = seatRow(profile),
+            signals         = stubProcessTable(rows);
+
+        writeLease(home);
+
+        expect(FleetLifecycleService.status('seat')).toMatchObject({state: 'running', adopted: true});
+
+        rows[4242].hidden = true;
+
+        expect(FleetLifecycleService.status('seat')).toMatchObject({state: 'failed', failureReason: 'the leased seat process is alive but cannot be identified as this seat'});
+        expect(fs.existsSync(path.join(home, LEASE_FILE))).toBe(true);
+        expect(() => FleetLifecycleService.start('seat')).toThrow(/alive but cannot be identified/);
+        expect(await FleetLifecycleService.stop('seat')).toMatchObject({success: false, state: 'failed'});
+        expect(signals).toEqual([]);
+
+        rows[4242].hidden = false;
+
+        expect(FleetLifecycleService.status('seat')).toMatchObject({state: 'running', adopted: true, failureReason: null})
+    });
+
+    test('Stop never sends the seat\'s SIGKILL to a newer process that took its pid during the grace period', async () => {
+        const {home, profile} = installSeat('claude-desktop');
+
+        writeLease(home);
+
+        // The seat exits on SIGTERM and a newer process takes its pid at once.
+        const signals = stubProcessTable(seatRow(profile, {reusedOn: 'SIGTERM'}));
+
+        expect(await FleetLifecycleService.stop('seat')).toMatchObject({success: true, state: 'stopped'});
+        expect(signals).toEqual(['SIGTERM'])
+    });
+
+    test('a seat that cannot be leased is stopped while the server holds it, and its Start fails with why', () => {
+        const cases = {
+            birth : ({home}) => {
+                FleetLifecycleService.processInspectFn = () => null
+            },
+            write : ({home}) => {
+                fs.rmSync(home, {recursive: true, force: true});
+                fs.writeFileSync(home, '')   // a file where the harness home belongs
+            },
+            rename: ({home}) => {
+                fs.mkdirSync(path.join(home, LEASE_FILE, 'occupied'), {recursive: true})
+            }
+        };
+
+        for (const [name, breakLease] of Object.entries(cases)) {
+            const seat = installSeat('claude-desktop');
+
+            FleetLifecycleService.processInspectFn = () => ({startedAt: STARTED_AT, command: ''});
+            breakLease(seat);
+
+            expect(() => FleetLifecycleService.start('seat'), name).toThrow(/the seat could not be leased \(.+\), so it was stopped/);
+            expect(seat.spawn.calls[0].child.signals, name).toEqual(['SIGTERM']);
+            expect(fs.existsSync(path.join(seat.home, `${LEASE_FILE}.${process.pid}.tmp`)), name).toBe(false)
+        }
+    });
+
+    test('an adopted Codex Desktop seat whose helper proof is gone is never reported as a clean stop, and retries once the bundle proves it', async () => {
+        for (const probe of [() => ({available: false, reason: 'bundle changed'}), () => { throw new Error('unreadable bundle') }]) {
+            const
+                {home, profile} = installSeat('codex-desktop'),
+                cleanups        = [];
+
+            FleetLifecycleService.codexDesktopCapabilityProbeFn = probe;
+            FleetLifecycleService.codexDesktopCleanupFn         = async options => {
+                cleanups.push(options);
+                return {terminated: [], escalated: []}
+            };
+            writeLease(home, {harnessType: 'codex-desktop', cwd: CHECKOUT});
+            stubProcessTable(seatRow(profile, {command: `${process.execPath} --user-data-dir=${profile} --open-project=${CHECKOUT}`, dieOn: ['SIGTERM']}));
+
+            expect(await FleetLifecycleService.stop('seat')).toMatchObject({success: false, state: 'failed', cleanupUnresolved: true});
+            expect(cleanups).toEqual([]);
+            expect(() => FleetLifecycleService.start('seat')).toThrow(/unresolved/);
+            await expect(FleetLifecycleService.restart('seat')).rejects.toThrow(/cleanup failed/);
+
+            FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({available: true, reason: null, crashpadExecutable: CRASHPAD});
+
+            expect(await FleetLifecycleService.stop('seat')).toMatchObject({success: true, state: 'stopped', cleanupUnresolved: false});
+            expect(cleanups).toEqual([{electronProfile: profile, crashpadExecutable: CRASHPAD}])
         }
     });
 
@@ -1810,7 +1945,10 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         FleetLifecycleService.processSignalFn     = null;  // the REAL process.kill
         FleetLifecycleService.sigkillTimeoutMs    = 2000;
 
-        const {pid} = FleetLifecycleService.start('seat');
+        const
+            {pid}  = FleetLifecycleService.start('seat'),
+            // This runner is the seat's parent here, so the seat lingers as a zombie until it is reaped.
+            reaped = new Promise(resolve => FleetLifecycleService.processes.get('seat').child.once('exit', resolve));
 
         try {
             expect(pgidOf(pid)).toBe(String(pid));                // its own group leader,
@@ -1821,6 +1959,8 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
             expect(FleetLifecycleService.status('seat')).toMatchObject({running: true, adopted: true, pid});
             expect(await FleetLifecycleService.stop('seat')).toMatchObject({success: true, state: 'stopped'});
+
+            await reaped;
             expect(() => process.kill(pid, 0)).toThrow()
         } finally {
             try { process.kill(pid, 'SIGKILL') } catch {}
