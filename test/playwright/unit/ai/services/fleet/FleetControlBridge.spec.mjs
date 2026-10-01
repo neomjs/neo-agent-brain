@@ -13,12 +13,15 @@ setup({
     }
 });
 
-import {test, expect}       from '@playwright/test';
-import Neo                  from 'neo.mjs/src/Neo.mjs';
-import * as core            from 'neo.mjs/src/core/_export.mjs';
-import FleetControlBridge   from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
-import FleetManager         from '../../../../../../ai/services/fleet/FleetManager.mjs';
-import FleetRegistryService from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {test, expect}         from '@playwright/test';
+import Neo                    from 'neo.mjs/src/Neo.mjs';
+import * as core              from 'neo.mjs/src/core/_export.mjs';
+import FleetControlBridge     from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
+import FleetManager           from '../../../../../../ai/services/fleet/FleetManager.mjs';
+import FleetRegistryService   from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {dispatchFleetRequest} from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+
+import {createFleetWireRequest, FLEET_WIRE_RESPONSE_STATES} from '../../../../../../src/fleet/contract/wire.mjs';
 
 // FleetControlBridge is a singleton — the default export is the instance. Its `registry` / `manager`
 // are plain injectable-seam fields (the sibling FleetManager.lifecycleService precedent), so each test
@@ -408,10 +411,56 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(calls).toEqual([['setRepo', payload]]);
     });
 
-    test('setRepos delegates the single payload to the manager definition-update (fleet authority)', () => {
+    test('setRepos delegates the single payload to the manager and answers the updated definition as accepted (fleet authority)', () => {
         const payload = {id: 'alice', repos: [{repoSlug: 'neomjs/neo-agent-brain'}]};
-        expect(FleetControlBridge.setRepos(payload)).toEqual({id: 'alice', metadata: {repos: payload.repos}});
+        expect(FleetControlBridge.setRepos(payload)).toEqual({status: 'accepted', agent: {id: 'alice', metadata: {repos: payload.repos}}});
         expect(calls).toEqual([['setRepos', payload]]);
+    });
+
+    test('setRepos answers every refusal the manager names as a rejection the Accounts card can render, on the wire too', async () => {
+        let seat = {id: 'alice', metadata: {repo: {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'}}};
+
+        // the real manager, so each reason is one FleetManager.setRepos actually gives, not a fixture's
+        FleetManager.lifecycleService = {getRegistry: () => ({
+            getAgent   : id => id === seat.id ? seat : null,
+            updateAgent: (id, patch) => { calls.push(['updateAgent', id, patch]); return {...seat, ...patch} }
+        })};
+        FleetControlBridge.manager = FleetManager;
+
+        try {
+            for (const [repos, rule] of [
+                ['x/y',                                                                     /must be an array/],
+                [[{repoSlug: 'X Y'}],                                                       /repoSlug must be/],
+                [[{repoSlug: 'x/y', cloneUrl: 'https://u:ghp_SECRET@github.com/x/y.git'}], /the clone URL must be/],
+                [[{repoSlug: 'x/y'}, {repoSlug: 'x/y'}],                                    /listed twice/],
+                [[{repoSlug: 'neomjs/neo'}],                                                /the working repository/]
+            ]) {
+                const
+                    outcome = FleetControlBridge.setRepos({id: 'alice', repos}),
+                    wire    = await dispatchFleetRequest(createFleetWireRequest('setRepos', {id: 'alice', repos}), FleetControlBridge);
+
+                expect(outcome.status, JSON.stringify(repos)).toBe('rejected');
+                expect(outcome.reason).toMatch(rule);
+                expect(outcome.reason).not.toMatch(/FleetManager|SECRET/);
+                expect(wire).toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok, result: outcome});
+                expect(JSON.stringify(wire)).not.toMatch(/SECRET/)
+            }
+
+            seat = {id: 'alice', metadata: {}};
+            expect(FleetControlBridge.setRepos({id: 'alice', repos: [{repoSlug: 'x/y'}]}).reason).toMatch(/no working repository/);
+            expect(FleetControlBridge.setRepos({id: 'ghost', repos: []})).toEqual({status: 'rejected', reason: "Unknown agent 'ghost'."});
+            expect(calls, 'no refusal wrote the registry').toEqual([])
+        } finally {
+            FleetManager.lifecycleService = null
+        }
+    });
+
+    test('setRepos rethrows a failure that is not a refusal, so the dispatcher still sanitizes it', async () => {
+        managerStub.setRepos = () => { throw new Error('/secret/storage/path failed') };
+
+        expect(() => FleetControlBridge.setRepos({id: 'alice', repos: []})).toThrow('/secret/storage/path failed');
+        expect(await dispatchFleetRequest(createFleetWireRequest('setRepos', {id: 'alice', repos: []}), FleetControlBridge))
+            .toMatchObject({ok: false, state: FLEET_WIRE_RESPONSE_STATES.operationFailed, error: "fleet: 'setRepos' failed"})
     });
 
     test('setAvatar delegates the single payload to the manager definition-update (fleet authority)', () => {

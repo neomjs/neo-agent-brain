@@ -16,6 +16,24 @@ import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpit
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
 
 /**
+ * @summary A validation refusal its caller names (`<caller>: <rule>`) as the domain outcome a Body
+ * surface may render. The wire keeps domain outcomes inside `result` (`src/fleet/contract/wire.mjs`),
+ * and the dispatcher sanitizes every throw into a bare `operation-failed`, so a verb that answers
+ * refusals as data converts them before they reach it.
+ * @param {Error}  error
+ * @param {String} caller The refusing function, e.g. `FleetManager.setRepos`.
+ * @returns {{status: 'rejected', reason: String}|null} `null` for any other failure, which the verb rethrows.
+ * @private
+ */
+function rejectionOf(error, caller) {
+    const prefix = `${caller}:`;
+
+    return error?.message?.startsWith(prefix)
+        ? {status: 'rejected', reason: error.message.slice(prefix.length).trim()}
+        : null
+}
+
+/**
  * @class Neo.ai.services.fleet.FleetControlBridge
  * @extends Neo.core.Base
  * @singleton
@@ -347,11 +365,9 @@ class FleetControlBridge extends Base {
                 ? {status: 'accepted', agent}
                 : {status: 'rejected', reason: `Unknown agent '${intent?.id ?? ''}'.`}
         } catch (error) {
-            const prefix = 'FleetRegistryService.configureAgent:';
+            const rejection = rejectionOf(error, 'FleetRegistryService.configureAgent');
 
-            if (error?.message?.startsWith(prefix)) {
-                return {status: 'rejected', reason: error.message.slice(prefix.length).trim()}
-            }
+            if (rejection) return rejection;
 
             throw error
         }
@@ -456,11 +472,27 @@ class FleetControlBridge extends Base {
      * @summary Set an agent's other repositories (`metadata.repos`, beside the working one) on its
      * definition, with the same fleet authority as `setRepo`. The next provisioned start clones each one
      * beside the working checkout. A single-`params` payload, so it is pane-reachable over the wire.
+     *
+     * Like {@link #configureAgent}, a refusal is a domain outcome the Accounts card renders: an invalid
+     * entry, a duplicate, the working repository, or a seat without one. Any other failure still throws
+     * and is sanitized by dispatchFleetRequest.
      * @param {Object} payload `{id, repos}`: the agent id and `[{repoSlug, cloneUrl?}]`.
-     * @returns {Object|null} the updated public definition, or `null` if the agent doesn't exist.
+     * @returns {{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}}
      */
     setRepos(payload) {
-        return this.getManager().setRepos(payload);
+        try {
+            const agent = this.getManager().setRepos(payload);
+
+            return agent
+                ? {status: 'accepted', agent}
+                : {status: 'rejected', reason: `Unknown agent '${payload?.id ?? ''}'.`}
+        } catch (error) {
+            const rejection = rejectionOf(error, 'FleetManager.setRepos');
+
+            if (rejection) return rejection;
+
+            throw error
+        }
     }
 
     /**
