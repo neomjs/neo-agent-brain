@@ -990,4 +990,48 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         expect(elsewhere.code).toBe('FLEET_SEAT_HOME_MISMATCH')
     });
+
+    test('a curated seat without a managed repo is guarded too: its harness home and lease live under the agents root', async () => {
+        // unbound: refused before the envelope, the PAT read and the spawn — nothing under the root is touched
+        const
+            events   = [],
+            unbound  = {a: {id: 'a', githubUsername: 'a', harnessType: 'codex-desktop', metadata: {}}},
+            refusal  = await startAgentProvisioned({lifecycleService: makeLifecycle({agents: unbound, events}), agentId: 'a', managedRoot: '/moved'}).catch(error => error);
+
+        expect(refusal.code).toBe('FLEET_SEAT_HOME_UNBOUND');
+        expect(refusal.derivedSeatHome).toBe('/moved/a');
+        expect(events).toEqual([]);
+
+        // bound elsewhere: the same mismatch refusal a repo-bearing seat gets
+        const
+            moved     = {a: {id: 'a', githubUsername: 'a', harnessType: 'codex-desktop', metadata: {}, seatHome: '/managed/a'}},
+            lifecycle = makeLifecycle({agents: moved, events}),
+            mismatch  = await startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/moved'}).catch(error => error);
+
+        expect(mismatch.code).toBe('FLEET_SEAT_HOME_MISMATCH');
+        expect(mismatch.recordedSeatHome).toBe('/managed/a');
+        expect(lifecycle.calls.start).toEqual([]);
+        expect(events).toEqual([]);
+
+        // bound where the root derives it: starts in the inherited cwd as before
+        const status = await startAgentProvisioned({lifecycleService: makeLifecycle({agents: moved}), agentId: 'a', managedRoot: '/managed'});
+
+        expect(status.running).toBe(true);
+
+        // the managed root is required to place the home even without a repo
+        await expect(startAgentProvisioned({lifecycleService: makeLifecycle({agents: moved}), agentId: 'a'})).rejects.toThrow(/'managedRoot' is required to place the seat home/)
+    });
+
+    test('a raw metadata.launch override derives no home, so it is the one row the guard leaves alone', async () => {
+        const
+            agents    = {a: {id: 'a', metadata: {launch: {command: 'h'}}}},
+            lifecycle = makeLifecycle({agents});
+
+        expect(agents.a.seatHome).toBeUndefined();
+
+        const status = await startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/moved'});
+
+        expect(status.running).toBe(true);
+        expect(lifecycle.calls.start).toHaveLength(1)
+    });
 });

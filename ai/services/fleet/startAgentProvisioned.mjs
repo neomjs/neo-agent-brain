@@ -164,25 +164,24 @@ export async function startAgentProvisioned({
         throw new Error(`startAgentProvisioned: tenant MCP agent '${agentId}' requires a managed repo.`)
     }
 
-    if (repo) {
-        // The managed-workspace contract is coupled to Fleet's curated harness launch. A repo-bearing
-        // raw override can execute an unrelated command and consumes no derived home/MCP artifacts,
-        // so reporting it as prepared would be a false resident-ready claim.
-        if (agent.metadata?.launch) {
-            throw new Error(`startAgentProvisioned: repo-bearing agent '${agentId}' uses a raw metadata.launch override; curated managed-workspace preparation is required.`);
-        }
+    // The managed-workspace contract is coupled to Fleet's curated harness launch. A repo-bearing raw
+    // override can execute an unrelated command and consumes no derived home/MCP artifacts, so
+    // reporting it as prepared would be a false resident-ready claim.
+    if (repo && agent.metadata?.launch) {
+        throw new Error(`startAgentProvisioned: repo-bearing agent '${agentId}' uses a raw metadata.launch override; curated managed-workspace preparation is required.`);
+    }
 
+    // Every seat the Fleet launches itself has a seat directory under the agents root — the managed
+    // clone, the harness home, the survivor lease — repo or not; only a raw `metadata.launch` override
+    // derives no home. The registry names where that directory lives, and the agents root derives the
+    // same path at every start. A different derivation means the root changed under a materialized
+    // seat, and going on would mint a second, empty seat while the real one sits untouched elsewhere
+    // — refused before the PAT read, any checkout and any home effect, naming the record and both ways out.
+    if (!agent.metadata?.launch) {
         if (!managedRoot) {
-            throw new Error(`startAgentProvisioned: 'managedRoot' is required to provision the repo for agent '${agentId}'.`);
-        }
-        if (typeof agentosRuntimeRoot !== 'string' || !path.isAbsolute(agentosRuntimeRoot)) {
-            throw new Error(`startAgentProvisioned: 'agentosRuntimeRoot' must be an absolute path for agent '${agentId}'.`)
+            throw new Error(`startAgentProvisioned: 'managedRoot' is required to place the seat home for agent '${agentId}'.`);
         }
 
-        // The registry names where this seat's files live; the agents root derives the same path at
-        // every start. A different derivation means the root changed under a materialized seat, and
-        // provisioning here would mint a second, empty seat while the real one sits untouched elsewhere
-        // — refused before the PAT read and any checkout, naming the record and both ways out.
         const
             seatHome         = path.resolve(managedRoot, agentId),
             recordedSeatHome = agent.seatHome ?? null;
@@ -202,6 +201,10 @@ export async function startAgentProvisioned({
                 `startAgentProvisioned: agent '${agentId}' was registered before Fleet recorded seat homes and names none; the current agents root derives '${seatHome}'. Nothing was created; bind its home deliberately (relocateSeatHome from null) to the directory its files live in, then start it again.`
             ), {code: 'FLEET_SEAT_HOME_UNBOUND', derivedSeatHome: seatHome})
         }
+    }
+
+    if (repo && (typeof agentosRuntimeRoot !== 'string' || !path.isAbsolute(agentosRuntimeRoot))) {
+        throw new Error(`startAgentProvisioned: 'agentosRuntimeRoot' must be an absolute path for agent '${agentId}'.`)
     }
 
     // Resolve the resident child envelope and seat PAT before any checkout/config mutation.
