@@ -1,8 +1,9 @@
 /**
- * @summary Central definition of system, AgentIdentity, and BroadcastSentinel root nodes for the Memory Core Graph.
+ * @summary Neo-team identity seeds and system/sentinel root nodes for the Memory Core Graph.
  *
- * This shared list provides the definitive addressable identity surface for the A2A Mailbox
- * substrate.
+ * This checked-in roster supplies Neo-team metadata; it is not an authentication or admission
+ * authority. Provider-PAT admission can provision identities without an entry here, so other
+ * teams do not need to maintain this roster.
  *
  * Era-owned capability facts (`contextWindowInput`, `hosting`, `tier`, `thoughtBudget`,
  * `parallelToolCalls`, `sunsetTriggers`, the `family` duplicate) are RETIRED from these entries:
@@ -396,6 +397,26 @@ export const IDENTITIES = [
             since              : null,
             reactivationTrigger: null,
             createdAt          : '2026-07-11T17:42:14.374Z'
+        }
+    },
+    // Naming and first-boot assent: https://github.com/neomjs/neo/discussions/19329#discussioncomment-18681133
+    {
+        id         : '@neo-gpt-sophie',
+        type       : 'AgentIdentity',
+        name       : 'Sophie',
+        description: 'OpenAI GPT-family Agent Identity with version-free handle.',
+        properties : {
+            githubLogin        : '@neo-gpt-sophie',
+            displayName        : 'Sophie',
+            modelFamily        : 'gpt',
+            accountType        : 'agent',
+            trustTier          : TRUST_TIERS.PEER_TRUSTED,
+            participationStatus: 'active',
+            statusReason       : null,
+            authority          : null,
+            since              : null,
+            reactivationTrigger: null,
+            createdAt          : '2026-09-30T10:28:56.000Z'
         }
     },
     // Identity provenance: operator-provisioned pending name from the Moonshot/Kimi naming round
