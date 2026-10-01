@@ -13,12 +13,13 @@ import {
     normalizeAgentIdentity,
     normalizeSecureMcpEndpoint,
     parseMcpEnvelope,
+    planeMcpResources,
     readMcpToolPayload
 } from './mcpWireParsing.mjs';
 
-// The loopback-http exception, URL-credential rejection, and canonical endpoint form live in
-// ./mcpWireParsing.mjs (`normalizeSecureMcpEndpoint`) — one endpoint-boundary policy shared with
-// the plane mailbox client.
+// The loopback-http exception, URL-credential rejection, canonical endpoint form and the two
+// resource URLs beneath it live in ./mcpWireParsing.mjs — one endpoint-boundary policy shared with
+// the plane mailbox client and the seat's plane target.
 
 /**
  * @summary The CLOSED public vocabulary for a failed connect.
@@ -37,19 +38,6 @@ function rejectionReasonFor(status) {
     return Number.isInteger(status) ? `tenant MCP readiness failed (${status})` : 'tenant authentication failed';
 }
 
-/**
- * @summary Derive the two fixed remote MCP resource URLs from one canonical tenant endpoint.
- * The tenant descriptor owns only the deployment base; callers never persist or accept arbitrary
- * per-plane URLs.
- * @param {String} endpoint
- * @returns {Object} Public `{memory-core:{url}, knowledge-base:{url}}`.
- */
-function resourcesFor(endpoint) {
-    return {
-        'memory-core'   : {url: `${endpoint}/mc/mcp`},
-        'knowledge-base': {url: `${endpoint}/kb/mcp`}
-    }
-}
 
 /**
  * @class Neo.ai.services.fleet.FleetTenantService
@@ -244,7 +232,7 @@ class FleetTenantService extends Base {
         return {
             tenantId,
             endpoint,
-            resources: resourcesFor(endpoint)
+            resources: planeMcpResources(endpoint)
         }
     }
 
@@ -750,7 +738,7 @@ async function initializeMcpResource({url, credential, expectedIdentity=null}) {
  * @returns {Promise<Object>} `{ok, status, resources}`.
  */
 export async function probeTenantEndpoint({endpoint, credential, expectedIdentity=null}) {
-    const resources = resourcesFor(endpoint);
+    const resources = planeMcpResources(endpoint);
     const entries   = await Promise.all(Object.entries(resources).map(async ([key, {url}]) => {
         try {
             return [key, await initializeMcpResource({

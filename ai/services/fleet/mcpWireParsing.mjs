@@ -77,6 +77,19 @@ export function normalizeSecureMcpEndpoint(candidateUrl, {allowPlainHttpHosts = 
 }
 
 /**
+ * @summary The two fixed MCP resource URLs a plane serves beneath one canonical endpoint. A plane
+ * owns only its base; nobody persists or accepts arbitrary per-resource URLs.
+ * @param {String} endpoint Canonical endpoint from {@link normalizeSecureMcpEndpoint}.
+ * @returns {Object} Public `{memory-core: {url}, knowledge-base: {url}}`.
+ */
+export function planeMcpResources(endpoint) {
+    return {
+        'memory-core'   : {url: `${endpoint}/mc/mcp`},
+        'knowledge-base': {url: `${endpoint}/kb/mcp`}
+    }
+}
+
+/**
  * @summary Normalize a provider login / AgentIdentity node id to the canonical `@login` shape.
  * The provider response is remote-authored, so malformed values fail closed instead of crossing
  * into diagnostics.
