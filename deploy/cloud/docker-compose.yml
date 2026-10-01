@@ -113,6 +113,8 @@ services:
       - NEO_OLLAMA_MODEL=${NEO_OLLAMA_MODEL:-}
       - NEO_OLLAMA_EMBEDDING_MODEL=${NEO_OLLAMA_EMBEDDING_MODEL:-}
       - NEO_OLLAMA_EMBEDDING_TIMEOUT_MS=${NEO_OLLAMA_EMBEDDING_TIMEOUT_MS:-}
+      - NEO_GEMINI_MODEL=${NEO_GEMINI_MODEL:-}
+      - NEO_GEMINI_EMBEDDING_MODEL=${NEO_GEMINI_EMBEDDING_MODEL:-}
       # Provider-readiness coordinate. Shipped HERE because TextEmbeddingService (:845) reads
       # `orchestrator.providerReadiness.timeoutMs` and runs inside THIS process - the namespace is
       # not the consumer. The shipped 3000 was sized where model discovery is instant; a CPU-only
@@ -301,6 +303,8 @@ services:
       - NEO_OLLAMA_MODEL=${NEO_OLLAMA_MODEL:-}
       - NEO_OLLAMA_EMBEDDING_MODEL=${NEO_OLLAMA_EMBEDDING_MODEL:-}
       - NEO_OLLAMA_EMBEDDING_TIMEOUT_MS=${NEO_OLLAMA_EMBEDDING_TIMEOUT_MS:-}
+      - NEO_GEMINI_MODEL=${NEO_GEMINI_MODEL:-}
+      - NEO_GEMINI_EMBEDDING_MODEL=${NEO_GEMINI_EMBEDDING_MODEL:-}
       # Provider-readiness coordinates. TextEmbeddingService (:845) reads timeoutMs and
       # InferenceLifecycleService (:66) reads routineCacheTtlMs - both run in THIS process
       # (inference-lifecycle is an mc-server startup dependency, confirmed at runtime).
@@ -442,6 +446,8 @@ services:
       - NEO_OLLAMA_MODEL=${NEO_OLLAMA_MODEL:-}
       - NEO_OLLAMA_EMBEDDING_MODEL=${NEO_OLLAMA_EMBEDDING_MODEL:-}
       - NEO_OLLAMA_EMBEDDING_TIMEOUT_MS=${NEO_OLLAMA_EMBEDDING_TIMEOUT_MS:-}
+      - NEO_GEMINI_MODEL=${NEO_GEMINI_MODEL:-}
+      - NEO_GEMINI_EMBEDDING_MODEL=${NEO_GEMINI_EMBEDDING_MODEL:-}
       # Provider-readiness coordinates, all four consumed here: ConfiguredTaskDefinitionsService,
       # DreamService and DeploymentStateBridgeService. NOT shipped: the three
       # NEO_ORCHESTRATOR_STUCK_RUNNER_* leaves - they are RESERVED with zero consumers anywhere in

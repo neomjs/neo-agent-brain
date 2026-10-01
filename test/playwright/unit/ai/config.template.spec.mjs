@@ -299,8 +299,8 @@ test.describe('Tier 1 Config Immutability', () => {
         if (!process.env.NEO_BACKUP_PATH) {
             expect(Config.backupPath.startsWith(Config.neoRootDir + path.sep)).toBe(false)
         }
-        expect(Config.modelName).toBe('gemini-3.5-flash');
-        expect(Config.embeddingModel).toBe('gemini-embedding-001');
+        expect(Config.modelName).toBe(process.env.NEO_GEMINI_MODEL || 'gemini-3.5-flash');
+        expect(Config.embeddingModel).toBe(process.env.NEO_GEMINI_EMBEDDING_MODEL || 'gemini-embedding-001');
 
         expect(Config.ollama).toMatchObject({
             host                 : process.env.NEO_OLLAMA_HOST || 'http://127.0.0.1:11434',

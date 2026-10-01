@@ -116,6 +116,8 @@ x-plane-env: &plane-env
   NEO_OLLAMA_HOST: ${NEO_OLLAMA_HOST:-}
   NEO_OLLAMA_MODEL: ${NEO_OLLAMA_MODEL:-}
   NEO_OLLAMA_EMBEDDING_MODEL: ${NEO_OLLAMA_EMBEDDING_MODEL:-}
+  NEO_GEMINI_MODEL: ${NEO_GEMINI_MODEL:-}
+  NEO_GEMINI_EMBEDDING_MODEL: ${NEO_GEMINI_EMBEDDING_MODEL:-}
 
 # Canonical direct-local authentication profile. Ordinary forks have no generated roster, so the
 # bounded fallback is explicit rather than overloading an empty `allowedUsers`: publish MCP only
