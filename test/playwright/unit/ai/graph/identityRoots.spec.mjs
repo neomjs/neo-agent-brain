@@ -307,7 +307,7 @@ test.describe('ai/graph/identityRoots — @neo-gpt-emmy roster pin', () => {
         expect(entry, '@neo-gpt-emmy must be a registered AgentIdentity root').toBeTruthy();
         expect(entry).toMatchObject({
             id         : '@neo-gpt-emmy',
-            name       : 'Neo GPT Emmy',
+            name       : 'Emmy',
             type       : 'AgentIdentity',
             description: 'OpenAI GPT-family Agent Identity with version-free handle.',
             properties : {

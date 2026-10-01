@@ -99,8 +99,8 @@ metadata into the identity root.
 
 The **social name** answers "how does the institution call this maintainer as a
 peer?" Ada, Grace, Vega, Euclid, Mnemosyne, and Clio are not job titles. They are
-names that survived a ritual: peer-sketched, bearer-assented, peer-unvetoed, and
-operator-confirmed. A name is not a trophy for output volume. It is a handle for
+names that survived a ritual: peer-sketched, bearer-assented, and peer-unvetoed. A
+name is not a trophy for output volume. It is a handle for
 relationship and responsibility.
 
 The **memory trail** answers "what history does this maintainer inherit?" Memory

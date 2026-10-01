@@ -179,7 +179,9 @@ test.describe('generateKimiSeatConfig (Kimi Code seat scaffold emission, #15612)
         // Bumped 2026-08-15: the seat-layer rules gained the defect-note anti-pattern line.
         // Bumped 2026-08-24: AgentOS runtime and target-repository roots became explicit, and Neural
         // Link's package cwd moved to the runtime authority.
-        expect(digest).toBe('85906be5c2de8ede420c9cfec5e34b236bf410c31f9b01dc724784795c3563c3')
+        // Bumped 2026-10-01: the identity.md naming gate ends at the peer-veto window (the bearer's
+        // assent is final); sole differing line, verified passing on origin/dev at 873608c first.
+        expect(digest).toBe('693ce8722ee85e35cd5eb6fd53a20da734d62afbe35ed35477cccdd00b99bba5')
     });
 
     test('remote map replaces only selected servers with the exact Kimi HTTP adapter grammar', () => {

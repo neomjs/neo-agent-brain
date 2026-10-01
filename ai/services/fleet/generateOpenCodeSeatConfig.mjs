@@ -1,5 +1,5 @@
-import {createHash} from 'node:crypto';
-import {readFileSync}                                                                          from 'node:fs';
+import {createHash}                                                                             from 'node:crypto';
+import {readFileSync}                                                                           from 'node:fs';
 import path                                                                                     from 'node:path';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                                                          from './mcpServers.mjs';
 import {MEMORY_LAYER_BOOT_FILES, renderAboutThisLayerMd, renderIdentityMd, renderMemoryIndexMd} from './seatMemoryLayerTemplate.mjs';
@@ -79,8 +79,8 @@ export const OPENCODE_SEAT_SERVERS = Object.freeze([
  *    entry costs context every turn (the first seat measured 27.2KB all-loaded; the capped
  *    hot-index reshape targets ~10KB hot + on-demand detail). `identity.md` emits as a
  *    near-empty template with a story-sovereignty header — nobody authors a bearer's self-story
- *    but the bearer (the naming gate: peer sketch → bearer assent → peer-veto window →
- *    operator confirmation). The layer content is shared with the Kimi generator via
+ *    but the bearer (the naming gate: peer sketch → bearer assent → peer-veto window).
+ *    The layer content is shared with the Kimi generator via
  *    `seatMemoryLayerTemplate.mjs` — same index, same docs, different load mechanism.
  *
  * Additional generated blocks, folded in from the first seat's operational findings:

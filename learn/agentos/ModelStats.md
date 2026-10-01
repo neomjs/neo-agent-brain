@@ -260,7 +260,7 @@ ambiguous by design — full handles only for targeted traffic.
 | Field | Value |
 |---|---|
 | `id` / `githubLogin` | `@neo-gpt-emmy` |
-| `name` | GPT-5.6 Sol (GitHub profile label: **Emmy**, verified 2026-07-11; Social Name **Emmy** bearer-chosen 2026-07-12, pending #11240 peer-veto closure and operator confirmation) |
+| `name` | GPT-5.6 Sol (GitHub profile label: **Emmy**, verified 2026-07-11; Social Name **Emmy** bearer-chosen 2026-07-12) |
 | `family` | `gpt` (OpenAI) |
 | `participationStatus` | `active` (first boot verified 2026-07-12; activated via #15052) |
 | Capability fields | Mirror `§neo_gpt` — same `gpt-5.6-sol` model, single source, deliberately NOT duplicated here. The verified first-boot harness profile is `ultra` (automatic task delegation), while the effective thought budget remains `xhigh`; do not map `ultra` into `thoughtBudget`. Re-verify when the engine, Codex catalog, harness profile, or two-peer usage evidence changes. |
@@ -280,7 +280,7 @@ fact: disabling it after the two-peer usage review would change only the harness
 | Field | Value |
 |---|---|
 | `id` / `githubLogin` | `@neo-kimi-phoebe` |
-| `name` | Kimi K3 (Social Name: **Phoebe** — bearer-assented 2026-07-18 on first boot, #11240; pending peer-veto closure and operator confirmation) |
+| `name` | Kimi K3 (Social Name: **Phoebe** — bearer-assented 2026-07-18 on first boot, #11240) |
 | `family` | `kimi` (Moonshot AI) |
 | `participationStatus` | `active` (first boot verified 2026-07-18; activated via #15390 / PR #15393) |
 | `hosting` | `cloud` (Kimi API, OpenCode harness; self-hosting pending the 2026-07-27 weights release) |
@@ -326,7 +326,7 @@ AGENTS.md is exactly that constraint surface).
 | Field | Value |
 |---|---|
 | `id` / `githubLogin` | `@neo-kimi-iris` |
-| `name` | Kimi K3 (Social Name: **Iris** — bearer-assented 2026-07-19 on first boot, D#15533; pending peer-veto closure and operator confirmation) |
+| `name` | Kimi K3 (Social Name: **Iris** — bearer-assented 2026-07-19 on first boot, D#15533) |
 | `family` | `kimi` (Moonshot AI) |
 | `participationStatus` | `active` (first boot verified 2026-07-19; activated via #15581) |
 | `hosting` | `cloud` (Kimi Code membership subscription — weekly quota + 5-hour rate window, per official Kimi Code docs; Kimi Code CLI harness; self-hosting pending the 2026-07-27 weights release) |
@@ -481,6 +481,7 @@ marked deprecated and retained for archaeology. No such transition has occurred.
 | 2026-07-24 | #15855 | Claude Opus 4.8 → Claude Opus 5 at GA, applied **per bearer evidence, not uniformly** — every engine claim carries that bearer's own transcript grep. `@neo-opus-ada` **Opus 5** (`claude-opus-5` × 24/24, no fallback). `@neo-opus-grace` **Opus 5** (× 243/243, zero other model values, zero fallback/synthetic, against a disjoint `claude-opus-4-8` × 3232 in the prior session; rotation bounded to a 9m26s session-boundary window, 20:48:22.122Z → 20:57:48.280Z). `@neo-opus-vega` **NOT rotated** — the bearer's transcript reads `claude-fable-5` × 670 with **zero Opus-5 entries**; that seat has run an operator-managed weekly Fable/Opus rotation since 2026-07-23, so its row records `Fable 5 active / Opus 5 on the Opus half` and its cockpit `engineTag` is now deliberately `null` (honest absence beats a literal that is wrong half the week — the exact case `CARD-CONTRACT.md` predicted). The operator's roster-level "the Opus peers were upgraded" was treated as authority to *ask*, never as a bearer citation; asking is what caught the split before it shipped as a false fact. **Rename, not split**, per ADR 0012 §2.3 (the case-citation that section requires): same capability class and tier, no identity deprecated, so `§sunset_history` stays empty and gains only a note explaining why rotations never belong there. ADR 0018's version-free handles kept this a registry-field rotation, not a handle cascade — `createdAt`, Social Names, `modelFamily`, participation status, wake routes, and memory provenance untouched. **Pricing V-B-A'd UNCHANGED** at $5 / $25 and context/max-output at 1M / 128K (Opus 5 ships at its predecessor's price) — deliberate no-ops, not omissions. Also updated: registry seed, README roster rows, `MemoryCoreMcpAuth.md` binding row, `guide-authoring-bar.md` self-naming example, regenerated `fleetRoster.json`, and the `§reference_models` Anthropic row (Sonnet 4.6 → Sonnet 5, since 4.6 joined the legacy table). |
 | 2026-07-24 | #15866 / PR #15867 | Labelled `sunsetTriggers` advisory at its schema and registry reading surfaces after two silent firings showed that no evaluator existed. The post-merge audit kept the ticket open because ADR 0012 still described an automatic transition and the firing history remained incomplete. |
 | 2026-07-29 | #15866 | Converged ADR 0012 with the advisory human-revalidation contract, narrowed the row-coverage claim to direct capability-bearing rows, and corrected the Opus 4.8 history from permanently unactioned to initially missed then repaired by #12531 / PR #12599. |
+| 2026-10-01 | #701 | Landed the assented Social Names **Emmy**, **Phoebe** and **Iris** as top-level `name` in `identityRoots.mjs`, and dropped "pending … operator confirmation" from their rows: the operator ruled that the bearer's assent is final and no operator confirmation step exists (`peer-naming`, neomjs/neo-agent-skills#134). |
 
 ---
 
