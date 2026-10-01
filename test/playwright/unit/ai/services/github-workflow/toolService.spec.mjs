@@ -17,11 +17,12 @@ setup({
 // classes that require Neo.gatekeep (Compare.mjs:166). The setup() call only configures
 // Neo; the augmentation happens via these imports — mirrors the existing AI unit-test
 // pattern (e.g. IssueService.spec.mjs).
-import {test, expect}  from '@playwright/test';
-import {readFileSync}  from 'node:fs';
-import Neo             from 'neo.mjs/src/Neo.mjs';
-import * as core       from 'neo.mjs/src/core/_export.mjs';
-import InstanceManager from 'neo.mjs/src/manager/Instance.mjs';
+import {test, expect}           from '@playwright/test';
+import {readFileSync}           from 'node:fs';
+import Neo                      from 'neo.mjs/src/Neo.mjs';
+import * as core                from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager          from 'neo.mjs/src/manager/Instance.mjs';
+import {assertExpectedIdentity} from '../../../../../../ai/graph/assertExpectedIdentity.mjs';
 
 /**
  * `get_conversation` dispatch router. The tool now serves BOTH pull requests and
@@ -264,6 +265,22 @@ test.describe('Neo.ai.services.github-workflow.toolService — write identity gu
         expect(assertionCalls).toBe(1);
     });
 
+    test('the real assertion admits an unseeded create_issue and refuses drift (#663)', async () => {
+        let   actualLogin = 'outside-team-peer', delegateCalls = 0;
+        const guarded     = guardGitHubWriteTools({
+            create_issue: async () => { delegateCalls++; return {issueNumber: 663}; }
+        }, {
+            assertExpectedIdentity: async () => assertExpectedIdentity({expected: '@outside-team-peer', actualLogin})
+        }).create_issue;
+
+        expect(await guarded()).toEqual({issueNumber: 663});
+        expect(delegateCalls).toBe(1);
+
+        actualLogin = 'another-peer';
+        await expect(guarded()).rejects.toMatchObject({code: 'GITHUB_IDENTITY_MISMATCH'});
+        expect(delegateCalls).toBe(1);
+    });
+
     test('rejects a public write when expected identity is unresolved', async () => {
         let   delegateCalls = 0;
         const guarded       = buildGitHubWriteIdentityGuard(async () => {
@@ -271,7 +288,7 @@ test.describe('Neo.ai.services.github-workflow.toolService — write identity gu
         }, {
             assertExpectedIdentity: async () => ({
                 ok    : false,
-                reason: "identity drift: expected identity 'missing-agent' is missing or unmappable in identityRoots",
+                reason: "identity drift: expected identity '' has no account login form",
                 code  : 'EXPECTED_UNMAPPABLE'
             })
         });

@@ -1,24 +1,13 @@
-import {IDENTITIES} from './identityRoots.mjs';
-
 /**
- * @summary Pure, fail-closed assertion that the live authed identity is the *expected* agent —
- * the detection core for GitHub `GH_TOKEN` identity drift (the 2026-06-14 agent identity drift incident).
+ * @summary Pure, fail-closed comparison of a runtime-bound GitHub identity with the authenticated viewer.
  *
- * The 2026-06-14 drift was a silent failure: a mis-set `GH_TOKEN` made `gh api user` resolve to the
- * wrong agent, so PRs were opened and reviews posted under a mis-attributed identity with nothing
- * surfacing it. This core turns that into a loud, deterministic check: given the expected agent
- * (the harness `NEO_AGENT_IDENTITY`), the live authed login (`gh api user --jq .login`), and the
- * Memory-Core self-identity (the second surface sharing the same token), it returns `{ok:false}`
- * with an explicit reason the moment any of them disagree.
+ * Provider authentication supplies the login; the harness or request context binds the expected
+ * identity. Callers resolve these independently before invoking this comparison. Team-roster
+ * metadata is not an admission authority: an outside team's authenticated peer needs no entry in
+ * `identityRoots.mjs`. Missing references and mismatches still fail closed.
  *
- * It is deliberately PURE: all inputs are injected and the only dependency is the static
- * `IDENTITIES` table, so it is unit-provable with no live `gh`, no Memory-Core, and no I/O. Both the
- * github-workflow healthcheck (`ai/services/github-workflow/HealthService.mjs`) and the
- * write-boundary guard (`ai/mcp/server/github-workflow/toolService.mjs`) consume this single
- * source of truth rather than re-implementing the comparison.
- *
- * It lives beside `identityRoots.mjs` because the expected-login mapping is read straight from that
- * canonical `IDENTITIES` table; it is identity logic over identity data, not github-workflow-specific.
+ * GitHub Workflow's healthcheck and public-write guard share this dependency-free core. The optional
+ * Memory-Core cross-check compares a supplied identity; it performs no lookup or provisioning.
  */
 
 /**
@@ -45,23 +34,19 @@ export const IdentityAssertionCode = Object.freeze({
 const bare = value => typeof value === 'string' ? value.replace(/^@/, '') : value;
 
 /**
- * @summary Resolves the canonical *bare* `githubLogin` for an expected identity reference.
+ * @summary Reads a canonical provider login from the expected reference without consulting a roster.
  *
- * Matches `expected` (an `IDENTITIES` `id` or `githubLogin`, in either `@`-prefixed or bare form)
- * against the table and returns its bare `githubLogin`, or `null` when the reference is missing,
- * unmappable, or maps to an identity without a login (e.g. the `@system` sender) — every such case
- * is fail-closed at the call site.
+ * A single `@` prefix is allowed. Empty, malformed, addressing-scheme and reserved system references
+ * are not account logins. Never derive a missing expected identity from the viewer being checked.
  * @param {String} expected
  * @returns {String|null}
  */
 const resolveExpectedLogin = expected => {
-    const ref      = bare(expected);
-    if (!ref) {return null}
+    const login = bare(expected);
 
-    const identity = IDENTITIES.find(node => bare(node.id) === ref || bare(node.properties?.githubLogin) === ref),
-          login    = identity?.properties?.githubLogin;
-
-    return login ? bare(login) : null;
+    return typeof login === 'string' && /^[a-z\d]+(?:-[a-z\d]+)*$/i.test(login) && login.toLowerCase() !== 'system'
+        ? login
+        : null;
 };
 
 /**
@@ -80,7 +65,7 @@ const resolveExpectedLogin = expected => {
  *
  * @param {Object} params
  * @param {String} params.expected The expected agent identity — the harness `NEO_AGENT_IDENTITY`
- * (an `IDENTITIES` id / login, `@`-prefixed or bare).
+ * (the canonical provider login, `@`-prefixed or bare).
  * @param {String} params.actualLogin The live authed login from `gh api user --jq .login` (bare).
  * @param {String} [params.memoryCoreIdentity] The Memory-Core self-identity, when available.
  * @returns {{ok: Boolean, reason: (String|null), code: String}} `code` is an {@link IdentityAssertionCode} value.
@@ -89,7 +74,7 @@ export function assertExpectedIdentity({expected, actualLogin, memoryCoreIdentit
     const expectedLogin = resolveExpectedLogin(expected);
 
     if (!expectedLogin) {
-        return {ok: false, reason: `identity drift: expected identity '${expected}' is missing or unmappable in identityRoots`, code: IdentityAssertionCode.EXPECTED_UNMAPPABLE};
+        return {ok: false, reason: `identity drift: expected identity '${expected}' has no account login form`, code: IdentityAssertionCode.EXPECTED_UNMAPPABLE};
     }
 
     const authedLogin = bare(actualLogin);

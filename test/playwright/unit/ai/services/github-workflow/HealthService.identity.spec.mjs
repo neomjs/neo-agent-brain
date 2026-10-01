@@ -64,6 +64,16 @@ test.describe.serial('Neo.ai.services.github-workflow.HealthService - agent iden
         expect(await HealthService.checkAgentIdentity()).toEqual({ok: true, reason: null});
     });
 
+    test('an unseeded provider login is healthy only while the viewer matches (#663)', async () => {
+        process.env.NEO_AGENT_IDENTITY = '@outside-team-peer';
+        HealthService.agentLoginReader = async () => 'outside-team-peer';
+
+        expect(await HealthService.checkAgentIdentity()).toEqual({ok: true, reason: null, code: 'OK'});
+
+        HealthService.agentLoginReader = async () => 'another-peer';
+        expect(await HealthService.checkAgentIdentity()).toMatchObject({ok: false, code: 'LOGIN_MISMATCH'});
+    });
+
     test('fails closed when the authed login cannot be resolved', async () => {
         process.env.NEO_AGENT_IDENTITY = '@neo-gpt';
         HealthService.agentLoginReader = async () => { throw new Error('gh exploded'); };

@@ -1,11 +1,47 @@
 import {test, expect}                                  from '@playwright/test';
 import {assertExpectedIdentity, IdentityAssertionCode} from '../../../../../ai/graph/assertExpectedIdentity.mjs';
+import {IDENTITIES}                                    from '../../../../../ai/graph/identityRoots.mjs';
 
-// Pure function over the static IDENTITIES table — imported directly; no Neo globals, no setup, no I/O.
-// Uses REAL identityRoots entries (@neo-gpt, @neo-opus-ada, @system) so the test exercises the live
-// mapping, not a fixture. The headline case is the 2026-06-14 drift: the github-workflow token authed
-// as neo-opus-ada while the harness expected neo-gpt — this core must catch it.
+// The provider login is the identity; team-roster membership must not gate this pure comparison.
 test.describe('assertExpectedIdentity (fail-closed GitHub identity-drift detection core)', () => {
+    test('an unseeded provider login passes without a team-roster entry (#663)', () => {
+        const login = 'outside-team-peer';
+
+        expect(IDENTITIES.some(node => node.id === `@${login}`)).toBe(false);
+
+        for (const expected of [login, `@${login}`]) {
+            expect(assertExpectedIdentity({expected, actualLogin: login}))
+                .toEqual({ok: true, reason: null, code: IdentityAssertionCode.OK});
+            expect(assertExpectedIdentity({expected, actualLogin: login, memoryCoreIdentity: `@${login}`}))
+                .toEqual({ok: true, reason: null, code: IdentityAssertionCode.OK});
+        }
+    });
+
+    test('every seeded account still matches its independently supplied login (#663)', () => {
+        const accounts = IDENTITIES.filter(node => node.properties?.githubLogin);
+
+        expect(accounts.length).toBeGreaterThan(0);
+        for (const node of accounts) {
+            expect(assertExpectedIdentity({expected: node.id, actualLogin: node.properties.githubLogin}).ok).toBe(true);
+        }
+    });
+
+    test('an unseeded login still refuses GitHub and Memory-Core drift (#663)', () => {
+        expect(assertExpectedIdentity({expected: 'outside-team-peer', actualLogin: 'another-peer'}).code)
+            .toBe(IdentityAssertionCode.LOGIN_MISMATCH);
+        expect(assertExpectedIdentity({expected: 'outside-team-peer', actualLogin: 'outside-team-peer', memoryCoreIdentity: '@another-peer'}).code)
+            .toBe(IdentityAssertionCode.MEMORY_CORE_MISMATCH);
+    });
+
+    test('malformed and non-account references refuse even matching inputs (#663)', () => {
+        for (const expected of [undefined, null, 7, {}, '', ' ', '@', '@@peer', '-peer', 'peer-', 'a b', 'a/b', 'AGENT:*', '@system']) {
+            const result = assertExpectedIdentity({expected, actualLogin: expected});
+
+            expect(result.code, String(expected)).toBe(IdentityAssertionCode.EXPECTED_UNMAPPABLE);
+            expect(result.reason).not.toContain('identityRoots');
+        }
+    });
+
     test('ok when the authed login matches the expected agent (GitHub surface only)', () => {
         expect(assertExpectedIdentity({expected: '@neo-gpt', actualLogin: 'neo-gpt'}))
             .toEqual({ok: true, reason: null, code: IdentityAssertionCode.OK});
@@ -59,7 +95,7 @@ test.describe('assertExpectedIdentity (fail-closed GitHub identity-drift detecti
     test('emits a stable code for every outcome branch', () => {
         expect(assertExpectedIdentity({expected: '@neo-gpt', actualLogin: 'neo-gpt'}).code)
             .toBe(IdentityAssertionCode.OK);
-        expect(assertExpectedIdentity({expected: 'nonexistent-agent', actualLogin: 'neo-gpt'}).code)
+        expect(assertExpectedIdentity({expected: '', actualLogin: 'neo-gpt'}).code)
             .toBe(IdentityAssertionCode.EXPECTED_UNMAPPABLE);
         expect(assertExpectedIdentity({expected: '@neo-gpt', actualLogin: null}).code)
             .toBe(IdentityAssertionCode.NO_AUTHED_LOGIN);
