@@ -7,8 +7,8 @@ import {gitCloneCommand, provisionAgentRepo} from '../../../../ai/services/fleet
 // network. `impl` lets a case simulate a clone failure.
 const makeCloneStub = impl => {
     const calls = [];
-    const fn    = async (cloneUrl, repoPath, {credential} = {}) => {
-        calls.push({cloneUrl, repoPath, credential});
+    const fn    = async (cloneUrl, repoPath, {credential, credentialOrigin} = {}) => {
+        calls.push({cloneUrl, repoPath, credential, credentialOrigin});
         if (impl) return impl(cloneUrl, repoPath);
     };
     fn.calls = calls;
@@ -90,12 +90,18 @@ test.describe('provisionAgentRepo (Fleet Manager repo-provisioning executor)', (
         expect(r).toEqual({repoPath: REPO, action: 'reused', cloned: false})
     });
 
-    test("the seat's credential reaches the clone executor", async () => {
+    test("the seat's credential and the origin it was stored for reach the clone executor", async () => {
         const clone = makeCloneStub();
 
         await provisionAgentRepo({repoPath: REPO, cloneUrl: URL, credential: 'ghp_seat', provisioningAction: 'clone', cloneRepo: clone});
+        await provisionAgentRepo({
+            repoPath: REPO, cloneUrl: URL, credential: 'glpat_seat', credentialOrigin: 'https://example.test', provisioningAction: 'clone', cloneRepo: clone
+        });
 
-        expect(clone.calls[0]).toEqual({cloneUrl: URL, repoPath: REPO, credential: 'ghp_seat'})
+        expect(clone.calls).toEqual([
+            {cloneUrl: URL, repoPath: REPO, credential: 'ghp_seat'},
+            {cloneUrl: URL, repoPath: REPO, credential: 'glpat_seat', credentialOrigin: 'https://example.test'}
+        ])
     });
 });
 
@@ -107,12 +113,37 @@ test.describe('gitCloneCommand — who a clone authenticates as', () => {
 
         expect(args).toEqual([
             '-c', 'credential.helper=',
-            '-c', 'credential.https://github.com.helper=!f() { echo username=x-access-token; echo "password=$NEO_SEAT_GITHUB_TOKEN"; }; f',
+            '-c', 'credential.https://github.com.helper=!f() { echo username=x-access-token; echo "password=$NEO_SEAT_FORGE_TOKEN"; }; f',
             'clone', '--', GITHUB, REPO
         ]);
         expect(args.join(' '), 'the token is not in argv, where any process can read it').not.toContain('ghp_seat');
-        expect(env.NEO_SEAT_GITHUB_TOKEN).toBe('ghp_seat');
+        expect(env.NEO_SEAT_FORGE_TOKEN).toBe('ghp_seat');
         expect(env.GIT_TERMINAL_PROMPT).toBe('0')
+    });
+
+    test("a GitLab seat's token is presented to the instance it was stored for, and to nothing else", () => {
+        const
+            ORIGIN      = 'https://gitlab.example.com',
+            PROJECT     = `${ORIGIN}/group/sub/project.git`,
+            {args, env} = gitCloneCommand(PROJECT, REPO, 'glpat_seat', {}, ORIGIN);
+
+        expect(args).toEqual([
+            '-c', 'credential.helper=',
+            '-c', `credential.${ORIGIN}.helper=!f() { echo username=x-access-token; echo "password=$NEO_SEAT_FORGE_TOKEN"; }; f`,
+            'clone', '--', PROJECT, REPO
+        ]);
+        expect(env.NEO_SEAT_FORGE_TOKEN).toBe('glpat_seat');
+
+        for (const cloneUrl of [
+            GITHUB,                                              // github.com is not where this PAT was stored
+            'https://gitlab.com/group/project.git',              // nor is another GitLab
+            'https://gitlab.example.com:8443/group/project.git', // nor another port on the same host
+            'https://gitlab.example.com.evil.example/g/p.git',
+            'http://gitlab.example.com/group/project.git',       // never in the clear
+            'https://oauth2@gitlab.example.com/group/project.git'
+        ]) {
+            expect(gitCloneCommand(cloneUrl, REPO, 'glpat_seat', {}, ORIGIN), cloneUrl).toEqual({args: ['clone', '--', cloneUrl, REPO], env: undefined})
+        }
     });
 
     test("the seat's clone runs outside the host's Git setup: no config file, no config or askpass from the environment", () => {
@@ -130,13 +161,13 @@ test.describe('gitCloneCommand — who a clone authenticates as', () => {
         });
 
         expect(env).toEqual({
-            PATH                 : '/usr/bin',
-            HTTPS_PROXY          : 'http://proxy.example:3128', // a proxy stays an environment setting
-            HOME                 : os.devNull,
-            GIT_CONFIG_GLOBAL    : os.devNull,
-            GIT_CONFIG_NOSYSTEM  : '1',
-            GIT_TERMINAL_PROMPT  : '0',
-            NEO_SEAT_GITHUB_TOKEN: 'ghp_seat'
+            PATH                : '/usr/bin',
+            HTTPS_PROXY         : 'http://proxy.example:3128', // a proxy stays an environment setting
+            HOME                : os.devNull,
+            GIT_CONFIG_GLOBAL   : os.devNull,
+            GIT_CONFIG_NOSYSTEM : '1',
+            GIT_TERMINAL_PROMPT : '0',
+            NEO_SEAT_FORGE_TOKEN: 'ghp_seat'
         })
     });
 
@@ -145,7 +176,9 @@ test.describe('gitCloneCommand — who a clone authenticates as', () => {
             [GITHUB, undefined],                          // no credential
             ['https://gitlab.example/x/y.git', 'ghp_seat'], // a GitHub PAT belongs to github.com only
             ['git@github.com:neomjs/neo.git', 'ghp_seat'],  // ssh authenticates with keys, not a PAT
-            ['https://github.com.evil.example/x/y.git', 'ghp_seat']
+            ['https://github.com.evil.example/x/y.git', 'ghp_seat'],
+            ['https://x-access-token@github.com/neomjs/neo.git', 'ghp_seat'], // a URL's userinfo is not ours to answer
+            ['http://github.com/neomjs/neo.git', 'ghp_seat']
         ]) {
             expect(gitCloneCommand(cloneUrl, REPO, credential), cloneUrl).toEqual({args: ['clone', '--', cloneUrl, REPO], env: undefined})
         }

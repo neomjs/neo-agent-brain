@@ -271,6 +271,33 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         ]);
     });
 
+    test("every clone carries the origin the seat's PAT was stored for: a GitLab seat's host, or none for GitHub's", async () => {
+        const
+            ORIGIN = 'https://gitlab.example.com',
+            agents = repoAgent('a'),
+            start  = async (lifecycleAgents, agentId, ensureRepo) => startAgentProvisioned({
+                lifecycleService  : makeLifecycle({agents: lifecycleAgents}),
+                agentId,
+                managedRoot       : '/managed',
+                ensureRepo,
+                prepareWorkspace  : makePrepareWorkspace(),
+                agentosRuntimeRoot: '/installed/neo'
+            });
+
+        Object.assign(agents.a, {forge: 'gitlab', forgeHost: ORIGIN});
+        agents.a.metadata.repo  = {repoSlug: 'group/sub/project', cloneUrl: `${ORIGIN}/group/sub/project.git`, forge: 'gitlab'};
+        agents.a.metadata.repos = [{repoSlug: 'group/tools', cloneUrl: `${ORIGIN}/group/tools.git`, forge: 'gitlab'}];
+
+        const gitlabRepo = makeEnsureRepo('/managed/a/group/sub/project'),
+              githubRepo = makeEnsureRepo('/managed/b/neomjs/neo');
+
+        await start(agents, 'a', gitlabRepo);
+        await start(repoAgent('b'), 'b', githubRepo);
+
+        expect(gitlabRepo.calls.map(call => [call.repoSlug, call.credentialOrigin])).toEqual([['group/sub/project', ORIGIN], ['group/tools', ORIGIN]]);
+        expect(githubRepo.calls[0].credentialOrigin).toBeUndefined() // the clone's own default: github.com
+    });
+
     test('an other repository that cannot be cloned is reported on the status, and the seat still starts', async () => {
         const agents = repoAgent('a');
 

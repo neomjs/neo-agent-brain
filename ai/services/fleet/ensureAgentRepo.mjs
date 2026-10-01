@@ -33,16 +33,17 @@ import {provisionAgentRepo}  from './provisionAgentRepo.mjs';
  * @param {String}    options.agentId     The Fleet Manager agent id.
  * @param {String}    options.repoSlug    The repo identifier, e.g. `'neomjs/neo'`.
  * @param {String}   [options.cloneUrl]   The clone source (required only when a clone is needed).
- * @param {String}   [options.credential] The seat's GitHub PAT, which a GitHub clone authenticates with.
- * @param {Function} [options.cloneRepo]  `(cloneUrl, repoPath, {credential}) => Promise<void>` — the clone
- *                                        executor; defaults to a real `git clone`, injectable for tests.
+ * @param {String}   [options.credential]       The seat's PAT, which a clone on its origin authenticates with.
+ * @param {String}   [options.credentialOrigin] The origin the PAT was stored for; omitted means GitHub's.
+ * @param {Function} [options.cloneRepo]        `(cloneUrl, repoPath, {credential, credentialOrigin}) => Promise<void>` —
+ *                                              the clone executor; defaults to a real `git clone`, injectable for tests.
  * @returns {Promise<{repoPath: String, state: String, action: String, cloned: Boolean}>}
  *   `repoPath` is the derived checkout path; `state` is the inspected on-disk state; `action` ∈
  *   `'cloned' | 'reused'`; `cloned` is `true` only when a clone ran.
  * @throws {Error} On invalid `managedRoot` / `agentId` / `repoSlug` (from derivation), a conflicting
  *   occupant, or a missing `cloneUrl` when a clone is required.
  */
-export async function ensureAgentRepo({managedRoot, agentId, repoSlug, cloneUrl, credential, cloneRepo} = {}) {
+export async function ensureAgentRepo({managedRoot, agentId, repoSlug, cloneUrl, credential, credentialOrigin, cloneRepo} = {}) {
     const repoPath = deriveAgentRepoPath({managedRoot, agentId, repoSlug});
 
     ensureSeatRoot(assertRoot(managedRoot, 'managedRoot', 'ensureAgentRepo'));
@@ -54,6 +55,7 @@ export async function ensureAgentRepo({managedRoot, agentId, repoSlug, cloneUrl,
             provisioningAction: inspection.provisioningAction,
             cloneUrl,
             credential,
+            credentialOrigin,
             cloneRepo
         });
 
