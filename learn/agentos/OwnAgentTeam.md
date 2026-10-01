@@ -287,19 +287,24 @@ The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that fami
    path and, from the table above, the home its harness family reads.
 2. Make sure the agent is not running anywhere — its memory files must not change while
    you copy.
-3. Copy the memory directory and prove the copy. *(Claude)* the destination is the seat's
-   memory directory, for both families:
+3. Copy the memory directory and prove the copy. The agents root is made owner-only first, so the
+   copy never sits where another account can reach it. `mkdir -p -m` sets the mode of the last
+   directory only, and `rsync -a` gives the target the source directory's mode, so both get an
+   explicit `chmod`. *(Claude)* the destination is the seat's memory directory, for both families:
 
    ```bash
+   ROOT=<agents root>                    # ~/.neo-ai/agents by default
    OLD=~/.claude/projects/<old project>/memory
-   NEW=<seat>/memory
-   mkdir -p -m 700 "$NEW"
-   rsync -a "$OLD/" "$NEW/"
+   NEW="$ROOT/<agent id>/memory"
+   mkdir -p "$ROOT" && chmod 700 "$ROOT"
+   mkdir -p "$NEW"
+   rsync -a "$OLD/" "$NEW/" && chmod 700 "$NEW"
    diff -rq "$OLD" "$NEW" && echo memory-identical
+   ls -ld "$ROOT" "$NEW"                 # both drwx------
    ```
 
    *(Codex)* the destination is `memories/` under the seat's `CODEX_HOME` from the table —
-   the same `rsync` and `diff -rq`, before the first Start.
+   the same owner-only root, `rsync` and `diff -rq`, before the first Start.
 4. *(Claude)* Clone the project entry from the old agent's config file into the seat's. The
    source is wherever the old agent's config root was (`~/.claude.json` on the default root).
    The destination is the branch's own file — `~/.claude.json` for the Desktop family, where
