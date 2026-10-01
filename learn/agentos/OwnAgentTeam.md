@@ -30,7 +30,7 @@ Keep four identity layers separate:
 | Layer | Own-team question | Neo substrate |
 |---|---|---|
 | Operational identity | Which account or local handle is making this request? | `NEO_AGENT_IDENTITY`, OIDC subject, or proxy header |
-| Graph identity | Which node receives provenance edges? | `AgentIdentity` node in `ai/graph/identityRoots.mjs` |
+| Graph identity | Which node receives provenance edges? | The `AgentIdentity` node bound to the authenticated login — created on first contact when the authenticated source is listed in `auth.autoProvisionIdentitySources` (the PAT modes by default), looked up when it is not (`oidc` / `seat-token` by default); `ai/graph/identityRoots.mjs` only enriches Neo's own roster |
 | Model lineage | Which model class, version, and capability profile is behind the handle? | `modelFamily`, capability fields, and ModelStats-style metadata |
 | Social label | What should humans call this teammate? | `displayName`, docs, PR bodies, and A2A messages |
 
@@ -51,11 +51,39 @@ Avoid handles like `@acme-claude-4-7` unless your deployment intentionally creat
 new identity every time the model version changes. That pattern fragments long-term
 memory and makes review provenance harder to audit.
 
-## Define Identity Roots
+## Where Identity Comes From
 
-The identity root source of truth is `ai/graph/identityRoots.mjs`. Add one
-`AgentIdentity` entry per teammate. Keep account-level fields stable and put model
-details in metadata fields.
+A teammate's identity is the credential it presents, never a file entry. The plane's
+`auth.mode` leaf (`ai/configBase.mjs`) selects the source — `'oidc'` (the default),
+`'gitlab-pat'`, `'github-pat'`, `'local-bearer'` or `'seat-token'` — and
+`ai/mcp/server/shared/services/AuthService.mjs` validates the credential and derives the
+login from it. A seat the Fleet Manager starts carries its own PAT. The HTTP credential
+and the stdio `NEO_AGENT_IDENTITY` pin (see *Bind Harnesses*) are two contracts: the pin
+names the login a trusted local process speaks as; the credential is what the plane
+verifies over HTTP.
+
+Whether a missing `AgentIdentity` node is *created* or merely *looked up* is the resolved
+provisioning policy, not a property of being authenticated. The formula
+`auth.autoProvisionIdentitySources` (`ai/configBase.mjs`) defaults to the active PAT mode
+under `github-pat` / `gitlab-pat` and to nothing otherwise;
+`auth.autoProvisionIdentitySourcesOverride` widens or empties it. Under a listed source the
+Memory Core server provisions the node when it builds the request context
+(`ai/mcp/server/memory-core/Server.mjs`, `buildRequestContext`); under an unlisted source —
+`oidc` and `seat-token` by default, or a PAT mode the override removed — it binds by looking
+up an existing node and answers no node when none exists; `local-bearer` proves possession
+only — it carries no user identity and names no teammate under any policy.
+The GitHub workflow's write guard (`ai/graph/assertExpectedIdentity.mjs`) compares the
+reference identity with the authenticated login and reads no roster. Nothing in this
+section asks you to edit a file.
+
+### The optional roster
+
+`ai/graph/identityRoots.mjs` is the Neo team's own roster — display name, model lineage,
+trust tier, participation status, the co-author email map beside it, the character
+choices a teammate makes at naming. It enriches a login the plane already knows; it never
+admits one. Other teams do not have this file and do not need it. If you want the same
+enrichment for your team, keep one `AgentIdentity` entry per teammate with stable
+account-level fields and model details in metadata:
 
 ```js
 {
@@ -86,17 +114,24 @@ Use the upstream entries as shape examples, not as identities to copy. Your `tru
 choice is a deployment policy: local teammates can be trusted inside your team without
 becoming upstream Neo maintainers.
 
-## Seed The Graph
+## Seed The Graph (roster teams only)
 
-After editing `ai/graph/identityRoots.mjs`, seed or refresh the Memory Core graph:
+Only a team that keeps the optional roster has anything to seed. After editing
+`ai/graph/identityRoots.mjs`, refresh the Memory Core graph:
 
 ```bash
 node ai/scripts/setup/seedAgentIdentities.mjs
 ```
 
 The script is idempotent. Existing root nodes keep their creation provenance while new
-nodes are inserted. A fresh Memory Core may also self-seed on boot, but running the
-script is the explicit recovery and verification path.
+nodes are inserted. A fresh Memory Core also self-seeds the roster on boot; running the
+script is the explicit refresh path after a roster change. A team without a roster skips
+this section while its auth source is listed in `auth.autoProvisionIdentitySources` (the
+PAT modes by default): its teammates' nodes appear with their first authenticated request.
+Under an unlisted source (`oidc` / `seat-token` by default) the bind needs a node that
+already exists — provisioned earlier under a listed source (the override can list `oidc`),
+or kept as a roster entry — so a roster-less team on an unlisted source provisions its
+nodes once through a listed source before relying on the bind.
 
 ## Bind Harnesses
 
@@ -400,31 +435,49 @@ the expected identity source and a bound graph node:
 
 If `bound` is false, verify in order:
 
-1. `NEO_AGENT_IDENTITY` is present in the MCP server env block, not only in a shell.
-2. The `@<login>` node exists in `ai/graph/identityRoots.mjs`.
-3. The checkout that owns the active Memory Core deployment has pulled merged `dev`.
-4. `node ai/scripts/setup/seedAgentIdentities.mjs` has run against that deployment's graph path.
-5. The Memory Core server was restarted after the pull and seed.
-6. `get_node({id: '@<login>', projection: 'full'})` and `who_is_online({verbose: true})`
-   both report the merged `participationStatus`.
+1. The seat's credential is the kind the plane's `auth.mode` accepts, and it reaches the
+   plane. Under `github-pat`, `gh api user` from the seat's shell names the login you
+   expect — that is GitHub verification only; a GitLab PAT or an OIDC subject is checked
+   against its own provider, and `local-bearer` cannot name a teammate at all.
+2. *(stdio harnesses only)* `NEO_AGENT_IDENTITY` is present in the MCP server env block,
+   not only in a shell, and spells the same login the credential authenticates as — a
+   different name is identity drift, and the write guard refuses it. An HTTP seat has no
+   pin: its identity is the authenticated request's login, so verify that request
+   (`healthcheck.identity.source` names the credential source, not `env-var`).
+3. `get_node({id: '@<login>', projection: 'full'})` returns the node: under a listed
+   provisioning source (the PAT modes by default) the one the request created; under an
+   unlisted source (`oidc` / `seat-token` by default) an existing node the request bound
+   to — absent, provision it once under a listed source or keep a roster entry.
+   `who_is_online({verbose: true})` lists it.
 
-Ordinary Memory Core boot only provisions missing roots. It intentionally does not overwrite an
-existing identity, because a stale MCP checkout must never rewind newer operator/activation state.
-Merged identity changes therefore use the explicit pull → seed → restart → full-node/liveness gate.
+A roster entry in `ai/graph/identityRoots.mjs` is never a prerequisite under a listed
+source: an unrostered login binds exactly like a rostered one there. Under an unlisted
+source the bind needs an existing node, and a roster entry is one way to provide it.
+Teams that keep the roster and change a rostered entry (a status, a display name)
+refresh it with the explicit path —
+pull merged `dev` in the checkout that owns the Memory Core deployment, run
+`node ai/scripts/setup/seedAgentIdentities.mjs` against that deployment's graph path,
+restart the server — because ordinary boot only provisions missing roots and
+intentionally never overwrites an existing identity: a stale MCP checkout must never
+rewind newer operator or activation state.
 
 ## Bring Up The Team
 
 Provision teammates incrementally:
 
-1. Add one identity root.
-2. Merge the roster/activation change and pull `dev` in the owning Memory Core runtime checkout.
-3. Run `node ai/scripts/setup/seedAgentIdentities.mjs`, then restart Memory Core.
-4. Verify the full identity node and verbose liveness projection agree with the merged status.
-5. Bind one harness with `NEO_AGENT_IDENTITY`.
-6. Set the harness git commit identity and confirm it with `git var GIT_AUTHOR_IDENT`.
-7. Verify `healthcheck.identity.bound`.
-8. Send an A2A message to the teammate and confirm it lands in the correct inbox.
-9. Repeat for the next teammate.
+1. Give the seat its own credential — a PAT the Fleet Manager injects at Start (its node
+   is provisioned on first contact while that PAT mode stays listed in
+   `auth.autoProvisionIdentitySources`, the default), or the OIDC subject your shared
+   deployment issues (bound to an existing node unless the override lists `oidc` — see
+   *Seed The Graph*). No file is edited for a seat on a listed source.
+2. *(stdio harnesses only)* Bind the harness with `NEO_AGENT_IDENTITY`, spelling the
+   credential's login; an HTTP seat needs no pin — the authenticated request carries it.
+3. Set the harness git commit identity and confirm it with `git var GIT_AUTHOR_IDENT`.
+4. Verify `healthcheck.identity.bound`, then the provisioned node with `get_node`.
+5. Send an A2A message to the teammate and confirm it lands in the correct inbox.
+6. *(roster teams only)* Add the optional roster entry, merge it, and refresh the graph
+   as *Seed The Graph* describes.
+7. Repeat for the next teammate.
 
 This sequence keeps identity, graph binding, and mailbox reachability falsifiable at
 each step.
@@ -454,9 +507,21 @@ identity is an authenticated request contract.
 
 ## Source Anchors
 
-- `ai/graph/identityRoots.mjs` defines the root identities consumed by boot-time
-  self-seeding and the manual seed script.
-- `ai/scripts/setup/seedAgentIdentities.mjs` inserts or refreshes those root identities
+- `ai/configBase.mjs` declares the `auth.mode` leaf — `'oidc'`, `'gitlab-pat'`,
+  `'github-pat'`, `'local-bearer'`, `'seat-token'` — and
+  `ai/mcp/server/shared/services/AuthService.mjs` validates the credential and derives the
+  login that becomes the teammate's identity.
+- `ai/configBase.mjs` also declares the formula `auth.autoProvisionIdentitySources`
+  (default: the active PAT mode; `auth.autoProvisionIdentitySourcesOverride` widens or
+  empties it), and `ai/mcp/server/memory-core/Server.mjs` `buildRequestContext` applies it:
+  provision under a listed source, bind by lookup otherwise, an empty context without a
+  user identity.
+- `ai/graph/assertExpectedIdentity.mjs` is the GitHub workflow's write guard: it compares
+  the reference identity with the authenticated login and reads no roster.
+- `ai/graph/identityRoots.mjs` is the optional roster — Neo's own team metadata — consumed
+  by boot-time self-seeding and the manual seed script; `ai/graph/agentCoAuthorEmails.mjs`
+  beside it maps rostered logins to their verified commit addresses.
+- `ai/scripts/setup/seedAgentIdentities.mjs` inserts or refreshes those roster identities
   in the Native Edge Graph.
 - `learn/agentos/tooling/MemoryCoreMcpAuth.md` explains `NEO_AGENT_IDENTITY`, graph-node
   binding, and the anti-spoof invariant.
