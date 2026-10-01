@@ -102,6 +102,11 @@ function options(agent, repoName = agent.id) {
         hydrateWorkspace: makeHydrate()
     };
 
+    result.residentMcpEnv = Object.fromEntries(['memory-core', 'knowledge-base', 'neural-link', 'github-workflow'].map(key => [key, {
+        NEO_PLANE_DATA_ROOT: path.join(root, 'placed-plane'),
+        ...(key === 'memory-core' ? {NEO_MEMORY_WAL_DIR: path.join(root, 'placed-plane/memory-wal')} : {})
+    }]));
+
     if (agent.harnessType === 'claude-desktop') {
         result.remoteMcpCapability = claudeDesktopRemoteCapability(agentosRuntimeRoot);
         result.claudeConfigRoot = path.join(root, 'operator');
@@ -526,6 +531,7 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
             instanceRoot,
             agentosRuntimeRoot,
             nodePath        : NODE_PATH,
+            residentMcpEnv  : options(makeAgent('codex')).residentMcpEnv,
             hydrateWorkspace: async args => {
                 operations.push('hydrateWorkspace');
                 await fs.mkdir(args.projectRoot, {recursive: true});
@@ -566,6 +572,7 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
                 agentosRuntimeRoot,
                 nodePath        : NODE_PATH,
                 hydrateWorkspace: makeHydrate(),
+                residentMcpEnv  : options(makeAgent('claude-code')).residentMcpEnv,
                 fileSystem      : recordingFileSystem(operations)
             });
 
@@ -616,6 +623,7 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
             instanceRoot,
             agentosRuntimeRoot,
             nodePath        : NODE_PATH,
+            residentMcpEnv  : options(makeAgent('codex')).residentMcpEnv,
             hydrateWorkspace: async args => {
                 hydrationCalls.push(args);
                 return {hydrated: true}
@@ -636,6 +644,7 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
             instanceRoot,
             agentosRuntimeRoot,
             nodePath        : NODE_PATH,
+            residentMcpEnv  : options(makeAgent('codex')).residentMcpEnv,
             hydrateWorkspace: makeHydrate()
         });
 
@@ -657,6 +666,7 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
             instanceRoot,
             agentosRuntimeRoot,
             nodePath        : NODE_PATH,
+            residentMcpEnv  : options(makeAgent('codex')).residentMcpEnv,
             hydrateWorkspace: makeHydrate()
         })).rejects.toBeInstanceOf(ManagedWorkspacePreparationError);
         expect(hydrationCalls).toEqual([]);
@@ -681,6 +691,7 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
             instanceRoot,
             agentosRuntimeRoot,
             nodePath        : NODE_PATH,
+            residentMcpEnv  : options(makeAgent('codex')).residentMcpEnv,
             hydrateWorkspace: makeHydrate()
         };
 
@@ -734,6 +745,38 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
 });
 
 test.describe('prepareManagedAgentWorkspace', () => {
+    test('codex-desktop NL/GW rows forward placement names without storing values', async () => {
+        const opts = options(makeAgent('codex-desktop', {mcpServers: {
+            'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': true
+        }}));
+        const result = await prepareManagedAgentWorkspace(opts);
+        const text = await read(path.join(opts.targetRepoRoot, '.codex/config.toml'));
+        for (const key of ['neural-link', 'github-workflow']) {
+            const row = result.mcpPlan.find(server => server.key === key);
+            expect(row.runtimeEnv).toContain('NEO_PLANE_DATA_ROOT');
+            const start = text.indexOf(`[mcp_servers.\"neo-mjs-${key}\"]`);
+            expect(text.slice(start).split('\n\n')[0]).toContain('NEO_PLANE_DATA_ROOT');
+        }
+        expect(text).not.toContain(path.join(root, 'placed-plane'));
+    });
+
+    test('Claude shared config has one previous snapshot under the seat home, with none at HOME root', async () => {
+        const opts = options(makeAgent('claude-desktop'));
+        await fs.mkdir(opts.claudeConfigRoot, {recursive: true});
+        const file = path.join(opts.claudeConfigRoot, '.claude.json');
+        await fs.writeFile(file, '{"custom":1}');
+        const first = await prepareManagedAgentWorkspace(opts);
+        const backup = path.join(first.instanceHome, '.neo-fleet-claude-backup.json');
+        expect(await read(backup)).toBe('{"custom":1}');
+        const current = await read(file);
+        opts.mcpTarget = tenantTarget();
+        await prepareManagedAgentWorkspace(opts);
+        expect(await read(backup)).toBe(current);
+        expect((await fs.readdir(first.instanceHome)).filter(name => name.includes('claude-backup'))).toEqual(['.neo-fleet-claude-backup.json']);
+        expect((await fs.readdir(opts.claudeConfigRoot)).some(name => name.includes('claude-backup'))).toBe(false);
+        expect((await fs.stat(backup)).mode & 0o777).toBe(0o600);
+    });
+
     test('Claude Desktop Code-tab scope preserves foreign projects and carries placed env by reference', async () => {
         const opts     = options(makeAgent('claude-desktop', {mcpServers: {'github-workflow': true}}));
         const filePath = path.join(opts.claudeConfigRoot, '.claude.json');
@@ -1619,7 +1662,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             '--cwd',
             agentosRuntimeRoot
         ]);
-        expect(nl.env).toEqual({
+        expect(nl.env).toMatchObject({
             NEO_AGENT_IDENTITY    : '${NEO_AGENT_IDENTITY}',
             NEO_FLEET_BRIDGE_TOKEN: '${NEO_FLEET_BRIDGE_TOKEN}'
         });
@@ -2542,6 +2585,7 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
                 isRunning      : () => false,
                 status         : id => ({id, running: false, state: 'stopped'}),
                 getInstanceRoot: () => instanceRoot,
+                resolveResidentMcpEnvironment: () => options(makeAgent('claude-code')).residentMcpEnv,
                 getRegistry    : () => ({getAgent: () => agent, getDefinition: () => agent, resolveCredential: () => 'ghp_fixture_only'}),
                 start          : (id, opts) => { started.push(id); return {id, running: true, state: 'running', cwd: opts.cwd} }
             }),

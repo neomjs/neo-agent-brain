@@ -732,6 +732,31 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         expect(status.authRequired).toBe(true);
     });
 
+    test('codex-desktop places resident NL/GW capabilities in the supervised child env', async () => {
+        const agent = {...curatedAgent('placement-seat', 'codex-desktop'), mcpServers: {
+            'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': true
+        }};
+        const spawn = install({agents: {'placement-seat': agent}});
+        FleetLifecycleService.instanceRoot = DESKTOP_ROOT;
+        FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: '/bin/sh'};
+        FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({available: true, crashpadExecutable: '/app/crashpad'});
+        FleetLifecycleService.codexDesktopCleanupFn = async () => ({terminated: [], escalated: []});
+        const requested = [];
+        FleetLifecycleService.residentMcpEnvSource = key => {
+            requested.push(key);
+            return {NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane'),
+                ...(key === 'neural-link' ? {NEO_NL_LOG_PATH: path.join(DESKTOP_ROOT, 'plane/logs')} : {})};
+        };
+        await FleetLifecycleService.start('placement-seat', {cwd: '/managed/placement-seat/neomjs/neo'});
+        expect(requested).toEqual(['neural-link', 'github-workflow']);
+        expect(spawn.calls).toHaveLength(1);
+        expect(spawn.calls[0].opts.env.NEO_PLANE_DATA_ROOT).toBe(path.join(DESKTOP_ROOT, 'plane'));
+        expect(spawn.calls[0].opts.env.NEO_NL_LOG_PATH).toBe(path.join(DESKTOP_ROOT, 'plane/logs'));
+        expect(spawn.calls[0].opts.env.GH_TOKEN).toBe(FIXTURE_PAT);
+        expect(FleetLifecycleService.status('placement-seat').env).toBeUndefined();
+        await FleetLifecycleService.stop('placement-seat');
+    });
+
     test('codex-desktop refuses before capability probe/spawn when the final provisioned cwd is absent', () => {
         const spawn = install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
 
@@ -1293,11 +1318,6 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         };
 
         const
-            desktopBridge = {
-                kind      : 'neo-stdio-streamable-http',
-                command   : process.execPath,
-                entrypoint: '/installed/neo/ai/mcp/client/stdioToStreamableHttp.mjs'
-            },
             outputs       = new Map([
                 ['codex',         'Usage: mcp add --url <URL> --bearer-token-env-var <ENV>'],
                 ['codex-desktop', 'Usage: mcp add --url <URL> --bearer-token-env-var <ENV>'],

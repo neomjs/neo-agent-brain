@@ -371,7 +371,7 @@ class ConfigProvider extends Provider {
     /**
      * @summary Serialize selected resolved leaves for a child process, using their declaring env
      * names. Plane members and anchors may be included as one placement contract; unrelated
-     * credentials stay excluded. Reads the current provider chain, never ambient env or defaults.
+     * credentials stay excluded. Reads the current provider chain without re-deriving env/defaults.
      * @param {Object} [options]
      * @param {String[]} [options.envNames=[]] Explicit child-runtime capability slots.
      * @param {Boolean} [options.includePlaneMembers=false] Include declared placement leaves.

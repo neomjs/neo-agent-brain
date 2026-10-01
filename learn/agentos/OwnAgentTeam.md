@@ -387,6 +387,11 @@ The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that fami
    project entry in `~/.claude.json`, with environment references resolved by the Code tab;
    the Desktop profile itself carries no Fleet MCP rows. Opening the clone brings the copied
    memory and the intended MCP servers into the same session.
+   During that first turn, re-check that the clone's MCP rows remain present: other running
+   Claude instances also write the shared config. A resident MC/KB target gives the harness
+   process the selected model-provider credential as an environment capability, so its shells
+   can use it too. A tenant target supplies the plane bearer instead and keeps model-provider
+   credentials on that plane.
 7. Rollback is the old launch. Nothing was moved, so nothing needs restoring.
 8. Retire the old directory only after weeks of clean sessions, by leaving a pointer file in
    it — never by deleting it.

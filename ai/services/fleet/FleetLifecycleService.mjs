@@ -517,7 +517,7 @@ class FleetLifecycleService extends Base {
             env[key] = value;
         }
 
-        if (agent.harnessType === 'claude-desktop') {
+        if (!agent.metadata?.launch) {
             const resident = Object.hasOwn(opts, 'resolvedResidentMcpEnv')
                 ? opts.resolvedResidentMcpEnv : this.resolveResidentMcpEnvironment(agent);
             for (const values of Object.values(resident)) {
@@ -1749,28 +1749,24 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary Resolve the enabled Desktop seat's resident MCP child-env envelope at Start.
+     * @summary Resolve every curated seat's enabled resident MCP child-env envelope at Start.
      * Tenant MC/KB rows need only their separately resolved bearer. Invalid placement refuses
      * before provisioning; no ambient config or credential is silently inherited.
      * @param {Object} agent Fleet definition.
      * @returns {Object<String,Object<String,String>>} Per-server child environment, not an artifact.
      */
     resolveResidentMcpEnvironment(agent) {
-        if (agent.harnessType !== 'claude-desktop') return {};
+        if (agent.metadata?.launch) return {};
         const matrix = resolveMcpMatrix(agent.mcpServers), result = {};
         for (const {key} of MCP_SERVERS) {
             if (!matrix[key] || (agent.mcpTarget?.kind === 'tenant' && REMOTE_MCP_SERVER_KEYS.has(key))) continue;
-            const envNames = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key].runtimeEnv.filter(name =>
-                !['NEO_AGENT_IDENTITY', 'GH_TOKEN', 'GITHUB_TOKEN', 'NEO_FLEET_BRIDGE_TOKEN', 'NEO_OPENAI_COMPATIBLE_API_KEY'].includes(name));
-            if (REMOTE_MCP_SERVER_KEYS.has(key)) {
-                envNames.push('NEO_CHROMA_HOST', 'NEO_CHROMA_HOST_TEST', 'NEO_CHROMA_PORT', 'NEO_CHROMA_PORT_TEST',
-                    'NEO_CHROMA_DATABASE', 'NEO_CHROMA_DATABASE_TEST', 'UNIT_TEST_MODE',
-                    'NEO_TEST_CONFIG_TEMPLATES', 'NEO_VECTOR_DIMENSION');
+            const descriptor = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
+            const providerSlots = descriptor.providerCredentialEnv || {};
+            const envNames = descriptor.runtimeEnv.filter(name =>
+                !['NEO_AGENT_IDENTITY', 'GH_TOKEN', 'GITHUB_TOKEN', 'NEO_FLEET_BRIDGE_TOKEN', ...Object.values(providerSlots)].includes(name));
+            if (descriptor.providerCredentialEnv) {
                 for (const provider of [AiConfig.modelProvider, AiConfig.embeddingProvider]) {
-                    switch (provider) {
-                        case 'gemini': envNames.push('GEMINI_API_KEY'); break;
-                        case 'openAiCompatible': envNames.push('NEO_OPENAI_COMPATIBLE_API_KEY'); break;
-                    }
+                    if (providerSlots[provider]) envNames.push(providerSlots[provider]);
                 }
             }
             const values = this.residentMcpEnvSource ? this.residentMcpEnvSource(key) : ({

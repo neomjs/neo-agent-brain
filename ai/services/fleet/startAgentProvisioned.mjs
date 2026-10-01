@@ -161,10 +161,9 @@ export async function startAgentProvisioned({
         }
     }
 
-    // Resolve the Desktop child envelope and seat PAT before any checkout/config mutation.
+    // Resolve the resident child envelope and seat PAT before any checkout/config mutation.
     // The same resolved envelope names the rendered slots and supplies the eventual spawn.
-    const resolvedResidentMcpEnv = agent.harnessType === 'claude-desktop'
-        ? lifecycleService.resolveResidentMcpEnvironment(agent) : {};
+    const resolvedResidentMcpEnv = lifecycleService.resolveResidentMcpEnvironment(agent);
     const resolvedCredential = registry.resolveCredential(agentId);
 
     // the creation test, applied to what is stored: a blank value written before the requirement
@@ -241,7 +240,7 @@ export async function startAgentProvisioned({
         instanceRoot       : instanceRoot ?? lifecycleService.getInstanceRoot?.(),
         agentosRuntimeRoot,
         nodePath,
-        ...(agent.harnessType === 'claude-desktop' ? {residentMcpEnv: resolvedResidentMcpEnv} : {}),
+        residentMcpEnv: resolvedResidentMcpEnv,
         remoteMcpCapability: remoteCapability,
         mcpTarget          : remotePlan && {
             kind            : 'tenant',
@@ -278,7 +277,7 @@ export async function startAgentProvisioned({
         startOptions: {
             cwd: prepared.targetRepoRoot,
             resolvedCredential,
-            ...(agent.harnessType === 'claude-desktop' ? {resolvedResidentMcpEnv} : {}),
+            resolvedResidentMcpEnv,
             ...(target?.kind === 'tenant'
                 ? {resolvedMcpCredential, remoteMcpCapability: remoteCapability}
                 : {})
