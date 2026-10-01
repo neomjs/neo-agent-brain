@@ -18,6 +18,7 @@ import Neo            from 'neo.mjs/src/Neo.mjs'
 import * as core      from 'neo.mjs/src/core/_export.mjs'
 
 import {readActiveWakeSubscriptionIdentities,
+        readActiveWakeSubscriptionIdsByIdentity,
         readActiveWakeSubscriptionObservations} from '../../../../../../ai/services/memory-core/readActiveWakeSubscriptionIdentities.mjs'
 
 /**
@@ -179,5 +180,45 @@ test.describe('readActiveWakeSubscriptionObservations — the redacted poll-rece
 
         expect(await readActiveWakeSubscriptionIdentities({graphService: service}))
             .toEqual(['@neo-fable-clio', '@neo-opus-ada'])
+    })
+})
+
+test.describe('readActiveWakeSubscriptionIdsByIdentity — the join to the receiver records', () => {
+    test('reads one durable row per ACTIVE subscription and groups the ids by holder, nothing aggregated in SQL', async () => {
+        const service = graphServiceDouble({
+            rows: [
+                {id: 'WAKE_SUB:a', agentIdentity: '@neo-opus-vega'},
+                {id: 'WAKE_SUB:b', agentIdentity: '@neo-opus-vega'},
+                {id: 'WAKE_SUB:c', agentIdentity: '@neo-gpt-emmy'},
+                {id: 'WAKE_SUB:d', agentIdentity: ''}
+            ]
+        })
+
+        expect(await readActiveWakeSubscriptionIdsByIdentity({graphService: service})).toEqual(new Map([
+            ['@neo-opus-vega', ['WAKE_SUB:a', 'WAKE_SUB:b']],
+            ['@neo-gpt-emmy',  ['WAKE_SUB:c']]
+        ]))
+
+        const [sql] = service.statements
+
+        expect(sql).toContain("json_extract(data, '$.label') = 'WAKE_SUBSCRIPTION'")
+        expect(sql).toContain("COALESCE(json_extract(data, '$.properties.status'), 'active') = 'active'")
+        expect(sql).not.toContain('GROUP BY')
+    })
+
+    test('the cache seam keeps the active predicate, and no read surface throws', async () => {
+        const service = graphServiceDouble({
+            items: [
+                {id: 'WAKE_SUB:live', label: 'WAKE_SUBSCRIPTION', properties: {status: 'active',   agentIdentity: '@neo-opus-vega'}},
+                {id: 'WAKE_SUB:gone', label: 'WAKE_SUBSCRIPTION', properties: {status: 'degraded', agentIdentity: '@neo-opus-vega'}},
+                {id: 'MESSAGE:x',     label: 'MESSAGE',           properties: {agentIdentity: '@neo-opus-vega'}}
+            ]
+        })
+
+        expect(await readActiveWakeSubscriptionIdsByIdentity({graphService: service}))
+            .toEqual(new Map([['@neo-opus-vega', ['WAKE_SUB:live']]]))
+
+        await expect(readActiveWakeSubscriptionIdsByIdentity({graphService: graphServiceDouble()}))
+            .rejects.toThrow('graph read surface unavailable')
     })
 })

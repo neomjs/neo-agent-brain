@@ -16,7 +16,12 @@ import {HEARTBEAT_PULSE_ENTITY_PREFIX, HEARTBEAT_PULSE_ENTITY_TYPE, match, match
 import {resolveResidentFamilyById}                                                              from '../graph/agentFamilyResolution.mjs';
 import {PRESENCE_STATES}                                                                        from '../fleet/fleetPresenceStateAdapter.mjs';
 import {deriveReviewLoad, REVIEW_LOAD_TRAIL_HORIZON_MS}                                         from './helpers/reviewLoadProjection.mjs';
-import {readActiveWakeSubscriptionObservations}                                                 from './readActiveWakeSubscriptionIdentities.mjs';
+import {
+    readActiveWakeSubscriptionIdsByIdentity,
+    readActiveWakeSubscriptionObservations
+} from './readActiveWakeSubscriptionIdentities.mjs';
+import {projectIdentityWakeReachability} from './wakeDeliveryProjection.mjs';
+import {readWakeDelivery}                from './wakeDeliveryReader.mjs';
 import {
     activeWakeSubscriptionStatusSql,
     isActiveWakeSubscriptionStatus
@@ -803,7 +808,8 @@ class WakeSubscriptionService extends Base {
               validationByLogin = new Map(),
               generatedAt       = new Date(nowMs).toISOString(),
               reviewTrail       = this._readReviewLifecycleLoad(nowMs),
-              axes              = this._composedAxesEnvelope(generatedAt, reviewTrail);
+              wake              = await this._readWakeReachability(),
+              axes              = this._composedAxesEnvelope(generatedAt, reviewTrail, wake);
 
         // Snapshot once per projection. The registry is request-live and deletes its entry on fresh
         // provider validation, so every who_is_online build is naturally latch-free. Values are keyed
@@ -840,7 +846,11 @@ class WakeSubscriptionService extends Base {
                     // the load envelope above carries the degraded reason
                     reviewLoad: reviewTrail.available
                         ? (reviewTrail.byReviewer.get(row.identity) ?? {loops: [], open: 0, returned: 0})
-                        : null
+                        : null,
+                    // unreadable records read `unknown`, never reachable; the wake envelope names why
+                    wake: wake.available
+                        ? (wake.byIdentity.get(row.identity) ?? {state: 'unsubscribed'})
+                        : {state: 'unknown', reason: wake.reason}
                 }))
             };
         }
@@ -864,7 +874,7 @@ class WakeSubscriptionService extends Base {
             // "nothing published" on every call — diagnostics by definition — so terse DECLARES
             // their axes unobserved and verbose serves the full envelopes. The load envelope is
             // the second owned axis: wired, container-plane, its trail named in the reason.
-            axes: {presence: axes.presence, load: axes.load, unobserved: [...COMPOSED_HOST_AXES]},
+            axes: {presence: axes.presence, load: axes.load, wake: axes.wake, unobserved: [...COMPOSED_HOST_AXES]},
             // The summary states the windows it applied: the same counts mean different things under
             // a 15-minute and a 4-hour window, so a bare number is not interpretable without them.
             // Counts and labels derive from the same imported taxonomy as the buckets — a rename at
@@ -883,8 +893,49 @@ class WakeSubscriptionService extends Base {
                     [...reviewTrail.byReviewer].filter(([, load]) => load.open > 0).map(([identity, load]) => [identity, load.open])
                 )
             } : {}),
+            // Sparse like reviewLoad: a rostered seat no wake reaches, with the receiver's own last
+            // reason. Omitted whole when the records are unreadable, so absence never reads reachable.
+            ...(wake.available ? {
+                undeliverable: Object.fromEntries(
+                    projected
+                        .map(row => [row.identity, wake.byIdentity.get(row.identity)])
+                        .filter(([, seat]) => seat?.state === 'undeliverable')
+                        .map(([identity, seat]) => [identity, seat.reason])
+                )
+            } : {}),
             ...buckets
         };
+    }
+
+    /**
+     * @summary Whether a wake can reach each subscribed identity: the wake receiver's own dispatch
+     * records (the reader `healthcheck` uses) joined to the identities' active subscriptions. An
+     * unreadable record set, or an unreadable subscription scan, is `available: false` with its
+     * reason, and the wake axis then reads degraded, never healthy.
+     * @returns {Promise<Object>} `{available: true, byIdentity: Map<identity, reachability>}` or
+     *     `{available: false, reason}`.
+     * @protected
+     */
+    async _readWakeReachability() {
+        let delivery, routes;
+
+        try {
+            [delivery, routes] = await Promise.all([
+                readWakeDelivery(),
+                readActiveWakeSubscriptionIdsByIdentity({graphService: GraphService})
+            ])
+        } catch {
+            return {available: false, reason: 'the active wake subscriptions could not be read'}
+        }
+
+        if (!delivery.deliveryReadable) {
+            return {available: false, reason: 'the wake receiver\'s dispatch records are unreadable from this process'}
+        }
+
+        return {
+            available : true,
+            byIdentity: new Map([...routes].map(([identity, ids]) => [identity, projectIdentityWakeReachability(ids, delivery.subscriptions)]))
+        }
     }
 
     /**
@@ -910,13 +961,17 @@ class WakeSubscriptionService extends Base {
      * The host-originated axes ({@link COMPOSED_HOST_AXES}) report `degraded/none` with a named reason
      * until the fleet publishes its observations into the plane — the envelope's `capturedAt` echoes
      * the projection's own observation bound (`generatedAt`), never a re-stamped clock.
+     * `wake` says whether a wake can reach each seat, from the wake receiver's own dispatch records
+     * (host truth, read through the same reader as `healthcheck`): `wired/observed` when they are
+     * readable, `degraded/none` with the reason when not.
      * @param {String} capturedAt The projection's observation bound (ISO).
      * @param {Object} reviewTrail `{available, reason?}` from the trail read — availability is
      *     tri-state honesty for the `load` envelope, not a caching hint.
-     * @returns {Object} `{presence, load, throttle, lifecycle, liveness}` capability envelopes.
+     * @param {Object} [wake={available: false}] `{available, reason?}` from {@link _readWakeReachability}.
+     * @returns {Object} `{presence, load, wake, throttle, lifecycle, liveness}` capability envelopes.
      * @protected
      */
-    _composedAxesEnvelope(capturedAt, reviewTrail) {
+    _composedAxesEnvelope(capturedAt, reviewTrail, wake = {available: false, reason: 'not read'}) {
         const unobserved = axis => ({
             capability: {
                 source    : null,
@@ -965,6 +1020,20 @@ class WakeSubscriptionService extends Base {
                 }
             },
             load: {capability: loadCapability},
+            wake: {
+                capability: {
+                    source    : 'memory-core:whoIsOnline',
+                    plane     : 'host',
+                    signal    : 'wake-receiver-records',
+                    state     : wake.available ? 'wired'    : 'degraded',
+                    confidence: wake.available ? 'observed' : 'none',
+                    capturedAt,
+                    reason    : wake.available
+                        ? 'the wake receiver\'s own dispatch records, joined to each seat\'s active ' +
+                          'subscriptions: one route that lands makes a seat reachable'
+                        : wake.reason
+                }
+            },
             ...Object.fromEntries(COMPOSED_HOST_AXES.map(axis => [axis, unobserved(axis)]))
         };
     }
