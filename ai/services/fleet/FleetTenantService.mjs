@@ -9,16 +9,22 @@ import {
 import Base                        from 'neo.mjs/src/core/Base.mjs';
 import AiConfig                    from '../../config.mjs';
 import {resolveFleetCredentialKey} from './FleetRegistryService.mjs';
+import {assertSeatSegment}         from './deriveAgentRepoPath.mjs';
 import {
     normalizeAgentIdentity,
     normalizeSecureMcpEndpoint,
     parseMcpEnvelope,
+    planeMcpResources,
     readMcpToolPayload
 } from './mcpWireParsing.mjs';
 
-// The loopback-http exception, URL-credential rejection, and canonical endpoint form live in
-// ./mcpWireParsing.mjs (`normalizeSecureMcpEndpoint`) — one endpoint-boundary policy shared with
-// the plane mailbox client.
+// The loopback-http exception, URL-credential rejection, canonical endpoint form and the two
+// resource URLs beneath it live in ./mcpWireParsing.mjs — one endpoint-boundary policy shared with
+// the plane mailbox client and the seat's plane target.
+
+const
+    TENANT_CREDENTIALS     = 'tenant-credentials.enc',
+    SEAT_PLANE_CREDENTIALS = 'seat-plane-credentials.enc';
 
 /**
  * @summary The CLOSED public vocabulary for a failed connect.
@@ -29,27 +35,15 @@ import {
  * field we can bound (the HTTP status) and the collaborator's prose is discarded, not sanitized:
  * an allowlist of our own sentences cannot leak what it never carries.
  * @param {Number} [status] The probe's HTTP status, when it reported one.
+ * @param {String} [subject='tenant'] Who refused: a connected tenant, or the plane a seat proves itself on.
  * @returns {String}
  */
-function rejectionReasonFor(status) {
-    if (status === 401 || status === 403) return 'tenant rejected the credential';
+function rejectionReasonFor(status, subject = 'tenant') {
+    if (status === 401 || status === 403) return `${subject} rejected the credential`;
 
-    return Number.isInteger(status) ? `tenant MCP readiness failed (${status})` : 'tenant authentication failed';
+    return Number.isInteger(status) ? `${subject} MCP readiness failed (${status})` : `${subject} authentication failed`;
 }
 
-/**
- * @summary Derive the two fixed remote MCP resource URLs from one canonical tenant endpoint.
- * The tenant descriptor owns only the deployment base; callers never persist or accept arbitrary
- * per-plane URLs.
- * @param {String} endpoint
- * @returns {Object} Public `{memory-core:{url}, knowledge-base:{url}}`.
- */
-function resourcesFor(endpoint) {
-    return {
-        'memory-core'   : {url: `${endpoint}/mc/mcp`},
-        'knowledge-base': {url: `${endpoint}/kb/mcp`}
-    }
-}
 
 /**
  * @class Neo.ai.services.fleet.FleetTenantService
@@ -82,6 +76,9 @@ function resourcesFor(endpoint) {
  * Storage layout (under the same data-dir precedent as the registry):
  * - `tenants.json`             — public descriptors only; safe to render anywhere.
  * - `tenant-credentials.enc`   — the encrypted `{tenantId: providerBearer}` map (AES-256-GCM, `0600`).
+ * - `seat-plane-credentials.enc` — each seat's own credential per plane, `{endpoint: {agentId:
+ *   {credential, plane}}}`, written only after a probe proves it is the seat's, with the `plane.id` and
+ *   `plane.dataRoot` that answered that probe (same encryption and mode).
  */
 class FleetTenantService extends Base {
     static config = {
@@ -106,7 +103,7 @@ class FleetTenantService extends Base {
     dataDir = null
     /**
      * Transport-probe seam:
-     * `({endpoint, credential, expectedIdentity?}) =>
+     * `({endpoint, credential, expectedIdentity?, servedPlane?}) =>
      * Promise<{ok: Boolean, status?: Number, resources?: Object}>`.
      * Defaults (via {@link getProbeFn}) to {@link probeTenantEndpoint} — authenticated MCP
      * initialization against BOTH MC and KB. Any `reason` a stub returns is IGNORED: the public failure vocabulary is
@@ -244,7 +241,7 @@ class FleetTenantService extends Base {
         return {
             tenantId,
             endpoint,
-            resources: resourcesFor(endpoint)
+            resources: planeMcpResources(endpoint)
         }
     }
 
@@ -302,6 +299,170 @@ class FleetTenantService extends Base {
         } catch {
             return {ok: false}
         }
+    }
+
+    /**
+     * @summary Stores one seat's own credential for one plane, after proving that it resolves to that
+     * seat. A plane admits a seat only as itself, and a seat's checkout PAT is never plane authority
+     * (see {@link probeSeatCredential}), so every seat on a plane carries a credential of its own: on a
+     * provider-PAT plane, an identity-only PAT. Nothing persists before the probe proves the identity;
+     * the credential is kept encrypted beside the tenant bearers and never returned. The plane that
+     * answered the probe is stored with it, and each start must meet that plane again
+     * ({@link probeSeatPlaneCredential}). Storing again rebinds the seat to the plane serving now.
+     * @param {Object} params
+     * @param {String} params.planeBase The plane the credential is for.
+     * @param {String} params.agentId Registry agent id.
+     * @param {String} params.identity The seat's identity the credential must resolve to.
+     * @param {String} params.credential Never returned.
+     * @returns {Promise<Object>} `{status: 'stored', endpoint, agentId}`, or `{status: 'rejected',
+     *     reason}` with a reason from a closed vocabulary.
+     */
+    async storeSeatPlaneCredential({planeBase, agentId, identity, credential} = {}) {
+        const
+            endpoint = this.normalizeEndpoint(planeBase),
+            expected = normalizeAgentIdentity(identity);
+
+        if (!endpoint) {
+            return {status: 'rejected', reason: 'planeBase must be a valid http(s) URL'}
+        }
+
+        try {
+            assertSeatSegment(agentId, 'agentId', 'FleetTenantService.storeSeatPlaneCredential')
+        } catch {
+            return {status: 'rejected', reason: 'a seat id and its identity are required'}
+        }
+
+        if (!expected) {
+            return {status: 'rejected', reason: 'a seat id and its identity are required'}
+        }
+
+        if (typeof credential !== 'string' || credential.trim() === '') {
+            return {status: 'rejected', reason: 'credential (the seat\'s own plane credential) is required'}
+        }
+
+        const proof = await this.proveSeatOnPlane({endpoint, credential, identity: expected});
+
+        if (!proof.ok) {
+            return {status: 'rejected', reason: proof.reason}
+        }
+
+        try {
+            const record = this.readSeatPlaneCredentialsForMutation();
+
+            record[endpoint] = {...record[endpoint], [agentId]: {credential, plane: proof.plane}};
+            this.publishAtomically(path.join(this.getDataDir(), SEAT_PLANE_CREDENTIALS), this.encrypt(JSON.stringify(record)))
+        } catch {
+            return {status: 'rejected', reason: 'seat plane credential could not be persisted'}
+        }
+
+        return {status: 'stored', endpoint, agentId}
+    }
+
+    /**
+     * @summary The stored plane credential of one seat and the plane it was proven on, for the
+     * Node-side start that presents it. Brain-internal only: this method is NOT on any wire allowlist
+     * and must never be added to one.
+     * @param {Object} params
+     * @param {String} params.planeBase
+     * @param {String} params.agentId
+     * @returns {Object|null} `{credential, plane: {id, dataRoot}}`; `null` for an unknown plane or seat,
+     *     or an unreadable store.
+     */
+    resolveSeatPlaneCredential({planeBase, agentId} = {}) {
+        const endpoint = this.normalizeEndpoint(planeBase);
+
+        if (!endpoint) return null;
+
+        let record;
+
+        try {
+            record = this.readSeatPlaneCredentialsForMutation()
+        } catch {
+            return null
+        }
+
+        const {credential, plane} = record[endpoint]?.[agentId] ?? {};
+
+        return typeof credential === 'string' && credential.trim() && plane?.id
+            ? {credential, plane: {id: plane.id, dataRoot: plane.dataRoot}}
+            : null
+    }
+
+    /**
+     * @summary Proves a stored seat credential again before a start: it must still resolve to the
+     * seat, on the plane it was stored against. An endpoint is only where a plane is reached. A plane
+     * recreated behind the same URL serves another `plane.id`, or the same id over other storage, and a
+     * credential proven on the old one does not carry over to it.
+     * @param {Object} params
+     * @param {String} params.planeBase
+     * @param {String} params.credential From {@link resolveSeatPlaneCredential}.
+     * @param {String} params.expectedIdentity The seat's identity.
+     * @param {Object} params.expectedPlane `{id, dataRoot}` stored with the credential.
+     * @returns {Promise<Object>} `{ok: true}`, or `{ok: false, reason}` with a reason from a closed
+     *     vocabulary.
+     */
+    async probeSeatPlaneCredential({planeBase, credential, expectedIdentity, expectedPlane} = {}) {
+        const
+            endpoint = this.normalizeEndpoint(planeBase),
+            identity = normalizeAgentIdentity(expectedIdentity);
+
+        if (!endpoint || !identity || typeof credential !== 'string' || !credential.trim() || !expectedPlane?.id) {
+            return {ok: false, reason: 'the seat holds no proven plane credential'}
+        }
+
+        const proof = await this.proveSeatOnPlane({endpoint, credential, identity});
+
+        if (!proof.ok) return proof;
+
+        if (proof.plane.id !== expectedPlane.id || proof.plane.dataRoot !== expectedPlane.dataRoot) {
+            return {ok: false, reason: 'the plane at this endpoint is not the one the credential was stored for'}
+        }
+
+        return {ok: true}
+    }
+
+    /**
+     * @summary Proves on the plane at `endpoint` that `credential` resolves to the seat, and reads which
+     * plane answered. Memory Core and Knowledge Base must name the same plane: one router can front
+     * another plane's server.
+     * @param {Object} params
+     * @param {String} params.endpoint Canonical plane endpoint.
+     * @param {String} params.credential
+     * @param {String} params.identity Canonical `@login`.
+     * @returns {Promise<Object>} `{ok: true, plane: {id, dataRoot}}`, or `{ok: false, reason}` with a
+     *     reason from a closed vocabulary.
+     * @protected
+     */
+    async proveSeatOnPlane({endpoint, credential, identity}) {
+        let probe;
+
+        try {
+            probe = await this.getProbeFn()({endpoint, credential, expectedIdentity: identity, servedPlane: true})
+        } catch {
+            return {ok: false, reason: 'plane endpoint unreachable'}
+        }
+
+        const
+            mc = probe?.resources?.['memory-core'],
+            kb = probe?.resources?.['knowledge-base'];
+
+        if (mc?.anotherIdentity || (probe?.ok && mc?.identity !== identity)) {
+            return {ok: false, reason: 'the credential resolves to another identity'}
+        }
+
+        if (!probe?.ok) {
+            return {ok: false, reason: rejectionReasonFor(probe?.status, 'plane')}
+        }
+
+        if (!mc.plane?.id || !kb?.plane?.id) {
+            return {ok: false, reason: 'the plane did not identify itself'}
+        }
+
+        if (mc.plane.id !== kb.plane.id || mc.plane.dataRoot !== kb.plane.dataRoot) {
+            return {ok: false, reason: 'the Memory Core and Knowledge Base at this endpoint belong to different planes'}
+        }
+
+        return {ok: true, plane: {id: mc.plane.id, dataRoot: mc.plane.dataRoot}}
     }
 
     /**
@@ -452,17 +613,35 @@ class FleetTenantService extends Base {
     }
 
     /**
-     * @summary Strict mutation snapshot for the encrypted credential record. Missing is empty;
-     * existing unreadable/wrong-key/non-record ciphertext throws and must remain byte-identical.
+     * @summary Strict mutation snapshot for the encrypted credential record.
      * @returns {Object} Null-prototype credential record.
      * @protected
      */
     readCredentialsForMutation() {
-        const file = path.join(this.getDataDir(), 'tenant-credentials.enc');
-        let   raw;
+        return this.readEncryptedRecord(TENANT_CREDENTIALS)
+    }
+
+    /**
+     * @summary Strict mutation snapshot of the seat plane credentials, `{endpoint: {agentId: credential}}`.
+     * @returns {Object} Null-prototype record.
+     * @protected
+     */
+    readSeatPlaneCredentialsForMutation() {
+        return this.readEncryptedRecord(SEAT_PLANE_CREDENTIALS)
+    }
+
+    /**
+     * @summary Strict snapshot of one encrypted record under the data dir. Missing is empty; existing
+     * unreadable/wrong-key/non-record ciphertext throws and must remain byte-identical.
+     * @param {String} filename
+     * @returns {Object} Null-prototype record.
+     * @protected
+     */
+    readEncryptedRecord(filename) {
+        let raw;
 
         try {
-            raw = fs.readFileSync(file)
+            raw = fs.readFileSync(path.join(this.getDataDir(), filename))
         } catch (error) {
             if (error?.code === 'ENOENT') return Object.create(null);
 
@@ -472,7 +651,7 @@ class FleetTenantService extends Base {
         const parsed = JSON.parse(this.decrypt(raw));
 
         if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-            throw new TypeError('FleetTenantService: tenant-credentials.enc must contain a credential record.')
+            throw new TypeError(`FleetTenantService: ${filename} must contain a credential record.`)
         }
 
         return Object.assign(Object.create(null), parsed)
@@ -504,7 +683,7 @@ class FleetTenantService extends Base {
      */
     writeCredentials(map) {
         this.publishAtomically(
-            path.join(this.getDataDir(), 'tenant-credentials.enc'),
+            path.join(this.getDataDir(), TENANT_CREDENTIALS),
             this.encrypt(JSON.stringify(map))
         );
     }
@@ -559,20 +738,18 @@ class FleetTenantService extends Base {
 // the fleet subsystem's one MCP-wire parsing authority, shared with planeMailboxClient.
 
 /**
- * @summary Ask Memory Core for the request-bound caller identity inside the initialized session.
- * `list_permissions` is read-only, health-exempt, defaults to the bound caller, and returns the
- * canonical identity it actually used. A valid bearer for the wrong provider subject therefore
- * cannot pass this gate.
+ * @summary Call one argument-less MCP tool inside an initialized session.
  * @param {Object} options
  * @param {String} options.url
  * @param {String} options.credential
  * @param {String} options.sessionId
  * @param {String} options.protocolVersion Negotiated initialize response version.
- * @param {String} options.expectedIdentity
- * @returns {Promise<Object>} Bounded `{ok,status,identity}`.
+ * @param {Number} options.id JSON-RPC request id.
+ * @param {String} options.name Tool name.
+ * @returns {Promise<Object>} `{ok, status, payload}`; the payload is structured JSON or `null`.
  * @private
  */
-async function probeMcpIdentity({url, credential, sessionId, protocolVersion, expectedIdentity}) {
+async function callMcpTool({url, credential, sessionId, protocolVersion, id, name}) {
     const response = await fetch(url, {
         method : 'POST',
         headers: {
@@ -584,20 +761,72 @@ async function probeMcpIdentity({url, credential, sessionId, protocolVersion, ex
         },
         body: JSON.stringify({
             jsonrpc: '2.0',
-            id     : 2,
+            id,
             method : 'tools/call',
-            params : {name: 'list_permissions', arguments: {}}
+            params : {name, arguments: {}}
         }),
         signal: AbortSignal.timeout(AiConfig.fleet.tenantProbeTimeoutMs)
     });
-    const payload  = readMcpToolPayload(parseMcpEnvelope(await response.text()));
-    const identity = normalizeAgentIdentity(payload?.identity);
-    const matches  = response.ok && identity === expectedIdentity;
+
+    return {
+        ok     : response.ok,
+        status : response.status,
+        payload: readMcpToolPayload(parseMcpEnvelope(await response.text()))
+    }
+}
+
+/**
+ * @summary Ask Memory Core for the request-bound caller identity inside the initialized session.
+ * `list_permissions` is read-only, health-exempt, defaults to the bound caller, and returns the
+ * canonical identity it actually used. A valid bearer for the wrong provider subject therefore
+ * cannot pass this gate.
+ * @param {Object} options
+ * @param {String} options.url
+ * @param {String} options.credential
+ * @param {String} options.sessionId
+ * @param {String} options.protocolVersion Negotiated initialize response version.
+ * @param {String} options.expectedIdentity
+ * @returns {Promise<Object>} Bounded `{ok,status,identity}`, plus `anotherIdentity: true` when the
+ *     server named a valid identity that is not the expected one. The other identity is never carried.
+ * @private
+ */
+async function probeMcpIdentity({url, credential, sessionId, protocolVersion, expectedIdentity}) {
+    const {ok, status, payload} = await callMcpTool({url, credential, sessionId, protocolVersion, id: 2, name: 'list_permissions'});
+
+    const
+        identity = normalizeAgentIdentity(payload?.identity),
+        matches  = ok && identity === expectedIdentity;
 
     return {
         ok      : matches,
-        status  : response.status,
-        identity: matches ? expectedIdentity : null
+        status,
+        identity: matches ? expectedIdentity : null,
+        ...(ok && identity && !matches ? {anotherIdentity: true} : {})
+    }
+}
+
+/**
+ * @summary Ask an MCP server which plane serves it. `healthcheck` always reports a `plane` block, the
+ * `id` and `dataRoot` this process resolved at boot. The values are remote-authored, so only bounded
+ * strings pass, and a server that names no plane, or fails to answer, reads as `null`.
+ * @param {Object} options
+ * @param {String} options.url
+ * @param {String} options.credential
+ * @param {String} options.sessionId
+ * @param {String} options.protocolVersion Negotiated initialize response version.
+ * @returns {Promise<Object|null>} `{id, dataRoot}`, or `null`.
+ * @private
+ */
+async function readServedPlane({url, credential, sessionId, protocolVersion}) {
+    const bounded = value => typeof value === 'string' && value.trim() !== '' && value.length <= 1024;
+
+    try {
+        const {ok, payload} = await callMcpTool({url, credential, sessionId, protocolVersion, id: 3, name: 'healthcheck'});
+        const plane         = payload?.plane;
+
+        return ok && bounded(plane?.id) && bounded(plane?.dataRoot) ? {id: plane.id, dataRoot: plane.dataRoot} : null
+    } catch {
+        return null
     }
 }
 
@@ -645,9 +874,10 @@ async function notifyMcpInitialized({url, credential, sessionId, protocolVersion
  * @param {String} options.url
  * @param {String} options.credential
  * @param {String|null} [options.expectedIdentity] Memory Core caller identity to prove.
- * @returns {Promise<Object>} `{ok,status,identity?}` with no remote prose.
+ * @param {Boolean} [options.servedPlane=false] Also read which plane serves the resource.
+ * @returns {Promise<Object>} `{ok,status,identity?,anotherIdentity?,plane?}` with no remote prose.
  */
-async function initializeMcpResource({url, credential, expectedIdentity=null}) {
+async function initializeMcpResource({url, credential, expectedIdentity=null, servedPlane=false}) {
     const requestedProtocolVersion = '2024-11-05';
     const headers                  = {
         Accept        : 'application/json, text/event-stream',
@@ -712,6 +942,10 @@ async function initializeMcpResource({url, credential, expectedIdentity=null}) {
                 : {ok: false, status: response.status, identity: null}
         }
 
+        if (observation.ok && servedPlane) {
+            observation.plane = sessionId ? await readServedPlane({url, credential, sessionId, protocolVersion}) : null
+        }
+
         return observation
     } finally {
         if (sessionId) {
@@ -747,16 +981,19 @@ async function initializeMcpResource({url, credential, expectedIdentity=null}) {
  * @param {String} options.endpoint   Normalized tenant base URL (TLS, or loopback for development).
  * @param {String} options.credential The tenant bearer (used for the probe only; never logged).
  * @param {String|null} [options.expectedIdentity] Canonical seat identity to verify through MC.
+ * @param {Boolean} [options.servedPlane=false] Also read the plane each ready resource names; it
+ *     never decides `ok`.
  * @returns {Promise<Object>} `{ok, status, resources}`.
  */
-export async function probeTenantEndpoint({endpoint, credential, expectedIdentity=null}) {
-    const resources = resourcesFor(endpoint);
+export async function probeTenantEndpoint({endpoint, credential, expectedIdentity=null, servedPlane=false}) {
+    const resources = planeMcpResources(endpoint);
     const entries   = await Promise.all(Object.entries(resources).map(async ([key, {url}]) => {
         try {
             return [key, await initializeMcpResource({
                 url,
                 credential,
-                expectedIdentity: key === 'memory-core' ? expectedIdentity : null
+                expectedIdentity: key === 'memory-core' ? expectedIdentity : null,
+                servedPlane
             })]
         } catch {
             return [key, {ok: false}]

@@ -1,6 +1,9 @@
-import {test, expect}          from '@playwright/test';
-import {CREDENTIAL_FAMILIES}   from '../../../../ai/services/fleet/redactCredentials.mjs';
-import {startAgentProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {test, expect}                    from '@playwright/test';
+import {CREDENTIAL_FAMILIES}             from '../../../../ai/services/fleet/redactCredentials.mjs';
+import {LAUNCHABLE_HARNESS_TYPES}        from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
+import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import {startAgentProvisioned}           from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {supportsTenantMcpTarget}         from '../../../../src/fleet/contract/harnessTypes.mjs';
 
 // Pure composer — imported directly with injected stubs (no fs / git / Neo runtime), so the suite has
 // no host-runtime side effects and each case is fully isolated. Mirrors deriveAgentRepoPath.spec /
@@ -1033,5 +1036,208 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         expect(status.running).toBe(true);
         expect(lifecycle.calls.start).toHaveLength(1)
+    });
+});
+
+/**
+ * A seat on the plane the Fleet serves (`planeBase`) reaches that plane's Memory Core and Knowledge
+ * Base with its own stored plane credential, proven again at every start on the plane it was stored
+ * against. A seat that cannot get there refuses and says why; a private per-seat store is no fallback.
+ */
+test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the Fleet serves', () => {
+    const
+        PLANE      = 'http://127.0.0.1:3102',
+        SERVED     = Object.freeze({id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'}),
+        RESOURCES  = Object.freeze({'memory-core': {url: `${PLANE}/mc/mcp`}, 'knowledge-base': {url: `${PLANE}/kb/mcp`}}),
+        CAPABILITY = Object.freeze({harnessType: 'codex', binaryPath: '/bin/harness', launchBinaryPath: '/bin/harness'});
+
+    /** The seat-plane half of the tenant service: the stored credential, and the start's proof of it. */
+    function makePlaneService({events, stored = {credential: 'seat-plane-pat', plane: SERVED}, readiness = {ok: true}} = {}) {
+        const calls = {resolve: [], probe: []};
+
+        return {
+            calls,
+            resolveSeatPlaneCredential(args) {
+                events?.push('plane-credential');
+                calls.resolve.push(args);
+
+                return stored
+            },
+            async probeSeatPlaneCredential(args) {
+                events?.push('probe');
+                calls.probe.push(args);
+
+                return readiness
+            }
+        }
+    }
+
+    /** A lifecycle that also records which placement the resident envelope was resolved for. */
+    function makePlaneLifecycle(options) {
+        const lifecycle = makeLifecycle(options);
+
+        lifecycle.calls.resident = [];
+        lifecycle.resolveResidentMcpEnvironment = (agent, placed) => { lifecycle.calls.resident.push(placed); return {} };
+
+        return lifecycle
+    }
+
+    function start({lifecycle, planeService, planeBase = PLANE, ensureRepo = makeEnsureRepo('/managed/a/neomjs-neo'), prepareWorkspace = makePrepareWorkspace()}) {
+        return startAgentProvisioned({
+            lifecycleService: lifecycle,
+            tenantService   : planeService,
+            agentId         : 'a',
+            managedRoot     : '/managed',
+            planeBase,
+            ensureRepo,
+            prepareWorkspace
+        })
+    }
+
+    test('a seat starts with its own plane credential, proven on its plane before any checkout', async () => {
+        const
+            events           = [],
+            lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: 'ghp_seat_checkout'}, events}),
+            planeService     = makePlaneService({events}),
+            prepareWorkspace = makePrepareWorkspace(events);
+
+        await start({lifecycle, planeService, ensureRepo: makeEnsureRepo('/managed/a/neomjs-neo', events), prepareWorkspace});
+
+        expect(events).toEqual(['credential', 'plane-credential', 'capability', 'probe', 'ensure', 'prepare', 'inspect', 'start']);
+        expect(lifecycle.calls.resident).toEqual([{remote: true}]);
+        expect(planeService.calls.resolve).toEqual([{planeBase: PLANE, agentId: 'a'}]);
+        expect(planeService.calls.probe).toEqual([{
+            planeBase       : PLANE,
+            credential      : 'seat-plane-pat',
+            expectedIdentity: '@a',
+            expectedPlane   : SERVED
+        }]);
+        expect(prepareWorkspace.calls[0].mcpTarget).toEqual({kind: 'tenant', credentialEnvVar: 'NEO_MCP_REMOTE_TOKEN', resources: RESOURCES});
+        expect(lifecycle.calls.inspection[0].mcpTarget).toEqual({kind: 'tenant', resources: RESOURCES});
+        // the checkout PAT stays the repository's; the plane gets only the seat's plane credential
+        expect(lifecycle.calls.start[0].opts).toEqual({
+            cwd                   : '/managed/a/neomjs-neo',
+            resolvedCredential    : 'ghp_seat_checkout',
+            resolvedResidentMcpEnv: {},
+            resolvedMcpCredential : 'seat-plane-pat',
+            remoteMcpCapability   : CAPABILITY
+        })
+    });
+
+    test('every launchable family either renders no local Memory Core or Knowledge Base on the plane, or refuses', async () => {
+        // `plan` is the real planner over exactly what the start hands preparation
+        const
+            ON   = {'memory-core': true, 'knowledge-base': true, 'neural-link': false, 'github-workflow': false, 'gitlab-workflow': false},
+            rows = {},
+            plan = async args => {
+                const {mcpServers} = createManagedAgentWorkspacePlan({agent: {id: args.agent.id, harnessType: args.agent.harnessType}, mcpMatrix: ON, mcpTarget: args.mcpTarget});
+
+                rows[args.agent.harnessType] = mcpServers.filter(server => ['memory-core', 'knowledge-base'].includes(server.key));
+
+                return {agentosRuntimeRoot: args.agentosRuntimeRoot, targetRepoRoot: args.targetRepoRoot, instanceHome: `/instances/${args.agent.id}`, mcpMatrix: ON, mcpPlan: buildPreparedMcpPlan(args, ON)}
+            };
+
+        expect(LAUNCHABLE_HARNESS_TYPES.filter(supportsTenantMcpTarget).length).toBeGreaterThan(0);
+        expect(LAUNCHABLE_HARNESS_TYPES.filter(type => !supportsTenantMcpTarget(type))).toContain('antigravity');
+
+        for (const harnessType of LAUNCHABLE_HARNESS_TYPES) {
+            const agents = repoAgent('a');
+
+            agents.a.harnessType = harnessType;
+
+            const run = start({lifecycle: makePlaneLifecycle({agents}), planeService: makePlaneService(), prepareWorkspace: plan});
+
+            if (!supportsTenantMcpTarget(harnessType)) {
+                await expect(run, harnessType).rejects.toThrow(`agent 'a' cannot start: ${harnessType} cannot reach a remote Memory Core`);
+                continue
+            }
+
+            await run;
+
+            expect(rows[harnessType].map(({key, target, transport, url}) => ({key, target, transport, url})), harnessType).toEqual([
+                {key: 'memory-core',    target: 'tenant', transport: 'streamable-http', url: RESOURCES['memory-core'].url},
+                {key: 'knowledge-base', target: 'tenant', transport: 'streamable-http', url: RESOURCES['knowledge-base'].url}
+            ])
+        }
+    });
+
+    test('a seat that cannot get to the plane refuses before checkout, workspace and spawn, and names why', async () => {
+        const scenarios = [{
+            name : 'no stored credential',
+            plane: {stored: null},
+            error: `agent 'a' has no plane credential stored for ${PLANE}; set the seat's own plane credential (setPlaneCredential) before starting it.`
+        }, {
+            name : 'another identity',
+            plane: {readiness: {ok: false, reason: 'the credential resolves to another identity'}},
+            error: `agent 'a' cannot use its plane at ${PLANE}: the credential resolves to another identity.`
+        }, {
+            name : 'an unreachable plane',
+            plane: {readiness: {ok: false, reason: 'plane endpoint unreachable'}},
+            error: `agent 'a' cannot use its plane at ${PLANE}: plane endpoint unreachable.`
+        }, {
+            name : 'a plane recreated behind the same URL',
+            plane: {readiness: {ok: false, reason: 'the plane at this endpoint is not the one the credential was stored for'}},
+            error: 'the plane at this endpoint is not the one the credential was stored for'
+        }, {
+            name           : 'a harness without the remote grammar',
+            plane          : {},
+            capabilityError: new Error('missing remote grammar'),
+            error          : 'missing remote grammar'
+        }];
+
+        for (const scenario of scenarios) {
+            const
+                lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), capabilityError: scenario.capabilityError}),
+                ensureRepo       = makeEnsureRepo(),
+                prepareWorkspace = makePrepareWorkspace();
+
+            await expect(start({lifecycle, planeService: makePlaneService(scenario.plane), ensureRepo, prepareWorkspace}), scenario.name)
+                .rejects.toThrow(scenario.error);
+
+            expect(ensureRepo.calls, scenario.name).toEqual([]);
+            expect(prepareWorkspace.calls, scenario.name).toEqual([]);
+            expect(lifecycle.calls.start, scenario.name).toEqual([])
+        }
+    });
+
+    test('a seat the plane cannot host refuses before any secret is read', async () => {
+        const repoLess = repoAgent('a');
+
+        delete repoLess.a.metadata.repo;
+
+        for (const [name, agents, planeBase, error] of [
+            ['a seat without a managed repo', repoLess,                                                     PLANE,                      /reaches its Memory Core remotely and requires a managed repo/],
+            ['a harness with no remote Memory Core', {a: {...repoAgent('a').a, harnessType: 'antigravity'}}, PLANE,                      /cannot start: antigravity cannot reach a remote Memory Core/],
+            ['a plane that is no secure endpoint', repoAgent('a'),                                          'http://plane.example.com', /cannot start: fleet\.planeBase is not a secure MCP endpoint/]
+        ]) {
+            const
+                lifecycle    = makePlaneLifecycle({agents}),
+                planeService = makePlaneService();
+
+            await expect(start({lifecycle, planeService, planeBase}), name).rejects.toThrow(error);
+
+            expect(lifecycle.calls.credential, name).toEqual([]);
+            expect(planeService.calls.resolve, name).toEqual([]);
+            expect(lifecycle.calls.start, name).toEqual([])
+        }
+    });
+
+    test('a Fleet that serves no plane keeps the per-seat servers, and a raw launch override has no placement', async () => {
+        const
+            lifecycle        = makePlaneLifecycle({agents: repoAgent('a')}),
+            planeService     = makePlaneService(),
+            prepareWorkspace = makePrepareWorkspace();
+
+        await start({lifecycle, planeService, planeBase: null, prepareWorkspace});
+
+        expect(lifecycle.calls.resident).toEqual([{remote: false}]);
+        expect(planeService.calls.resolve).toEqual([]);
+        expect(prepareWorkspace.calls[0].mcpTarget).toBeNull();
+        expect(lifecycle.calls.start[0].opts).not.toHaveProperty('resolvedMcpCredential');
+
+        const raw = makePlaneLifecycle({agents: {a: {id: 'a', githubUsername: 'a', metadata: {launch: {command: 'h'}}}}});
+
+        expect((await start({lifecycle: raw, planeService})).running).toBe(true);
+        expect(planeService.calls.resolve).toEqual([])
     });
 });
