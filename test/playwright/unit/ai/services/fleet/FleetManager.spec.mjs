@@ -34,6 +34,8 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleet-authority definition
         calls = [];
 
         registryStub = {
+            // setRepo reads the seat's other repositories for the collision rule; none by default
+            getAgent   : () => null,
             updateAgent: (id, patch) => { calls.push(['updateAgent', id, patch]); return {id, ...patch}; }
         };
 
@@ -158,6 +160,53 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleet-authority definition
         expect(() => FleetManager.setRepos({id: 'alice', repos: [{repoSlug: 'x/y'}]})).toThrow(/no working repository/);
 
         expect(calls, 'the registry was never written').toEqual([])
+    });
+
+    test('a GitLab repository records its forge, may name nested groups, and must name its clone URL', () => {
+        FleetManager.setRepo({id: 'alice', forge: 'gitlab', repoSlug: 'group/sub/project', cloneUrl: 'https://gitlab.example.com/group/sub/project.git'});
+
+        expect(calls).toEqual([['updateAgent', 'alice', {metadata: {repo: {
+            cloneUrl: 'https://gitlab.example.com/group/sub/project.git', forge: 'gitlab', repoSlug: 'group/sub/project'
+        }}}]]);
+
+        for (const [payload, rule] of [
+            [{forge: 'gitlab', repoSlug: 'group/project'},                                                              /needs its clone URL/],
+            [{forge: 'gitlab', repoSlug: 'group/project', cloneUrl: 'https://gitlab.example.com/other/project.git'},   /the clone URL must be/],
+            [{forge: 'bitbucket', repoSlug: 'x/y'},                                                                     /forge must be one of github, gitlab/],
+            [{repoSlug: 'group/sub/project'},                                                                           /exactly '<owner>\/<repo>' on GitHub/],
+            [{forge: 'gitlab', repoSlug: 'memory/sub/project', cloneUrl: 'git@gitlab.example.com:memory/sub/project.git'}, /repoSlug must be/]
+        ]) {
+            expect(() => FleetManager.setRepo({id: 'alice', ...payload}), JSON.stringify(payload)).toThrow(rule)
+        }
+
+        expect(calls, 'only the valid entry was written').toHaveLength(1)
+    });
+
+    test('a seat\'s checkouts never share a path or nest, across forges, in setRepo and setRepos', () => {
+        const working = {repoSlug: 'acme/tools', cloneUrl: 'https://github.com/acme/tools.git'};
+
+        registryStub.getAgent = id => ({id, metadata: {repo: working}});
+
+        for (const repos of [
+            [{forge: 'gitlab', repoSlug: 'acme/tools/cli', cloneUrl: 'https://gitlab.example.com/acme/tools/cli.git'}],
+            [{forge: 'gitlab', repoSlug: 'acme/tools', cloneUrl: 'https://gitlab.example.com/acme/tools.git'}],
+            [{forge: 'gitlab', repoSlug: 'x/y', cloneUrl: 'https://gitlab.example.com/x/y.git'},
+             {forge: 'gitlab', repoSlug: 'x/y/z', cloneUrl: 'https://gitlab.example.com/x/y/z.git'}]
+        ]) {
+            expect(() => FleetManager.setRepos({id: 'alice', repos}), JSON.stringify(repos)).toThrow(/share one checkout, or nest one inside the other/)
+        }
+
+        // a new working repository is checked against the others already recorded
+        registryStub.getAgent = id => ({id, metadata: {repos: [{forge: 'gitlab', repoSlug: 'acme/tools/cli', cloneUrl: 'https://gitlab.example.com/acme/tools/cli.git'}]}});
+        expect(() => FleetManager.setRepo({id: 'alice', repoSlug: 'acme/tools'})).toThrow(/share one checkout, or nest one inside the other/);
+
+        expect(calls, 'nothing was written').toEqual([]);
+
+        // a sibling that only shares a name prefix is no collision
+        registryStub.getAgent = id => ({id, metadata: {repo: working}});
+        FleetManager.setRepos({id: 'alice', repos: [{forge: 'gitlab', repoSlug: 'acme/tools-cli', cloneUrl: 'https://gitlab.example.com/acme/tools-cli.git'}]});
+
+        expect(calls).toHaveLength(1)
     });
 
     test('setRepos with an empty list clears the facet, and an unknown agent is null', () => {

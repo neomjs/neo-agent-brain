@@ -51,10 +51,14 @@ test.describe('deriveAgentRepoPath (Fleet Manager repo-provisioning path derivat
         refuse('a'.repeat(101), 'neomjs/neo', /'agentId'/);
     });
 
-    test('the slug is exactly <owner>/<repo>, and the owners `harness` and `memory` are reserved for the seat', () => {
-        for (const repoSlug of ['neo', 'neomjs/neo/extra', '/neo', 'neomjs/', '../../root', undefined]) {
+    test('the slug is <owner>/<repo> or deeper, and the owners `harness` and `memory` are reserved for the seat', () => {
+        for (const repoSlug of ['neo', '/neo', 'neomjs/', 'group//project', '../../root', undefined]) {
             expect(() => deriveAgentRepoPath({managedRoot: '/srv/agents', agentId: 'ada', repoSlug})).toThrow();
         }
+
+        // a GitLab project in nested groups: the checkout mirrors them (how deep a forge allows is the registration rule's)
+        expect(deriveAgentRepoPath({managedRoot: '/srv/agents', agentId: 'ada', repoSlug: 'group/sub/project'}))
+            .toBe(path.join(ROOT, 'ada', 'group', 'sub', 'project'));
 
         expect(() => deriveAgentRepoPath({managedRoot: '/srv/agents', agentId: 'ada', repoSlug: 'harness/codex'}))
             .toThrow(/'harness' is reserved for an agent's harness homes/);

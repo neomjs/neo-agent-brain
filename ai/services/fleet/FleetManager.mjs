@@ -1,7 +1,7 @@
 import Base                             from 'neo.mjs/src/core/Base.mjs';
 import FleetLifecycleService            from './FleetLifecycleService.mjs';
 import {armFleetSeatWake}               from './armFleetSeatWake.mjs';
-import {assertRepoSlug}                 from './deriveAgentRepoPath.mjs';
+import {REPO_FORGES, assertNoCheckoutCollision, assertRepoSlug} from './deriveAgentRepoPath.mjs';
 import {inspectFleetRepos}              from './inspectFleetRepos.mjs';
 import {launchRefusalOf}                from '../../../src/fleet/contract/launchAuthority.mjs';
 import {readFleetPresenceSnapshot}      from './fleetPresenceStateAdapter.mjs';
@@ -13,30 +13,46 @@ import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
 /**
  * @summary The one rule for a repository a seat clones: a slug that passes the checkout path's own rule
  * ({@link assertRepoSlug}), and a remote naming that repo — https, ssh or the SCP-like
- * `git@host:owner/repo`, with no embedded credentials and never a local source. Without a clone URL it is
- * the GitHub URL of the slug. A refusal names the rule, never the refused value: a caller's string may be
- * a URL with a credential in it, and an error message travels to logs and panes.
+ * `git@host:owner/repo`, with no embedded credentials and never a local source. A GitHub slug is exactly
+ * `<owner>/<repo>` and, without a clone URL, is the GitHub URL of the slug. A GitLab slug may name nested
+ * groups and must name its clone URL, because a self-hosted host cannot be derived; the entry records
+ * `forge: 'gitlab'`, while GitHub stays unrecorded. A refusal names the rule, never the refused value: a
+ * caller's string may be a URL with a credential in it, and an error message travels to logs and panes.
  * @param {Object} coordinates
- * @param {String} [coordinates.repoSlug] `owner/repo`.
+ * @param {String} [coordinates.repoSlug] `owner/repo`, or `group/…/project` on GitLab.
  * @param {String} [coordinates.cloneUrl] A remote naming that repo.
+ * @param {String} [coordinates.forge='github'] One of {@link REPO_FORGES}.
  * @param {String} caller For the error message.
- * @returns {{repoSlug: String, cloneUrl: String}}
- * @throws {Error} On a malformed slug, or a clone URL that is not a remote naming the slug's repo.
+ * @returns {{repoSlug: String, cloneUrl: String, forge?: String}}
+ * @throws {Error} On an unknown forge, a malformed slug, a GitLab entry without a clone URL, or a clone
+ * URL that is not a remote naming the slug's repo.
  * @private
  */
-function repoCoordinates({repoSlug, cloneUrl}, caller) {
-    let owner, name;
+function repoCoordinates({repoSlug, cloneUrl, forge = 'github'}, caller) {
+    if (!REPO_FORGES.includes(forge)) {
+        throw new Error(`${caller}: forge must be one of ${REPO_FORGES.join(', ')}.`)
+    }
+
+    let segments;
 
     try {
-        [owner, name] = assertRepoSlug(repoSlug, caller)
+        segments = assertRepoSlug(repoSlug, caller)
     } catch {
-        throw new Error(`${caller}: repoSlug must be '<owner>/<repo>' in lowercase seat segments, never a reserved owner.`)
+        throw new Error(`${caller}: repoSlug must be '<owner>/<repo>' in lowercase seat segments (a GitLab slug may name nested groups), never a reserved owner.`)
+    }
+
+    if (forge === 'github' && segments.length !== 2) {
+        throw new Error(`${caller}: repoSlug must be exactly '<owner>/<repo>' on GitHub.`)
+    }
+
+    if (forge !== 'github' && cloneUrl == null) {
+        throw new Error(`${caller}: a ${forge} repository needs its clone URL, because its host cannot be derived.`)
     }
 
     const
-        escaped = `${owner}/${name}`.replace(/\./g, '\\.'),
+        escaped = repoSlug.replace(/\./g, '\\.'),
         remote  = new RegExp(`^(?:https://[^/@\\s]+/|ssh://(?:[\\w.-]+@)?[^/@\\s:]+(?::\\d+)?/|[\\w.-]+@[\\w.-]+:)${escaped}(?:\\.git)?$`, 'i'),
-        repo    = {repoSlug, cloneUrl: cloneUrl ?? `https://github.com/${repoSlug}.git`};
+        repo    = {repoSlug, cloneUrl: cloneUrl ?? `https://github.com/${repoSlug}.git`, ...(forge === 'github' ? {} : {forge})};
 
     if (!remote.test(repo.cloneUrl)) {
         throw new Error(`${caller}: the clone URL must be an https, ssh or SCP-like remote naming ${repoSlug}, with no credentials and no local source.`)
@@ -505,15 +521,24 @@ class FleetManager extends Base {
      * @param {String}  payload.id        Registry agent id.
      * @param {String} [payload.repoSlug] `owner/repo`: the checkout dir under the agents root.
      * @param {String} [payload.cloneUrl] A remote naming that repo; defaults to `https://github.com/<repoSlug>.git`.
+     * @param {String} [payload.forge]    `'gitlab'` for a GitLab repository; GitHub otherwise.
      * @returns {Object|null} The updated public definition, or `null` if the agent doesn't exist.
-     * @throws {Error} On a malformed slug, or a clone URL that is not a remote naming the slug's repo.
+     * @throws {Error} On what {@link repoCoordinates} refuses, or a checkout that would collide with one
+     * of the seat's other repositories.
      */
-    setRepo({id, cloneUrl, repoSlug} = {}) {
-        const repo = repoSlug != null || cloneUrl != null
-            ? repoCoordinates({repoSlug, cloneUrl}, 'FleetManager.setRepo')
-            : {};
+    setRepo({id, cloneUrl, forge, repoSlug} = {}) {
+        const
+            caller   = 'FleetManager.setRepo',
+            registry = this.getLifecycleService().getRegistry(),
+            repo     = repoSlug != null || cloneUrl != null || forge != null
+                ? repoCoordinates({repoSlug, cloneUrl, forge}, caller)
+                : {};
 
-        return this.getLifecycleService().getRegistry().updateAgent(id, {metadata: {repo}});
+        if (repo.repoSlug) {
+            assertNoCheckoutCollision([repo.repoSlug, ...(registry.getAgent(id)?.metadata?.repos ?? []).map(entry => entry.repoSlug)], caller)
+        }
+
+        return registry.updateAgent(id, {metadata: {repo}});
     }
 
     /**
@@ -547,19 +572,22 @@ class FleetManager extends Base {
         if (!agent) return null;
 
         const
-            working = agent.metadata?.repo?.repoSlug,
-            entries = repos.map(entry => repoCoordinates(entry && typeof entry === 'object' ? entry : {}, caller)),
-            slugs   = entries.map(entry => entry.repoSlug);
+            identity = repo => `${repo.forge ?? 'github'}:${repo.repoSlug}`,
+            working  = agent.metadata?.repo,
+            entries  = repos.map(entry => repoCoordinates(entry && typeof entry === 'object' ? entry : {}, caller)),
+            ids      = entries.map(identity);
 
-        if (entries.length && !working) {
+        if (entries.length && !working?.repoSlug) {
             throw new Error(`${caller}: the seat has no working repository; set it through setRepo first.`)
         }
-        if (slugs.includes(working)) {
+        if (ids.includes(identity(working ?? {}))) {
             throw new Error(`${caller}: the working repository is set through setRepo, never listed here.`)
         }
-        if (new Set(slugs).size !== slugs.length) {
+        if (new Set(ids).size !== ids.length) {
             throw new Error(`${caller}: a repository is listed twice.`)
         }
+
+        entries.length && assertNoCheckoutCollision([working.repoSlug, ...entries.map(entry => entry.repoSlug)], caller);
 
         return registry.updateAgent(id, {metadata: {repos: entries}});
     }
