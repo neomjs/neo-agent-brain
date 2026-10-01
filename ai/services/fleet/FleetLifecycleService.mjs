@@ -965,9 +965,10 @@ class FleetLifecycleService extends Base {
         // pid, its start time, startedAt and the checkout. Commands, profile and homes derive from
         // the registry and AiConfig exactly as `start` derives them.
         try {
-            lease      = JSON.parse(fs.readFileSync(leasePath, 'utf8'));
-            record.cwd = typeof lease.cwd === 'string' && path.isAbsolute(lease.cwd) ? lease.cwd : null;
-            launch     = deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath: this.getHarnessBinaryPath(harnessType), cwd: record.cwd})
+            lease            = JSON.parse(fs.readFileSync(leasePath, 'utf8'));
+            record.cwd       = typeof lease.cwd === 'string' && path.isAbsolute(lease.cwd) ? lease.cwd : null;
+            record.startedAt = typeof lease.startedAt === 'string' && !Number.isNaN(Date.parse(lease.startedAt)) ? lease.startedAt : null;
+            launch           = deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath: this.getHarnessBinaryPath(harnessType), cwd: record.cwd})
         } catch (error) {
             if (error?.code === 'ENOENT') return;   // no lease: the seat never outlived a server
         }
@@ -976,6 +977,8 @@ class FleetLifecycleService extends Base {
             profileArg = launch?.args.find(arg => arg.startsWith('--user-data-dir=')),
             live       = lease?.agentId === agent.id && Number.isInteger(lease.pid) && profileArg && this.isProcessAlive(lease.pid) && this.getProcessInspectFn()(lease.pid);
 
+        // A stale seat keeps its leased `startedAt`: the fleet did launch it, so the fleet view reports
+        // an observed `stopped` with this reason, never an agent outside fleet supervision.
         if (!live || live.startedAt !== lease.pidStartedAt || !live.command.includes(profileArg)) {
             fs.rmSync(leasePath, {force: true});
             this.processes.set(agent.id, {...record, state: 'stopped', failureReason: 'the seat exited while no Fleet server supervised it'});
@@ -990,7 +993,6 @@ class FleetLifecycleService extends Base {
             pid               : lease.pid,
             pidStartedAt      : lease.pidStartedAt,
             state             : 'running',
-            startedAt         : typeof lease.startedAt === 'string' && !Number.isNaN(Date.parse(lease.startedAt)) ? lease.startedAt : null,
             authHome          : launch.authHome ?? (HARNESS_AUTH_MARKERS[harnessType] ? instanceHome : null),
             authCommand       : harnessType === 'codex-desktop' ? this.resolveExecutable(this.getHarnessBinaryPath('codex'), process.env.PATH, record.cwd) : null,
             electronProfile   : launch.electronProfile ?? null,

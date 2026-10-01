@@ -22,6 +22,7 @@ import Neo                          from 'neo.mjs/src/Neo.mjs';
 import * as core                    from 'neo.mjs/src/core/_export.mjs';
 import AiConfig                     from '../../../../ai/config.template.mjs';
 import FleetLifecycleService        from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import FleetManager                 from '../../../../ai/services/fleet/FleetManager.mjs';
 import ToolService                  from '../../../../ai/mcp/ToolService.mjs';
 import {generateOpenCodeSeatConfig} from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
 
@@ -1735,7 +1736,12 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             expect(FleetLifecycleService.status('seat'), name).toMatchObject({
                 state: 'stopped', running: false, adopted: false, failureReason: 'the seat exited while no Fleet server supervised it'
             });
-            expect(fs.existsSync(path.join(home, LEASE_FILE)), name).toBe(false)
+            expect(fs.existsSync(path.join(home, LEASE_FILE)), name).toBe(false);
+            // The fleet view: an observed stop with that reason, never "outside fleet supervision".
+            expect(FleetManager.fleetRuntimeStatus(), name).toEqual([{
+                agentId      : 'seat', state: 'stopped', running: false, confidence: 'observed', source: 'fleet:runtimeStatus',
+                failureReason: 'the seat exited while no Fleet server supervised it'
+            }])
         }
     });
 
