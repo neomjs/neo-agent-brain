@@ -7,27 +7,28 @@ import {promisify} from 'node:util';
  * @summary The first-run recipe's placement probe: reads the machine that will bear a workload and
  * reports two RAM budgets kept apart — the host's (total minus every consumer, each once) and the
  * guest's (a VM's cap minus what its containers hold) — with pressure, uncertainty and a running
- * plane named explicitly. It carries no threshold: {@link fitsPreset} compares a preset's declared
- * workload against both budgets and answers nothing without one.
+ * plane named explicitly. It carries no preset sizing threshold: {@link fitsPreset} compares a
+ * preset's declared workload against both budgets and answers nothing without one.
  *
  * A cap is a limit, never consumption: raising a VM's cap moves the guest budget and leaves the host
  * budget alone. A loaded-but-idle model still holds its weights. `os.freemem()` is not availability
- * on macOS, so pressure comes from swap and compressed memory, and a host that swaps gets no local
- * fit whatever the arithmetic says. Every reader is injectable; one that fails lands in
- * `uncertainty` and the budgets are computed from what was read. The probe reads the machine it
- * runs on and nothing else — a remote target is probed on the target, and its JSON is carried over.
+ * on macOS, so pressure comes from swap and compressed memory (the one named classifier here), and a
+ * host that swaps gets no local fit whatever the arithmetic says. Every reader is injectable; one that
+ * fails lands in `uncertainty`, the budget it feeds is marked incomplete, and an incomplete budget
+ * never yields an affirmative fit. The probe reads the machine it runs on and nothing else — a remote
+ * target is probed on the target, and its JSON is carried over.
+ *
+ * **One owner per process population.** The host inventory comes back partitioned: the VM's own
+ * processes, the model servers, and everything else. A VM population is replaced by the observed
+ * host reservation only when a VM topology was actually observed; a model server's resident set is
+ * replaced by its loaded weights only when that server's inventory was actually read; container
+ * processes on a host-native engine are already in the inventory and are never added a second time.
  */
 
 const execFileAsync = promisify(execFile);
 
 /** @summary One gibibyte (1024³), the unit every budget here is reasoned in. */
 export const GiB = 1073741824;
-
-/** @summary Byte multipliers for the unit suffixes the instruments print — binary and decimal, by prefix letter. */
-const BYTE_UNITS = {
-    binary : {k: 1024, K: 1024, M: 1048576, G: 1073741824, T: 1099511627776},
-    decimal: {k: 1000, K: 1000, M: 1000000, G: 1000000000, T: 1000000000000}
-};
 
 /**
  * @summary The named share of total memory held by the compressor above which a host reads as
@@ -36,68 +37,117 @@ const BYTE_UNITS = {
 export const SWAPPING_COMPRESSED_SHARE = 0.15;
 
 /**
- * @summary The conservative policy applied when a VM's host reservation cannot be observed: its
- * containers' residency plus two gibibytes of hypervisor overhead, counted once on the host side.
+ * @summary The conservative policy applied when a VM topology was observed but its host reservation
+ * was not: the containers' residency plus two gibibytes of hypervisor overhead, counted once on the
+ * host side.
  */
 export const VM_RESERVATION_POLICY = 'vm-reservation=residency+2GiB';
 
 /** @summary The canonical compose project of a local Agent OS plane — the one-plane-per-host detector's key. */
 export const DEFAULT_PLANE_PROJECT = 'neo-local-agent-os';
 
+/** @summary The readers whose observations the host budget is computed from; a failed one makes it incomplete. */
+export const HOST_BUDGET_READERS = Object.freeze(['totalmem', 'hostUse', 'vmInfo', 'loadedModels']);
+
 /**
  * @summary Probe the machine for the recipe's placement step.
  * @param {Object}   [options]
  * @param {Object}   [options.target={kind: 'local'}] Which machine this JSON describes; echoed back.
- * @param {Object}   [options.readers]        Backend readers (see {@link defaultReaders}); any subset,
- *                                            the rest default to the production shells.
+ * @param {Object}   [options.readers]        Backend readers (see {@link createDefaultReaders}); any
+ *                                            subset, the rest default to the production shells.
  * @param {String}   [options.planeProject]   The compose project that counts as the canonical plane.
  * @param {Function} [options.now]            Clock, for `probedAt`.
- * @returns {Promise<Object>} `{host, guest, disk, cores, accelerator, runningPlane, uncertainty, probedAt, target}`
- *   — `host.availableBytes = total − Σ consumers` (each consumer once, a cap never among them),
- *   `guest.availableBytes = cap − residency` or `guest: null` without a VM, `host.pressure` one of
- *   `'ok' | 'swapping' | 'unknown'`, `uncertainty` one `{reader, reason}` per reader that failed.
+ * @returns {Promise<Object>} `{host, guest, disk, cores, accelerator, runningPlane, observed, uncertainty, probedAt, target}`
+ *   — `host.availableBytes = total − Σ consumers` (each consumer once, a cap never among them) or
+ *   `null` while `host.complete` is false; `guest.availableBytes = cap − residency` or `guest: null`
+ *   when the engine was observed running on the host itself; `host.pressure` one of
+ *   `'ok' | 'swapping' | 'unknown'`; `observed` one boolean per reader; `uncertainty` one
+ *   `{reader, reason}` per reader that failed or answered an unusable shape.
  */
 export async function probePlacement({target = {kind: 'local'}, readers = {}, planeProject = DEFAULT_PLANE_PROJECT, now = () => new Date()} = {}) {
     const
-        read        = {...defaultReaders, ...readers},
+        read        = {...createDefaultReaders(), ...readers},
         uncertainty = [],
+        observed    = {},
         attempt     = async (name, ...args) => {
+            if (typeof read[name] !== 'function') {
+                observed[name] = false;
+                uncertainty.push({reader: name, reason: 'no reader'});
+                return undefined
+            }
             try {
-                return await read[name](...args)
+                const value = await read[name](...args);
+                observed[name] = true;
+                return value
             } catch (error) {
+                observed[name] = false;
                 uncertainty.push({reader: name, reason: error?.message || String(error)});
                 return undefined
             }
+        },
+        unusable = (name, reason) => {
+            observed[name] = false;
+            uncertainty.push({reader: name, reason})
         };
 
+    let totalBytes = await attempt('totalmem');
+    if (observed.totalmem && !isByteCount(totalBytes)) { unusable('totalmem', 'not a byte count'); totalBytes = undefined }
+
+    let inventory = await attempt('hostUse');
+    if (observed.hostUse && !isConsumerList(inventory)) { unusable('hostUse', 'not a consumer list'); inventory = undefined }
+
+    // `null` is an observation (the engine runs on the host itself); a throw or an unusable shape is not
+    let vm = await attempt('vmInfo');
+    if (observed.vmInfo && vm !== null && !isVmInfo(vm)) { unusable('vmInfo', 'not a VM description'); vm = undefined }
+
+    let containers = await attempt('containerStats');
+    if (observed.containerStats && !isConsumerList(containers)) { unusable('containerStats', 'not a container list'); containers = undefined }
+
+    let modelInventory = await attempt('loadedModels');
+    if (observed.loadedModels && !isModelInventory(modelInventory)) { unusable('loadedModels', 'not a model inventory'); modelInventory = undefined }
+
     const
-        totalBytes   = await attempt('totalmem'),
-        hostUse      = await attempt('hostUse')        ?? [],
-        vm           = await attempt('vmInfo'),
-        containers   = await attempt('containerStats') ?? [],
-        models       = await attempt('loadedModels')   ?? [],
-        swap         = await attempt('swap'),
-        disk         = await attempt('statfs'),
-        cores        = await attempt('cores'),
-        accelerator  = await attempt('accelerator'),
-        composeRows  = await attempt('composeLs')      ?? [],
-        residency    = containers.reduce((sum, row) => sum + row.bytes, 0),
-        consumers    = [
-            ...hostUse.map(row => ({name: row.name, bytes: row.bytes, source: row.source})),
-            ...models.map(model => ({name: model.name, bytes: model.bytes, source: `loaded model (${model.state ?? 'loaded'}; weights stay resident)`}))
-        ];
+        swap        = await attempt('swap'),
+        disk        = await attempt('statfs'),
+        cores       = await attempt('cores'),
+        accelerator = await attempt('accelerator'),
+        composeRows = await attempt('composeLs'),
+        vmObserved  = observed.vmInfo && vm !== undefined,
+        hasVm       = vmObserved && vm !== null,
+        residency   = Array.isArray(containers) ? containers.reduce((sum, row) => sum + row.bytes, 0) : null,
+        consumers   = [];
+
+    // ---- the host budget: one owner per population ----------------------------------------------
+
+    for (const row of inventory ?? []) {
+        const population = row.population ?? 'other';
+
+        if (population === 'vm' && hasVm) continue;                       // owned by the VM consumer below
+        if (population === 'model-server' && modelInventory && row.inventory && modelInventory.inventories.includes(row.inventory)) continue; // owned by its loaded weights
+
+        consumers.push({name: row.name, bytes: row.bytes, source: row.source, population})
+    }
+
+    for (const model of modelInventory?.models ?? []) {
+        consumers.push({name: model.name, bytes: model.bytes, source: `loaded model (${model.state ?? 'loaded'}; weights stay resident)`, population: 'model'})
+    }
 
     let guest = null;
 
-    if (vm) {
-        // the VM is one host consumer: its observed reservation, else the named policy — never its
-        // cap, and never its containers' sum (that is the guest's residency, inside the VM)
-        const reservation = await attempt('vmReservation', vm);
+    if (hasVm) {
+        // the VM is one host consumer: an explicitly observed reservation, else its own processes'
+        // resident sets from the inventory, else the named policy — never its cap, never its
+        // containers' sum (that is the guest's residency, inside the VM)
+        const
+            explicit  = typeof read.vmReservation === 'function' ? await attempt('vmReservation', vm) : undefined,
+            fromPs    = (inventory ?? []).filter(row => row.population === 'vm').reduce((sum, row) => sum + row.bytes, 0),
+            reserved  = isByteCount(explicit) ? explicit : fromPs > 0 ? fromPs : null,
+            policyOn  = reserved === null && residency !== null;
 
-        if (typeof reservation === 'number') {
-            consumers.push({name: `vm:${vm.backend}`, bytes: reservation, source: 'host reservation (observed)'})
-        } else {
-            consumers.push({name: `vm:${vm.backend}`, bytes: residency + 2 * GiB, source: `policy:${VM_RESERVATION_POLICY}`});
+        if (reserved !== null) {
+            consumers.push({name: `vm:${vm.backend}`, bytes: reserved, source: isByteCount(explicit) ? 'host reservation (observed)' : 'host reservation (the VM processes\' resident sets)', population: 'vm'})
+        } else if (policyOn) {
+            consumers.push({name: `vm:${vm.backend}`, bytes: residency + 2 * GiB, source: `policy:${VM_RESERVATION_POLICY}`, population: 'vm'});
             uncertainty.push({reader: 'vmReservation', reason: `host reservation unobservable; ${VM_RESERVATION_POLICY} applied`})
         }
 
@@ -107,28 +157,34 @@ export async function probePlacement({target = {kind: 'local'}, readers = {}, pl
             cores            : vm.cores ?? null,
             guestOs          : vm.guestOs ?? null,
             residencyBytes   : residency,
-            availableBytes   : vm.capBytes - residency,
-            reservationPolicy: typeof reservation === 'number' ? null : VM_RESERVATION_POLICY
+            availableBytes   : residency === null ? null : vm.capBytes - residency,
+            reservationPolicy: reserved !== null ? null : policyOn ? VM_RESERVATION_POLICY : null,
+            complete         : residency !== null && (reserved !== null || policyOn)
         }
-    } else {
-        // no VM: containers are host consumers directly, each once
-        consumers.push(...containers.map(row => ({name: row.name, bytes: row.bytes, source: 'container (host-native)'})))
     }
+    // a host-native engine: its container processes are already in the inventory, once; the stats
+    // rows are reported for display and never added to the budget
 
-    const consumed = consumers.reduce((sum, row) => sum + row.bytes, 0);
+    const
+        hostComplete = HOST_BUDGET_READERS.every(name => observed[name]) && vm !== undefined && (!hasVm || guest.complete),
+        consumed     = consumers.reduce((sum, row) => sum + row.bytes, 0);
 
     return {
         host: {
             totalBytes    : totalBytes ?? null,
             consumers,
-            availableBytes: typeof totalBytes === 'number' ? totalBytes - consumed : null,
+            // listed for display only on an observed host-native engine; unknown topology lists nothing
+            containers    : vmObserved && !hasVm && Array.isArray(containers) ? containers : null,
+            availableBytes: hostComplete ? totalBytes - consumed : null,
+            complete      : hostComplete,
             pressure      : classifyPressure(swap, totalBytes)
         },
         guest,
         disk        : disk ?? null,
         cores       : cores ?? null,
         accelerator : accelerator ?? null,
-        runningPlane: await detectRunningPlane(composeRows, planeProject, attempt),
+        runningPlane: await detectRunningPlane(composeRows ?? [], planeProject, attempt),
+        observed,
         uncertainty,
         probedAt    : now().toISOString(),
         target
@@ -136,49 +192,73 @@ export async function probePlacement({target = {kind: 'local'}, readers = {}, pl
 }
 
 /**
- * @summary Compare a preset's declared workload against both budgets. Pure: no preset data, no verdict.
+ * @summary Compare a preset's declared workload against both budgets. Pure: no workload, no verdict;
+ * a malformed workload, an incomplete budget, or a swapping host and a local preset are refusals,
+ * never an affirmative fit.
+ *
+ * The workload is **additional demand**: a new plane's peak plus its models, on top of everything the
+ * probe already counted. The plane's containers live in the VM when there is one, and the VM's
+ * memory is host memory, so the host backs the plane's peak with or without a VM; the guest budget
+ * must hold the same peak under the cap. Raising the cap alone therefore never changes the host margin.
  * @param {Object} probe    A {@link probePlacement} result.
  * @param {Object} workload `{planeIdleBytes, planePeakBytes, modelsBytes, vmCapRecommendedBytes}` —
  *                          the presets leaf's data; `modelsBytes > 0` is what makes a preset local.
  * @returns {Object|null} `{fits, margins: {host, guest}, reasons}` or `null` without a workload.
  */
 export function fitsPreset(probe, workload) {
-    if (!workload || typeof workload !== 'object') return null;
+    if (workload === undefined || workload === null) return null;
+
+    const reasons = [];
+
+    if (!isPlainObject(workload) || !isByteCount(workload.planePeakBytes) || !isByteCount(workload.modelsBytes)) {
+        return {fits: false, margins: {host: null, guest: null}, reasons: ['the workload is malformed: planePeakBytes and modelsBytes must be byte counts']}
+    }
 
     const
-        {planePeakBytes = 0, modelsBytes = 0, vmCapRecommendedBytes = null} = workload,
+        {planePeakBytes, modelsBytes, vmCapRecommendedBytes = null} = workload,
         local     = modelsBytes > 0,
-        reasons   = [],
-        hostAvail = probe?.host?.availableBytes,
+        host      = probe?.host ?? {},
         guest     = probe?.guest ?? null,
-        // the plane's containers live in the VM when there is one; the models always sit on the host
-        hostNeed  = modelsBytes + (guest ? 0 : planePeakBytes),
-        guestNeed = guest ? planePeakBytes : 0,
+        hostNeed  = modelsBytes + planePeakBytes,
         margins   = {
-            host : typeof hostAvail === 'number' ? hostAvail - hostNeed : null,
-            guest: guest ? guest.availableBytes - guestNeed : null
+            host : host.complete && isByteCount(host.availableBytes) ? host.availableBytes - hostNeed : null,
+            guest: guest?.complete && isByteCount(guest.availableBytes) ? guest.availableBytes - planePeakBytes : null
         };
 
-    if (local && probe?.host?.pressure === 'swapping') {
-        reasons.push('the host is swapping: no local preset fits, whatever the arithmetic says')
-    }
-    if (local && probe?.host?.pressure === 'unknown') {
-        reasons.push('host pressure is unknown: a local preset is not called a fit')
-    }
-    if (margins.host === null) {
-        reasons.push('the host budget could not be computed')
+    if (!host.complete || margins.host === null) {
+        const missing = Object.entries(probe?.observed ?? {}).filter(([, ok]) => !ok).map(([name]) => name);
+
+        reasons.push(`the host budget is incomplete${missing.length ? ` (unobserved: ${missing.join(', ')})` : ''}`)
     } else if (margins.host < 0) {
         reasons.push(`the host budget falls ${((-margins.host) / GiB).toFixed(1)} GiB short`)
     }
-    if (guest && margins.guest < 0) {
+
+    if (guest && (!guest.complete || margins.guest === null)) {
+        reasons.push('the guest budget is incomplete')
+    } else if (guest && margins.guest < 0) {
         reasons.push(`the guest budget falls ${((-margins.guest) / GiB).toFixed(1)} GiB short`)
     }
-    if (guest && typeof vmCapRecommendedBytes === 'number' && guest.capBytes < vmCapRecommendedBytes) {
+
+    if (local && host.pressure === 'swapping') {
+        reasons.push('the host is swapping: no local preset fits, whatever the arithmetic says')
+    }
+    if (local && host.pressure !== 'ok' && host.pressure !== 'swapping') {
+        reasons.push('host pressure is unknown: a local preset is not called a fit')
+    }
+    if (guest && isByteCount(vmCapRecommendedBytes) && guest.capBytes < vmCapRecommendedBytes) {
         reasons.push(`the VM cap is below the preset's recommended ${(vmCapRecommendedBytes / GiB).toFixed(0)} GiB`)
     }
 
     return {fits: reasons.length === 0, margins, reasons}
 }
+
+// ---- shape guards ---------------------------------------------------------------------------------
+
+const isPlainObject   = value => !!value && typeof value === 'object' && !Array.isArray(value);
+const isByteCount     = value => Number.isFinite(value) && value >= 0;
+const isConsumerList  = value => Array.isArray(value) && value.every(row => isPlainObject(row) && typeof row.name === 'string' && isByteCount(row.bytes));
+const isVmInfo        = value => isPlainObject(value) && typeof value.backend === 'string' && isByteCount(value.capBytes);
+const isModelInventory = value => isPlainObject(value) && Array.isArray(value.inventories) && isConsumerList(value.models);
 
 /**
  * @summary `'swapping'` when swap is in use or the compressor holds the named share of memory;
@@ -189,9 +269,11 @@ export function fitsPreset(probe, workload) {
  * @private
  */
 function classifyPressure(swap, totalBytes) {
-    if (!swap || typeof totalBytes !== 'number') return 'unknown';
+    if (!isPlainObject(swap) || !isByteCount(totalBytes)) return 'unknown';
 
     const {swapUsedBytes = 0, compressedBytes = 0} = swap;
+
+    if (!isByteCount(swapUsedBytes) || !isByteCount(compressedBytes)) return 'unknown';
 
     return swapUsedBytes > 0 || compressedBytes >= SWAPPING_COMPRESSED_SHARE * totalBytes ? 'swapping' : 'ok'
 }
@@ -205,14 +287,16 @@ function classifyPressure(swap, totalBytes) {
  * @private
  */
 async function detectRunningPlane(rows, planeProject, attempt) {
-    const row = rows.find(entry => entry.name === planeProject && /^running/i.test(entry.status ?? ''));
+    const row = Array.isArray(rows) ? rows.find(entry => entry?.name === planeProject && /^running/i.test(entry.status ?? '')) : null;
 
     if (!row) return null;
+
+    const ports = await attempt('composePorts', row.name);
 
     return {
         project    : row.name,
         status     : row.status,
-        ports      : (await attempt('composePorts', row.name)) ?? [],
+        ports      : Array.isArray(ports) ? ports : [],
         configFiles: row.configFiles ?? []
     }
 }
@@ -236,6 +320,12 @@ export function parseDockerBytes(text) {
 
     return Math.round(value * scale)
 }
+
+/** @summary Byte multipliers for the unit suffixes the instruments print — binary and decimal, by prefix letter. */
+const BYTE_UNITS = {
+    binary : {k: 1024, K: 1024, M: 1048576, G: 1073741824, T: 1099511627776},
+    decimal: {k: 1000, K: 1000, M: 1000000, G: 1000000000, T: 1000000000000}
+};
 
 /**
  * @summary Parse one `docker stats --no-stream --format '{{json .}}'` row into `{name, bytes}`
@@ -327,16 +417,19 @@ export function parseComposePorts(text) {
 }
 
 /**
- * @summary Parse `lms ps --json` into loaded models `{name, bytes, state}` — an idle model still counts.
+ * @summary Parse `lms ps --json` into loaded models `{name, bytes, state}` — an idle model still
+ * counts, and a row without a finite size is an unreadable inventory, never zero bytes.
  * @param {String} json
  * @returns {Object[]}
  */
 export function parseLmsPs(json) {
-    return JSON.parse(json).map(model => ({
-        name : model.identifier ?? model.modelKey,
-        bytes: Number(model.sizeBytes ?? 0),
-        state: model.status ?? 'loaded'
-    }))
+    return JSON.parse(json).map(model => {
+        if (!Number.isFinite(model?.sizeBytes) || model.sizeBytes < 0) {
+            throw new Error(`lms ps row '${model?.identifier ?? model?.modelKey ?? '?'}' carries no sizeBytes`)
+        }
+
+        return {name: model.identifier ?? model.modelKey, bytes: model.sizeBytes, state: model.status ?? 'loaded'}
+    })
 }
 
 /**
@@ -355,84 +448,110 @@ export function parseDfRoot(text) {
 }
 
 /**
- * @summary Sum the resident set of every process whose command matches one of `patterns` (KiB → bytes),
- * from `ps -axo rss=,comm=` output; `null` when nothing matched.
- * @param {String}   text
- * @param {RegExp[]} patterns
- * @returns {Number|null}
- */
-export function sumProcessRss(text, patterns) {
-    let found = false, total = 0;
-
-    for (const line of String(text ?? '').split('\n')) {
-        const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-
-        if (match && patterns.some(pattern => pattern.test(match[2]))) {
-            found  = true;
-            total += Number(match[1]) * 1024
-        }
-    }
-
-    return found ? total : null
-}
-
-/**
  * @summary The processes Docker Desktop has been seen to run its VM under: Apple's Virtualization
  * framework XPC service on macOS 26+ (8.8 GiB resident on the 2026-10-01 specimen), its own
- * virtualization helper before that, and QEMU on Linux hosts that still run a VM.
+ * virtualization helper before that, and QEMU on hosts that run a VM.
  */
 export const VM_PROCESS_PATTERNS = [/com\.apple\.Virtualization\.VirtualMachine/i, /com\.docker\.virtualization/i, /qemu-system/i];
 
 /**
- * @summary Model servers whose own resident set is separate from the weights `loadedModels` already
- * count: LM Studio's bundled node runtime lives under `~/.lmstudio/`, Ollama and llama-server by name.
+ * @summary Model servers and the inventory that lists their loaded weights: LM Studio's bundled
+ * runtime lives under `~/.lmstudio/` and `lms ps` is its inventory; Ollama and llama-server have no
+ * inventory read here, so their resident sets stay host consumers as observed.
  */
-export const MODEL_SERVER_PATTERNS = [/\.lmstudio\//i, /LM Studio/i, /\bollama\b/i, /llama-server/i];
-
-const run = async (file, args) => (await execFileAsync(file, args, {encoding: 'utf8', timeout: 15_000, maxBuffer: 8 * 1024 * 1024})).stdout;
+export const MODEL_SERVER_PATTERNS = [
+    {pattern: /\.lmstudio\//i, name: 'lm-studio', inventory: 'lms'},
+    {pattern: /LM Studio/i,    name: 'lm-studio', inventory: 'lms'},
+    {pattern: /\bollama\b/i,   name: 'ollama',    inventory: null},
+    {pattern: /llama-server/i, name: 'llama-server', inventory: null}
+];
 
 /**
- * @summary The production readers: thin shells over the instruments the ticket measured, one each.
- * Every entry may throw; the probe turns a throw into an `uncertainty` entry.
+ * @summary Partition `ps -axo rss=,comm=` output (KiB → bytes) into the host inventory: one
+ * `os-and-harnesses` row for everything unmatched, one row per matched VM process pattern
+ * (`population: 'vm'`) and one per model server (`population: 'model-server'`, with the inventory
+ * that could replace it). Nothing is discarded here — the probe decides each population's owner.
+ * @param {String} text
+ * @returns {Object[]}
  */
-export const defaultReaders = {
-    totalmem: () => os.totalmem(),
-    cores   : () => os.cpus().length,
+export function partitionProcessInventory(text) {
+    const
+        rows   = [],
+        groups = new Map();
+    let other = 0;
 
-    // the OS and every harness, once: all resident sets except the VM's (its own consumer) and the
-    // model server's (its weights are the loaded models' bytes)
-    async hostUse() {
+    for (const line of String(text ?? '').split('\n')) {
+        const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+
+        if (!match) continue;
+
         const
-            text   = await run('ps', ['-axo', 'rss=,comm=']),
-            all    = sumProcessRss(text, [/./]) ?? 0,
-            vm     = sumProcessRss(text, VM_PROCESS_PATTERNS) ?? 0,
-            models = sumProcessRss(text, MODEL_SERVER_PATTERNS) ?? 0;
+            bytes   = Number(match[1]) * 1024,
+            command = match[2],
+            server  = MODEL_SERVER_PATTERNS.find(entry => entry.pattern.test(command));
 
-        return [{name: 'os-and-harnesses', bytes: all - vm - models, source: 'ps -axo rss (every process except the VM and the model server)'}]
-    },
+        if (VM_PROCESS_PATTERNS.some(pattern => pattern.test(command))) {
+            groups.set('vm', {name: 'vm-processes', bytes: (groups.get('vm')?.bytes ?? 0) + bytes, source: 'ps -axo rss (the VM\'s own processes)', population: 'vm'})
+        } else if (server) {
+            const key = `model-server:${server.name}`;
 
-    vmInfo        : async () => parseDockerInfo(await run('docker', ['info', '--format', '{{.MemTotal}} {{.NCPU}} {{.OperatingSystem}}'])),
-    containerStats: async () => (await run('docker', ['stats', '--no-stream', '--format', '{{json .}}'])).split('\n').filter(Boolean).map(line => parseDockerStatsRow(JSON.parse(line))),
-    vmReservation : async () => sumProcessRss(await run('ps', ['-axo', 'rss=,comm=']), VM_PROCESS_PATTERNS),
-    loadedModels  : async () => parseLmsPs(await run('lms', ['ps', '--json'])),
-
-    async swap() {
-        if (os.type() !== 'Darwin') {
-            const meminfo = await run('cat', ['/proc/meminfo']),
-                  total   = Number(/SwapTotal:\s*(\d+)/.exec(meminfo)?.[1] ?? 0),
-                  free    = Number(/SwapFree:\s*(\d+)/.exec(meminfo)?.[1] ?? 0);
-
-            return {swapUsedBytes: (total - free) * 1024, compressedBytes: 0}
+            groups.set(key, {name: key, bytes: (groups.get(key)?.bytes ?? 0) + bytes, source: 'ps -axo rss (the model server\'s own processes)', population: 'model-server', inventory: server.inventory})
+        } else {
+            other += bytes
         }
+    }
 
-        return {
-            swapUsedBytes  : parseSwapUsage(await run('sysctl', ['-n', 'vm.swapusage'])),
-            compressedBytes: parseVmStatCompressed(await run('vm_stat', []))
-        }
-    },
+    rows.push({name: 'os-and-harnesses', bytes: other, source: 'ps -axo rss (every process except the VM and the model servers)', population: 'other'});
+    rows.push(...groups.values());
 
-    composeLs   : async () => parseComposeLs(await run('docker', ['compose', 'ls', '--format', 'json'])),
-    composePorts: async project => parseComposePorts(await run('docker', ['compose', '-p', project, 'ps', '--format', 'json'])),
-    statfs      : async () => parseDfRoot(await run('df', ['-k', '/'])),
-    accelerator : () => null
-};
+    return rows
+}
+
+/**
+ * @summary Build the production readers over an injectable command runner — thin shells over the
+ * instruments the ticket measured, one each; every entry may throw, and the probe turns a throw into
+ * an `uncertainty` entry and an incomplete budget.
+ * @param {Object}   [options]
+ * @param {Function} [options.run]      `(file, args) => Promise<String>` returning stdout.
+ * @param {String}   [options.hostType] `os.type()` override for tests.
+ * @returns {Object}
+ */
+export function createDefaultReaders({run = defaultRun, hostType = os.type()} = {}) {
+    return {
+        totalmem: () => os.totalmem(),
+        cores   : () => os.cpus().length,
+
+        hostUse       : async () => partitionProcessInventory(await run('ps', ['-axo', 'rss=,comm='])),
+        vmInfo        : async () => parseDockerInfo(await run('docker', ['info', '--format', '{{.MemTotal}} {{.NCPU}} {{.OperatingSystem}}']), hostType),
+        containerStats: async () => (await run('docker', ['stats', '--no-stream', '--format', '{{json .}}'])).split('\n').filter(Boolean).map(line => parseDockerStatsRow(JSON.parse(line))),
+        loadedModels  : async () => ({inventories: ['lms'], models: parseLmsPs(await run('lms', ['ps', '--json']))}),
+
+        async swap() {
+            if (hostType !== 'Darwin') {
+                const meminfo = await run('cat', ['/proc/meminfo']),
+                      total   = Number(/SwapTotal:\s*(\d+)/.exec(meminfo)?.[1] ?? 0),
+                      free    = Number(/SwapFree:\s*(\d+)/.exec(meminfo)?.[1] ?? 0);
+
+                return {swapUsedBytes: (total - free) * 1024, compressedBytes: 0}
+            }
+
+            return {
+                swapUsedBytes  : parseSwapUsage(await run('sysctl', ['-n', 'vm.swapusage'])),
+                compressedBytes: parseVmStatCompressed(await run('vm_stat', []))
+            }
+        },
+
+        composeLs   : async () => parseComposeLs(await run('docker', ['compose', 'ls', '--format', 'json'])),
+        composePorts: async project => parseComposePorts(await run('docker', ['compose', '-p', project, 'ps', '--format', 'json'])),
+        statfs      : async () => parseDfRoot(await run('df', ['-k', '/'])),
+        accelerator : () => null
+    }
+}
+
+/** @private */
+async function defaultRun(file, args) {
+    return (await execFileAsync(file, args, {encoding: 'utf8', timeout: 15_000, maxBuffer: 8 * 1024 * 1024})).stdout
+}
+
+/** @summary The production readers over the real command runner. */
+export const defaultReaders = createDefaultReaders();
