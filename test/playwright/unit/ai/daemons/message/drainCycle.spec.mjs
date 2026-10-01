@@ -117,10 +117,11 @@ test.describe('Neo.ai.daemons.message.drainCycle', () => {
             afterCycle  : async summary => { summaries.push(summary) }
         });
 
-        await new Promise(resolve => setTimeout(resolve, 80));
+        // Wait for the cycles the loop has published, not for a wall-clock window a loaded runner spends
+        // inside the first poll.
+        await expect.poll(() => summaries.length).toBeGreaterThanOrEqual(2);
         loop.stop();
 
-        expect(summaries.length).toBeGreaterThanOrEqual(2);
         expect(summaries[0]).toMatchObject({observed: 0, drained: 0, outstanding: 0, inactive: false});
     });
 
