@@ -26,7 +26,6 @@ import {IDENTITIES} from './identityRoots.mjs';
  * trigger:** the first day `MISMATCHED_LOGINS` below is empty. Delete this file then; do not grow
  * it into a general-purpose identity store.
  *
- * @see #16280 — the ticket this module implements (ticket-ref-ok: implementing ticket)
  * @see ai/graph/identityRoots.mjs — the authoritative identity registry this map is keyed to
  */
 
