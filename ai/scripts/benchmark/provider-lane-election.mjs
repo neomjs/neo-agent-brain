@@ -1304,7 +1304,7 @@ export function assertProviderLaneWorkerConfig({aiConfig, providerConfig, receip
         aiConfig.openAiCompatible.host !== lane.baseUrl ||
         aiConfig.openAiCompatible.embeddingModel !== lane.model.id ||
         aiConfig.openAiCompatible.batchEmbeddingChunkSize !== EMBEDDING_CHUNK_SIZE ||
-        aiConfig.openAiCompatible.apiKey) {
+        aiConfig.openAiCompatible.apiKey || aiConfig.openAiCompatible.apiKeyFile) {
         throw Object.assign(new Error('provider-lane embedding worker config differs from its exact receipt'), {
             code: 'WORKER_CONFIG_MISMATCH'
         })

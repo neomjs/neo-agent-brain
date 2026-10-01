@@ -29,6 +29,7 @@ import {composeTurnDocumentText, resolveTurnDocumentForRead}    from './helpers/
 import {isCollectionQuarantined}                                from './helpers/quarantineStore.mjs';
 import {buildChatModel}                                         from '../../provider/buildChatModel.mjs';
 import aiConfig                                                 from '../../mcp/server/memory-core/config.mjs';
+import {readSecretCarrier}                                      from '../shared/secretCarrier.mjs';
 import RequestContextService, {SHARED_USER_ID, normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
 import {IDENTITIES, TRUST_TIERS, TRUST_TIER_ORDER}              from '../../graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId}                           from '../../graph/normalizeAgentIdentityNodeId.mjs';
@@ -1938,7 +1939,7 @@ class MemoryService extends Base {
                 modelProvider           : aiConfig.modelProvider,
                 openAiCompatibleConfig  : aiConfig.openAiCompatible,
                 ollamaConfig            : aiConfig.ollama,
-                geminiApiKey            : aiConfig.geminiApiKey,
+                geminiApiKey            : readSecretCarrier({value: aiConfig.geminiApiKey, file: aiConfig.geminiApiKeyFile, valueName: 'geminiApiKey', fileName: 'geminiApiKeyFile'}),
                 geminiModelName         : aiConfig.modelName,
                 providerActivityRecorder: MemoryCoreRecorderService,
                 providerActivityService : 'memory-core'

@@ -2,6 +2,7 @@ import crypto   from 'crypto';
 import fs       from 'fs';
 import path     from 'path';
 import AiConfig from '../../mcp/server/memory-core/config.mjs';
+import {readSecretCarrier} from '../shared/secretCarrier.mjs';
 import Base     from 'neo.mjs/src/core/Base.mjs';
 import {
     bytesToTokens,
@@ -171,7 +172,7 @@ class SemanticGraphExtractor extends Base {
     /**
      * Builds the graph-generation provider from resolved AiConfig leaves.
      *
-     * @summary Anchor & Echo: Keeps ADR-19 ownership local to this consumer: the
+     * @summary Anchor & Echo: Keeps the AiConfig SSOT decision's ownership local to this consumer: the
      * Provider tree is read at the graph-extraction use site, while the dispatch
      * helper receives only the plain constructor shape it needs for provider creation.
      *
@@ -189,7 +190,7 @@ class SemanticGraphExtractor extends Base {
                 keep_alive    : AiConfig.ollama.keep_alive
             },
             openAiCompatibleConfig: {
-                apiKey    : AiConfig.openAiCompatible.apiKey,
+                apiKey    : readSecretCarrier({value: AiConfig.openAiCompatible.apiKey, file: AiConfig.openAiCompatible.apiKeyFile, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'}),
                 host      : AiConfig.openAiCompatible.host,
                 keep_alive: AiConfig.openAiCompatible.keep_alive,
                 model     : AiConfig.openAiCompatible.model

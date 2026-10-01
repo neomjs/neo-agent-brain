@@ -2,6 +2,7 @@ import fs                from 'fs';
 import path              from 'path';
 import AiConfig          from '../../mcp/server/memory-core/config.mjs';
 import {writeFileAtomic} from '../shared/atomicFileWrite.mjs';
+import {readSecretCarrier} from '../shared/secretCarrier.mjs';
 import Base              from 'neo.mjs/src/core/Base.mjs';
 import Json              from 'neo.mjs/src/util/Json.mjs';
 import logger            from '../../mcp/server/memory-core/logger.mjs';
@@ -123,7 +124,7 @@ class TopologyInferenceEngine extends Base {
                 keep_alive    : AiConfig.ollama.keep_alive
             },
             openAiCompatibleConfig: {
-                apiKey    : AiConfig.openAiCompatible.apiKey,
+                apiKey    : readSecretCarrier({value: AiConfig.openAiCompatible.apiKey, file: AiConfig.openAiCompatible.apiKeyFile, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'}),
                 host      : AiConfig.openAiCompatible.host,
                 keep_alive: AiConfig.openAiCompatible.keep_alive,
                 model     : AiConfig.openAiCompatible.model

@@ -6,6 +6,7 @@ import {
 // Vocabulary only — this module lazy-imports its provider classes so selecting Gemini never loads
 // Ollama, and `providerAliases` is import-free precisely so sharing the alias set cannot undo that.
 import {assertProviderAlias} from './providerAliases.mjs';
+import {readSecretCarrier}   from '../services/shared/secretCarrier.mjs';
 
 let GoogleGenerativeAIClass,
     OllamaProviderClass,
@@ -101,7 +102,7 @@ function toGeminiEnvelope(result) {
  * queue so its parallelism is configurable without handing concurrency to every other local chat
  * consumer in the process. The queue arrives already constructed because its capacity comes from that
  * consumer's config, and this module must neither receive config values second-hand nor read
- * `AiConfig` itself. Per ADR 0019 B5 + C1 (ticket-ref-ok: the ADR clauses are the authority for why
+ * `AiConfig` itself. Per the AiConfig SSOT decision's B5 and C1 clauses (the authority for why
  * the queue arrives constructed instead of as a capacity number — a maintainer "simplifying" this
  * into a threaded parameter would violate the zero-tolerance C1 rule, so the rule has to be named).
  * @param {Object} [options.providerActivityRecorder] Best-effort bounded provider telemetry sink.
@@ -129,13 +130,16 @@ export function buildChatModel({
     assertProviderAlias(modelProvider, 'buildChatModel');
 
     if (modelProvider === 'openAiCompatible') {
-        const cfg = openAiCompatibleConfig || {};
+        const
+            cfg = openAiCompatibleConfig || {},
+            // the key's two carriers (value leaf, file sibling) resolve at the use site, each time
+            apiKey = () => readSecretCarrier({value: cfg.apiKey, file: cfg.apiKeyFile, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'});
         let providerPromise;
 
         const getProvider = () => {
             providerPromise ||= Promise.resolve((async () => {
                 const providerConfig = {
-                    apiKey   : cfg.apiKey,
+                    apiKey   : apiKey(),
                     host     : cfg.host,
                     modelName: cfg.model,
                     ...(cfg.keep_alive !== undefined ? {keepAlive: cfg.keep_alive} : {})
@@ -178,7 +182,7 @@ export function buildChatModel({
                     const provider      = await getProvider(),
                           dispatchModel = cfg.model;
 
-                    provider.apiKey    = cfg.apiKey;
+                    provider.apiKey    = apiKey();
                     provider.host      = cfg.host;
                     provider.modelName = dispatchModel;
                     if (cfg.keep_alive !== undefined) {

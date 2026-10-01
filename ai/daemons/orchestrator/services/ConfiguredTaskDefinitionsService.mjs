@@ -1,5 +1,6 @@
 import path             from 'path';
 import AiConfig         from '../../../config.mjs';
+import {readSecretCarrier} from '../../../services/shared/secretCarrier.mjs';
 import neuralLinkConfig from '../../../mcp/server/neural-link/config.mjs';
 import {
     buildLmsPreloadConfig,
@@ -172,7 +173,7 @@ function applyConfiguredLmsTask(tasks, {ensureLmsModelsLoadedFn}) {
                         host,
                         model       : embeddingModel,
                         timeoutMs,
-                        apiKey      : AiConfig.openAiCompatible.apiKey,
+                        apiKey      : readSecretCarrier({value: AiConfig.openAiCompatible.apiKey, file: AiConfig.openAiCompatible.apiKeyFile, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'}),
                         lmsLoadedModels,
                         metadataOnly: true
                     })
