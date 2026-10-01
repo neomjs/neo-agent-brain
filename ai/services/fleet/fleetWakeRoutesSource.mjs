@@ -63,6 +63,9 @@ const
  * @param {Function|null} [options.readPresence] `() => Object` (sync or async) resolving the
  *     roster-presence report (`who_is_online` payload shape: `{agents: [{identity, state,
  *     reason, signals}]}`). Absent ⇒ the presence axis is a typed `unobserved`.
+ * @param {Function|null} [options.readFleetArming] `(agentId) => {state, reason}|null` — the wake
+ *     route the Fleet recorded when it started the seat. It only explains a seat the manifest does
+ *     not carry; the manifest stays the authority for armed.
  * @param {Function} [options.wakeIdentityFor] `(agent) => String` roster row → wake identity.
  *     Default: the exported presence canonicalizer — ONE registry→plane identity boundary for
  *     both live presence consumers, accepting the registry's full production spelling domain
@@ -80,6 +83,7 @@ export function createFleetWakeRoutesSource({
     resolveSeatArming = null,
     wakeReceiverManifestPath = null,
     readPresence = null,
+    readFleetArming = null,
     wakeIdentityFor = presenceIdentityForAgent,
     now = () => new Date()
 } = {}) {
@@ -144,7 +148,7 @@ export function createFleetWakeRoutesSource({
                 agentId      : agent.id,
                 agentIdentity: identity,
                 subscription : subscription.rowFor(identity),
-                armed        : arming.rowFor(identity),
+                armed        : explainUnarmed(arming.rowFor(identity), readFleetArming, agent.id),
                 delivery     : {state: delivery.state, reason: delivery.reason},
                 lastFailure  : failures.rowFor(identity),
                 presence     : presence.rowFor(identity)
@@ -300,6 +304,30 @@ async function readArmingAxis(resolveSeatArming) {
             }
         }
     }
+}
+
+/**
+ * @summary A seat the manifest does not carry says why, when the Fleet's own arming of it reported
+ * `unarmed`. Any other row passes through untouched: the manifest decides armed, and an unobserved or
+ * unknown axis keeps its own reason.
+ * @param {Object} row The arming axis row for the seat.
+ * @param {Function|null} readFleetArming
+ * @param {String} agentId
+ * @returns {Object}
+ * @private
+ */
+function explainUnarmed(row, readFleetArming, agentId) {
+    if (row.state !== 'none' || typeof readFleetArming !== 'function') return row;
+
+    let route;
+
+    try {
+        route = readFleetArming(agentId)
+    } catch {
+        return row
+    }
+
+    return route?.state === 'unarmed' && route.reason ? {...row, reason: redactReason(route.reason)} : row
 }
 
 /**

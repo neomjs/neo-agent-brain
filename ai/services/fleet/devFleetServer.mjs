@@ -293,7 +293,9 @@ async function boot() {
         // SOURCE, the Neo-free site the spec exercises. An explicit resolver stays the override seam.
         resolveSeatArming       : FleetManager.wakeStateOptions.resolveSeatArming ?? null,
         wakeReceiverManifestPath: FleetManager.wakeStateOptions.wakeReceiverManifestPath ?? null,
-        readPresence            : planeClient ? createPlaneWhoIsOnlineReader(planeClient) : null
+        readPresence            : planeClient ? createPlaneWhoIsOnlineReader(planeClient) : null,
+        // why a seat the manifest does not carry is unarmed, as the Fleet recorded it at the start
+        readFleetArming         : agentId => FleetManager.getLifecycleService().status(agentId).wakeRoute
     });
 
     // Wire the composed activitySource onto FleetControlBridge. The memory-core mailbox + graph
