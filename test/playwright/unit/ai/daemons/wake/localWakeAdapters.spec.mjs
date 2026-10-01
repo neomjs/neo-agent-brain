@@ -312,6 +312,48 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         expect(fetchCount).toBe(1);
     });
 
+    test('a 404 from prompt_async is named stale coordinates, with no retry; any other status keeps its plain reading', async () => {
+        const envelope = {
+            agentIdentity,
+            hostname : '127.0.0.1',
+            port     : 4101,
+            sessionId: 'session-gone',
+            projectId: 'project-1',
+            directory: '/workspace/one',
+            username : 'neo',
+            password : 'secret'
+        };
+        const opencode = record('opencode-server', {
+            route: {
+                agentIdentity,
+                harnessTargetMetadata: {adapter: 'opencode-server', envelopePath: '/seat/opencode-envelope.json'},
+                adapterConfig        : {attemptTimeoutMs: 1000}
+            }
+        });
+        const dispatchAnswering = async status => {
+            let fetchCount = 0;
+
+            const outcome = await dispatchLocalWake(opencode, {
+                fs   : {readFile: async () => JSON.stringify(envelope)},
+                fetch: async () => { fetchCount++; return {status} }
+            });
+
+            return {fetchCount, outcome}
+        };
+
+        expect(await dispatchAnswering(404)).toEqual({
+            fetchCount: 1,
+            outcome   : {
+                outcome      : 'failed',
+                outcomeReason: 'opencode-server coordinates are stale: the server has no session by the id the envelope names (HTTP 404)'
+            }
+        });
+        expect(await dispatchAnswering(500)).toEqual({
+            fetchCount: 1,
+            outcome   : {outcome: 'failed', outcomeReason: 'opencode-server prompt_async expected HTTP 204, received 500'}
+        });
+    });
+
     test('a post-submit draft-restore focus race is delivered and never retried', async () => {
         let   probeAttempts    = 0;
         let   deliveryAttempts = 0;
