@@ -987,10 +987,17 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect(projectConfig).not.toContain('command = "npm"');
         await expect(fs.stat(path.join(opts.targetRepoRoot, 'node_modules'))).rejects.toMatchObject({code: 'ENOENT'});
 
-        // All catalog keys are projected from current defaults; optional workflows remain disabled.
-        expect(projectConfig.match(/^\[mcp_servers\./gm)).toHaveLength(5);
-        expect(projectConfig).toMatch(/\[mcp_servers\."neo-mjs-github-workflow"\][\s\S]*?enabled = false/);
-        expect(projectConfig).toMatch(/\[mcp_servers\."neo-mjs-gitlab-workflow"\][\s\S]*?enabled = false/);
+        // All catalog keys are projected from current defaults. Only the switched-off optional workflows
+        // say so; the switched-on servers carry no `enabled`, so the seat's own switch decides.
+        expect(projectConfig.match(/^\[mcp_servers\."[^"]+"\]$|^enabled\s*=.*$/gm)).toEqual([
+            '[mcp_servers."neo-mjs-memory-core"]',
+            '[mcp_servers."neo-mjs-knowledge-base"]',
+            '[mcp_servers."neo-mjs-neural-link"]',
+            '[mcp_servers."neo-mjs-github-workflow"]',
+            'enabled = false',
+            '[mcp_servers."neo-mjs-gitlab-workflow"]',
+            'enabled = false'
+        ]);
         expect(homeConfig).toContain('cli_auth_credentials_store = "file"');
         expect(homeConfig).toContain('mcp_oauth_credentials_store = "file"');
         expect(homeConfig).not.toContain(`[projects.${JSON.stringify(opts.targetRepoRoot)}]`);
@@ -1170,6 +1177,132 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect((await read(path.join(opts.targetRepoRoot, '.codex', 'config.toml'))).match(/^\[mcp_servers\./gm)).toHaveLength(5);
         expect((await fs.stat(path.join(authHome, 'memories'))).isDirectory()).toBe(true);
         await expect(fs.stat(path.join(result.instanceHome, 'config.toml'))).rejects.toMatchObject({code: 'ENOENT'});
+    });
+
+    test('a switch the Codex app writes into the seat\'s home survives the next Start untouched', async () => {
+        const
+            opts        = options(makeAgent('codex-desktop')),
+            result      = await prepareManagedAgentWorkspace(opts),
+            homePath    = path.join(result.instanceHome, 'codex-home', 'config.toml'),
+            projectPath = path.join(opts.targetRepoRoot, '.codex', 'config.toml'),
+            project     = await read(projectPath),
+            // What the app's switch writes (`config/value/write`, user layer): Neural Link off.
+            switched    = await read(homePath) + '\n[mcp_servers."neo-mjs-neural-link"]\nenabled = false\n';
+
+        await fs.writeFile(homePath, switched);
+
+        const again = await prepareManagedAgentWorkspace(opts);
+
+        expect(await read(homePath)).toBe(switched);
+        expect(await read(projectPath)).toBe(project);
+        expect(again.artifacts.every(item => item.status === WORKSPACE_ARTIFACT_STATES.MATCH)).toBe(true);
+    });
+
+    test('a cockpit change of the MCP matrix lands at the next Start instead of reading as divergence', async () => {
+        const
+            opts        = options(makeAgent('codex')),
+            projectPath = path.join(opts.targetRepoRoot, '.codex', 'config.toml'),
+            switches    = async () => (await read(projectPath)).match(/^\[mcp_servers\."[^"]+"\]$|^enabled = false$/gm).join(' ');
+
+        await prepareManagedAgentWorkspace(opts);
+
+        opts.agent = makeAgent('codex', {mcpServers: {'github-workflow': true}});
+        const on = await prepareManagedAgentWorkspace(opts);
+
+        expect(on.artifacts[0].status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        expect(await switches()).not.toMatch(/github-workflow"\] enabled = false/);
+        expect(await switches()).toMatch(/gitlab-workflow"\] enabled = false/);
+
+        opts.agent = makeAgent('codex');
+        await prepareManagedAgentWorkspace(opts);
+
+        expect(await switches()).toMatch(/github-workflow"\] enabled = false/);
+    });
+
+    test('a seat an earlier Fleet rendered with project `enabled` lines migrates in one Start, its receipt included', async () => {
+        const
+            opts        = {...options(makeAgent('codex-desktop')), mcpTarget: tenantTarget()},
+            first       = await prepareManagedAgentWorkspace(opts),
+            projectPath = path.join(opts.targetRepoRoot, '.codex', 'config.toml'),
+            homePath    = path.join(first.instanceHome, 'codex-home', 'config.toml'),
+            receiptPath = path.join(first.instanceHome, '.neo-fleet-mcp-transport.json'),
+            tableBody   = (source, name) => {
+                const lines = source.split('\n'), start = lines.indexOf(`[mcp_servers."${name}"]`);
+                let   end   = start + 1;
+
+                while (end < lines.length && !lines[end].startsWith('[')) end++;
+
+                return lines.slice(start, end).join('\n').trim()
+            },
+            // The receipt contract: sha256 over the canonical JSON of the Memory Core and Knowledge Base tables.
+            transportHash = source => crypto.createHash('sha256').update(JSON.stringify({
+                'neo-mjs-knowledge-base': tableBody(source, 'neo-mjs-knowledge-base'),
+                'neo-mjs-memory-core'   : tableBody(source, 'neo-mjs-memory-core')
+            })).digest('hex');
+
+        expect(JSON.parse(await read(receiptPath)).projectionSha256, 'the hash helper reproduces the receipt')
+            .toBe(transportHash(await read(projectPath)));
+
+        // The previous rendering: the old header, and `enabled = true` closing every switched-on table.
+        let table = null;
+        const previous = (await read(projectPath)).split('\n').map(line => {
+            const header = line.match(/^\[mcp_servers\."(neo-mjs-[^"]+)"\]$/);
+
+            table = header ? header[1] : line.startsWith('[') ? null : table;
+
+            return table && !table.endsWith('-workflow') && line === 'tool_timeout_sec = 120' ? `${line}\nenabled = true` : line
+        }).join('\n').replace(
+            /^# Fleet-managed Neo MCP tables: .*$/m,
+            '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; enabled values are the current Brain projection.'
+        );
+
+        await fs.writeFile(projectPath, previous);
+        await fs.writeFile(receiptPath, JSON.stringify({version: 1, adapter: 'codex-desktop', artifact: 'config.toml', projectionSha256: transportHash(previous)}));
+
+        const home = await read(homePath);
+
+        // The same Start also moves the tenant, so the receipt has to authenticate the converged tables.
+        opts.mcpTarget = tenantTarget('https://tenant-b.example.com/agentos');
+        await prepareManagedAgentWorkspace(opts);
+
+        const project = await read(projectPath);
+
+        expect(project.match(/^enabled\s*=.*$/gm)).toEqual(['enabled = false', 'enabled = false']);
+        expect(project).toContain('`enabled = false` marks a server the Fleet switches off');
+        expect(project).toContain('https://tenant-b.example.com/agentos/mc/mcp');
+        expect(await read(homePath), 'the Fleet never writes a switch into the home').toBe(home);
+        expect(JSON.parse(await read(receiptPath)).projectionSha256).toBe(transportHash(project));
+    });
+
+    test('the installed Codex parser reads each server\'s state from the seat\'s home', async () => {
+        test.skip(!process.env.NEO_TEST_CODEX_BIN, 'Requires an installed Codex CLI.');
+
+        const
+            // Codex trusts a project by its canonical path; the temp root may sit behind a symlink.
+            opts     = {...options(makeAgent('codex-desktop')), mcpTarget: tenantTarget(), targetRepoRoot: path.join(await fs.realpath(root), 'canonical-repo')},
+            result   = await prepareManagedAgentWorkspace(opts),
+            home     = path.join(result.instanceHome, 'codex-home'),
+            homePath = path.join(home, 'config.toml'),
+            states   = () => {
+                const listed = spawnSync(process.env.NEO_TEST_CODEX_BIN, ['mcp', 'list', '--json'], {
+                    cwd     : opts.targetRepoRoot,
+                    env     : {PATH: process.env.PATH, CODEX_HOME: home},
+                    encoding: 'utf8',
+                    timeout : 10000
+                });
+
+                expect(listed.status, listed.stderr).toBe(0);
+                return Object.fromEntries(JSON.parse(listed.stdout).map(row => [row.name, row.enabled]))
+            };
+
+        expect(states()).toMatchObject({'neo-mjs-neural-link': true, 'neo-mjs-github-workflow': false});
+
+        // The app's switch turns Neural Link off in the home; the cockpit turns GitHub on.
+        await fs.writeFile(homePath, await read(homePath) + '\n[mcp_servers."neo-mjs-neural-link"]\nenabled = false\n');
+        opts.agent = makeAgent('codex-desktop', {mcpServers: {'github-workflow': true}});
+        await prepareManagedAgentWorkspace(opts);
+
+        expect(states()).toMatchObject({'neo-mjs-neural-link': false, 'neo-mjs-github-workflow': true});
     });
 
     test('a symlinked resident-home segment fails before hydration or artifact writes', async () => {

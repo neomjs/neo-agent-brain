@@ -22,7 +22,10 @@ export {createManagedAgentWorkspacePlan} from './managedAgentWorkspacePlan.mjs';
 const
     NEO_MCP_NAME_PREFIX      = 'neo-mjs-',
     CODEX_REMOTE_TRUST_BEGIN = '# Fleet-managed remote MCP project trust begin',
-    CODEX_REMOTE_TRUST_END   = '# Fleet-managed remote MCP project trust end';
+    CODEX_REMOTE_TRUST_END   = '# Fleet-managed remote MCP project trust end',
+    CODEX_PROJECT_HEADER     = '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; `enabled = false` marks a server the Fleet switches off, the others follow the seat\'s own switch.',
+    // The header an earlier Fleet wrote, while the tables still carried `enabled`.
+    CODEX_PROJECT_HEADER_V1  = '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; enabled values are the current Brain projection.';
 
 /**
  * @summary Convergence states for Fleet-owned workspace artifacts. `DIVERGENT` is emitted on the
@@ -836,7 +839,14 @@ async function retireSeatInstructions({filePath, receiptPath, trustedRoot, fileS
     return {artifact: {path: filePath, status: WORKSPACE_ARTIFACT_STATES.UPDATED, ownedKeys: `${ownedLabel} retired`}}
 }
 
-/** @private */
+/**
+ * @summary Converge a Codex seat's project MCP tables and its Codex home. The `enabled` lines are
+ * converged first ({@link convergeCodexProjectSwitches}): the Fleet switches servers off in the
+ * project layer and leaves the others to the seat's own switch, which writes the home.
+ * @param {Object} options
+ * @returns {Promise<Object[]>} The artifact rows: project, home, memories directory.
+ * @private
+ */
 async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, fileSystem}) {
     const
         projectPath     = path.join(targetRepoRoot, '.codex', 'config.toml'),
@@ -848,6 +858,14 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
         homeContent     = renderCodexHomeConfig(),
         remote          = plan.some(server => server.target === 'tenant'),
         artifacts       = [];
+    const switched    = await convergeCodexProjectSwitches({
+        filePath   : projectPath,
+        plan,
+        instanceHome,
+        adapter    : agent.harnessType,
+        trustedRoot: targetRepoRoot,
+        fileSystem
+    });
     const contextSeed = await readCodexContextSeed({targetRepoRoot, projectPath, homePath, instanceHome, fileSystem});
 
     artifacts.push(...await convergeTransportArtifact({
@@ -872,6 +890,10 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
             content : contextSeed + await fileSystem.readFile(projectPath, 'utf8'),
             fileSystem
         });
+        artifacts[0].status = WORKSPACE_ARTIFACT_STATES.UPDATED
+    }
+
+    if (switched && artifacts[0].status === WORKSPACE_ARTIFACT_STATES.MATCH) {
         artifacts[0].status = WORKSPACE_ARTIFACT_STATES.UPDATED
     }
 
@@ -1353,14 +1375,20 @@ function opencodeJsoncOwnedProjection(source) {
  */
 function renderCodexProjectConfig(plan) {
     return [
-        '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; enabled values are the current Brain projection.',
+        CODEX_PROJECT_HEADER,
         plan.map(renderCodexMcpTable).join('\n\n'),
         ''
     ].join('\n');
 }
 
-/** @private */
+/**
+ * @summary One Codex project table. Only a server the Fleet switches off carries `enabled`
+ * ({@link convergeCodexProjectSwitches}).
+ * @private
+ */
 function renderCodexMcpTable(server) {
+    const switchedOff = server.enabled ? [] : ['enabled = false'];
+
     if (server.transport === 'streamable-http') {
         return [
             `[mcp_servers.\"${server.name}\"]`,
@@ -1368,7 +1396,7 @@ function renderCodexMcpTable(server) {
             `bearer_token_env_var = ${JSON.stringify(server.credentialEnvVar)}`,
             'startup_timeout_sec = 30',
             'tool_timeout_sec = 120',
-            `enabled = ${server.enabled}`
+            ...switchedOff
         ].join('\n')
     }
 
@@ -1381,7 +1409,7 @@ function renderCodexMcpTable(server) {
         `env_vars = ${JSON.stringify(server.runtimeEnv)}`,
         'startup_timeout_sec = 30',
         'tool_timeout_sec = 120',
-        `enabled = ${server.enabled}`
+        ...switchedOff
     ].join('\n');
 }
 
@@ -1532,6 +1560,91 @@ function codexHomeOwnedProjection(source) {
 }
 
 /**
+ * @summary Bring the `enabled` line of each `neo-mjs-*` table in a Codex project config to the plan:
+ * `enabled = false` closes a table the Fleet switches off, and a switched-on table carries none, so
+ * the seat's own switch decides. The app's switch writes the seat's Codex home (the user layer), and
+ * the project layer outranks it, so an `enabled = true` here would shadow the switch. Converging the
+ * line apart from the rest of the table lets a cockpit change of the matrix land instead of reading
+ * as divergence. A tenant seat's transport receipt that vouched for the previous tables is re-issued
+ * for the converged ones first, so a crash between the two writes leaves a receipt the next Start can
+ * still use.
+ * @param {Object}   options
+ * @param {String}   options.filePath     The project `config.toml`.
+ * @param {Object[]} options.plan         The bound MCP plan (`name`, `enabled`).
+ * @param {String}   options.instanceHome The seat's instance home (receipt location).
+ * @param {String}   options.adapter      Harness type the receipt names.
+ * @param {String}   options.trustedRoot  The target repository root.
+ * @param {Object}   options.fileSystem   Promise filesystem seam.
+ * @returns {Promise<Boolean>} whether Fleet changed the project artifact.
+ * @private
+ */
+async function convergeCodexProjectSwitches({filePath, plan, instanceHome, adapter, trustedRoot, fileSystem}) {
+    let source;
+
+    try {
+        source = await fileSystem.readFile(filePath, 'utf8')
+    } catch (error) {
+        if (error?.code === 'ENOENT') return false;
+        throw error
+    }
+
+    const
+        off    = new Set(plan.filter(server => !server.enabled).map(server => server.name)),
+        output = [];
+    let table = null, lastContent = -1;
+
+    const close = () => {
+        if (table && off.has(table)) output.splice(lastContent + 1, 0, 'enabled = false')
+    };
+
+    for (const line of source.replace(CODEX_PROJECT_HEADER_V1, CODEX_PROJECT_HEADER).split('\n')) {
+        const header = parseTomlTableHeader(line);
+
+        if (header) {
+            const name = codexMcpServerName(header);
+
+            close();
+            table       = name?.startsWith(NEO_MCP_NAME_PREFIX) ? name : null;
+            output.push(line);
+            lastContent = output.length - 1;
+            continue
+        }
+
+        if (table && /^\s*enabled\s*=\s*(?:true|false)\s*(?:#.*)?\r?$/.test(line)) continue;
+
+        output.push(line);
+
+        if (table && line.trim() && !line.trim().startsWith('#')) lastContent = output.length - 1
+    }
+
+    close();
+
+    const converged = output.join('\n');
+
+    if (converged === source) return false;
+
+    await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: 'mcp_servers."neo-mjs-*".enabled'});
+
+    const
+        receiptPath = path.join(instanceHome, TRANSPORT_RECEIPT_FILE),
+        receipt     = await readTransportReceipt({receiptPath, adapter, filePath, fileSystem});
+
+    if (receipt?.projectionSha256 === hashProjection(splitTransportProjection(projectCodexOwnedProjection(source)).transport)) {
+        await convergeTransportReceipt({
+            receiptPath,
+            adapter,
+            filePath,
+            projectionSha256: hashProjection(splitTransportProjection(projectCodexOwnedProjection(converged)).transport),
+            fileSystem,
+            instanceHome
+        })
+    }
+
+    await publishTextAtomically({filePath, content: converged, fileSystem});
+    return true
+}
+
+/**
  * @summary Add the narrow Codex project-trust row only while remote MCP is selected, then remove
  * exactly Fleet's marked block on opt-out. Re-entry reads semantic trust, preserving native settings
  * inserted inside Fleet's comments; mixed blocks cannot be removed on opt-out. A non-trusted row
@@ -1653,6 +1766,8 @@ const TRANSPORT_SERVER_NAMES = Object.freeze([
     `${NEO_MCP_NAME_PREFIX}knowledge-base`
 ]);
 
+const TRANSPORT_RECEIPT_FILE = '.neo-fleet-mcp-transport.json';
+
 /** @summary Recognize the former exact invocation without widening any other managed setting. @private */
 function previousNodeRuntimePlan(plan) {
     return plan.some(server => server.environment)
@@ -1703,7 +1818,7 @@ async function convergeTransportArtifact({
     await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: ownedLabel});
 
     const
-        receiptPath          = path.join(instanceHome, '.neo-fleet-mcp-transport.json'),
+        receiptPath          = path.join(instanceHome, TRANSPORT_RECEIPT_FILE),
         desired              = splitTransportProjection(ownedProjection(desiredContent)),
         legacy               = splitTransportProjection(ownedProjection(legacyContent)),
         runtimePrevious      = runtimeLegacyContent && splitTransportProjection(ownedProjection(runtimeLegacyContent)),
