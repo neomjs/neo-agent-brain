@@ -24,8 +24,9 @@ import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
  * @param {String} [coordinates.forge='github'] One of {@link REPO_FORGES}.
  * @param {String} caller For the error message.
  * @returns {{repoSlug: String, cloneUrl: String, forge?: String}}
- * @throws {Error} On an unknown forge, a malformed slug, a GitLab entry without a clone URL, or a clone
- * URL that is not a remote naming the slug's repo.
+ * @throws {Error} On an unknown forge, a malformed slug, a GitLab entry without a clone URL, a clone URL
+ * that is not a plain string (a query, fragment or whitespace included), or one that is not a remote naming
+ * the slug's repo.
  * @private
  */
 function repoCoordinates({repoSlug, cloneUrl, forge = 'github'}, caller) {
@@ -47,6 +48,12 @@ function repoCoordinates({repoSlug, cloneUrl, forge = 'github'}, caller) {
 
     if (forge !== 'github' && cloneUrl == null) {
         throw new Error(`${caller}: a ${forge} repository needs its clone URL, because its host cannot be derived.`)
+    }
+
+    // The matcher below reads text, not a parsed URL: a query or fragment before the path would let a remote
+    // that names another path pass it, and a non-string would be coerced into one.
+    if (cloneUrl != null && (typeof cloneUrl !== 'string' || /[?#\s]/.test(cloneUrl))) {
+        throw new Error(`${caller}: the clone URL must be a plain remote string, with no query, fragment or whitespace.`)
     }
 
     const

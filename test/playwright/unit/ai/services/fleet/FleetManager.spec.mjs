@@ -174,7 +174,12 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleet-authority definition
             [{forge: 'gitlab', repoSlug: 'group/project', cloneUrl: 'https://gitlab.example.com/other/project.git'},   /the clone URL must be/],
             [{forge: 'bitbucket', repoSlug: 'x/y'},                                                                     /forge must be one of github, gitlab/],
             [{repoSlug: 'group/sub/project'},                                                                           /exactly '<owner>\/<repo>' on GitHub/],
-            [{forge: 'gitlab', repoSlug: 'memory/sub/project', cloneUrl: 'git@gitlab.example.com:memory/sub/project.git'}, /repoSlug must be/]
+            [{forge: 'gitlab', repoSlug: 'memory/sub/project', cloneUrl: 'git@gitlab.example.com:memory/sub/project.git'}, /repoSlug must be/],
+            // the text matches the slug, but the parsed URL names another path or is no string at all
+            [{forge: 'gitlab', repoSlug: 'group/sub/project', cloneUrl: 'https://gitlab.example.com?x=/group/sub/project.git'}, /plain remote string/],
+            [{forge: 'gitlab', repoSlug: 'group/sub/project', cloneUrl: 'https://gitlab.example.com#x=/group/sub/project.git'}, /plain remote string/],
+            [{forge: 'gitlab', repoSlug: 'group/sub/project', cloneUrl: ['https://gitlab.example.com/group/sub/project.git']}, /plain remote string/],
+            [{repoSlug: 'x/y', cloneUrl: 'https://github.com/x/y.git?ref=main'},                                         /plain remote string/]
         ]) {
             expect(() => FleetManager.setRepo({id: 'alice', ...payload}), JSON.stringify(payload)).toThrow(rule)
         }
