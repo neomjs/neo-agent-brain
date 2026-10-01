@@ -34,6 +34,13 @@ const RESERVED_OWNERS = {
 };
 
 /**
+ * The forges a seat's repository can live on. `github` is the default and is never recorded; `gitlab`
+ * is, because a self-hosted host does not say which forge it is.
+ * @type {ReadonlyArray<String>}
+ */
+export const REPO_FORGES = Object.freeze(['github', 'gitlab']);
+
+/**
  * @summary Derive the managed checkout path of a Fleet agent's clone of a repo:
  * `<managedRoot>/<agentId>/<owner>/<repo>`, the layout a person would make by hand.
  *
@@ -55,10 +62,11 @@ const RESERVED_OWNERS = {
  * @param {Object} options
  * @param {String} options.managedRoot An absolute path to the trusted agents root.
  * @param {String} options.agentId     The Fleet agent id (untrusted).
- * @param {String} options.repoSlug    `<owner>/<repo>`, e.g. `'neomjs/neo'` (untrusted).
- * @returns {String} `<managedRoot>/<agentId>/<owner>/<repo>`, absolute, stable, contained.
- * @throws {Error} If `managedRoot` is not an absolute path, `repoSlug` is not exactly
- * `<owner>/<repo>`, a segment fails {@link assertSeatSegment}, the owner is {@link HARNESS_SEGMENT} or
+ * @param {String} options.repoSlug    `<owner>/<repo>`, e.g. `'neomjs/neo'`, or deeper for a GitLab
+ * project in nested groups (untrusted).
+ * @returns {String} `<managedRoot>/<agentId>/<owner>/…/<repo>`, absolute, stable, contained.
+ * @throws {Error} If `managedRoot` is not an absolute path, `repoSlug` has fewer than two segments, a
+ * segment fails {@link assertSeatSegment}, the owner is {@link HARNESS_SEGMENT} or
  * {@link MEMORY_SEGMENT}, or (defense-in-depth) the resolved path escapes `managedRoot`.
  */
 export function deriveAgentRepoPath({managedRoot, agentId, repoSlug} = {}) {
@@ -66,35 +74,53 @@ export function deriveAgentRepoPath({managedRoot, agentId, repoSlug} = {}) {
 
     assertSeatSegment(agentId, 'agentId', 'deriveAgentRepoPath');
 
-    const [owner, repo] = assertRepoSlug(repoSlug, 'deriveAgentRepoPath');
-
-    return assertContained(root, path.resolve(root, agentId, owner, repo), 'deriveAgentRepoPath')
+    return assertContained(root, path.resolve(root, agentId, ...assertRepoSlug(repoSlug, 'deriveAgentRepoPath')), 'deriveAgentRepoPath')
 }
 
 /**
- * @summary Refuse any repo slug that could not name a seat's checkout: exactly `<owner>/<repo>`, both
- * seat segments, and never a reserved owner ({@link HARNESS_SEGMENT}, {@link MEMORY_SEGMENT}). The one
- * rule for the checkout path and for the verb that records a seat's repo.
+ * @summary Refuse any repo slug that could not name a seat's checkout: `<owner>/<repo>` or deeper (a
+ * GitLab project in nested groups), every part a seat segment, and never a reserved owner
+ * ({@link HARNESS_SEGMENT}, {@link MEMORY_SEGMENT}). How deep a forge allows is the registration rule's
+ * (`FleetManager`), not the path's: a GitHub slug registers as exactly `<owner>/<repo>`.
  * @param {*} repoSlug
  * @param {String} caller For the error message
- * @returns {String[]} `[owner, repo]`
+ * @returns {String[]} The segments, `[owner, …groups, repo]`.
  * @throws {Error} On any other shape.
  */
 export function assertRepoSlug(repoSlug, caller) {
-    if (typeof repoSlug !== 'string' || repoSlug.split('/').length !== 2) {
-        throw new Error(`${caller}: 'repoSlug' must be '<owner>/<repo>', received '${repoSlug}'.`);
+    const segments = typeof repoSlug === 'string' ? repoSlug.split('/') : [];
+
+    if (segments.length < 2) {
+        throw new Error(`${caller}: 'repoSlug' must be '<owner>/<repo>' or deeper, received '${repoSlug}'.`);
     }
 
-    const [owner, repo] = repoSlug.split('/');
+    segments.forEach((segment, index) => assertSeatSegment(segment, index === 0 ? 'owner' : 'repo', caller));
 
-    assertSeatSegment(owner, 'owner', caller);
-    assertSeatSegment(repo,  'repo',  caller);
-
-    if (Object.hasOwn(RESERVED_OWNERS, owner)) {
-        throw new Error(`${caller}: the owner '${owner}' is reserved for ${RESERVED_OWNERS[owner]}.`);
+    if (Object.hasOwn(RESERVED_OWNERS, segments[0])) {
+        throw new Error(`${caller}: the owner '${segments[0]}' is reserved for ${RESERVED_OWNERS[segments[0]]}.`);
     }
 
-    return [owner, repo]
+    return segments
+}
+
+/**
+ * @summary Refuse a seat's repositories whose checkouts would collide: two slugs that derive one path,
+ * or one checkout nested inside another (a GitLab `acme/tools/cli` beside `acme/tools`, or one slug on
+ * two forges). Seats never share a folder, so the rule runs over one seat's set.
+ * @param {String[]} repoSlugs One seat's validated slugs: its working repository and the others.
+ * @param {String} caller For the error message
+ * @throws {Error} Naming the rule, never the values.
+ */
+export function assertNoCheckoutCollision(repoSlugs, caller) {
+    const paths = repoSlugs.map(repoSlug => repoSlug.split('/'));
+
+    paths.forEach((a, i) => paths.slice(i + 1).forEach(b => {
+        const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+
+        if (shorter.every((segment, index) => segment === longer[index])) {
+            throw new Error(`${caller}: two of the seat's repositories would share one checkout, or nest one inside the other.`)
+        }
+    }))
 }
 
 /**
