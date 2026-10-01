@@ -168,16 +168,45 @@ function inspectProcess(pid) {
 }
 
 /**
- * @summary Whether a live command line is this seat's own main process: the launch binary as `argv[0]`
- * (a launched script shows behind its interpreter), and the profile argument as a whole word. A longer
- * profile path, an argument that only embeds the profile, a helper binary and any other program all fail.
+ * @summary The interpreter line a launched script names in its shebang, or `null` for a binary. The
+ * kernel runs a script as that exact line followed by the script path, so the line is the only
+ * `argv[0]` a script's process may show ahead of the launch path.
+ * @param {String|null} file Resolved launch path.
+ * @returns {String|null}
+ * @private
+ */
+function readShebangLine(file) {
+    let fd;
+
+    try {
+        const buffer = Buffer.alloc(512);
+
+        fd = fs.openSync(file, 'r');
+
+        const head = buffer.subarray(0, fs.readSync(fd, buffer, 0, buffer.length, 0)).toString('utf8');
+
+        return head.startsWith('#!') ? head.slice(2).split('\n')[0].trim() || null : null
+    } catch {
+        return null
+    } finally {
+        if (fd !== undefined) fs.closeSync(fd)
+    }
+}
+
+/**
+ * @summary Whether a live command line is this seat's own main process: the launch binary as `argv[0]`,
+ * or a launched script behind exactly the interpreter line its shebang names, and the profile argument
+ * as a whole word. A longer profile path, an argument that only embeds the profile, a helper binary,
+ * and any other program running the launch path as an operand all fail.
  * @param {String} command `ps` command line.
- * @param {String|null} launchCommand Resolved launch binary.
- * @param {String|null} profileArg `--user-data-dir=<profile>` exactly as the seat was launched with it.
+ * @param {Object} seat
+ * @param {String|null} seat.launchCommand Resolved launch path.
+ * @param {String|null} seat.launchInterpreter Its shebang line when it is a script ({@link readShebangLine}).
+ * @param {String|null} seat.profileArg `--user-data-dir=<profile>` exactly as the seat was launched with it.
  * @returns {Boolean}
  * @private
  */
-function runsSeatLaunch(command, launchCommand, profileArg) {
+function runsSeatLaunch(command, {launchCommand, launchInterpreter, profileArg}) {
     const
         isProgram = line => line === launchCommand || line.startsWith(`${launchCommand} `),
         hasWord   = line => {
@@ -188,9 +217,10 @@ function runsSeatLaunch(command, launchCommand, profileArg) {
             }
 
             return false
-        };
+        },
+        isScript  = Boolean(launchInterpreter) && command.startsWith(`${launchInterpreter} `) && isProgram(command.slice(launchInterpreter.length + 1));
 
-    return Boolean(launchCommand && profileArg) && (isProgram(command) || isProgram(command.replace(/^\S+ /, ''))) && hasWord(command)
+    return Boolean(launchCommand && profileArg) && (isProgram(command) || isScript) && hasWord(command)
 }
 
 /**
@@ -1039,11 +1069,13 @@ class FleetLifecycleService extends Base {
             return
         }
 
+        record.launchCommand = this.resolveExecutable(launch.command, process.env.PATH, record.cwd);
+
         Object.assign(record, {
-            pid          : lease.pid,
-            pidStartedAt : lease.pidStartedAt,
-            launchCommand: this.resolveExecutable(launch.command, process.env.PATH, record.cwd),
-            profileArg   : launch.args.find(arg => arg.startsWith('--user-data-dir=')) ?? null
+            pid              : lease.pid,
+            pidStartedAt     : lease.pidStartedAt,
+            launchInterpreter: readShebangLine(record.launchCommand),
+            profileArg       : launch.args.find(arg => arg.startsWith('--user-data-dir=')) ?? null
         });
 
         const seat = this.probeSeat(record);
@@ -1235,7 +1267,7 @@ class FleetLifecycleService extends Base {
      * @summary Prove whether an adopted seat's leased process is still the seat. `live`: its pid
      * answers, was born at the leased start time and runs this seat's launch. `gone`: the pid is free,
      * or it now belongs to a process born later. `unknown`: the pid answers but cannot be identified.
-     * @param {Object} record Adopted record: `pid`, `pidStartedAt`, `launchCommand`, `profileArg`.
+     * @param {Object} record Adopted record: `pid`, `pidStartedAt`, `launchCommand`, `launchInterpreter`, `profileArg`.
      * @returns {String} `live`, `gone` or `unknown`.
      * @private
      */
@@ -1247,7 +1279,7 @@ class FleetLifecycleService extends Base {
         if (!live) return this.isProcessAlive(record.pid) ? 'unknown' : 'gone';
         if (live.startedAt !== record.pidStartedAt || live.exited) return 'gone';
 
-        return runsSeatLaunch(live.command, record.launchCommand, record.profileArg) ? 'live' : 'unknown'
+        return runsSeatLaunch(live.command, record) ? 'live' : 'unknown'
     }
 
     /**

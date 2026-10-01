@@ -1776,7 +1776,9 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             prefix  : profile => `${process.execPath} --user-data-dir=${profile}-other`,
             embedded: profile => `/unrelated/app --note=--user-data-dir=${profile}`,
             helper  : profile => `/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper --type=renderer --user-data-dir=${profile}`,
-            program : profile => `/unrelated/app --user-data-dir=${profile}`
+            program : profile => `/unrelated/app --user-data-dir=${profile}`,
+            // A binary launch has no interpreter, so another program holding the launch path as an operand is not the seat.
+            operand : profile => `/usr/bin/yes ${process.execPath} --user-data-dir=${profile}`
         };
 
         for (const [name, command] of Object.entries(cases)) {
@@ -1790,6 +1792,21 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             });
             expect(fs.existsSync(path.join(home, LEASE_FILE)), name).toBe(true);
             expect(() => FleetLifecycleService.start('seat'), name).toThrow(/alive but cannot be identified/)
+        }
+    });
+
+    test('a launched script is adopted only behind the exact interpreter line its shebang names', () => {
+        for (const [interpreter, expected] of [['/opt/interp/node --flag', 'running'], ['/usr/bin/yes', 'failed']]) {
+            const
+                {home, profile} = installSeat('claude-desktop'),
+                script          = path.join(home, '..', 'seat-app.mjs');
+
+            fs.writeFileSync(script, '#!/opt/interp/node --flag\n', {mode: 0o755});
+            FleetLifecycleService.harnessBinaryPaths = {'claude-desktop': script};
+            writeLease(home);
+            stubProcessTable(seatRow(profile, {command: `${interpreter} ${script} --user-data-dir=${profile}`}));
+
+            expect(FleetLifecycleService.status('seat'), interpreter).toMatchObject({state: expected})
         }
     });
 
