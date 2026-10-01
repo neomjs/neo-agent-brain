@@ -1282,7 +1282,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
             return {NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane'), NEO_CHROMA_PORT: '3456'};
         };
         await FleetLifecycleService.start('a');
-        expect(calls).toEqual(['memory-core', 'knowledge-base', 'neural-link']);
+        expect(calls).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'github-workflow']);
         const env = spawnStub.calls[0].opts.env;
         expect(env.NEO_PLANE_DATA_ROOT).toBe(path.join(DESKTOP_ROOT, 'plane'));
         expect(env.NEO_CHROMA_PORT).toBe('3456');
@@ -1298,7 +1298,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         install();
         FleetLifecycleService.residentMcpEnvSource = null;
         const records = FleetLifecycleService.resolveResidentMcpEnvironment({id: 'a', harnessType: 'claude-desktop', mcpServers: null});
-        expect(Object.keys(records)).toEqual(['memory-core', 'knowledge-base', 'neural-link']);
+        expect(Object.keys(records)).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'github-workflow']);
         expect(records['memory-core'].NEO_PLANE_DATA_ROOT).toBe(AiConfig.plane.dataRoot);
         expect(Object.keys(records['memory-core'])).toContain('NEO_MEMORY_WAL_DIR');
         expect(Object.keys(records['knowledge-base'])).toContain('NEO_KB_LOG_PATH');

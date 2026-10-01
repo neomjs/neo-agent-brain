@@ -1136,7 +1136,6 @@ test.describe('prepareManagedAgentWorkspace', () => {
             '[mcp_servers."neo-mjs-knowledge-base"]',
             '[mcp_servers."neo-mjs-neural-link"]',
             '[mcp_servers."neo-mjs-github-workflow"]',
-            'enabled = false',
             '[mcp_servers."neo-mjs-gitlab-workflow"]',
             'enabled = false'
         ]);
@@ -1432,17 +1431,17 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
         await prepareManagedAgentWorkspace(opts);
 
-        opts.agent = makeAgent('codex', {mcpServers: {'github-workflow': true}});
-        const on = await prepareManagedAgentWorkspace(opts);
+        opts.agent = makeAgent('codex', {mcpServers: {'github-workflow': false}});
+        const off = await prepareManagedAgentWorkspace(opts);
 
-        expect(on.artifacts[0].status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
-        expect(await switches()).not.toMatch(/github-workflow"\] enabled = false/);
+        expect(off.artifacts[0].status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        expect(await switches()).toMatch(/github-workflow"\] enabled = false/);
         expect(await switches()).toMatch(/gitlab-workflow"\] enabled = false/);
 
         opts.agent = makeAgent('codex');
         await prepareManagedAgentWorkspace(opts);
 
-        expect(await switches()).toMatch(/github-workflow"\] enabled = false/);
+        expect(await switches()).not.toMatch(/github-workflow"\] enabled = false/);
     });
 
     test('a seat an earlier Fleet rendered with project `enabled` lines migrates in one Start, its receipt included', async () => {
@@ -1476,7 +1475,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
             table = header ? header[1] : line.startsWith('[') ? null : table;
 
-            return table && !table.endsWith('-workflow') && line === 'tool_timeout_sec = 120' ? `${line}\nenabled = true` : line
+            return table && table !== 'neo-mjs-gitlab-workflow' && line === 'tool_timeout_sec = 120' ? `${line}\nenabled = true` : line
         }).join('\n').replace(
             /^# Fleet-managed Neo MCP tables: .*$/m,
             '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; enabled values are the current Brain projection.'
@@ -1493,7 +1492,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
         const project = await read(projectPath);
 
-        expect(project.match(/^enabled\s*=.*$/gm)).toEqual(['enabled = false', 'enabled = false']);
+        expect(project.match(/^enabled\s*=.*$/gm)).toEqual(['enabled = false']);
         expect(project).toContain('`enabled = false` marks a server the Fleet switches off');
         expect(project).toContain('https://tenant-b.example.com/agentos/mc/mcp');
         expect(await read(homePath), 'the Fleet never writes a switch into the home').toBe(home);
@@ -1652,6 +1651,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             nl         = config.mcpServers['neo-mjs-neural-link'];
 
         expect(Object.keys(config.mcpServers).sort()).toEqual([
+            'neo-mjs-github-workflow',
             'neo-mjs-knowledge-base',
             'neo-mjs-memory-core',
             'neo-mjs-neural-link'
@@ -1666,6 +1666,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             NEO_AGENT_IDENTITY    : '${NEO_AGENT_IDENTITY}',
             NEO_FLEET_BRIDGE_TOKEN: '${NEO_FLEET_BRIDGE_TOKEN}'
         });
+        expect(config.mcpServers['neo-mjs-github-workflow'].env.GH_TOKEN).toBe('${GH_TOKEN}');
         expect(raw).not.toContain('secret-token-value');
         await expect(fs.stat(path.join(opts.targetRepoRoot, '.mcp.json'))).rejects.toMatchObject({code: 'ENOENT'});
     });
@@ -1712,7 +1713,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
     test('Claude Desktop: a secret-free matrix materializes the exact contained profile config', async () => {
         const
-            opts       = options(makeAgent('claude-desktop', {mcpServers: {'neural-link': false}})),
+            opts       = options(makeAgent('claude-desktop', {mcpServers: {'neural-link': false, 'github-workflow': false}})),
             result     = await prepareManagedAgentWorkspace(opts),
             configPath = path.join(result.instanceHome, 'claude_desktop_config.json'),
             config     = JSON.parse(await read(configPath));
@@ -1873,10 +1874,11 @@ test.describe('prepareManagedAgentWorkspace', () => {
         // 7 artifacts: config.toml + mcp.json + 4 memory-layer files + the emitted hook.
         expect(result.artifacts.map(item => item.status)).toEqual(new Array(7).fill(WORKSPACE_ARTIFACT_STATES.CREATED));
 
-        // The curated matrix narrows the wiring: github/gitlab stay OUT, the enabled three wire in.
-        expect(Object.keys(mcp.mcpServers).sort()).toEqual(['neo-mjs-knowledge-base', 'neo-mjs-memory-core', 'neo-mjs-neural-link']);
+        // The curated matrix narrows the wiring: gitlab stays OUT, the four enabled servers wire in.
+        expect(Object.keys(mcp.mcpServers).sort()).toEqual(['neo-mjs-github-workflow', 'neo-mjs-knowledge-base', 'neo-mjs-memory-core', 'neo-mjs-neural-link']);
         expect(config).toContain('pattern  = "mcp__neo-mjs-memory-core__*"');
-        expect(config).not.toContain('mcp__neo-mjs-github-workflow__*');
+        expect(config).toContain('pattern  = "mcp__neo-mjs-github-workflow__*"');
+        expect(config).not.toContain('mcp__neo-mjs-gitlab-workflow__*');
 
         // The identity-anchor hook pair is wired against the emitted script in the instance home.
         expect(config.match(/\[\[hooks\]\]/g)).toHaveLength(8); // SessionStart + 2 identity-anchor + 5 presence
@@ -1943,7 +1945,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             path.join(result.instanceHome, 'memory', 'MEMORY.md'),
             path.join(result.instanceHome, 'memory', 'identity.md')
         ]);
-        expect(Object.keys(config.mcp).sort()).toEqual(['neo-mjs-knowledge-base', 'neo-mjs-memory-core', 'neo-mjs-neural-link']);
+        expect(Object.keys(config.mcp).sort()).toEqual(['neo-mjs-github-workflow', 'neo-mjs-knowledge-base', 'neo-mjs-memory-core', 'neo-mjs-neural-link']);
         // Permission allow-list covers the seat home, the managed repo, and the canonical checkout.
         expect(config.permission.external_directory[result.instanceHome + '/**']).toBe('allow');
         expect(config.permission.external_directory[opts.targetRepoRoot + '/**']).toBe('allow');
