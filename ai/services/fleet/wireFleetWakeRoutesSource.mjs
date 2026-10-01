@@ -23,6 +23,7 @@ import {createFleetWakeRoutesSource} from './fleetWakeRoutesSource.mjs';
  *     published 0600 route manifest, forwarded verbatim — the path→reader composition lives in
  *     `createFleetWakeRoutesSource`, the Neo-free site the spec exercises directly.
  * @param {Function|null} [options.readPresence]
+ * @param {Function|null} [options.readFleetArming] The wake route the Fleet recorded at a seat's start.
  * @param {Function} [options.wakeIdentityFor]
  * @param {Function} [options.now]
  * @param {Object} [options.bridge=FleetControlBridge]
@@ -38,6 +39,7 @@ export function wireFleetWakeRoutesSource({
     resolveSeatArming = null,
     wakeReceiverManifestPath = null,
     readPresence = null,
+    readFleetArming = null,
     wakeIdentityFor,
     now,
     bridge       = FleetControlBridge,
@@ -56,6 +58,7 @@ export function wireFleetWakeRoutesSource({
         resolveSeatArming,
         wakeReceiverManifestPath,
         readPresence,
+        readFleetArming,
         ...(wakeIdentityFor ? {wakeIdentityFor} : {}),
         ...(now ? {now} : {})
     });

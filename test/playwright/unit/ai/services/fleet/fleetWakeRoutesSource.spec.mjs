@@ -96,6 +96,47 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         })
     });
 
+    test('a seat the manifest does not carry says why, when the Fleet\'s own arming reported unarmed — the manifest still decides armed', async () => {
+        const
+            arming = () => ({state: 'observed', reason: null, byIdentity: new Map([['@neo-fable-clio', {routeCount: 1, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'}]])}),
+            fleet  = {
+                ada : {state: 'unarmed', reason: 'no wake receiver is declared (fleet.wakeReceiverBase and fleet.wakeReceiverManifestPath)'},
+                clio: {state: 'unarmed', reason: 'an older start could not arm it'}
+            },
+            [ada, clio] = (await harness({resolveSeatArming: arming, readFleetArming: agentId => fleet[agentId]}).readWakeRoutes()).seats;
+
+        expect(ada.armed).toEqual({state: 'none', reason: fleet.ada.reason});
+        expect(clio.armed).toMatchObject({state: 'armed', reason: null});
+    });
+
+    test('the Fleet\'s reason never stands in for another arming state, and a missing, ready or throwing read leaves none bare', async () => {
+        const
+            unarmed = () => ({state: 'unarmed', reason: 'the seat runs a resident Memory Core'}),
+            empty   = () => ({state: 'observed', reason: null, byIdentity: new Map()});
+
+        expect((await harness({readFleetArming: unarmed}).readWakeRoutes()).seats[0].armed)
+            .toEqual({state: 'unobserved', reason: 'arming read path unavailable'});
+        expect((await harness({resolveSeatArming: () => { throw new Error('manifest unreadable') }, readFleetArming: unarmed}).readWakeRoutes()).seats[0].armed)
+            .toEqual({state: 'unknown', reason: 'manifest unreadable'});
+
+        for (const readFleetArming of [() => null, () => ({state: 'ready', reason: null}), () => { throw new Error('lifecycle unreadable') }]) {
+            expect((await harness({resolveSeatArming: empty, readFleetArming}).readWakeRoutes()).seats[0].armed).toEqual({state: 'none', reason: null});
+        }
+    });
+
+    test('the Fleet\'s reason is redacted and bounded like every other axis reason', async () => {
+        const
+            secret = `ghp_${'a1B2'.repeat(9)}`,
+            [ada]  = (await harness({
+                resolveSeatArming: () => ({state: 'observed', reason: null, byIdentity: new Map()}),
+                readFleetArming  : () => ({state: 'unarmed', reason: `refused for token ${secret} ${'x'.repeat(400)}`})
+            }).readWakeRoutes()).seats;
+
+        expect(ada.armed.reason).toContain('refused for token [redacted-token]');
+        expect(ada.armed.reason).not.toContain(secret);
+        expect(ada.armed.reason.length).toBeLessThanOrEqual(240);
+    });
+
     test('the composition witness: a declared manifest path ALONE — no resolver injection — arms the envelope through the receiver\'s own loader', async () => {
         // The production path end-to-end: the deployment-declared coordinate (the
         // `fleet.wakeReceiverManifestPath` leaf's value in production, a literal here) composes
