@@ -1788,7 +1788,8 @@ async function convergeCodexProjectSwitches({filePath, plan, instanceHome, adapt
 
 /**
  * @summary Add the narrow Codex project-trust row only while remote MCP is selected, then remove
- * exactly Fleet's marked block on opt-out. Re-entry reads semantic trust, preserving native settings
+ * exactly Fleet's marked block on opt-out. Trust keys use the checkout's real path, as Codex does;
+ * only an exact former lexical block may migrate. Re-entry reads semantic trust, preserving native settings
  * inserted inside Fleet's comments; mixed blocks cannot be removed on opt-out. A non-trusted row
  * rejects remote admission. This keeps the no-intent home artifact byte-identical
  * to the stdio baseline while making the generated project MCP config consumable at runtime.
@@ -1806,7 +1807,8 @@ async function convergeCodexRemoteTrust({filePath, repoPath, remote, trustedRoot
 
     const
         source        = await fileSystem.readFile(filePath, 'utf8'),
-        expectedBlock = renderCodexRemoteTrustBlock(repoPath),
+        trustPath     = remote ? await fileSystem.realpath(repoPath) : repoPath,
+        expectedBlock = renderCodexRemoteTrustBlock(trustPath),
         begin         = source.indexOf(CODEX_REMOTE_TRUST_BEGIN),
         endMarker     = source.indexOf(CODEX_REMOTE_TRUST_END),
         secondBegin   = begin < 0 ? -1 : source.indexOf(CODEX_REMOTE_TRUST_BEGIN, begin + 1),
@@ -1816,7 +1818,7 @@ async function convergeCodexRemoteTrust({filePath, repoPath, remote, trustedRoot
         throw transportDivergence(filePath, 'projects.<managed-repo>.trust_level', 'malformed Fleet trust marker')
     }
 
-    const existingTrust = remote ? readCodexProjectTrust(source, repoPath, filePath) : undefined;
+    const existingTrust = remote ? readCodexProjectTrust(source, trustPath, filePath) : undefined;
 
     if (begin >= 0) {
         const
@@ -1824,6 +1826,20 @@ async function convergeCodexRemoteTrust({filePath, repoPath, remote, trustedRoot
             block = source.slice(begin, end);
 
         if (remote) {
+            if (trustPath !== repoPath && readCodexProjectTrust(block, repoPath, filePath) !== undefined) {
+                if (block !== renderCodexRemoteTrustBlock(repoPath)) {
+                    throw transportDivergence(filePath, 'projects.<managed-repo>.trust_level', 'legacy Fleet trust block diverged')
+                }
+                if (existingTrust !== undefined && existingTrust !== 'trusted') {
+                    throw transportDivergence(filePath, 'projects.<managed-repo>.trust_level', 'resident trust row is not trusted')
+                }
+
+                // An existing resident grant already owns canonical trust; never create a duplicate table.
+                const replacement = existingTrust === 'trusted' ? '' : expectedBlock;
+
+                await publishTextAtomically({filePath, content: source.slice(0, begin) + replacement + source.slice(end), fileSystem});
+                return true
+            }
             if (existingTrust !== 'trusted') {
                 throw transportDivergence(filePath, 'projects.<managed-repo>.trust_level', 'Fleet trust block diverged')
             }
