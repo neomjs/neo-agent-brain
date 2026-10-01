@@ -405,9 +405,9 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(calls).toEqual([['removeAgent', 'alice']]);
     });
 
-    test('setRepo delegates the single payload to the manager definition-update (fleet authority)', () => {
+    test('setRepo delegates the single payload to the manager and answers the updated definition as accepted (fleet authority)', () => {
         const payload = {id: 'alice', cloneUrl: 'https://github.com/x/y.git', repoSlug: 'x/y'};
-        expect(FleetControlBridge.setRepo(payload)).toEqual({id: 'alice', metadata: {repo: payload}});
+        expect(FleetControlBridge.setRepo(payload)).toEqual({status: 'accepted', agent: {id: 'alice', metadata: {repo: payload}}});
         expect(calls).toEqual([['setRepo', payload]]);
     });
 
@@ -417,50 +417,59 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(calls).toEqual([['setRepos', payload]]);
     });
 
-    test('setRepos answers every refusal the manager names as a rejection the Accounts card can render, on the wire too', async () => {
+    test('setRepo and setRepos answer every refusal the manager names as a rejection a Body surface can render, on the wire too', async () => {
         let seat = {id: 'alice', metadata: {repo: {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'}}};
 
-        // the real manager, so each reason is one FleetManager.setRepos actually gives, not a fixture's
+        const credentialed = 'https://u:ghp_SECRET@github.com/x/y.git';
+
+        // the real manager, so each reason is one FleetManager actually gives, not a fixture's
         FleetManager.lifecycleService = {getRegistry: () => ({
             getAgent   : id => id === seat.id ? seat : null,
-            updateAgent: (id, patch) => { calls.push(['updateAgent', id, patch]); return {...seat, ...patch} }
+            updateAgent: (id, patch) => { calls.push(['updateAgent', id, patch]); return id === seat.id ? {...seat, ...patch} : null }
         })};
         FleetControlBridge.manager = FleetManager;
 
         try {
-            for (const [repos, rule] of [
-                ['x/y',                                                                     /must be an array/],
-                [[{repoSlug: 'X Y'}],                                                       /repoSlug must be/],
-                [[{repoSlug: 'x/y', cloneUrl: 'https://u:ghp_SECRET@github.com/x/y.git'}], /the clone URL must be/],
-                [[{repoSlug: 'x/y'}, {repoSlug: 'x/y'}],                                    /listed twice/],
-                [[{repoSlug: 'neomjs/neo'}],                                                /the working repository/]
+            for (const [method, payload, rule] of [
+                ['setRepo',  {id: 'alice', repoSlug: 'X Y'},                                    /repoSlug must be/],
+                ['setRepo',  {id: 'alice', repoSlug: 'x/y', cloneUrl: credentialed},            /the clone URL must be/],
+                ['setRepos', {id: 'alice', repos: 'x/y'},                                       /must be an array/],
+                ['setRepos', {id: 'alice', repos: [{repoSlug: 'X Y'}]},                         /repoSlug must be/],
+                ['setRepos', {id: 'alice', repos: [{repoSlug: 'x/y', cloneUrl: credentialed}]}, /the clone URL must be/],
+                ['setRepos', {id: 'alice', repos: [{repoSlug: 'x/y'}, {repoSlug: 'x/y'}]},      /listed twice/],
+                ['setRepos', {id: 'alice', repos: [{repoSlug: 'neomjs/neo'}]},                  /the working repository/]
             ]) {
                 const
-                    outcome = FleetControlBridge.setRepos({id: 'alice', repos}),
-                    wire    = await dispatchFleetRequest(createFleetWireRequest('setRepos', {id: 'alice', repos}), FleetControlBridge);
+                    outcome = FleetControlBridge[method](payload),
+                    wire    = await dispatchFleetRequest(createFleetWireRequest(method, payload), FleetControlBridge);
 
-                expect(outcome.status, JSON.stringify(repos)).toBe('rejected');
+                expect(outcome.status, `${method} ${JSON.stringify(payload)}`).toBe('rejected');
                 expect(outcome.reason).toMatch(rule);
                 expect(outcome.reason).not.toMatch(/FleetManager|SECRET/);
                 expect(wire).toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok, result: outcome});
                 expect(JSON.stringify(wire)).not.toMatch(/SECRET/)
             }
 
-            seat = {id: 'alice', metadata: {}};
-            expect(FleetControlBridge.setRepos({id: 'alice', repos: [{repoSlug: 'x/y'}]}).reason).toMatch(/no working repository/);
+            expect(calls, 'no refusal wrote the registry').toEqual([]);
+
+            expect(FleetControlBridge.setRepo({id: 'ghost', repoSlug: 'x/y'})).toEqual({status: 'rejected', reason: "Unknown agent 'ghost'."});
             expect(FleetControlBridge.setRepos({id: 'ghost', repos: []})).toEqual({status: 'rejected', reason: "Unknown agent 'ghost'."});
-            expect(calls, 'no refusal wrote the registry').toEqual([])
+
+            seat = {id: 'alice', metadata: {}};
+            expect(FleetControlBridge.setRepos({id: 'alice', repos: [{repoSlug: 'x/y'}]}).reason).toMatch(/no working repository/)
         } finally {
             FleetManager.lifecycleService = null
         }
     });
 
-    test('setRepos rethrows a failure that is not a refusal, so the dispatcher still sanitizes it', async () => {
-        managerStub.setRepos = () => { throw new Error('/secret/storage/path failed') };
+    test('setRepo and setRepos rethrow a failure that is not a refusal, so the dispatcher still sanitizes it', async () => {
+        for (const [method, payload] of [['setRepo', {id: 'alice', repoSlug: 'x/y'}], ['setRepos', {id: 'alice', repos: []}]]) {
+            managerStub[method] = () => { throw new Error('/secret/storage/path failed') };
 
-        expect(() => FleetControlBridge.setRepos({id: 'alice', repos: []})).toThrow('/secret/storage/path failed');
-        expect(await dispatchFleetRequest(createFleetWireRequest('setRepos', {id: 'alice', repos: []}), FleetControlBridge))
-            .toMatchObject({ok: false, state: FLEET_WIRE_RESPONSE_STATES.operationFailed, error: "fleet: 'setRepos' failed"})
+            expect(() => FleetControlBridge[method](payload)).toThrow('/secret/storage/path failed');
+            expect(await dispatchFleetRequest(createFleetWireRequest(method, payload), FleetControlBridge))
+                .toMatchObject({ok: false, state: FLEET_WIRE_RESPONSE_STATES.operationFailed, error: `fleet: '${method}' failed`})
+        }
     });
 
     test('setAvatar delegates the single payload to the manager definition-update (fleet authority)', () => {

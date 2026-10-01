@@ -16,13 +16,12 @@ import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpit
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
 
 /**
- * @summary A validation refusal its caller names (`<caller>: <rule>`) as the domain outcome a Body
- * surface may render. The wire keeps domain outcomes inside `result` (`src/fleet/contract/wire.mjs`),
- * and the dispatcher sanitizes every throw into a bare `operation-failed`, so a verb that answers
- * refusals as data converts them before they reach it.
+ * @summary A refusal its caller names (`<caller>: <rule>`) as a domain outcome. The wire keeps those
+ * inside `result` (`src/fleet/contract/wire.mjs`); the dispatcher turns any throw into a bare
+ * `operation-failed`.
  * @param {Error}  error
  * @param {String} caller The refusing function, e.g. `FleetManager.setRepos`.
- * @returns {{status: 'rejected', reason: String}|null} `null` for any other failure, which the verb rethrows.
+ * @returns {{status: 'rejected', reason: String}|null} `null` for any other failure.
  * @private
  */
 function rejectionOf(error, caller) {
@@ -31,6 +30,31 @@ function rejectionOf(error, caller) {
     return error?.message?.startsWith(prefix)
         ? {status: 'rejected', reason: error.message.slice(prefix.length).trim()}
         : null
+}
+
+/**
+ * @summary A manager definition-update as a domain outcome: the updated definition is accepted, an
+ * unknown agent or a refusal `caller` names is rejected, and any other failure rethrows.
+ * @param {Function} update Returns the updated public definition, or `null` for an unknown agent.
+ * @param {String}   id
+ * @param {String}   caller The manager function whose refusals answer as data.
+ * @returns {{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}}
+ * @private
+ */
+function definitionOutcome(update, id, caller) {
+    try {
+        const agent = update();
+
+        return agent
+            ? {status: 'accepted', agent}
+            : {status: 'rejected', reason: `Unknown agent '${id ?? ''}'.`}
+    } catch (error) {
+        const rejection = rejectionOf(error, caller);
+
+        if (rejection) return rejection;
+
+        throw error
+    }
 }
 
 /**
@@ -461,38 +485,26 @@ class FleetControlBridge extends Base {
      * end-to-end: the provisioner already honors `metadata.repo`, so the next start launches the agent in
      * the set repo. A single-`params` payload, so it is pane-reachable over the wire. Non-destructive to
      * the existing on-disk checkout.
+     * A refusal (a malformed slug, a clone URL that is not a remote naming it) is a domain outcome, as
+     * in {@link #configureAgent}.
      * @param {Object} payload `{id, cloneUrl?, repoSlug?}` — the agent id + working-repo coordinates.
-     * @returns {Object|null} the updated public definition, or `null` if the agent doesn't exist.
+     * @returns {{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}}
      */
     setRepo(payload) {
-        return this.getManager().setRepo(payload);
+        return definitionOutcome(() => this.getManager().setRepo(payload), payload?.id, 'FleetManager.setRepo')
     }
 
     /**
      * @summary Set an agent's other repositories (`metadata.repos`, beside the working one) on its
      * definition, with the same fleet authority as `setRepo`. The next provisioned start clones each one
      * beside the working checkout. A single-`params` payload, so it is pane-reachable over the wire.
-     *
-     * Like {@link #configureAgent}, a refusal is a domain outcome the Accounts card renders: an invalid
-     * entry, a duplicate, the working repository, or a seat without one. Any other failure still throws
-     * and is sanitized by dispatchFleetRequest.
+     * A refusal (an invalid entry, a duplicate, the working repository, a seat without one) is a
+     * domain outcome, as in {@link #setRepo}.
      * @param {Object} payload `{id, repos}`: the agent id and `[{repoSlug, cloneUrl?}]`.
      * @returns {{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}}
      */
     setRepos(payload) {
-        try {
-            const agent = this.getManager().setRepos(payload);
-
-            return agent
-                ? {status: 'accepted', agent}
-                : {status: 'rejected', reason: `Unknown agent '${payload?.id ?? ''}'.`}
-        } catch (error) {
-            const rejection = rejectionOf(error, 'FleetManager.setRepos');
-
-            if (rejection) return rejection;
-
-            throw error
-        }
+        return definitionOutcome(() => this.getManager().setRepos(payload), payload?.id, 'FleetManager.setRepos')
     }
 
     /**

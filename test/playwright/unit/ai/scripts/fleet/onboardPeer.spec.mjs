@@ -18,6 +18,7 @@ import {
     CURATED_HARNESS_TYPES,
     buildLoginCommand,
     buildOnboardingIntent,
+    commitRepoSegment,
     createOnboardingFleetBridge,
     defineRequestOf,
     deriveAuthHandoff,
@@ -347,6 +348,27 @@ test.describe('onboardPeer — the two-phase planner', () => {
         expect(rendered).toContain('phase A');
         expect(rendered).toContain('OPERATOR GATE');
         expect(rendered).toContain('[PRINT] roster');
+    });
+});
+
+test.describe('onboardPeer — the repo commit', () => {
+    test('commitRepoSegment sends the intent repository and stops the commit on a refusal, with the Fleet reason', async () => {
+        const
+            intent = buildIntent(REPO_OPTIONS),
+            agent  = buildAgent(),
+            sent   = [],
+            fleet  = {setRepo: async payload => { sent.push(payload); return answer }};
+
+        let answer = {status: 'accepted', agent};
+
+        await expect(commitRepoSegment(fleet, intent)).resolves.toBe(agent);
+        expect(sent).toEqual([{id: 'neo-gpt-2', ...REPO_OPTIONS}]);
+
+        answer = {status: 'rejected', reason: "repoSlug must be '<owner>/<repo>' in lowercase seat segments, never a reserved owner."};
+        await expect(commitRepoSegment(fleet, intent)).rejects.toThrow("the Fleet refused repo x/y: repoSlug must be '<owner>/<repo>'");
+
+        answer = null;
+        await expect(commitRepoSegment(fleet, intent)).rejects.toThrow('the Fleet refused repo x/y: no reason given')
     });
 });
 
