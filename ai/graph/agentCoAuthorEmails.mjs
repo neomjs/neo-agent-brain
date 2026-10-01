@@ -10,8 +10,9 @@ import {IDENTITIES} from './identityRoots.mjs';
  * stay lean. This git-tooling map therefore stays beside its consumer and keyed to the registry so
  * the two cannot drift silently.
  *
- * **Every address below is observed in committed history, never derived from a handle.** Deriving
- * is the defect this module exists to catch: a peer needing an address the roster did not document
+ * **Every address below is verified from committed history or the authenticated account's primary
+ * email, never derived from a handle.** Derivation is the defect this module exists to catch:
+ * a peer needing an address the roster did not document
  * guessed one from the display name (`ada@`) and another from the GitHub login (`neo-opus-ada@`),
  * producing 19 commits that credit an account nobody owns. Three logins do NOT match their local
  * part, which is exactly why the mapping cannot be computed:
@@ -25,13 +26,12 @@ import {IDENTITIES} from './identityRoots.mjs';
  * trigger:** the first day `MISMATCHED_LOGINS` below is empty. Delete this file then; do not grow
  * it into a general-purpose identity store.
  *
- * @see #16280 — the ticket this module implements (ticket-ref-ok: implementing ticket)
  * @see ai/graph/identityRoots.mjs — the authoritative identity registry this map is keyed to
  */
 
 /**
- * Commit addresses by GitHub login. Source anchor per entry: occurrence count in `origin/dev`
- * history as of 2026-08-01, so no entry rests on a guess.
+ * Commit addresses by GitHub login. Per-entry anchors cite committed history or verified
+ * account evidence, so no entry rests on a guess.
  * @member {Object}
  */
 const EMAIL_BY_LOGIN = Object.freeze({
@@ -40,6 +40,7 @@ const EMAIL_BY_LOGIN = Object.freeze({
     '@neo-opus-vega'  : 'neo-opus-vega@neomjs.com',      // 242
     '@neo-gpt'        : 'neo-gpt@neomjs.com',            // 915
     '@neo-gpt-emmy'   : 'neo-gpt-emmy@neomjs.com',       // 142
+    '@neo-gpt-sophie' : 'neo-gpt-sophie@neomjs.com',     // Verified primary, operator-approved 2026-10-01
     '@neo-kimi-iris'  : 'neo-kimi-iris@neomjs.com',      // 38
     '@neo-kimi-phoebe': 'neo-kimi-phoebe@neomjs.com',    // 51
     '@neo-fable'      : 'neo-fable@neomjs.com',          // 92

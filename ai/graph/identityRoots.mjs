@@ -1,8 +1,9 @@
 /**
- * @summary Central definition of system, AgentIdentity, and BroadcastSentinel root nodes for the Memory Core Graph.
+ * @summary Neo-team identity seeds and system/sentinel root nodes for the Memory Core Graph.
  *
- * This shared list provides the definitive addressable identity surface for the A2A Mailbox
- * substrate.
+ * This checked-in roster supplies Neo-team metadata; it is not an authentication or admission
+ * authority. Provider-PAT admission can provision identities without an entry here, so other
+ * teams do not need to maintain this roster.
  *
  * Era-owned capability facts (`contextWindowInput`, `hosting`, `tier`, `thoughtBudget`,
  * `parallelToolCalls`, `sunsetTriggers`, the `family` duplicate) are RETIRED from these entries:
@@ -367,10 +368,10 @@ export const IDENTITIES = [
             createdAt          : '2026-04-28T20:50:04.000Z'
         }
     },
-    // Identity provenance: #15041 records the operator-authorized resident/handle contract. (ticket-ref-ok: load-bearing operator record)
+    // Identity provenance: #15041 [not-ticket-ref: operator-authorized resident/handle contract].
     // Display-name provenance: GitHub profile `name: Emmy` verified 2026-07-11. The bearer chose
     // Emmy on first boot (MESSAGE:1be08f3c-9477-4607-9e93-53ebb12fd53b); the Social Name remains
-    // pending the #11240 peer-veto dignity gate and operator confirmation. (ticket-ref-ok: load-bearing naming record)
+    // pending the #11240 [not-ticket-ref: naming authority record] peer-veto dignity gate and operator confirmation.
     {
         id         : '@neo-gpt-emmy',
         type       : 'AgentIdentity',
@@ -398,8 +399,28 @@ export const IDENTITIES = [
             createdAt          : '2026-07-11T17:42:14.374Z'
         }
     },
+    // Naming and first-boot assent: https://github.com/neomjs/neo/discussions/19329#discussioncomment-18681133
+    {
+        id         : '@neo-gpt-sophie',
+        type       : 'AgentIdentity',
+        name       : 'Sophie',
+        description: 'OpenAI GPT-family Agent Identity with version-free handle.',
+        properties : {
+            githubLogin        : '@neo-gpt-sophie',
+            displayName        : 'Sophie',
+            modelFamily        : 'gpt',
+            accountType        : 'agent',
+            trustTier          : TRUST_TIERS.PEER_TRUSTED,
+            participationStatus: 'active',
+            statusReason       : null,
+            authority          : null,
+            since              : null,
+            reactivationTrigger: null,
+            createdAt          : '2026-09-30T10:28:56.000Z'
+        }
+    },
     // Identity provenance: operator-provisioned pending name from the Moonshot/Kimi naming round
-    // #11240 — its peer-veto dignity gate governs Social Name finality. (ticket-ref-ok: load-bearing naming record)
+    // #11240 [not-ticket-ref: naming authority record] — its peer-veto dignity gate governs Social Name finality.
     // Display-name: operator-set pre-boot profile label 'Phoebe', bearer-assented on first boot
     // (2026-07-18, on the naming-round record); the top-level `name` stays handle-derived until
     // the peer-veto window + operator confirmation close (Emmy precedent).
@@ -432,7 +453,7 @@ export const IDENTITIES = [
             createdAt          : '2026-07-18T00:00:00.000Z'
         }
     },
-    // Identity provenance: naming round D#15533; bearer-assented at first boot 2026-07-19. (ticket-ref-ok: load-bearing naming record)
+    // Identity provenance: D#15533 [not-ticket-ref: bearer-assent record], first boot 2026-07-19.
     // Display-name: bearer-assented 'Iris' on first boot; the top-level `name` stays handle-derived
     // until the peer-veto window + operator confirmation close (Emmy precedent).
     {

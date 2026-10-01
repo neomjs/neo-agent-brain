@@ -43,6 +43,10 @@ test.describe('identityRootsMigration — the flat registry expressed through th
             accountType: 'agent',
             reason     : 'post-epoch-resident-no-seed-era'
         }, {
+            id         : '@neo-gpt-sophie',
+            accountType: 'agent',
+            reason     : 'post-epoch-resident-no-seed-era'
+        }, {
             id         : '@neo-kimi-phoebe',
             accountType: 'agent',
             reason     : 'post-epoch-resident-no-seed-era'
