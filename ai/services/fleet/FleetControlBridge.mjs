@@ -519,6 +519,17 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @summary Store a seat's own credential for the plane this fleet serves. A credential-bearing verb,
+     * like {@link #connectTenant}: the trusted launcher supplies the credential, it is stored encrypted
+     * Node-side once the plane proves it is the seat, and it is never echoed back.
+     * @param {Object} payload `{id, credential}`.
+     * @returns {Promise<Object>} `{status: 'stored', endpoint, agentId}` or `{status: 'rejected', reason}`.
+     */
+    setPlaneCredential(payload) {
+        return this.getManager().setPlaneCredential(payload);
+    }
+
+    /**
      * @summary Make this fleet a seat's only launcher, so the cockpit can start it the first time (fleet
      * authority, the operator's recorded act). A single-`params` payload, pane-reachable over the wire.
      * @param {Object} payload `{id}` — the agent id.

@@ -9,11 +9,10 @@ import {normalizeSecureMcpEndpoint, planeMcpResources} from './mcpWireParsing.mj
  *
  * - A seat bound to a connected tenant keeps that tenant.
  * - Any other seat on a Fleet that serves a plane (`fleet.planeBase`) reaches that plane's MC and KB.
- * - Two named exceptions keep the per-seat store, each with its reason on the result: a Fleet that
- *   serves no plane (own mode serves no MC or KB endpoint yet), and a harness that cannot reach a
- *   remote Memory Core.
- * - A declared plane that is not a secure MCP endpoint refuses the start, because falling back to a
- *   private store there would be exactly the silent fork this removes.
+ * - A Fleet that serves no plane keeps the per-seat store, the one named exception: own mode serves no
+ *   MC or KB endpoint yet.
+ * - A seat that cannot reach the plane refuses to start rather than fall back to a private store: a
+ *   declared plane that is not a secure MCP endpoint, or a harness with no remote Memory Core.
  */
 
 /**
@@ -41,7 +40,7 @@ export function resolveSeatPlaneTarget({target, harnessType, planeBase}) {
     }
 
     if (!supportsTenantMcpTarget(harnessType)) {
-        return {kind: 'resident', reason: `${harnessType} cannot reach a remote Memory Core, so its memories stay on this seat`}
+        return {kind: 'refused', reason: `${harnessType} cannot reach a remote Memory Core, and on a Fleet that serves a plane a private per-seat store would write memories no peer reads`}
     }
 
     return {kind: 'plane', endpoint, resources: planeMcpResources(endpoint)}

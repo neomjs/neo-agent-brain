@@ -153,8 +153,9 @@ class FleetManager extends Base {
      */
     wakeArmFn = null
     /**
-     * Tenant collaborator for wake arming. `null` ⇒ the `FleetTenantService` singleton is imported
-     * lazily, only when a started seat actually targets a tenant. Plain field.
+     * Tenant collaborator for wake arming and seat plane credentials. `null` ⇒ the
+     * `FleetTenantService` singleton is imported lazily, only when a seat reaches a tenant or the plane
+     * this Fleet serves. Plain field.
      * @member {Object|null} tenantService=null
      */
     tenantService = null
@@ -254,8 +255,8 @@ class FleetManager extends Base {
                 planeBase    : this.planeBase,
                 receiverBase : options.wakeReceiverBase,
                 manifestPath : options.wakeReceiverManifestPath,
-                tenantService: agent?.mcpTarget?.kind === 'tenant'
-                    ? this.tenantService ?? (await import('./FleetTenantService.mjs')).default
+                tenantService: agent?.mcpTarget?.kind === 'tenant' || this.planeBase
+                    ? await this.getTenantService()
                     : null
             })
         } catch (error) {
@@ -268,6 +269,14 @@ class FleetManager extends Base {
         lifecycle.setWakeRoute?.(agentId, wakeRoute, {pid: status?.pid, startedAt: status?.startedAt});
 
         return {...status, wakeRoute}
+    }
+
+    /**
+     * @returns {Promise<Object>} the tenant collaborator (injected stub or the lazily imported singleton).
+     * @protected
+     */
+    async getTenantService() {
+        return this.tenantService ?? (await import('./FleetTenantService.mjs')).default
     }
 
     /**
@@ -588,6 +597,32 @@ class FleetManager extends Base {
         if (avatarUrl != null) metadata.avatarUrl = avatarUrl;
 
         return this.getLifecycleService().getRegistry().updateAgent(id, {metadata});
+    }
+
+    /**
+     * @summary Store the seat's own credential for the plane this Fleet serves, where its Memory Core
+     * and Knowledge Base live ({@link Neo.ai.services.fleet.startAgentProvisioned}). The caller names
+     * only the seat and the credential: the plane is the one this Fleet serves, and the identity the
+     * credential must prove is the seat's row. Inbound once, never returned.
+     * @param {Object} payload
+     * @param {String} payload.id         Registry agent id.
+     * @param {String} payload.credential On a provider-PAT plane an identity-only PAT, never the seat's
+     *     checkout PAT.
+     * @returns {Promise<Object>} `{status: 'stored', endpoint, agentId}` or `{status: 'rejected', reason}`.
+     */
+    async setPlaneCredential({id, credential} = {}) {
+        if (!this.planeBase) return {status: 'rejected', reason: 'this Fleet serves no plane'};
+
+        const agent = this.getLifecycleService().getRegistry().getAgent(id);
+
+        if (!agent) return {status: 'rejected', reason: 'unknown agent'};
+
+        return (await this.getTenantService()).storeSeatPlaneCredential({
+            planeBase: this.planeBase,
+            agentId  : agent.id,
+            identity : agent.githubUsername,
+            credential
+        })
     }
 
     /**

@@ -1306,6 +1306,21 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(Object.values(records).every(values => !Object.keys(values).some(key => ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY'].includes(key)))).toBe(true);
     });
 
+    test('a seat the start placed on a remote plane gets no resident Memory Core or Knowledge Base envelope, tenant row or not', () => {
+        install();
+        FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')});
+
+        const
+            seat   = {id: 'a', harnessType: 'claude-desktop', mcpServers: null},
+            tenant = {...seat, mcpTarget: {kind: 'tenant', tenantId: 't'}},
+            keys   = (agent, options) => Object.keys(FleetLifecycleService.resolveResidentMcpEnvironment(agent, options));
+
+        expect(keys(seat, {remote: true})).toEqual(['neural-link', 'github-workflow']);
+        expect(keys(seat)).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'github-workflow']);
+        // omitted, only a tenant row is remote
+        expect(keys(tenant)).toEqual(['neural-link', 'github-workflow']);
+    });
+
     test('accepts only the exact adapter grammar for every supported harness family', async () => {
         install();
         FleetLifecycleService.harnessBinaryPaths = {

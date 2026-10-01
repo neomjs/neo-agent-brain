@@ -3,6 +3,7 @@ import {createPlaneMailboxClient}   from './planeMailboxClient.mjs';
 import {deriveHarnessWakeAddress}   from './deriveHarnessLaunchSpec.mjs';
 import {normalizeSecureMcpEndpoint} from './mcpWireParsing.mjs';
 import {redactReadFailure}          from './redactReadFailure.mjs';
+import {resolveSeatPlaneTarget}     from './resolveSeatPlaneTarget.mjs';
 
 /**
  * @module ai/services/fleet/armFleetSeatWake
@@ -83,17 +84,26 @@ export async function armFleetSeatWake({
 
     if (!login) return unarmed('the seat has no GitHub identity to subscribe as');
 
-    if (target?.kind !== 'tenant') {
+    // The seat subscribes where its start placed its Memory Core, with the credential proven there.
+    const placement = resolveSeatPlaneTarget({target, harnessType: agent.harnessType, planeBase});
+    let   plan, credential;
+
+    if (placement.kind === 'tenant') {
+        plan       = tenantService?.resolveMcpResources(target.tenantId);
+        credential = plan && tenantService.resolveMcpCredential(target.tenantId);
+
+        if (!plan || !credential) return unarmed('the seat\'s plane is not connected');
+
+        if (normalizeSecureMcpEndpoint(planeBase ?? '') !== plan.endpoint) {
+            return unarmed('the seat\'s plane is not the plane this Fleet is attached to, and the receiver URL is declared for that plane only')
+        }
+    } else if (placement.kind === 'plane') {
+        plan       = placement;
+        credential = tenantService?.resolveSeatPlaneCredential({planeBase: placement.endpoint, agentId: agent.id})?.credential;
+
+        if (!credential) return unarmed('the seat holds no plane credential to subscribe with');
+    } else {
         return unarmed('the seat runs a resident Memory Core, which is not the plane that dispatches wakes')
-    }
-
-    const plan       = tenantService?.resolveMcpResources(target.tenantId),
-          credential = plan && tenantService.resolveMcpCredential(target.tenantId);
-
-    if (!plan || !credential) return unarmed('the seat\'s plane is not connected');
-
-    if (normalizeSecureMcpEndpoint(planeBase ?? '') !== plan.endpoint) {
-        return unarmed('the seat\'s plane is not the plane this Fleet is attached to, and the receiver URL is declared for that plane only')
     }
 
     if (!receiverBase || !manifestPath) {

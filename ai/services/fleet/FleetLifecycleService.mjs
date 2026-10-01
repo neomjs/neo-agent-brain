@@ -1779,16 +1779,20 @@ class FleetLifecycleService extends Base {
 
     /**
      * @summary Resolve every curated seat's enabled resident MCP child-env envelope at Start.
-     * Tenant MC/KB rows need only their separately resolved bearer. Invalid placement refuses
-     * before provisioning; no ambient config or credential is silently inherited.
+     * Remote MC/KB, on a tenant or on the plane the Fleet serves, need only their separately resolved
+     * bearer. Invalid placement refuses before provisioning; no ambient config or credential is
+     * silently inherited.
      * @param {Object} agent Fleet definition.
+     * @param {Object} [options]
+     * @param {Boolean} [options.remote] Whether the seat reaches MC/KB remotely, as the start placed
+     *     it; omitted, only a tenant row does.
      * @returns {Object<String,Object<String,String>>} Per-server child environment, not an artifact.
      */
-    resolveResidentMcpEnvironment(agent) {
+    resolveResidentMcpEnvironment(agent, {remote = agent.mcpTarget?.kind === 'tenant'} = {}) {
         if (agent.metadata?.launch) return {};
         const matrix = resolveMcpMatrix(agent.mcpServers), result = {};
         for (const {key} of MCP_SERVERS) {
-            if (!matrix[key] || (agent.mcpTarget?.kind === 'tenant' && REMOTE_MCP_SERVER_KEYS.has(key))) continue;
+            if (!matrix[key] || (remote && REMOTE_MCP_SERVER_KEYS.has(key))) continue;
             const descriptor = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
             const providerSlots = descriptor.providerCredentialEnv || {};
             const envNames = descriptor.runtimeEnv.filter(name =>

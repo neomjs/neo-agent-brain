@@ -161,9 +161,11 @@ These assume `NEO_MCP_TOKEN` holds your PAT and the server is reachable at `http
 
 #### Fleet vocabulary: target, transport, adapter
 
-Fleet keeps three layers explicit. The public agent definition selects an MCP **target**:
-resident services or one connected tenant. Workspace preparation resolves that intent into plan
-rows whose `target` is `resident` or `tenant` and whose canonical MCP `transport` is `stdio` or
+Fleet keeps three layers explicit. The public agent definition selects an MCP **target**: one
+connected tenant, or none, which places the seat on the plane the Fleet serves (per-seat resident
+services only on a Fleet that serves no plane). Workspace preparation resolves that placement into
+plan rows whose `target` is `resident` or `tenant` — remote, whether a tenant or the Fleet's plane
+serves it — and whose canonical MCP `transport` is `stdio` or
 `streamable-http`. Only the final harness adapter translates that plan into product grammar such as
 Codex `streamable_http`, Claude Code `http`, or Claude Desktop's local command bridge. Vendor
 spellings never enter the public registry, and target placement is never named after a wire
@@ -171,7 +173,7 @@ protocol.
 
 ```mermaid
 flowchart TD
-    intent["Public intent<br/>mcpTarget: resident or tenant"] --> plan["Resolved plan row<br/>target + canonical transport"]
+    intent["Public intent<br/>mcpTarget: tenant, or none for the Fleet's plane"] --> plan["Resolved plan row<br/>target + canonical transport"]
     plan --> stdio["stdio"]
     plan --> streamable["streamable-http"]
     streamable --> codexAdapter["Codex adapter<br/>streamable_http"]
@@ -204,7 +206,7 @@ claude mcp add --transport http neo-mc https://mcp.<your-host>/mc/mcp \
   --header "Authorization: Bearer ${NEO_MCP_TOKEN}"
 ```
 
-Fleet-managed Claude Desktop residents invoke that reviewed checkout entrypoint directly. The
+Fleet-managed Claude Desktop seats invoke that reviewed checkout entrypoint directly. The
 generated argv contains only the endpoint and `NEO_MCP_REMOTE_TOKEN` slot name; the raw token remains
 inherited process state. The bridge has no OAuth, browser callback, SSE-fallback, cache, or package
 download surface.

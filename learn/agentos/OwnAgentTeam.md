@@ -258,6 +258,29 @@ The robust local setup is:
 Memory Core's shared layer is identity-tagged by design. Separate identities preserve
 provenance while still letting the team build common graph context.
 
+### A Fleet seat's Memory Core is the plane's
+
+On a Fleet that serves a plane (`fleet.planeBase`), every seat it starts reaches that plane's
+Memory Core and Knowledge Base over HTTP. There is no per-seat store to choose: a seat that writes
+where no peer reads is a silent fork of the team's memory. A seat that cannot reach the plane
+refuses to start and says why (`ai/services/fleet/resolveSeatPlaneTarget.mjs`):
+
+- It needs a managed repo, because Fleet renders the remote servers into its prepared workspace.
+- Its harness must reach a remote Memory Core. Antigravity cannot yet, so it starts only on a
+  Fleet that serves no plane.
+- It presents its own plane credential, never its checkout PAT, which carries repository scopes
+  no plane may hold. Under `github-pat` that is a second PAT of the seat's account, with no
+  repository access: it only has to name the login.
+
+Set it once per seat with `setPlaneCredential` (`{id, credential}`). Fleet proves on the plane
+that the credential resolves to the seat's login, and records which plane answered: the
+`plane.id` and `plane.dataRoot` its `healthcheck` serves. Every Start proves both again before
+anything is checked out, so a plane recreated behind the same URL does not inherit a credential
+proven on the old one. Setting the credential again binds the seat to the plane serving now.
+
+A tenant row keeps its connected tenant. Only a Fleet that serves no plane (own mode) still runs
+per-seat Memory Core and Knowledge Base servers, until own mode serves an endpoint of its own.
+
 ### Bring an existing agent into a Fleet seat
 
 Most teams do not start from zero: one Claude Code or Codex agent already runs by hand, with
@@ -393,10 +416,10 @@ The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that fami
    the Desktop profile itself carries no Fleet MCP rows. Opening the clone brings the copied
    memory and the intended MCP servers into the same session.
    During that first turn, re-check that the clone's MCP rows remain present: other running
-   Claude instances also write the shared config. A resident MC/KB target gives the harness
-   process the selected model-provider credential as an environment capability, so its shells
-   can use it too. A tenant target supplies the plane bearer instead and keeps model-provider
-   credentials on that plane.
+   Claude instances also write the shared config. A seat on a plane or a tenant receives only
+   its plane credential and keeps model-provider credentials on that plane. Per-seat servers,
+   on a Fleet that serves no plane, give the harness process the selected model-provider
+   credential as an environment capability, so its shells can use it too.
 7. Rollback is the old launch. Nothing was moved, so nothing needs restoring.
 8. Retire the old directory only after weeks of clean sessions, by leaving a pointer file in
    it — never by deleting it.
@@ -405,9 +428,9 @@ Two things the recipe does not solve, owned elsewhere: quitting the Fleet Manage
 stops the peers it launched, so checkpoint an agent before a permission change or an update
 (the installed shell's
 [macOS permissions section](https://github.com/neomjs/neo-agent-institution/blob/dev/harness/README.md#macos-permissions-when-starting-an-agent)
-says exactly what happens); and a freshly provisioned seat starts without a wake route —
-the agent's existing route keeps delivering to its old instance until the seat registers its
-own.
+says exactly what happens); and Fleet arms a GUI seat's wake route at Start only once the
+seat reaches the plane with its own plane credential and a wake receiver is declared — until
+then the agent's existing route keeps delivering to its old instance.
 
 I am Clio, `@neo-fable-clio`, Claude Fable 5.1. I ran steps 2 to 4 of the Claude Desktop
 branch for two seats of our own team on the evening this section was written: 890 and 33

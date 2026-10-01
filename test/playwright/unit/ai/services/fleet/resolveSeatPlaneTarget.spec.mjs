@@ -52,12 +52,13 @@ test.describe('resolveSeatPlaneTarget — a seat\'s memories live where its peer
         }
     });
 
-    test('a family that cannot reach a remote Memory Core keeps its own store, named by its family', () => {
+    test('a family that cannot reach a remote Memory Core refuses on a Fleet that serves a plane, named by its family', () => {
         for (const harnessType of LOCAL) {
             expect(resolveSeatPlaneTarget({target: null, harnessType, planeBase: PLANE})).toEqual({
-                kind  : 'resident',
-                reason: `${harnessType} cannot reach a remote Memory Core, so its memories stay on this seat`
+                kind  : 'refused',
+                reason: `${harnessType} cannot reach a remote Memory Core, and on a Fleet that serves a plane a private per-seat store would write memories no peer reads`
             });
+            expect(resolveSeatPlaneTarget({target: null, harnessType, planeBase: null}).kind).toBe('resident');
         }
     });
 

@@ -25,9 +25,10 @@ import * as core      from 'neo.mjs/src/core/_export.mjs'
 import FleetTenantService, {
     probeTenantEndpoint
 } from '../../../../../../ai/services/fleet/FleetTenantService.mjs'
-import FleetRegistryService   from '../../../../../../ai/services/fleet/FleetRegistryService.mjs'
-import FleetControlBridge     from '../../../../../../ai/services/fleet/FleetControlBridge.mjs'
-import {dispatchFleetRequest} from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs'
+import FleetRegistryService       from '../../../../../../ai/services/fleet/FleetRegistryService.mjs'
+import FleetControlBridge         from '../../../../../../ai/services/fleet/FleetControlBridge.mjs'
+import {dispatchFleetRequest}     from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs'
+import {FLEET_CREDENTIAL_METHODS} from '../../../../../../ai/services/fleet/fleetLaunchContract.mjs'
 import {
     createFleetWireOffer,
     createFleetWireRequest,
@@ -805,8 +806,9 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
             })
 
             expect(rejected.ok).toBe(false)
+            // the other identity is named as such, never carried
             expect(rejected.resources['memory-core'])
-                .toEqual({ok: false, status: 200, identity: null})
+                .toEqual({ok: false, status: 200, identity: null, anotherIdentity: true})
         } finally {
             globalThis.fetch = originalFetch
         }
@@ -1016,6 +1018,24 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — connectTenant
 test.describe.serial('FleetControlBridge + wire — the remote-tenant surface', () => {
     test.afterEach(() => {
         FleetControlBridge.tenantService = null
+        FleetControlBridge.manager       = null
+    })
+
+    test('a seat\'s plane credential rides in as a credential-bearing verb to the Fleet, and nothing reads it back out', async () => {
+        const calls = []
+
+        FleetControlBridge.manager = {
+            setPlaneCredential: async payload => { calls.push(payload); return {status: 'stored', endpoint: 'http://127.0.0.1:3102', agentId: 'a'} }
+        }
+
+        expect(FLEET_CREDENTIAL_METHODS).toContain('setPlaneCredential')
+        await expect(dispatchFleetRequest(createFleetWireRequest('setPlaneCredential', {id: 'a', credential: 'x'}))).resolves
+            .toMatchObject({ok: true, result: {status: 'stored', endpoint: 'http://127.0.0.1:3102', agentId: 'a'}, state: FLEET_WIRE_RESPONSE_STATES.ok})
+        expect(calls).toEqual([{id: 'a', credential: 'x'}])
+
+        for (const reader of ['storeSeatPlaneCredential', 'resolveSeatPlaneCredential', 'probeSeatPlaneCredential']) {
+            expect(FLEET_WIRE_METHODS).not.toContain(reader)
+        }
     })
 
     test('connectTenant and listTenants delegate through the injectable tenant seam', async () => {
@@ -1073,16 +1093,24 @@ test.describe.serial('FleetControlBridge + wire — the remote-tenant surface', 
  * A seat's own plane credential, one per (plane, seat). The tenant store keeps one bearer per plane,
  * which the seat probe admits for one identity only, so a plane served to several seats needs each
  * seat's own credential. Nothing persists before the probe proves the identity, and nothing returns it.
+ * The plane that answered is stored with it, by the `plane.id` and `plane.dataRoot` it serves, and
+ * every start must meet that plane again: an endpoint is only where a plane is reached.
  */
 test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane credentials', () => {
+    // `asSeatOn` is the plane answering a seat it knows; it names itself only when asked which plane it is.
     const
-        PLANE   = 'http://127.0.0.1:3102',
-        STORE   = () => path.join(tmpDir, 'seat-plane-credentials.enc'),
-        AS_SEAT = async ({expectedIdentity}) => ({
+        PLANE    = 'http://127.0.0.1:3102',
+        SERVED   = Object.freeze({id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'}),
+        STORE    = () => path.join(tmpDir, 'seat-plane-credentials.enc'),
+        asSeatOn = (mcPlane = SERVED, kbPlane = mcPlane) => async ({expectedIdentity, servedPlane}) => ({
             ok       : true,
             status   : 200,
-            resources: {'memory-core': {ok: true, status: 200, identity: expectedIdentity}, 'knowledge-base': {ok: true, status: 200}}
-        })
+            resources: {
+                'memory-core'   : {ok: true, status: 200, identity: expectedIdentity, ...(servedPlane ? {plane: mcPlane} : {})},
+                'knowledge-base': {ok: true, status: 200, ...(servedPlane ? {plane: kbPlane} : {})}
+            }
+        }),
+        AS_SEAT  = asSeatOn()
 
     test.beforeEach(() => {
         sequence++
@@ -1098,14 +1126,14 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
         fs.rmSync(tmpDir, {force: true, recursive: true})
     })
 
-    test('a credential proven to be the seat is stored encrypted, resolves for that seat and plane only, and is never returned', async () => {
+    test('a credential proven to be the seat is stored encrypted with the plane that answered, resolves for that seat and plane only, and is never returned', async () => {
         FleetTenantService.probeFn = AS_SEAT
 
         const stored = await FleetTenantService.storeSeatPlaneCredential({planeBase: `${PLANE}/`, agentId: 'neo-gpt-sophie', identity: 'neo-gpt-sophie', credential: PAT})
 
         expect(stored).toEqual({status: 'stored', endpoint: PLANE, agentId: 'neo-gpt-sophie'})
         expect(JSON.stringify(stored)).not.toContain(PAT)
-        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'})).toBe(PAT)
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'})).toEqual({credential: PAT, plane: SERVED})
         expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-opus-ada'})).toBeNull()
         expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: 'https://elsewhere.example.com', agentId: 'neo-gpt-sophie'})).toBeNull()
         expect(fs.readFileSync(STORE()).includes(Buffer.from(PAT))).toBe(false)
@@ -1118,15 +1146,18 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
         await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie', identity: '@neo-gpt-sophie', credential: 'sophie-plane-pat'})
         await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy', identity: '@neo-gpt-emmy', credential: 'emmy-plane-pat'})
 
-        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'})).toBe('sophie-plane-pat')
-        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy'})).toBe('emmy-plane-pat')
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'}).credential).toBe('sophie-plane-pat')
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy'}).credential).toBe('emmy-plane-pat')
     })
 
-    test('another identity, a rejected bearer and an unreachable plane each persist nothing', async () => {
+    test('another identity, a rejected bearer, an unreachable plane and a plane that does not name itself each persist nothing', async () => {
         const cases = [
             [async () => ({ok: true, status: 200, resources: {'memory-core': {ok: true, identity: '@someone-else'}, 'knowledge-base': {ok: true}}}), 'the credential resolves to another identity'],
-            [async () => ({ok: false, status: 401}), 'tenant rejected the credential'],
-            [async () => { throw new Error(`refused ${PAT}`) }, 'plane endpoint unreachable']
+            [async () => ({ok: false, status: 200, resources: {'memory-core': {ok: false, status: 200, identity: null, anotherIdentity: true}, 'knowledge-base': {ok: true}}}), 'the credential resolves to another identity'],
+            [async () => ({ok: false, status: 401}), 'plane rejected the credential'],
+            [async () => { throw new Error(`refused ${PAT}`) }, 'plane endpoint unreachable'],
+            [asSeatOn(null), 'the plane did not identify itself'],
+            [asSeatOn(SERVED, {...SERVED, id: 'another-plane'}), 'the Memory Core and Knowledge Base at this endpoint belong to different planes']
         ]
 
         for (const [probe, reason] of cases) {
@@ -1176,5 +1207,116 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
     test('the seat credential is never reachable over the Fleet wire', async () => {
         await expect(dispatchFleetRequest({method: 'resolveSeatPlaneCredential', params: {}, protocol: createFleetWireOffer()})).resolves
             .toMatchObject({ok: false, state: FLEET_WIRE_RESPONSE_STATES.unsupportedMethod})
+    })
+
+    test('every start proves the credential again, and a plane recreated behind the same URL does not inherit it', async () => {
+        FleetTenantService.probeFn = AS_SEAT
+
+        await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie', identity: '@neo-gpt-sophie', credential: PAT})
+
+        const
+            {credential, plane} = FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'}),
+            prove               = () => FleetTenantService.probeSeatPlaneCredential({planeBase: PLANE, credential, expectedIdentity: '@neo-gpt-sophie', expectedPlane: plane})
+
+        expect(await prove()).toEqual({ok: true})
+
+        // another id, and the same id over other storage
+        for (const served of [{...SERVED, id: 'neo-local-recreated'}, {...SERVED, dataRoot: '/elsewhere/.neo-ai-data'}]) {
+            FleetTenantService.probeFn = asSeatOn(served)
+
+            expect(await prove()).toEqual({ok: false, reason: 'the plane at this endpoint is not the one the credential was stored for'})
+        }
+    })
+
+    test('a start proof fails with the plane\'s reason, and an unproven input never reaches the probe', async () => {
+        const proof = {planeBase: PLANE, credential: PAT, expectedIdentity: '@neo-gpt-sophie', expectedPlane: SERVED}
+
+        for (const [probe, reason] of [
+            [async () => ({ok: false, status: 401}), 'plane rejected the credential'],
+            [async () => { throw new Error('ECONNREFUSED') }, 'plane endpoint unreachable'],
+            [async () => ({ok: true, status: 200, resources: {'memory-core': {ok: true, identity: '@someone-else'}, 'knowledge-base': {ok: true}}}), 'the credential resolves to another identity'],
+            [asSeatOn(null), 'the plane did not identify itself']
+        ]) {
+            FleetTenantService.probeFn = probe
+
+            expect(await FleetTenantService.probeSeatPlaneCredential(proof)).toEqual({ok: false, reason})
+        }
+
+        let probed = 0
+
+        FleetTenantService.probeFn = async args => { probed++; return AS_SEAT(args) }
+
+        for (const override of [{expectedPlane: null}, {credential: ' '}, {expectedIdentity: ''}, {planeBase: 'http://plane.example.com'}]) {
+            expect(await FleetTenantService.probeSeatPlaneCredential({...proof, ...override}))
+                .toEqual({ok: false, reason: 'the seat holds no proven plane credential'})
+        }
+
+        expect(probed).toBe(0)
+    })
+
+    test('the default probe reads which plane serves each resource only when asked, and names a wrong-but-valid subject as another identity', async () => {
+        const
+            calls         = [],
+            originalFetch = globalThis.fetch
+
+        let served = {plane: SERVED}, identity = '@neo-gpt-sophie'
+
+        globalThis.fetch = async (url, options) => {
+            const request = options.body ? JSON.parse(options.body) : null
+
+            calls.push({url, request, session: options.headers['mcp-session-id']})
+
+            const result = request?.method === 'tools/call'
+                ? {content: [{type: 'text', text: JSON.stringify(request.params.name === 'healthcheck' ? served : {identity})}]}
+                : {protocolVersion: '2025-06-18', capabilities: {}, serverInfo: {name: 'test', version: '1'}}
+
+            return {
+                ok     : true,
+                status : 200,
+                headers: {get: key => key === 'mcp-session-id' && request?.method === 'initialize' ? `session-${url.includes('/mc/') ? 'mc' : 'kb'}` : null},
+                text   : async () => JSON.stringify({jsonrpc: '2.0', id: request?.id, result})
+            }
+        }
+
+        const healthchecks = () => calls.filter(call => call.request?.params?.name === 'healthcheck')
+
+        try {
+            const asked = await probeTenantEndpoint({endpoint: PLANE, credential: PAT, expectedIdentity: '@neo-gpt-sophie', servedPlane: true})
+
+            expect(asked).toEqual({
+                ok       : true,
+                status   : 200,
+                resources: {
+                    'memory-core'   : {ok: true, status: 200, identity: '@neo-gpt-sophie', plane: SERVED},
+                    'knowledge-base': {ok: true, status: 200, plane: SERVED}
+                }
+            })
+            // one healthcheck per resource, inside that resource's own session
+            expect(healthchecks().map(call => [call.url, call.session]).sort())
+                .toEqual([[`${PLANE}/kb/mcp`, 'session-kb'], [`${PLANE}/mc/mcp`, 'session-mc']])
+
+            const unasked = await probeTenantEndpoint({endpoint: PLANE, credential: PAT, expectedIdentity: '@neo-gpt-sophie'})
+
+            expect(unasked.resources['memory-core']).toEqual({ok: true, status: 200, identity: '@neo-gpt-sophie'})
+            expect(healthchecks()).toHaveLength(2)
+
+            // a server that names no plane is no plane, and readiness is still decided by readiness alone
+            served = {status: 'healthy'}
+
+            const unnamed = await probeTenantEndpoint({endpoint: PLANE, credential: PAT, servedPlane: true})
+
+            expect(unnamed.ok).toBe(true)
+            expect(unnamed.resources['knowledge-base'].plane).toBeNull()
+
+            // the store end to end through the default probe: the plane's other subject is named as such
+            served   = {plane: SERVED}
+            identity = '@someone-else'
+
+            expect(await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie', identity: '@neo-gpt-sophie', credential: PAT}))
+                .toEqual({status: 'rejected', reason: 'the credential resolves to another identity'})
+            expect(fs.existsSync(STORE())).toBe(false)
+        } finally {
+            globalThis.fetch = originalFetch
+        }
     })
 })

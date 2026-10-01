@@ -3,6 +3,7 @@ import {ensureAgentRepo}               from './ensureAgentRepo.mjs';
 import {launchRefusalOf}               from '../../../src/fleet/contract/launchAuthority.mjs';
 import {prepareManagedAgentWorkspace}  from './prepareManagedAgentWorkspace.mjs';
 import {redactReadFailure}             from './redactReadFailure.mjs';
+import {resolveSeatPlaneTarget}        from './resolveSeatPlaneTarget.mjs';
 import path                            from 'node:path';
 import {fileURLToPath}                 from 'node:url';
 
@@ -92,6 +93,15 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * happens to exist under the current root carries no binding authority, so nothing is adopted from
  * the filesystem. Only that act, or a deliberate move, rewrites the record.
  *
+ * **Memory Core and Knowledge Base live where the team reads them**
+ * ({@link Neo.ai.services.fleet.resolveSeatPlaneTarget}). A tenant row reaches its tenant. On a Fleet
+ * that serves a plane, every other seat reaches that plane with its own stored plane credential, never
+ * its checkout PAT. The start proves again that the credential resolves to the seat, on the plane it
+ * was stored against, before any checkout. A seat that cannot get there refuses to start and says why:
+ * no managed repo to render the remote servers into, a harness with no remote Memory Core, no stored
+ * credential, or a failed proof. A private per-seat store is no fallback. Only a Fleet that serves no
+ * plane keeps the per-seat servers.
+ *
  * Pure composition over injectable seams: `ensureRepo` (default {@link Neo.ai.services.fleet.ensureAgentRepo}),
  * `prepareWorkspace` (default {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}), and
  * `cloneRepo` (forwarded to provisioning) make the order/failure contract unit-testable without a git
@@ -104,6 +114,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @param {String}    options.agentId          The Fleet Manager agent id to start.
  * @param {String}   [options.managedRoot]     The absolute, trusted fleet-managed checkout root —
  *                                             required only when the agent carries `metadata.repo`.
+ * @param {String}   [options.planeBase]       The plane the Fleet serves (`fleet.planeBase`), as its
+ *                                             entrypoint resolved it; omitted on a Fleet without one.
  * @param {Function} [options.cloneRepo]       `(cloneUrl, repoPath) => Promise<void>` clone seam,
  *                                             forwarded to `ensureRepo`; defaults to a real `git clone`.
  * @param {Function} [options.ensureRepo]      The repo-provisioning composer; defaults to
@@ -124,7 +136,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, where a failed entry's
  *   `reason` is the failure's credential-redacted, bounded diagnostic.
  * @throws {Error} when `lifecycleService` / `agentId` is missing, the agent is unknown or has no GitHub
- *   PAT stored (refused before any checkout), `managedRoot`
+ *   PAT stored (refused before any checkout), the seat cannot reach the Memory Core it must use (see
+ *   above; refused before any checkout), `managedRoot`
  *   is absent for a repo-bearing agent, a repo-bearing raw launch override would bypass curated
  *   preparation, the managed root derives a seat home other than the recorded one or the row records
  *   none (`FLEET_SEAT_HOME_MISMATCH` / `FLEET_SEAT_HOME_UNBOUND`, refused before the PAT read),
@@ -135,6 +148,7 @@ export async function startAgentProvisioned({
     lifecycleService,
     agentId,
     managedRoot,
+    planeBase = null,
     cloneRepo,
     ensureRepo = ensureAgentRepo,
     prepareWorkspace = prepareManagedAgentWorkspace,
@@ -155,13 +169,20 @@ export async function startAgentProvisioned({
           agent    = registry.getDefinition?.(agentId) ?? registry.getAgent(agentId);
     if (!agent) throw new Error(`startAgentProvisioned: unknown agent '${agentId}'.`);
 
+    // A raw launch override renders no MCP config, so it has no placement.
     const
-        repo   = agent.metadata?.repo,
-        target = agent.mcpTarget;
+        repo      = agent.metadata?.repo,
+        target    = agent.mcpTarget,
+        placement = agent.metadata?.launch ? null : resolveSeatPlaneTarget({target, harnessType: agent.harnessType, planeBase}),
+        remote    = target?.kind === 'tenant' || placement?.kind === 'plane';
 
     // Structural refusals first: none of them may read a secret.
-    if (!repo && target?.kind === 'tenant') {
-        throw new Error(`startAgentProvisioned: tenant MCP agent '${agentId}' requires a managed repo.`)
+    if (!repo && remote) {
+        throw new Error(`startAgentProvisioned: agent '${agentId}' reaches its Memory Core remotely and requires a managed repo, the workspace its remote servers are rendered into.`)
+    }
+
+    if (placement?.kind === 'refused') {
+        throw new Error(`startAgentProvisioned: agent '${agentId}' cannot start: ${placement.reason}.`)
     }
 
     // The managed-workspace contract is coupled to Fleet's curated harness launch. A repo-bearing raw
@@ -209,8 +230,8 @@ export async function startAgentProvisioned({
 
     // Resolve the resident child envelope and seat PAT before any checkout/config mutation.
     // The same resolved envelope names the rendered slots and supplies the eventual spawn.
-    const resolvedResidentMcpEnv = lifecycleService.resolveResidentMcpEnvironment(agent);
-    const resolvedCredential = registry.resolveCredential(agentId);
+    const resolvedResidentMcpEnv = lifecycleService.resolveResidentMcpEnvironment(agent, {remote});
+    const resolvedCredential     = registry.resolveCredential(agentId);
 
     // the creation test, applied to what is stored: a blank value written before the requirement
     // is no PAT either
@@ -228,9 +249,9 @@ export async function startAgentProvisioned({
         resolvedMcpCredential,
         remoteCapability;
 
-    if (target?.kind === 'tenant') {
-        const activeTenantService = tenantService ?? (await import('./FleetTenantService.mjs')).default;
+    const activeTenantService = remote ? tenantService ?? (await import('./FleetTenantService.mjs')).default : null;
 
+    if (target?.kind === 'tenant') {
         remotePlan = activeTenantService.resolveMcpResources(target.tenantId);
 
         if (!remotePlan) {
@@ -260,6 +281,30 @@ export async function startAgentProvisioned({
             readiness.resources['memory-core'].identity !== expectedIdentity ||
             !readiness.resources?.['knowledge-base']?.ok) {
             throw new Error(`startAgentProvisioned: remote MCP credential readiness failed for agent '${agentId}'.`)
+        }
+    } else if (placement?.kind === 'plane') {
+        const stored = activeTenantService.resolveSeatPlaneCredential({planeBase: placement.endpoint, agentId});
+
+        if (!stored) {
+            throw new Error(`startAgentProvisioned: agent '${agentId}' has no plane credential stored for ${placement.endpoint}; set the seat's own plane credential (setPlaneCredential) before starting it.`)
+        }
+
+        remotePlan            = placement;
+        resolvedMcpCredential = stored.credential;
+        remoteCapability      = await lifecycleService.assertRemoteMcpCapability(agent, {
+            mainCheckout: agentosRuntimeRoot,
+            nodePath
+        });
+
+        const readiness = await activeTenantService.probeSeatPlaneCredential({
+            planeBase       : placement.endpoint,
+            credential      : stored.credential,
+            expectedIdentity: expectedAgentIdentity(agent),
+            expectedPlane   : stored.plane
+        });
+
+        if (!readiness?.ok) {
+            throw new Error(`startAgentProvisioned: agent '${agentId}' cannot use its plane at ${placement.endpoint}: ${readiness?.reason ?? 'the readiness probe failed'}.`)
         }
     }
 
@@ -301,8 +346,9 @@ export async function startAgentProvisioned({
         instanceRoot       : instanceRoot ?? lifecycleService.getInstanceRoot?.(),
         agentosRuntimeRoot,
         nodePath,
-        residentMcpEnv: resolvedResidentMcpEnv,
+        residentMcpEnv     : resolvedResidentMcpEnv,
         remoteMcpCapability: remoteCapability,
+        // the plan's remote kind, whether a connected tenant or the Fleet's plane serves MC and KB
         mcpTarget          : remotePlan && {
             kind            : 'tenant',
             credentialEnvVar: REMOTE_MCP_CREDENTIAL_ENV_VAR,
@@ -316,7 +362,7 @@ export async function startAgentProvisioned({
         throw new Error(`startAgentProvisioned: preparation did not return the exact AgentOS runtime and target repo roots for agent '${agentId}'.`);
     }
 
-    if (target?.kind === 'tenant') {
+    if (remote) {
         await lifecycleService.inspectPreparedRemoteMcpAdapter({
             agent,
             binaryPath  : remoteCapability.binaryPath,
@@ -339,7 +385,7 @@ export async function startAgentProvisioned({
             cwd: prepared.targetRepoRoot,
             resolvedCredential,
             resolvedResidentMcpEnv,
-            ...(target?.kind === 'tenant'
+            ...(remote
                 ? {resolvedMcpCredential, remoteMcpCapability: remoteCapability}
                 : {})
         }

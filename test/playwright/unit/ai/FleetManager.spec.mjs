@@ -179,7 +179,7 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
      * Wires the manager around a recording lifecycle stub, or around the real lifecycle's bookkeeping
      * (`real: true`) where its launch check and status projection are under test.
      */
-    function configure({agent = TENANT_AGENT, arm, real = false, provision = async () => ({state: 'running', instanceHome: HOME, ...LAUNCH})}) {
+    function configure({agent = TENANT_AGENT, arm, real = false, planeBase = 'http://127.0.0.1:3102', provision = async () => ({state: 'running', instanceHome: HOME, ...LAUNCH})}) {
         const recorded = [],
               armCalls = [],
               tenants  = {marker: 'tenant-service'};
@@ -187,7 +187,7 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
         FleetManager.managedRoot         = '/managed/root';
         FleetManager.tenantService       = tenants;
         FleetManager.provisionAndStartFn = provision;
-        FleetManager.planeBase           = 'http://127.0.0.1:3102';
+        FleetManager.planeBase           = planeBase;
         FleetManager.wakeStateOptions    = {wakeReceiverBase: 'http://host.docker.internal:3199', wakeReceiverManifestPath: '/host/wake/routes.json'};
         FleetManager.wakeArmFn           = async args => { armCalls.push(args); return arm(args) };
         FleetManager.lifecycleService    = {
@@ -275,10 +275,57 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
         expect(recorded).toEqual([]);
     });
 
-    test('a resident seat is handed no tenant service', async () => {
-        const {armCalls} = configure({agent: {...TENANT_AGENT, mcpTarget: null}, arm: () => ({state: 'unarmed', reason: 'resident'})});
+    test('a seat on the plane the Fleet serves is handed the tenant service, which holds its plane credential', async () => {
+        const {armCalls, tenants} = configure({agent: {...TENANT_AGENT, mcpTarget: null}, arm: () => READY});
+
+        await FleetManager.startAgent('agent-a');
+        expect(armCalls[0].tenantService).toBe(tenants);
+    });
+
+    test('a resident seat, on a Fleet that serves no plane, is handed no tenant service', async () => {
+        const {armCalls} = configure({agent: {...TENANT_AGENT, mcpTarget: null}, planeBase: null, arm: () => ({state: 'unarmed', reason: 'resident'})});
 
         await FleetManager.startAgent('agent-a');
         expect(armCalls[0].tenantService).toBeNull();
+    });
+});
+
+test.describe('Neo.ai.services.fleet.FleetManager — a seat\'s plane credential', () => {
+    const
+        SEAT   = Object.freeze({id: 'agent-a', githubUsername: 'neo-agent-a', harnessType: 'codex'}),
+        STORED = Object.freeze({status: 'stored', endpoint: 'http://127.0.0.1:3102', agentId: 'agent-a'});
+
+    /** The plane and the identity come from the Fleet; the caller names only the seat and the credential. */
+    function configure({planeBase = 'http://127.0.0.1:3102'} = {}) {
+        const calls = [];
+
+        FleetManager.planeBase        = planeBase;
+        FleetManager.tenantService    = {storeSeatPlaneCredential: async args => { calls.push(args); return STORED }};
+        FleetManager.lifecycleService = {getRegistry: () => ({getAgent: id => id === 'agent-a' ? SEAT : null})};
+
+        return calls
+    }
+
+    test.beforeEach(reset);
+    test.afterEach(reset);
+
+    test('the credential is stored for the plane this Fleet serves, as the identity the seat\'s row names', async () => {
+        const calls = configure();
+
+        expect(await FleetManager.setPlaneCredential({id: 'agent-a', credential: 'seat-plane-pat', planeBase: 'https://elsewhere.example.com', identity: '@someone-else'}))
+            .toEqual(STORED);
+        expect(calls).toEqual([{planeBase: 'http://127.0.0.1:3102', agentId: 'agent-a', identity: 'neo-agent-a', credential: 'seat-plane-pat'}]);
+    });
+
+    test('a Fleet that serves no plane, and an unknown seat, store nothing', async () => {
+        let calls = configure({planeBase: null});
+
+        expect(await FleetManager.setPlaneCredential({id: 'agent-a', credential: 'x'})).toEqual({status: 'rejected', reason: 'this Fleet serves no plane'});
+        expect(calls).toEqual([]);
+
+        calls = configure();
+
+        expect(await FleetManager.setPlaneCredential({id: 'agent-b', credential: 'x'})).toEqual({status: 'rejected', reason: 'unknown agent'});
+        expect(calls).toEqual([]);
     });
 });
