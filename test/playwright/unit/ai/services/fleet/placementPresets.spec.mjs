@@ -60,14 +60,19 @@ test.describe('placementPresets — three presets as env sets over declared leav
         expect(byId('local-small')).toMatchObject({inference: 'local', vectorDimension: 1024, embedder: 'text-embedding-qwen3-embedding-0.6b', chatModel: 'google/gemma-4-26b-a4b', pendingBindings: []});
         expect(byId('local-full')).toMatchObject({inference: 'local', vectorDimension: 4096, embedder: 'text-embedding-qwen3-embedding-8b', chatModel: 'google/gemma-4-26b-a4b', pendingBindings: []});
         expect(byId('hosted')).toMatchObject({inference: 'hosted', vectorDimension: 3072, embedder: 'gemini-embedding-001', chatModel: 'gemini-3.5-flash', requires: ['providerKey', 'pat', 'repos']});
-        expect(byId('hosted').pendingBindings).toEqual(['gemini.modelName', 'gemini.embeddingModel']);
+        // AC-4: every preset names its models through declared env bindings — nothing pending since the Gemini leaves gained theirs
+        for (const preset of presets) {
+            expect(preset.pendingBindings, preset.id).toEqual([])
+        }
 
         // the local presets point the plane's containers at the host's model server, as the live plane does
         for (const id of ['local-small', 'local-full']) {
             expect(byId(id).env).toMatchObject({NEO_MODEL_PROVIDER: 'openAiCompatible', NEO_EMBEDDING_PROVIDER: 'openAiCompatible', NEO_OPENAI_COMPATIBLE_HOST: 'http://host.docker.internal:1234', NEO_OPENAI_COMPATIBLE_MODEL: 'google/gemma-4-26b-a4b'});
             expect(byId(id).env.NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL).toBe(byId(id).embedder)
         }
-        expect(byId('hosted').env).toEqual({NEO_MODEL_PROVIDER: 'gemini', NEO_EMBEDDING_PROVIDER: 'gemini', NEO_VECTOR_DIMENSION: '3072'});
+        expect(byId('hosted').env).toEqual({NEO_MODEL_PROVIDER: 'gemini', NEO_EMBEDDING_PROVIDER: 'gemini', NEO_GEMINI_MODEL: 'gemini-3.5-flash', NEO_GEMINI_EMBEDDING_MODEL: 'gemini-embedding-001', NEO_VECTOR_DIMENSION: '3072'});
+        expect(byId('hosted').env.NEO_GEMINI_MODEL).toBe(byId('hosted').chatModel);
+        expect(byId('hosted').env.NEO_GEMINI_EMBEDDING_MODEL).toBe(byId('hosted').embedder);
 
         // the models' bytes are the loaded weights, summed once per preset; hosted carries none
         expect(byId('hosted').workload.modelsBytes).toBe(0);

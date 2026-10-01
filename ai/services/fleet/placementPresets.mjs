@@ -54,8 +54,9 @@ const
  * `authorityProfile`, `env` (only declared leaf bindings — the parity spec proves it), `requires`
  * (what the recipe must still ask for), `vectorDimension`, `embedder`, `chatModel`, `workload`
  * (`{planeIdleBytes, planePeakBytes, modelsBytes, vmCapRecommendedBytes}` for the probe's
- * `fitsPreset`), `qualityFloor` (a recorded floor run, or `null` → `candidate`), and for the hosted
- * preset `pendingBindings`: leaves whose defaults it relies on until their env bindings exist.
+ * `fitsPreset`), `qualityFloor` (a recorded floor run, or `null` → `candidate`), and `pendingBindings`:
+ * leaves a preset would still rely on by default because they lack an env binding — empty for every
+ * preset since the Gemini model leaves gained theirs; the recipe shows the list when it is not.
  */
 export const presets = Object.freeze([
     Object.freeze({
@@ -65,17 +66,17 @@ export const presets = Object.freeze([
         profile         : PLANE_PROFILE.id,
         authorityProfile: CONTAINER_AUTHORITY_PROFILE,
         env             : Object.freeze({
-            NEO_MODEL_PROVIDER    : 'gemini',
-            NEO_EMBEDDING_PROVIDER: 'gemini',
-            NEO_VECTOR_DIMENSION  : '3072'
+            NEO_MODEL_PROVIDER        : 'gemini',
+            NEO_EMBEDDING_PROVIDER    : 'gemini',
+            NEO_GEMINI_MODEL          : 'gemini-3.5-flash',
+            NEO_GEMINI_EMBEDDING_MODEL: 'gemini-embedding-001',
+            NEO_VECTOR_DIMENSION      : '3072'
         }),
         requires        : ['providerKey', 'pat', 'repos'],
         vectorDimension : 3072,
         embedder        : 'gemini-embedding-001',
         chatModel       : 'gemini-3.5-flash',
-        // the Gemini model leaves carry these as defaults and have no env binding yet; the recipe shows
-        // the names, the operator cannot change them through a preset until the bindings land
-        pendingBindings : ['gemini.modelName', 'gemini.embeddingModel'],
+        pendingBindings : [],
         workload        : Object.freeze({...FIXTURE_PLANE, modelsBytes: 0, vmCapRecommendedBytes: 6 * GiB}),
         qualityFloor    : null
     }),
