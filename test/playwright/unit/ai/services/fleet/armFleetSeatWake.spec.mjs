@@ -51,15 +51,30 @@ const
         }
     });
 
-function tenantService({endpoint = PLANE, credential = 'seat-credential', seatCredential = 'seat-plane-credential'} = {}) {
+/** The plane the seat's credential was stored against. */
+const STORED_PLANE = Object.freeze({id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'});
+
+/** `served` is the plane answering now: arming must meet the stored one there before any effect. */
+function tenantService({endpoint = PLANE, credential = 'seat-credential', seatCredential = 'seat-plane-credential', served = STORED_PLANE} = {}) {
+    const proofs = [];
+
     return {
+        proofs,
         resolveMcpResources : tenantId => tenantId === 'local'
             ? {tenantId, endpoint, resources: {'memory-core': {url: `${endpoint}/mc/mcp`}}}
             : null,
         resolveMcpCredential      : tenantId => tenantId === 'local' ? credential : null,
         resolveSeatPlaneCredential: ({planeBase, agentId}) => planeBase === PLANE && agentId === 'neo-gpt-sophie' && seatCredential
-            ? {credential: seatCredential, plane: {id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'}}
-            : null
+            ? {credential: seatCredential, plane: STORED_PLANE}
+            : null,
+        // the service's own comparison, over the plane this double serves
+        probeSeatPlaneCredential: async args => {
+            proofs.push(args);
+
+            return served.id === args.expectedPlane?.id && served.dataRoot === args.expectedPlane?.dataRoot
+                ? {ok: true}
+                : {ok: false, reason: 'the plane at this endpoint is not the one the credential was stored for'}
+        }
     }
 }
 
@@ -179,15 +194,42 @@ test.describe('armFleetSeatWake — one route per seat, subscribed as the seat',
         expect(plane.calls.closed).toBe(1);
     });
 
-    test('a seat on the plane the Fleet serves subscribes there with its own plane credential', async () => {
-        const {result, plane, armCalls} = arm({agent: {...AGENT, mcpTarget: null}});
+    test('a seat on the plane the Fleet serves subscribes there with its own plane credential, once arming proves the binding', async () => {
+        const
+            tenants                   = tenantService(),
+            {result, plane, armCalls} = arm({agent: {...AGENT, mcpTarget: null}, tenantService: tenants});
 
         expect(await result).toMatchObject({state: 'ready', subscriptionId: 'WAKE_SUB:minted'});
+        expect(tenants.proofs).toEqual([{
+            planeBase       : PLANE,
+            credential      : 'seat-plane-credential',
+            expectedIdentity: '@neo-gpt-sophie',
+            expectedPlane   : STORED_PLANE
+        }]);
         expect(plane.calls.created).toEqual({baseUrl: `${PLANE}/mc/mcp`, credential: 'seat-plane-credential'});
         expect(plane.calls.init).toEqual([{expectedIdentity: '@neo-gpt-sophie'}]);
         expect(plane.subscribeCalls()).toEqual([CANONICAL]);
         expect(armCalls).toHaveLength(1);
     });
+
+    // FleetManager.startAgent arms after every Start, and a Start on a running seat returns before
+    // the start's own proof: arming is where the binding must hold for that path.
+    for (const [label, served] of [
+        ['another plane id',                 {...STORED_PLANE, id: 'neo-local-recreated'}],
+        ['the same id over another data root', {...STORED_PLANE, dataRoot: '/elsewhere/.neo-ai-data'}]
+    ]) {
+        test(`a re-arm against ${label} subscribes nothing and publishes nothing`, async () => {
+            const {result, plane, armCalls} = arm({agent: {...AGENT, mcpTarget: null}, tenantService: tenantService({served})});
+
+            expect(await result).toMatchObject({
+                state : 'unarmed',
+                reason: 'the seat\'s plane credential is not proven on this plane: the plane at this endpoint is not the one the credential was stored for'
+            });
+            expect(plane.calls.created).toBeNull();
+            expect(plane.subscribeCalls()).toEqual([]);
+            expect(armCalls).toHaveLength(0);
+        });
+    }
 
     test('a repeat start asks for the identical route, so the plane answers with the row it holds', async () => {
         const first  = fakePlane(),

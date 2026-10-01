@@ -274,9 +274,11 @@ refuses to start and says why (`ai/services/fleet/resolveSeatPlaneTarget.mjs`):
 
 Set it once per seat with `setPlaneCredential` (`{id, credential}`). Fleet proves on the plane
 that the credential resolves to the seat's login, and records which plane answered: the
-`plane.id` and `plane.dataRoot` its `healthcheck` serves. Every Start proves both again before
-anything is checked out, so a plane recreated behind the same URL does not inherit a credential
-proven on the old one. Setting the credential again binds the seat to the plane serving now.
+`plane.id` and `plane.dataRoot` its `healthcheck` serves. Both are proven again before the
+credential is used: a fresh Start proves them before anything is checked out, and wake arming
+before it subscribes, including on a Start for a seat that is already running. A plane recreated
+behind the same URL therefore does not inherit a credential proven on the old one. Setting the
+credential again binds the seat to the plane serving now.
 
 A tenant row keeps its connected tenant. Only a Fleet that serves no plane (own mode) still runs
 per-seat Memory Core and Knowledge Base servers, until own mode serves an endpoint of its own.
@@ -416,8 +418,9 @@ The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that fami
    the Desktop profile itself carries no Fleet MCP rows. Opening the clone brings the copied
    memory and the intended MCP servers into the same session.
    During that first turn, re-check that the clone's MCP rows remain present: other running
-   Claude instances also write the shared config. A seat on a plane or a tenant receives only
-   its plane credential and keeps model-provider credentials on that plane. Per-seat servers,
+   Claude instances also write the shared config. For Memory Core and Knowledge Base, a seat on a
+   plane or a tenant receives only its plane credential, beside its separate checkout PAT, and
+   model-provider credentials stay on that plane. Per-seat servers,
    on a Fleet that serves no plane, give the harness process the selected model-provider
    credential as an environment capability, so its shells can use it too.
 7. Rollback is the old launch. Nothing was moved, so nothing needs restoring.

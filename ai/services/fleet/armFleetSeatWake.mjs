@@ -86,7 +86,7 @@ export async function armFleetSeatWake({
 
     // The seat subscribes where its start placed its Memory Core, with the credential proven there.
     const placement = resolveSeatPlaneTarget({target, harnessType: agent.harnessType, planeBase});
-    let   plan, credential;
+    let   plan, credential, stored = null;
 
     if (placement.kind === 'tenant') {
         plan       = tenantService?.resolveMcpResources(target.tenantId);
@@ -98,10 +98,12 @@ export async function armFleetSeatWake({
             return unarmed('the seat\'s plane is not the plane this Fleet is attached to, and the receiver URL is declared for that plane only')
         }
     } else if (placement.kind === 'plane') {
-        plan       = placement;
-        credential = tenantService?.resolveSeatPlaneCredential({planeBase: placement.endpoint, agentId: agent.id})?.credential;
+        stored = tenantService?.resolveSeatPlaneCredential({planeBase: placement.endpoint, agentId: agent.id});
 
-        if (!credential) return unarmed('the seat holds no plane credential to subscribe with');
+        if (!stored) return unarmed('the seat holds no plane credential to subscribe with');
+
+        plan       = placement;
+        credential = stored.credential;
     } else {
         return unarmed('the seat runs a resident Memory Core, which is not the plane that dispatches wakes')
     }
@@ -118,8 +120,22 @@ export async function armFleetSeatWake({
         return unarmed('fleet.wakeReceiverBase is not a valid URL')
     }
 
-    const client   = createClient({baseUrl: plan.resources['memory-core'].url, credential}),
-          identity = `@${login}`;
+    const identity = `@${login}`;
+
+    // A Start on a seat that is already running skips the start's own proof, so arming proves the
+    // binding itself: the credential subscribes only on the plane it was stored against.
+    if (stored) {
+        const binding = await tenantService.probeSeatPlaneCredential({
+            planeBase       : placement.endpoint,
+            credential,
+            expectedIdentity: identity,
+            expectedPlane   : stored.plane
+        });
+
+        if (!binding?.ok) return unarmed(`the seat's plane credential is not proven on this plane: ${binding?.reason ?? 'no reason given'}`);
+    }
+
+    const client = createClient({baseUrl: plan.resources['memory-core'].url, credential});
 
     try {
         const proof = await client.init({expectedIdentity: identity});
