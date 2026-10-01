@@ -1716,17 +1716,20 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         expect(FleetLifecycleService.listRunning().map(row => row.id)).toEqual(['seat'])
     });
 
-    test('a lease whose pid is gone, reused or on another profile is removed, and the agent reads stopped with why', () => {
-        const cases = {
-            gone   : () => ({}),
-            reused : profile => ({4242: {alive: true, startedAt: 'Thu Oct  1 09:30:00 2026', command: `${process.execPath} --user-data-dir=${profile}`}}),
-            foreign: () => ({4242: {alive: true, startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=/elsewhere`}})
-        };
+    test('a lease whose pid is gone, reused, on another profile or named for another agent is removed, and the agent reads stopped with why', () => {
+        const
+            seatRow = profile => ({4242: {alive: true, startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${profile}`}}),
+            cases   = {
+                gone    : {rows: () => ({})},
+                reused  : {rows: profile => ({4242: {...seatRow(profile)[4242], startedAt: 'Thu Oct  1 09:30:00 2026'}})},
+                foreign : {rows: () => seatRow('/elsewhere')},
+                stranger: {rows: seatRow, lease: {agentId: 'another-seat'}}   // pid, start time and profile all match
+            };
 
-        for (const [name, rows] of Object.entries(cases)) {
+        for (const [name, {rows, lease}] of Object.entries(cases)) {
             const {home, profile} = installSeat('claude-desktop');
 
-            writeLease(home);
+            writeLease(home, lease);
             stubProcessTable(rows(profile));
 
             expect(FleetLifecycleService.status('seat'), name).toMatchObject({
