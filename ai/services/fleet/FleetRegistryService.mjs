@@ -217,10 +217,11 @@ function normalizeStoredMcpTarget(target) {
  *
  * **Seat home** (`seatHome`) is where a seat's files live — the absolute `<agentsRoot>/<id>` that holds
  * its clone and harness home. Fleet derives that path from the agents root at every start, so the row
- * records it the first time the seat is materialized ({@link recordSeatHome}, create-only) and the
- * start composer ({@link Neo.ai.services.fleet.startAgentProvisioned}) refuses a derivation that
- * differs from the record instead of provisioning a second, empty seat under a changed root. Only a
- * deliberate move rewrites it ({@link relocateSeatHome}); a row without it is adopted at its next start.
+ * records it at birth ({@link defineAgent}, under {@link getAgentsRoot}) and the start composer
+ * ({@link Neo.ai.services.fleet.startAgentProvisioned}) refuses a derivation that differs from the
+ * record instead of provisioning a second, empty seat under a changed root. A row older than the
+ * record is adopted ({@link recordSeatHome}, create-only) only once its seat is found under the current
+ * root; only a deliberate move or bless rewrites the record ({@link relocateSeatHome}).
  */
 class FleetRegistryService extends Base {
     static config = {
@@ -241,7 +242,15 @@ class FleetRegistryService extends Base {
          * `AiConfig.fleet.dataDir` plane member at the use site. Changing it transparently reloads
          * the in-memory registry on the next call.
          */
-        dataDir_: null
+        dataDir_: null,
+        /**
+         * @member {String|null} agentsRoot_=null
+         * @summary Optional override of the agents root a new row's `seatHome` is recorded under, for
+         * isolation and tests. Production leaves this null so {@link getAgentsRoot} reads the canonical
+         * `AiConfig.fleet.agentsRoot` leaf at the use site — the leaf the Fleet entrypoint also injects
+         * as the manager's managed root and the lifecycle's instance root.
+         */
+        agentsRoot_: null
     }
 
     /**
@@ -380,6 +389,10 @@ class FleetRegistryService extends Base {
                 metadata,
                 mcpServers   : matrix,
                 mcpTarget    : target,
+                // where the seat will live, recorded at birth: a start under a changed root then refuses
+                // instead of provisioning a second seat; rows older than the record adopt through
+                // `recordSeatHome` only once their seat is found under the current root
+                seatHome     : path.resolve(this.getAgentsRoot(), agentId),
                 launchOwner,
                 // an explicit owner is an ownership act, the fact `launchRefusalOf` keys on; the omitted
                 // default records none, so the process record stays that seat's only start gate
@@ -586,10 +599,10 @@ class FleetRegistryService extends Base {
     }
 
     /**
-     * @summary Records where a seat's files live — the one create-only write of `seatHome` after
-     * {@link defineAgent}. The start composer calls it when a seat is first materialized, or adopts a
-     * row that predates the record at its next start; an equal value is a no-op, and a different value
-     * is refused here because only a deliberate move may change the record ({@link relocateSeatHome}).
+     * @summary Adopts a row older than the seat record — the one create-only write of `seatHome` after
+     * {@link defineAgent}, which the start composer makes once such a row's seat is found under the
+     * current root. An equal value is a no-op, and a different value is refused here because only a
+     * deliberate move or bless may change the record ({@link relocateSeatHome}).
      * @param {String} id       Registry agent id.
      * @param {String} seatHome The absolute seat directory, `<agentsRoot>/<id>`.
      * @returns {Object|null} The updated public definition, or `null` when the agent doesn't exist.
@@ -1027,6 +1040,15 @@ class FleetRegistryService extends Base {
      */
     getDataDir() {
         return this.dataDir || aiConfig.fleet.dataDir;
+    }
+
+    /**
+     * @summary The agents root a new row's `seatHome` is recorded under: the injected override, else
+     * the canonical `AiConfig.fleet.agentsRoot` leaf — the root the Fleet derives every seat path from.
+     * @returns {String}
+     */
+    getAgentsRoot() {
+        return this.agentsRoot || aiConfig.fleet.agentsRoot;
     }
 
     /** @returns {String} @private */

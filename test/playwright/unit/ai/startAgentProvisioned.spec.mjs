@@ -132,8 +132,19 @@ function makePrepareWorkspace(events) {
 
 const REPO = {cloneUrl: 'https://github.com/neomjs/neo.git', repoSlug: 'neomjs/neo'};
 
+/** A row as `defineAgent` writes it today: born with its seat home under the suite's `/managed` root. */
 function repoAgent(id = 'a') {
-    return {[id]: {id, githubUsername: id, harnessType: 'codex', metadata: {repo: REPO}}};
+    return {[id]: {id, githubUsername: id, harnessType: 'codex', metadata: {repo: REPO}, seatHome: `/managed/${id}`}};
+}
+
+/** A row persisted before Fleet recorded seat homes: no `seatHome`, so a start must adopt or refuse. */
+function legacyRepoAgent(id = 'a') {
+    const agents = repoAgent(id);
+
+    delete agents[id].seatHome;
+    agents[id].createdAt = '2026-09-30T19:46:00.000Z';
+
+    return agents
 }
 
 function remoteRepoAgent(id = 'a') {
@@ -846,24 +857,25 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.start[0].opts.cwd).toBe('/managed/a/neomjs-neo')
     });
 
-    test('a new seat records its home on first materialization — after preparation, before the spawn', async () => {
+    test('a row born with its record starts under its root without a record write; the probe is never consulted', async () => {
         const
             agents    = repoAgent('a'),
             lifecycle = makeLifecycle({agents});
 
-        expect(agents.a.seatHome).toBeUndefined();
+        expect(agents.a.seatHome).toBe('/managed/a');   // defineAgent wrote it at registration
 
-        await startAgentProvisioned({
+        const status = await startAgentProvisioned({
             lifecycleService  : lifecycle,
             agentId           : 'a',
             managedRoot       : '/managed',
             ensureRepo        : makeEnsureRepo('/managed/a/neomjs-neo'),
             prepareWorkspace  : makePrepareWorkspace(),
-            agentosRuntimeRoot: '/installed/neo'
+            agentosRuntimeRoot: '/installed/neo',
+            seatExists        : () => { throw new Error('a recorded row is never probed') }
         });
 
-        expect(lifecycle.calls.seatHome).toEqual([{id: 'a', seatHome: '/managed/a'}]);
-        expect(agents.a.seatHome).toBe('/managed/a');
+        expect(status.running).toBe(true);
+        expect(lifecycle.calls.seatHome).toEqual([]);
         expect(lifecycle.calls.start).toHaveLength(1)
     });
 
@@ -883,7 +895,8 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             managedRoot       : '/moved',
             ensureRepo,
             prepareWorkspace  : prepare,
-            agentosRuntimeRoot: '/installed/neo'
+            agentosRuntimeRoot: '/installed/neo',
+            seatExists        : () => { throw new Error('the record decides; the filesystem is not consulted') }
         }).catch(error => error);
 
         expect(failure).toBeInstanceOf(Error);
@@ -923,13 +936,14 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.seatHome).toEqual([])
     });
 
-    test('a registration that predates the record adopts the derived home at its next start, reused checkout included', async () => {
+    test('a registration that predates the record adopts the derived home at its next start only when the seat already exists there', async () => {
         const
-            agents     = repoAgent('a'),
+            agents     = legacyRepoAgent('a'),
             lifecycle  = makeLifecycle({agents}),
+            probed     = [],
             ensureRepo = async () => ({repoPath: '/managed/a/neomjs-neo', state: 'present', action: 'reused', cloned: false});
 
-        agents.a.createdAt = '2026-09-30T19:46:00.000Z';   // registered before the record existed
+        expect(agents.a.seatHome).toBeUndefined();
 
         await startAgentProvisioned({
             lifecycleService  : lifecycle,
@@ -937,10 +951,44 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             managedRoot       : '/managed',
             ensureRepo,
             prepareWorkspace  : makePrepareWorkspace(),
-            agentosRuntimeRoot: '/installed/neo'
+            agentosRuntimeRoot: '/installed/neo',
+            seatExists        : seatHome => { probed.push(seatHome); return seatHome === '/managed/a' }
         });
 
+        expect(probed).toEqual(['/managed/a']);
         expect(lifecycle.calls.seatHome).toEqual([{id: 'a', seatHome: '/managed/a'}]);
-        expect(agents.a.seatHome).toBe('/managed/a')
+        expect(agents.a.seatHome).toBe('/managed/a');
+        expect(lifecycle.calls.start).toHaveLength(1)
+    });
+
+    test('a legacy row under a changed root, its old home intact elsewhere, is refused before any provisioning effect instead of blessing the new root', async () => {
+        const
+            events     = [],
+            agents     = legacyRepoAgent('a'),
+            lifecycle  = makeLifecycle({agents, events}),
+            ensureRepo = makeEnsureRepo('/moved/a/neomjs-neo', events),
+            prepare    = makePrepareWorkspace(events);
+
+        const failure = await startAgentProvisioned({
+            lifecycleService  : lifecycle,
+            agentId           : 'a',
+            managedRoot       : '/moved',
+            ensureRepo,
+            prepareWorkspace  : prepare,
+            agentosRuntimeRoot: '/installed/neo',
+            seatExists        : seatHome => seatHome === '/managed/a'   // the real seat still sits under the previous root
+        }).catch(error => error);
+
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure.code).toBe('FLEET_SEAT_HOME_UNKNOWN');
+        expect(failure.derivedSeatHome).toBe('/moved/a');
+        expect(failure.message).toContain("no seat exists under the current agents root at '/moved/a'");
+        expect(failure.message).toMatch(/Restore the previous agents root, or bless the seat's home deliberately/);
+        expect(events).toEqual([]);
+        expect(ensureRepo.calls).toEqual([]);
+        expect(prepare.calls).toEqual([]);
+        expect(lifecycle.calls.start).toEqual([]);
+        expect(lifecycle.calls.seatHome).toEqual([]);
+        expect(agents.a.seatHome).toBeUndefined()
     });
 });
