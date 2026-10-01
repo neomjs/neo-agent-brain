@@ -109,6 +109,19 @@ function isPublicSensitiveKey(key) {
 }
 
 /**
+ * @summary A seat home is an absolute path or nothing — a relative value would be re-rooted by
+ * whoever reads it, which is the silent re-homing the record exists to prevent.
+ * @param {*}      value
+ * @param {String} caller The registry method name, for the error.
+ * @private
+ */
+function assertSeatHome(value, caller) {
+    if (typeof value !== 'string' || !path.isAbsolute(value)) {
+        throw new Error(`FleetRegistryService.${caller}: seatHome must be an absolute path.`)
+    }
+}
+
+/**
  * @summary Recursively remove credential/launch vocabulary from a caller-owned public projection.
  * Registry metadata is intentionally extensible, so redaction must guard nested legacy entries as
  * well as the current top-level fields. Keys normalize hyphens/underscores and case before lookup.
@@ -201,6 +214,13 @@ function normalizeStoredMcpTarget(target) {
  * that, and a row without it reads `external` with no act recorded. A seat released to its own harness
  * by either act is never started by this fleet until it is adopted, whatever process record it holds
  * ({@link launchRefusalOf}).
+ *
+ * **Seat home** (`seatHome`) is where a seat's files live — the absolute `<agentsRoot>/<id>` that holds
+ * its clone and harness home. Fleet derives that path from the agents root at every start, so the row
+ * records it the first time the seat is materialized ({@link recordSeatHome}, create-only) and the
+ * start composer ({@link Neo.ai.services.fleet.startAgentProvisioned}) refuses a derivation that
+ * differs from the record instead of provisioning a second, empty seat under a changed root. Only a
+ * deliberate move rewrites it ({@link relocateSeatHome}); a row without it is adopted at its next start.
  */
 class FleetRegistryService extends Base {
     static config = {
@@ -556,6 +576,77 @@ class FleetRegistryService extends Base {
         const
             now        = new Date().toISOString(),
             def        = {...existing, launchOwner: owner, launchOwnerSince: now, updatedAt: now},
+            nextAgents = new Map(this.agents);
+
+        nextAgents.set(id, def);
+        this.writeRegistry(nextAgents);
+        this.agents = nextAgents;
+
+        return this.toPublic(def);
+    }
+
+    /**
+     * @summary Records where a seat's files live — the one create-only write of `seatHome` after
+     * {@link defineAgent}. The start composer calls it when a seat is first materialized, or adopts a
+     * row that predates the record at its next start; an equal value is a no-op, and a different value
+     * is refused here because only a deliberate move may change the record ({@link relocateSeatHome}).
+     * @param {String} id       Registry agent id.
+     * @param {String} seatHome The absolute seat directory, `<agentsRoot>/<id>`.
+     * @returns {Object|null} The updated public definition, or `null` when the agent doesn't exist.
+     * @throws {Error} when `seatHome` is not an absolute path, or the row already records a different one.
+     */
+    recordSeatHome(id, seatHome) {
+        assertSeatHome(seatHome, 'recordSeatHome');
+        this.ensureLoaded();
+
+        const existing = this.agents.get(id);
+        if (!existing) return null;
+
+        if (existing.seatHome) {
+            if (existing.seatHome === seatHome) return this.toPublic(existing);
+
+            throw new Error(`FleetRegistryService.recordSeatHome: agent '${id}' already records seat home '${existing.seatHome}'; relocateSeatHome is the one write that changes it.`)
+        }
+
+        return this.writeSeatHome(id, existing, seatHome)
+    }
+
+    /**
+     * @summary The deliberate move: rewrites a recorded `seatHome` only when the caller names the
+     * current record exactly (compare-and-set), so a stale or guessed `from` never re-homes a seat.
+     * The files move outside this registry; this write is what lets the next start accept the new root.
+     * @param {String} id        Registry agent id.
+     * @param {Object} move
+     * @param {String} move.from The seat home the row records now (`null` for a row without one).
+     * @param {String} move.to   The absolute seat directory the files moved to.
+     * @returns {Object|null} The updated public definition, or `null` when the agent doesn't exist.
+     * @throws {Error} when `to` is not an absolute path, or `from` is not the recorded seat home.
+     */
+    relocateSeatHome(id, {from, to} = {}) {
+        assertSeatHome(to, 'relocateSeatHome');
+        this.ensureLoaded();
+
+        const existing = this.agents.get(id);
+        if (!existing) return null;
+
+        if ((existing.seatHome ?? null) !== (from ?? null)) {
+            throw new Error(`FleetRegistryService.relocateSeatHome: agent '${id}' records seat home '${existing.seatHome ?? 'none'}', not '${from ?? 'none'}'.`)
+        }
+
+        return this.writeSeatHome(id, existing, to)
+    }
+
+    /**
+     * @summary Persist one row's `seatHome` beside a fresh `updatedAt`.
+     * @param {String} id
+     * @param {Object} existing The current row.
+     * @param {String} seatHome
+     * @returns {Object} The updated public definition.
+     * @private
+     */
+    writeSeatHome(id, existing, seatHome) {
+        const
+            def        = {...existing, seatHome, updatedAt: new Date().toISOString()},
             nextAgents = new Map(this.agents);
 
         nextAgents.set(id, def);

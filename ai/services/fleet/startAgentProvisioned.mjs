@@ -82,6 +82,13 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * exactly as before (inherited cwd). The opinionated provisioning + the `metadata.repo` convention live
  * here, NOT in the registry-owned supervisor — `start` only gained a generic optional `cwd`.
  *
+ * **Seat home is a record, not a derivation:** the first materialization records `<managedRoot>/<id>`
+ * on the registry row ({@link Neo.ai.services.fleet.FleetRegistryService#recordSeatHome}); from then on
+ * a start whose agents root derives a different path is refused before the PAT read and any checkout
+ * (`FLEET_SEAT_HOME_MISMATCH`, naming the record and both remedies) — a changed root must never mint a
+ * second, empty seat while the real one sits untouched elsewhere. A row that predates the record is
+ * adopted at its next start; only a deliberate move rewrites it.
+ *
  * Pure composition over injectable seams: `ensureRepo` (default {@link Neo.ai.services.fleet.ensureAgentRepo}),
  * `prepareWorkspace` (default {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}), and
  * `cloneRepo` (forwarded to provisioning) make the order/failure contract unit-testable without a git
@@ -152,6 +159,9 @@ export async function startAgentProvisioned({
         throw new Error(`startAgentProvisioned: tenant MCP agent '${agentId}' requires a managed repo.`)
     }
 
+    // `<managedRoot>/<id>`: the seat directory the registry records once the seat is materialized.
+    let seatHome = null;
+
     if (repo) {
         // The managed-workspace contract is coupled to Fleet's curated harness launch. A repo-bearing
         // raw override can execute an unrelated command and consumes no derived home/MCP artifacts,
@@ -165,6 +175,20 @@ export async function startAgentProvisioned({
         }
         if (typeof agentosRuntimeRoot !== 'string' || !path.isAbsolute(agentosRuntimeRoot)) {
             throw new Error(`startAgentProvisioned: 'agentosRuntimeRoot' must be an absolute path for agent '${agentId}'.`)
+        }
+
+        // The registry remembers where this seat's files live; the agents root derives the same path at
+        // every start. A different derivation means the root changed under a materialized seat, and
+        // provisioning here would mint a second, empty seat while the real one sits untouched elsewhere
+        // — refused before the PAT read and any checkout, naming the record and both ways out.
+        seatHome = path.resolve(managedRoot, agentId);
+
+        const recordedSeatHome = agent.seatHome ?? null;
+
+        if (recordedSeatHome && recordedSeatHome !== seatHome) {
+            throw Object.assign(new Error(
+                `startAgentProvisioned: agent '${agentId}' records its seat home at '${recordedSeatHome}', but the current agents root derives '${seatHome}'. Nothing was created. Restore the previous agents root, or move the seat deliberately and relocate its record.`
+            ), {code: 'FLEET_SEAT_HOME_MISMATCH', recordedSeatHome, derivedSeatHome: seatHome})
         }
     }
 
@@ -275,6 +299,12 @@ export async function startAgentProvisioned({
         prepared.targetRepoRoot !== targetRepoRoot ||
         prepared.agentosRuntimeRoot !== path.resolve(agentosRuntimeRoot)) {
         throw new Error(`startAgentProvisioned: preparation did not return the exact AgentOS runtime and target repo roots for agent '${agentId}'.`);
+    }
+
+    // First materialization, or a row that predates the record: remember where the seat lives, so a
+    // changed root is refused above from now on. An equal record is a no-op inside the registry.
+    if (!agent.seatHome) {
+        registry.recordSeatHome(agentId, seatHome)
     }
 
     if (target?.kind === 'tenant') {

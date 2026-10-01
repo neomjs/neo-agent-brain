@@ -618,6 +618,45 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
         expect(() => FleetRegistryService.setLaunchOwner('seat', 'everyone')).toThrow(/invalid launchOwner 'everyone'/)
     });
 
+    test('recordSeatHome is create-only: persisted once, an equal record is a no-op, a different one is refused, an unknown id writes nothing', () => {
+        FleetRegistryService.dataDir = tmpDir;
+        FleetRegistryService.defineAgent({githubUsername: 'seat', harnessType: 'codex', credential: PAT});
+
+        expect(FleetRegistryService.getAgent('seat').seatHome).toBeUndefined();
+
+        const recorded = FleetRegistryService.recordSeatHome('seat', '/agents/seat');
+
+        expect(recorded.seatHome).toBe('/agents/seat');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.seat.seatHome).toBe('/agents/seat');
+        expect(FleetRegistryService.listAgents().find(agent => agent.id === 'seat').seatHome).toBe('/agents/seat');
+
+        expect(FleetRegistryService.recordSeatHome('seat', '/agents/seat').seatHome).toBe('/agents/seat');
+        expect(() => FleetRegistryService.recordSeatHome('seat', '/elsewhere/seat'))
+            .toThrow(/already records seat home '\/agents\/seat'; relocateSeatHome is the one write that changes it/);
+        expect(FleetRegistryService.getAgent('seat').seatHome).toBe('/agents/seat');
+        expect(FleetRegistryService.recordSeatHome('ghost', '/agents/ghost')).toBeNull();
+        expect(() => FleetRegistryService.recordSeatHome('seat', 'agents/seat')).toThrow(/recordSeatHome: seatHome must be an absolute path/)
+    });
+
+    test('relocateSeatHome is compare-and-set: the exact current record moves, anything else is refused without a write', () => {
+        FleetRegistryService.dataDir = tmpDir;
+        FleetRegistryService.defineAgent({githubUsername: 'seat', harnessType: 'codex', credential: PAT});
+
+        expect(() => FleetRegistryService.relocateSeatHome('seat', {from: '/agents/seat', to: '/moved/seat'}))
+            .toThrow(/records seat home 'none', not '\/agents\/seat'/);
+
+        FleetRegistryService.recordSeatHome('seat', '/agents/seat');
+
+        expect(() => FleetRegistryService.relocateSeatHome('seat', {from: '/stale/seat', to: '/moved/seat'}))
+            .toThrow(/records seat home '\/agents\/seat', not '\/stale\/seat'/);
+        expect(FleetRegistryService.getAgent('seat').seatHome).toBe('/agents/seat');
+
+        expect(FleetRegistryService.relocateSeatHome('seat', {from: '/agents/seat', to: '/moved/seat'}).seatHome).toBe('/moved/seat');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.seat.seatHome).toBe('/moved/seat');
+        expect(FleetRegistryService.relocateSeatHome('ghost', {from: null, to: '/moved/ghost'})).toBeNull();
+        expect(() => FleetRegistryService.relocateSeatHome('seat', {from: '/moved/seat', to: 'moved/seat'})).toThrow(/relocateSeatHome: seatHome must be an absolute path/)
+    });
+
     test('launchRefusalOf: a row with no ownership act and a fleet-owned row start as before; a release through setLaunchOwner refuses, and an adoption lifts it', () => {
         FleetRegistryService.dataDir = tmpDir;
         FleetRegistryService.defineAgent({githubUsername: 'default', harnessType: 'codex', credential: PAT});
