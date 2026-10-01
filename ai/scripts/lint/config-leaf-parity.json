@@ -243,6 +243,7 @@
         "fleet.tenantProbeTimeoutMs",
         "fleet.viewerMcAuthorization",
         "fleet.viewerMcAuthorizationFile",
+        "fleet.wakeReceiverBase",
         "fleet.wakeReceiverManifestPath",
         "fleet.wakeSelfBase",
         "geminiApiKey",

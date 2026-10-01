@@ -259,6 +259,9 @@ export AGENTOS_RUNTIME_ROOT="$(pwd -P)"
 export NEO_AGENT_OS_HOST_ROOT="${HOME}/Library/Application Support/Neo/AgentOS"
 export NEO_WAKE_RECEIVER_ROOT="${NEO_AGENT_OS_HOST_ROOT}/wake"
 export NEO_WAKE_RECEIVER_MANIFEST="${NEO_WAKE_RECEIVER_ROOT}/routes.json"
+# The receiver as the dockerized plane reaches it; the Fleet writes `<base>/wake` into the
+# route of every GUI seat it launches (the `fleet.wakeReceiverBase` leaf binds this name).
+export NEO_WAKE_RECEIVER_BASE="http://host.docker.internal:3199"
 export NEO_WAKE_RECEIVER_STATE_DIR="${NEO_WAKE_RECEIVER_ROOT}/state"
 export NEO_HOST_EDGE_STATE_DIR="${NEO_AGENT_OS_HOST_ROOT}/host-edge"
 export NEO_WAKE_PLIST="${HOME}/Library/LaunchAgents/com.neomjs.agent-os-wake.plist"
@@ -270,6 +273,13 @@ install -d -m 700 \
   "${NEO_HOST_EDGE_STATE_DIR}" \
   "${HOME}/Library/LaunchAgents"
 ```
+
+**A seat the Fleet launches needs none of the steps below.** When the Fleet
+starts a Codex Desktop or Claude Desktop seat on this plane, it subscribes the
+seat under the seat's own plane credential (only when no route reaches that
+window yet) and publishes the route; the seat's status reports `wakeRoute`
+`ready`, or `unarmed` with the reason. The recipe below is for seats the Fleet
+does not launch.
 
 For a fresh install, each resident creates its own signed Shape-B route through
 its authenticated Memory Core connection:
@@ -305,17 +315,13 @@ npm run ai:wake-manifest -- \
   --identity "@your-seat-handle" \
   --instance userDataDir \
   --instance-address /absolute/validated/seat-profile
-
-# Publishing writes the file; it does NOT make the route live — a running receiver
-# serves the manifest it validated. To adopt a newly published route, RESTART the
-# receiver. Stop the existing process, then start it again as above.
 ```
 
-**Publishing is not provisioning.** Until the running receiver re-reads, a newly
-published route answers `404`, and the sender treats a 4xx as a client error and
-degrades the subscription immediately with no retry — so the route goes deaf on
-its *first* wake rather than failing gradually. Restart after publishing, or start
-the receiver afterwards.
+**A running receiver adopts a publish on its own.** It watches the manifest and
+reloads moments after a write; a backstop sweep covers missed filesystem events,
+and `SIGHUP` forces a reload. A wake sent before that reload still answers `404`,
+and the sender treats a 4xx as a client error and degrades the subscription
+with no retry, so publish before the route's first wake.
 
 ## Start the wake receiver
 

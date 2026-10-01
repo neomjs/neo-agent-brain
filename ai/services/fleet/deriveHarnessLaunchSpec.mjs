@@ -290,7 +290,7 @@ export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, 
 
         const
             authHome        = path.join(instanceHome, 'codex-home'),
-            electronProfile = path.join(instanceHome, 'electron-profile');
+            electronProfile = guiProfileDir(harnessType, instanceHome);
 
         return {
             command: binaryPath,
@@ -320,7 +320,7 @@ export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, 
     }
 
     if (harnessType === 'claude-desktop') {
-        const homeArg = `${contract.homeArgFlag}=${instanceHome}`;
+        const homeArg = `${contract.homeArgFlag}=${guiProfileDir(harnessType, instanceHome)}`;
 
         return {
             command         : binaryPath,
@@ -371,6 +371,36 @@ export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, 
         env             : {},
         versionProbeArgs: contract.versionProbeArgs && [homeArg, ...contract.versionProbeArgs]
     };
+}
+
+/**
+ * @summary The `--user-data-dir` a Fleet-launched GUI family runs with: `<instanceHome>/electron-profile`
+ * for `codex-desktop`, the instance home itself for `claude-desktop`. The launch argv and the wake
+ * route both read it from here, so the profile the receiver matches and the profile the window was
+ * started with are one value by construction.
+ * @param {String} harnessType
+ * @param {String} instanceHome
+ * @returns {String}
+ * @private
+ */
+function guiProfileDir(harnessType, instanceHome) {
+    return harnessType === 'codex-desktop' ? path.join(instanceHome, 'electron-profile') : instanceHome
+}
+
+/**
+ * @summary The wake address of a Fleet-launched GUI seat: the `userDataDir` its window was launched
+ * with, which the wake receiver resolves to that exact process before it types anything.
+ * @param {Object} options
+ * @param {String} options.harnessType  The seat's harness family.
+ * @param {String} options.instanceHome The seat's absolute harness home.
+ * @returns {{addressType: 'userDataDir', instanceAddress: String}|null} `null` for a family the
+ *     Fleet does not launch as a GUI window, or a home that is not absolute.
+ */
+export function deriveHarnessWakeAddress({harnessType, instanceHome} = {}) {
+    if (!['claude-desktop', 'codex-desktop'].includes(harnessType)) return null;
+    if (typeof instanceHome !== 'string' || !path.isAbsolute(instanceHome)) return null;
+
+    return {addressType: 'userDataDir', instanceAddress: guiProfileDir(harnessType, instanceHome)}
 }
 
 /**

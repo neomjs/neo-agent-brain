@@ -2009,3 +2009,60 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
         }
     });
 });
+
+test.describe('FleetLifecycleService.setWakeRoute — the route the Fleet armed for a GUI seat', () => {
+    test.beforeEach(() => { FleetLifecycleService.leasesAdopted = true; FleetLifecycleService.processes.clear(); });
+    test.afterEach(() => { FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false; });
+
+    test('is recorded, and status projects it through the allowlist', () => {
+        FleetLifecycleService.processes.set('gui-seat', {
+            id          : 'gui-seat',
+            state       : 'running',
+            pid         : null,
+            startedAt   : null,
+            harnessType : 'codex-desktop',
+            instanceHome: '/agents/gui-seat/harness/codex-desktop',
+            wakeRoute   : null
+        });
+
+        const route = {
+            state          : 'ready',
+            reason         : null,
+            adapter        : 'osascript',
+            addressType    : 'userDataDir',
+            instanceAddress: '/agents/gui-seat/harness/codex-desktop/electron-profile',
+            subscriptionId : 'WAKE_SUB:gui-seat'
+        };
+
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', {...route, signingKey: 'must-never-be-projected'}, {pid: null, startedAt: null})).toBe(true);
+
+        const projected = FleetLifecycleService.status('gui-seat').wakeRoute;
+
+        expect(projected).toEqual({...route, port: null, sessionId: null, projectId: null, directory: null, envelopePath: null});
+        expect(projected).not.toHaveProperty('signingKey');
+    });
+
+    test('an OpenCode seat keeps its own route, and an unknown seat records nothing', () => {
+        const own = {state: 'ready', hookPath: '/h/write-wake-envelope.mjs', envelopePath: '/h/opencode/wake-envelope.json'};
+
+        FleetLifecycleService.processes.set('open-seat', {id: 'open-seat', state: 'running', wakeRoute: own});
+
+        expect(FleetLifecycleService.setWakeRoute('open-seat', {state: 'unarmed', reason: 'x'})).toBe(false);
+        expect(FleetLifecycleService.processes.get('open-seat').wakeRoute).toBe(own);
+        expect(FleetLifecycleService.setWakeRoute('nobody', {state: 'ready'})).toBe(false);
+    });
+
+    test('a route armed for an earlier launch never lands on the launch that replaced it', () => {
+        const earlier = {pid: 4101, startedAt: '2026-10-01T18:00:00.000Z'},
+              current = {pid: 4202, startedAt: '2026-10-01T18:00:05.000Z'},
+              ready   = {state: 'ready', reason: null, subscriptionId: 'WAKE_SUB:current'};
+
+        FleetLifecycleService.processes.set('gui-seat', {id: 'gui-seat', state: 'running', ...current, wakeRoute: null});
+
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', ready, current)).toBe(true);
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', {state: 'unarmed', reason: 'late'}, earlier)).toBe(false);
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', {state: 'unarmed', reason: 'reused pid'}, {...current, startedAt: earlier.startedAt})).toBe(false);
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', {state: 'unarmed', reason: 'no launch named'})).toBe(false);
+        expect(FleetLifecycleService.processes.get('gui-seat').wakeRoute).toEqual(ready);
+    });
+});

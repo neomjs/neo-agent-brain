@@ -895,8 +895,10 @@ class FleetLifecycleService extends Base {
      *     `binaryVersion` is the best-effort `--version` capture of what actually ran (`null`
      *     until/unless the probe answered); `failureReason` is a bounded lifecycle-owned reason,
      *     never raw child output. Fleet-managed OpenCode additionally carries a non-secret
-     *     `wakeRoute` (`starting | ready | degraded`, owner tuple, envelope path); server
-     *     credentials remain env-only and never enter the record or projection. `adopted` marks a
+     *     `wakeRoute` (`starting | ready | degraded`, owner tuple, envelope path); a GUI seat the
+     *     Fleet armed at start carries one too (`ready | unarmed`, the reason, the adapter and the
+     *     window's `userDataDir`). Server and signing credentials never enter the record or
+     *     projection. `adopted` marks a
      *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
      *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`).
      */
@@ -928,15 +930,42 @@ class FleetLifecycleService extends Base {
             failureReason    : record.failureReason ?? null,
             cleanupUnresolved: Boolean(record.cleanupUnresolved),
             wakeRoute        : record.wakeRoute ? {
-                state       : record.wakeRoute.state,
-                reason      : record.wakeRoute.reason,
-                port        : record.wakeRoute.port,
-                sessionId   : record.wakeRoute.sessionId,
-                projectId   : record.wakeRoute.projectId,
-                directory   : record.wakeRoute.directory,
-                envelopePath: record.wakeRoute.envelopePath
+                state          : record.wakeRoute.state,
+                reason         : record.wakeRoute.reason,
+                port           : record.wakeRoute.port ?? null,
+                sessionId      : record.wakeRoute.sessionId ?? null,
+                projectId      : record.wakeRoute.projectId ?? null,
+                directory      : record.wakeRoute.directory ?? null,
+                envelopePath   : record.wakeRoute.envelopePath ?? null,
+                adapter        : record.wakeRoute.adapter ?? null,
+                addressType    : record.wakeRoute.addressType ?? null,
+                instanceAddress: record.wakeRoute.instanceAddress ?? null,
+                subscriptionId : record.wakeRoute.subscriptionId ?? null
             } : null
         };
+    }
+
+    /**
+     * @summary Records the wake route the Fleet armed for a GUI seat it started, so {@link status}
+     * reports whether a peer can wake the seat and why not. An OpenCode route belongs to the seat's own
+     * envelope lifecycle and is never replaced here.
+     *
+     * A route describes one launch, and arming finishes after the start returns: a seat restarted in
+     * the meantime runs at the same profile path, so only its `pid` and `startedAt` tell the launches
+     * apart.
+     * @param {String} id
+     * @param {Object} route `{state, reason, adapter, addressType, instanceAddress, subscriptionId}`.
+     * @param {Object} launch `{pid, startedAt}` from the status of the start the route was armed for.
+     * @returns {Boolean} `true` when recorded; `false` for an unknown seat, one that owns its route, or
+     *     a launch the seat has since replaced.
+     */
+    setWakeRoute(id, route, {pid, startedAt} = {}) {
+        const record = this.processes.get(id);
+
+        if (!record || record.wakeRoute?.hookPath || record.pid !== pid || record.startedAt !== startedAt) return false;
+
+        record.wakeRoute = {...route};
+        return true
     }
 
     /**

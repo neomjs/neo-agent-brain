@@ -468,6 +468,18 @@ class ConfigBase extends ConfigProvider {
                  */
                 wakeReceiverManifestPath: leaf('', 'NEO_WAKE_RECEIVER_MANIFEST', 'string'),
                 /**
+                 * Plane-facing base URL of that same signed host wake receiver — the address the
+                 * attached plane's Shape-B dispatcher POSTs a Fleet seat's wake digests to (`<base>/wake`
+                 * is derived at the use site; e.g. `http://host.docker.internal:3199` for the local
+                 * dockerized plane). The Fleet writes it into the route it arms for each GUI seat it
+                 * launches. EMPTY means undeclared: those seats stay unarmed with that reason — never a
+                 * guessed default, because a wrong receiver address turns every wake into a signed
+                 * POST at a stranger. Declared by the local runbook beside `NEO_WAKE_RECEIVER_MANIFEST`.
+                 * Not a plane member — host-edge consumer config, exactly like `wakeReceiverManifestPath`.
+                 * @type {string}
+                 */
+                wakeReceiverBase: leaf('', 'NEO_WAKE_RECEIVER_BASE', 'string'),
+                /**
                  * Externally-dialable base URL of THIS fleet server's own signed wake receiver —
                  * the address the plane's Shape-B dispatcher (`WebhookDeliveryService`) POSTs
                  * digests to (`<base>/wake` is derived at the use site). In the composed profile

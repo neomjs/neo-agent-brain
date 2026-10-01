@@ -15,7 +15,9 @@ import {test, expect}          from '@playwright/test';
 
 import Neo                     from 'neo.mjs/src/Neo.mjs';
 import * as core               from 'neo.mjs/src/core/_export.mjs';
+import FleetLifecycleService   from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
 import FleetManager            from '../../../../ai/services/fleet/FleetManager.mjs';
+import {armFleetSeatWake}      from '../../../../ai/services/fleet/armFleetSeatWake.mjs';
 import {inspectFleetRepos}     from '../../../../ai/services/fleet/inspectFleetRepos.mjs';
 import {startAgentProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 
@@ -28,6 +30,9 @@ function reset() {
     FleetManager.lifecycleService    = null;
     FleetManager.provisionAndStartFn = null;
     FleetManager.repoStatusFn        = null;
+    FleetManager.wakeArmFn           = null;
+    FleetManager.tenantService       = null;
+    FleetManager.wakeStateOptions    = null;
 }
 
 // Singleton-stateful service → serial, with env + injected-field reset per case.
@@ -157,5 +162,121 @@ test.describe('Neo.ai.services.fleet.FleetManager', () => {
     test('seams default to the real composers (a no-injection construction wires them)', () => {
         expect(FleetManager.getProvisionAndStartFn()).toBe(startAgentProvisioned);
         expect(FleetManager.getRepoStatusFn()).toBe(inspectFleetRepos);
+        expect(FleetManager.getWakeArmFn()).toBe(armFleetSeatWake);
+    });
+});
+
+test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', () => {
+    const
+        HOME         = '/agents/agent-a/harness/codex-desktop',
+        LAUNCH       = Object.freeze({pid: 4101, startedAt: '2026-10-01T18:00:00.000Z'}),
+        READY        = Object.freeze({state: 'ready', reason: null, adapter: 'osascript', addressType: 'userDataDir', instanceAddress: `${HOME}/electron-profile`, subscriptionId: 'WAKE_SUB:x'}),
+        TENANT_AGENT = {id: 'agent-a', harnessType: 'codex-desktop', githubUsername: 'neo-agent-a', mcpTarget: {kind: 'tenant', tenantId: 'local'}},
+        adopted      = FleetLifecycleService.leasesAdopted;
+
+    /**
+     * Wires the manager around a recording lifecycle stub, or around the real lifecycle's bookkeeping
+     * (`real: true`) where its launch check and status projection are under test.
+     */
+    function configure({agent = TENANT_AGENT, arm, real = false, provision = async () => ({state: 'running', instanceHome: HOME, ...LAUNCH})}) {
+        const recorded = [],
+              armCalls = [],
+              tenants  = {marker: 'tenant-service'};
+
+        FleetManager.managedRoot         = '/managed/root';
+        FleetManager.tenantService       = tenants;
+        FleetManager.provisionAndStartFn = provision;
+        FleetManager.wakeStateOptions    = {planeBase: 'http://127.0.0.1:3102', wakeReceiverBase: 'http://host.docker.internal:3199', wakeReceiverManifestPath: '/host/wake/routes.json'};
+        FleetManager.wakeArmFn           = async args => { armCalls.push(args); return arm(args) };
+        FleetManager.lifecycleService    = {
+            getRegistry : () => ({getAgent: () => agent}),
+            setWakeRoute: real
+                ? (...args) => FleetLifecycleService.setWakeRoute(...args)
+                : (id, route, launch) => { recorded.push({id, route, launch}); return true }
+        };
+
+        return {recorded, armCalls, tenants}
+    }
+
+    test.beforeEach(() => { reset(); FleetLifecycleService.leasesAdopted = true; FleetLifecycleService.processes.delete('agent-a'); });
+    test.afterEach(() => { reset(); FleetLifecycleService.processes.delete('agent-a'); FleetLifecycleService.leasesAdopted = adopted; });
+
+    test('a started seat is armed with the entrypoint\'s receiver coordinates, and the route is recorded for that launch', async () => {
+        const {recorded, armCalls, tenants} = configure({arm: () => READY});
+
+        expect(await FleetManager.startAgent('agent-a')).toEqual({state: 'running', instanceHome: HOME, ...LAUNCH, wakeRoute: READY});
+        expect(armCalls[0]).toEqual({
+            agent        : TENANT_AGENT,
+            instanceHome : HOME,
+            planeBase    : 'http://127.0.0.1:3102',
+            receiverBase : 'http://host.docker.internal:3199',
+            manifestPath : '/host/wake/routes.json',
+            tenantService: tenants
+        });
+        expect(recorded).toEqual([{id: 'agent-a', route: READY, launch: LAUNCH}]);
+    });
+
+    test('an arming error never fails the start: the seat runs, unarmed, with the cause', async () => {
+        const {recorded} = configure({arm: () => { throw new Error('receiver unreachable') }});
+
+        expect(await FleetManager.startAgent('agent-a')).toMatchObject({state: 'running', wakeRoute: {state: 'unarmed', reason: 'wake arming failed: receiver unreachable'}});
+        expect(recorded[0].route.state).toBe('unarmed');
+    });
+
+    test('a credential or an oversized message in an arming error reaches neither the start status nor the later lifecycle status', async () => {
+        const secret = `github_pat_${'A1b2'.repeat(10)}`;
+
+        FleetLifecycleService.processes.set('agent-a', {id: 'agent-a', state: 'running', ...LAUNCH, wakeRoute: null});
+        configure({real: true, arm: () => { throw new Error(`plane said ${secret} ${'x'.repeat(500)}`) }});
+
+        const started = (await FleetManager.startAgent('agent-a')).wakeRoute.reason,
+              later   = FleetLifecycleService.status('agent-a').wakeRoute.reason;
+
+        for (const reason of [started, later]) {
+            expect(reason).toMatch(/^wake arming failed: plane said \[redacted-token\] x/);
+            expect(reason).not.toContain(secret);
+            expect(reason.length).toBeLessThanOrEqual(240);
+        }
+    });
+
+    test('a slow arm for an earlier launch never overwrites the route of the restart that replaced it', async () => {
+        // Both launches run at the same profile path; only the launch identity tells them apart.
+        let   launches = 0;
+        const slow     = Promise.withResolvers(),
+              arms     = [() => slow.promise, () => READY];
+
+        configure({
+            real     : true,
+            arm      : () => arms.shift()(),
+            provision: async () => {
+                const launch = {pid: 4100 + ++launches, startedAt: `2026-10-01T18:00:0${launches}.000Z`};
+
+                FleetLifecycleService.processes.set('agent-a', {id: 'agent-a', state: 'running', ...launch, wakeRoute: null});
+                return {state: 'running', instanceHome: HOME, ...launch}
+            }
+        });
+
+        const earlier = FleetManager.startAgent('agent-a'),
+              current = await FleetManager.startAgent('agent-a');
+
+        slow.resolve({...READY, state: 'unarmed', reason: 'the earlier launch failed late', subscriptionId: null});
+
+        expect(current.wakeRoute).toEqual(READY);
+        expect((await earlier).wakeRoute.reason).toBe('the earlier launch failed late');
+        expect(FleetLifecycleService.status('agent-a')).toMatchObject({pid: 4102, wakeRoute: {state: 'ready', subscriptionId: 'WAKE_SUB:x'}});
+    });
+
+    test('a family with no GUI wake leaves the status and the record untouched', async () => {
+        const {recorded} = configure({agent: {...TENANT_AGENT, harnessType: 'opencode'}, arm: () => null});
+
+        expect(await FleetManager.startAgent('agent-a')).toEqual({state: 'running', instanceHome: HOME, ...LAUNCH});
+        expect(recorded).toEqual([]);
+    });
+
+    test('a resident seat is handed no tenant service', async () => {
+        const {armCalls} = configure({agent: {...TENANT_AGENT, mcpTarget: null}, arm: () => ({state: 'unarmed', reason: 'resident'})});
+
+        await FleetManager.startAgent('agent-a');
+        expect(armCalls[0].tenantService).toBeNull();
     });
 });

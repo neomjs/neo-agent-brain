@@ -1,16 +1,17 @@
-import {test, expect} from '@playwright/test';
-import Neo            from 'neo.mjs/src/Neo.mjs';
-import * as core      from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}       from '@playwright/test';
+import Neo                  from 'neo.mjs/src/Neo.mjs';
+import * as core            from 'neo.mjs/src/core/_export.mjs';
 import {mkdtemp, mkdir, rm} from 'fs/promises';
-import os             from 'os';
-import path           from 'path';
+import os                   from 'os';
+import path                 from 'path';
 
 import {
     ARMED_ADAPTER,
     armSeatWakeRoute,
     INSTANCE_DIR_BY_HARNESS,
     resolveInstanceTuple,
-    toBareIdentity
+    toBareIdentity,
+    validateKnownTuple
 } from '../../../../../../ai/daemons/wake/armSeatWakeRoute.mjs';
 
 /**
@@ -40,17 +41,17 @@ const SUBSCRIPTION_ID = 'WAKE_SUB:11111111-2222-4333-8444-555555555555';
 
 function makeSubscription({agentIdentity = '@neo-preview', adapter = ARMED_ADAPTER, ...rest} = {}) {
     return {
-        id            : SUBSCRIPTION_ID,
-        status        : 'active',
+        id                   : SUBSCRIPTION_ID,
+        status               : 'active',
         agentIdentity,
-        trigger       : 'SENT_TO_ME',
-        harnessTarget : 'a2a-webhook',
+        trigger              : 'SENT_TO_ME',
+        harnessTarget        : 'a2a-webhook',
         harnessTargetMetadata: {
             adapter,
-            signingKey  : 'a'.repeat(64),
-            url         : 'http://127.0.0.1:3199/wake',
-            appName     : 'OpenCode',
-            addressType : 'userDataDir',
+            signingKey : 'a'.repeat(64),
+            url        : 'http://127.0.0.1:3199/wake',
+            appName    : 'OpenCode',
+            addressType: 'userDataDir',
             ...rest
         }
     };
@@ -169,9 +170,9 @@ test.describe('armSeatWakeRoute — preconditions', () => {
     // Built per call: `homeDir` is assigned in beforeAll, so a literal captured at
     // describe-evaluation time would freeze `undefined` into every arm.
     const base = () => ({
-        env      : {NEO_AGENT_IDENTITY: '@neo-preview'},
+        env         : {NEO_AGENT_IDENTITY: '@neo-preview'},
         homeDir,
-        harness  : 'opencode',
+        harness     : 'opencode',
         manifestPath: path.join(homeDir, 'routes.json')
     });
 
@@ -269,15 +270,19 @@ test.describe('armSeatWakeRoute — a success must mean a reachable seat', () =>
         expect(result.reason).toMatch(/produced no route owned by @neo-preview/);
     });
 
-    test('owning a route on the armed adapter arms, and says which adapter it published', async () => {
+    test('owning a route on the armed adapter arms, and says which adapter and routes it published', async () => {
         const result = await armSeatWakeRoute({
             ...base(),
-            runBuilder: makeBuilder({routes: [ownRouteOn(ARMED_ADAPTER)]})
+            runBuilder: makeBuilder({routes: [
+                ownRouteOn(ARMED_ADAPTER),
+                {subscriptionId: 'WAKE_SUB:other', agentIdentity: '@neo-opus-ada', adapter: ARMED_ADAPTER}
+            ]})
         });
 
         expect(result.armed).toBe(true);
         expect(result.adapter).toBe(ARMED_ADAPTER);
         expect(result.routeCount).toBe(1);
+        expect(result.subscriptionIds).toEqual([SUBSCRIPTION_ID]);
     });
 
     test('THE FALSE SUCCESS: own route published on a non-armed adapter is a named non-success', async () => {
@@ -351,5 +356,40 @@ test.describe('armSeatWakeRoute — a success must mean a reachable seat', () =>
         expect(result.armed).toBe(true);
         expect(result.routeCount).toBe(2);
         expect(result.adapter).toBe(ARMED_ADAPTER);
+    });
+});
+
+/**
+ * The launcher already knows the address. A Fleet-started window's profile lives under the Fleet's
+ * agents root, not under any convention directory, so a caller-supplied tuple must replace the
+ * derivation entirely: no convention lookup that could guess a different window, and the builder
+ * publishes exactly the address that was launched.
+ */
+test.describe('armSeatWakeRoute — a caller-supplied tuple', () => {
+    const TUPLE = {identity: '@neo-preview', instanceAddress: '/agents/neo-preview/harness/codex-desktop/electron-profile', instanceType: 'userDataDir'};
+
+    test('replaces the convention derivation, and the builder publishes that exact address', async () => {
+        const builderCalls = [];
+
+        const result = await armSeatWakeRoute({
+            listSubscriptions: async () => [makeSubscription()],
+            manifestPath     : '/host/wake/routes.json',
+            tuple            : TUPLE,
+            env              : {},
+            homeDir          : '/no/convention/dirs/here',
+            fs               : {stat: async () => { throw new Error('the convention path must not be consulted') }, writeFile: async () => {}, rm: async () => {}},
+            runBuilder       : async options => { builderCalls.push(options); return {manifest: {}, routeSummaries: [ownRouteOn(ARMED_ADAPTER)], skipped: []} }
+        });
+
+        expect(result.armed).toBe(true);
+        expect(builderCalls).toHaveLength(1);
+        expect(builderCalls[0]).toMatchObject({identity: '@neo-preview', instanceAddress: TUPLE.instanceAddress, instanceType: 'userDataDir'});
+    });
+
+    test('a tuple that names no identity or no absolute address is a named skip, never a route', () => {
+        expect(validateKnownTuple({...TUPLE, identity: ''})).toEqual({skipped: true, reason: 'the supplied tuple names no identity'});
+        expect(validateKnownTuple({...TUPLE, instanceAddress: 'relative/profile'}).reason).toMatch(/not an absolute userDataDir address/);
+        expect(validateKnownTuple({...TUPLE, instanceType: 'pid'}).skipped).toBe(true);
+        expect(validateKnownTuple({...TUPLE, identity: 'neo-preview'})).toEqual(TUPLE);
     });
 });
