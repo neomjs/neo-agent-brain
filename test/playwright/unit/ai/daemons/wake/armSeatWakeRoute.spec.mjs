@@ -270,15 +270,19 @@ test.describe('armSeatWakeRoute — a success must mean a reachable seat', () =>
         expect(result.reason).toMatch(/produced no route owned by @neo-preview/);
     });
 
-    test('owning a route on the armed adapter arms, and says which adapter it published', async () => {
+    test('owning a route on the armed adapter arms, and says which adapter and routes it published', async () => {
         const result = await armSeatWakeRoute({
             ...base(),
-            runBuilder: makeBuilder({routes: [ownRouteOn(ARMED_ADAPTER)]})
+            runBuilder: makeBuilder({routes: [
+                ownRouteOn(ARMED_ADAPTER),
+                {subscriptionId: 'WAKE_SUB:other', agentIdentity: '@neo-opus-ada', adapter: ARMED_ADAPTER}
+            ]})
         });
 
         expect(result.armed).toBe(true);
         expect(result.adapter).toBe(ARMED_ADAPTER);
         expect(result.routeCount).toBe(1);
+        expect(result.subscriptionIds).toEqual([SUBSCRIPTION_ID]);
     });
 
     test('THE FALSE SUCCESS: own route published on a non-armed adapter is a named non-success', async () => {

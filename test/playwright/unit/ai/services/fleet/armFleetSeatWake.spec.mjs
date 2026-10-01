@@ -2,19 +2,21 @@ import {test, expect} from '@playwright/test';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 
-import {armFleetSeatWake, GUI_WAKE_DISPATCH, isLiveRouteFor} from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
-import {deriveHarnessLaunchSpec, deriveHarnessWakeAddress}   from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
+import {armFleetSeatWake, GUI_WAKE_DISPATCH}               from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
+import {deriveHarnessLaunchSpec, deriveHarnessWakeAddress} from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 
 /**
  * Fleet-side wake arming for a launched GUI seat (`ai/services/fleet/armFleetSeatWake.mjs`).
  *
- *   Address        — the route addresses the `--user-data-dir` the Fleet launched the window with,
- *                    from one derivation, so the receiver and the launch can never disagree.
- *   Subscribe once — a seat with no route reaching its window is subscribed AS ITSELF (proven
- *                    credential); a seat that already has one is not subscribed again.
- *   Non-vacuity    — a resident seat, a seat on another plane, an undeclared receiver, an unproven
- *                    credential: each stays unarmed with its own reason and never subscribes.
- *   Never throws   — a plane failure becomes `unarmed` with the cause, and the client is closed.
+ *   Address      — the route addresses the `--user-data-dir` the Fleet launched the window with,
+ *                  from one derivation, so the receiver and the launch can never disagree.
+ *   One route    — every start subscribes the seat's canonical route AS ITSELF (proven credential);
+ *                  the plane's route key answers a repeat with the row it holds, and a row on
+ *                  another receiver, trigger or filter neither stands in for it nor is withdrawn.
+ *   Ready        — only when the publish carries the route this start subscribed.
+ *   Non-vacuity  — a resident seat, a seat on another plane, an undeclared receiver, an unproven
+ *                  credential: each stays unarmed with its own reason and never subscribes.
+ *   Never throws — a failure becomes `unarmed` with a redacted, bounded cause; the client is closed.
  *
  * The plane client, tenant service and publish step are injected; nothing leaves the process.
  */
@@ -30,6 +32,21 @@ const
         harnessType   : 'codex-desktop',
         githubUsername: 'neo-gpt-sophie',
         mcpTarget     : {kind: 'tenant', tenantId: 'local'}
+    }),
+    // The one route every start asks the plane for.
+    CANONICAL = Object.freeze({
+        action               : 'subscribe',
+        trigger              : 'SENT_TO_ME',
+        filters              : {},
+        harnessTarget        : 'a2a-webhook',
+        harnessTargetMetadata: {
+            adapter        : 'osascript',
+            appName        : 'Codex',
+            focusSeedKey   : 'r',
+            url            : `${RECEIVER}/wake`,
+            addressType    : 'userDataDir',
+            instanceAddress: PROFILE
+        }
     });
 
 function tenantService({endpoint = PLANE, credential = 'seat-credential'} = {}) {
@@ -41,31 +58,43 @@ function tenantService({endpoint = PLANE, credential = 'seat-credential'} = {}) 
     }
 }
 
-function liveRoute(instanceAddress, id = 'WAKE_SUB:existing') {
+/** A row the seat owns on the plane, addressed to the launched window: the canonical route unless overridden. */
+function row({id = 'WAKE_SUB:stale', trigger = 'SENT_TO_ME', filters = {}, url = `${RECEIVER}/wake`} = {}) {
     return {
         id,
         status               : 'active',
+        agentIdentity        : '@neo-gpt-sophie',
+        trigger,
+        filters,
         harnessTarget        : 'a2a-webhook',
         routeDeliverable     : true,
-        harnessTargetMetadata: {adapter: 'osascript', addressType: 'userDataDir', instanceAddress}
+        harnessTargetMetadata: {adapter: 'osascript', appName: 'Codex', url, addressType: 'userDataDir', instanceAddress: PROFILE}
     }
 }
 
-function fakePlane({proof = {ok: true, identity: '@neo-gpt-sophie'}, subscriptions = [], failOn = null} = {}) {
+/** `rows` is what the plane lists AFTER the subscribe; `subscribed` is what the subscribe answers. */
+function fakePlane({
+    proof      = {ok: true, identity: '@neo-gpt-sophie'},
+    rows       = [],
+    subscribed = {subscriptionId: 'WAKE_SUB:minted'},
+    failOn     = null,
+    failure    = 'plane refused the call'
+} = {}) {
     const calls = {created: null, init: [], tools: [], closed: 0};
 
     return {
         calls,
-        createClient: options => {
+        subscribeCalls: () => calls.tools.filter(call => call.args.action === 'subscribe').map(call => call.args),
+        createClient  : options => {
             calls.created = options;
 
             return {
                 init    : async args => { calls.init.push(args); return proof },
                 callTool: async (name, args) => {
                     calls.tools.push({name, args});
-                    if (args.action === failOn) throw new Error('plane refused the call');
-                    if (args.action === 'list') return {subscriptions};
-                    if (args.action === 'subscribe') return {subscriptionId: 'WAKE_SUB:minted'};
+                    if (args.action === failOn) throw new Error(failure);
+                    if (args.action === 'list') return {subscriptions: rows};
+                    if (args.action === 'subscribe') return subscribed;
                     return {}
                 },
                 close: async () => { calls.closed++ }
@@ -74,7 +103,14 @@ function fakePlane({proof = {ok: true, identity: '@neo-gpt-sophie'}, subscriptio
     }
 }
 
-function arm({agent = AGENT, plane = fakePlane(), published = {armed: true, routeCount: 1}, ...overrides} = {}) {
+/** The publisher's contract without a manifest: every row the plane lists is published as the seat's. */
+async function publishListed({listSubscriptions}) {
+    const rows = await listSubscriptions();
+
+    return {armed: rows.length > 0, subscriptionIds: rows.map(listed => listed.id)}
+}
+
+function arm({agent = AGENT, plane = fakePlane(), publish = async () => ({armed: true, subscriptionIds: ['WAKE_SUB:minted']}), ...overrides} = {}) {
     const armCalls = [];
 
     return {
@@ -88,7 +124,7 @@ function arm({agent = AGENT, plane = fakePlane(), published = {armed: true, rout
             manifestPath : MANIFEST,
             tenantService: tenantService(),
             createClient : plane.createClient,
-            armRoute     : async options => { armCalls.push(options); return published },
+            armRoute     : async options => { armCalls.push(options); return publish(options) },
             logger       : {info() {}, warn() {}, error() {}},
             ...overrides
         })
@@ -114,8 +150,8 @@ test.describe('armFleetSeatWake — the address is the launch profile', () => {
     });
 });
 
-test.describe('armFleetSeatWake — subscribes the seat once, as itself', () => {
-    test('a seat with no route is proven, subscribed to its own window, and published', async () => {
+test.describe('armFleetSeatWake — one route per seat, subscribed as the seat', () => {
+    test('a seat is proven, subscribed to its own window, and published', async () => {
         const {result, plane, armCalls} = arm();
 
         expect(await result).toEqual({
@@ -129,26 +165,7 @@ test.describe('armFleetSeatWake — subscribes the seat once, as itself', () => 
 
         expect(plane.calls.created).toEqual({baseUrl: `${PLANE}/mc/mcp`, credential: 'seat-credential'});
         expect(plane.calls.init).toEqual([{expectedIdentity: '@neo-gpt-sophie'}]);
-
-        const subscribe = plane.calls.tools.filter(call => call.args.action === 'subscribe');
-
-        expect(subscribe).toEqual([{
-            name: 'manage_wake_subscription',
-            args: {
-                action               : 'subscribe',
-                trigger              : 'SENT_TO_ME',
-                harnessTarget        : 'a2a-webhook',
-                harnessTargetMetadata: {
-                    adapter        : 'osascript',
-                    appName        : 'Codex',
-                    focusSeedKey   : 'r',
-                    url            : `${RECEIVER}/wake`,
-                    addressType    : 'userDataDir',
-                    instanceAddress: PROFILE
-                }
-            }
-        }]);
-
+        expect(plane.subscribeCalls()).toEqual([CANONICAL]);
         expect(armCalls).toHaveLength(1);
         expect(armCalls[0]).toMatchObject({
             manifestPath: MANIFEST,
@@ -157,22 +174,38 @@ test.describe('armFleetSeatWake — subscribes the seat once, as itself', () => 
         expect(plane.calls.closed).toBe(1);
     });
 
-    test('a second start finds the live route and subscribes nothing', async () => {
-        const plane              = fakePlane({subscriptions: [liveRoute(PROFILE)]}),
-              {result, armCalls} = arm({plane});
+    test('a repeat start asks for the identical route, so the plane answers with the row it holds', async () => {
+        const first  = fakePlane(),
+              second = fakePlane({rows: [row({id: 'WAKE_SUB:minted'})], subscribed: {subscriptionId: 'WAKE_SUB:minted', status: 'existing'}});
 
-        expect(await result).toMatchObject({state: 'ready', subscriptionId: 'WAKE_SUB:existing'});
-        expect(plane.calls.tools.some(call => call.args.action === 'subscribe')).toBe(false);
-        expect(armCalls).toHaveLength(1);
+        await arm({plane: first}).result;
+
+        expect(await arm({plane: second, publish: publishListed}).result).toMatchObject({state: 'ready', subscriptionId: 'WAKE_SUB:minted'});
+        expect(second.subscribeCalls()).toEqual(first.subscribeCalls());
     });
 
-    test('a route to a DIFFERENT window does not count: the launched window gets its own', async () => {
-        const plane    = fakePlane({subscriptions: [liveRoute('/old/profile')]}),
-              {result} = arm({plane});
+    const NOT_THIS_ROUTE = [
+        ['an older receiver',    {url: 'http://host.docker.internal:3100/wake'}],
+        ['another trigger',      {trigger: 'TASK_STATE_CHANGED'}],
+        ['a restrictive filter', {filters: {priority: 'high'}}]
+    ];
 
-        expect(await result).toMatchObject({state: 'ready', subscriptionId: 'WAKE_SUB:minted'});
-        expect(plane.calls.tools.filter(call => call.args.action === 'subscribe')).toHaveLength(1);
-    });
+    for (const [label, differs] of NOT_THIS_ROUTE) {
+        test(`a same-window row on ${label} never stands in for the route, and is never withdrawn`, async () => {
+            const plane    = fakePlane({rows: [row(differs), row({id: 'WAKE_SUB:minted'})]}),
+                  {result} = arm({plane, publish: publishListed});
+
+            expect(await result).toMatchObject({state: 'ready', subscriptionId: 'WAKE_SUB:minted'});
+            expect(plane.subscribeCalls()).toEqual([CANONICAL]);
+            expect(plane.calls.tools.map(call => call.args.action)).toEqual(['subscribe', 'list']);
+        });
+
+        test(`a publish carrying only the row on ${label} is not ready`, async () => {
+            const {result} = arm({plane: fakePlane({rows: [row(differs)]}), publish: publishListed});
+
+            expect(await result).toMatchObject({state: 'unarmed', reason: 'the publish carried no route for WAKE_SUB:minted', subscriptionId: null});
+        });
+    }
 
     test('a Claude Desktop seat carries the Claude dispatch and its home as the address', async () => {
         const plane    = fakePlane(),
@@ -180,7 +213,7 @@ test.describe('armFleetSeatWake — subscribes the seat once, as itself', () => 
 
         expect(await result).toMatchObject({state: 'ready', instanceAddress: '/agents/a/harness/claude-desktop'});
 
-        const metadata = plane.calls.tools.find(call => call.args.action === 'subscribe').args.harnessTargetMetadata;
+        const metadata = plane.subscribeCalls()[0].harnessTargetMetadata;
 
         expect(metadata).toEqual({
             ...GUI_WAKE_DISPATCH['claude-desktop'],
@@ -194,13 +227,13 @@ test.describe('armFleetSeatWake — subscribes the seat once, as itself', () => 
 
 test.describe('armFleetSeatWake — non-vacuity: these seats never subscribe', () => {
     const cases = [
-        ['a resident seat',            {agent: {...AGENT, mcpTarget: null}},              /resident Memory Core/],
-        ['a seat on another plane',    {planeBase: 'https://elsewhere.example.com'},      /not the plane this Fleet is attached to/],
-        ['an undeclared receiver',     {receiverBase: ''},                                /no wake receiver is declared/],
-        ['an undeclared manifest',     {manifestPath: ''},                                /no wake receiver is declared/],
-        ['a disconnected plane',       {tenantService: {resolveMcpResources: () => null}}, /not connected/],
-        ['a seat with no identity',    {agent: {...AGENT, githubUsername: ''}},           /no GitHub identity/],
-        ['a seat with no launched home', {instanceHome: null},                            /no launched profile/]
+        ['a resident seat',              {agent: {...AGENT, mcpTarget: null}},               /resident Memory Core/],
+        ['a seat on another plane',      {planeBase: 'https://elsewhere.example.com'},       /not the plane this Fleet is attached to/],
+        ['an undeclared receiver',       {receiverBase: ''},                                 /no wake receiver is declared/],
+        ['an undeclared manifest',       {manifestPath: ''},                                 /no wake receiver is declared/],
+        ['a disconnected plane',         {tenantService: {resolveMcpResources: () => null}}, /not connected/],
+        ['a seat with no identity',      {agent: {...AGENT, githubUsername: ''}},            /no GitHub identity/],
+        ['a seat with no launched home', {instanceHome: null},                               /no launched profile/]
     ];
 
     for (const [label, overrides, reason] of cases) {
@@ -218,14 +251,14 @@ test.describe('armFleetSeatWake — non-vacuity: these seats never subscribe', (
         const plane              = fakePlane({proof: {ok: false, reason: 'identity mismatch'}}),
               {result, armCalls} = arm({plane});
 
-        expect(await result).toMatchObject({state: 'unarmed', reason: expect.stringContaining('did not prove @neo-gpt-sophie: identity mismatch')});
+        expect(await result).toMatchObject({state: 'unarmed', reason: 'the seat credential did not prove @neo-gpt-sophie: identity mismatch'});
         expect(plane.calls.tools).toHaveLength(0);
         expect(armCalls).toHaveLength(0);
         expect(plane.calls.closed).toBe(1);
     });
 });
 
-test.describe('armFleetSeatWake — never throws', () => {
+test.describe('armFleetSeatWake — never throws, and every reason is redacted and bounded', () => {
     test('a plane failure becomes unarmed with the cause, and the client is still closed', async () => {
         const plane              = fakePlane({failOn: 'subscribe'}),
               {result, armCalls} = arm({plane});
@@ -235,20 +268,35 @@ test.describe('armFleetSeatWake — never throws', () => {
         expect(plane.calls.closed).toBe(1);
     });
 
+    test('a subscription the plane does not name is never published', async () => {
+        const {result, armCalls} = arm({plane: fakePlane({subscribed: {}})});
+
+        expect(await result).toMatchObject({state: 'unarmed', reason: 'the plane accepted the subscription without naming it'});
+        expect(armCalls).toHaveLength(0);
+    });
+
     test('a publish that leaves the seat unreachable reports the publisher\'s reason', async () => {
-        const {result} = arm({published: {armed: false, reason: 'the publish succeeded but produced no route owned by @neo-gpt-sophie'}});
+        const {result} = arm({publish: async () => ({armed: false, reason: 'the publish succeeded but produced no route owned by @neo-gpt-sophie'})});
 
         expect(await result).toMatchObject({state: 'unarmed', reason: expect.stringContaining('no route owned by @neo-gpt-sophie')});
     });
-});
 
-test.describe('isLiveRouteFor', () => {
-    test('only an active, deliverable webhook route to the same userDataDir counts', () => {
-        expect(isLiveRouteFor(liveRoute(PROFILE), PROFILE)).toBe(true);
-        expect(isLiveRouteFor({...liveRoute(PROFILE), status: 'degraded'}, PROFILE)).toBe(false);
-        expect(isLiveRouteFor({...liveRoute(PROFILE), routeDeliverable: false}, PROFILE)).toBe(false);
-        expect(isLiveRouteFor({...liveRoute(PROFILE), harnessTarget: 'bridge-daemon'}, PROFILE)).toBe(false);
-        expect(isLiveRouteFor(liveRoute('/other'), PROFILE)).toBe(false);
-        expect(isLiveRouteFor({...liveRoute(null), harnessTargetMetadata: {addressType: 'userDataDir', userDataDir: PROFILE}}, PROFILE)).toBe(true);
-    });
+    const
+        SECRET  = `ghp_${'a1B2'.repeat(9)}`,
+        NOISY   = `refused for token ${SECRET} ${'x'.repeat(400)}`,
+        SOURCES = [
+            ['a thrown plane error', {plane: fakePlane({failOn: 'subscribe', failure: NOISY})}],
+            ['the identity proof',   {plane: fakePlane({proof: {ok: false, reason: NOISY}})}],
+            ['the publisher',        {publish: async () => ({armed: false, reason: NOISY})}]
+        ];
+
+    for (const [label, overrides] of SOURCES) {
+        test(`a credential and an oversized message from ${label} reach the status redacted and bounded`, async () => {
+            const {reason} = await arm(overrides).result;
+
+            expect(reason).toContain('refused for token [redacted-token]');
+            expect(reason).not.toContain(SECRET);
+            expect(reason.length).toBeLessThanOrEqual(240);
+        });
+    }
 });

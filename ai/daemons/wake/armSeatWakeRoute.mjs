@@ -155,7 +155,8 @@ export function validateKnownTuple({identity, instanceAddress, instanceType} = {
  * @param {String} [options.tmpDir] Overrides the OS temp directory.
  * @param {Object} [options.logger=console]
  * @returns {Promise<Object>} `armed` whether a route was published · `reason` why not, when it was not ·
- * `identity` the seat, once derived · `routeCount` routes published · `skipped` the builder's named skips.
+ * `identity` the seat, once derived · `routeCount` routes published · `subscriptionIds` which ones, when
+ * armed · `skipped` the builder's named skips.
  */
 export async function armSeatWakeRoute({
     listSubscriptions,
@@ -298,11 +299,12 @@ export async function armSeatWakeRoute({
         }
 
         return {
-            armed     : true,
-            identity  : tuple.identity,
-            routeCount: ownRoutes.length,
-            adapter   : ARMED_ADAPTER,
-            skipped   : result?.skipped ?? []
+            armed          : true,
+            identity       : tuple.identity,
+            routeCount     : ownRoutes.length,
+            subscriptionIds: ownRoutes.map(route => route.subscriptionId),
+            adapter        : ARMED_ADAPTER,
+            skipped        : result?.skipped ?? []
         }
     } catch (error) {
         return {armed: false, identity: tuple.identity, reason: `arming failed: ${error?.message || error}`};

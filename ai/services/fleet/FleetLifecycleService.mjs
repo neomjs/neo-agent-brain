@@ -949,14 +949,20 @@ class FleetLifecycleService extends Base {
      * @summary Records the wake route the Fleet armed for a GUI seat it started, so {@link status}
      * reports whether a peer can wake the seat and why not. An OpenCode route belongs to the seat's own
      * envelope lifecycle and is never replaced here.
+     *
+     * A route describes one launch, and arming finishes after the start returns: a seat restarted in
+     * the meantime runs at the same profile path, so only its `pid` and `startedAt` tell the launches
+     * apart.
      * @param {String} id
      * @param {Object} route `{state, reason, adapter, addressType, instanceAddress, subscriptionId}`.
-     * @returns {Boolean} `true` when recorded; `false` for an unknown seat or one that owns its route.
+     * @param {Object} launch `{pid, startedAt}` from the status of the start the route was armed for.
+     * @returns {Boolean} `true` when recorded; `false` for an unknown seat, one that owns its route, or
+     *     a launch the seat has since replaced.
      */
-    setWakeRoute(id, route) {
+    setWakeRoute(id, route, {pid, startedAt} = {}) {
         const record = this.processes.get(id);
 
-        if (!record || record.wakeRoute?.hookPath) return false;
+        if (!record || record.wakeRoute?.hookPath || record.pid !== pid || record.startedAt !== startedAt) return false;
 
         record.wakeRoute = {...route};
         return true

@@ -2034,7 +2034,7 @@ test.describe('FleetLifecycleService.setWakeRoute — the route the Fleet armed 
             subscriptionId : 'WAKE_SUB:gui-seat'
         };
 
-        expect(FleetLifecycleService.setWakeRoute('gui-seat', {...route, signingKey: 'must-never-be-projected'})).toBe(true);
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', {...route, signingKey: 'must-never-be-projected'}, {pid: null, startedAt: null})).toBe(true);
 
         const projected = FleetLifecycleService.status('gui-seat').wakeRoute;
 
@@ -2050,5 +2050,19 @@ test.describe('FleetLifecycleService.setWakeRoute — the route the Fleet armed 
         expect(FleetLifecycleService.setWakeRoute('open-seat', {state: 'unarmed', reason: 'x'})).toBe(false);
         expect(FleetLifecycleService.processes.get('open-seat').wakeRoute).toBe(own);
         expect(FleetLifecycleService.setWakeRoute('nobody', {state: 'ready'})).toBe(false);
+    });
+
+    test('a route armed for an earlier launch never lands on the launch that replaced it', () => {
+        const earlier = {pid: 4101, startedAt: '2026-10-01T18:00:00.000Z'},
+              current = {pid: 4202, startedAt: '2026-10-01T18:00:05.000Z'},
+              ready   = {state: 'ready', reason: null, subscriptionId: 'WAKE_SUB:current'};
+
+        FleetLifecycleService.processes.set('gui-seat', {id: 'gui-seat', state: 'running', ...current, wakeRoute: null});
+
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', ready, current)).toBe(true);
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', {state: 'unarmed', reason: 'late'}, earlier)).toBe(false);
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', {state: 'unarmed', reason: 'reused pid'}, {...current, startedAt: earlier.startedAt})).toBe(false);
+        expect(FleetLifecycleService.setWakeRoute('gui-seat', {state: 'unarmed', reason: 'no launch named'})).toBe(false);
+        expect(FleetLifecycleService.processes.get('gui-seat').wakeRoute).toEqual(ready);
     });
 });

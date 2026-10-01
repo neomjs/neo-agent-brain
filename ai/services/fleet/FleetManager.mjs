@@ -7,6 +7,7 @@ import {launchRefusalOf}                from '../../../src/fleet/contract/launch
 import {readFleetPresenceSnapshot}      from './fleetPresenceStateAdapter.mjs';
 import {readFleetThrottleStateSnapshot} from './fleetThrottleStateAdapter.mjs';
 import {readFleetWakeStateSnapshot}     from './fleetWakeStateAdapter.mjs';
+import {redactReadFailure}              from './redactReadFailure.mjs';
 import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
 
 /**
@@ -250,12 +251,13 @@ class FleetManager extends Base {
                     : null
             })
         } catch (error) {
-            wakeRoute = {state: 'unarmed', reason: `wake arming failed: ${error?.message ?? error}`}
+            wakeRoute = {state: 'unarmed', reason: redactReadFailure(`wake arming failed: ${error?.message ?? error}`)}
         }
 
         if (!wakeRoute) return status;
 
-        lifecycle.setWakeRoute?.(agentId, wakeRoute);
+        // Arming can outlive the launch it was started for; the record takes it only from that launch.
+        lifecycle.setWakeRoute?.(agentId, wakeRoute, {pid: status?.pid, startedAt: status?.startedAt});
 
         return {...status, wakeRoute}
     }
