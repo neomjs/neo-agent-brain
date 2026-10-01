@@ -1,25 +1,32 @@
 # Memory Core MCP Authentication
 
-The Memory Core MCP server enforces **tenant-scoped identity** on every tool invocation — regardless of whether the caller connects over **stdio** (local agents, CI runners) or **Streamable HTTP** (cloud-native, multi-tenant deployments). This guide describes the dual-path identity resolution, the `AgentIdentity` graph-node binding, and the anti-spoof invariant that together close the multi-tenant isolation contract shipped across tickets #10000, #10144, and #10145.
+Memory Core derives caller identity at the server boundary when the transport and authentication mode provide one. Streamable HTTP supports OIDC, provider PAT, seat-token, and local-bearer modes; stdio resolves a trusted process identity at server boot. A request without a user identity retains the single-tenant fallthrough. This guide covers identity binding and the anti-spoof boundary; see [Run Your Own Agent Team](../OwnAgentTeam.md) for roster and provisioning choices.
 
 ## Why Identity Matters Here
 
-Every write to the Memory Core's ChromaDB collections is tagged with `metadata.userId`. Every read filters on the same field. Without a reliable identity source, tenant isolation is advisory — a client can claim to be anyone, or nothing at all. The multi-tenant Memory Core deployment scope of Epic #9999 requires this substrate to be authoritative, not cooperative.
+When a request has a resolved user identity, Memory Core uses that server-stamped identity for tenant tagging and read filtering. A request without one can use the single-tenant fallthrough; it does not acquire caller identity merely by presenting a local-bearer credential.
 
-Three invariants together close the contract:
+Three invariants define the boundary:
 
-1. **Identity is server-stamped, never client-supplied.** No MCP tool schema accepts a caller-identity argument. The caller's identity is derived inside the server from transport-level claims.
-2. **Write-path tagging is unconditional.** `addMemory`, `mutate_frontier`, and every future write tool reads identity from `RequestContextService.getUserId()` and tags writes with it. Read filters symmetrically apply `where: {userId}` when the context is populated.
-3. **Anti-spoof guards the argument surface.** The `AuthMiddleware` service rejects any tool-call argument containing a key that would contradict server-stamped identity — closing a spoof vector before Mailbox (#10139) creates its first surface.
+1. **Identity is server-stamped, never client-supplied.** Tool schemas do not accept caller identity as an argument.
+2. **Tenant tagging follows the resolved context.** Reads and writes use the identity in `RequestContextService` when present; an identity-free context remains possible.
+3. **The anti-spoof guard protects the argument surface.** `AuthMiddleware` rejects tool-call arguments that attempt to override server-stamped identity.
 
-## The Two Paths
+## Transport and HTTP Authentication
 
-| Transport | Identity Source | Implementation |
-|---|---|---|
-| **Streamable HTTP** | OIDC Bearer-token introspection, or GitLab bearer validation in `gitlab-pat` mode | `AuthService.verifyAccessToken` (shipped in #10000) and `AuthService.createGitlabPatVerifier()` |
-| **stdio** | `NEO_AGENT_IDENTITY` env-var, then `gh api user` fallback | `StdioIdentityResolver` (ticket #10145) |
+Transport and authentication are separate choices. Stdio is a trusted-process boundary that resolves identity at server boot. The HTTP `auth.mode` selects how each request is authenticated.
 
-Both paths end at the same destination: a `RequestContextService.run(context, ...)` wrap around tool dispatch, where the `context` shape is identical. Service-layer code reading `RequestContextService.getUserId()` is transport-agnostic.
+| Streamable HTTP mode | Identity behavior |
+|---|---|
+| `oidc` (default) | Validates the OIDC token and derives request identity; binds an existing graph node by default. |
+| `gitlab-pat` | Validates a GitLab bearer token and derives the provider login. |
+| `github-pat` | Validates a GitHub PAT and derives the provider login. |
+| `seat-token` | Verifies the registered token and binds its minted `AgentIdentity` subject. |
+| `local-bearer` | Checks possession of a process-lifetime credential on an explicitly loopback-bound listener; supplies no user identity and does not bind or provision a teammate. |
+
+For Memory Core, `auth.autoProvisionIdentitySources` controls request-time creation of a missing graph identity. Its default is a one-entry list containing the active provider-PAT mode (`github-pat` or `gitlab-pat`), and an empty list for other modes. `NEO_AUTH_AUTO_PROVISION_IDENTITY_SOURCES` overrides that policy, including with an empty value to disable provisioning. An unlisted identity-bearing source binds an existing node by lookup. Stdio also binds by lookup; its `NEO_AGENT_IDENTITY` pin is distinct from HTTP bearer authentication.
+
+A validated provider login and its graph-node binding are separate facts. A listed provider-PAT source can provision an unrostered login on first request. An unlisted identity-bearing source needs an existing node for graph binding. `identityRoots.mjs` supplies optional roster metadata and seed identities; it is not an admission list. See [Run Your Own Agent Team](../OwnAgentTeam.md) and the [Security](../cloud-deployment/Security.md) and [Configuration](../cloud-deployment/Configuration.md) references for current deployment policy.
 
 ### Streamable HTTP Path — OIDC via `AuthService`
 
@@ -40,13 +47,11 @@ NEO_OAUTH_CLIENT_SECRET=<secret>
 
 Once the server starts, every tool call from a client MUST arrive with `Authorization: Bearer <token>` where the token was issued by the configured issuer AND audience-matches the Memory Core's canonical public URL (configured via `NEO_PUBLIC_URL`). Tokens with `aud` claims targeting a different resource are rejected per RFC 9068.
 
-### Streamable HTTP Path — GitLab Bearer via `gitlab-pat`
+### Provider PAT Authentication and Provisioning
 
-Cloud deployments can opt into `NEO_AUTH_MODE=gitlab-pat`. In that mode the server validates the incoming bearer against the configured GitLab instance's `/api/v4/user` endpoint and stamps the request with the GitLab username plus provider-neutral metadata (`authProvider`, `authSource`, `providerBaseUrl`, `providerUserId`, `providerUsername`, `providerDisplayName`). User and client allowlists, when configured, are checked before request context is built.
+The `gitlab-pat` and `github-pat` modes validate the bearer with the corresponding provider and stamp the request with its resolved login and auth-source metadata. The configured provider base URL supports self-managed GitLab or GitHub Enterprise Server deployments. User allowlists, when configured, are checked before request context is built.
 
-For Memory Core, a successful GitLab bearer login also creates the missing `AgentIdentity` graph node at request time when `gitlab-pat` is present in `NEO_AUTH_AUTO_PROVISION_IDENTITY_SOURCES` (default: `gitlab-pat`). The node id is the validated canonical username in the normal `@<username>` form, written as a globally visible SQLite graph node (`userId: null`) with `accountType: 'agent'`, `authSource: 'gitlab-pat'`, `autoProvisioned: true`, and a non-`unclassified` trust tier. Existing seeded `AgentIdentity` nodes are preserved; a non-`AgentIdentity` collision at the target id fails closed.
-
-The node is durable graph state, not a process-local cache entry. In the reference cloud topology the `mc-server` and `orchestrator` containers are separate processes that mount the same SQLite graph path, so the orchestrator observes the provisioned identity through the existing GraphLog invalidation and lazy-load path. Operators do not edit `ai/graph/identityRoots.mjs` for first-use GitLab-PAT deployment users.
+When the validated source is listed in `auth.autoProvisionIdentitySources`, `Server.buildRequestContext` creates a missing `AgentIdentity` graph node for that login. By default the active PAT mode is listed, so a provider-authenticated teammate can bind on first contact without an `identityRoots.mjs` entry. The override can narrow, widen, or disable that behavior. Existing `AgentIdentity` nodes are preserved; an incompatible node at the target id fails closed. The provisioned node is durable graph state.
 
 ### Stdio Path — `StdioIdentityResolver`
 
@@ -66,7 +71,9 @@ The resolved identity is cached on the running server instance and wrapped aroun
 > do not define the same server in both scopes. `--user-data-dir` changes the UI profile,
 > not this MCP-root contract. See `.agents/skills/debugging-antigravity/references/debugging-guide.md`.
 
-Each AI harness pins its model's identity at session start by setting `NEO_AGENT_IDENTITY`. Matches the per-model GitHub-account convention from ticket #10144 (`@neo-opus-ada`, `@neo-gemini-pro`, `@tobiu`).
+Each stdio harness process pins its own operational identity at session start with `NEO_AGENT_IDENTITY`. Use the same canonical login that the process is expected to speak as.
+
+The following harness snippets configure the **stdio** server process. Streamable HTTP credentials are supplied per request and are configured at the server's `auth.mode` boundary.
 
 ### Claude Code (`.claude/settings.json`)
 
@@ -108,17 +115,13 @@ No harness configuration required. `StdioIdentityResolver` falls back to `gh api
 
 ## AgentIdentity Graph-Node Binding
 
-Ticket #10144 seeded three `AgentIdentity` nodes in the Native Edge Graph:
+After an HTTP request resolves a user identity, `Server.buildRequestContext` either provisions or looks up the corresponding graph node. It provisions only when the request's validated `source` or `authSource` appears in `auth.autoProvisionIdentitySources`; otherwise it looks up the existing `@<login>` node. On the lookup path, a missing node is non-fatal and leaves `agentIdentityNodeId` null. By default only the active provider-PAT mode is listed.
 
-- `@neo-opus-ada` — Claude Opus 5
-- `@neo-gemini-pro` — Gemini 3.1 Pro
-- `@tobiu` — Tobias Uhlig (human owner)
+A seat-token resolves its already-minted `AgentIdentity` subject. Stdio resolves `NEO_AGENT_IDENTITY` (or the local `gh api user` fallback) at boot and looks up its graph node. These bindings do not imply request-time provisioning. Local-bearer supplies no `userId`, so `buildRequestContext` returns an empty context.
 
-Each seeded node carries `{githubLogin, displayName, modelFamily, accountType}` properties and is addressable by its `@`-prefixed ID.
+The seeded roster is useful when a team wants known identities available to lookup-only paths or wants roster metadata such as display names and model lineage. `identityRoots.mjs` is Neo's own roster, not an admission authority for other teams. See the setup guide for when a team needs its own seed entries and when a listed PAT source can create identities on first contact.
 
-After identity resolution, Memory Core binds the request to a graph node in one of two ways. Stdio and OIDC requests use `Server.bindAgentIdentity(userId)`, which looks up the matching graph node by prepending `@` to the resolved login. GitLab bearer requests first run the request-time auto-provisioning path described above, then return the same `@`-prefixed node id. The result (either the node ID or `null`) lands in `RequestContext.agentIdentityNodeId`, exposed via `RequestContextService.getAgentIdentityNodeId()`.
-
-Services building `AUTHORED_BY` / `OWNED_BY` / future provenance edges at write time terminate their edges on the resolved node ID. Missing node remains non-fatal for local stdio and generic OIDC identities — unseeded agents can still accumulate memories; they just can't yet terminate graph edges until someone adds or seeds an identity. GitLab bearer cloud users are the exception: successful auth provisions the graph node dynamically so mailbox, broadcast, permission, and presence flows work on first use.
+Services that build `AUTHORED_BY` or `OWNED_BY` edges use the resolved node id when one is available.
 
 ## The Anti-Spoof Invariant
 
@@ -152,50 +155,54 @@ To solve this, shared entities explicitly set `sharedEntity: true` on their node
 
 ```javascript
 {
-    userId             : String,        // Bare GitHub login (no `@` prefix)
-    username           : String,        // Human-readable display name
-    agentIdentityNodeId: String | null, // `@`-prefixed graph node ID if bound
-    source             : String         // Provenance: 'oidc' | 'gitlab-pat' | 'env-var' | 'gh-cli' | 'unresolved'
+    userId             : String|undefined, // Resolved provider login or OIDC subject
+    username           : String|undefined, // Provider or OIDC display name when available
+    agentIdentityNodeId: String|null,      // @-prefixed node when an identity is bound
+    source             : String            // Auth provenance, e.g. oidc, github-pat, gitlab-pat,
+                                           // seat-token, env-var, or gh-cli
 }
 ```
 
-All fields are populated on a best-effort basis. `userId` is `undefined` only when neither transport resolves an identity — the single-tenant fallthrough case.
+HTTP `buildRequestContext` returns an empty object when auth supplies no `userId`; stdio may also resolve to no identity. In either case the server follows its single-tenant fallthrough. A resolved user can still have `agentIdentityNodeId: null` when its source is lookup-only and no graph node exists.
 
-## OAuth 2.1 Spec Version
+## OIDC Token Requirements
 
-The Streamable HTTP path validates Bearer tokens per OAuth 2.1 draft conventions (audience enforcement, introspection-based validation, resource indicator checks per RFC 9068). Implementations targeting this Memory Core MUST:
+These requirements apply to the Streamable HTTP `oidc` mode. They do not apply to provider-PAT, seat-token, or local-bearer modes.
 
-- Issue tokens with a specific `aud` (audience) claim matching the Memory Core's public URL
-- Support RFC 7662 introspection (or expose introspection metadata in the OIDC discovery document)
-- Populate `preferred_username` OR `sub` in the introspection response (both honored; `sub`-fallback guarantees a non-empty `userId` for machine-to-machine client-credential flows)
+OIDC tokens are validated with audience enforcement, introspection, and resource-indicator checks. An OIDC issuer used with this Memory Core MUST:
+
+- Issue tokens with an `aud` claim matching the Memory Core's public URL
+- Support RFC 7662 introspection (or expose introspection metadata in its OIDC discovery document)
+- Populate `preferred_username` or `sub` in the introspection response
 
 ## Troubleshooting
 
-### Primary diagnostic: `healthcheck` identity block (#10176)
+### Stdio diagnostic: the `healthcheck` identity block
 
-The fastest single-call diagnostic is the `identity` block in the MCP `healthcheck` response. Call `healthcheck` and inspect `identity.*` — no need to grep startup logs or check multiple substrates:
+The MCP `healthcheck` tool's `identity` block reports the server's **cached stdio boot identity**, not the current HTTP caller. A bound stdio example:
 
 ```json
 {
     "identity": {
-        "source": "env-var" | "gh-cli" | "oidc" | "unresolved",
-        "bound":  true | false,
-        "nodeId": "@neo-opus-ada" | null
+        "source": "env-var",
+        "bound": true,
+        "nodeId": "@example-agent",
+        "warning": null
     }
 }
 ```
 
-The three substantive states and their implied fixes:
+Interpret that block by transport:
 
 | `identity.source` | `identity.bound` | Interpretation | Fix |
 |---|---|---|---|
-| `env-var` or `gh-cli` | `true` | ✓ Fully operational. Agent bound to graph node. | None needed. |
-| `env-var` or `gh-cli` | `false` | Identity resolved but no matching AgentIdentity graph node. | Run `node ai/scripts/seedAgentIdentities.mjs` OR verify the #10232 boot-time self-seed fired. If new per-model account: add to `ai/graph/identityRoots.mjs` and restart. |
-| `gitlab-pat` | `true` | ✓ Fully operational. Authenticated GitLab bearer principal was bound to an existing or auto-provisioned graph node. | None needed. |
-| `gitlab-pat` | `false` | GitLab auth succeeded, but graph provisioning/binding could not complete because the graph substrate was degraded. | Check Memory Core graph/SQLite health and retry after recovery; do not seed `identityRoots.mjs` for ordinary cloud users. |
-| `unresolved` | `false` | Resolver yielded no userId at all. | See "Identity unresolved" section below. |
+| `env-var` or `gh-cli` | `true` | The stdio process identity is bound to a graph node. | No binding repair needed; this does not certify every service. |
+| `env-var` or `gh-cli` | `false` | Stdio identity resolved, but graph binding was not established. | Check graph health and whether the expected node exists. If this team maintains a roster, refresh it with `node ai/scripts/setup/seedAgentIdentities.mjs`; otherwise use a listed provider-PAT source or another authorized provisioning path. |
+| `unresolved` | `false` | No cached stdio identity. Normal for Streamable HTTP, whose identity is per request. | For stdio, use the resolver checks below. For HTTP, inspect credential validation and request binding separately. |
 
-`status` stays `healthy` regardless of `bound` — unbound identity is a valid single-tenant fallthrough, not a health failure. This is observability, not a gate.
+An env-pinned stdio identity with no binding produces `identity.warning` and degrades health readiness. An unresolved HTTP boot block does not prove failed authentication or missing request identity: `HealthService` builds this block from its stored stdio state. See `ai/services/memory-core/HealthService.mjs` (`buildIdentityBlock`, `setStdioIdentityState`).
+
+For HTTP binding failures, check the selected `auth.mode`, the validated request's source, `auth.autoProvisionIdentitySources`, and graph/SQLite diagnostics. An unlisted identity-bearing source needs an existing node for graph binding; a listed source may provision it. Local-bearer supplies no user identity. A roster is one optional provisioning source, not a prerequisite.
 
 ### `identity.source: 'unresolved'` (stdio mode)
 
@@ -207,12 +214,12 @@ Resolver chain failed entirely — neither env-var nor gh-CLI yielded a login:
 
 ### `identity.bound: false` despite resolved `source`
 
-Startup log reads `Identity: tobiu via gh-cli — unbound (no matching AgentIdentity node)`, and `healthcheck.identity.bound` is `false`.
+For stdio, a resolved `env-var` or `gh-cli` identity with `bound: false` means graph binding was not established. The node may be missing, have an incompatible type, or be unreadable because the graph is degraded; the binding diagnostic distinguishes these cases.
 
-- The graph node `@<login>` does not exist in the current Memory Core graph.
-- Run `node ai/scripts/seedAgentIdentities.mjs` to re-seed the canonical identities.
-- For a new per-model account, add the identity to the `IDENTITIES` array in `ai/graph/identityRoots.mjs` (the shared source consumed by both boot-time self-seed and the CLI) before running.
-- Post-#10232, boot-time self-seed should provision missing root identities automatically. If `bound` stays false after a restart cycle with a populated graph, investigate whether `GraphService.initAsync` is reaching the self-seed block — check startup logs for errors.
+- For an identity that belongs in your maintained roster, verify its entry in `ai/graph/identityRoots.mjs`, then refresh that deployment's graph with `node ai/scripts/setup/seedAgentIdentities.mjs`.
+- A roster is not required for every identity: an HTTP request from a source listed in `auth.autoProvisionIdentitySources` can provision its node on first contact.
+- A lookup-only source (stdio, OIDC or seat-token by default) needs an existing node for graph binding. Check the correct graph database and its provisioning path; check roster seeding only if this deployment uses a roster.
+- If a provider-PAT source is listed but binding remains false, check graph/SQLite health and the provisioning diagnostic before retrying.
 
 ### Boot-Time Identity Race Condition (Cross-Process WAL Lock Contention)
 
@@ -226,17 +233,19 @@ Retry loops targeting this specific race are correctly rejected — the underlyi
 
 ### Startup-log fallback (pre-#10176 environments or logging-only workflows)
 
-The `[neo-memory-core MCP] Identity: <userId> via <source> — bound to <nodeId>` log line is still emitted at boot by `logIdentityStatus` and remains usable as a fallback diagnostic. The healthcheck block supersedes it for live diagnostics because a single tool call returns structured JSON the agent can branch on; log-grep requires filesystem access to the MCP stdout capture.
+The `[neo-memory-core MCP] Identity: <userId> via <source> — bound to <nodeId>` log line is emitted at boot by `logIdentityStatus` and remains a fallback for stdio diagnostics. The healthcheck block exposes that process-level binding as structured data; neither is an observation of a particular HTTP caller.
 
 ### `Identity-override spoof rejected` error on a tool call
 
 The `AuthMiddleware` refused a tool-call argument. Check that the client is not attempting to supply `userId`, `agent.authorLogin`, `from`, or any other field listed above. If the tool legitimately needs to pass an identity-adjacent value, rename the field at the schema layer.
 
-### Streamable HTTP transport returns 401 despite a valid-looking Bearer token
+### OIDC requests return 401 despite a valid-looking Bearer token
 
-- Check the `aud` (audience) claim of the token — must match the Memory Core's public URL.
+- Check that the token's `aud` claim matches the Memory Core's public URL.
 - Check that the OIDC introspection endpoint is reachable from the Memory Core process.
-- Check that the `AuthService` was able to fetch the OIDC discovery document at startup (look for `[AuthService] OIDC Discovery successful for issuer: <url>` in the startup log).
+- Check that `AuthService` fetched the OIDC discovery document at startup.
+
+For `gitlab-pat` or `github-pat`, verify the token with its provider and confirm the configured provider API base URL and any username allowlist; these modes do not use OIDC audience claims or introspection. For `seat-token`, check the seat-token registry and token generation. For `local-bearer`, verify the process-lifetime credential and loopback listener configuration.
 
 ## Service Relationships
 
@@ -248,19 +257,21 @@ flowchart TD
         HTTP["Streamable HTTP Transport\nTransportService"]
         STDIO["Stdio Transport\nServer.mjs"]
 
-        AuthSvc["AuthService\n(OIDC introspect)"]
+        AuthSvc["AuthService\n(OIDC, PAT, seat-token, local-bearer)"]
         StdioRes["StdioIdentityResolver\n(env-var + gh-CLI)"]
 
         HTTP --> AuthSvc
         STDIO --> StdioRes
 
-        Bind["bindAgentIdent\n(graph lookup)"]
+        RequestBuild["buildRequestContext\n(provision only for listed source)"]
+        AuthSvc --> RequestBuild
 
-        AuthSvc --> Bind
+        Bind["bindAgentIdentity\n(graph lookup)"]
         StdioRes --> Bind
 
         ReqCtx["RequestContextService\n.run(identity, dispatch)"]
 
+        RequestBuild --> ReqCtx
         Bind --> ReqCtx
 
         AuthMid["AuthMiddleware\n.validateNoSpoof()"]
@@ -449,12 +460,16 @@ Shipping the guarded projector or migration script does **not** mutate a live gr
 
 ## See Also
 
-- `ai/mcp/server/shared/services/AuthService.mjs` — OIDC discovery and token introspection
+- `ai/mcp/server/shared/services/AuthService.mjs` — HTTP credential validation and auth-source stamping
 - `ai/mcp/server/shared/services/RequestContextService.mjs` — AsyncLocalStorage identity propagation
 - `ai/mcp/server/shared/services/StdioIdentityResolver.mjs` — Stdio identity resolution
 - `ai/mcp/server/shared/services/AuthMiddleware.mjs` — Anti-spoof argument validation
 - `ai/mcp/server/memory-core/Server.mjs` — Composition point for stdio transport
-- `ai/scripts/seedAgentIdentities.mjs` — AgentIdentity node seed script (#10144)
+- `ai/services/memory-core/HealthService.mjs` — cached stdio identity diagnostics, separate from HTTP request context
+- `ai/scripts/setup/seedAgentIdentities.mjs` — refreshes a deployment's maintained identity roster
+- `learn/agentos/OwnAgentTeam.md` — optional roster and team provisioning guidance
+- `learn/agentos/cloud-deployment/Security.md` — HTTP authentication modes and security posture
+- `learn/agentos/cloud-deployment/Configuration.md` — current auth configuration reference
 - `learn/agentos/tooling/Authorization.md` — Server Authorization overview
 - `learn/agentos/tooling/MemoryCoreMcpApi.md` — Memory Core tool surface
 - `learn/agentos/tooling/MultiTenantMigrationGuide.md` — #10017 lazy-tag-on-read migration design; `memorySharing` flag semantics; on-demand migration-census operator guidance (`ai:migration-census-report`)
