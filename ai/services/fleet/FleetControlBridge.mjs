@@ -453,6 +453,17 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @summary Set an agent's other repositories (`metadata.repos`, beside the working one) on its
+     * definition, with the same fleet authority as `setRepo`. The next provisioned start clones each one
+     * beside the working checkout. A single-`params` payload, so it is pane-reachable over the wire.
+     * @param {Object} payload `{id, repos}`: the agent id and `[{repoSlug, cloneUrl?}]`.
+     * @returns {Object|null} the updated public definition, or `null` if the agent doesn't exist.
+     */
+    setRepos(payload) {
+        return this.getManager().setRepos(payload);
+    }
+
+    /**
      * @summary Set an agent's profile-avatar reference (`metadata.avatarUrl`) on its definition (fleet
      * authority — the FM owns the registry, as with `defineAgent`). A single-`params` payload, so it is
      * pane-reachable over the wire. Non-destructive to other metadata.

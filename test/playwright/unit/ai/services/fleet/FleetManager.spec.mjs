@@ -118,6 +118,57 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleet-authority definition
         expect(FleetManager.setRepo({id: 'ghost', repoSlug: 'x/y'})).toBeNull();
     });
 
+    test('setRepos stores the seat\'s other repositories as metadata.repos, each by setRepo\'s rule', () => {
+        registryStub.getAgent = id => ({id, metadata: {repo: {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'}}});
+
+        FleetManager.setRepos({id: 'alice', repos: [{repoSlug: 'neomjs/neo-agent-brain'}, {repoSlug: 'x/y', cloneUrl: 'git@gitlab.example:x/y.git'}]});
+
+        expect(calls).toEqual([['updateAgent', 'alice', {metadata: {repos: [
+            {repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git'},
+            {repoSlug: 'x/y',                    cloneUrl: 'git@gitlab.example:x/y.git'}
+        ]}}]]);
+    });
+
+    test('setRepos refuses what setRepo refuses, a duplicate and the working repository, naming the rule, never the value', () => {
+        registryStub.getAgent = id => ({id, metadata: {repo: {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'}}});
+
+        for (const [repos, rule] of [
+            [[{repoSlug: 'x/y', cloneUrl: 'https://user:ghp_SECRET@github.com/x/y.git'}], /the clone URL must be/],
+            [[{repoSlug: 'harness/y'}],                                                  /repoSlug must be/],
+            [['x/y'],                                                                    /repoSlug must be/],
+            [[{repoSlug: 'x/y'}, {repoSlug: 'x/y'}],                                     /listed twice/],
+            [[{repoSlug: 'neomjs/neo'}],                                                 /the working repository/]
+        ]) {
+            let message = '';
+
+            try {
+                FleetManager.setRepos({id: 'alice', repos})
+            } catch (error) {
+                message = error.message
+            }
+
+            expect(message, JSON.stringify(repos)).toMatch(/^FleetManager\.setRepos: /);
+            expect(message).toMatch(rule);
+            expect(message).not.toMatch(/SECRET/)
+        }
+
+        expect(() => FleetManager.setRepos({id: 'alice', repos: 'x/y'})).toThrow(/must be an array/);
+
+        registryStub.getAgent = id => ({id, metadata: {}});
+        expect(() => FleetManager.setRepos({id: 'alice', repos: [{repoSlug: 'x/y'}]})).toThrow(/no working repository/);
+
+        expect(calls, 'the registry was never written').toEqual([])
+    });
+
+    test('setRepos with an empty list clears the facet, and an unknown agent is null', () => {
+        registryStub.getAgent = id => id === 'alice' ? {id, metadata: {}} : null;
+
+        FleetManager.setRepos({id: 'alice', repos: []});
+
+        expect(calls).toEqual([['updateAgent', 'alice', {metadata: {repos: []}}]]);
+        expect(FleetManager.setRepos({id: 'ghost', repos: []})).toBeNull();
+    });
+
     test('setAvatar sets metadata.avatarUrl from the single payload (sibling fleet-authority verb)', () => {
         const result = FleetManager.setAvatar({id: 'alice', avatarUrl: 'https://cdn/x.png'});
 

@@ -9,6 +9,41 @@ import {readFleetWakeStateSnapshot}     from './fleetWakeStateAdapter.mjs';
 import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
 
 /**
+ * @summary The one rule for a repository a seat clones: a slug that passes the checkout path's own rule
+ * ({@link assertRepoSlug}), and a remote naming that repo — https, ssh or the SCP-like
+ * `git@host:owner/repo`, with no embedded credentials and never a local source. Without a clone URL it is
+ * the GitHub URL of the slug. A refusal names the rule, never the refused value: a caller's string may be
+ * a URL with a credential in it, and an error message travels to logs and panes.
+ * @param {Object} coordinates
+ * @param {String} [coordinates.repoSlug] `owner/repo`.
+ * @param {String} [coordinates.cloneUrl] A remote naming that repo.
+ * @param {String} caller For the error message.
+ * @returns {{repoSlug: String, cloneUrl: String}}
+ * @throws {Error} On a malformed slug, or a clone URL that is not a remote naming the slug's repo.
+ * @private
+ */
+function repoCoordinates({repoSlug, cloneUrl}, caller) {
+    let owner, name;
+
+    try {
+        [owner, name] = assertRepoSlug(repoSlug, caller)
+    } catch {
+        throw new Error(`${caller}: repoSlug must be '<owner>/<repo>' in lowercase seat segments, never a reserved owner.`)
+    }
+
+    const
+        escaped = `${owner}/${name}`.replace(/\./g, '\\.'),
+        remote  = new RegExp(`^(?:https://[^/@\\s]+/|ssh://(?:[\\w.-]+@)?[^/@\\s:]+(?::\\d+)?/|[\\w.-]+@[\\w.-]+:)${escaped}(?:\\.git)?$`, 'i'),
+        repo    = {repoSlug, cloneUrl: cloneUrl ?? `https://github.com/${repoSlug}.git`};
+
+    if (!remote.test(repo.cloneUrl)) {
+        throw new Error(`${caller}: the clone URL must be an https, ssh or SCP-like remote naming ${repoSlug}, with no credentials and no local source.`)
+    }
+
+    return repo
+}
+
+/**
  * @class Neo.ai.services.fleet.FleetManager
  * @extends Neo.core.Base
  * @singleton
@@ -396,11 +431,8 @@ class FleetManager extends Base {
      * orphaned here. Replaces `metadata.repo` wholesale (a repo is set as a unit); other metadata keys
      * survive the merge.
      *
-     * The verb is the boundary, not its callers. The slug must pass the checkout path's own rule
-     * ({@link assertRepoSlug}). The clone URL must be a remote that names that repo: https, ssh or the
-     * SCP-like `git@host:owner/repo`, with no embedded credentials and never a local source, so no caller
-     * points a seat's harness at a directory it chose. Without one it is the GitHub URL of the slug.
-     * `{id}` alone clears the repo.
+     * The verb is the boundary, not its callers: the coordinates pass {@link repoCoordinates}, so no
+     * caller points a seat's harness at a directory it chose. `{id}` alone clears the repo.
      * @param {Object}  payload
      * @param {String}  payload.id        Registry agent id.
      * @param {String} [payload.repoSlug] `owner/repo`: the checkout dir under the agents root.
@@ -409,32 +441,59 @@ class FleetManager extends Base {
      * @throws {Error} On a malformed slug, or a clone URL that is not a remote naming the slug's repo.
      */
     setRepo({id, cloneUrl, repoSlug} = {}) {
-        const repo = {};
-
-        if (repoSlug != null || cloneUrl != null) {
-            // A refusal names the rule, never the refused value: a caller's string may be a URL with a
-            // credential in it, and an error message travels to logs and panes.
-            let owner, name;
-
-            try {
-                [owner, name] = assertRepoSlug(repoSlug, 'FleetManager.setRepo')
-            } catch {
-                throw new Error("FleetManager.setRepo: repoSlug must be '<owner>/<repo>' in lowercase seat segments, never the 'harness' owner.")
-            }
-
-            const
-                escaped = `${owner}/${name}`.replace(/\./g, '\\.'),
-                remote  = new RegExp(`^(?:https://[^/@\\s]+/|ssh://(?:[\\w.-]+@)?[^/@\\s:]+(?::\\d+)?/|[\\w.-]+@[\\w.-]+:)${escaped}(?:\\.git)?$`, 'i');
-
-            repo.repoSlug = repoSlug;
-            repo.cloneUrl = cloneUrl ?? `https://github.com/${repoSlug}.git`;
-
-            if (!remote.test(repo.cloneUrl)) {
-                throw new Error(`FleetManager.setRepo: the clone URL must be an https, ssh or SCP-like remote naming ${repoSlug}, with no credentials and no local source.`)
-            }
-        }
+        const repo = repoSlug != null || cloneUrl != null
+            ? repoCoordinates({repoSlug, cloneUrl}, 'FleetManager.setRepo')
+            : {};
 
         return this.getLifecycleService().getRegistry().updateAgent(id, {metadata: {repo}});
+    }
+
+    /**
+     * @summary Set the seat's other repositories: `metadata.repos`, an ordered list of `{repoSlug,
+     * cloneUrl}` beside the working repository of {@link setRepo}. A provisioned start clones each one
+     * beside the working checkout ({@link Neo.ai.services.fleet.startAgentProvisioned}).
+     *
+     * The list is set as a unit, and `{id, repos: []}` clears it. Each entry passes
+     * {@link repoCoordinates}. A duplicate is refused, and so are the working repository itself and a
+     * seat without one. This is a verb of its own because `setRepo`'s callers set the working repository
+     * as a unit, so a wider `setRepo` payload would let them clear these. Non-destructive to disk, like
+     * {@link setRepo}: a repository dropped from the list keeps its checkout.
+     * @param {Object}   payload
+     * @param {String}   payload.id    Registry agent id.
+     * @param {Object[]} payload.repos `[{repoSlug, cloneUrl?}]`.
+     * @returns {Object|null} The updated public definition, or `null` if the agent doesn't exist.
+     * @throws {Error} On a list that is not an array, an invalid entry, a duplicate, the working
+     * repository, or a seat that has no working repository.
+     */
+    setRepos({id, repos} = {}) {
+        const
+            caller   = 'FleetManager.setRepos',
+            registry = this.getLifecycleService().getRegistry();
+
+        if (!Array.isArray(repos)) {
+            throw new Error(`${caller}: 'repos' must be an array of {repoSlug, cloneUrl}.`)
+        }
+
+        const agent = registry.getAgent(id);
+
+        if (!agent) return null;
+
+        const
+            working = agent.metadata?.repo?.repoSlug,
+            entries = repos.map(entry => repoCoordinates(entry && typeof entry === 'object' ? entry : {}, caller)),
+            slugs   = entries.map(entry => entry.repoSlug);
+
+        if (entries.length && !working) {
+            throw new Error(`${caller}: the seat has no working repository; set it through setRepo first.`)
+        }
+        if (slugs.includes(working)) {
+            throw new Error(`${caller}: the working repository is set through setRepo, never listed here.`)
+        }
+        if (new Set(slugs).size !== slugs.length) {
+            throw new Error(`${caller}: a repository is listed twice.`)
+        }
+
+        return registry.updateAgent(id, {metadata: {repos: entries}});
     }
 
     /**

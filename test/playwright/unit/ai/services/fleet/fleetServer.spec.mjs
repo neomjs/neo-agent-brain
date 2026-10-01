@@ -928,6 +928,7 @@ test.describe('Fleet S1 wire policy', () => {
             adoptAgent            : 'awaiting-s4',
             releaseAgent          : 'awaiting-s4',
             setRepo               : 'awaiting-s4',
+            setRepos              : 'awaiting-s4',
             setAvatar             : 'awaiting-s4',
             markFleetCaughtUp     : 'awaiting-s4',
             resolveViewerIdentity : 'awaiting-s4',
@@ -1035,8 +1036,8 @@ test.describe('composed deployment-state path', () => {
         stubProviderIdentity();
 
         const
-            root  = await mkdtemp(path.join(os.tmpdir(), 'neo-fleet-agents-root-')),
-            prior = FleetManager.managedRoot,
+            root   = await mkdtemp(path.join(os.tmpdir(), 'neo-fleet-agents-root-')),
+            prior  = FleetManager.managedRoot,
             config = composedConfig(path.join(root, 'absent-snapshot.json'));
 
         config.fleet = {...config.fleet, agentsRoot: path.join(root, 'agents')};

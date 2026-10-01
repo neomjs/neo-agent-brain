@@ -220,6 +220,83 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.start[0]).toEqual({id: 'a', opts: {cwd: '/managed/a/neomjs-neo', resolvedCredential: FIXTURE_PAT}});
         expect(status.state).toBe('running');
         expect(status.cwd).toBe('/managed/a/neomjs-neo');
+        expect(status).not.toHaveProperty('repos');
+    });
+
+    test('a seat\'s other repositories are cloned beside the working checkout, with its PAT, before the spawn', async () => {
+        const events = [],
+              agents = repoAgent('a');
+
+        agents.a.metadata.repos = [
+            {repoSlug: 'neomjs/neo-agent-brain',       cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git'},
+            {repoSlug: 'neomjs/neo-agent-institution', cloneUrl: 'https://github.com/neomjs/neo-agent-institution.git'}
+        ];
+
+        const lifecycle        = makeLifecycle({agents, events}),
+              ensureRepo       = makeEnsureRepo('/managed/a/neomjs/neo', events),
+              prepareWorkspace = makePrepareWorkspace(events),
+              status           = await startAgentProvisioned({
+                  lifecycleService  : lifecycle,
+                  agentId           : 'a',
+                  managedRoot       : '/managed',
+                  ensureRepo,
+                  prepareWorkspace,
+                  agentosRuntimeRoot: '/installed/neo'
+              });
+
+        expect(ensureRepo.calls.map(call => call.repoSlug)).toEqual(['neomjs/neo', 'neomjs/neo-agent-brain', 'neomjs/neo-agent-institution']);
+        expect(ensureRepo.calls.every(call => call.managedRoot === '/managed' && call.agentId === 'a' && call.credential === FIXTURE_PAT)).toBe(true);
+        expect(ensureRepo.calls[2].cloneUrl).toBe('https://github.com/neomjs/neo-agent-institution.git');
+        expect(events).toEqual(['credential', 'ensure', 'ensure', 'ensure', 'prepare', 'start']);
+        expect(lifecycle.calls.start[0].opts.cwd).toBe('/managed/a/neomjs/neo');
+        expect(status.repos).toEqual([
+            {repoSlug: 'neomjs/neo-agent-brain',       state: 'prepared'},
+            {repoSlug: 'neomjs/neo-agent-institution', state: 'prepared'}
+        ]);
+    });
+
+    test('an other repository that cannot be cloned is reported on the status, and the seat still starts', async () => {
+        const agents = repoAgent('a');
+
+        agents.a.metadata.repos = [{repoSlug: 'neomjs/missing', cloneUrl: 'https://github.com/neomjs/missing.git'}];
+
+        const lifecycle  = makeLifecycle({agents}),
+              ensureRepo = async ({repoSlug}) => {
+                  if (repoSlug === 'neomjs/missing') throw new Error('ensureAgentRepo: clone failed');
+                  return {repoPath: '/managed/a/neomjs/neo'}
+              },
+              status     = await startAgentProvisioned({
+                  lifecycleService  : lifecycle,
+                  agentId           : 'a',
+                  managedRoot       : '/managed',
+                  ensureRepo,
+                  prepareWorkspace  : makePrepareWorkspace(),
+                  agentosRuntimeRoot: '/installed/neo'
+              });
+
+        expect(lifecycle.calls.start).toHaveLength(1);
+        expect(status.repos).toEqual([{repoSlug: 'neomjs/missing', state: 'failed', reason: 'ensureAgentRepo: clone failed'}]);
+    });
+
+    test('a working checkout that cannot be cloned still refuses the start, and no other repository is tried', async () => {
+        const agents = repoAgent('a'),
+              tried  = [];
+
+        agents.a.metadata.repos = [{repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git'}];
+
+        const lifecycle = makeLifecycle({agents});
+
+        await expect(startAgentProvisioned({
+            lifecycleService  : lifecycle,
+            agentId           : 'a',
+            managedRoot       : '/managed',
+            ensureRepo        : async ({repoSlug}) => { tried.push(repoSlug); throw new Error('ensureAgentRepo: conflicting checkout') },
+            prepareWorkspace  : makePrepareWorkspace(),
+            agentosRuntimeRoot: '/installed/neo'
+        })).rejects.toThrow('conflicting checkout');
+
+        expect(tried).toEqual(['neomjs/neo']);
+        expect(lifecycle.calls.start).toHaveLength(0);
     });
 
     test('an agent with no metadata.repo starts in the inherited cwd (backward-compatible)', async () => {
