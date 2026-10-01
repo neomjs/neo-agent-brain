@@ -101,6 +101,38 @@ test.describe('ai/configBase — delta-only subclass overlays (overlay-drift roo
         }
     });
 
+    test('the Gemini model leaves take their env bindings, and keep their defaults when unset', () => {
+        const names    = ['NEO_GEMINI_MODEL', 'NEO_GEMINI_EMBEDDING_MODEL'],
+              original = names.map(name => process.env[name]);
+
+        let fixture = null;
+
+        try {
+            names.forEach(name => delete process.env[name]);
+            fixture = createOverlayFixture('Neo.ai.unittest.GeminiModelBindingFixture', null);
+
+            expect(fixture.proxy.modelName).toBe('gemini-3.5-flash');
+            expect(fixture.proxy.embeddingModel).toBe('gemini-embedding-001');
+
+            process.env.NEO_GEMINI_MODEL           = 'gemini-unit-chat';
+            process.env.NEO_GEMINI_EMBEDDING_MODEL = 'gemini-unit-embedding';
+            fixture.instance.refreshEnv();
+
+            expect(fixture.proxy.modelName).toBe('gemini-unit-chat');
+            expect(fixture.proxy.embeddingModel).toBe('gemini-unit-embedding');
+        } finally {
+            names.forEach((name, index) => {
+                if (original[index] === undefined) {
+                    delete process.env[name];
+                } else {
+                    process.env[name] = original[index];
+                }
+            });
+
+            fixture?.instance?.destroy();
+        }
+    });
+
     test('a base leaf NOT named in the delta resolves through the subclass — zero overlay edits (AC-1)', () => {
         // Deltas are leaf() declarations exactly like the base — the data plane's invariant.
         // (A bare primitive merged over a leaf descriptor does not survive construction; the

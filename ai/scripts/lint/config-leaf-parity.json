@@ -85,7 +85,7 @@
         "census": {
             "profile": "deploy/cloud/docker-compose.yml",
             "baselineUniqueKeys": 45,
-            "remainingUniqueKeys": 74,
+            "remainingUniqueKeys": 76,
             "requiredDeploymentInputs": [
                 "NEO_AI_ORCHESTRATOR_AUTHORITY_PROFILE",
                 "NEO_AUTH_MODE",
@@ -125,6 +125,8 @@
                 "NEO_DEPLOYMENT_STATE_BRIDGE_BEARER_TOKEN_FILE",
                 "NEO_DEPLOYMENT_STATE_BRIDGE_DIRECT_PROBE_URLS",
                 "NEO_EMBEDDING_PROVIDER",
+                "NEO_GEMINI_EMBEDDING_MODEL",
+                "NEO_GEMINI_MODEL",
                 "NEO_GRAPH_PROVIDER",
                 "NEO_KB_ASK_BASE_URL",
                 "NEO_KB_ASK_MAX_PARALLEL",

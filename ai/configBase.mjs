@@ -1045,15 +1045,16 @@ class ConfigBase extends ConfigProvider {
              * @summary Deployment-wide Gemini model defaults.
              *
              * Memory Core still exposes these historical field names for Gemini-backed
-             * summary and embedding paths; Tier-1 owns the default tuple.
+             * summary and embedding paths; Tier-1 owns the default tuple. A deployment names
+             * another model through the env binding, as it does for the other providers.
              * @type {String}
              */
-            modelName: leaf('gemini-3.5-flash'),
+            modelName: leaf('gemini-3.5-flash', 'NEO_GEMINI_MODEL', 'string'),
             /**
              * @summary Deployment-wide Gemini embedding model default.
              * @type {String}
              */
-            embeddingModel: leaf('gemini-embedding-001'),
+            embeddingModel: leaf('gemini-embedding-001', 'NEO_GEMINI_EMBEDDING_MODEL', 'string'),
             /**
              * @summary Gemini API key (secret), sourced from the `GEMINI_API_KEY` env var via the leaf
              * (mirrors the OpenAI-compatible `apiKey` leaf). Read at the use site (`aiConfig.geminiApiKey`);
