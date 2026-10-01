@@ -627,7 +627,7 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
         }}}));
     }
 
-    test('defineAgent records the seat home at birth under the agents root; recordSeatHome adopts only a row without one and never rewrites a record', () => {
+    test('defineAgent records the seat home at birth under the agents root; a row persisted before the record names none', () => {
         writeLegacyRow('legacy');
         FleetRegistryService.dataDir    = tmpDir;
         FleetRegistryService.agentsRoot = '/agents';
@@ -636,23 +636,12 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
 
         expect(born.seatHome).toBe('/agents/seat');
         expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.seat.seatHome).toBe('/agents/seat');
+        expect(FleetRegistryService.listAgents().find(agent => agent.id === 'seat').seatHome).toBe('/agents/seat');
         expect(FleetRegistryService.getAgent('legacy').seatHome).toBeUndefined();
-
-        // adoption of the legacy row: one write, persisted, visible through the public read API
-        expect(FleetRegistryService.recordSeatHome('legacy', '/agents/legacy').seatHome).toBe('/agents/legacy');
-        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.legacy.seatHome).toBe('/agents/legacy');
-        expect(FleetRegistryService.listAgents().find(agent => agent.id === 'legacy').seatHome).toBe('/agents/legacy');
-
-        // create-only: equal is a no-op, different is refused, unknown writes nothing, relative throws
-        expect(FleetRegistryService.recordSeatHome('seat', '/agents/seat').seatHome).toBe('/agents/seat');
-        expect(() => FleetRegistryService.recordSeatHome('seat', '/elsewhere/seat'))
-            .toThrow(/already records seat home '\/agents\/seat'; relocateSeatHome is the one write that changes it/);
-        expect(FleetRegistryService.getAgent('seat').seatHome).toBe('/agents/seat');
-        expect(FleetRegistryService.recordSeatHome('ghost', '/agents/ghost')).toBeNull();
-        expect(() => FleetRegistryService.recordSeatHome('seat', 'agents/seat')).toThrow(/recordSeatHome: seatHome must be an absolute path/)
+        expect(FleetRegistryService.getAgentsRoot()).toBe('/agents')
     });
 
-    test('relocateSeatHome is compare-and-set: the exact current record moves (null blesses a legacy row), anything else is refused without a write', () => {
+    test('relocateSeatHome is the one write after birth: compare-and-set, null binds a legacy row, anything else is refused without a write', () => {
         writeLegacyRow('legacy');
         FleetRegistryService.dataDir    = tmpDir;
         FleetRegistryService.agentsRoot = '/agents';
@@ -660,15 +649,20 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
 
         expect(() => FleetRegistryService.relocateSeatHome('seat', {from: '/stale/seat', to: '/moved/seat'}))
             .toThrow(/records seat home '\/agents\/seat', not '\/stale\/seat'/);
+        expect(() => FleetRegistryService.relocateSeatHome('seat', {from: null, to: '/moved/seat'}))
+            .toThrow(/records seat home '\/agents\/seat', not 'none'/);
         expect(FleetRegistryService.getAgent('seat').seatHome).toBe('/agents/seat');
 
         expect(FleetRegistryService.relocateSeatHome('seat', {from: '/agents/seat', to: '/moved/seat'}).seatHome).toBe('/moved/seat');
         expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.seat.seatHome).toBe('/moved/seat');
 
-        // the deliberate bless of a legacy row: from nothing to where its files are
+        // the deliberate bind of a legacy row: from nothing to where its files are, once
         expect(() => FleetRegistryService.relocateSeatHome('legacy', {from: '/agents/legacy', to: '/agents/legacy'}))
             .toThrow(/records seat home 'none', not '\/agents\/legacy'/);
         expect(FleetRegistryService.relocateSeatHome('legacy', {from: null, to: '/agents/legacy'}).seatHome).toBe('/agents/legacy');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.legacy.seatHome).toBe('/agents/legacy');
+        expect(() => FleetRegistryService.relocateSeatHome('legacy', {from: null, to: '/elsewhere/legacy'}))
+            .toThrow(/records seat home '\/agents\/legacy', not 'none'/);
 
         expect(FleetRegistryService.relocateSeatHome('ghost', {from: null, to: '/moved/ghost'})).toBeNull();
         expect(() => FleetRegistryService.relocateSeatHome('seat', {from: '/moved/seat', to: 'moved/seat'})).toThrow(/relocateSeatHome: seatHome must be an absolute path/)

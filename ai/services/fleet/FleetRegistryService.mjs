@@ -220,8 +220,8 @@ function normalizeStoredMcpTarget(target) {
  * records it at birth ({@link defineAgent}, under {@link getAgentsRoot}) and the start composer
  * ({@link Neo.ai.services.fleet.startAgentProvisioned}) refuses a derivation that differs from the
  * record instead of provisioning a second, empty seat under a changed root. A row older than the
- * record is adopted ({@link recordSeatHome}, create-only) only once its seat is found under the current
- * root; only a deliberate move or bless rewrites the record ({@link relocateSeatHome}).
+ * record names none and stays refused until it is bound; the move and that first bind are the one
+ * write after birth ({@link relocateSeatHome}), never an adoption of whatever directory exists.
  */
 class FleetRegistryService extends Base {
     static config = {
@@ -390,8 +390,8 @@ class FleetRegistryService extends Base {
                 mcpServers   : matrix,
                 mcpTarget    : target,
                 // where the seat will live, recorded at birth: a start under a changed root then refuses
-                // instead of provisioning a second seat; rows older than the record adopt through
-                // `recordSeatHome` only once their seat is found under the current root
+                // instead of provisioning a second seat; rows older than the record name none and are
+                // bound once, deliberately, through `relocateSeatHome`
                 seatHome     : path.resolve(this.getAgentsRoot(), agentId),
                 launchOwner,
                 // an explicit owner is an ownership act, the fact `launchRefusalOf` keys on; the omitted
@@ -599,39 +599,16 @@ class FleetRegistryService extends Base {
     }
 
     /**
-     * @summary Adopts a row older than the seat record — the one create-only write of `seatHome` after
-     * {@link defineAgent}, which the start composer makes once such a row's seat is found under the
-     * current root. An equal value is a no-op, and a different value is refused here because only a
-     * deliberate move or bless may change the record ({@link relocateSeatHome}).
-     * @param {String} id       Registry agent id.
-     * @param {String} seatHome The absolute seat directory, `<agentsRoot>/<id>`.
-     * @returns {Object|null} The updated public definition, or `null` when the agent doesn't exist.
-     * @throws {Error} when `seatHome` is not an absolute path, or the row already records a different one.
-     */
-    recordSeatHome(id, seatHome) {
-        assertSeatHome(seatHome, 'recordSeatHome');
-        this.ensureLoaded();
-
-        const existing = this.agents.get(id);
-        if (!existing) return null;
-
-        if (existing.seatHome) {
-            if (existing.seatHome === seatHome) return this.toPublic(existing);
-
-            throw new Error(`FleetRegistryService.recordSeatHome: agent '${id}' already records seat home '${existing.seatHome}'; relocateSeatHome is the one write that changes it.`)
-        }
-
-        return this.writeSeatHome(id, existing, seatHome)
-    }
-
-    /**
-     * @summary The deliberate move: rewrites a recorded `seatHome` only when the caller names the
-     * current record exactly (compare-and-set), so a stale or guessed `from` never re-homes a seat.
-     * The files move outside this registry; this write is what lets the next start accept the new root.
-     * @param {String} id        Registry agent id.
-     * @param {Object} move
-     * @param {String} move.from The seat home the row records now (`null` for a row without one).
-     * @param {String} move.to   The absolute seat directory the files moved to.
+     * @summary The one write of `seatHome` after {@link defineAgent}: the deliberate move, or the
+     * binding of a row that predates the record. The caller names the current record exactly
+     * (compare-and-set — `null` for a row that has none), so a stale or guessed `from` never re-homes
+     * a seat. The files move outside this registry; this write is what lets the next start accept the
+     * path it names. No automatic adoption exists: a directory that happens to exist under the current
+     * root carries no binding authority, so an unbound row stays refused until this act names its home.
+     * @param {String}      id        Registry agent id.
+     * @param {Object}      move
+     * @param {String|null} move.from The seat home the row records now, `null` for a row without one.
+     * @param {String}      move.to   The absolute seat directory the files live in.
      * @returns {Object|null} The updated public definition, or `null` when the agent doesn't exist.
      * @throws {Error} when `to` is not an absolute path, or `from` is not the recorded seat home.
      */
@@ -646,20 +623,8 @@ class FleetRegistryService extends Base {
             throw new Error(`FleetRegistryService.relocateSeatHome: agent '${id}' records seat home '${existing.seatHome ?? 'none'}', not '${from ?? 'none'}'.`)
         }
 
-        return this.writeSeatHome(id, existing, to)
-    }
-
-    /**
-     * @summary Persist one row's `seatHome` beside a fresh `updatedAt`.
-     * @param {String} id
-     * @param {Object} existing The current row.
-     * @param {String} seatHome
-     * @returns {Object} The updated public definition.
-     * @private
-     */
-    writeSeatHome(id, existing, seatHome) {
         const
-            def        = {...existing, seatHome, updatedAt: new Date().toISOString()},
+            def        = {...existing, seatHome: to, updatedAt: new Date().toISOString()},
             nextAgents = new Map(this.agents);
 
         nextAgents.set(id, def);

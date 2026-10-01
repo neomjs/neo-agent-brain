@@ -3,7 +3,6 @@ import {ensureAgentRepo}               from './ensureAgentRepo.mjs';
 import {launchRefusalOf}               from '../../../src/fleet/contract/launchAuthority.mjs';
 import {prepareManagedAgentWorkspace}  from './prepareManagedAgentWorkspace.mjs';
 import {redactReadFailure}             from './redactReadFailure.mjs';
-import fs                              from 'node:fs';
 import path                            from 'node:path';
 import {fileURLToPath}                 from 'node:url';
 
@@ -87,11 +86,11 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * ({@link Neo.ai.services.fleet.FleetRegistryService#defineAgent}), and a start whose managed root
  * derives a different path is refused before the PAT read and any checkout (`FLEET_SEAT_HOME_MISMATCH`,
  * naming the record and both remedies) — a changed root must never mint a second, empty seat while the
- * real one sits untouched elsewhere. A row older than the record names no home: it is adopted
- * ({@link Neo.ai.services.fleet.FleetRegistryService#recordSeatHome}) only when the derived seat already
- * exists (`seatExists`), and refused otherwise (`FLEET_SEAT_HOME_UNKNOWN`) — latching whatever the
- * current root derives would bless a fresh empty seat the moment the root changed. Only a deliberate
- * move or bless rewrites the record.
+ * real one sits untouched elsewhere. A row older than the record names no home and is refused too
+ * (`FLEET_SEAT_HOME_UNBOUND`) until a deliberate act binds it
+ * ({@link Neo.ai.services.fleet.FleetRegistryService#relocateSeatHome} from `null`): a directory that
+ * happens to exist under the current root carries no binding authority, so nothing is adopted from
+ * the filesystem. Only that act, or a deliberate move, rewrites the record.
  *
  * Pure composition over injectable seams: `ensureRepo` (default {@link Neo.ai.services.fleet.ensureAgentRepo}),
  * `prepareWorkspace` (default {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}), and
@@ -119,9 +118,6 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @param {String}   [options.agentosRuntimeRoot] Installed AgentOS runtime root; defaults to the
  *                                                package root containing this composer.
  * @param {String}   [options.nodePath]         Node executable override for generated MCP definitions.
- * @param {Function} [options.seatExists]       `(seatHome) => Boolean` — whether a seat directory already
- *                                              exists; consulted only for a row older than the seat
- *                                              record. Defaults to `fs.existsSync`, injectable for tests.
  * @returns {Promise<Object>} the agent's lifecycle status (see `FleetLifecycleService.status`). A prepared
  *   seat's status also carries `seatInstructions`, the preparer's decision about its instructions file,
  *   so whoever starts the seat sees why it got, kept or lost one. A seat with other repositories also
@@ -130,10 +126,10 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @throws {Error} when `lifecycleService` / `agentId` is missing, the agent is unknown or has no GitHub
  *   PAT stored (refused before any checkout), `managedRoot`
  *   is absent for a repo-bearing agent, a repo-bearing raw launch override would bypass curated
- *   preparation, the managed root derives a seat home other than the recorded one or a row without a
- *   record has no seat under the current root (`FLEET_SEAT_HOME_MISMATCH` / `FLEET_SEAT_HOME_UNKNOWN`,
- *   refused before the PAT read), provisioning/preparation fails (re-thrown — no spawn), or the seat's
- *   launch authority was released while preparation ran ({@link spawnPermitted}).
+ *   preparation, the managed root derives a seat home other than the recorded one or the row records
+ *   none (`FLEET_SEAT_HOME_MISMATCH` / `FLEET_SEAT_HOME_UNBOUND`, refused before the PAT read),
+ *   provisioning/preparation fails (re-thrown — no spawn), or the seat's launch authority was released
+ *   while preparation ran ({@link spawnPermitted}).
  */
 export async function startAgentProvisioned({
     lifecycleService,
@@ -145,8 +141,7 @@ export async function startAgentProvisioned({
     tenantService = null,
     instanceRoot,
     agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT,
-    nodePath,
-    seatExists = fs.existsSync
+    nodePath
 } = {}) {
     if (!lifecycleService) throw new Error("startAgentProvisioned: 'lifecycleService' is required.");
     if (!agentId)          throw new Error("startAgentProvisioned: 'agentId' is required.");
@@ -169,9 +164,6 @@ export async function startAgentProvisioned({
         throw new Error(`startAgentProvisioned: tenant MCP agent '${agentId}' requires a managed repo.`)
     }
 
-    // `<managedRoot>/<id>`: the seat directory the registry records once the seat is materialized.
-    let seatHome = null;
-
     if (repo) {
         // The managed-workspace contract is coupled to Fleet's curated harness launch. A repo-bearing
         // raw override can execute an unrelated command and consumes no derived home/MCP artifacts,
@@ -187,13 +179,13 @@ export async function startAgentProvisioned({
             throw new Error(`startAgentProvisioned: 'agentosRuntimeRoot' must be an absolute path for agent '${agentId}'.`)
         }
 
-        // The registry remembers where this seat's files live; the agents root derives the same path at
+        // The registry names where this seat's files live; the agents root derives the same path at
         // every start. A different derivation means the root changed under a materialized seat, and
         // provisioning here would mint a second, empty seat while the real one sits untouched elsewhere
         // — refused before the PAT read and any checkout, naming the record and both ways out.
-        seatHome = path.resolve(managedRoot, agentId);
-
-        const recordedSeatHome = agent.seatHome ?? null;
+        const
+            seatHome         = path.resolve(managedRoot, agentId),
+            recordedSeatHome = agent.seatHome ?? null;
 
         if (recordedSeatHome && recordedSeatHome !== seatHome) {
             throw Object.assign(new Error(
@@ -201,14 +193,14 @@ export async function startAgentProvisioned({
             ), {code: 'FLEET_SEAT_HOME_MISMATCH', recordedSeatHome, derivedSeatHome: seatHome})
         }
 
-        // A row older than the record names no home. Latching whatever the current root derives would
-        // bless a fresh empty seat the moment the root changed, so adoption needs the seat to already
-        // exist there; otherwise the start refuses, and a deliberate bless (relocateSeatHome from
-        // nothing) is the only way to name a home the root does not derive.
-        if (!recordedSeatHome && !seatExists(seatHome)) {
+        // A row older than the record names no home. A directory under the current root carries no
+        // binding authority — the stray empty seat an earlier start minted satisfies that test as well
+        // as the real one — so nothing is adopted here: the start refuses until a deliberate act
+        // (relocateSeatHome from nothing) names the directory the seat's files live in.
+        if (!recordedSeatHome) {
             throw Object.assign(new Error(
-                `startAgentProvisioned: agent '${agentId}' was registered before Fleet recorded seat homes, and no seat exists under the current agents root at '${seatHome}'. Nothing was created. Restore the previous agents root, or bless the seat's home deliberately once its files are where they belong.`
-            ), {code: 'FLEET_SEAT_HOME_UNKNOWN', derivedSeatHome: seatHome})
+                `startAgentProvisioned: agent '${agentId}' was registered before Fleet recorded seat homes and names none; the current agents root derives '${seatHome}'. Nothing was created; bind its home deliberately (relocateSeatHome from null) to the directory its files live in, then start it again.`
+            ), {code: 'FLEET_SEAT_HOME_UNBOUND', derivedSeatHome: seatHome})
         }
     }
 
@@ -319,12 +311,6 @@ export async function startAgentProvisioned({
         prepared.targetRepoRoot !== targetRepoRoot ||
         prepared.agentosRuntimeRoot !== path.resolve(agentosRuntimeRoot)) {
         throw new Error(`startAgentProvisioned: preparation did not return the exact AgentOS runtime and target repo roots for agent '${agentId}'.`);
-    }
-
-    // First materialization, or a row that predates the record: remember where the seat lives, so a
-    // changed root is refused above from now on. An equal record is a no-op inside the registry.
-    if (!agent.seatHome) {
-        registry.recordSeatHome(agentId, seatHome)
     }
 
     if (target?.kind === 'tenant') {

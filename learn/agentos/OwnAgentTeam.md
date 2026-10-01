@@ -267,10 +267,12 @@ a fresh harness home at `<id>/harness/<type>` — and hands the process its iden
 PAT, so the old checkout's `.env` retires. Everything the harness keys by *path* stays where
 it was, and the agent would boot with an empty memory index while every file it ever wrote
 sits orphaned. The move is a copy, done before the first session, proven by a diff, and never
-a move. Fleet also records the seat's directory on its registry row the first time it
-materializes it (`seatHome`) and refuses a later start whose agents root derives a different
-path, so a changed root can never mint a second, empty seat; moving a seat later ends with
-that record rewritten (`FleetRegistryService.relocateSeatHome`), never with a fresh start.
+a move. Fleet also records the seat's directory on its registry row when it registers the
+seat (`seatHome`) and refuses a later start whose agents root derives a different path, so a
+changed root can never mint a second, empty seat; a seat registered before that record names
+none and is bound once, deliberately, to the directory its files live in, and moving a seat
+later ends with that record rewritten (`FleetRegistryService.relocateSeatHome`, compare-and-set
+from the current value — `null` for the first bind), never with a fresh start.
 
 Which files, and where they go, depends on the harness family Fleet launches — four
 families, four homes (`ai/services/fleet/deriveHarnessLaunchSpec.mjs`):
