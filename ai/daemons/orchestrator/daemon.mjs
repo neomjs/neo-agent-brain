@@ -307,8 +307,8 @@ export function assertOrchestratorPlane({aiConfig = AiConfig, rootDir = REPO_ROO
  * continuously starved plane answers `healthy` — the detector runs, the verdict is written, and
  * almost every poll misses it. Sibling of `assertOrchestratorPlane`: a config pair that cannot
  * mean what it claims is refused here, ahead of `startOrchestrator`, so a rejected launch writes no
- * state directory, no PID file and no log. ticket-ref-ok: ADR-0019 §10.8 is the authority
- * that assigns boot-time config refusal to this entrypoint rather than to a service hook.
+ * state directory, no PID file and no log. ADR-0019 [not-ticket-ref: decision-record authority]
+ * §10.8 assigns boot-time config refusal to this entrypoint rather than to a service hook.
  *
  * The shipped pair was 600,000ms restamped against a 120,000ms window — readable roughly a fifth of
  * the time, through green CI and a live plane starved for days.
@@ -395,16 +395,18 @@ export function requiresOrchestratorPlane(
  * @param {String} options.profile    Authority profile.
  * @param {Function} [options.sleep]  Injectable delay, for tests.
  * @param {Number} [options.ttlMs]    Freshness window; defaults to the authority lease TTL.
+ * @param {Function} [options.now]    Clock (epoch ms) for both claims and the wait, as the lease core takes it.
  * @returns {Promise<Object>} The acquired lease handle.
  */
 export async function acquireAuthorityLeaseSurvivingSelfSuccession({
     dir,
     profile,
     sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
-    ttlMs = AUTHORITY_LEASE_TTL_MS
+    ttlMs = AUTHORITY_LEASE_TTL_MS,
+    now   = Date.now
 }) {
     try {
-        return acquireAuthorityLease({dir, profile, ttlMs})
+        return acquireAuthorityLease({dir, profile, ttlMs, now})
     } catch (error) {
         // Only self-succession waits. Any other refusal is a genuine second claimant and must still
         // fail immediately — a blanket retry would convert every duplicate-start into a slow one.
@@ -416,7 +418,7 @@ export async function acquireAuthorityLeaseSurvivingSelfSuccession({
               // Wait out the remaining freshness window rather than a flat TTL: a predecessor that died
               // most of a window ago should cost us the remainder, not a fresh 60s.
               remaining = Number.isFinite(heldSince)
-                  ? Math.max(0, ttlMs - (Date.now() - heldSince)) + 1_000
+                  ? Math.max(0, ttlMs - (now() - heldSince)) + 1_000
                   : ttlMs + 1_000;
 
         console.warn(
@@ -437,7 +439,8 @@ export async function acquireAuthorityLeaseSurvivingSelfSuccession({
         // was computed from the injected window, so the dead-predecessor case still refused — and the
         // live-holder control passed VACUOUSLY, refusing because of the default TTL rather than because the
         // holder pulsed. One missing argument made the guard's own witness meaningless in both directions.
-        return acquireAuthorityLease({dir, profile, ttlMs})
+        // `now` is the same lesson: a clock that reaches one claim and not the other judges them apart.
+        return acquireAuthorityLease({dir, profile, ttlMs, now})
     }
 }
 
