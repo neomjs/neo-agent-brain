@@ -57,6 +57,7 @@ function makeLifecycle({
 
             return {harnessType: args.agent.harnessType, inspected: true}
         },
+        resolveResidentMcpEnvironment: () => ({}),
         start          : (id, opts) => { events?.push('start'); calls.start.push({id, opts}); return {id, running: true, state: 'running', cwd: opts?.cwd}; }
     };
 }
@@ -217,7 +218,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(events).toEqual(['credential', 'ensure', 'prepare', 'start']);
         // Runtime authority stays AgentOS-owned; the harness cwd stays the provisioned target root.
         expect(lifecycle.calls.start).toHaveLength(1);
-        expect(lifecycle.calls.start[0]).toEqual({id: 'a', opts: {cwd: '/managed/a/neomjs-neo', resolvedCredential: FIXTURE_PAT}});
+        expect(lifecycle.calls.start[0]).toEqual({id: 'a', opts: {cwd: '/managed/a/neomjs-neo', resolvedCredential: FIXTURE_PAT, resolvedResidentMcpEnv: {}}});
         expect(status.state).toBe('running');
         expect(status.cwd).toBe('/managed/a/neomjs-neo');
     });
@@ -351,6 +352,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             opts: {
                 cwd                  : '/managed/a/neomjs-neo',
                 resolvedCredential   : repositoryPat,
+                resolvedResidentMcpEnv: {},
                 resolvedMcpCredential: planePat,
                 remoteMcpCapability  : {
                     harnessType     : 'codex',
@@ -411,6 +413,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             opts: {
                 cwd                  : '/managed/a/neomjs-neo',
                 resolvedCredential   : 'ghp_seat_only',
+                resolvedResidentMcpEnv: {},
                 resolvedMcpCredential: 'glpat_plane_only',
                 remoteMcpCapability  : {
                     harnessType     : 'codex',

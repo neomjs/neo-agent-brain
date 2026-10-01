@@ -6,6 +6,27 @@ import {LAUNCHABLE_HARNESS_TYPES}      from './deriveHarnessLaunchSpec.mjs';
 
 const NEO_MCP_NAME_PREFIX = 'neo-mjs-';
 
+// MC/KB consume these production endpoint/collection coordinates. Test-mode switches belong
+// to a disposable test process, not a production seat's inherited capability envelope.
+const PLANE_CLIENT_RUNTIME_ENV = Object.freeze([
+    'NEO_CHROMA_HOST', 'NEO_CHROMA_PORT', 'NEO_CHROMA_DATABASE', 'NEO_VECTOR_DIMENSION'
+]);
+const PROVIDER_CREDENTIAL_ENV = Object.freeze({
+    gemini: 'GEMINI_API_KEY', openAiCompatible: 'NEO_OPENAI_COMPATIBLE_API_KEY'
+});
+const MEMORY_RUNTIME_ENV_BEFORE_PLACEMENT = Object.freeze([
+    'NEO_AGENT_IDENTITY', 'NEO_CHROMA_EMBEDDING_PROVIDER', 'NEO_CHROMA_UNIFIED',
+    'NEO_EMBEDDING_PROVIDER', 'NEO_MEM_AUTO_START_DATABASE', 'NEO_MEM_AUTO_START_INFERENCE',
+    'NEO_MODEL_PROVIDER', 'NEO_OPENAI_COMPATIBLE_API_KEY', 'NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL',
+    'NEO_OPENAI_COMPATIBLE_HOST', 'NEO_OPENAI_COMPATIBLE_MODEL'
+]);
+const KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT = Object.freeze([
+    'NEO_AGENT_IDENTITY', 'NEO_CHROMA_EMBEDDING_PROVIDER', 'NEO_CHROMA_UNIFIED',
+    'NEO_EMBEDDING_PROVIDER', 'NEO_KB_ASK_API_KEY', 'NEO_KB_AUTO_START_DATABASE',
+    'NEO_OPENAI_COMPATIBLE_API_KEY', 'NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL',
+    'NEO_OPENAI_COMPATIBLE_HOST', 'NEO_OPENAI_COMPATIBLE_MODEL'
+]);
+
 /**
  * @summary Curated, installed-checkout-relative MCP execution vocabulary. The Body-safe catalog remains the
  * durable key/default authority; this pure sibling adds no host binding, environment read, command,
@@ -16,35 +37,16 @@ const NEO_MCP_NAME_PREFIX = 'neo-mjs-';
 export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
     'memory-core': Object.freeze({
         entrypoint: 'ai/mcp/server/memory-core/mcp-server.mjs',
-        runtimeEnv: Object.freeze([
-            'NEO_AGENT_IDENTITY',
-            'NEO_CHROMA_EMBEDDING_PROVIDER',
-            'NEO_CHROMA_UNIFIED',
-            'NEO_EMBEDDING_PROVIDER',
-            'NEO_MEM_AUTO_START_DATABASE',
-            'NEO_MEM_AUTO_START_INFERENCE',
-            'NEO_MODEL_PROVIDER',
-            'NEO_OPENAI_COMPATIBLE_API_KEY',
-            'NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL',
-            'NEO_OPENAI_COMPATIBLE_HOST',
-            'NEO_OPENAI_COMPATIBLE_MODEL'
-        ]),
+        runtimeEnv: Object.freeze([...MEMORY_RUNTIME_ENV_BEFORE_PLACEMENT, ...PLANE_CLIENT_RUNTIME_ENV, 'GEMINI_API_KEY']),
+        legacyRuntimeEnv: MEMORY_RUNTIME_ENV_BEFORE_PLACEMENT,
+        providerCredentialEnv: PROVIDER_CREDENTIAL_ENV,
         requiredRuntimeEnv: Object.freeze(['NEO_AGENT_IDENTITY'])
     }),
     'knowledge-base': Object.freeze({
         entrypoint: 'ai/mcp/server/knowledge-base/mcp-server.mjs',
-        runtimeEnv: Object.freeze([
-            'NEO_AGENT_IDENTITY',
-            'NEO_CHROMA_EMBEDDING_PROVIDER',
-            'NEO_CHROMA_UNIFIED',
-            'NEO_EMBEDDING_PROVIDER',
-            'NEO_KB_ASK_API_KEY',
-            'NEO_KB_AUTO_START_DATABASE',
-            'NEO_OPENAI_COMPATIBLE_API_KEY',
-            'NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL',
-            'NEO_OPENAI_COMPATIBLE_HOST',
-            'NEO_OPENAI_COMPATIBLE_MODEL'
-        ]),
+        runtimeEnv: Object.freeze([...KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT, ...PLANE_CLIENT_RUNTIME_ENV, 'GEMINI_API_KEY']),
+        legacyRuntimeEnv: KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT,
+        providerCredentialEnv: PROVIDER_CREDENTIAL_ENV,
         requiredRuntimeEnv: Object.freeze(['NEO_AGENT_IDENTITY'])
     }),
     'neural-link': Object.freeze({
@@ -300,17 +302,6 @@ export function mcpDeclarationRefusal({harnessType, mcpMatrix, tenant=false}) {
 
     if (unsupported) {
         return `MCP server '${unsupported}' is enabled but unsupported: ${MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[unsupported].unsupportedReason}`
-    }
-
-    if (harnessType === 'claude-desktop') {
-        const secretServer = enabled.find(key => {
-            const {requiredRuntimeEnv, secretEnv=[]} = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
-            return requiredRuntimeEnv.some(name => secretEnv.includes(name))
-        });
-
-        if (secretServer) {
-            return `Claude Desktop cannot represent startup-required Fleet secret env for enabled MCP server '${secretServer}' without persisting secret bytes.`
-        }
     }
 
     return null

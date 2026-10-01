@@ -2,6 +2,7 @@ import {constants as fsConstants}                  from 'node:fs';
 import fs                                          from 'node:fs/promises';
 import {writeFileAtomic}                           from '../shared/atomicFileWrite.mjs';
 import path                                        from 'node:path';
+import os                                          from 'node:os';
 import crypto                                      from 'node:crypto';
 import {isDeepStrictEqual}                         from 'node:util';
 import {parse as parseToml}                        from 'smol-toml';
@@ -212,10 +213,11 @@ function validateManagedAgentWorkspacePlan(plan) {
  * @param {String} options.agentosRuntimeRoot
  * @param {String} options.nodePath
  * @param {Object} options.runtime Host runtime facts.
+ * @param {Object} options.residentMcpEnv Per-server resolved child environment; only slot names are rendered.
  * @returns {Object[]}
  * @private
  */
-function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePath, runtime}) {
+function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePath, runtime, residentMcpEnv}) {
     const environment = deriveNodeRuntimeEnv(nodePath, runtime);
 
     return logicalPlan.mcpServers.map(server => ({
@@ -227,8 +229,8 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
             path.join(agentosRuntimeRoot, server.entrypoint),
             ...(server.key === 'neural-link' ? ['--cwd', agentosRuntimeRoot] : [])
         ],
-        runtimeEnv        : [...server.runtimeEnv],
-        requiredRuntimeEnv: [...server.requiredRuntimeEnv],
+        runtimeEnv        : [...new Set([...server.runtimeEnv, ...Object.keys(residentMcpEnv[server.key] || {})])],
+        requiredRuntimeEnv: [...new Set([...server.requiredRuntimeEnv, ...Object.keys(residentMcpEnv[server.key] || {})])],
         secretEnv         : [...server.secretEnv],
         unsupportedReason : MCP_SERVER_DESCRIPTORS[server.key].unsupportedReason || null
     }))
@@ -257,6 +259,8 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {String} options.agentosRuntimeRoot Installed AgentOS runtime root.
  * @param {String} [options.nodePath] Node executable used for installed MCP entrypoints.
  * @param {Object} [options.runtime=process] Host runtime facts for child execution mode.
+ * @param {String} [options.claudeConfigRoot] Claude Desktop's shared Code-tab config root (host home by default).
+ * @param {Object} [options.residentMcpEnv] Per-server resolved child environment supplied at Start.
  * @param {Object} [options.remoteMcpCapability] Existing non-secret installed-adapter proof.
  * @param {Function} [options.hydrateWorkspace] Import-safe checkout hydration seam.
  * @param {Function} [options.deriveInstanceHome] Per-agent home derivation seam.
@@ -285,7 +289,7 @@ export async function applyManagedAgentWorkspacePlan(options={}) {
     }
 }
 
-/** @private */
+/** @summary Apply validated host bindings, preserving only name references in artifacts. @private */
 async function applyManagedAgentWorkspacePlanUnchecked({
     plan: inputPlan,
     targetRepoRoot,
@@ -294,6 +298,8 @@ async function applyManagedAgentWorkspacePlanUnchecked({
     agentosRuntimeRoot,
     nodePath = process.execPath,
     runtime = process,
+    claudeConfigRoot = os.homedir(),
+    residentMcpEnv = {},
     remoteMcpCapability = null,
     hydrateWorkspace = hydrateCurrentWorktree,
     deriveInstanceHome = deriveAgentInstanceHome,
@@ -321,18 +327,17 @@ async function applyManagedAgentWorkspacePlanUnchecked({
             logicalPlan,
             agentosRuntimeRoot: canonicalAgentosRuntimeRoot,
             nodePath,
-            runtime
+            runtime,
+            residentMcpEnv
         });
 
     assertAbsolutePath(instanceHome, 'instanceHome');
-    await assertRemoteBridgeCapability({
-        agent,
-        plan,
-        capability        : remoteMcpCapability,
-        agentosRuntimeRoot: canonicalAgentosRuntimeRoot,
-        nodePath,
-        fileSystem
-    });
+    if (agent.harnessType === 'claude-desktop') assertAbsolutePath(claudeConfigRoot, 'claudeConfigRoot');
+    for (const server of plan.filter(row => row.enabled && row.transport === 'stdio')) {
+        if (!path.isAbsolute(residentMcpEnv[server.key]?.NEO_PLANE_DATA_ROOT || '')) {
+            throw unsupported(`resident '${server.key}' needs a resolved plane environment before preparation`)
+        }
+    }
     await assertNoSymlinkSegments({
         rootPath  : canonicalInstanceRoot,
         targetPath: instanceHome,
@@ -362,6 +367,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         agentosRuntimeRoot: canonicalAgentosRuntimeRoot,
         plan,
         remoteMcpCapability,
+        claudeConfigRoot,
         fileSystem
     });
 
@@ -417,10 +423,9 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * hydrated for resident workspace tooling; no resident dependency artifact is created or adopted.
  *
  * Product adapters are evidence-gated. Codex uses project TOML plus an isolated home; Claude Code
- * uses an explicit strict MCP JSON with environment-variable references; Claude Desktop uses its
- * exact `CLAUDE_USER_DATA_DIR` profile file but refuses any enabled server whose startup requires a
- * dynamic secret that cannot be represented without writing the secret. Optional secrets remain
- * child-environment capabilities, not persisted config. Antigravity refuses until a contained
+ * uses an explicit strict MCP JSON with environment-variable references; Claude Desktop uses the
+ * Code-tab local scope keyed by the managed clone's real cwd, with all child capabilities by reference.
+ * Its isolated Desktop profile retires the old Fleet rows. Antigravity refuses until a contained
  * per-resident MCP authority is proven.
  *
  * @param {Object}   options
@@ -437,6 +442,8 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * @param {Function}[options.deriveInstanceHome]  Per-agent home derivation seam.
  * @param {Function}[options.resolveMatrix]       Sparse-at-rest MCP resolver seam.
  * @param {Object}  [options.runtime=process]     Host runtime facts for child execution mode.
+ * @param {String}  [options.claudeConfigRoot]    Claude Desktop's shared Code-tab config root.
+ * @param {Object}  [options.residentMcpEnv]      Per-server resolved child environment supplied at Start.
  * @param {Object}  [options.fileSystem]          Promise filesystem seam.
  * @param {Function}[options.log]                 Hydration logger.
  * @returns {Promise<{agentosRuntimeRoot: String, targetRepoRoot: String, instanceHome: String, mcpMatrix: Object, mcpPlan: Object[], hydration: Object, artifacts: Object[], seatInstructions: Object}>}
@@ -452,6 +459,8 @@ export async function prepareManagedAgentWorkspace({
     agentosRuntimeRoot,
     nodePath = process.execPath,
     runtime = process,
+    claudeConfigRoot = os.homedir(),
+    residentMcpEnv = {},
     hydrateWorkspace = hydrateCurrentWorktree,
     deriveInstanceHome = deriveAgentInstanceHome,
     resolveMatrix = resolveMcpMatrix,
@@ -490,6 +499,8 @@ export async function prepareManagedAgentWorkspace({
         agentosRuntimeRoot,
         nodePath,
         runtime,
+        claudeConfigRoot,
+        residentMcpEnv,
         remoteMcpCapability,
         hydrateWorkspace,
         deriveInstanceHome,
@@ -579,53 +590,6 @@ function isPortableAbsolutePath(value) {
     return path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value)
 }
 
-/**
- * @summary Revalidate Claude Desktop's exact installed Neo bridge before hydration. The lifecycle
- * performs the same gate before checkout provisioning; this local check prevents direct composer
- * callers from manufacturing a structurally plausible proof over missing or drifted bytes.
- * @param {Object} options
- * @param {Object} options.agent
- * @param {Object[]} options.plan
- * @param {Object|null} options.capability
- * @param {String} options.agentosRuntimeRoot
- * @param {String} options.nodePath
- * @param {Object} options.fileSystem
- * @returns {Promise<void>}
- * @private
- */
-async function assertRemoteBridgeCapability({agent, plan, capability, agentosRuntimeRoot, nodePath, fileSystem}) {
-    if (agent.harnessType !== 'claude-desktop' ||
-        !plan.some(server => server.enabled && server.target === 'tenant')) {
-        return
-    }
-
-    const
-        bridge             = capability?.bridge,
-        expectedEntrypoint = path.join(agentosRuntimeRoot, 'ai/mcp/client/stdioToStreamableHttp.mjs');
-
-    if (capability?.harnessType !== 'claude-desktop' ||
-        !bridge ||
-        bridge.kind !== 'neo-stdio-streamable-http' ||
-        bridge.command !== nodePath ||
-        bridge.entrypoint !== expectedEntrypoint) {
-        throw unsupported('Claude Desktop remote MCP requires the exact installed Neo bridge capability proof')
-    }
-
-    const
-        nodeStat   = await fileSystem.stat(nodePath).catch(() => null),
-        bridgeStat = await fileSystem.lstat(expectedEntrypoint).catch(() => null);
-
-    if (!nodeStat?.isFile() || !bridgeStat?.isFile()) {
-        throw unsupported('Claude Desktop bridge Node command or installed entrypoint is absent')
-    }
-
-    try {
-        await fileSystem.access(nodePath, fsConstants.X_OK);
-        await fileSystem.access(expectedEntrypoint, fsConstants.R_OK)
-    } catch {
-        throw unsupported('Claude Desktop bridge Node command or installed entrypoint is inaccessible')
-    }
-}
 
 /** @private */
 async function assertRealDirectory(directoryPath, label, fileSystem) {
@@ -703,7 +667,7 @@ async function assertNoSymlinkSegments({rootPath, targetPath, fileSystem, label}
     }
 }
 
-/** @private */
+/** @summary Converge the selected harness's owned workspace and MCP carrier. @private */
 async function prepareHarnessArtifacts({
     agent,
     targetRepoRoot,
@@ -711,6 +675,7 @@ async function prepareHarnessArtifacts({
     agentosRuntimeRoot,
     plan,
     remoteMcpCapability,
+    claudeConfigRoot,
     fileSystem
 }) {
     switch (agent.harnessType) {
@@ -732,15 +697,7 @@ async function prepareHarnessArtifacts({
                 interpolateEnv: true
             });
         case 'claude-desktop':
-            return prepareClaudeJsonArtifact({
-                agent,
-                filePath      : path.join(instanceHome, 'claude_desktop_config.json'),
-                trustedRoot   : instanceHome,
-                plan,
-                remoteMcpCapability,
-                fileSystem,
-                interpolateEnv: false
-            });
+            return prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem});
         default:
             throw unsupported(`harness '${agent.harnessType}' has no workspace adapter`);
     }
@@ -1014,6 +971,7 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
         filePath                 : projectPath,
         desiredContent           : contextSeed + renderCodexProjectConfig(plan),
         legacyContent,
+        placementLegacyContent   : renderCodexProjectConfig(previousPlacementPlan(plan)),
         runtimeLegacyContent     : runtimePrevious && renderCodexProjectConfig(runtimePrevious),
         runtimeLegacyStdioContent: runtimePrevious && renderCodexProjectConfig(localizePlan(runtimePrevious)),
         ownedProjection          : projectCodexOwnedProjection,
@@ -1123,7 +1081,7 @@ async function prepareClaudeJsonArtifact({
 }) {
     const
         runtimePrevious = previousNodeRuntimePlan(plan),
-        renderPrevious  = previous => renderClaudeJsonContent({agent, plan: previous, remoteMcpCapability, interpolateEnv}),
+        renderPrevious  = previous => renderClaudeJsonContent({agent, plan: previousPlacementPlan(previous), remoteMcpCapability, interpolateEnv, placement: false}),
         desiredContent  = renderClaudeJsonContent({
             agent,
             plan,
@@ -1143,6 +1101,7 @@ async function prepareClaudeJsonArtifact({
         filePath,
         desiredContent,
         legacyContent,
+        placementLegacyContent   : [renderPrevious(plan), runtimePrevious && renderClaudeJsonContent({agent, plan: runtimePrevious, interpolateEnv})].filter(Boolean),
         runtimeLegacyContent     : runtimePrevious && renderPrevious(runtimePrevious),
         runtimeLegacyStdioContent: runtimePrevious && renderPrevious(localizePlan(runtimePrevious)),
         ownedProjection          : claudeJsonOwnedProjection,
@@ -1157,23 +1116,23 @@ async function prepareClaudeJsonArtifact({
 }
 
 /**
- * @summary Render Claude-family MCP JSON. Claude Desktop receives Neo's local command bridge for
- * remote rows; direct-HTTP-capable Claude Code receives native HTTP entries.
+ * @summary Render Claude Code MCP JSON with native HTTP and stdio env references. The exact prior
+ * Desktop shape is retained only to recognize and retire Fleet's old profile rows.
  * @private
  */
-function renderClaudeJsonContent({agent, plan, remoteMcpCapability, interpolateEnv}) {
+function renderClaudeJsonContent({agent, plan, interpolateEnv, legacyDesktop = false, placement = true}) {
     const servers = {};
 
     for (const server of plan) {
         if (!server.enabled) continue;
 
         if (server.transport === 'streamable-http') {
-            if (agent.harnessType === 'claude-desktop') {
+            if (legacyDesktop) {
                 servers[server.name] = {
-                    command: remoteMcpCapability.bridge.command,
+                    command: server.command,
                     ...(server.environment ? {env: {...server.environment}} : {}),
                     args   : [
-                        remoteMcpCapability.bridge.entrypoint,
+                        path.join(server.sourceRoot, 'ai/mcp/client/stdioToStreamableHttp.mjs'),
                         '--url',
                         server.url,
                         '--token-env',
@@ -1193,12 +1152,13 @@ function renderClaudeJsonContent({agent, plan, remoteMcpCapability, interpolateE
         const
             env      = {...server.environment},
             envNames = interpolateEnv
-                ? new Set([...server.requiredRuntimeEnv, ...server.secretEnv])
+                ? new Set(placement ? server.runtimeEnv : [...server.requiredRuntimeEnv, ...server.secretEnv])
                 : server.requiredRuntimeEnv;
 
         for (const name of envNames) {
             if (interpolateEnv) {
-                env[name] = `\${${name}}`;
+                const required = server.requiredRuntimeEnv.includes(name) || server.secretEnv.includes(name);
+                env[name] = `\${${name}${placement && !required ? ':-' : ''}}`;
             } else if (name === 'NEO_AGENT_IDENTITY') {
                 env[name] = agent.id;
             } else {
@@ -1210,6 +1170,108 @@ function renderClaudeJsonContent({agent, plan, remoteMcpCapability, interpolateE
     }
 
     return JSON.stringify({mcpServers: servers}, null, 2) + '\n'
+}
+
+/**
+ * @summary Move the managed Desktop seat's MCP projection into its Code-tab local project scope.
+ * Retire only exact legacy Fleet rows; divergent rows refuse before touching the shared file.
+ * @param {Object} options Explicit host roots and name-only bound plan.
+ * @returns {Promise<Object[]>} Carrier and profile convergence observations.
+ * @private
+ */
+async function prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem}) {
+    targetRepoRoot = await fileSystem.realpath(targetRepoRoot);
+    const desktopPath = path.join(instanceHome, 'claude_desktop_config.json');
+    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: desktopPath, fileSystem, label: 'Desktop MCP retirement'});
+    const desktopSource = await fileSystem.readFile(desktopPath, 'utf8').catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error
+    });
+    const actual = desktopSource === null ? {} : claudeJsonOwnedProjection(desktopSource);
+    if (Object.keys(actual).length) {
+        const legacyPlan = previousPlacementPlan(plan).map(server => ({...server, enabled: server.enabled &&
+            !server.requiredRuntimeEnv.some(name => server.secretEnv.includes(name))}));
+        const candidates = [legacyPlan, localizePlan(legacyPlan)];
+        const previous   = previousNodeRuntimePlan(legacyPlan);
+        if (previous) candidates.push(previous, localizePlan(previous));
+        if (!candidates.some(candidate => isDeepStrictEqual(actual, claudeJsonOwnedProjection(renderClaudeJsonContent({
+            agent, plan: candidate, interpolateEnv: false, legacyDesktop: true
+        }))))) throw divergentArtifact(desktopPath, 'Desktop MCP retirement', 'not an exact prior Fleet projection');
+    }
+    const local  = await convergeClaudeLocalScope({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem});
+    let   status = WORKSPACE_ARTIFACT_STATES.MATCH;
+    if (desktopSource === null) {
+        await fileSystem.mkdir(instanceHome, {recursive: true});
+        await fileSystem.writeFile(desktopPath, '{"mcpServers":{}}\n', {flag: 'wx', mode: 0o600});
+        status = WORKSPACE_ARTIFACT_STATES.CREATED
+    } else if (Object.keys(actual).length) {
+        if (await fileSystem.readFile(desktopPath, 'utf8') !== desktopSource) {
+            throw divergentArtifact(desktopPath, 'Desktop MCP retirement', 'changed during preparation')
+        }
+        const parsed = JSON.parse(desktopSource);
+        for (const key of Object.keys(parsed.mcpServers)) if (key.startsWith(NEO_MCP_NAME_PREFIX)) delete parsed.mcpServers[key];
+        await publishTextAtomically({filePath: desktopPath, content: JSON.stringify(parsed, null, 2) + '\n', fileSystem});
+        status = WORKSPACE_ARTIFACT_STATES.UPDATED
+    }
+    return [local, {path: desktopPath, status, ownedKeys: 'mcpServers.neo-mjs-* retired'}]
+}
+
+/**
+ * @summary Own only neo-mjs rows under the managed clone in the shared Claude config. A projection
+ * receipt admits later plan transitions while foreign projects, trust and toggles remain resident-owned.
+ * Back up changed bytes and refuse an observed concurrent rewrite rather than overwriting it.
+ * @param {Object} options Explicit clone, profile, config root and bound plan.
+ * @returns {Promise<Object>} Local-scope convergence observation.
+ * @private
+ */
+async function convergeClaudeLocalScope({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem}) {
+    const filePath    = path.join(claudeConfigRoot, '.claude.json');
+    const receiptPath = path.join(instanceHome, '.neo-fleet-claude-project.json');
+    const ownedLabel  = 'projects.<managed-clone>.mcpServers.neo-mjs-*';
+    await assertNoSymlinkSegments({rootPath: claudeConfigRoot, targetPath: filePath, fileSystem, label: ownedLabel});
+    const readSource = () => fileSystem.readFile(filePath, 'utf8').catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error
+    });
+    const source = await readSource();
+    let parsed;
+    try {
+        parsed = source === null ? {} : JSON.parse(source);
+        for (const value of [parsed, parsed.projects, parsed.projects?.[targetRepoRoot], parsed.projects?.[targetRepoRoot]?.mcpServers]) {
+            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError();
+        }
+    } catch {
+        throw divergentArtifact(filePath, ownedLabel, 'invalid Claude local config')
+    }
+    const actual        = claudeJsonOwnedProjection(JSON.stringify(parsed.projects?.[targetRepoRoot] || {}));
+    const desiredSource = renderClaudeJsonContent({agent, plan, interpolateEnv: true});
+    const desired       = claudeJsonOwnedProjection(desiredSource);
+    const recorded      = await readContentReceipt({receiptPath, filePath, trustedRoot: instanceHome, fileSystem});
+    const matches       = isDeepStrictEqual(actual, desired);
+    if (!matches && Object.keys(actual).length && recorded !== hashContent(JSON.stringify(actual))) {
+        throw divergentArtifact(filePath, ownedLabel, 'Fleet-owned project rows differ from their receipt')
+    }
+    let status = WORKSPACE_ARTIFACT_STATES.MATCH;
+    if (!matches || source === null) {
+        const project = (parsed.projects ??= {})[targetRepoRoot] ??= {};
+        const rows    = project.mcpServers ??= {};
+        for (const name of Object.keys(rows)) if (name.startsWith(NEO_MCP_NAME_PREFIX)) delete rows[name];
+        Object.assign(rows, JSON.parse(desiredSource).mcpServers);
+        await fileSystem.mkdir(claudeConfigRoot, {recursive: true});
+        if (source !== null) {
+            const backup = path.join(instanceHome, '.neo-fleet-claude-backup.json');
+            await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: backup, fileSystem, label: 'Claude config backup'});
+            await fileSystem.mkdir(instanceHome, {recursive: true});
+            await publishTextAtomically({filePath: backup, content: source, fileSystem});
+        }
+        if (await readSource() !== source) throw divergentArtifact(filePath, ownedLabel, 'changed during preparation; retry after the config writer settles');
+        const content = JSON.stringify(parsed, null, 2) + '\n';
+        if (source === null) await fileSystem.writeFile(filePath, content, {flag: 'wx', mode: 0o600});
+        else await publishTextAtomically({filePath, content, fileSystem});
+        status = source === null ? WORKSPACE_ARTIFACT_STATES.CREATED : WORKSPACE_ARTIFACT_STATES.UPDATED
+    }
+    await writeContentReceipt({receiptPath, filePath, content: JSON.stringify(desired), trustedRoot: instanceHome, fileSystem});
+    return {path: filePath, status, ownedKeys: ownedLabel}
 }
 
 /**
@@ -1933,6 +1995,20 @@ function previousNodeRuntimePlan(plan) {
         : null;
 }
 
+/**
+ * @summary Exact pre-placement slot vocabulary for upgrading only an untouched Fleet projection.
+ * Descriptor history is bounded here; unrelated operator edits remain a divergence.
+ * @param {Object[]} plan Bound current plan.
+ * @returns {Object[]} Prior generated plan.
+ * @private
+ */
+function previousPlacementPlan(plan) {
+    return plan.map(server => ({...server,
+        runtimeEnv: [...(MCP_SERVER_DESCRIPTORS[server.key].legacyRuntimeEnv || MCP_SERVER_DESCRIPTORS[server.key].runtimeEnv)],
+        requiredRuntimeEnv: [...MCP_SERVER_DESCRIPTORS[server.key].requiredRuntimeEnv]
+    }))
+}
+
 /** @private */
 function localizePlan(plan) {
     return plan.map(server => server.target === 'tenant'
@@ -1964,6 +2040,7 @@ async function convergeTransportArtifact({
     legacyContent,
     runtimeLegacyContent,
     runtimeLegacyStdioContent,
+    placementLegacyContent,
     ownedProjection,
     mergeTransport,
     adapter,
@@ -1979,6 +2056,7 @@ async function convergeTransportArtifact({
         receiptPath          = path.join(instanceHome, TRANSPORT_RECEIPT_FILE),
         desired              = splitTransportProjection(ownedProjection(desiredContent)),
         legacy               = splitTransportProjection(ownedProjection(legacyContent)),
+        placementPrevious    = [].concat(placementLegacyContent || []).map(content => splitTransportProjection(ownedProjection(content))),
         runtimePrevious      = runtimeLegacyContent && splitTransportProjection(ownedProjection(runtimeLegacyContent)),
         runtimePreviousStdio = runtimeLegacyStdioContent && splitTransportProjection(ownedProjection(runtimeLegacyStdioContent));
     let existing;
@@ -1998,8 +2076,8 @@ async function convergeTransportArtifact({
 
     const actual         = splitTransportProjection(ownedProjection(existing));
     const runtimeUpgrade = JSON.stringify(actual.other) !== JSON.stringify(desired.other)
-        && runtimePrevious && !runtimePrevious.invalid
-        && JSON.stringify(actual.other) === JSON.stringify(runtimePrevious.other);
+        && [runtimePrevious, ...placementPrevious].some(previous => previous && !previous.invalid
+            && JSON.stringify(actual.other) === JSON.stringify(previous.other));
 
     if (actual.invalid || desired.invalid || legacy.invalid ||
         (!runtimeUpgrade && JSON.stringify(actual.other) !== JSON.stringify(desired.other))) {
@@ -2013,6 +2091,8 @@ async function convergeTransportArtifact({
         const authorized = receipt
             ? receipt.projectionSha256 === hashProjection(actual.transport)
             : JSON.stringify(actual.transport) === JSON.stringify(legacy.transport)
+                || placementPrevious.some(previous => !previous.invalid
+                    && JSON.stringify(actual.transport) === JSON.stringify(previous.transport))
                 || (runtimePreviousStdio && !runtimePreviousStdio.invalid
                     && JSON.stringify(actual.transport) === JSON.stringify(runtimePreviousStdio.transport));
 

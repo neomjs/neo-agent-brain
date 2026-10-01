@@ -360,4 +360,30 @@ test.describe('Neo.ai.ConfigProvider (data + afterSetData seam + leaf() factory)
             child.destroy()
         }
     });
+
+    test('child-process export reads selected resolved leaves and inherited placement, excluding unrelated secrets', () => {
+        const root = Neo.create(ConfigProvider, {data: {
+            plane          : {dataRoot: leaf('/tmp/placed', 'NEO_TEST_PLANE_ROOT')},
+            graph          : leaf('/tmp/placed/graph', 'NEO_TEST_GRAPH', 'string', {planeMember: true}),
+            debug          : leaf(false, 'NEO_TEST_DEBUG', 'boolean'),
+            unrelatedSecret: leaf('not-for-this-child', 'NEO_TEST_OTHER_SECRET')
+        }});
+        const child        = Neo.create(ConfigProvider, {data: {names: leaf(['a', 'b'], 'NEO_TEST_NAMES', 'csv')}});
+        const previousRoot = Neo.ai.Config;
+        Neo.ai.Config = root;
+        try {
+            root.setData('debug', true);
+            const exported = child.exportEnv({envNames: ['NEO_TEST_DEBUG', 'NEO_TEST_NAMES'], includePlaneMembers: true});
+            expect(exported).toEqual({
+                NEO_TEST_NAMES: 'a,b', NEO_TEST_PLANE_ROOT: '/tmp/placed',
+                NEO_TEST_GRAPH: '/tmp/placed/graph', NEO_TEST_DEBUG: 'true'
+            });
+            expect(JSON.stringify(exported)).not.toContain('not-for-this-child');
+            root.setData('plane.dataRoot', '/tmp/retuned');
+            expect(child.exportEnv({includePlaneMembers: true}).NEO_TEST_PLANE_ROOT).toBe('/tmp/retuned');
+        } finally {
+            Neo.ai.Config = previousRoot;
+            child.destroy(); root.destroy();
+        }
+    });
 });

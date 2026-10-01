@@ -133,10 +133,53 @@ export function resolvePlaneDataRoot({rootDir} = {}) {
  * @returns {String}
  */
 function realpathOrResolve(p) {
-    try {
-        return fs.realpathSync(p)
-    } catch {
-        return path.resolve(p)
+    let   current = path.resolve(p);
+    const suffix  = [];
+    for (;;) {
+        try {
+            return path.join(fs.realpathSync(current), ...suffix)
+        } catch (error) {
+            if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+            const parent = path.dirname(current);
+            if (parent === current) return path.resolve(p);
+            suffix.unshift(path.basename(current));
+            current = parent
+        }
+    }
+}
+
+/**
+ * @summary Refuses resolved plane storage inside an app bundle, including not-yet-created paths
+ * through symlinked ancestors. Config construction also checks the nearest existing parent is
+ * writable, before any logging or persistence consumer can run. Module anchors remain pure.
+ * @param {String} dataRoot Resolved placement, never the unresolved default anchor.
+ * @param {Object} [options]
+ * @param {Boolean} [options.requireWritable=false] Check actual host write permission at boot.
+ * @param {Function} [options.realpathFn] Injectable path-identity resolver.
+ * @returns {void}
+ */
+export function assertPlaneDataRootPlacement(dataRoot, {requireWritable = false, realpathFn = realpathOrResolve} = {}) {
+    if (typeof dataRoot !== 'string' || !path.isAbsolute(dataRoot)) {
+        throw new Error(`planeConfig: plane dataRoot "${dataRoot}" must be absolute.`)
+    }
+    if (/(?:^|\/)[^/]+\.app(?:\/|$)/i.test(realpathFn(dataRoot))) {
+        throw new Error('planeConfig: plane dataRoot is inside an application bundle; place the plane outside the install root.')
+    }
+    if (!requireWritable) return;
+
+    let parent = dataRoot;
+    for (;;) {
+        try {
+            fs.accessSync(parent, fs.constants.W_OK);
+            return
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                throw new Error(`planeConfig: plane dataRoot has a read-only or inaccessible install root at "${parent}"; place the plane in writable storage.`)
+            }
+            const next = path.dirname(parent);
+            if (next === parent) throw error;
+            parent = next
+        }
     }
 }
 
@@ -206,6 +249,8 @@ export function assertPlaneCoherence({planeId, dataRoot, canonicalDataRoot, cano
         );
     }
 
+    assertPlaneDataRootPlacement(dataRoot, {realpathFn});
+
     if (planeId !== canonicalPlaneId && canonicalDataRoot &&
         realpathFn(dataRoot) === realpathFn(canonicalDataRoot)) {
         throw new Error(
@@ -265,8 +310,6 @@ export function collectPlaneMembers({memberPaths, resolvedConfig, descriptorData
  *   list) can no longer pass silently, which is the omission class a real instance first confirmed
  *   (the graph SQLite leaf in the memory-core copy — the plane's core artifact with a plane-anchored
  *   default and no declared membership) and the pinned `toBe(N)` census could never see.
- *   ticket-ref-ok: #15872 is the omission instance the mechanism exists to catch — the check's
- *   empirical anchor, named because the motivation lives in the proof, not the number.
  *
  * A leaf-shaped node owns all four descriptor keys (`default`, `env`, `type`, `parse`) — the
  * `leaf()` signature in `ConfigProvider.mjs` — which is what distinguishes a descriptor from

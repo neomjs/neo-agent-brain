@@ -1,7 +1,8 @@
-import fs       from 'fs/promises';
-import path     from 'path';
-import Env      from './Env.mjs';
-import Provider from 'neo.mjs/src/state/Provider.mjs';
+import fs                             from 'fs/promises';
+import path                           from 'path';
+import Env                            from './Env.mjs';
+import Provider                       from 'neo.mjs/src/state/Provider.mjs';
+import {assertPlaneDataRootPlacement} from './planeConfig.mjs';
 
 /**
  * Maps a {@link leaf} `type` token to the name-based `Neo.ai.Env` parser that decodes its env
@@ -173,7 +174,7 @@ class ConfigProvider extends Provider {
     #dataObserveCleanups = []
 
     /**
-     * Compiles a meta-leaf tree into plain data plus a leaf-metadata registry. A leaf is any
+     * @summary Compiles a meta-leaf tree into plain data plus a leaf-metadata registry. A leaf is any
      * object owning a `default` key; every other object is a namespace, walked recursively.
      * Does not apply env values — see {@link #applyEnvLayer}.
      * @param {Object} tree
@@ -198,6 +199,7 @@ class ConfigProvider extends Provider {
                         env        : value.env         ?? null,
                         parse      : value.parse       ?? null,
                         requiredFor: value.requiredFor ?? null,
+                        planeMember: value.planeMember ?? null,
                         // Guard inference: Neo.typeOf is undefined for objects with an own `constructor` key.
                         type : value.type  ?? (value.default == null
                             ? null
@@ -298,10 +300,12 @@ class ConfigProvider extends Provider {
     }
 
     /**
-     * The compile seam. A subclass assigns its meta-leaf tree to `data`; this override compiles it
+     * @summary The compile seam. A subclass assigns its meta-leaf tree to `data`; this override compiles it
      * into plain data + the leaf-metadata registry, forwards the plain data to the Provider's
      * reactive pipeline (`processDataObject`), then applies the env layer. Fires at construction
-     * (when the `data` config is applied) and on any later `data` reassignment.
+     * (when the `data` config is applied) and on any later `data` reassignment. A provider declaring
+     * the plane anchor asserts its resolved placement before logging/persistence can import it;
+     * both delta and legacy snapshot overlays inherit this guard.
      * @param {Object|null} value    The assigned meta-leaf tree.
      * @param {Object|null} oldValue
      */
@@ -314,7 +318,10 @@ class ConfigProvider extends Provider {
 
         this.#leafMetadataRegistry = registry;
         super.afterSetData(plainData, oldValue);
-        this.#applyEnvLayer()
+        this.#applyEnvLayer();
+        if (registry.has('plane.dataRoot')) {
+            assertPlaneDataRootPlacement(this.getData('plane.dataRoot'), {requireWritable: true})
+        }
     }
 
     /**
@@ -359,6 +366,39 @@ class ConfigProvider extends Provider {
      */
     refreshEnv() {
         this.#applyEnvLayer()
+    }
+
+    /**
+     * @summary Serialize selected resolved leaves for a child process, using their declaring env
+     * names. Plane members and anchors may be included as one placement contract; unrelated
+     * credentials stay excluded. Reads the current provider chain without re-deriving env/defaults.
+     * @param {Object} [options]
+     * @param {String[]} [options.envNames=[]] Explicit child-runtime capability slots.
+     * @param {Boolean} [options.includePlaneMembers=false] Include declared placement leaves.
+     * @returns {Object<String,String>} Child environment values; never a persisted artifact.
+     */
+    exportEnv({envNames = [], includePlaneMembers = false} = {}) {
+        const selected = new Set(envNames), seen = new Set(), providers = new Set(), result = {};
+        for (let provider = this; provider instanceof ConfigProvider && !providers.has(provider); provider = provider.getParent()) {
+            providers.add(provider);
+            for (const [leafPath, meta] of provider.#leafMetadataRegistry) {
+                if (seen.has(leafPath)) continue;
+                seen.add(leafPath);
+                if (!meta.env || (!selected.has(meta.env) &&
+                    !(includePlaneMembers && (meta.planeMember === true || leafPath.startsWith('plane.'))))) continue;
+
+                const value = this.getData(leafPath);
+                if (value === null || value === undefined) continue;
+                if (meta.type === 'csv' && Array.isArray(value)) {
+                    result[meta.env] = value.join(',')
+                } else if (['string', 'boolean', 'number'].includes(typeof value)) {
+                    result[meta.env] = String(value)
+                } else {
+                    throw new TypeError(`ConfigProvider.exportEnv: '${leafPath}' has no scalar child-env representation.`)
+                }
+            }
+        }
+        return result
     }
 
     /**
