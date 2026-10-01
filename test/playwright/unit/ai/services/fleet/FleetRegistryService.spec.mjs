@@ -252,11 +252,11 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         const updated = FleetRegistryService.configureAgent({
             id         : 'neo-gpt',
             harnessType: 'claude-code',
-            mcpServers : {'memory-core': true, 'knowledge-base': false, 'github-workflow': true}
+            mcpServers : {'memory-core': true, 'knowledge-base': false, 'github-workflow': false}
         });
 
         expect(updated.harnessType).toBe('claude-code');
-        expect(updated.mcpServers).toEqual({'knowledge-base': false, 'github-workflow': true});
+        expect(updated.mcpServers).toEqual({'knowledge-base': false, 'github-workflow': false});
         expect(updated.githubUsername).toBe('neo-gpt');
         expect(updated.credential).toBeUndefined();
         expect(updated.pat).toBeUndefined();
@@ -266,7 +266,7 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
 
         const persisted = JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8'));
         expect(persisted.agents['neo-gpt'].mcpServers)
-            .toEqual({'knowledge-base': false, 'github-workflow': true});
+            .toEqual({'knowledge-base': false, 'github-workflow': false});
         expect(FleetRegistryService.resolveCredential('neo-gpt')).toBe('ghp_config_secret')
     });
 
@@ -361,9 +361,10 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
 
     test('unrepresentable declarations refuse before writing; Desktop GitHub rows are representable', () => {
         FleetRegistryService.defineAgent({githubUsername: 'desk', harnessType: 'claude-desktop', credential: PAT});
+        // GitHub on is the catalog default: the accepted declaration persists as null, not as an override
         expect(FleetRegistryService.configureAgent({
             id: 'desk', mcpServers: {'github-workflow': true}
-        }).mcpServers).toEqual({'github-workflow': true});
+        }).mcpServers).toBeNull();
         const before = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');
         expect(() => FleetRegistryService.configureAgent({
             id: 'desk', mcpServers: {'gitlab-workflow': true}
@@ -375,7 +376,7 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         expect(FleetRegistryService.getAgent('desk-two')).toBeNull();
         expect(FleetRegistryService.defineAgent({
             githubUsername: 'desk-two', harnessType: 'claude-desktop', credential: PAT, mcpServers: {'github-workflow': true}
-        }).mcpServers).toEqual({'github-workflow': true});
+        }).mcpServers).toBeNull();
         FleetRegistryService.configureAgent({id: 'desk', harnessType: 'claude-code'});
         expect(FleetRegistryService.configureAgent({id: 'desk', harnessType: 'claude-desktop'}).harnessType).toBe('claude-desktop');
     });
@@ -429,7 +430,7 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
                 'memory-core'    : true,
                 'knowledge-base' : true,
                 'neural-link'    : true,
-                'github-workflow': false,
+                'github-workflow': true,
                 'gitlab-workflow': false
             }
         }).mcpServers).toBeNull();
