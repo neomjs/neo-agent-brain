@@ -284,9 +284,16 @@ test.describe('ai/daemons/wake/receiver — manifest reload', () => {
         adapterConfig        : {attemptTimeoutMs: 100}
     });
 
+    let staged = 0;
+
+    // Publishes the way buildReceiverManifest does: a staged file in the same directory, renamed into
+    // place. Written in place, a read during startup can see the file half-written; a rename never can.
     const write = async (routes, mode = 0o600) => {
-        await fs.writeFile(manifestPath, JSON.stringify({schemaVersion: 1, routes}), {mode});
-        await fs.chmod(manifestPath, mode);
+        const stagingPath = `${manifestPath}.${process.pid}.${++staged}.staging`;
+
+        await fs.writeFile(stagingPath, JSON.stringify({schemaVersion: 1, routes}), {mode});
+        await fs.chmod(stagingPath, mode);
+        await fs.rename(stagingPath, manifestPath);
     };
 
     // `startWakeReceiver` requires an explicit integer port in 1..65535 — deliberately, so a real
