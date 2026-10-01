@@ -2600,8 +2600,9 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
                 agentosRuntimeRoot,
                 nodePath        : NODE_PATH
             }),
-            supplied = {...makeAgent('claude-code', {id: 'composed-a'}), metadata: {repo: {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'}}},
-            outside  = {...makeAgent('claude-code', {id: 'composed-b'}), metadata: {repo: {repoSlug: 'acme/app', cloneUrl: 'https://github.com/acme/app.git'}}},
+            // rows as the registry writes them: born with their seat home under the managed root
+            supplied = {...makeAgent('claude-code', {id: 'composed-a'}), seatHome: path.join(root, 'composed-a'), metadata: {repo: {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'}}},
+            outside  = {...makeAgent('claude-code', {id: 'composed-b'}), seatHome: path.join(root, 'composed-b'), metadata: {repo: {repoSlug: 'acme/app', cloneUrl: 'https://github.com/acme/app.git'}}},
             suppliedRoot = path.join(repoRoot, 'composed-a');
 
         await fs.mkdir(suppliedRoot, {recursive: true});

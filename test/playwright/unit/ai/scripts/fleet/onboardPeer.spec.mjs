@@ -528,13 +528,16 @@ test.describe('onboardPeer — long-lived Fleet owner transport', () => {
                   managerLifecycle     : FleetManager.lifecycleService,
                   managerManagedRoot   : FleetManager.managedRoot,
                   managerProvision     : FleetManager.provisionAndStartFn,
-                  registryDataDir      : FleetRegistryService.dataDir
+                  registryDataDir      : FleetRegistryService.dataDir,
+                  registryAgentsRoot   : FleetRegistryService.agentsRoot
               };
 
         fs.mkdirSync(path.join(repoPath, '.git'), {recursive: true});
 
-        FleetRegistryService.dataDir  = path.join(root, 'registry');
-        FleetRegistryService.loadedDir = null;
+        FleetRegistryService.dataDir    = path.join(root, 'registry');
+        // the row's seat home is recorded at birth under the root the manager will derive from
+        FleetRegistryService.agentsRoot = managedRoot;
+        FleetRegistryService.loadedDir  = null;
         FleetRegistryService.agents.clear();
 
         FleetLifecycleService.processes.clear();
@@ -621,6 +624,7 @@ test.describe('onboardPeer — long-lived Fleet owner transport', () => {
             FleetManager.managedRoot                   = original.managerManagedRoot;
             FleetManager.provisionAndStartFn           = original.managerProvision;
             FleetRegistryService.dataDir               = original.registryDataDir;
+            FleetRegistryService.agentsRoot            = original.registryAgentsRoot;
             FleetRegistryService.loadedDir             = null;
             FleetRegistryService.agents.clear();
             fs.rmSync(root, {recursive: true, force: true});

@@ -581,7 +581,8 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
     });
 
     test.afterEach(() => {
-        FleetRegistryService.dataDir = null;
+        FleetRegistryService.dataDir    = null;
+        FleetRegistryService.agentsRoot = null;
         fs.rmSync(tmpDir, {recursive: true, force: true});
     });
 
@@ -617,6 +618,55 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
         expect(FleetRegistryService.setLaunchOwner('seat', 'external').launchOwner).toBe('external');
         expect(FleetRegistryService.setLaunchOwner('ghost', 'fleet')).toBeNull();
         expect(() => FleetRegistryService.setLaunchOwner('seat', 'everyone')).toThrow(/invalid launchOwner 'everyone'/)
+    });
+
+    /** A row persisted before Fleet recorded seat homes, written straight to the file so no define touches it. */
+    function writeLegacyRow(id) {
+        fs.writeFileSync(path.join(tmpDir, 'registry.json'), JSON.stringify({agents: {[id]: {
+            id, githubUsername: id, harnessType: 'codex', modelProvider: 'ollama', metadata: {},
+            mcpServers: null, mcpTarget: null, createdAt: '2026-09-30T19:46:00.000Z', updatedAt: '2026-09-30T19:46:00.000Z'
+        }}}));
+    }
+
+    test('defineAgent records the seat home at birth under the agents root; a row persisted before the record names none', () => {
+        writeLegacyRow('legacy');
+        FleetRegistryService.dataDir    = tmpDir;
+        FleetRegistryService.agentsRoot = '/agents';
+
+        const born = FleetRegistryService.defineAgent({githubUsername: 'seat', harnessType: 'codex', credential: PAT});
+
+        expect(born.seatHome).toBe('/agents/seat');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.seat.seatHome).toBe('/agents/seat');
+        expect(FleetRegistryService.listAgents().find(agent => agent.id === 'seat').seatHome).toBe('/agents/seat');
+        expect(FleetRegistryService.getAgent('legacy').seatHome).toBeUndefined();
+        expect(FleetRegistryService.getAgentsRoot()).toBe('/agents')
+    });
+
+    test('relocateSeatHome is the one write after birth: compare-and-set, null binds a legacy row, anything else is refused without a write', () => {
+        writeLegacyRow('legacy');
+        FleetRegistryService.dataDir    = tmpDir;
+        FleetRegistryService.agentsRoot = '/agents';
+        FleetRegistryService.defineAgent({githubUsername: 'seat', harnessType: 'codex', credential: PAT});
+
+        expect(() => FleetRegistryService.relocateSeatHome('seat', {from: '/stale/seat', to: '/moved/seat'}))
+            .toThrow(/records seat home '\/agents\/seat', not '\/stale\/seat'/);
+        expect(() => FleetRegistryService.relocateSeatHome('seat', {from: null, to: '/moved/seat'}))
+            .toThrow(/records seat home '\/agents\/seat', not 'none'/);
+        expect(FleetRegistryService.getAgent('seat').seatHome).toBe('/agents/seat');
+
+        expect(FleetRegistryService.relocateSeatHome('seat', {from: '/agents/seat', to: '/moved/seat'}).seatHome).toBe('/moved/seat');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.seat.seatHome).toBe('/moved/seat');
+
+        // the deliberate bind of a legacy row: from nothing to where its files are, once
+        expect(() => FleetRegistryService.relocateSeatHome('legacy', {from: '/agents/legacy', to: '/agents/legacy'}))
+            .toThrow(/records seat home 'none', not '\/agents\/legacy'/);
+        expect(FleetRegistryService.relocateSeatHome('legacy', {from: null, to: '/agents/legacy'}).seatHome).toBe('/agents/legacy');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.legacy.seatHome).toBe('/agents/legacy');
+        expect(() => FleetRegistryService.relocateSeatHome('legacy', {from: null, to: '/elsewhere/legacy'}))
+            .toThrow(/records seat home '\/agents\/legacy', not 'none'/);
+
+        expect(FleetRegistryService.relocateSeatHome('ghost', {from: null, to: '/moved/ghost'})).toBeNull();
+        expect(() => FleetRegistryService.relocateSeatHome('seat', {from: '/moved/seat', to: 'moved/seat'})).toThrow(/relocateSeatHome: seatHome must be an absolute path/)
     });
 
     test('launchRefusalOf: a row with no ownership act and a fleet-owned row start as before; a release through setLaunchOwner refuses, and an adoption lifts it', () => {

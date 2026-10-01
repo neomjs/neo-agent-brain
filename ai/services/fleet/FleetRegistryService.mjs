@@ -109,6 +109,19 @@ function isPublicSensitiveKey(key) {
 }
 
 /**
+ * @summary A seat home is an absolute path or nothing — a relative value would be re-rooted by
+ * whoever reads it, which is the silent re-homing the record exists to prevent.
+ * @param {*}      value
+ * @param {String} caller The registry method name, for the error.
+ * @private
+ */
+function assertSeatHome(value, caller) {
+    if (typeof value !== 'string' || !path.isAbsolute(value)) {
+        throw new Error(`FleetRegistryService.${caller}: seatHome must be an absolute path.`)
+    }
+}
+
+/**
  * @summary Recursively remove credential/launch vocabulary from a caller-owned public projection.
  * Registry metadata is intentionally extensible, so redaction must guard nested legacy entries as
  * well as the current top-level fields. Keys normalize hyphens/underscores and case before lookup.
@@ -201,6 +214,14 @@ function normalizeStoredMcpTarget(target) {
  * that, and a row without it reads `external` with no act recorded. A seat released to its own harness
  * by either act is never started by this fleet until it is adopted, whatever process record it holds
  * ({@link launchRefusalOf}).
+ *
+ * **Seat home** (`seatHome`) is where a seat's files live — the absolute `<agentsRoot>/<id>` that holds
+ * its clone and harness home. Fleet derives that path from the agents root at every start, so the row
+ * records it at birth ({@link defineAgent}, under {@link getAgentsRoot}) and the start composer
+ * ({@link Neo.ai.services.fleet.startAgentProvisioned}) refuses a derivation that differs from the
+ * record instead of provisioning a second, empty seat under a changed root. A row older than the
+ * record names none and stays refused until it is bound; the move and that first bind are the one
+ * write after birth ({@link relocateSeatHome}), never an adoption of whatever directory exists.
  */
 class FleetRegistryService extends Base {
     static config = {
@@ -221,7 +242,15 @@ class FleetRegistryService extends Base {
          * `AiConfig.fleet.dataDir` plane member at the use site. Changing it transparently reloads
          * the in-memory registry on the next call.
          */
-        dataDir_: null
+        dataDir_: null,
+        /**
+         * @member {String|null} agentsRoot_=null
+         * @summary Optional override of the agents root a new row's `seatHome` is recorded under, for
+         * isolation and tests. Production leaves this null so {@link getAgentsRoot} reads the canonical
+         * `AiConfig.fleet.agentsRoot` leaf at the use site — the leaf the Fleet entrypoint also injects
+         * as the manager's managed root and the lifecycle's instance root.
+         */
+        agentsRoot_: null
     }
 
     /**
@@ -360,6 +389,10 @@ class FleetRegistryService extends Base {
                 metadata,
                 mcpServers   : matrix,
                 mcpTarget    : target,
+                // where the seat will live, recorded at birth: a start under a changed root then refuses
+                // instead of provisioning a second seat; rows older than the record name none and are
+                // bound once, deliberately, through `relocateSeatHome`
+                seatHome     : path.resolve(this.getAgentsRoot(), agentId),
                 launchOwner,
                 // an explicit owner is an ownership act, the fact `launchRefusalOf` keys on; the omitted
                 // default records none, so the process record stays that seat's only start gate
@@ -556,6 +589,42 @@ class FleetRegistryService extends Base {
         const
             now        = new Date().toISOString(),
             def        = {...existing, launchOwner: owner, launchOwnerSince: now, updatedAt: now},
+            nextAgents = new Map(this.agents);
+
+        nextAgents.set(id, def);
+        this.writeRegistry(nextAgents);
+        this.agents = nextAgents;
+
+        return this.toPublic(def);
+    }
+
+    /**
+     * @summary The one write of `seatHome` after {@link defineAgent}: the deliberate move, or the
+     * binding of a row that predates the record. The caller names the current record exactly
+     * (compare-and-set — `null` for a row that has none), so a stale or guessed `from` never re-homes
+     * a seat. The files move outside this registry; this write is what lets the next start accept the
+     * path it names. No automatic adoption exists: a directory that happens to exist under the current
+     * root carries no binding authority, so an unbound row stays refused until this act names its home.
+     * @param {String}      id        Registry agent id.
+     * @param {Object}      move
+     * @param {String|null} move.from The seat home the row records now, `null` for a row without one.
+     * @param {String}      move.to   The absolute seat directory the files live in.
+     * @returns {Object|null} The updated public definition, or `null` when the agent doesn't exist.
+     * @throws {Error} when `to` is not an absolute path, or `from` is not the recorded seat home.
+     */
+    relocateSeatHome(id, {from, to} = {}) {
+        assertSeatHome(to, 'relocateSeatHome');
+        this.ensureLoaded();
+
+        const existing = this.agents.get(id);
+        if (!existing) return null;
+
+        if ((existing.seatHome ?? null) !== (from ?? null)) {
+            throw new Error(`FleetRegistryService.relocateSeatHome: agent '${id}' records seat home '${existing.seatHome ?? 'none'}', not '${from ?? 'none'}'.`)
+        }
+
+        const
+            def        = {...existing, seatHome: to, updatedAt: new Date().toISOString()},
             nextAgents = new Map(this.agents);
 
         nextAgents.set(id, def);
@@ -936,6 +1005,15 @@ class FleetRegistryService extends Base {
      */
     getDataDir() {
         return this.dataDir || aiConfig.fleet.dataDir;
+    }
+
+    /**
+     * @summary The agents root a new row's `seatHome` is recorded under: the injected override, else
+     * the canonical `AiConfig.fleet.agentsRoot` leaf — the root the Fleet derives every seat path from.
+     * @returns {String}
+     */
+    getAgentsRoot() {
+        return this.agentsRoot || aiConfig.fleet.agentsRoot;
     }
 
     /** @returns {String} @private */
