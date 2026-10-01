@@ -13,7 +13,9 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
+import {test, expect}         from '@playwright/test';
+import Neo                    from 'neo.mjs/src/Neo.mjs';
+import * as core              from 'neo.mjs/src/core/_export.mjs';
 import ChromaLifecycleService from '../../../../../../../ai/services/memory-core/lifecycle/ChromaLifecycleService.mjs';
 
 /**
