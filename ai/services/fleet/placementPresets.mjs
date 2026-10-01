@@ -24,8 +24,68 @@ export const PLANE_PROFILE = Object.freeze({
 /** @summary The orchestrator's declared role inside that plane (the leaf's own vocabulary). */
 export const CONTAINER_AUTHORITY_PROFILE = 'container-plane';
 
-/** @summary The relative Chroma store a plane of a given dimension uses (`<planeDataRoot>/<store>`). */
-export const chromaStoreFor = dimension => dimension === 4096 ? 'chroma/unified' : `chroma/unified-${dimension}d`;
+const COMPOSE_INPUT = /\$\{([A-Z][A-Z0-9_]*)(?::-[^}]*)?\}/g, COMPOSE_MAPPING = /^\s*(?:-\s*)?([A-Z][A-Z0-9_]*)\s*[:=]\s*\$\{([A-Z][A-Z0-9_]*)/;
+
+/**
+ * @summary What a profile actually consumes, read from its Compose files' text in order. An env line
+ * `NAME: ${INPUT:-default}` (or `- NAME=${INPUT}`) feeds NAME from INPUT, and the LAST file to feed a
+ * name wins — the overlay's provider anchor replaces the base's pass-through of the same name, so a
+ * base input the overlay re-feeds from its own name is not an input of the profile any more. Bare
+ * `${NAME}` uses outside env lines (a secret's file, a project name) stay inputs. A preset key the
+ * profile never reads reaches no container, whatever `configBase` declares.
+ * @param {String[]} composeTexts The profile's Compose files, in order.
+ * @returns {{inputs: Set<String>, mappings: Map<String, String>}} `mappings`: input name → the env name it lands on, when they differ.
+ */
+export function profileInputs(composeTexts) {
+    const bare = new Set(), feeds = new Map();
+
+    for (const text of composeTexts) {
+        for (const line of text.split('\n')) {
+            const mapped = COMPOSE_MAPPING.exec(line);
+
+            if (mapped) {
+                feeds.set(mapped[1], mapped[2]);
+                continue;
+            }
+
+            for (const match of line.matchAll(COMPOSE_INPUT)) {
+                bare.add(match[1]);
+            }
+        }
+    }
+
+    const inputs = new Set(bare), mappings = new Map();
+
+    for (const [name, input] of feeds) {
+        inputs.add(input);
+
+        if (input !== name) {
+            mappings.set(input, name);
+        }
+    }
+
+    return {inputs, mappings};
+}
+
+/**
+ * @summary The effective-profile parity check: every preset env key must be an input the profile reads,
+ * and the env name it lands on (itself, or the mapped name) must be a binding `configBase` declares.
+ * @param {Object} preset
+ * @param {{inputs: Set<String>, mappings: Map<String, String>}} profile From {@link profileInputs}.
+ * @param {Set<String>} declared From {@link declaredEnvBindings}.
+ * @returns {String[]} The offending keys, each with its reason; empty when the preset is honoured.
+ */
+export function unconsumedPresetEnvKeys(preset, profile, declared) {
+    return Object.keys(preset?.env ?? {}).flatMap(key => {
+        if (!profile.inputs.has(key)) {
+            return [`${key}: not an input of the profile's Compose files`];
+        }
+
+        const landsOn = profile.mappings.get(key) ?? key;
+
+        return declared.has(landsOn) ? [] : [`${key}: lands on ${landsOn}, which configBase does not declare`];
+    });
+}
 
 const
     FIXTURE_PLANE = Object.freeze({
@@ -43,20 +103,25 @@ const
         result    : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4-5', ungroundedNames: 0},
         note      : 'sets the floor; gpt-oss-20b was 3.7× faster on prefill but thin below it; Qwen3.6 blocked by the reasoning channel'
     }),
+    // the local overlay's own inputs: it maps NEO_LOCAL_AGENT_OS_* onto the openAiCompatible leaves and
+    // fixes the three providers to openAiCompatible unless a preset says otherwise
     LOCAL_ENV = Object.freeze({
-        NEO_MODEL_PROVIDER        : 'openAiCompatible',
-        NEO_EMBEDDING_PROVIDER    : 'openAiCompatible',
-        NEO_OPENAI_COMPATIBLE_HOST: 'http://host.docker.internal:1234'
+        NEO_MODEL_PROVIDER              : 'openAiCompatible',
+        NEO_GRAPH_PROVIDER              : 'openAiCompatible',
+        NEO_EMBEDDING_PROVIDER          : 'openAiCompatible',
+        NEO_LOCAL_AGENT_OS_PROVIDER_HOST: 'http://host.docker.internal:1234'
     });
 
 /**
  * @summary The supported presets. Fields: `id`, `label`, `inference` (`hosted` | `local`), `profile`,
- * `authorityProfile`, `env` (only declared leaf bindings — the parity spec proves it), `requires`
- * (what the recipe must still ask for), `vectorDimension`, `embedder`, `chatModel`, `workload`
- * (`{planeIdleBytes, planePeakBytes, modelsBytes, vmCapRecommendedBytes}` for the probe's
- * `fitsPreset`), `qualityFloor` (a recorded floor run, or `null` → `candidate`), and `pendingBindings`:
- * leaves a preset would still rely on by default because they lack an env binding — empty for every
- * preset since the Gemini model leaves gained theirs; the recipe shows the list when it is not.
+ * `authorityProfile`, `env` (the profile's CONSUMED inputs — each key is either a declared leaf binding
+ * the profile forwards or an overlay input the profile maps onto one; the parity spec proves both
+ * against the Compose files and `configBase`), `requires` (what the recipe must still ask for),
+ * `vectorDimension`, `embedder`, `chatModel`, `workload` (`{planeIdleBytes, planePeakBytes,
+ * modelsBytes, vmCapRecommendedBytes}` for the probe's `fitsPreset`), `qualityFloor` (a recorded floor
+ * run, or `null` → `candidate`), and `pendingBindings`: leaves a preset would still rely on by default
+ * because they lack an env binding — empty for every preset since the Gemini model leaves gained
+ * theirs; the recipe shows the list when it is not.
  */
 export const presets = Object.freeze([
     Object.freeze({
@@ -67,6 +132,7 @@ export const presets = Object.freeze([
         authorityProfile: CONTAINER_AUTHORITY_PROFILE,
         env             : Object.freeze({
             NEO_MODEL_PROVIDER        : 'gemini',
+            NEO_GRAPH_PROVIDER        : 'gemini',
             NEO_EMBEDDING_PROVIDER    : 'gemini',
             NEO_GEMINI_MODEL          : 'gemini-3.5-flash',
             NEO_GEMINI_EMBEDDING_MODEL: 'gemini-embedding-001',
@@ -88,9 +154,9 @@ export const presets = Object.freeze([
         authorityProfile: CONTAINER_AUTHORITY_PROFILE,
         env             : Object.freeze({
             ...LOCAL_ENV,
-            NEO_OPENAI_COMPATIBLE_MODEL          : GEMMA_26B.id,
-            NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL: QWEN3_06B.id,
-            NEO_VECTOR_DIMENSION                 : String(QWEN3_06B.dimension)
+            NEO_LOCAL_AGENT_OS_MODEL          : GEMMA_26B.id,
+            NEO_LOCAL_AGENT_OS_EMBEDDING_MODEL: QWEN3_06B.id,
+            NEO_VECTOR_DIMENSION              : String(QWEN3_06B.dimension)
         }),
         requires        : ['chatModel', 'embeddingModel', 'pat', 'repos'],
         vectorDimension : QWEN3_06B.dimension,
@@ -108,9 +174,9 @@ export const presets = Object.freeze([
         authorityProfile: CONTAINER_AUTHORITY_PROFILE,
         env             : Object.freeze({
             ...LOCAL_ENV,
-            NEO_OPENAI_COMPATIBLE_MODEL          : GEMMA_26B.id,
-            NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL: QWEN3_8B.id,
-            NEO_VECTOR_DIMENSION                 : String(QWEN3_8B.dimension)
+            NEO_LOCAL_AGENT_OS_MODEL          : GEMMA_26B.id,
+            NEO_LOCAL_AGENT_OS_EMBEDDING_MODEL: QWEN3_8B.id,
+            NEO_VECTOR_DIMENSION              : String(QWEN3_8B.dimension)
         }),
         requires        : ['chatModel', 'embeddingModel', 'pat', 'repos'],
         vectorDimension : QWEN3_8B.dimension,
@@ -132,15 +198,27 @@ export function presetStatus(preset) {
     return preset?.qualityFloor ? 'supported' : 'candidate'
 }
 
+/** @summary The Chroma database the plane opens when nothing else is declared (`NEO_CHROMA_DATABASE`'s leaf default). */
+export const DEFAULT_CHROMA_DATABASE = 'default_database';
+
+const CHROMA_DATABASE_NAME = /^[a-z0-9][a-z0-9_-]{2,62}$/i;
+
 /**
- * @summary The birth decision's consequence: a preset change after ingest is a NEW store, never an
- * in-place re-dimension. Names the path — the new Chroma store, the two env values that select it,
- * and the re-embedding work — or `null` when the dimension is unchanged.
+ * @summary The birth decision's consequence: a preset change after ingest is a NEW Chroma database,
+ * never an in-place re-dimension. Storage selection belongs to the deployment — the profile forwards
+ * `NEO_VECTOR_DIMENSION` and `NEO_CHROMA_DATABASE` to the Memory Core and Knowledge Base while Chroma
+ * keeps its volume — so this helper names no store by itself: a dimension change needs an explicit
+ * fresh database name, validated against the current one and the default before an executable plan
+ * is returned. Whether that name is unused in Chroma is the deployment's check and a step of the plan,
+ * not something a name can prove. `null` when the dimension is unchanged.
  * @param {Object} fromPreset
  * @param {Object} toPreset
- * @returns {Object|null} `{from, to, store, env, steps}`
+ * @param {Object} [storage]
+ * @param {String} [storage.currentDatabase=DEFAULT_CHROMA_DATABASE] The database the plane opens today.
+ * @param {String} [storage.freshDatabase] The deployment's chosen new database: never the current, never the default.
+ * @returns {Object|null} `{from, to, database: {current, fresh}, env, steps}`
  */
-export function reembedPath(fromPreset, toPreset) {
+export function reembedPath(fromPreset, toPreset, {currentDatabase = DEFAULT_CHROMA_DATABASE, freshDatabase} = {}) {
     const from = fromPreset?.vectorDimension, to = toPreset?.vectorDimension;
 
     if (!Number.isInteger(from) || !Number.isInteger(to)) {
@@ -148,19 +226,30 @@ export function reembedPath(fromPreset, toPreset) {
     }
     if (from === to) return null;
 
-    const store = chromaStoreFor(to);
+    const fresh = typeof freshDatabase === 'string' ? freshDatabase.trim() : '';
+
+    if (!fresh) {
+        throw new Error('reembedPath: a dimension change needs an explicit fresh database name (NEO_CHROMA_DATABASE); none was given')
+    }
+    if (fresh === currentDatabase || fresh === DEFAULT_CHROMA_DATABASE) {
+        throw new Error(`reembedPath: '${fresh}' is the current or the default database, not a fresh one`)
+    }
+    if (!CHROMA_DATABASE_NAME.test(fresh)) {
+        throw new Error('reembedPath: a Chroma database name is 3–63 characters of letters, digits, _ or -')
+    }
 
     return {
         from,
         to,
-        store,
-        env  : {NEO_VECTOR_DIMENSION: String(to), NEO_CHROMA_DATA_DIR: store},
-        steps: [
+        database: {current: currentDatabase, fresh},
+        env     : {NEO_VECTOR_DIMENSION: String(to), NEO_CHROMA_DATABASE: fresh},
+        steps   : [
             'stop the plane',
-            `declare the new store: NEO_VECTOR_DIMENSION=${to}, NEO_CHROMA_DATA_DIR=${store} (the old store stays on disk, untouched)`,
-            `start the plane against the empty store with ${toPreset.embedder}`,
+            `verify '${fresh}' does not exist in this Chroma yet (the deployment's check: a name proves nothing)`,
+            `declare the fresh database: NEO_VECTOR_DIMENSION=${to}, NEO_CHROMA_DATABASE=${fresh} (the profile forwards both; '${currentDatabase}' stays in Chroma's volume, untouched)`,
+            `start the plane: the Memory Core and Knowledge Base open '${fresh}' with ${toPreset.embedder}`,
             'ingest the corpus again (the Knowledge Base ingest verb over the same sources)',
-            'let the embed daemon re-embed memories into the new store (the WAL is the source, not the old vectors)'
+            'let the embed daemon re-embed memories into the fresh database (the WAL is the source, not the old vectors)'
         ]
     }
 }
