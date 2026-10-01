@@ -144,6 +144,9 @@ test.describe('Neo.ai.daemons.services.IssueIngestor', () => {
         GraphService   = services.Memory_GraphService;
         StorageRouter  = services.Memory_StorageRouter;
 
+        // Captured once the singleton has its graph: captured earlier it is still null, and the restore
+        // would leave the next graph spec in this worker an initialised lifecycle with no graph.
+        await GraphService.ready();
         _originalGraphDb = GraphService.db;
         _originalGetGraphCollection = StorageRouter.getGraphCollection;
         GraphService.db = {
