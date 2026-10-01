@@ -136,6 +136,20 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows[1].sources.runtime).toMatchObject({state: 'not-wired', confidence: 'none'})
     })
 
+    test('carries the last start\'s per-repository outcome from the runtime row — null before a start', () => {
+        const
+            repos    = [{repoSlug: 'neomjs/neo-agent-brain', state: 'prepared'}, {repoSlug: 'neomjs/missing', state: 'failed', reason: 'clone failed'}],
+            snapshot = createFleetCockpitStatus({
+                agents       : [{id: 'alice'}, {id: 'bob'}, {id: 'carol'}],
+                runtimeStatus: [
+                    {agentId: 'alice', state: 'running', running: true, confidence: 'observed', repos},
+                    {agentId: 'bob',   state: 'running', running: true, confidence: 'observed'}
+                ]
+            })
+
+        expect(snapshot.rows.map(row => row.repoOutcomes)).toEqual([repos, null, null])
+    })
+
     test('an unmanaged runtime row is NOT wired — row-existence is a roster fact, not a supervision fact (#17305)', () => {
         const snapshot = createFleetCockpitStatus({
             agents       : [{id: 'grace'}],
@@ -404,7 +418,7 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
     })
 
     test('the beacon facet rides the presence axis untouched when it is one of the closed facets; an older producer without it leaves the row without it; an out-of-set word is dropped, never admitted (#318)', () => {
-        const row = beacon => ({agentId: 'clio', presence: 'fresh', lastSeenAt: null, confidence: 'observed', source: FLEET_COCKPIT_SOURCES.presence, ...(beacon !== undefined && {beacon})})
+        const row        = beacon => ({agentId: 'clio', presence: 'fresh', lastSeenAt: null, confidence: 'observed', source: FLEET_COCKPIT_SOURCES.presence, ...(beacon !== undefined && {beacon})})
         const presenceOf = beacon => createFleetCockpitStatus({
             agents        : [{id: 'clio', githubUsername: 'neo-fable-clio'}],
             presenceStatus: [row(beacon)],

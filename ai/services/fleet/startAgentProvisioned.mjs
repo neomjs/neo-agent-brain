@@ -391,6 +391,11 @@ export async function startAgentProvisioned({
         }
     });
 
+    // the answer reaches whoever pressed Start; the launch record keeps it for every later read
+    if (repos.length) {
+        lifecycleService.setRepoOutcomes(agentId, repos, {pid: status?.pid, startedAt: status?.startedAt})
+    }
+
     return {
         ...status,
         ...(prepared.seatInstructions ? {seatInstructions: prepared.seatInstructions} : {}),

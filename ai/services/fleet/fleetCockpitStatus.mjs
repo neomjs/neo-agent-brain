@@ -158,7 +158,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 participationStatus: publicAgent.participationStatus ?? null,
                 agent              : publicAgent,
                 repoStatus,
-                lifecycle          : supervised
+                // the last start's per-repository outcome from the launch record; null before a start
+                repoOutcomes: runtime?.repos ?? null,
+                lifecycle   : supervised
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.runtime,
                         state     : runtime.state ?? 'unknown',
