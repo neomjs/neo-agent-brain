@@ -5,10 +5,10 @@ import path from 'node:path';
  * @summary Make a Fleet seat root owner-only: create it `0700`, or narrow an existing root that grants
  * group or other access.
  *
- * Harness homes below the root hold logins, and the folders above it do not keep them private (on
- * macOS `~` is `0750` and `~/.neo-ai` `0755`), so the root is where privacy is set: a `0700` root
- * closes traversal to every seat inside it. Missing ancestors keep the default mode; only the root is
- * narrowed.
+ * Harness homes below the root hold logins, and the folders above it need not keep them private (on
+ * the operator's host, measured 2026-10-01: `~` `0750`, `~/.neo-ai` `0755`), so the root is where
+ * privacy is set: a `0700` root closes traversal to every seat inside it. Missing ancestors keep the
+ * default mode; only the root is narrowed.
  *
  * @param {String} root Absolute seat root (`fleet.agentsRoot`).
  * @returns {String} The root.

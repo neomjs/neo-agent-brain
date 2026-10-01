@@ -1,5 +1,5 @@
-import {deriveAgentRepoPath} from './deriveAgentRepoPath.mjs';
-import {ensureSeatRoot}      from './ensureSeatRoot.mjs';
+import {assertRoot, deriveAgentRepoPath} from './deriveAgentRepoPath.mjs';
+import {ensureSeatRoot}                  from './ensureSeatRoot.mjs';
 import {inspectAgentRepo}    from './inspectAgentRepo.mjs';
 import {provisionAgentRepo}  from './provisionAgentRepo.mjs';
 
@@ -21,7 +21,8 @@ import {provisionAgentRepo}  from './provisionAgentRepo.mjs';
  *
  * The managed root is made owner-only first ({@link Neo.ai.services.fleet.ensureSeatRoot}): a clone
  * would otherwise create it with the process umask, and the harness homes beside the checkouts hold
- * logins.
+ * logins. It is the root as the derivation resolves it (`assertRoot`), so a spelling the filesystem
+ * reads differently (a symlink before `..`) cannot secure one directory and clone into another.
  *
  * Fleet Manager is single-writer (Scenario-C-zero per the MVP epic), so the inspect→provision sequence
  * is not TOCTOU-guarded — and does not need to be: `git clone` fails safe if the directory changed
@@ -44,7 +45,7 @@ import {provisionAgentRepo}  from './provisionAgentRepo.mjs';
 export async function ensureAgentRepo({managedRoot, agentId, repoSlug, cloneUrl, credential, cloneRepo} = {}) {
     const repoPath = deriveAgentRepoPath({managedRoot, agentId, repoSlug});
 
-    ensureSeatRoot(managedRoot);
+    ensureSeatRoot(assertRoot(managedRoot, 'managedRoot', 'ensureAgentRepo'));
 
     const
         inspection = inspectAgentRepo({repoPath}),

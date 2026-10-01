@@ -110,6 +110,25 @@ test.describe('ensureAgentRepo (Fleet Manager derive → inspect → provision o
         expect(clone.calls).toHaveLength(1)
     });
 
+    test('the root the clone uses is the one made owner-only, whichever directory a symlink before `..` reaches', async () => {
+        const
+            base     = path.join(suiteRoot, 'spelling'),
+            lexical  = path.join(base, 'lexical'),
+            physical = path.join(base, 'physical'),
+            spelled  = `${lexical}/link/../agents`, // the filesystem reads this as physical/agents
+            modes    = [],
+            clone    = async () => { modes.push(fs.statSync(path.join(lexical, 'agents')).mode & 0o777) };
+
+        fs.mkdirSync(path.join(physical, 'child'), {recursive: true});
+        fs.mkdirSync(lexical);
+        fs.symlinkSync(path.join(physical, 'child'), path.join(lexical, 'link'));
+
+        await ensureAgentRepo({managedRoot: spelled, agentId: 'agent-spelled', repoSlug: 'neomjs/neo', cloneUrl: URL, cloneRepo: clone});
+
+        expect(modes, 'the clone root is owner-only when the clone runs').toEqual([0o700]);
+        expect(fs.existsSync(path.join(physical, 'agents')), 'the directory the raw spelling names is untouched').toBe(false)
+    });
+
     test('two distinct agents ensure into distinct checkouts (no cross-contamination)', async () => {
         const clone = makeCloneStub(),
               ra    = await ensureAgentRepo({managedRoot: suiteRoot, agentId: 'agent-x', repoSlug: 'neomjs/neo', cloneUrl: URL, cloneRepo: clone}),
