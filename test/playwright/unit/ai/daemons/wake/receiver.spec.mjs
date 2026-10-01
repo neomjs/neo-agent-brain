@@ -535,8 +535,9 @@ test.describe('ai/daemons/wake/receiver — manifest reload', () => {
         expect(second.size).toBe(first.size);
         expect(second.ino).not.toBe(first.ino);
 
-        expect(await receiver.reloadIfChanged()).toBe(1);
-        expect(await probe(beta)).toBe(401);
+        // Served, whichever trigger adopts it: the watcher and the sweep race this call.
+        await receiver.reloadIfChanged();
+        expect(await waitFor(async () => await probe(beta) === 401)).toBe(true);
         expect(await probe(alpha)).toBe(404);
     });
 
