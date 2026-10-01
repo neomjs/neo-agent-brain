@@ -123,6 +123,21 @@ async function read(filePath) {
     return fs.readFile(filePath, 'utf8');
 }
 
+function recordingFileSystem(operations) {
+    return new Proxy(fs, {
+        get(target, property, receiver) {
+            const value = Reflect.get(target, property, receiver);
+
+            return typeof value !== 'function'
+                ? value
+                : async (...args) => {
+                    operations.push(String(property));
+                    return value.call(target, ...args)
+                }
+        }
+    })
+}
+
 async function sourceFiles(directoryPath) {
     const result = [];
 
@@ -484,18 +499,7 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
         const
             plan       = createManagedAgentWorkspacePlan(logicalInput()),
             operations = [],
-            fileSystem = new Proxy(fs, {
-                get(target, property, receiver) {
-                    const value = Reflect.get(target, property, receiver);
-
-                    return typeof value !== 'function'
-                        ? value
-                        : async (...args) => {
-                            operations.push(String(property));
-                            return value.call(target, ...args)
-                        }
-                }
-            });
+            fileSystem = recordingFileSystem(operations);
 
         expect(operations).toEqual([]);
 
@@ -533,6 +537,26 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
         expect(result.mcpPlan.every(server => server.sourceRoot === agentosRuntimeRoot)).toBe(true);
         expect(result.mcpPlan.find(server => server.key === 'neural-link').args.slice(-2))
             .toEqual(['--cwd', agentosRuntimeRoot])
+    });
+
+    test('a Claude seat\'s memory pin stays inside the bounded effect vocabulary', async () => {
+        const
+            operations = [],
+            result     = await applyManagedAgentWorkspacePlan({
+                plan            : createManagedAgentWorkspacePlan(logicalInput({harnessType: 'claude-code'})),
+                targetRepoRoot  : path.join(repoRoot, 'claude-apply'),
+                instanceRoot,
+                agentosRuntimeRoot,
+                nodePath        : NODE_PATH,
+                hydrateWorkspace: makeHydrate(),
+                fileSystem      : recordingFileSystem(operations)
+            });
+
+        expect([...new Set(operations)].every(operation => BOUNDED_APPLY_EFFECTS.has(operation))).toBe(true);
+        expect(result.artifacts.map(item => item.path)).toEqual(expect.arrayContaining([
+            path.join(instanceRoot, 'agent-a', 'memory'),
+            path.join(repoRoot, 'claude-apply', '.claude', 'settings.local.json')
+        ]))
     });
 
     test('host apply requires both semantic roots and never falls back to legacy aliases', async () => {
@@ -1496,6 +1520,16 @@ test.describe('prepareManagedAgentWorkspace', () => {
                 path     : configPath,
                 status   : WORKSPACE_ARTIFACT_STATES.CREATED,
                 ownedKeys: 'mcpServers.neo-mjs-*'
+            },
+            {
+                path     : path.join(instanceRoot, 'agent-a', 'memory'),
+                status   : WORKSPACE_ARTIFACT_STATES.CREATED,
+                ownedKeys: 'directory'
+            },
+            {
+                path     : path.join(opts.targetRepoRoot, '.claude', 'settings.local.json'),
+                status   : WORKSPACE_ARTIFACT_STATES.CREATED,
+                ownedKeys: 'autoMemoryDirectory'
             }
         ]);
         expect(Object.keys(config.mcpServers).sort()).toEqual([
@@ -1513,6 +1547,101 @@ test.describe('prepareManagedAgentWorkspace', () => {
         });
         expect(hydrationCalls).toHaveLength(0);
         await expect(fs.stat(instanceRoot)).rejects.toMatchObject({code: 'ENOENT'});
+    });
+
+    for (const harnessType of ['claude-code', 'claude-desktop']) {
+        test(`${harnessType}: the seat's auto memory is pinned to its seat folder, owner-only`, async () => {
+            const
+                opts         = options(makeAgent(harnessType)),
+                memoryDir    = path.join(instanceRoot, 'agent-a', 'memory'),
+                settingsPath = path.join(opts.targetRepoRoot, '.claude', 'settings.local.json'),
+                pinStates    = result => result.artifacts.filter(item => [memoryDir, settingsPath].includes(item.path)).map(item => item.status);
+
+            expect(pinStates(await prepareManagedAgentWorkspace(opts))).toEqual([WORKSPACE_ARTIFACT_STATES.CREATED, WORKSPACE_ARTIFACT_STATES.CREATED]);
+            expect(await read(settingsPath)).toBe(`{\n    "autoMemoryDirectory": ${JSON.stringify(memoryDir)}\n}\n`);
+            expect((await fs.stat(memoryDir)).mode & 0o777).toBe(0o700);
+            expect(pinStates(await prepareManagedAgentWorkspace(opts))).toEqual([WORKSPACE_ARTIFACT_STATES.MATCH, WORKSPACE_ARTIFACT_STATES.MATCH]);
+        });
+    }
+
+    test('the memory pin goes into an existing local settings file, every other byte kept', async () => {
+        const
+            opts         = options(makeAgent('claude-desktop')),
+            memoryDir    = path.join(instanceRoot, 'agent-a', 'memory'),
+            settingsPath = path.join(opts.targetRepoRoot, '.claude', 'settings.local.json'),
+            original     = '{\n  "permissions": {\n    "allow": ["Bash(npm test:*)"]\n  }\n}\n';
+
+        await fs.mkdir(path.dirname(settingsPath), {recursive: true});
+        await fs.writeFile(settingsPath, original);
+
+        const result = await prepareManagedAgentWorkspace(opts);
+
+        expect(await read(settingsPath)).toBe(original.replace('{\n', `{\n  "autoMemoryDirectory": ${JSON.stringify(memoryDir)},\n`));
+        expect(result.artifacts.find(item => item.path === settingsPath).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+        expect((await prepareManagedAgentWorkspace(opts)).artifacts.find(item => item.path === settingsPath).status)
+            .toBe(WORKSPACE_ARTIFACT_STATES.MATCH);
+    });
+
+    test('an empty or one-line local settings object takes the pin as valid JSON', async () => {
+        for (const [id, original, expected] of [
+            ['empty',    '{}\n',      dir => `{\n    "autoMemoryDirectory": ${JSON.stringify(dir)}\n}\n`],
+            ['one-line', '{"a":1}\n', dir => `{"autoMemoryDirectory": ${JSON.stringify(dir)},"a":1}\n`]
+        ]) {
+            const
+                opts         = options(makeAgent('claude-code', {id})),
+                settingsPath = path.join(opts.targetRepoRoot, '.claude', 'settings.local.json');
+
+            await fs.mkdir(path.dirname(settingsPath), {recursive: true});
+            await fs.writeFile(settingsPath, original);
+            await prepareManagedAgentWorkspace(opts);
+
+            expect(await read(settingsPath)).toBe(expected(path.join(instanceRoot, id, 'memory')));
+        }
+    });
+
+    test('a local settings file naming another memory directory, or holding no JSON object, refuses untouched', async () => {
+        for (const [id, original] of [
+            ['elsewhere', '{"autoMemoryDirectory": "/elsewhere"}\n'],
+            ['broken',    '{ "permissions": \n'],
+            ['array',     '[]\n']
+        ]) {
+            const
+                opts         = options(makeAgent('claude-desktop', {id})),
+                settingsPath = path.join(opts.targetRepoRoot, '.claude', 'settings.local.json');
+
+            await fs.mkdir(path.dirname(settingsPath), {recursive: true});
+            await fs.writeFile(settingsPath, original);
+
+            await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({
+                code    : 'FLEET_WORKSPACE_DIVERGENT',
+                artifact: {path: settingsPath, ownedKeys: 'autoMemoryDirectory'}
+            });
+            expect(await read(settingsPath)).toBe(original);
+        }
+    });
+
+    test('a symlinked .claude directory refuses the pin before anything is written through it', async () => {
+        const
+            opts    = options(makeAgent('claude-code')),
+            outside = path.join(root, 'outside');
+
+        await fs.mkdir(outside, {recursive: true});
+        await fs.mkdir(opts.targetRepoRoot, {recursive: true});
+        await fs.symlink(outside, path.join(opts.targetRepoRoot, '.claude'));
+
+        await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+        expect(await fs.readdir(outside)).toEqual([]);
+    });
+
+    test('only the Claude families get a memory pin', async () => {
+        for (const harnessType of ['codex', 'codex-desktop', 'kimi-code', 'opencode']) {
+            const opts = options(makeAgent(harnessType, {id: harnessType}));
+
+            await prepareManagedAgentWorkspace(opts);
+
+            await expect(fs.stat(path.join(opts.targetRepoRoot, '.claude', 'settings.local.json'))).rejects.toMatchObject({code: 'ENOENT'});
+            await expect(fs.stat(path.join(instanceRoot, harnessType, 'memory'))).rejects.toMatchObject({code: 'ENOENT'});
+        }
     });
 
     test('Antigravity and unprovisioned GitLab credential authority fail before hydration', async () => {

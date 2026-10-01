@@ -3,7 +3,8 @@ import {
     assertContained,
     assertRoot,
     assertSeatSegment,
-    HARNESS_SEGMENT
+    HARNESS_SEGMENT,
+    MEMORY_SEGMENT
 } from './deriveAgentRepoPath.mjs';
 
 /**
@@ -41,4 +42,28 @@ export function deriveAgentInstanceHome({instanceRoot, agentId, harnessType} = {
     assertSeatSegment(harnessType, 'harnessType', 'deriveAgentInstanceHome');
 
     return assertContained(root, path.resolve(root, agentId, HARNESS_SEGMENT, harnessType), 'deriveAgentInstanceHome')
+}
+
+/**
+ * @summary Derive the memory directory of a Fleet agent's seat: `<instanceRoot>/<agentId>/memory`,
+ * beside its clones and harness homes.
+ *
+ * A Claude seat keeps its auto memory here whichever checkout it opens, so a moved checkout or a second
+ * repository never re-keys it. Claude Code would otherwise key memory by the checkout path. The memory is
+ * the seat's, not one harness family's, so it sits beside `harness/` rather than inside a home. The
+ * `memory` segment is one no clone owner may take ({@link MEMORY_SEGMENT}).
+ *
+ * @param {Object} options
+ * @param {String} options.instanceRoot An absolute path to the trusted agents root.
+ * @param {String} options.agentId      The Fleet agent id (untrusted).
+ * @returns {String} `<instanceRoot>/<agentId>/memory`, absolute, stable, contained.
+ * @throws {Error} If `instanceRoot` is not an absolute path, `agentId` fails the segment rule, or
+ * (defense-in-depth) the resolved path escapes `instanceRoot`.
+ */
+export function deriveAgentMemoryDir({instanceRoot, agentId} = {}) {
+    const root = assertRoot(instanceRoot, 'instanceRoot', 'deriveAgentMemoryDir');
+
+    assertSeatSegment(agentId, 'agentId', 'deriveAgentMemoryDir');
+
+    return assertContained(root, path.resolve(root, agentId, MEMORY_SEGMENT), 'deriveAgentMemoryDir')
 }

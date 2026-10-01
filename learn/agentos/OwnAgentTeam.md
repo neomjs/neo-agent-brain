@@ -239,8 +239,8 @@ families, four homes (`ai/services/fleet/deriveHarnessLaunchSpec.mjs`):
 
 | Fleet harness | The seat's home, as Fleet passes it | Where its markdown memory lives | Its window |
 |---|---|---|---|
-| `claude-desktop` | `<seat>/harness/claude-desktop` as `--user-data-dir` (and `CLAUDE_USER_DATA_DIR`) — the app profile only; the Claude Code inside keeps the default config root `~/.claude` | `~/.claude/projects/<project>/memory/` — measured on this setup | the app window; sign in there |
-| `claude-code` | `<seat>/harness/claude-code` as `CLAUDE_CONFIG_DIR` — the whole config root moves with the seat, its `.claude.json` included (`<CLAUDE_CONFIG_DIR>/.claude.json`, as Fleet's launch contract documents and an isolated CLI run confirmed) | `<CLAUDE_CONFIG_DIR>/projects/<project>/memory/` — Claude's documented storage rule, not yet witnessed on a Fleet seat | none (a supervised stream); the login is a command against that config root |
+| `claude-desktop` | `<seat>/harness/claude-desktop` as `--user-data-dir` (and `CLAUDE_USER_DATA_DIR`) — the app profile only; the Claude Code inside keeps the default config root `~/.claude` | `<seat>/memory/` — Fleet pins it (below) | the app window; sign in there |
+| `claude-code` | `<seat>/harness/claude-code` as `CLAUDE_CONFIG_DIR` — the whole config root moves with the seat, its `.claude.json` included (`<CLAUDE_CONFIG_DIR>/.claude.json`, as Fleet's launch contract documents and an isolated CLI run confirmed) | `<seat>/memory/` — Fleet pins it (below) | none (a supervised stream); the login is a command against that config root |
 | `codex-desktop` | `<seat>/harness/codex-desktop` — `codex-home/` inside it is `CODEX_HOME`, `electron-profile/` is `--user-data-dir` | `<seat>/harness/codex-desktop/codex-home/memories/` | the app window; sign in there |
 | `codex` | `<seat>/harness/codex` as `CODEX_HOME` | `<CODEX_HOME>/memories/` | none; the login is a command against that home |
 
@@ -249,24 +249,22 @@ config root:
 
 | Surface | Where | In the move? |
 |---|---|---|
-| Markdown memory (the index and its files) | `~/.claude/projects/<project>/memory/` | Copy |
+| Markdown memory (the index and its files) | `~/.claude/projects/<project>/memory/` | Copy, into the seat's `<seat>/memory/` |
 | Session transcripts | `~/.claude/projects/<project>/*.jsonl` | Optional — resume history only; the Memory Core is the archive |
 | Project entry (allowed tools, MCP toggles, trust) | `~/.claude.json` → `projects["<cwd>"]` on the Desktop family; the CLI family's file is `<CLAUDE_CONFIG_DIR>/.claude.json` | Copy the entry onto the new cwd, in the branch's own file |
-| Permission allowlist | `<checkout>/.claude/settings.local.json` | Copy into the new clone, after Fleet cloned it |
+| Permission allowlist | `<checkout>/.claude/settings.local.json` | Merge into the new clone's file, after Fleet cloned it — that file carries Fleet's memory pin |
 | App profile (login, sessions, MCP config) | the instance's `--user-data-dir` | No — sign in once; Fleet writes the MCP config |
 
 `<project>` is derived from the repository path — every character outside `A–Z`, `a–z` and
 `0–9` becomes `-`, a space included: `/Users/me/agents/ada/neomjs/neo` becomes
 `-Users-me-agents-ada-neomjs-neo` — and every worktree and subdirectory of one repository
 shares it (Claude Code's [memory storage rule](https://code.claude.com/docs/en/memory#storage-location)).
-Two documented overrides change the destination: `autoMemoryDirectory` in settings relocates
-the memory directory, and `CLAUDE_CODE_PROJECT_DIR_NAME` beside `CLAUDE_CONFIG_DIR` fixes the
-`projects/` name regardless of where the clone lives
-([environment variables](https://code.claude.com/docs/en/env-vars)) — the latter is what makes
-a Claude seat's memory path independent of its checkout path, so a seat launched that way
-never needs the derivation at all. On a moved config root or with either override, do not
-derive: start one session on the new clone, find the directory Claude created, and copy into
-it before the second session.
+A Fleet seat does not use that derivation. Fleet writes `autoMemoryDirectory: <seat>/memory`
+into the clone's `.claude/settings.local.json` at every Start, for both Claude families, so a
+seat keeps one memory whichever checkout it opens and wherever a checkout moves
+([memory storage](https://code.claude.com/docs/en/memory#storage-location)). Claude Code
+honours the setting once the folder is trusted. The derivation still names the *old* directory,
+the source of the copy.
 
 Codex keys differently, and the move is simpler for it. Read off a live Codex seat by a Codex
 maintainer (`CODEX_HOME` is one instance directory, not a per-project one):
@@ -289,20 +287,19 @@ The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that fami
    path and, from the table above, the home its harness family reads.
 2. Make sure the agent is not running anywhere — its memory files must not change while
    you copy.
-3. Copy the memory directory and prove the copy. *(Claude Desktop)* the destination is the
-   new clone's `<project>` directory under the default config root:
+3. Copy the memory directory and prove the copy. *(Claude)* the destination is the seat's
+   memory directory, for both families:
 
    ```bash
-   OLD=~/.claude/projects/<old project>
-   NEW=~/.claude/projects/<new project>
-   mkdir -p "$NEW/memory"
-   rsync -a "$OLD/memory/" "$NEW/memory/"
-   diff -rq "$OLD/memory" "$NEW/memory" && echo memory-identical
+   OLD=~/.claude/projects/<old project>/memory
+   NEW=<seat>/memory
+   mkdir -p -m 700 "$NEW"
+   rsync -a "$OLD/" "$NEW/"
+   diff -rq "$OLD" "$NEW" && echo memory-identical
    ```
 
    *(Codex)* the destination is `memories/` under the seat's `CODEX_HOME` from the table —
-   the same `rsync` and `diff -rq`, before the first Start. *(Claude Code CLI)* the config
-   root moved with the seat: find the destination as described above before copying.
+   the same `rsync` and `diff -rq`, before the first Start.
 4. *(Claude)* Clone the project entry from the old agent's config file into the seat's. The
    source is wherever the old agent's config root was (`~/.claude.json` on the default root).
    The destination is the branch's own file — `~/.claude.json` for the Desktop family, where
@@ -325,14 +322,24 @@ The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that fami
 
    *(Codex)* add the trust table for the new clone's path to the seat's `config.toml`.
 5. Start the seat in the Fleet Manager. *(Desktop families)* sign in inside the window;
-   *(CLI families)* run the harness's login against the seat's home. *(Claude)* only now copy
-   `.claude/settings.local.json` into the new clone: the clone exists after the first Start,
-   and nothing may sit at the checkout path before it — `git clone` refuses a directory that
-   is not empty; the harness home beside it was prepared in step 3.
+   *(CLI families)* run the harness's login against the seat's home. *(Claude)* only now bring
+   the old `.claude/settings.local.json` across: the clone exists after the first Start, and
+   nothing may sit at the checkout path before it — `git clone` refuses a directory that is not
+   empty; the harness home beside it was prepared in step 3. Merge it rather than copy it,
+   because the new clone's file already holds Fleet's memory pin, and a copy over it would send
+   the next session's memory back to a checkout slug:
+
+   ```bash
+   OLD=<old checkout>/.claude/settings.local.json
+   NEW=<new clone>/.claude/settings.local.json
+   jq -s '.[0] * .[1]' "$OLD" "$NEW" > "$TMPDIR/settings.json" \
+     && jq -e .autoMemoryDirectory "$TMPDIR/settings.json" \
+     && mv "$TMPDIR/settings.json" "$NEW"
+   ```
 6. Open the new clone in the harness and spend one turn on verification: ask the agent for
    the identity line its memory index loaded and the absolute path of the memory directory
-   it writes to, and have it write one witness file there. The file must appear in the new
-   directory and not in the old one.
+   it writes to (*(Claude)* `<seat>/memory`), and have it write one witness file there. The
+   file must appear in the new directory and not in the old one.
 7. Rollback is the old launch. Nothing was moved, so nothing needs restoring.
 8. Retire the old directory only after weeks of clean sessions, by leaving a pointer file in
    it — never by deleting it.

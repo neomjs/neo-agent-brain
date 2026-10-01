@@ -1,7 +1,10 @@
-import {test, expect}            from '@playwright/test';
-import path                      from 'path';
-import {deriveAgentInstanceHome} from '../../../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
-import {deriveAgentRepoPath}     from '../../../../../../ai/services/fleet/deriveAgentRepoPath.mjs';
+import {test, expect} from '@playwright/test';
+import path           from 'path';
+import {
+    deriveAgentInstanceHome,
+    deriveAgentMemoryDir
+} from '../../../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
+import {deriveAgentRepoPath} from '../../../../../../ai/services/fleet/deriveAgentRepoPath.mjs';
 
 // Pure function — imported directly (no fs / git / Neo runtime), so the suite has no host-runtime
 // side effects and each case is fully isolated. Mirrors deriveAgentRepoPath.spec.
@@ -66,5 +69,34 @@ test.describe('deriveAgentInstanceHome (Fleet Manager harness instance-home deri
         expect(() => deriveAgentInstanceHome({instanceRoot: '../../etc',    agentId: 'a', harnessType: 'codex'})).toThrow(/absolute/);
         expect(() => deriveAgentInstanceHome({instanceRoot: '',             agentId: 'a', harnessType: 'codex'})).toThrow(/instanceRoot/);
         expect(() => deriveAgentInstanceHome({})).toThrow(/instanceRoot/);
+    });
+});
+
+test.describe('deriveAgentMemoryDir (a seat\'s memory, whichever checkout it opens)', () => {
+    test('derives <root>/<agentId>/memory, beside the agent\'s clones and harness homes', () => {
+        const
+            memory = deriveAgentMemoryDir({instanceRoot: '/srv/agents', agentId: 'neo-opus-ada'}),
+            home   = deriveAgentInstanceHome({instanceRoot: '/srv/agents', agentId: 'neo-opus-ada', harnessType: 'claude-desktop'}),
+            clone  = deriveAgentRepoPath({managedRoot: '/srv/agents', agentId: 'neo-opus-ada', repoSlug: 'neomjs/neo'});
+
+        expect(memory).toBe(path.join(ROOT, 'neo-opus-ada', 'memory'));
+        expect(path.dirname(memory)).toBe(path.dirname(path.dirname(home)));
+        expect(path.dirname(memory)).toBe(path.dirname(path.dirname(clone)));
+        expect(deriveAgentMemoryDir({instanceRoot: '/srv/agents', agentId: 'neo-opus-ada'})).toBe(memory)
+    });
+
+    test('distinct agents never share a memory, and no checkout can land in one', () => {
+        expect(deriveAgentMemoryDir({instanceRoot: '/srv/agents', agentId: 'neo-fable'}))
+            .not.toBe(deriveAgentMemoryDir({instanceRoot: '/srv/agents', agentId: 'neo-fable-clio'}));
+        expect(() => deriveAgentRepoPath({managedRoot: '/srv/agents', agentId: 'neo-fable', repoSlug: 'memory/notes'})).toThrow(/reserved/)
+    });
+
+    test('refuses an invalid agent id or a relative root', () => {
+        for (const agentId of ['..', '.', 'a/b', 'Ada', '', 42]) {
+            expect(() => deriveAgentMemoryDir({instanceRoot: '/srv/agents', agentId})).toThrow(/'agentId'/);
+        }
+
+        expect(() => deriveAgentMemoryDir({instanceRoot: '../agents', agentId: 'a'})).toThrow(/absolute/);
+        expect(() => deriveAgentMemoryDir({})).toThrow(/instanceRoot/)
     });
 });

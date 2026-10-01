@@ -17,6 +17,23 @@ const SEGMENT = /^(?!\.{1,2}$)(?!-)[a-z0-9._-]{1,100}$/;
 export const HARNESS_SEGMENT = 'harness';
 
 /**
+ * The segment under an agent's folder that holds the memory the seat keeps whichever checkout it opens.
+ * No clone owner may take it, so a checkout can never land inside that memory.
+ * @type {String}
+ */
+export const MEMORY_SEGMENT = 'memory';
+
+/**
+ * What each reserved owner segment holds, for the refusal.
+ * @type {Object<String, String>}
+ * @private
+ */
+const RESERVED_OWNERS = {
+    [HARNESS_SEGMENT]: "an agent's harness homes",
+    [MEMORY_SEGMENT] : "an agent's memory"
+};
+
+/**
  * @summary Derive the managed checkout path of a Fleet agent's clone of a repo:
  * `<managedRoot>/<agentId>/<owner>/<repo>`, the layout a person would make by hand.
  *
@@ -41,8 +58,8 @@ export const HARNESS_SEGMENT = 'harness';
  * @param {String} options.repoSlug    `<owner>/<repo>`, e.g. `'neomjs/neo'` (untrusted).
  * @returns {String} `<managedRoot>/<agentId>/<owner>/<repo>`, absolute, stable, contained.
  * @throws {Error} If `managedRoot` is not an absolute path, `repoSlug` is not exactly
- * `<owner>/<repo>`, a segment fails {@link assertSeatSegment}, the owner is {@link HARNESS_SEGMENT},
- * or (defense-in-depth) the resolved path escapes `managedRoot`.
+ * `<owner>/<repo>`, a segment fails {@link assertSeatSegment}, the owner is {@link HARNESS_SEGMENT} or
+ * {@link MEMORY_SEGMENT}, or (defense-in-depth) the resolved path escapes `managedRoot`.
  */
 export function deriveAgentRepoPath({managedRoot, agentId, repoSlug} = {}) {
     const root = assertRoot(managedRoot, 'managedRoot', 'deriveAgentRepoPath');
@@ -56,8 +73,8 @@ export function deriveAgentRepoPath({managedRoot, agentId, repoSlug} = {}) {
 
 /**
  * @summary Refuse any repo slug that could not name a seat's checkout: exactly `<owner>/<repo>`, both
- * seat segments, and never the {@link HARNESS_SEGMENT} owner. The one rule for the checkout path and for
- * the verb that records a seat's repo.
+ * seat segments, and never a reserved owner ({@link HARNESS_SEGMENT}, {@link MEMORY_SEGMENT}). The one
+ * rule for the checkout path and for the verb that records a seat's repo.
  * @param {*} repoSlug
  * @param {String} caller For the error message
  * @returns {String[]} `[owner, repo]`
@@ -73,8 +90,8 @@ export function assertRepoSlug(repoSlug, caller) {
     assertSeatSegment(owner, 'owner', caller);
     assertSeatSegment(repo,  'repo',  caller);
 
-    if (owner === HARNESS_SEGMENT) {
-        throw new Error(`${caller}: the owner '${HARNESS_SEGMENT}' is reserved for an agent's harness homes.`);
+    if (Object.hasOwn(RESERVED_OWNERS, owner)) {
+        throw new Error(`${caller}: the owner '${owner}' is reserved for ${RESERVED_OWNERS[owner]}.`);
     }
 
     return [owner, repo]

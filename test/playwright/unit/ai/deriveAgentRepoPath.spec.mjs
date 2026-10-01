@@ -51,13 +51,15 @@ test.describe('deriveAgentRepoPath (Fleet Manager repo-provisioning path derivat
         refuse('a'.repeat(101), 'neomjs/neo', /'agentId'/);
     });
 
-    test('the slug is exactly <owner>/<repo>, and the owner `harness` is reserved for harness homes', () => {
+    test('the slug is exactly <owner>/<repo>, and the owners `harness` and `memory` are reserved for the seat', () => {
         for (const repoSlug of ['neo', 'neomjs/neo/extra', '/neo', 'neomjs/', '../../root', undefined]) {
             expect(() => deriveAgentRepoPath({managedRoot: '/srv/agents', agentId: 'ada', repoSlug})).toThrow();
         }
 
         expect(() => deriveAgentRepoPath({managedRoot: '/srv/agents', agentId: 'ada', repoSlug: 'harness/codex'}))
-            .toThrow(/reserved/);
+            .toThrow(/'harness' is reserved for an agent's harness homes/);
+        expect(() => deriveAgentRepoPath({managedRoot: '/srv/agents', agentId: 'ada', repoSlug: 'memory/notes'}))
+            .toThrow(/'memory' is reserved for an agent's memory/);
     });
 
     test('the managed root is honored verbatim — same agent/repo under different roots diverges', () => {

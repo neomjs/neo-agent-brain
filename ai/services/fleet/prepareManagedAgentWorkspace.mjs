@@ -7,9 +7,12 @@ import {isDeepStrictEqual}                         from 'node:util';
 import {parse as parseToml}                        from 'smol-toml';
 import {hydrateCurrentWorktree}                    from '../../scripts/migrations/bootstrapWorktree.mjs';
 import {MCP_SERVERS, resolveMcpMatrix}             from '../../../src/fleet/contract/mcpServers.mjs';
-import {deriveAgentInstanceHome}                   from './deriveAgentInstanceHome.mjs';
 import {deriveNodeRuntimeEnv}                      from './deriveNodeRuntimeEnv.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig} from './generateKimiSeatConfig.mjs';
+import {
+    deriveAgentInstanceHome,
+    deriveAgentMemoryDir
+} from './deriveAgentInstanceHome.mjs';
 import {
     MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS as MCP_SERVER_DESCRIPTORS,
     createManagedAgentWorkspacePlan
@@ -25,7 +28,9 @@ const
     CODEX_REMOTE_TRUST_END   = '# Fleet-managed remote MCP project trust end',
     CODEX_PROJECT_HEADER     = '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; `enabled = false` marks a server the Fleet switches off, the others follow the seat\'s own switch.',
     // The header an earlier Fleet wrote, while the tables still carried `enabled`.
-    CODEX_PROJECT_HEADER_V1  = '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; enabled values are the current Brain projection.';
+    CODEX_PROJECT_HEADER_V1  = '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; enabled values are the current Brain projection.',
+    CLAUDE_HARNESS_TYPES     = new Set(['claude-code', 'claude-desktop']),
+    CLAUDE_MEMORY_SETTING    = 'autoMemoryDirectory';
 
 /**
  * @summary Convergence states for Fleet-owned workspace artifacts. `DIVERGENT` is emitted on the
@@ -359,6 +364,13 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         remoteMcpCapability,
         fileSystem
     });
+
+    artifacts.push(...await convergeSeatMemory({
+        agent,
+        targetRepoRoot: canonicalTargetRepoRoot,
+        instanceRoot  : canonicalInstanceRoot,
+        fileSystem
+    }));
 
     const seatInstructions = await convergeSeatInstructions({
         harnessType   : agent.harnessType,
@@ -840,6 +852,136 @@ async function retireSeatInstructions({filePath, receiptPath, trustedRoot, fileS
 }
 
 /**
+ * @summary Pins a Claude seat's auto memory to its seat folder. Claude Code keys auto memory by the
+ * checkout unless `autoMemoryDirectory` names a directory, so the checkout's local settings name
+ * `<agentsRoot>/<agentId>/memory`: the seat keeps one memory whichever checkout it opens and wherever a
+ * checkout moves. The directory is created owner-only, because it holds the seat's notes. The setting is
+ * Claude Code's, so the other families get nothing here.
+ * @param {Object} options
+ * @param {Object} options.agent          Fleet registry agent definition.
+ * @param {String} options.targetRepoRoot Absolute provisioned target checkout path.
+ * @param {String} options.instanceRoot   Absolute Fleet agents root.
+ * @param {Object} options.fileSystem     Promise filesystem seam.
+ * @returns {Promise<Object[]>} The directory and settings artifacts, or none for another family.
+ * @private
+ */
+async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, fileSystem}) {
+    if (!CLAUDE_HARNESS_TYPES.has(agent.harnessType)) return [];
+
+    const memoryDir = deriveAgentMemoryDir({instanceRoot, agentId: agent.id});
+
+    return [
+        await ensureDirectoryArtifact(memoryDir, instanceRoot, fileSystem, {mode: 0o700}),
+        await convergeJsonSetting({
+            filePath   : path.join(targetRepoRoot, '.claude', 'settings.local.json'),
+            key        : CLAUDE_MEMORY_SETTING,
+            value      : memoryDir,
+            trustedRoot: targetRepoRoot,
+            fileSystem
+        })
+    ]
+}
+
+/**
+ * @summary Converges one Fleet-owned top-level key in a JSON settings file the seat and its person also
+ * write. The key goes into the file's own text, so every other byte stays as it was. A value already
+ * there that differs is refused, never replaced: it is someone else's decision about the same thing.
+ * @param {Object} options
+ * @param {String} options.filePath    The settings file.
+ * @param {String} options.key         The Fleet-owned top-level key.
+ * @param {*}      options.value       Its JSON-serializable value.
+ * @param {String} options.trustedRoot The root no path segment may leave by a symlink.
+ * @param {Object} options.fileSystem  Promise filesystem seam.
+ * @returns {Promise<Object>} The artifact, `CREATED`, `MATCH` or `UPDATED`.
+ * @throws {ManagedWorkspacePreparationError} For a file that is not a JSON object, or a different value.
+ * @private
+ */
+async function convergeJsonSetting({filePath, key, value, trustedRoot, fileSystem}) {
+    await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: key});
+
+    let existing;
+
+    try {
+        existing = await fileSystem.readFile(filePath, 'utf8')
+    } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+
+        await fileSystem.mkdir(path.dirname(filePath), {recursive: true});
+        await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: key});
+
+        try {
+            await fileSystem.writeFile(filePath, `${JSON.stringify({[key]: value}, null, 4)}\n`, {encoding: 'utf8', flag: 'wx', mode: 0o600});
+            return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.CREATED, ownedKeys: key}
+        } catch (writeError) {
+            if (writeError?.code !== 'EEXIST') throw writeError;
+            existing = await fileSystem.readFile(filePath, 'utf8')
+        }
+    }
+
+    const settings = parseJsonObject(existing);
+
+    if (!settings) throw divergentArtifact(filePath, key, 'not a JSON object');
+
+    if (Object.hasOwn(settings, key)) {
+        if (isDeepStrictEqual(settings[key], value)) {
+            return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: key}
+        }
+
+        throw divergentArtifact(filePath, key, `it already names another ${key}`)
+    }
+
+    const merged = insertJsonProperty(existing, key, value);
+
+    if (!isDeepStrictEqual(parseJsonObject(merged), {...settings, [key]: value})) {
+        throw divergentArtifact(filePath, key, 'the insertion could not preserve the file')
+    }
+
+    await publishTextAtomically({filePath, content: merged, fileSystem});
+
+    return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.UPDATED, ownedKeys: key}
+}
+
+/**
+ * @summary Inserts one property at the top of a JSON object's source, leaving every other byte as it
+ * was. The new line takes the indentation of the property after it, or four spaces in an empty object.
+ * @param {String} source A JSON object's source.
+ * @param {String} key
+ * @param {*}      value
+ * @returns {String}
+ * @private
+ */
+function insertJsonProperty(source, key, value) {
+    const
+        open  = findJsonObjectRange(source).start + 1,
+        first = skipJsonTrivia(source, open),
+        entry = `${JSON.stringify(key)}: ${JSON.stringify(value)}`;
+
+    if (source[first] === '}') {
+        return `${source.slice(0, open)}\n    ${entry}\n${source.slice(first)}`
+    }
+
+    const lead = source.slice(open, first);
+
+    return `${source.slice(0, open)}${lead.includes('\n') ? lead.slice(lead.lastIndexOf('\n')) : ''}${entry},${source.slice(open)}`
+}
+
+/**
+ * @summary Parses strict JSON and keeps it only when it is a plain object.
+ * @param {String} source
+ * @returns {Object|null}
+ * @private
+ */
+function parseJsonObject(source) {
+    try {
+        const value = JSON.parse(source);
+
+        return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+    } catch {
+        return null
+    }
+}
+
+/**
  * @summary Converge a Codex seat's project MCP tables and its Codex home. The `enabled` lines are
  * converged first ({@link convergeCodexProjectSwitches}): the Fleet switches servers off in the
  * project layer and leaves the others to the seat's own switch, which writes the home.
@@ -858,7 +1000,7 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
         homeContent     = renderCodexHomeConfig(),
         remote          = plan.some(server => server.target === 'tenant'),
         artifacts       = [];
-    const switched    = await convergeCodexProjectSwitches({
+    const switched = await convergeCodexProjectSwitches({
         filePath   : projectPath,
         plan,
         instanceHome,
@@ -2522,8 +2664,12 @@ async function convergeTextArtifact({filePath, desiredContent, ownedProjection, 
     );
 }
 
-/** @private */
-async function ensureDirectoryArtifact(directoryPath, trustedRoot, fileSystem) {
+/**
+ * @summary Converges one directory: create it when absent (with `mode` when given), match it when it
+ * is a real directory, refuse a symlink or any other entry. An existing directory keeps its mode.
+ * @private
+ */
+async function ensureDirectoryArtifact(directoryPath, trustedRoot, fileSystem, {mode} = {}) {
     let stat;
     try {
         stat = await fileSystem.lstat(directoryPath);
@@ -2545,7 +2691,7 @@ async function ensureDirectoryArtifact(directoryPath, trustedRoot, fileSystem) {
         return {path: directoryPath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: 'directory'};
     }
 
-    await fileSystem.mkdir(directoryPath, {recursive: true});
+    await fileSystem.mkdir(directoryPath, {recursive: true, ...(mode ? {mode} : {})});
     await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: directoryPath, fileSystem, label: 'directory'});
     return {path: directoryPath, status: WORKSPACE_ARTIFACT_STATES.CREATED, ownedKeys: 'directory'};
 }
