@@ -144,6 +144,15 @@ surface that selects Gemini. `NEO_GEMINI_MODEL` and `NEO_GEMINI_EMBEDDING_MODEL`
 name its chat and embedding models (`gemini-3.5-flash` and `gemini-embedding-001`
 by default).
 
+Every provider key has a file sibling for secret-file-aware runtimes:
+`GEMINI_API_KEY_FILE` beside `GEMINI_API_KEY`, `NEO_OPENAI_COMPATIBLE_API_KEY_FILE`
+beside `NEO_OPENAI_COMPATIBLE_API_KEY`. Exactly one carrier may be set — the clients
+read the resolved pair at the use site through `readSecretCarrier`, and both set or
+(where the role needs a key) neither set fails loud naming the two leaves. The local
+Compose profile mounts the hosted preset's key as the `gemini-api-key` secret and
+points the file leaf at `/run/secrets/gemini-api-key`; the first-run credential step
+writes that file owner-only and emits only paths into the env carrier.
+
 The local context leaves are role-based, not provider-brand-based:
 `localModels.chat` protects chat, summaries, and graph generation;
 `localModels.embedding` protects vector input. The readiness helpers use those

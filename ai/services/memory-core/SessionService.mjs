@@ -1,4 +1,5 @@
 import aiConfig                                      from '../../mcp/server/memory-core/config.mjs';
+import {readSecretCarrier}                           from '../shared/secretCarrier.mjs';
 import Base                                          from 'neo.mjs/src/core/Base.mjs';
 import {buildChatModel}                              from '../../provider/buildChatModel.mjs';
 import {invokeWithGuardrail}                         from './helpers/consumerFrictionHelper.mjs';
@@ -189,7 +190,7 @@ class SessionService extends Base {
             modelProvider           : aiConfig.modelProvider,
             openAiCompatibleConfig  : aiConfig.openAiCompatible,
             ollamaConfig            : aiConfig.ollama,
-            geminiApiKey            : aiConfig.geminiApiKey,
+            geminiApiKey            : readSecretCarrier({value: aiConfig.geminiApiKey, file: aiConfig.geminiApiKeyFile, valueName: 'geminiApiKey', fileName: 'geminiApiKeyFile'}),
             geminiModelName         : aiConfig.modelName,
             providerActivityRecorder: MemoryCoreRecorderService,
             providerActivityService : 'memory-core'

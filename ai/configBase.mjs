@@ -863,6 +863,16 @@ class ConfigBase extends ConfigProvider {
                 model                  : leaf('google/gemma-4-26b-a4b', 'NEO_OPENAI_COMPATIBLE_MODEL', 'string'),
                 embeddingModel         : leaf('text-embedding-qwen3-embedding-8b', 'NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL', 'string'),
                 apiKey                 : leaf('', 'NEO_OPENAI_COMPATIBLE_API_KEY', 'string'),
+                /**
+                 * @summary File containing the OpenAI-compatible API key for secret-file-aware runtimes.
+                 *
+                 * The file sibling of `apiKey`: mutually exclusive with it, read at the use site through
+                 * `readSecretCarrier` (both set or, where a key is required, neither set fails loud naming
+                 * the two leaves), never logged. Compose mounts it as a secret so the rendered
+                 * configuration and the host record carry the path, never the credential.
+                 * @type {String}
+                 */
+                apiKeyFile             : leaf('', 'NEO_OPENAI_COMPATIBLE_API_KEY_FILE', 'string'),
                 unloadRetryCount       : leaf(3, 'NEO_OPENAI_COMPATIBLE_UNLOAD_RETRY_COUNT', 'number'),
                 unloadRetryDelayMs     : leaf(500, 'NEO_OPENAI_COMPATIBLE_UNLOAD_RETRY_DELAY_MS', 'number'),
                 contentionRetryCount   : leaf(2, 'NEO_OPENAI_COMPATIBLE_CONTENTION_RETRY_COUNT', 'number'),
@@ -1062,6 +1072,14 @@ class ConfigBase extends ConfigProvider {
              * @type {String}
              */
             geminiApiKey: leaf('', 'GEMINI_API_KEY', 'string'),
+            /**
+             * @summary File containing the Gemini API key for secret-file-aware runtimes — the file
+             * sibling of `geminiApiKey` (env stem `GEMINI_API_KEY` + `_FILE`): mutually exclusive with
+             * it, read at the use site through `readSecretCarrier`, never logged; Compose mounts it as a
+             * secret so the rendered configuration and the host record carry the path, never the key.
+             * @type {String}
+             */
+            geminiApiKeyFile: leaf('', 'GEMINI_API_KEY_FILE', 'string'),
             /**
              * @summary Enforced vector dimension across shared vector collections.
              *

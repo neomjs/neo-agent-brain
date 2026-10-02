@@ -24,6 +24,7 @@ import readline        from 'node:readline/promises';
 import {fileURLToPath} from 'node:url';
 import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../services/fleet/firstRunRecipe.mjs';
 import {EFFECT_IDS, admitCredentialReference, applyEffect, createHost, persistSetupRecord, recordConsent, settleReceipt} from '../../services/fleet/hostEffects.mjs';
+import {composeCredentialEffects, presetEnvRefusals}                                          from '../../services/fleet/credentialStep.mjs';
 import {presets}                                                                              from '../../services/fleet/placementPresets.mjs';
 import {createDefaultReaders, probePlacement}                                                 from '../../services/fleet/probePlacement.mjs';
 import {RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath} from '../../services/fleet/setupRunRecord.mjs';
@@ -205,10 +206,35 @@ async function ask(question, {input, output}) {
     }
 }
 
-async function answerQuestions({evaluation, answers, record, recordPath, host, io, interactive, stderr}) {
-    let current = record;
+/**
+ * @summary Answers the pending questions in recipe order, re-evaluating after every consent, so a
+ * question the consented preset decides (the provider key) is asked only once that preset requires it.
+ * A question left unanswered or refused is not asked twice in one pass. Exported for the renderer spec.
+ * @param {Object} options
+ * @param {Function} options.evaluate `(record) → Promise<evaluation>`: the run's evaluation over a candidate record.
+ * @param {Object}   options.answers  Answers by step id (a fake host's, or none when prompting).
+ * @param {Object}   options.record
+ * @param {String}   options.recordPath
+ * @param {Object}   options.host
+ * @param {Object}   options.io `{input, output}` for the prompts.
+ * @param {Boolean}  options.interactive
+ * @param {Object}   options.stderr
+ * @returns {Promise<Object>} The record after the consents this pass could record.
+ */
+export async function answerQuestions({evaluate, answers, record, recordPath, host, io, interactive, stderr}) {
+    const asked = new Set();
 
-    for (const step of evaluation.steps.filter(row => row.kind === STEP_KINDS.question && row.status === STEP_STATUSES.pending)) {
+    let current = record, evaluation = await evaluate(current);
+
+    for (;;) {
+        const step = evaluation.steps.find(row => row.kind === STEP_KINDS.question && row.status === STEP_STATUSES.pending && !asked.has(row.id));
+
+        if (!step) {
+            return current;
+        }
+
+        asked.add(step.id);
+
         let answer = answers[step.id] ?? null;
 
         if (answer === null && interactive) {
@@ -240,36 +266,67 @@ async function answerQuestions({evaluation, answers, record, recordPath, host, i
             answer = admitted.path;
         }
 
-        current = (await recordConsent({stepId: step.id, answer, record: current, recordPath, host})).record;
+        current    = (await recordConsent({stepId: step.id, answer, record: current, recordPath, host})).record;
+        // the next question is decided by what was just consented
+        evaluation = await evaluate(current);
     }
-
-    return current;
 }
 
-async function performEffects({record, recordPath, host, layout, target, evaluation}) {
+/**
+ * @summary The credential step and the effects after it. The preset's env set is refused BEFORE any
+ * write when the profile would not honour it (`presetEnvRefusals` over the checkout's config and
+ * Compose files); the credentials are read from the operator's files and composed into secret files
+ * (the admission token, a minted Fleet plane bearer, a hosted preset's provider key) and `_FILE` env
+ * values — the carrier and the record carry paths, never a value.
+ */
+async function performEffects({record, recordPath, host, layout, target, evaluation, stderr}) {
     const
-        presetId  = record.consents.find(consent => consent.stepId === 'preset')?.answer ?? null,
-        preset    = presets.find(row => row.id === presetId),
-        patPath   = record.consents.find(consent => consent.stepId === 'plane-credential')?.answer ?? null;
+        consent = stepId => record.consents.find(row => row.stepId === stepId)?.answer ?? null,
+        preset  = presets.find(row => row.id === consent('preset')),
+        patPath = consent('plane-credential'),
+        keyPath = consent('provider-key');
 
     if (!preset || !patPath) {
         return record;
     }
 
-    const
-        pat     = (await host.fsModule.readFile(patPath, 'utf8')).trim(),
-        entries = {
-            ...preset.env,
-            GH_TOKEN          : pat,
-            NEO_PLANE_ID      : target.planeId,
-            NEO_PLANE_DATA_ROOT: target.dataRoot
-        };
+    const refusals = presetEnvRefusals({
+        preset,
+        configSource: await host.fsModule.readFile(path.join(brainRoot, 'ai/configBase.mjs'), 'utf8'),
+        composeTexts: await Promise.all(layout.composeFiles.map(file => host.fsModule.readFile(path.join(layout.composeDir, file), 'utf8')))
+    });
+
+    if (refusals.length > 0) {
+        stderr.write(`preset '${preset.id}' refused before any write:\n  ${refusals.join('\n  ')}\n`);
+
+        return record;
+    }
+
+    const credentials = composeCredentialEffects({
+        preset,
+        pat        : await host.fsModule.readFile(patPath, 'utf8'),
+        providerKey: keyPath ? await host.fsModule.readFile(keyPath, 'utf8') : '',
+        secretsDir : layout.secretsDir
+    });
+
+    if (credentials.refusals.length > 0) {
+        stderr.write(`credentials refused before any write:\n  ${credentials.refusals.join('\n  ')}\n`);
+
+        return record;
+    }
+
+    const entries = {
+        ...preset.env,
+        ...credentials.envEntries,
+        NEO_PLANE_ID       : target.planeId,
+        NEO_PLANE_DATA_ROOT: target.dataRoot
+    };
 
     let current = record;
 
     for (const [effectId, input] of [
+        [EFFECT_IDS.writeSecrets, {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))}],
         [EFFECT_IDS.writeEnv,     {path: layout.envFile, entries}],
-        [EFFECT_IDS.writeSecrets, {files: [{path: path.join(layout.secretsDir, 'fleet-plane-token'), content: pat}]}],
         [EFFECT_IDS.composeUp,    {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles}]
     ]) {
         const stepStatus = evaluation.steps.find(step => step.effectId === effectId)?.status;
@@ -404,16 +461,16 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         }
     }
 
-    const evaluate = () => evaluateRecipe({target, record, observers, presets, now: host.now});
+    const evaluate = (candidate = record) => evaluateRecipe({target, record: candidate, observers, presets, now: host.now});
 
-    let evaluation = await evaluate();
+    let evaluation;
 
-    record     = await answerQuestions({evaluation, answers, record, recordPath, host, io: {input: stdin, output: stdout}, interactive, stderr});
+    record     = await answerQuestions({evaluate, answers, record, recordPath, host, io: {input: stdin, output: stdout}, interactive, stderr});
     evaluation = await evaluate();
     record     = await settlePending({record, recordPath, host, evaluation});
     // performing reads the settled state: a settled effect is skipped as ok, an unsettled one halts the run
     evaluation = await evaluate();
-    record     = await performEffects({record, recordPath, host, layout, target, evaluation});
+    record     = await performEffects({record, recordPath, host, layout, target, evaluation, stderr});
     evaluation = await evaluate();
 
     stdout.write(options.json || !interactive ? `${JSON.stringify({runId, recordPath, ...evaluation}, null, 2)}\n` : renderText(evaluation));

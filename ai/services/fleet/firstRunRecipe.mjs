@@ -69,6 +69,7 @@ export const RECIPE_STEPS = Object.freeze([
     Object.freeze({id: 'placement',        kind: STEP_KINDS.observation, observer: 'placement',    summary: 'the presets this host bears, each with its reason'}),
     Object.freeze({id: 'preset',           kind: STEP_KINDS.question,                              summary: 'the inference preset'}),
     Object.freeze({id: 'plane-credential', kind: STEP_KINDS.question,    answer: 'file',           summary: 'the plane credential, kept as a secret file (the record holds its path)'}),
+    Object.freeze({id: 'provider-key',     kind: STEP_KINDS.question,    answer: 'file', requiredBy: 'providerKey', summary: 'the provider key file, when the consented preset requires one (the record holds its path)'}),
     Object.freeze({id: 'advanced',         kind: STEP_KINDS.question,    optional: true,           summary: 'advanced bindings, folded by default'}),
     Object.freeze({id: 'write-env',        kind: STEP_KINDS.effect,      observer: 'envCarrier',   effectId: 'write-env',     summary: 'the plane env carrier holds the preset and the plane bindings'}),
     Object.freeze({id: 'write-secrets',    kind: STEP_KINDS.effect,      observer: 'secretFiles',  effectId: 'write-secrets', summary: 'the secret files exist, owner-only'}),
@@ -141,7 +142,7 @@ function status(step, state, reason, extra = {}) {
     return {id: step.id, kind: step.kind, status: state, reason, summary: step.summary, ...extra};
 }
 
-function evaluateQuestion(step, {record, bound, bindingReason}) {
+function evaluateQuestion(step, {record, bound, bindingReason, presets}) {
     const consent = bound ? findConsent(record, step.id) : null;
 
     if (consent) {
@@ -150,6 +151,21 @@ function evaluateQuestion(step, {record, bound, bindingReason}) {
 
     if (step.optional) {
         return status(step, STEP_STATUSES.ok, 'folded: defaults apply', {answer: null});
+    }
+
+    if (step.requiredBy) {
+        // a question the consented preset decides: asked only when that preset requires the input
+        const
+            chosen = bound ? findConsent(record, 'preset') : null,
+            preset = chosen ? presets.find(row => row.id === chosen.answer) : null;
+
+        if (!preset) {
+            return status(step, STEP_STATUSES.pending, 'decided by the preset: none consented yet', {answer: null});
+        }
+
+        if (!(preset.requires ?? []).includes(step.requiredBy)) {
+            return status(step, STEP_STATUSES.ok, `not needed: the '${preset.id}' preset requires no ${step.requiredBy}`, {answer: null});
+        }
     }
 
     return status(step, STEP_STATUSES.pending, bound ? 'unanswered' : `unanswered (${bindingReason})`, {answer: null});
@@ -313,7 +329,7 @@ export async function evaluateRecipe({target, record = null, observers = {}, pre
 
     for (const step of RECIPE_STEPS) {
         if (step.kind === STEP_KINDS.question) {
-            steps.push(evaluateQuestion(step, {record, bound, bindingReason}));
+            steps.push(evaluateQuestion(step, {record, bound, bindingReason, presets}));
             continue;
         }
 

@@ -54,7 +54,7 @@ export function profileInputs(composeTexts) {
         }
     }
 
-    const inputs = new Set(bare), mappings = new Map();
+    const inputs = new Set(bare), mappings = new Map(), fed = new Set(feeds.values());
 
     for (const [name, input] of feeds) {
         inputs.add(input);
@@ -64,14 +64,19 @@ export function profileInputs(composeTexts) {
         }
     }
 
-    return {inputs, mappings};
+    // a bare input feeds no service env name: a secret's source file, a project name — the profile
+    // consumes it itself, so no leaf landing is expected of it
+    const bareInputs = new Set([...bare].filter(name => !fed.has(name)));
+
+    return {inputs, mappings, bareInputs};
 }
 
 /**
  * @summary The effective-profile parity check: every preset env key must be an input the profile reads,
- * and the env name it lands on (itself, or the mapped name) must be a binding `configBase` declares.
+ * and — for an input that feeds a service env name — the name it lands on (itself, or the mapped name)
+ * must be a binding `configBase` declares. A bare input (a secret's source path) needs no leaf.
  * @param {Object} preset
- * @param {{inputs: Set<String>, mappings: Map<String, String>}} profile From {@link profileInputs}.
+ * @param {{inputs: Set<String>, mappings: Map<String, String>, bareInputs: Set<String>}} profile From {@link profileInputs}.
  * @param {Set<String>} declared From {@link declaredEnvBindings}.
  * @returns {String[]} The offending keys, each with its reason; empty when the preset is honoured.
  */
@@ -79,6 +84,10 @@ export function unconsumedPresetEnvKeys(preset, profile, declared) {
     return Object.keys(preset?.env ?? {}).flatMap(key => {
         if (!profile.inputs.has(key)) {
             return [`${key}: not an input of the profile's Compose files`];
+        }
+
+        if (profile.bareInputs.has(key)) {
+            return [];
         }
 
         const landsOn = profile.mappings.get(key) ?? key;

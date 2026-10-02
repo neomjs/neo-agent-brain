@@ -23,6 +23,7 @@ import {
 }                           from '../shared/providerActivityLedger.mjs';
 import EmbeddingAdmission                                              from './helpers/EmbeddingAdmission.mjs';
 import MemoryCoreRecorderService                                       from './MemoryCoreRecorderService.mjs';
+import {readSecretCarrier}                                             from '../shared/secretCarrier.mjs';
 import {
     OPENAI_COMPATIBLE_REQUEST_TIMEOUT_CODE,
     PROVIDER_TIMEOUT_CODE,
@@ -548,6 +549,15 @@ function logEmbeddingAbort({provider, operation, error}) {
 }
 
 /**
+ * @summary The Gemini key from its two carriers, read at the use site: the value leaf, else the file
+ * sibling read at this call; `''` when neither is set, an error naming both leaves when both are.
+ * @returns {String}
+ */
+function readGeminiApiKey() {
+    return readSecretCarrier({value: aiConfig.geminiApiKey, file: aiConfig.geminiApiKeyFile, valueName: 'geminiApiKey', fileName: 'geminiApiKeyFile'});
+}
+
+/**
  * Determines whether TextEmbeddingService needs a Gemini embedding client for the active provider.
  * Kept pure so config-consolidation tests can pin the single-provider gate without
  * constructing the singleton or requiring a live `GEMINI_API_KEY`.
@@ -719,7 +729,7 @@ class TextEmbeddingService extends Base {
          *
          * The host was read inline at four sites, so a test needing a real endpoint had exactly one
          * way to point this service at it: write `aiConfig.openAiCompatible.host` on the shared
-         * singleton. ADR 0019 B4 calls that safety-critical — the write routes to shared state, so a
+         * singleton. A runtime write to the config is safety-critical — it routes to shared state, so a
          * missed cleanup or a test order means the next consumer reads the test's endpoint. This is
          * the sanctioned alternative: isolate the CONSUMER, never mutate the config.
          * @member {Function} openAiCompatibleHostFn_=() => aiConfig.openAiCompatible.host
@@ -765,9 +775,9 @@ class TextEmbeddingService extends Base {
         super.construct(config);
 
         if (shouldInitializeGeminiEmbeddingClient()) {
-            const apiKey = aiConfig.geminiApiKey;
+            const apiKey = readGeminiApiKey();
             if (!apiKey) {
-                logger.warn('⚠️  [TextEmbeddingService] GEMINI_API_KEY not set. Semantic search features with Gemini will be unavailable.');
+                logger.warn('⚠️  [TextEmbeddingService] no Gemini key is set (geminiApiKey or geminiApiKeyFile). Semantic search features with Gemini will be unavailable.');
             } else {
                 const genAI = new GoogleGenerativeAI(apiKey);
                 this.embeddingModel = genAI.getGenerativeModel({model: aiConfig.embeddingModel});
@@ -2297,9 +2307,9 @@ class TextEmbeddingService extends Base {
                 );
                 return result.embeddings?.[0];
             } else if (explicitProvider === 'gemini') {
-                const geminiKey = aiConfig.geminiApiKey;
+                const geminiKey = readGeminiApiKey();
                 if (!geminiKey) {
-                     throw new Error('Semantic search unavailable: GEMINI_API_KEY is missing.');
+                     throw new Error('Semantic search unavailable: no Gemini key is set (geminiApiKey or geminiApiKeyFile).');
                 }
                 if (!this.embeddingModel) {
                      throw new Error('Google Generative AI Client not initialized properly.');
@@ -2436,9 +2446,9 @@ class TextEmbeddingService extends Base {
 
                 return ollamaEmbeddings;
             } else if (explicitProvider === 'gemini') {
-                const geminiKey = aiConfig.geminiApiKey;
+                const geminiKey = readGeminiApiKey();
                 if (!geminiKey) {
-                     throw new Error('Semantic search unavailable: GEMINI_API_KEY is missing.');
+                     throw new Error('Semantic search unavailable: no Gemini key is set (geminiApiKey or geminiApiKeyFile).');
                 }
                 if (!this.embeddingModel) {
                      throw new Error('Google Generative AI Client not initialized properly.');

@@ -28,6 +28,10 @@ x-local-provider: &local-provider
   NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL: ${NEO_LOCAL_AGENT_OS_EMBEDDING_MODEL:-text-embedding-qwen3-embedding-8b}
   NEO_VECTOR_DIMENSION: ${NEO_VECTOR_DIMENSION:-}
   NEO_CHROMA_DATABASE: ${NEO_CHROMA_DATABASE:-}
+  # A hosted preset points the key leaf at the mounted secret (`/run/secrets/gemini-api-key`); a
+  # local plane leaves it empty and the secret below mounts /dev/null — the leaf, not the mount,
+  # decides whether a key is read.
+  GEMINI_API_KEY_FILE: ${GEMINI_API_KEY_FILE:-}
 
 services:
   chroma:
@@ -48,6 +52,7 @@ services:
       NEO_AUTH_PAT_DISK_CACHE_PATH: /app/.neo-ai-data/auth/kb-pat-validation-cache.json
     secrets:
       - mcp-auth-token
+      - gemini-api-key
     # N=1 tenant bootstrap: query-time tenant-config resolution reads
     # <neoRootDir>/kb-config.yaml (tier 2, fail-soft). Compose appends override
     # volume lists to the base service's, so this adds to the base mounts.
@@ -74,6 +79,7 @@ services:
       NEO_WAKE_RECEIVER_RECORDS_DIR: /app/wake-receiver-records
     secrets:
       - mcp-auth-token
+      - gemini-api-key
     # The receiver's records directory: `<the receiver's --state-dir>/records`, the LaunchAgent's own
     # argument on this machine. The env file supplies it as NEO_WAKE_RECEIVER_RECORDS_HOST_DIR — a
     # missing variable fails the render (`:?`), a missing directory fails `up` (no host path is
@@ -106,6 +112,8 @@ services:
       # container. Monitor only the Compose services it actually starts.
       NEO_ORCHESTRATOR_RUNTIME_ACCESS_ALLOWED_SERVICES: &local-runtime-services chroma,kb-server,mc-server,fleet-server,orchestrator
       NEO_DEPLOYMENT_STATE_BRIDGE_ALLOWED_SERVICES: *local-runtime-services
+    secrets:
+      - gemini-api-key
     # N=1 tenant bootstrap: the pull-mode sync's tiered resolver reads
     # <neoRootDir>/kb-config.yaml. This mount is load-bearing — without it the
     # orchestrator silently falls back to the aiConfig default tier (the trap the
@@ -185,3 +193,8 @@ secrets:
   # written to the path below.
   fleet-plane-token:
     file: ${NEO_FLEET_PLANE_TOKEN_FILE:-${HOME}/.neo-ai/secrets/fleet-plane-token}
+  # The hosted preset's provider key, written by the first-run credential step as an owner-only file
+  # and read inside the containers through the `GEMINI_API_KEY_FILE` leaf. A local plane has no key:
+  # the mount defaults to /dev/null and the leaf stays empty, so nothing is ever read from it.
+  gemini-api-key:
+    file: ${NEO_GEMINI_API_KEY_FILE:-/dev/null}

@@ -184,7 +184,7 @@ test.describe('buildChatModel provider selector (#11965 Sub-2)', () => {
         expect(factoryCalls).toEqual([{
             host     : 'http://oai.test',
             modelName: 'lazy-model',
-            apiKey   : undefined
+            apiKey   : ''
         }]);
     });
 

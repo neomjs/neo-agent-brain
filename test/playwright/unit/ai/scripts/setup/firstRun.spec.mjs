@@ -74,7 +74,7 @@ test.describe('firstRun CLI', () => {
         expect(result.code, result.stderr).toBe(0);
         expect(output.runId).toBe(RUN_ID);
         expect(output.binding).toBe('bound');
-        expect(output.steps).toHaveLength(10);
+        expect(output.steps).toHaveLength(11);
 
         for (const step of output.steps) {
             expect(typeof step.status, step.id).toBe('string');
@@ -92,18 +92,28 @@ test.describe('firstRun CLI', () => {
 
         expect(recordText).not.toContain(PAT);
         expect(record.consents.map(consent => consent.stepId).sort()).toEqual(['plane-credential', 'preset']);
-        expect(record.receipts.map(receipt => [receipt.effectId, receipt.outcome])).toEqual([['write-env', 'accepted'], ['write-secrets', 'accepted'], ['compose-up', 'accepted']]);
+        expect(record.receipts.map(receipt => [receipt.effectId, receipt.outcome])).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted']]);
         expect((await fs.stat(path.join(setupRoot, `${RUN_ID}.json`))).mode & 0o777).toBe(0o600);
+        expect(output.steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'ok', reason: "not needed: the 'local-small' preset requires no providerKey"});
 
         const env = await fs.readFile(layout.envFile, 'utf8');
 
-        expect(env).toContain(`GH_TOKEN=${PAT}\n`);
+        // the carrier holds paths, never a value: the admission token and the minted Fleet bearer by file
+        expect(env).not.toContain(PAT);
+        expect(env).toContain(`NEO_MCP_AUTH_TOKEN_FILE=${layout.secretsDir}/mcp-auth-token\n`);
+        expect(env).toContain(`NEO_FLEET_PLANE_TOKEN_FILE=${layout.secretsDir}/fleet-plane-token\n`);
+        expect(env).not.toContain('GEMINI_API_KEY_FILE');
         expect(env).toContain('NEO_PLANE_ID=plane-a\n');
         expect(env).toContain('NEO_PLANE_DATA_ROOT=/srv/plane-a\n');
         expect(env).toContain('NEO_VECTOR_DIMENSION=1024\n');
         expect(env).toContain('NEO_MODEL_PROVIDER=openAiCompatible\n');
+        expect(env).toContain('NEO_LOCAL_AGENT_OS_EMBEDDING_MODEL=text-embedding-qwen3-embedding-0.6b\n');
         expect((await fs.stat(layout.envFile)).mode & 0o777).toBe(0o600);
-        expect(await fs.readFile(path.join(layout.secretsDir, 'fleet-plane-token'), 'utf8')).toBe(PAT);
+        // the PAT is the admission token; the Fleet bearer is a distinct mint; both owner-only
+        expect(await fs.readFile(path.join(layout.secretsDir, 'mcp-auth-token'), 'utf8')).toBe(PAT);
+        expect(await fs.readFile(path.join(layout.secretsDir, 'fleet-plane-token'), 'utf8')).toMatch(/^[0-9a-f]{64}$/);
+        expect((await fs.stat(path.join(layout.secretsDir, 'mcp-auth-token'))).mode & 0o777).toBe(0o600);
+        await expect(fs.access(path.join(layout.secretsDir, 'gemini-api-key'))).rejects.toThrow();
 
         // the compose invocation went through the recording runner, in the checkout's deploy folder
         const calls = JSON.parse(await fs.readFile(path.join(setupRoot, 'fake-run.json'), 'utf8'));
@@ -256,6 +266,75 @@ test.describe('firstRun CLI', () => {
         expect(direct.code).toBe(0);
         expect(JSON.parse(await fs.readFile(recordPath, 'utf8')).receipts.find(receipt => receipt.effectId === 'write-env')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
         expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+    });
+
+    test('AC-2 end to end: a hosted preset writes the provider key as an owner-only secret and points the leaf at the mount; the key is in no record, carrier or log', async () => {
+        const
+            {root, setupRoot, stateRoot, patPath} = await scratch(),
+            KEY     = 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh',
+            keyPath = path.join(root, 'operator', 'gemini-key');
+
+        await fs.writeFile(keyPath, `${KEY}\n`, {mode: 0o600});
+
+        const
+            fake   = greenFake({patPath}),
+            hosted = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {provider: {ok: true, model: 'gemini-3.5-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath}}}),
+            output = JSON.parse(hosted.stdout),
+            layout = hostLayout({stateRoot}),
+            env    = await fs.readFile(layout.envFile, 'utf8');
+
+        expect(hosted.code, hosted.stderr).toBe(0);
+        expect(output.steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'ok', answer: keyPath});
+        expect(env).toContain(`NEO_GEMINI_API_KEY_FILE=${layout.secretsDir}/gemini-api-key\n`);
+        expect(env).toContain('GEMINI_API_KEY_FILE=/run/secrets/gemini-api-key\n');
+        expect(env).toContain('NEO_MODEL_PROVIDER=gemini\n');
+        expect(env).toContain('NEO_VECTOR_DIMENSION=3072\n');
+        expect(env).not.toContain(KEY);
+        expect(env).not.toContain(PAT);
+        expect(await fs.readFile(path.join(layout.secretsDir, 'gemini-api-key'), 'utf8')).toBe(KEY);
+        expect((await fs.stat(path.join(layout.secretsDir, 'gemini-api-key'))).mode & 0o777).toBe(0o600);
+
+        for (const file of [path.join(setupRoot, `${RUN_ID}.json`), path.join(setupRoot, 'fake-run.json')]) {
+            const text = await fs.readFile(file, 'utf8');
+
+            expect(text, file).not.toContain(KEY);
+            expect(text, file).not.toContain(PAT);
+        }
+        expect(hosted.stdout).not.toContain(KEY);
+        expect(hosted.stderr).not.toContain(KEY);
+    });
+
+    test('AC-3: a preset the profile would not honour is refused before any file is written', async () => {
+        // a hosted answer without a provider key on a host where nothing serves yet: the credential step
+        // refuses, no secret and no carrier appear, the run stays pending
+        const
+            {setupRoot, stateRoot, patPath} = await scratch(),
+            fake   = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
+            result = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {throw: 'no plane to ask'}}, answers: {preset: 'hosted', 'plane-credential': patPath}}}),
+            layout = hostLayout({stateRoot});
+
+        expect(result.code).toBe(2);
+        expect(result.stderr).toMatch(/credentials refused before any write:\n\s+the 'hosted' preset requires a provider key and none was given/);
+        await expect(fs.access(layout.envFile)).rejects.toThrow();
+        await expect(fs.access(layout.secretsDir)).rejects.toThrow();
+        expect(JSON.parse(result.stdout).steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'pending', reason: 'unanswered'});
+    });
+
+    test('a fake host\'s provider-key answer for a local preset is never recorded: the question is decided after the preset consent (review round 1, RA-2)', async () => {
+        const
+            {root, setupRoot, stateRoot, patPath} = await scratch(),
+            keyPath = path.join(root, 'operator', 'gemini-key');
+
+        await fs.writeFile(keyPath, 'AIzaFAKEKEY\n', {mode: 0o600});
+
+        const
+            fake   = greenFake({patPath}),
+            local  = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {preset: 'local-small', 'plane-credential': patPath, 'provider-key': keyPath}}}),
+            record = JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8'));
+
+        expect(local.code, local.stderr).toBe(0);
+        expect(record.consents.map(consent => consent.stepId)).toEqual(['preset', 'plane-credential']);
+        expect(JSON.parse(local.stdout).steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'ok', reason: "not needed: the 'local-small' preset requires no providerKey", answer: null});
     });
 
     test('parseArgs: defaults under the host state root, env overrides, unknown flags refused; a fake host turns thrown observers into failures', () => {

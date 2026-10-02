@@ -255,8 +255,11 @@ test.describe('firstRunRecipe', () => {
         expect(result.steps.map(step => step.id)).toEqual(RECIPE_STEPS.map(step => step.id));
         // an effect row carries the effect it reads, so a renderer can settle the receipt it names
         expect(result.steps.filter(row => row.kind === STEP_KINDS.effect).map(row => row.effectId)).toEqual(['write-env', 'write-secrets', 'compose-up']);
-        expect(RECIPE_STEPS.find(step => step.id === 'plane-credential').answer).toBe('file');
-        expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'advanced', 'write-env', 'write-secrets', 'compose-up', 'served-plane', 'validation', 'done']);
+        // both credential questions are answered by a file reference, admitted before it is recorded
+        expect(RECIPE_STEPS.filter(step => step.answer === 'file').map(step => step.id)).toEqual(['plane-credential', 'provider-key']);
+        expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'provider-key', 'advanced', 'write-env', 'write-secrets', 'compose-up', 'served-plane', 'validation', 'done']);
+        // the provider-key question is decided by the consented preset: pending until one is chosen, not needed for a local one
+        expect(result.steps.find(step => step.id === 'provider-key')).toMatchObject({status: STEP_STATUSES.pending, reason: 'decided by the preset: none consented yet'});
         expect(result.recipeVersion).toBe(RECIPE_VERSION);
     });
 });

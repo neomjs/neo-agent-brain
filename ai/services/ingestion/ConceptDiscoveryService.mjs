@@ -11,6 +11,7 @@ import Json                                            from 'neo.mjs/src/util/Js
 import logger                                          from '../../mcp/server/memory-core/logger.mjs';
 import {buildGraphProvider, resolveGraphModelProvider} from '../graph/providerDispatch.mjs';
 import {assertTestWriteIsolated}                       from '../shared/storeWriteGuard.mjs';
+import {readSecretCarrier}                             from '../shared/secretCarrier.mjs';
 
 /**
  * System prompt establishing the Teaching Test + anti-patterns for the concept extraction
@@ -378,7 +379,7 @@ class ConceptDiscoveryService extends Base {
                     keep_alive    : aiConfig.ollama.keep_alive
                 },
                 openAiCompatibleConfig: {
-                    apiKey    : aiConfig.openAiCompatible.apiKey,
+                    apiKey    : readSecretCarrier({value: aiConfig.openAiCompatible.apiKey, file: aiConfig.openAiCompatible.apiKeyFile, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'}),
                     host      : aiConfig.openAiCompatible.host,
                     keep_alive: aiConfig.openAiCompatible.keep_alive,
                     model     : aiConfig.openAiCompatible.model
