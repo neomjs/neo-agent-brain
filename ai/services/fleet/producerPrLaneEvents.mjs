@@ -1,4 +1,5 @@
 import {createFleetCockpitEvent, createFleetCockpitEventId} from './fleetCockpitStatus.mjs';
+import {FLEET_ACTIVITY_BOUND_MAX}                           from './fleetActivityComposer.mjs';
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
 import {projectOpenWork}                                    from './fleetOpenWorkSource.mjs';
 import {redactCredentials}                                  from './redactCredentials.mjs';
@@ -9,9 +10,11 @@ import {TRANSITION_WINDOW}                                  from './openWorkProd
  * @summary The PR/lane slot's pull-request contributor over the open-work producer: the transitions it
  * observed (opened, review verdict, merged, closed) become `pr-activity` events for every repository the
  * producer snapshots, each carrying the producer's observation time. The slot's capability carries the
- * producer's high-water time and its retained window, so a reader behind that window reads a coverage
- * gap, never a silent loss. The issue, lane-claim and stall contributors stay on their own sources, and
- * no reader here sources GitHub.
+ * producer's high-water time, coverage and declared retained window, so a reader behind that window reads
+ * a coverage gap, never a silent loss. The issue, lane-claim and stall contributors stay on their own
+ * sources, asked for without pull-request events and at the composer's maximum bound, so the final bound
+ * is applied here, after the replacement, and a removed corpus PR can displace nothing. No reader here
+ * sources GitHub.
  */
 
 /**
@@ -68,31 +71,39 @@ export function createPrTransitionEvents(transitions = [], {kinds = PR_LANE_TRAN
 }
 
 /**
- * @summary The producer's retained window, declared: where it begins, how much it holds, and whether
- * it is full — only a full window can have dropped a transition a reader has not seen.
+ * @summary The producer's retained window, declared conservatively. The producer keeps the newest
+ * `max` transitions by count, so a full window may have cut inside one pulse: transitions of the oldest
+ * retained pulse are not known to be complete. Coverage therefore begins at the first pulse after it
+ * (`coveredSince`); a window with room dropped nothing and covers everything it holds.
  * @param {Object|null} state The producer's state.
  * @param {Object}      [options]
  * @param {Number}      [options.transitionWindow=TRANSITION_WINDOW]
- * @returns {{since: String|null, size: Number, max: Number, full: Boolean}}
+ * @returns {{since: String|null, coveredSince: String|null, size: Number, max: Number, full: Boolean}}
  */
 export function describeRetainedWindow(state, {transitionWindow = TRANSITION_WINDOW} = {}) {
-    const transitions = asArray(state?.transitions);
+    const
+        transitions = asArray(state?.transitions),
+        since       = transitions[0]?.pulse ?? null,
+        full        = transitions.length >= transitionWindow;
 
     return {
-        since: transitions[0]?.pulse ?? null,
-        size : transitions.length,
-        max  : transitionWindow,
-        full : transitions.length >= transitionWindow
+        since,
+        coveredSince: full ? transitions.find(transition => transition.pulse !== since)?.pulse ?? null : since,
+        size        : transitions.length,
+        max         : transitionWindow,
+        full
     }
 }
 
 /**
  * @summary The PR/lane slot reader over a base reader and the open-work producer. The base reader
  * (the local corpus, or the plane's `get_pr_lane_activity`) keeps its issue, lane-claim and stall
- * events; its pull-request events are replaced by the producer's transitions. A failed base read is
- * contained: the slot degrades naming it and still carries the producer's events. A producer that has
- * not pulsed, or whose last pulse is stale, degrades the slot naming the producer; its freshness is the
- * producer's `observedAt`, never this read's clock.
+ * events and is asked for them without pull-request events, at the composer's maximum bound; the
+ * producer's transitions are the pull-request events; ranking and the caller's bound are applied last,
+ * so a replaced corpus PR displaces no surviving event. A failed base read is contained: the slot
+ * degrades naming it and still carries the producer's events. A producer that has not pulsed, whose
+ * last pulse is stale or whose coverage is not complete degrades the slot naming the producer; its
+ * freshness is the producer's `observedAt`, never this read's clock.
  * @param {Function|null} readBase `async params => {capability, counts, events}`, or null when this
  *     process has neither a corpus nor a plane to read.
  * @param {Object}   options
@@ -100,9 +111,10 @@ export function describeRetainedWindow(state, {transitionWindow = TRANSITION_WIN
  *     (the Fleet server wires the producer after the slot).
  * @param {Function} [options.now] `() → epoch ms`.
  * @param {Number}   [options.transitionWindow=TRANSITION_WINDOW]
+ * @param {Number}   [options.baseBound=FLEET_ACTIVITY_BOUND_MAX] The bound the base is asked for.
  * @returns {Function} `async params => {capability, counts, events}`
  */
-export function withProducerPrLane(readBase, {producer, now = () => Date.now(), transitionWindow = TRANSITION_WINDOW} = {}) {
+export function withProducerPrLane(readBase, {producer, now = () => Date.now(), transitionWindow = TRANSITION_WINDOW, baseBound = FLEET_ACTIVITY_BOUND_MAX} = {}) {
     return async (params = {}) => {
         const
             capturedAt = new Date(now()).toISOString(),
@@ -115,13 +127,16 @@ export function withProducerPrLane(readBase, {producer, now = () => Date.now(), 
 
         if (typeof readBase === 'function') {
             try {
-                base = await readBase(params)
+                // no pull-request events, and the whole bound: the replacement happens before this
+                // reader bounds, never after the base already spent its bound on the PRs removed here
+                base = await readBase({...params, limit: baseBound, prEvents: false})
             } catch (error) {
                 reasons.push(`base read: ${normalizeReason(error)}`)
             }
         }
 
         if (base) {
+            // a base that predates the flag still answers pull-request events; they are the corpus's, not the producer's
             events.push(...asArray(base.events).filter(event => event?.source !== FLEET_COCKPIT_SOURCES.githubPr))
         }
 
@@ -141,10 +156,13 @@ export function withProducerPrLane(readBase, {producer, now = () => Date.now(), 
             reasons.push(`open-work producer unavailable: ${normalizeReason(state?.reason ?? 'no pulse yet')}`)
         } else {
             projection.state === 'stale' && reasons.push(`open-work producer stale since ${state.observedAt}`);
+            state.coverage !== 'complete' && reasons.push(`open-work producer coverage ${state.coverage}`);
 
-            if (since && retained.full && retained.since && Date.parse(since) < Date.parse(retained.since)) {
-                coverageGap = {requestedSince: since, retainedSince: retained.since};
-                reasons.push(`pr lane: transitions before ${retained.since} are not retained`)
+            // a reader asking from before the covered window: the window is full and the asked
+            // instant lies before, or inside, the pulse the window cut through
+            if (since && retained.full && (retained.coveredSince === null || Date.parse(since) < Date.parse(retained.coveredSince))) {
+                coverageGap = {requestedSince: since, retainedSince: retained.since, coveredSince: retained.coveredSince};
+                reasons.push(`pr lane: transitions before ${retained.coveredSince ?? 'the retained window'} are not retained`)
             }
 
             events.push(...createPrTransitionEvents(state.transitions))

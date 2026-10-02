@@ -36,6 +36,9 @@ const LANE_CLAIM_PATTERN = /\[(?:lane-claim|claiming)\]|\blane-state:\s*next-lan
  *     never presented as the whole fleet.
  * @param {Date|String} options.capturedAt Capture timestamp.
  * @param {Number} options.limit Maximum events to return.
+ * @param {Boolean} [options.prEvents=true] `false` emits no pull-request events: the caller's PR
+ *     contributor is another source (the open-work producer), and the bound here must not be spent
+ *     on events that source replaces. `prs` still feed nothing else here; the stall inference consumed them upstream.
  * @returns {{capability: Object, counts: Object[], events: Object[]}}
  */
 export function createFleetPrLaneActivitySnapshot({
@@ -45,7 +48,8 @@ export function createFleetPrLaneActivitySnapshot({
     error = null,
     partialFailures = [],
     capturedAt = new Date(),
-    limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT
+    limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT,
+    prEvents = true
 } = {}) {
     const observedAt = toIsoString(capturedAt)
 
@@ -75,7 +79,7 @@ export function createFleetPrLaneActivitySnapshot({
     const failures = asArray(partialFailures).filter(Boolean).map(normalizeError)
 
     const events = [
-        ...createPrActivityEvents(prs, {capturedAt: observedAt}),
+        ...(prEvents ? createPrActivityEvents(prs, {capturedAt: observedAt}) : []),
         ...createIssueActivityEvents(issues, {capturedAt: observedAt}),
         ...createStallActivityEvents(stallFindings, {capturedAt: observedAt})
     ]

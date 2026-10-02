@@ -105,4 +105,25 @@ test.describe('prLaneActivityStore — the plane serves the Fleet\'s PR/lane slo
         expect((await store.read({root, graphService: {}, limit: 1})).events).toHaveLength(1);
         expect(counter.reads).toBe(2)
     });
+
+    test('`prEvents: false` is an answer without pull-request events, kept apart from the full one', async () => {
+        writeIssue(7);
+        writePull(7);
+        writeIndex();
+
+        const counter = {reads: 0},
+              store   = countingStore(counter),
+              full    = await store.read({root, graphService: {}, limit: 10}),
+              lean    = await store.read({root, graphService: {}, limit: 10, prEvents: false});
+
+        expect(full.events.map(event => event.type).sort()).toEqual(['issue-activity', 'pr-activity']);
+        expect(lean.events.map(event => event.type)).toEqual(['issue-activity']);
+        expect(lean.capability.state).toBe('wired');
+        expect(counter.reads).toBe(2);
+
+        // each answer is kept under its own key
+        expect(await store.read({root, graphService: {}, limit: 10, prEvents: false})).toBe(lean);
+        expect(await store.read({root, graphService: {}, limit: 10})).toBe(full);
+        expect(counter.reads).toBe(2)
+    });
 });

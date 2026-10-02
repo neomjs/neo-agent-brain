@@ -125,12 +125,14 @@ const prLaneActivityStore = createPrLaneActivityStore();
  * use site, and handed on as a value.
  * @param {Object} [args]
  * @param {Number} [args.limit] Maximum events; the slot's default when omitted.
+ * @param {Boolean} [args.prEvents] `false` answers no pull-request events (the caller's PR contributor is its own producer).
  * @returns {Promise<Object>} `{capability, counts, events, corpusIndexedAt}`
  */
 const readPrLaneActivityTool = args => prLaneActivityStore.read({
     root        : AiConfig.orchestrator.corpusProjection.materializedRoot,
     graphService: GraphService,
-    limit       : args?.limit
+    limit       : args?.limit,
+    prEvents    : args?.prEvents !== false
 });
 
 // `explore_memory_history` — the Memory/session temporal Bird View runtime op. The pure composition

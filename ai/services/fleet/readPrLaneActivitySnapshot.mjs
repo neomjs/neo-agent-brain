@@ -26,7 +26,9 @@ import {buildWorkGraphStallFindings,
  * @param {Object} options
  * @param {Array<{repoSlug: String, issuesDir: String, pullsDir?: String}>} options.origins Resolved origins.
  * @param {Object} [options.graphService] memory-core GraphService for stall-finding defer disposition.
- * @returns {Function} `params => Promise<{capability, counts, events}>`
+ * @returns {Function} `params => Promise<{capability, counts, events}>` — `params.prEvents === false`
+ *     answers no pull-request events (a caller whose PR contributor is the open-work producer); the
+ *     pull records are still read for the stall inference.
  */
 export function makeReadPrLaneSnapshot({origins, graphService}) {
     return async params => {
@@ -64,7 +66,7 @@ export function makeReadPrLaneSnapshot({origins, graphService}) {
             return createFleetPrLaneActivitySnapshot({error: failures.join(' · '), limit: params.limit, capturedAt})
         }
 
-        return createFleetPrLaneActivitySnapshot({prs, issues, stallFindings, partialFailures: failures, limit: params.limit, capturedAt})
+        return createFleetPrLaneActivitySnapshot({prs, issues, stallFindings, partialFailures: failures, limit: params.limit, prEvents: params.prEvents !== false, capturedAt})
     }
 }
 

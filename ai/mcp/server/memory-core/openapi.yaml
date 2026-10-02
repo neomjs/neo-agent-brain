@@ -533,6 +533,9 @@ paths:
                   type: integer
                   minimum: 1
                   description: Maximum events to return; the slot's default when omitted.
+                prEvents:
+                  type: boolean
+                  description: "`false` answers no pull-request events — for a Fleet whose PR contributor is its own open-work producer, so this bound is spent on the issue, lane-claim and stall events alone. Omitted or `true`: the full slot."
       responses:
         '200':
           description: The PR/lane activity snapshot, or a degraded one naming the failure.
