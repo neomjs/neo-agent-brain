@@ -3,6 +3,7 @@ import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
+import {readPlaneConfig} from '../seatConfig.mjs';
 
 function parseHookPayload(raw) {
     if (!raw) return null;
@@ -44,33 +45,11 @@ function resolveNote({action, hookPayload} = {}) {
 }
 
 /**
- * @summary Reads the plane leaves from `AiConfig`, the one config read in this process.
- *
- * Imported lazily so the module stays loadable — and its pure helpers unit-testable — without booting
- * the Neo state Provider. The hook process is an entrypoint, so reading the config singleton here is
- * the sanctioned shape; the writer it feeds is not one, and deliberately resolves nothing itself.
- * @returns {Promise<Object>} `{baseUrl, credential}`
- */
-export async function readPlaneConfig() {
-    // Namespace bootstrap before the config import, the entry-point invariant `devFleetServer.mjs`
-    // documents: without them `ai/config.mjs` throws `Neo is not defined` at module-load.
-    await import('neo.mjs/src/Neo.mjs');
-    await import('neo.mjs/src/core/_export.mjs');
-
-    const {default: AiConfig} = await import('../../../../config.mjs'),
-          planeBase           = AiConfig.fleet.planeBase.trim().replace(/\/+$/, '');
-
-    return {
-        baseUrl   : planeBase ? `${planeBase}/mc/mcp` : '',
-        credential: AiConfig.fleet.planeBearer
-    };
-}
-
-/**
  * @summary Records Claude Code turn-presence into the store the deployment serves.
  *
- * **This is the entrypoint, and the only place config is resolved.** It reads the plane leaves and
- * injects them into a writer that resolves nothing — the same split `wakeArmingHook` uses. The
+ * **This is the entrypoint, and the only place config is resolved.** It reads the seat's plane
+ * (`seatConfig.readPlaneConfig`) and injects it into a writer that resolves nothing — the same split
+ * `wakeArmingHook` uses. The
  * previous shape let the writer derive a filesystem path from its own module location, which is how
  * every beacon ended up in a private checkout that no reader queries.
  *
@@ -79,7 +58,7 @@ export async function readPlaneConfig() {
  * @param {Object} [options.env=process.env] Environment source.
  * @param {*} [options.hookPayload] Parsed Claude Code hook payload.
  * @param {String|Date|Number} [options.now] Clock override for tests.
- * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from `AiConfig` when absent.
+ * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from the seat leaves when absent.
  * @param {Function} [options.record] Transport seam.
  * @returns {Promise<Object>} `{status}` — `recorded`, or `skipped` with a reason.
  */

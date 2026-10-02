@@ -1747,6 +1747,22 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(spawn.calls[0].opts.env.NEO_MCP_REMOTE_TOKEN).toBe(planePat);
         expect(spawn.calls[0].opts.env.GH_TOKEN).not.toBe(spawn.calls[0].opts.env.NEO_MCP_REMOTE_TOKEN)
     });
+
+    // The seat's hooks reach its plane as the seat (AiConfig.seat), so the plane travels with the
+    // credential proven on it, and a seat is never told a plane it holds no credential for.
+    test('the seat plane rides with the plane credential, never alone, and a launch env cannot pre-load it', () => {
+        const spawn = install({agents: {a: agentDef('a'), b: agentDef('b')}, creds: {a: 'ghp_a', b: 'ghp_b'}});
+
+        FleetLifecycleService.start('a', {resolvedMcpCredential: 'seat-plane-pat', resolvedMcpEndpoint: 'http://127.0.0.1:3102'});
+        FleetLifecycleService.start('b', {resolvedMcpEndpoint: 'http://127.0.0.1:3102'});
+
+        expect(spawn.calls[0].opts.env).toMatchObject({NEO_MCP_REMOTE_TOKEN: 'seat-plane-pat', NEO_SEAT_PLANE_BASE: 'http://127.0.0.1:3102'});
+        expect(spawn.calls[1].opts.env).not.toHaveProperty('NEO_SEAT_PLANE_BASE');
+        expect(spawn.calls[1].opts.env).not.toHaveProperty('NEO_MCP_REMOTE_TOKEN');
+
+        install({agents: {c: agentDef('c', {metadata: {launch: {command: 'x', args: [], env: {NEO_SEAT_PLANE_BASE: 'https://elsewhere.example'}}}})}, creds: {}});
+        expect(() => FleetLifecycleService.start('c')).toThrow(/collides with a reserved env slot/)
+    });
 });
 
 // A seat outlives the Fleet server: the app-bundle families spawn detached and lease their pid; a

@@ -7,6 +7,7 @@ import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
+import {readPlaneConfig} from '../seatConfig.mjs';
 
 const LOG_DIR_NAME              = 'codex-lane-state-hook',
       PROMPT_CONTEXT_FILE_NAME  = 'codex-prompt-context.json',
@@ -152,32 +153,12 @@ export function writePromptContextFromHookPayload({
 }
 
 /**
- * @summary Reads the plane leaves from `AiConfig`, the one config read in this process.
- *
- * Imported lazily so the module stays loadable — and its pure helpers unit-testable — without booting
- * the Neo state Provider. The hook process is an entrypoint, so reading the config singleton here is
- * the sanctioned shape; the writer it feeds is not one, and deliberately resolves nothing itself.
- * @returns {Promise<Object>} `{baseUrl, credential}`
- */
-export async function readPlaneConfig() {
-    await import('neo.mjs/src/Neo.mjs');
-    await import('neo.mjs/src/core/_export.mjs');
-
-    const {default: AiConfig} = await import('../../../../config.mjs'),
-          planeBase           = AiConfig.fleet.planeBase.trim().replace(/\/+$/, '');
-
-    return {
-        baseUrl   : planeBase ? `${planeBase}/mc/mcp` : '',
-        credential: AiConfig.fleet.planeBearer
-    };
-}
-
-/**
  * @summary Emits a Codex turn-start beacon into the store the deployment serves.
  *
- * **This is the entrypoint, and the only place config is resolved.** It injects the plane leaves into
- * a writer that resolves nothing — replacing a path the writer derived from its own module location,
- * which sent every beacon to a private checkout that no reader queries.
+ * **This is the entrypoint, and the only place config is resolved.** It injects the seat's plane
+ * (`seatConfig.readPlaneConfig`) into a writer that resolves nothing — replacing a path the writer
+ * derived from its own module location, which sent every beacon to a private checkout that no reader
+ * queries.
  *
  * The wake-submit nonce matters more on this seat than on the others: the wake daemon's Codex
  * delivery proof correlates a submit to the interval it produced by matching that exact value, so it
@@ -186,7 +167,7 @@ export async function readPlaneConfig() {
  * @param {Object} options
  * @param {Object} [options.env=process.env] Environment source.
  * @param {*} [options.hookPayload] Codex hook payload used to extract a wake-submit nonce.
- * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from `AiConfig` when absent.
+ * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from the seat leaves when absent.
  * @param {Function} [options.record] Transport seam.
  * @returns {Promise<Object>} `{status}` — `recorded`, or `skipped` with a reason.
  */
@@ -220,17 +201,15 @@ export async function recordTurnStarted({
  * — and the file is target-authored, never projector custody: `.codex/CODEX.md` is tracked in the
  * Engine and has never existed in this repository, so `projectSeatHooks` correctly does not place it.
  *
- * Before #250 that could not matter, because this hook only ever ran from `.codex/hooks/` inside the
- * Engine, where the file is always present. Projecting it into arbitrary checkouts is what turned a
- * guaranteed read into an optional one, and an unguarded `readFileSync` made the optional case fatal:
- * the projected hook exited 1 on every `UserPromptSubmit` in a seat that authors no context.
+ * While this hook ran only from `.codex/hooks/` inside the Engine, where the file is always present,
+ * that could not matter. Projecting it into arbitrary checkouts is what turned a guaranteed read into
+ * an optional one, and an unguarded `readFileSync` made the optional case fatal: the projected hook
+ * exited 1 on every `UserPromptSubmit` in a seat that authors no context.
  *
  * So absence resolves to `''`, which `main()` already handles — it branches on empty context and
  * writes nothing. **ENOENT only.** Any other read failure — a permission error, a directory in the
  * file's place — still throws, because those describe a broken seat rather than an unconfigured one,
- * and swallowing them would be the silent-success shape this ticket exists to remove.
- *
- * Found while verifying the RA-2 rewriter repair; disposition by @neo-gpt-emmy in review.
+ * and swallowing them would be a silent success.
  * @returns {String} The context payload, or `''` when the target authors none.
  */
 export function readCodexContext() {

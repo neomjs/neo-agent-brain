@@ -195,7 +195,7 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
         const {outcome} = await listen({config: {planeBase: '', planeBearer: '', identity: `@${IDENTITY}`}});
 
         expect(outcome.exit).toBe(0);
-        expect(outcome.reason).toMatch(/fleet\.planeBase is not configured/);
+        expect(outcome.reason).toMatch(/seat\.planeBase is not configured/);
         expect(fs.existsSync(statePath())).toBe(false)
     })
 });

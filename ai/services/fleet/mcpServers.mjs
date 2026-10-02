@@ -12,6 +12,13 @@
 export const REMOTE_MCP_CREDENTIAL_ENV_VAR = 'NEO_MCP_REMOTE_TOKEN';
 
 /**
+ * The child-environment slot naming the plane that credential was proven against, read by the seat's
+ * hooks as `AiConfig.seat.planeBase`. It travels with the credential, never alone.
+ * @type {String}
+ */
+export const SEAT_PLANE_BASE_ENV_VAR = 'NEO_SEAT_PLANE_BASE';
+
+/**
  * @summary Validate and canonicalize the deliberately tiny MCP target intent. The resident target
  * is represented as `null`; a connected tenant carries only its public id. URLs, transports,
  * headers, environment bags, commands, and credentials have no grammar here, so they cannot cross

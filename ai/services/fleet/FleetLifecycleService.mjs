@@ -7,7 +7,7 @@ import {generateLocalBearerToken}                                   from '../../
 import Base                                                         from 'neo.mjs/src/core/Base.mjs';
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}               from '../../../src/fleet/contract/mcpServers.mjs';
 import {listHarnessTypes}                                           from '../../../src/fleet/contract/harnessTypes.mjs';
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                              from './mcpServers.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}     from './mcpServers.mjs';
 import {deriveAgentInstanceHome}                                    from './deriveAgentInstanceHome.mjs';
 import {deriveHarnessLaunchSpec}                                    from './deriveHarnessLaunchSpec.mjs';
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                     from './deriveNodeRuntimeEnv.mjs';
@@ -261,7 +261,7 @@ function runsSeatLaunch(command, {launchCommand, launchInterpreter, profileArg})
  * **Child env (minimal by construction):** the child receives ONLY the `AMBIENT_ENV_ALLOWLIST`
  * process-runtime vars — never a full parent-env copy, so ambient operator secrets cannot leak into
  * a peer — plus the launch spec's own env (its isolation home var), plus the reserved injections.
- * A `launch.env` key naming a reserved slot (`credentialEnvVar`, `NEO_MCP_REMOTE_TOKEN`,
+ * A `launch.env` key naming a reserved slot (`credentialEnvVar`, `NEO_MCP_REMOTE_TOKEN`, `NEO_SEAT_PLANE_BASE`,
  * `bridgeTokenEnvVar`, `NEO_NL_TOOL_PROJECTION_MODE`, `NEO_AGENT_IDENTITY`) or a prototype-mutating key
  * (`__proto__` / `constructor` / `prototype`) is rejected fail-fast, naming the offending key.
  *
@@ -271,8 +271,9 @@ function runsSeatLaunch(command, {launchCommand, launchInterpreter, profileArg})
  * (the parent env is never mutated), under a configurable var (`credentialEnvVar`, default
  * `GH_TOKEN`). It is **never** placed in `argv` (visible in `ps`), never written to the tracked
  * process record, and never logged. The already-probed remote MCP plane bearer is a SECOND credential
- * class, injected only when supplied under the fixed `NEO_MCP_REMOTE_TOKEN` slot; it is never substituted for
- * `GH_TOKEN`. A status read can never surface either secret because the records hold none. The
+ * class, injected only when supplied under the fixed `NEO_MCP_REMOTE_TOKEN` slot, with the plane it was
+ * proven against under `NEO_SEAT_PLANE_BASE` so the seat's hooks reach that plane as the seat; it is
+ * never substituted for `GH_TOKEN`. A status read can never surface either secret because the records hold none. The
  * **Bridge session token** is a THIRD, distinct credential class, injected the same way under its
  * own var (`bridgeTokenEnvVar`) — minted per spawn, never co-mingled with either provider
  * credential.
@@ -464,6 +465,8 @@ class FleetLifecycleService extends Base {
      *                              runs inside ITS repo rather than the Fleet Manager's own directory.
      * @param {String|null} [opts.resolvedCredential] Already-resolved GitHub repository credential.
      * @param {String|null} [opts.resolvedMcpCredential] Already-probed remote MC/KB plane credential.
+     * @param {String|null} [opts.resolvedMcpEndpoint] The plane that credential was proven against;
+     *     injected only with it.
      * @param {Object} [opts.remoteMcpCapability] Exact capability proof returned by
      *     {@link assertRemoteMcpCapability}; binds the curated launch to the same resolved binary
      *     snapshot instead of re-reading a mutable AiConfig path after preparation.
@@ -514,13 +517,14 @@ class FleetLifecycleService extends Base {
         const envKeys = [
             this.credentialEnvVar,
             REMOTE_MCP_CREDENTIAL_ENV_VAR,
+            SEAT_PLANE_BASE_ENV_VAR,
             this.bridgeTokenEnvVar,
             TOOL_PROJECTION_MODE_ENV_VAR,
             AGENT_IDENTITY_ENV_VAR,
             ...GITLAB_SEAT_ENV
         ];
         if (envKeys.some(key => !key) || new Set(envKeys).size !== envKeys.length) {
-            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential slot, bridgeTokenEnvVar, the NL-policy var, the agent-identity var, and the GitLab seat slots must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
+            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential and seat plane-base slots, bridgeTokenEnvVar, the NL-policy var, the agent-identity var, and the GitLab seat slots must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
         }
 
         // The launch env may not name a reserved slot: allowing it would either let registry-authored
@@ -632,11 +636,15 @@ class FleetLifecycleService extends Base {
 
         // Remote plane bearer: a second provider credential resolved + authenticated by
         // startAgentProvisioned through FleetTenantService. It has NO implicit fallback to the
-        // repository PAT: provider equality is a deployment fact, never a Fleet assumption.
+        // repository PAT: provider equality is a deployment fact, never a Fleet assumption. The plane it
+        // was proven against rides with it, so the seat's hooks reach that plane as the seat.
         const remoteMcpCredential = Object.hasOwn(opts, 'resolvedMcpCredential')
             ? opts.resolvedMcpCredential
             : null;
-        if (remoteMcpCredential != null) env[REMOTE_MCP_CREDENTIAL_ENV_VAR] = remoteMcpCredential;
+        if (remoteMcpCredential != null) {
+            env[REMOTE_MCP_CREDENTIAL_ENV_VAR] = remoteMcpCredential;
+            if (opts.resolvedMcpEndpoint) env[SEAT_PLANE_BASE_ENV_VAR] = opts.resolvedMcpEndpoint
+        }
 
         // Bridge token: a credential class DISTINCT from the PAT. Mint one + inject it under
         // bridgeTokenEnvVar (never credentialEnvVar). The raw token enters the child env only — the

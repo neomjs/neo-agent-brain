@@ -228,6 +228,24 @@ class ConfigBase extends ConfigProvider {
                 }
             },
             /**
+             * The plane a seat's hooks reach as the seat, both slots injected by the Fleet's `start`.
+             * Never `fleet.planeBase` / `fleet.planeBearer`: those configure the Fleet transport, whose
+             * bearer belongs to the single viewer.
+             * @member {Object} data.seat
+             */
+            seat: {
+                /**
+                 * Base of the seat's plane (`<base>/mc/mcp` is derived). Empty: every hook skips by name.
+                 * @type {string}
+                 */
+                planeBase  : leaf('', 'NEO_SEAT_PLANE_BASE', 'string'),
+                /**
+                 * The seat's own plane credential: the seat-side slot its remote MC/KB servers read.
+                 * @type {string}
+                 */
+                planeBearer: leaf('', 'NEO_MCP_REMOTE_TOKEN', 'string')
+            },
+            /**
              * The current in-flight release version whose milestone / epic work counts as "current
              * release focus" for the Golden Path emitter. Set at cut-prep, advanced by
              * `buildScripts/release/publish.mjs` at release — so a shipped release never lingers as

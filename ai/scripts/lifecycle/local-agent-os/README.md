@@ -213,7 +213,9 @@ harness must survive a shell restart; never put the bearer in this repository.
 It is a different credential class from the app-to-Fleet
 `NEO_FLEET_BEARER`, the seat-side MCP slot `NEO_MCP_REMOTE_TOKEN`, and any
 repository-workflow credential such as `GH_TOKEN`; do not copy or alias one of
-those values into it.
+those values into it. A seat never carries `NEO_FLEET_PLANE_*`: its hooks reach
+the plane as the seat, through `NEO_SEAT_PLANE_BASE` and `NEO_MCP_REMOTE_TOKEN`,
+which the Fleet injects when it starts the seat.
 
 A nonempty `NEO_FLEET_PLANE_BASE` is a topology declaration, not a health
 probe. `npm --prefix harness run start:brain` will therefore start or reuse only
