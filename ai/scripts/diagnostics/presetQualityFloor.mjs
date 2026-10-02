@@ -3,7 +3,9 @@ import 'dotenv/config';
 
 import {Command, InvalidArgumentError} from 'commander';
 import {execFile}                      from 'node:child_process';
+import {createHash}                    from 'node:crypto';
 import fs                              from 'node:fs/promises';
+import os                              from 'node:os';
 import path                            from 'node:path';
 import {fileURLToPath, pathToFileURL}  from 'node:url';
 import {promisify}                     from 'node:util';
@@ -19,9 +21,11 @@ import {PLANE_PROFILE, presets, profileInputs} from '../../services/fleet/placem
  * path over three documents and prints what came back — never a stored status.
  *
  * Each document is extracted in a child process that carries the preset's env mapped onto the leaf
- * names the local profile reads (`profileInputs` — the parity witness's own mapping), under
- * `NEO_UNIT_TEST_MODE` so no plane data root is touched, and a `beforeCommit` sentinel that keeps the
- * payload and refuses the graph write. The parent measures the payload against the document: schema
+ * names the local profile reads (`profileInputs` — the parity witness's own mapping), isolated from
+ * every plane (`isolationEnv`: the consumed unit-test flag resolves the graph store to memory, the
+ * plane anchor and the REM marker directory point under a scratch root the parent removes; the child
+ * reports what it resolved and the parent refuses anything else), and a `beforeCommit` sentinel that
+ * keeps the payload and refuses the graph write. The parent measures the payload against the document: schema
  * validity, dangling edges (an endpoint that is neither a node of the payload, `frontier`, nor a
  * row-backed `memory:` / `session:` provenance target), and grounded names (a node whose name occurs
  * in the document). The result is an observation with its date, pasted into
@@ -161,23 +165,31 @@ export function measurePayload(payload, documentText) {
 }
 
 /**
- * @summary Folds per-document measurements into the shape the presets table records, with the floor verdict.
+ * @summary Folds per-document measurements into the shape the presets table records, with the floor
+ * verdict. The verdict is positive only against a reference measured on the SAME document set (the
+ * digests agree); another set makes the comparison unavailable, never a pass.
  * @param {Object[]} runs `[{document, measure}]`, every run measured.
  * @param {Object} options
  * @param {String} options.preset
  * @param {String} options.chatModel
+ * @param {String} options.documentsDigest The run's document set, from {@link documentsDigest}.
  * @param {String} [options.measuredAt]
+ * @param {Object|null} [options.reference] The table's recorded floor (`referenceFloor()` by default).
  * @returns {Object}
  */
-export function summarizeRuns(runs, {preset, chatModel, measuredAt = new Date().toISOString().slice(0, 10), reference = referenceFloor()}) {
+export function summarizeRuns(runs, {preset, chatModel, documentsDigest: digest, measuredAt = new Date().toISOString().slice(0, 10), reference = referenceFloor()}) {
     const
-        grounded = runs.map(run => run.measure.groundedNodes),
-        result   = {
+        grounded   = runs.map(run => run.measure.groundedNodes),
+        result     = {
             schemaValid             : runs.length > 0 && runs.every(run => run.measure.schemaValid),
             danglingEdges           : runs.reduce((sum, run) => sum + run.measure.danglingEdges, 0),
             groundedNodesPerDocument: runs.length ? (Math.min(...grounded) === Math.max(...grounded) ? String(grounded[0]) : `${Math.min(...grounded)}-${Math.max(...grounded)}`) : '0',
             ungroundedNames         : runs.reduce((sum, run) => sum + run.measure.ungroundedNames.length, 0)
-        };
+        },
+        comparable = Boolean(reference?.documentsDigest) && reference.documentsDigest === digest,
+        floor      = comparable
+            ? {met: meetsFloor(result, reference.result), comparable, reference}
+            : {met: false, comparable, reference, reason: reference ? 'the reference was measured on another document set' : 'no reference is recorded'};
 
     return {
         preset,
@@ -185,8 +197,9 @@ export function summarizeRuns(runs, {preset, chatModel, measuredAt = new Date().
         measuredAt,
         chatModel,
         documents : runs.map(run => run.document),
+        documentsDigest: digest,
         result,
-        floor     : {met: meetsFloor(result, reference?.result ?? null), reference},
+        floor,
         perDocument: runs.map(run => ({document: run.document, ...run.measure}))
     };
 }
@@ -207,10 +220,11 @@ export function childSource(root) {
         await import(${JSON.stringify(file('node_modules/neo.mjs/src/core/_export.mjs'))});
         const fs = await import('node:fs/promises');
         const {default: AiConfig} = await import(${JSON.stringify(file('ai/mcp/server/memory-core/config.mjs'))});
+        const isolation = {graph: AiConfig.storagePaths.graph, remRunStateDir: AiConfig.remRunStateDir, dataRoot: AiConfig.plane.dataRoot};
         const {GRAPH_MODEL_PROVIDERS, resolveGraphModelProvider} = await import(${JSON.stringify(file('ai/services/graph/providerDispatch.mjs'))});
         const graphProvider = resolveGraphModelProvider(AiConfig);
         if (!GRAPH_MODEL_PROVIDERS.includes(graphProvider)) {
-            print({unmeasured: "graph provider '" + graphProvider + "' is outside the Tri-Vector dispatch (" + GRAPH_MODEL_PROVIDERS.join(' | ') + ")"});
+            print({isolation, unmeasured: "graph provider '" + graphProvider + "' is outside the Tri-Vector dispatch (" + GRAPH_MODEL_PROVIDERS.join(' | ') + ")"});
             process.exit(0);
         }
         const {default: extractor} = await import(${JSON.stringify(file('ai/services/graph/SemanticGraphExtractor.mjs'))});
@@ -222,9 +236,48 @@ export function childSource(root) {
             {meta: {sessionId: process.env.NEO_PRESET_FLOOR_SESSION_ID}, document},
             {beforeCommit: ({payload}) => { captured = payload; throw sentinel }}
         );
-        print({chatModel, payload: captured, failure: captured ? null : result});
+        print({isolation, chatModel, payload: captured, failure: captured ? null : result});
         process.exit(0);
     `;
+}
+
+/**
+ * @summary The env that isolates a child from every plane: the consumed unit-test flag resolves the
+ * graph store to ':memory:' (and the test WAL to the OS temp dir); the plane anchor and the REM
+ * marker directory — the one writer that runs before the commit hook — point under the scratch root.
+ * The child reports what it resolved ('isolation'), and {@link isolatedUnder} refuses a run that
+ * resolved anything else.
+ * @param {String} scratchRoot An empty directory the parent created for this run.
+ * @returns {Object}
+ */
+export function isolationEnv(scratchRoot) {
+    return {
+        UNIT_TEST_MODE        : 'true',
+        NEO_PLANE_DATA_ROOT   : scratchRoot,
+        NEO_REM_RUN_STATE_DIR : path.join(scratchRoot, 'rem-runs')
+    };
+}
+
+/**
+ * @summary Whether a child's reported destinations all sit in memory or under the scratch root.
+ * @param {Object|undefined} isolation The child's \`isolation\` line.
+ * @param {String} scratchRoot
+ * @returns {String|null} The refusal, or null when isolated.
+ */
+export function isolatedUnder(isolation, scratchRoot) {
+    const under = value => typeof value === 'string' && (value === scratchRoot || value.startsWith(scratchRoot + path.sep));
+
+    if (!isolation) {
+        return 'the child reported no isolation';
+    }
+    if (isolation.graph !== ':memory:') {
+        return `the child resolved the graph store to ${isolation.graph}, not :memory:`;
+    }
+    if (!under(isolation.remRunStateDir) || !under(isolation.dataRoot)) {
+        return `the child resolved a plane path outside its scratch root: ${isolation.remRunStateDir}, ${isolation.dataRoot}`;
+    }
+
+    return null;
 }
 
 /**
@@ -233,14 +286,16 @@ export function childSource(root) {
  * @param {String} options.documentPath
  * @param {String} options.sessionId
  * @param {Object} options.env The mapped preset env.
+ * @param {String} options.scratchRoot The run's scratch root; the child's cwd and plane anchor.
+ * @param {Object} [options.baseEnv=process.env] The ambient env the preset env and the isolation env override.
  * @param {String} [options.root=brainRoot]
  * @param {Function} [options.exec=execFileAsync] The spawn seam, `(file, args, options) → Promise<{stdout}>`.
  * @returns {Promise<Object>}
  */
-export async function runChildExtraction({documentPath, sessionId, env, root = brainRoot, exec = execFileAsync}) {
+export async function runChildExtraction({documentPath, sessionId, env, scratchRoot, baseEnv = process.env, root = brainRoot, exec = execFileAsync}) {
     const {stdout} = await exec(process.execPath, ['--input-type=module', '-e', childSource(root)], {
-        cwd      : root,
-        env      : {...process.env, ...env, NEO_UNIT_TEST_MODE: 'true', NEO_PRESET_FLOOR_DOCUMENT: documentPath, NEO_PRESET_FLOOR_SESSION_ID: sessionId},
+        cwd      : scratchRoot,
+        env      : {...baseEnv, ...env, ...isolationEnv(scratchRoot), NEO_PRESET_FLOOR_DOCUMENT: documentPath, NEO_PRESET_FLOOR_SESSION_ID: sessionId},
         maxBuffer: 16 * 1024 * 1024,
         timeout  : CHILD_TIMEOUT_MS
     });
@@ -261,7 +316,23 @@ export async function listDocuments(dir) {
 }
 
 /**
+ * @summary The identity of a document set: the sha256 over `name`, newline, the sha256 of the content,
+ * newline — per document in name order. A reference measured on another set is not comparable to a run.
+ * @param {{name: String, content: String}[]} documents
+ * @returns {String}
+ */
+export function documentsDigest(documents) {
+    const
+        hash  = value => createHash('sha256').update(value).digest('hex'),
+        lines = documents.map(doc => ({name: doc.name, line: `${doc.name}\n${hash(doc.content)}\n`})).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+
+    return hash(lines.map(row => row.line).join(''));
+}
+
+/**
  * @summary Measures one preset over the documents; `unmeasured` carries the first reason the path could not run.
+ * Every child runs under a fresh scratch root (removed afterwards) and must report isolation
+ * ({@link isolatedUnder}); the summary carries the document set's digest and the isolation observed.
  * @param {Object} options
  * @param {String} options.presetId
  * @param {String} [options.documentsDir=DEFAULT_DOCUMENTS_DIR]
@@ -269,9 +340,10 @@ export async function listDocuments(dir) {
  * @param {String} [options.root=brainRoot]
  * @param {Function} [options.exec] The spawn seam.
  * @param {Function} [options.readCompose] `(file) → Promise<String>` over the profile's Compose files.
+ * @param {Object} [options.baseEnv] The ambient env the children start from (`process.env` by default).
  * @returns {Promise<Object>} The summary, or `{preset, unmeasured, measuredAt, ...}`.
  */
-export async function measurePreset({presetId, documentsDir = DEFAULT_DOCUMENTS_DIR, providerHost = null, root = brainRoot, exec, readCompose}) {
+export async function measurePreset({presetId, documentsDir = DEFAULT_DOCUMENTS_DIR, providerHost = null, root = brainRoot, exec, readCompose, baseEnv}) {
     const preset = presets.find(row => row.id === presetId);
 
     if (!preset) {
@@ -300,28 +372,43 @@ export async function measurePreset({presetId, documentsDir = DEFAULT_DOCUMENTS_
         return {...base, unmeasured: `no .md or .txt document under ${documentsDir}`};
     }
 
-    const runs = [];
-    let chatModel = null;
+    const
+        contents    = new Map(await Promise.all(documents.map(async file => [file, await fs.readFile(file, 'utf8')]))),
+        digest      = documentsDigest(documents.map(file => ({name: path.basename(file), content: contents.get(file)}))),
+        scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'preset-quality-floor-')),
+        runs        = [];
+    let chatModel = null, isolation = null;
 
-    for (const documentPath of documents) {
-        const
-            document = path.basename(documentPath),
-            child    = await runChildExtraction({documentPath, sessionId: `preset-quality-floor:${presetId}:${document}`, env, root, exec});
+    try {
+        for (const documentPath of documents) {
+            const
+                document = path.basename(documentPath),
+                child    = await runChildExtraction({documentPath, sessionId: `preset-quality-floor:${presetId}:${document}`, env, scratchRoot, baseEnv, root, exec}),
+                refusal  = isolatedUnder(child.isolation, scratchRoot);
 
-        if (child.unmeasured) {
-            return {...base, unmeasured: child.unmeasured};
+            isolation ??= child.isolation ?? null;
+
+            if (refusal) {
+                return {...base, isolation, unmeasured: `the child was not isolated: ${refusal}`};
+            }
+
+            if (child.unmeasured) {
+                return {...base, isolation, unmeasured: child.unmeasured};
+            }
+
+            chatModel ??= child.chatModel ?? null;
+
+            if (!child.payload) {
+                return {...base, isolation, chatModel, unmeasured: `the extraction of ${document} returned no payload: ${child.failure?.evidence?.errorMessage ?? child.failure?.deferReason ?? 'typed failure'}`, failure: child.failure ?? null};
+            }
+
+            runs.push({document, measure: measurePayload(child.payload, contents.get(documentPath))});
         }
-
-        chatModel ??= child.chatModel ?? null;
-
-        if (!child.payload) {
-            return {...base, chatModel, unmeasured: `the extraction of ${document} returned no payload: ${child.failure?.evidence?.errorMessage ?? child.failure?.deferReason ?? 'typed failure'}`, failure: child.failure ?? null};
-        }
-
-        runs.push({document, measure: measurePayload(child.payload, await fs.readFile(documentPath, 'utf8'))});
+    } finally {
+        await fs.rm(scratchRoot, {recursive: true, force: true});
     }
 
-    return {...summarizeRuns(runs, {preset: presetId, chatModel, measuredAt}), providerHost: host};
+    return {...summarizeRuns(runs, {preset: presetId, chatModel, measuredAt, documentsDigest: digest}), providerHost: host, isolation};
 }
 
 /**

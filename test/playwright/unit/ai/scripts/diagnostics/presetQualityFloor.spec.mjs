@@ -1,12 +1,18 @@
 import {expect, test}            from '@playwright/test';
-import {mkdtemp, readFile, writeFile} from 'node:fs/promises';
+import {execFile}                from 'node:child_process';
+import {access, mkdtemp, readFile, readdir, writeFile} from 'node:fs/promises';
+import http                      from 'node:http';
 import os                        from 'node:os';
 import path                      from 'node:path';
 import {fileURLToPath}           from 'node:url';
+import {promisify}               from 'node:util';
 import {
     DEFAULT_DOCUMENTS_DIR,
     INSTRUMENT,
+    documentsDigest,
     isTriVectorShape,
+    isolatedUnder,
+    isolationEnv,
     listDocuments,
     main,
     mapPresetEnv,
@@ -15,6 +21,7 @@ import {
     meetsFloor,
     referenceFloor,
     resolveProviderHost,
+    runChildExtraction,
     summarizeRuns
 } from '../../../../../../ai/scripts/diagnostics/presetQualityFloor.mjs';
 import {PLANE_PROFILE, presets, profileInputs} from '../../../../../../ai/services/fleet/placementPresets.mjs';
@@ -54,17 +61,24 @@ function payload({nodes, edges} = {}) {
     };
 }
 
-/** A fake child: one JSON line per spawn, recording the env it was given. */
+/**
+ * A fake child: one JSON line per spawn, recording the env and cwd it was given; it reports the
+ * isolation the env asked for, as the real child does (the real child's report is the witness arm).
+ */
 function fakeExec(reply, calls = []) {
     return async (file, args, options) => {
-        calls.push({file, args, env: options.env});
+        calls.push({file, args, env: options.env, cwd: options.cwd});
 
-        const value = typeof reply === 'function' ? reply(options.env) : reply;
+        const
+            env       = options.env,
+            isolation = {graph: ':memory:', remRunStateDir: env.NEO_REM_RUN_STATE_DIR, dataRoot: env.NEO_PLANE_DATA_ROOT},
+            value     = typeof reply === 'function' ? reply(env) : reply;
 
-        return {stdout: `[SemanticGraphExtractor] noise the parent must skip\n${JSON.stringify(value)}\n`, stderr: ''};
+        return {stdout: `[SemanticGraphExtractor] noise the parent must skip\n${JSON.stringify({isolation, ...value})}\n`, stderr: ''};
     };
 }
 
+/** Three documents of one text, plus a file the instrument must skip — a set the recorded floor was not measured on. */
 async function scratchDocuments(count = 3) {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'preset-floor-docs-'));
 
@@ -74,6 +88,28 @@ async function scratchDocuments(count = 3) {
     await writeFile(path.join(dir, 'notes.json'), '{}');
 
     return dir;
+}
+
+const execFileAsync = promisify(execFile);
+
+/** A fake OpenAI-compatible endpoint answering every chat completion with one payload; records the requests. */
+async function fakeProviderServer(reply) {
+    const
+        requests = [],
+        server   = http.createServer((req, res) => {
+            let body = '';
+
+            req.on('data', chunk => body += chunk);
+            req.on('end', () => {
+                requests.push({url: req.url, body: JSON.parse(body)});
+                res.writeHead(200, {'Content-Type': 'application/json'});
+                res.end(JSON.stringify({choices: [{message: {content: JSON.stringify(reply)}, finish_reason: 'stop'}], usage: {prompt_tokens: 10, completion_tokens: 10}}));
+            });
+        });
+
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+
+    return {requests, host: `http://127.0.0.1:${server.address().port}`, close: () => new Promise(resolve => server.close(resolve))};
 }
 
 test.describe('presetQualityFloor', () => {
@@ -128,12 +164,13 @@ test.describe('presetQualityFloor', () => {
         expect(measurePayload(null, DOCUMENT)).toEqual({schemaValid: false, nodes: 0, edges: 0, danglingEdges: 0, groundedNodes: 0, ungroundedNames: [], labelledNodes: 0, extracted: []});
     });
 
-    test('runs fold into the table\'s shape, and the floor is the reference model\'s recorded result on the same fixtures — met at or above it on every axis, never without a reference', () => {
+    test('runs fold into the table\'s shape, and the floor is the reference model\'s recorded result on the same document set — met at or above it on every axis, never on another set, never without a reference', async () => {
         const
             good      = {schemaValid: true, nodes: 5, edges: 4, danglingEdges: 0, groundedNodes: 5, ungroundedNames: []},
             thin      = {schemaValid: true, nodes: 3, edges: 2, danglingEdges: 1, groundedNodes: 2, ungroundedNames: ['Neo.dashboard.Main']},
             reference = referenceFloor(),
-            met       = summarizeRuns([{document: 'a.md', measure: good}, {document: 'b.md', measure: {...good, groundedNodes: 4}}], {preset: 'local-small', chatModel: 'google/gemma-4-26b-a4b', measuredAt: '2026-10-02'});
+            runs      = [{document: 'a.md', measure: good}, {document: 'b.md', measure: {...good, groundedNodes: 4}}],
+            met       = summarizeRuns(runs, {preset: 'local-small', chatModel: 'google/gemma-4-26b-a4b', measuredAt: '2026-10-02', documentsDigest: reference.documentsDigest});
 
         // the reference is the table's recorded gemma run, read from the presets module, never a number in the instrument
         expect(reference).toMatchObject({instrument: INSTRUMENT, chatModel: 'google/gemma-4-26b-a4b', result: {schemaValid: true}});
@@ -145,16 +182,30 @@ test.describe('presetQualityFloor', () => {
             measuredAt: '2026-10-02',
             chatModel : 'google/gemma-4-26b-a4b',
             documents : ['a.md', 'b.md'],
+            documentsDigest: reference.documentsDigest,
             result    : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4-5', ungroundedNames: 0},
-            floor     : {met: true, reference}
+            floor     : {met: true, comparable: true, reference}
         });
         expect(met.perDocument.map(row => row.document)).toEqual(['a.md', 'b.md']);
 
-        const short = summarizeRuns([{document: 'a.md', measure: good}, {document: 'b.md', measure: thin}], {preset: 'local-small', chatModel: 'gpt-oss-20b', measuredAt: '2026-10-02'});
+        // the same favourable metrics over another document set are not a pass: the comparison is unavailable
+        const elsewhere = summarizeRuns(runs, {preset: 'local-small', chatModel: 'google/gemma-4-26b-a4b', measuredAt: '2026-10-02', documentsDigest: 'f'.repeat(64)});
+
+        expect(elsewhere.floor).toEqual({met: false, comparable: false, reference, reason: 'the reference was measured on another document set'});
+        expect(summarizeRuns(runs, {preset: 'local-small', chatModel: 'x', measuredAt: '2026-10-02', documentsDigest: reference.documentsDigest, reference: null}).floor).toEqual({met: false, comparable: false, reference: null, reason: 'no reference is recorded'});
+
+        const short = summarizeRuns([{document: 'a.md', measure: good}, {document: 'b.md', measure: thin}], {preset: 'local-small', chatModel: 'gpt-oss-20b', measuredAt: '2026-10-02', documentsDigest: reference.documentsDigest});
 
         expect(short.result).toEqual({schemaValid: true, danglingEdges: 1, groundedNodesPerDocument: '2-5', ungroundedNames: 1});
-        expect(short.floor.met).toBe(false);
-        expect(summarizeRuns([], {preset: 'local-small', chatModel: null, measuredAt: '2026-10-02'}).floor.met).toBe(false);
+        expect(short.floor).toMatchObject({met: false, comparable: true});
+        expect(summarizeRuns([], {preset: 'local-small', chatModel: null, measuredAt: '2026-10-02', documentsDigest: reference.documentsDigest}).floor.met).toBe(false);
+
+        // the digest is the set's identity: order-free, content-sensitive, and the table's recorded one IS the shipped fixtures'
+        expect(documentsDigest([{name: 'b.md', content: '2'}, {name: 'a.md', content: '1'}])).toBe(documentsDigest([{name: 'a.md', content: '1'}, {name: 'b.md', content: '2'}]));
+        expect(documentsDigest([{name: 'a.md', content: '1'}, {name: 'b.md', content: '3'}])).not.toBe(documentsDigest([{name: 'a.md', content: '1'}, {name: 'b.md', content: '2'}]));
+        const fixtures = await Promise.all((await listDocuments(DEFAULT_DOCUMENTS_DIR)).map(async file => ({name: path.basename(file), content: await readFile(file, 'utf8')})));
+
+        expect(documentsDigest(fixtures)).toBe(reference.documentsDigest);
 
         // the reference's own result meets itself; one more dangling edge or one fewer grounded node does not
         expect(meetsFloor(reference.result, reference.result)).toBe(true);
@@ -173,33 +224,54 @@ test.describe('presetQualityFloor', () => {
         expect(result.measuredAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
 
-    test('a local preset runs one child per document with the mapped env under unit-test mode, and folds the payloads; a child failure or a refused provider is unmeasured', async () => {
+    test('a local preset runs one child per document under a fresh scratch root with the consumed isolation flags, refuses a child that resolved a plane path, folds the payloads and removes the root; a child failure or a refused provider is unmeasured', async () => {
         const
-            dir     = await scratchDocuments(),
-            calls   = [],
-            measured = await measurePreset({presetId: 'local-small', documentsDir: dir, providerHost: 'http://127.0.0.1:1234', exec: fakeExec({chatModel: 'google/gemma-4-26b-a4b', payload: payload(), failure: null}, calls)});
+            dir      = await scratchDocuments(),
+            calls    = [],
+            measured = await measurePreset({presetId: 'local-small', documentsDir: dir, providerHost: 'http://127.0.0.1:1234', exec: fakeExec({chatModel: 'google/gemma-4-26b-a4b', payload: payload(), failure: null}, calls)}),
+            root     = calls[0].cwd;
 
         expect(await listDocuments(dir)).toHaveLength(3);
         expect(calls).toHaveLength(3);
         expect(calls[0].file).toBe(process.execPath);
         expect(calls[0].args.slice(0, 2)).toEqual(['--input-type=module', '-e']);
         expect(calls[0].args[2]).toContain('executeTriVectorExtraction');
+        // the scratch root is every child's cwd, plane anchor and marker directory; the CONSUMED unit-test flag selects the memory graph store
+        expect(path.basename(root)).toMatch(/^preset-quality-floor-/);
+        expect(calls.every(call => call.cwd === root)).toBe(true);
         expect(calls[0].env).toMatchObject({
-            NEO_UNIT_TEST_MODE         : 'true',
+            UNIT_TEST_MODE             : 'true',
+            NEO_PLANE_DATA_ROOT        : root,
+            NEO_REM_RUN_STATE_DIR      : path.join(root, 'rem-runs'),
             NEO_GRAPH_PROVIDER         : 'openAiCompatible',
             NEO_OPENAI_COMPATIBLE_HOST : 'http://127.0.0.1:1234',
             NEO_OPENAI_COMPATIBLE_MODEL: 'google/gemma-4-26b-a4b',
             NEO_PRESET_FLOOR_SESSION_ID: 'preset-quality-floor:local-small:01-thread.md'
         });
+        expect(calls[0].env.NEO_UNIT_TEST_MODE).toBeUndefined();
         expect(calls[0].env.NEO_PRESET_FLOOR_DOCUMENT).toBe(path.join(dir, '01-thread.md'));
+        // the root is gone once the run is folded
+        await expect(access(root)).rejects.toThrow();
         expect(measured).toMatchObject({
             preset      : 'local-small',
             chatModel   : 'google/gemma-4-26b-a4b',
             documents   : ['01-thread.md', '02-thread.md', '03-thread.md'],
             result      : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4', ungroundedNames: 0},
-            floor       : {met: true},
+            // three scratch documents are not the recorded floor's set: measured, not comparable, never a pass
+            floor       : {met: false, comparable: false, reason: 'the reference was measured on another document set'},
+            isolation   : {graph: ':memory:', remRunStateDir: path.join(root, 'rem-runs'), dataRoot: root},
             providerHost: {declared: 'http://host.docker.internal:1234', used: 'http://127.0.0.1:1234'}
         });
+        expect(measured.documentsDigest).toBe(documentsDigest(await Promise.all(['01-thread.md', '02-thread.md', '03-thread.md'].map(async name => ({name, content: await readFile(path.join(dir, name), 'utf8')})))));
+
+        // a child that resolved the graph store or a plane path elsewhere is refused before its payload counts
+        const leaky = await measurePreset({presetId: 'local-small', documentsDir: dir, exec: fakeExec(env => ({isolation: {graph: '/srv/plane/sqlite/memory-core-graph.sqlite', remRunStateDir: env.NEO_REM_RUN_STATE_DIR, dataRoot: env.NEO_PLANE_DATA_ROOT}, chatModel: 'x', payload: payload(), failure: null}))});
+
+        expect(leaky.unmeasured).toBe('the child was not isolated: the child resolved the graph store to /srv/plane/sqlite/memory-core-graph.sqlite, not :memory:');
+        expect(isolatedUnder({graph: ':memory:', remRunStateDir: '/elsewhere/rem-runs', dataRoot: '/tmp/x'}, '/tmp/x')).toMatch(/outside its scratch root/);
+        expect(isolatedUnder(undefined, '/tmp/x')).toBe('the child reported no isolation');
+        expect(isolatedUnder({graph: ':memory:', remRunStateDir: '/tmp/x/rem-runs', dataRoot: '/tmp/x'}, '/tmp/x')).toBeNull();
+        expect(isolationEnv('/tmp/x')).toEqual({UNIT_TEST_MODE: 'true', NEO_PLANE_DATA_ROOT: '/tmp/x', NEO_REM_RUN_STATE_DIR: '/tmp/x/rem-runs'});
 
         const failed = await measurePreset({presetId: 'local-small', documentsDir: dir, exec: fakeExec({chatModel: 'google/gemma-4-26b-a4b', payload: null, failure: {ok: false, deferReason: 'schema-failure', evidence: {errorMessage: 'fetch failed'}}})});
 
@@ -210,6 +282,53 @@ test.describe('presetQualityFloor', () => {
         expect(refused.unmeasured).toMatch(/outside the Tri-Vector dispatch/);
 
         await expect(measurePreset({presetId: 'nope', documentsDir: dir, exec: fakeExec({})})).rejects.toThrow(/--preset must be one of hosted \| local-small \| local-full/);
+    });
+
+    test('witness: the real child, from a clean environment, runs the shipped path against a fake endpoint — memory graph store, scratch anchor and marker directory, nothing written but the emptied marker directory, the root removed', async () => {
+        test.setTimeout(180000);
+
+        const
+            provider = await fakeProviderServer(payload()),
+            roots    = [],
+            seen     = [],
+            // the instrument's own spawn, observed: the scratch root's content right after each child exits, before the parent removes it
+            exec     = async (file, args, options) => {
+                const result = await execFileAsync(file, args, options);
+
+                roots.push(options.cwd);
+                seen.push((await readdir(options.cwd, {recursive: true})).sort());
+
+                return result;
+            };
+
+        try {
+            const
+                reference = referenceFloor(),
+                measured  = await measurePreset({
+                    presetId    : 'local-small',
+                    providerHost: provider.host,
+                    // no ambient test flag reaches the child: the isolation is the instrument's own env
+                    baseEnv     : {PATH: process.env.PATH, HOME: process.env.HOME},
+                    exec
+                }),
+                root = roots[0];
+
+            expect(roots).toHaveLength(3);
+            expect(roots.every(dir => dir === root)).toBe(true);
+            // every request went to the fake endpoint through the shipped client, grammar-constrained
+            expect(provider.requests.map(row => row.url)).toEqual(['/v1/chat/completions', '/v1/chat/completions', '/v1/chat/completions']);
+            expect(provider.requests[0].body).toMatchObject({model: 'google/gemma-4-26b-a4b', response_format: {type: 'json_schema'}});
+            // what the child resolved: memory for the graph store, the scratch root for the anchor and the marker directory
+            expect(measured.isolation).toEqual({graph: ':memory:', remRunStateDir: path.join(root, 'rem-runs'), dataRoot: root});
+            // what the child wrote: the marker directory, emptied again — and nothing else under its root
+            expect(seen).toEqual([['rem-runs'], ['rem-runs'], ['rem-runs']]);
+            await expect(access(root)).rejects.toThrow();
+            // the payload came through the sentinel; the shipped fixtures are the recorded floor's set
+            expect(measured).toMatchObject({preset: 'local-small', chatModel: 'google/gemma-4-26b-a4b', documentsDigest: reference.documentsDigest, result: {schemaValid: true}, floor: {comparable: true}});
+            expect(measured.documents).toEqual(['19339-dock-reveal-overlay-focus.md', '19354-dock-workspace-header-actions-plugin.md', '19356-grid-body-scroll-edge.md']);
+        } finally {
+            await provider.close();
+        }
     });
 
     test('the CLI prints the measurement and exits 0 when measured, 2 when unmeasured; the shipped fixtures are three public engine threads', async () => {

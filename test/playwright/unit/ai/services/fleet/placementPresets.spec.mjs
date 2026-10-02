@@ -89,7 +89,8 @@ test.describe('placementPresets — three presets as env sets over declared leav
         expect(presetStatus(byId('local-small'))).toBe('supported');
         expect(presetStatus(byId('local-full'))).toBe('supported');
         expect(presetStatus(byId('hosted'))).toBe('candidate');
-        expect(byId('local-full').qualityFloor).toMatchObject({instrument: 'tri-vector-three-documents', measuredAt: '2026-10-02', chatModel: 'google/gemma-4-26b-a4b', documents: ['19339-dock-reveal-overlay-focus.md', '19354-dock-workspace-header-actions-plugin.md', '19356-grid-body-scroll-edge.md'], result: {schemaValid: true, danglingEdges: 1, groundedNodesPerDocument: '3-4', ungroundedNames: 0}});
+        // the recorded floor names its document set and that set's digest (the instrument's spec proves the digest is the shipped fixtures')
+        expect(byId('local-full').qualityFloor).toMatchObject({instrument: 'tri-vector-three-documents', measuredAt: '2026-10-02', chatModel: 'google/gemma-4-26b-a4b', documents: ['19339-dock-reveal-overlay-focus.md', '19354-dock-workspace-header-actions-plugin.md', '19356-grid-body-scroll-edge.md'], documentsDigest: 'f3cd8b711bc5a8905cd7ec171577c423be34b23583adbaa6c9feeef82116844e', result: {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '3-4', ungroundedNames: 0}});
         expect(presetStatus({})).toBe('candidate')
     });
 
