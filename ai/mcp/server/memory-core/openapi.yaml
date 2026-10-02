@@ -644,6 +644,15 @@ paths:
         the envelope's reason says so.
 
 
+        Wake axis: whether a wake can reach each seat, from the wake receiver's own dispatch records
+        (host truth, the reader healthcheck uses) joined to each identity's active subscriptions —
+        one route that lands makes a seat reachable, and undeliverable needs every active route
+        concluded failing (a route the receiver never concluded keeps the seat unknown). Terse
+        carries the sparse undeliverable map (identity → the receiver's last outcome reason);
+        verbose rows carry {state, reason?, consecutiveFailures?}. Unreadable records degrade the
+        wake envelope and omit the map, so they never read as reachable.
+
+
         Terse by default: {summary, windows, online[], idle[], dark[], neverConnected[], benched[]}
         (identity arrays). Buckets separate liveness from membership: idle is stale but within the
         configured cutoff, dark is stale beyond it, neverConnected has no activity on this deployment
@@ -679,9 +688,9 @@ paths:
               schema:
                 type: object
                 description: >
-                  Terse default: {generatedAt, axes, summary, windows, reviewLoad, online[], idle[], dark[],
-                  neverConnected[], benched[]}. With verbose:true: {generatedAt, axes, signalStatus,
-                  agents[]}.
+                  Terse default: {generatedAt, axes, summary, windows, reviewLoad, undeliverable, online[],
+                  idle[], dark[], neverConnected[], benched[]}. With verbose:true: {generatedAt, axes,
+                  signalStatus, agents[]}.
                 properties:
                   generatedAt:
                     type: string
@@ -693,7 +702,8 @@ paths:
                       capability-envelope grammar (adds plane/signal: this tool serves axes it
                       cannot own, so the plane travels on the envelope). Terse: the presence
                       envelope (wired/observed, proxy declared), the load envelope (wired/observed,
-                      the A2A review-lifecycle trail's blind class named), plus an unobserved marker
+                      the A2A review-lifecycle trail's blind class named), the wake envelope (the
+                      receiver's dispatch records, degraded when unreadable), plus an unobserved marker
                       naming the host-originated axes (throttle, lifecycle, liveness). Verbose: each
                       host axis as its full degraded/none envelope until the fleet publishes. An
                       unknown axis never ranks a seat top and never renders as fine.
@@ -705,6 +715,15 @@ paths:
                       only seats holding at least one. Absent IS the counted zero. Derived from the
                       plane-resident A2A review-lifecycle ping trail; a review that never pinged is
                       invisible to it.
+                  undeliverable:
+                    type: object
+                    additionalProperties: {type: string, nullable: true}
+                    description: >
+                      Terse default — the sparse wake map: identity → the wake receiver's last
+                      outcome reason, only rostered seats whose every active wake route has concluded
+                      failing. An absent seat is reachable, unsubscribed, or has a route the receiver
+                      never concluded — never known failing. Omitted whole when the receiver's
+                      records are unreadable; the wake envelope says why.
                   summary:
                     type: string
                     description: >
@@ -784,6 +803,18 @@ paths:
                             Per-row re-review load from the A2A review-lifecycle trail: {open,
                             returned, loops[]} with loops oldest-first (the stalest obligation at
                             the head). A seat with no open loops reads the counted zero.
+                        wake:
+                          type: object
+                          description: >
+                            Whether a wake can reach this seat: reachable when one active route
+                            delivers; undeliverable, with the newest failing route's reason and
+                            streak, only when every active route has concluded failing; unknown
+                            when any active route has not concluded or the records are unreadable;
+                            unsubscribed with no active route.
+                          properties:
+                            state: {type: string, enum: [reachable, undeliverable, unknown, unsubscribed]}
+                            reason: {type: string, nullable: true}
+                            consecutiveFailures: {type: integer}
         '500':
           description: Operation failed.
           content:

@@ -1,5 +1,8 @@
-import {expect, test}           from '@playwright/test';
-import {projectWakeDelivery}    from '../../../../../../ai/services/memory-core/wakeDeliveryProjection.mjs';
+import {expect, test} from '@playwright/test';
+import {
+    projectIdentityWakeReachability,
+    projectWakeDelivery
+} from '../../../../../../ai/services/memory-core/wakeDeliveryProjection.mjs';
 
 /**
  * The defect this projects: a wake subscription whose dispatches all fail still reports itself
@@ -69,8 +72,8 @@ test.describe('projectWakeDelivery — per-subscription delivery outcome', () =>
 
     test('AC-5 · non-vacuity control: the signal is neither permanently red nor permanently green', () => {
         // Without this arm every other arm passes on a payload that is uninformatively constant.
-        // The defect #17647's AC-4 was written to catch is a constant-health payload, and a streak
-        // counter hardwired to 1 would sail every other assertion in this file.
+        // The defect this guards is a constant-health payload, and a streak counter hardwired to 1
+        // would sail every other assertion in this file.
         const healthy = projectWakeDelivery([
             at('delivered', {acceptedAt: '2026-09-25T00:00:00.000Z', dispatchFinishedAt: '2026-09-25T00:00:01.000Z'})
         ])['WAKE_SUB:sub-a'];
@@ -170,5 +173,37 @@ test.describe('projectWakeDelivery — per-subscription delivery outcome', () =>
 
         expect(projected.state).toBe('unknown');
         expect(projected.consecutiveFailures, 'an unreadable record is not a failure and not a success').toBe(0);
+    });
+});
+
+test.describe('projectIdentityWakeReachability — one seat across its routes', () => {
+    const verdicts = {
+        ok   : {state: 'reachable',   consecutiveFailures: 0, lastOutcomeReason: null,         lastAttemptedAt: '2026-10-01T10:00:00.000Z'},
+        older: {state: 'unreachable', consecutiveFailures: 4, lastOutcomeReason: 'old reason', lastAttemptedAt: '2026-10-01T09:00:00.000Z'},
+        newer: {state: 'unreachable', consecutiveFailures: 2, lastOutcomeReason: 'new reason', lastAttemptedAt: '2026-10-01T11:00:00.000Z'},
+        quiet: {state: 'unknown',     consecutiveFailures: 0, lastOutcomeReason: null,         lastAttemptedAt: null}
+    };
+
+    test('one route that lands makes the seat reachable, whatever its other routes do', () => {
+        expect(projectIdentityWakeReachability(['older', 'ok', 'newer'], verdicts)).toEqual({state: 'reachable'});
+    });
+
+    test('with every active route concluded failing the seat is undeliverable, with the newest failing route\'s reason and streak', () => {
+        expect(projectIdentityWakeReachability(['older', 'newer'], verdicts))
+            .toEqual({state: 'undeliverable', reason: 'new reason', consecutiveFailures: 2});
+    });
+
+    test('a failing route beside one the receiver never concluded keeps the seat unknown: one failure is not evidence about every route', () => {
+        // The mixed cases: a failed route with an unknown sibling, and with a sibling that has no
+        // records at all. Before this arm both read undeliverable, and the pure spec pinned that.
+        for (const ids of [['older', 'newer', 'quiet'], ['newer', 'absent'], ['quiet', 'older']]) {
+            expect(projectIdentityWakeReachability(ids, verdicts), JSON.stringify(ids)).toEqual({state: 'unknown'});
+        }
+    });
+
+    test('a route never concluded, a route with no records and no route at all read unknown, never reachable', () => {
+        for (const ids of [['quiet'], ['absent'], []]) {
+            expect(projectIdentityWakeReachability(ids, verdicts), JSON.stringify(ids)).toEqual({state: 'unknown'});
+        }
     });
 });

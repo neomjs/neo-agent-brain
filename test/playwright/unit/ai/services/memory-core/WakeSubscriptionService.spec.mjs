@@ -16,6 +16,7 @@ setup({
 import {test, expect} from '@playwright/test';
 import crypto         from 'crypto';
 import fs             from 'fs-extra';
+import os             from 'os';
 import path           from 'path';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
@@ -3260,6 +3261,103 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(declared).toContain('validationState:');
             expect(declared).toContain('enum: [stale-validated]');
             expect(declared).toContain('since:');
+        });
+
+        /**
+         * The roster tells a seat a wake reaches from one it does not, from the wake receiver's own
+         * dispatch records joined to the seat's active subscriptions.
+         */
+        test.describe('whether a wake can reach the seat (#503)', () => {
+            let recordsDir, savedRecordsDir;
+
+            test.beforeEach(async () => {
+                savedRecordsDir = process.env.NEO_WAKE_RECEIVER_RECORDS_DIR;
+                recordsDir      = await fs.mkdtemp(path.join(os.tmpdir(), 'who-is-online-wake-'));
+                process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = recordsDir
+            });
+
+            test.afterEach(async () => {
+                if (savedRecordsDir === undefined) delete process.env.NEO_WAKE_RECEIVER_RECORDS_DIR;
+                else process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = savedRecordsDir;
+
+                await fs.rm(recordsDir, {force: true, recursive: true})
+            });
+
+            const
+                REASON = 'opencode-server envelope requires \'agentIdentity\'',
+                route  = (owner, id) => GraphService.upsertNode({id, type: 'WAKE_SUBSCRIPTION', name: id, properties: {agentIdentity: owner, status: 'active'}}),
+                record = (subscriptionId, state, minute, outcomeReason) => fs.writeFile(
+                    path.join(recordsDir, `${subscriptionId.replace(/\W/g, '_')}-${minute}.json`),
+                    JSON.stringify({subscriptionId, state, dispatchFinishedAt: iso(T0ms + minute * 60_000), ...(outcomeReason ? {outcomeReason} : {})})
+                ),
+                verboseRow = async identity => (await WakeSubscriptionService.whoIsOnline({verbose: true, now: new Date(T0)})).agents.find(agent => agent.identity === identity);
+
+            test('a present seat whose routes keep failing reads undeliverable, with the receiver\'s reason; a delivering seat reads reachable', async () => {
+                for (const id of ['@neo-wake-broken', '@neo-wake-fine']) { seedAgent(id); seedActivity(id) }
+                route('@neo-wake-broken', 'WAKE_SUB:broken');
+                route('@neo-wake-fine',   'WAKE_SUB:fine');
+                await record('WAKE_SUB:broken', 'delivered', 1);
+                await record('WAKE_SUB:broken', 'failed',    2, REASON);
+                await record('WAKE_SUB:broken', 'failed',    3, REASON);
+                await record('WAKE_SUB:fine',   'delivered', 2);
+
+                const terse = await WakeSubscriptionService.whoIsOnline({now: new Date(T0)});
+
+                expect(terse.online).toEqual(expect.arrayContaining(['@neo-wake-broken', '@neo-wake-fine']));
+                expect(terse.undeliverable).toEqual({'@neo-wake-broken': REASON});
+                expect(terse.axes.wake.capability).toMatchObject({plane: 'host', state: 'wired', confidence: 'observed'});
+                expect((await verboseRow('@neo-wake-broken')).wake).toEqual({state: 'undeliverable', reason: REASON, consecutiveFailures: 2});
+                // the non-vacuity control: the same projection answers reachable when a wake lands
+                expect((await verboseRow('@neo-wake-fine')).wake).toEqual({state: 'reachable'});
+            });
+
+            test('one route that lands is enough; a failing route beside one without records, a route never concluded, and no route read reachable-not: unknown, unknown, unsubscribed', async () => {
+                for (const id of ['@neo-wake-two', '@neo-wake-half', '@neo-wake-new', '@neo-wake-none']) { seedAgent(id); seedActivity(id) }
+                route('@neo-wake-two',  'WAKE_SUB:two-old');
+                route('@neo-wake-two',  'WAKE_SUB:two-gui');
+                route('@neo-wake-half', 'WAKE_SUB:half-failed');
+                route('@neo-wake-half', 'WAKE_SUB:half-quiet');
+                route('@neo-wake-new',  'WAKE_SUB:new');
+                await record('WAKE_SUB:two-old',     'failed',    4, REASON);
+                await record('WAKE_SUB:two-gui',     'delivered', 3);
+                await record('WAKE_SUB:half-failed', 'failed',    5, REASON);
+                // WAKE_SUB:half-quiet: active, and the receiver has never dispatched to it
+
+                const terse = await WakeSubscriptionService.whoIsOnline({now: new Date(T0)});
+
+                // the seat with a failing route AND an unobserved one stays out of the map: one
+                // failure is not evidence that every route fails
+                expect(terse.undeliverable).toEqual({});
+                expect((await verboseRow('@neo-wake-two')).wake).toEqual({state: 'reachable'});
+                expect((await verboseRow('@neo-wake-half')).wake).toEqual({state: 'unknown'});
+                expect((await verboseRow('@neo-wake-new')).wake).toEqual({state: 'unknown'});
+                expect((await verboseRow('@neo-wake-none')).wake).toEqual({state: 'unsubscribed'});
+            });
+
+            test('records the process cannot read degrade the wake axis: no map, unknown rows, never reachable', async () => {
+                seedAgent('@neo-wake-blind');
+                seedActivity('@neo-wake-blind');
+                route('@neo-wake-blind', 'WAKE_SUB:blind');
+
+                // a file where the directory should be: readable as nothing, which is not "no records"
+                const notADirectory = path.join(recordsDir, 'records-file');
+
+                await fs.writeFile(notADirectory, '');
+                process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = notADirectory;
+
+                const terse = await WakeSubscriptionService.whoIsOnline({now: new Date(T0)});
+
+                expect(terse).not.toHaveProperty('undeliverable');
+                expect(terse.axes.wake.capability).toMatchObject({
+                    state     : 'degraded',
+                    confidence: 'none',
+                    reason    : 'the wake receiver\'s dispatch records are unreadable from this process'
+                });
+                expect((await verboseRow('@neo-wake-blind')).wake).toEqual({
+                    state : 'unknown',
+                    reason: 'the wake receiver\'s dispatch records are unreadable from this process'
+                });
+            });
         });
 
         test('#16058 — the summary states the windows it applied', async () => {

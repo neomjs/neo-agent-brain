@@ -55,6 +55,37 @@ const ACTIVE_OBSERVATIONS_SQL = `
 `
 
 /**
+ * The durable fleet-wide ACTIVE-subscription ids, one row per subscription and nothing aggregated:
+ * the join key between an identity and the wake receiver's per-subscription dispatch records. Same
+ * status predicate as {@link ACTIVE_OBSERVATIONS_SQL}.
+ */
+const ACTIVE_IDS_SQL = `
+    SELECT id, json_extract(data, '$.properties.agentIdentity') AS agentIdentity
+    FROM Nodes
+    WHERE json_extract(data, '$.label') = 'WAKE_SUBSCRIPTION'
+      AND ${activeWakeSubscriptionStatusSql()}
+`
+
+/**
+ * @summary The graph's two read surfaces, once its async init has settled: the durable SQLite handle
+ * (production) and the in-process node cache (the test-double seam).
+ * @param {Object|null} graphService
+ * @returns {Promise<{sqlite: Object|undefined, items: Object[]|undefined}>}
+ * @private
+ */
+async function graphReadSurfaces(graphService) {
+    const service = graphService || (await import('./GraphService.mjs')).default
+
+    // `db` is populated by async init, not by module import: reading it straight off the fresh
+    // import yields undefined. `ready()` is the ONLY architecture-compliant external wait —
+    // `core.Base` triggers `initAsync()` itself during `Neo.create()`, so awaiting that method from
+    // out here would run it a second time (`src/core/Base.mjs`). Mirrors `WakeSubscriptionService`.
+    await service.ready()
+
+    return {sqlite: service.db?.storage?.db, items: service.db?.nodes?.items}
+}
+
+/**
  * @summary Scan the graph for ACTIVE wake subscriptions and return one redacted observation per
  * holder identity: `{identity, lastPollAt}` with `lastPollAt` null until an authenticated poll has
  * stamped one of that identity's subscriptions.
@@ -65,15 +96,7 @@ const ACTIVE_OBSERVATIONS_SQL = `
  * @throws {Error} When no read surface is reachable — the adapter maps this to honest `unknown`.
  */
 export async function readActiveWakeSubscriptionObservations({graphService = null} = {}) {
-    const service = graphService || (await import('./GraphService.mjs')).default
-
-    // `db` is populated by async init, not by module import: reading it straight off the fresh
-    // import yields undefined. `ready()` is the ONLY architecture-compliant external wait —
-    // `core.Base` triggers `initAsync()` itself during `Neo.create()`, so awaiting that method from
-    // out here would run it a second time (`src/core/Base.mjs`). Mirrors `WakeSubscriptionService`.
-    await service.ready()
-
-    const sqlite = service.db?.storage?.db
+    const {sqlite, items} = await graphReadSurfaces(graphService)
 
     if (sqlite) {
         return sqlite.prepare(ACTIVE_OBSERVATIONS_SQL)
@@ -87,8 +110,6 @@ export async function readActiveWakeSubscriptionObservations({graphService = nul
 
     // Test-double seam only: an injected service with no SQLite handle. Never the production path —
     // see the module note on cross-process cache truth.
-    const items = service.db?.nodes?.items
-
     if (!items) {
         throw new Error('wake subscription scan: graph read surface unavailable')
     }
@@ -115,6 +136,47 @@ export async function readActiveWakeSubscriptionObservations({graphService = nul
     }
 
     return [...observations].map(([identity, lastPollAt]) => ({identity, lastPollAt}))
+}
+
+/**
+ * @summary The ACTIVE wake subscriptions of every holder identity, by id: what joins a roster row to
+ * the wake receiver's per-subscription dispatch records. Same predicate and the same durable-first
+ * rule as {@link readActiveWakeSubscriptionObservations}. The ids serve the projection that reads
+ * them in-process; they are not part of the redacted observation the fleet serves.
+ * @param {Object} [options]
+ * @param {Object} [options.graphService] Injectable service exposing `ready()` + `db`; defaults to
+ *     the memory-core `GraphService` singleton, imported lazily.
+ * @returns {Promise<Map<String, String[]>>} identity → its active subscription ids.
+ * @throws {Error} When no read surface is reachable.
+ */
+export async function readActiveWakeSubscriptionIdsByIdentity({graphService = null} = {}) {
+    const
+        {sqlite, items} = await graphReadSurfaces(graphService),
+        byIdentity      = new Map(),
+        add             = (identity, id) => {
+            if (typeof identity === 'string' && identity !== '' && typeof id === 'string' && id !== '') {
+                byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), id])
+            }
+        }
+
+    if (sqlite) {
+        for (const row of sqlite.prepare(ACTIVE_IDS_SQL).all()) add(row.agentIdentity, row.id)
+
+        return byIdentity
+    }
+
+    // the test-double seam, as above
+    if (!items) {
+        throw new Error('wake subscription scan: graph read surface unavailable')
+    }
+
+    for (const node of items) {
+        if (node.label === 'WAKE_SUBSCRIPTION' && isActiveWakeSubscriptionStatus(node.properties?.status)) {
+            add(node.properties?.agentIdentity, node.id)
+        }
+    }
+
+    return byIdentity
 }
 
 /**
