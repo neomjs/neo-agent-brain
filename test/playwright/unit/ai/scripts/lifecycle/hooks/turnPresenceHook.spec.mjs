@@ -13,18 +13,20 @@ setup({
     }
 });
 
-import {test, expect}   from '@playwright/test';
-import Neo              from 'neo.mjs/src/Neo.mjs';
-import * as core        from 'neo.mjs/src/core/_export.mjs';
-import fs               from 'node:fs';
-import os               from 'node:os';
-import path             from 'node:path';
-import {pathToFileURL}  from 'node:url';
-import {renderProjection} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
+import {test, expect}                            from '@playwright/test';
+import Neo                                       from 'neo.mjs/src/Neo.mjs';
+import * as core                                 from 'neo.mjs/src/core/_export.mjs';
+import fs                                        from 'node:fs';
+import os                                        from 'node:os';
+import path                                      from 'node:path';
+import {pathToFileURL}                           from 'node:url';
+import {reconcileClaudeEvents, renderProjection} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
 
 const
     REPO_ROOT   = path.resolve(process.cwd()),
-    HOOK_SOURCE = path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude/turnPresenceHook.mjs');
+    HOOK_SOURCE = path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude/turnPresenceHook.mjs'),
+    MANIFEST    = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude/events.manifest.json'), 'utf8')),
+    PRESENCE    = '/.claude/hooks/turnPresenceHook.mjs';
 
 let scratchDirs = [];
 
@@ -56,7 +58,7 @@ test.afterAll(() => {
 });
 
 /**
- * #250 AC-8 — the presence hooks still emit after the move, with the MCP storage path unchanged.
+ * The presence hooks still emit after their move into the Brain, with the MCP storage path unchanged.
  *
  * The hazard is named in `turnPresenceHook.mjs`'s own JSDoc: an earlier shape let the writer derive
  * a filesystem path from its own module location, "which is how every beacon ended up in a private
@@ -145,5 +147,49 @@ test.describe('turnPresenceHook — emission survives projection to an arbitrary
         // No self-location derivation. These are the constructs that produced the original defect.
         expect(contents).not.toMatch(/import\.meta\.url[^\n]*\b(dirname|resolve|join)\b/);
         expect(contents).not.toMatch(/\bprocess\.cwd\(\)/)
+    })
+});
+
+/**
+ * Presence is never a precondition, so no prompt or tool call waits on it. The harness enforces no
+ * timeout on an async hook, which leaves the writer's own deadline as the only bound — a `timeout`
+ * on the entry would read as one.
+ */
+test.describe('turnPresenceHook — runs in the background, never in a prompt\'s or a tool call\'s path', () => {
+    const presenceEntries = events => Object.entries(events).flatMap(([event, buckets]) =>
+        buckets.flatMap(bucket => bucket.hooks.filter(entry => entry.command.includes(PRESENCE)).map(entry => ({event, entry}))));
+
+    test('both registrations are async, carry no timeout, and keep their commands', () => {
+        const entries = presenceEntries(MANIFEST.events);
+
+        expect(entries.map(({event}) => event).sort()).toEqual(['PostToolUse', 'UserPromptSubmit']);
+
+        entries.forEach(({event, entry}) => {
+            expect(entry.async, `${event} would block on presence`).toBe(true);
+            expect('timeout' in entry, `${event} carries a timeout the harness never enforces`).toBe(false);
+            expect(entry.command).toBe(`/usr/bin/env node "$(git rev-parse --show-toplevel)${PRESENCE}" ${event === 'PostToolUse' ? 'progress' : 'start'}`)
+        })
+    });
+
+    test('a seat\'s synchronous entries are replaced by the async ones on reconciliation', () => {
+        const
+            operator   = {command: 'echo operator-hook', type: 'command'},
+            sync       = action => ({command: `/usr/bin/env node "$(git rev-parse --show-toplevel)${PRESENCE}" ${action}`, timeout: 2, type: 'command'}),
+            {settings} = reconcileClaudeEvents({
+                isOwned : command => command.includes(PRESENCE),
+                manifest: MANIFEST,
+                settings: {hooks: {
+                    PostToolUse     : [{hooks: [sync('progress'), operator]}],
+                    UserPromptSubmit: [{hooks: [sync('start')]}]
+                }}
+            }),
+            entries    = presenceEntries(settings.hooks);
+
+        expect(entries).toHaveLength(2);
+        entries.forEach(({entry}) => {
+            expect(entry.async).toBe(true);
+            expect('timeout' in entry).toBe(false)
+        });
+        expect(settings.hooks.PostToolUse.flatMap(bucket => bucket.hooks)).toContainEqual(operator)
     })
 });

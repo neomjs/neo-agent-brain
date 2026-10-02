@@ -10,7 +10,10 @@
     "and derives its MCP exchange budget from it, so a drift between that constant and the 15 below",
     "silently shortens the window the hook believes it has.",
     "Commands are byte-identical to the pre-cut Engine template at c623b2f63c^, so the reconciliation",
-    "restores the wiring that existed rather than a re-derived approximation."
+    "restores the wiring that existed rather than a re-derived approximation.",
+    "turnPresenceHook runs async: presence is never a precondition, so no prompt or tool call waits",
+    "on it, and the harness enforces no timeout on an async hook. TurnPresenceConfig's",
+    "hookWriteTimeoutMs, the writer's one deadline across every MCP stage, bounds each run alone."
   ],
   "events": {
     "SessionStart": [
@@ -35,7 +38,7 @@
           {
             "type": "command",
             "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/turnPresenceHook.mjs\" start",
-            "timeout": 2
+            "async": true
           }
         ]
       }
@@ -46,7 +49,7 @@
           {
             "type": "command",
             "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/turnPresenceHook.mjs\" progress",
-            "timeout": 2
+            "async": true
           }
         ]
       }
