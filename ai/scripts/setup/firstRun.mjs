@@ -22,16 +22,19 @@ import os              from 'node:os';
 import path            from 'node:path';
 import readline        from 'node:readline/promises';
 import {fileURLToPath} from 'node:url';
+
 import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../services/fleet/firstRunRecipe.mjs';
-import {EFFECT_IDS, admitCredentialReference, applyEffect, createHost, persistSetupRecord, recordConsent, settleReceipt} from '../../services/fleet/hostEffects.mjs';
-import {composeCredentialEffects, presetEnvRefusals}                                          from '../../services/fleet/credentialStep.mjs';
+import {admitCredentialReference, createHost, persistSetupRecord, recordConsent}              from '../../services/fleet/hostEffects.mjs';
 import {presets}                                                                              from '../../services/fleet/placementPresets.mjs';
 import {createDefaultReaders, probePlacement}                                                 from '../../services/fleet/probePlacement.mjs';
-import {RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath} from '../../services/fleet/setupRunRecord.mjs';
-import {runHealthcheck}                                                                       from '../diagnostics/mcpHealthcheck.mjs';
+import {
+    RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath
+} from '../../services/fleet/setupRunRecord.mjs';
+import {performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
+import {runHealthcheck}                from '../diagnostics/mcpHealthcheck.mjs';
 
 const
-    brainRoot      = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
+    brainRoot       = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
     COMPOSE_PROJECT = 'neo-local-agent-os',
     COMPOSE_FILES   = ['docker-compose.yml', 'docker-compose.local-agent-os.yml'],
     USAGE           = `usage: node ai/scripts/setup/firstRun.mjs [--json] [--setup-root <dir>] [--state-root <dir>] [--run-id <uuid>]
@@ -96,10 +99,10 @@ export function parseArgs(argv, env = process.env) {
  */
 export function hostLayout({stateRoot}) {
     return {
-        envFile      : path.join(stateRoot, 'config', 'local-agent-os.env'),
-        secretsDir   : path.join(stateRoot, 'secrets'),
-        composeDir   : path.join(brainRoot, 'deploy', 'cloud'),
-        composeFiles : COMPOSE_FILES,
+        envFile       : path.join(stateRoot, 'config', 'local-agent-os.env'),
+        secretsDir    : path.join(stateRoot, 'secrets'),
+        composeDir    : path.join(brainRoot, 'deploy', 'cloud'),
+        composeFiles  : COMPOSE_FILES,
         composeProject: COMPOSE_PROJECT
     };
 }
@@ -134,8 +137,8 @@ export function productionObservers({layout, host, probe = probePlacement, healt
 
     return {
         placement,
-        envCarrier  : () => digestOfFile(host.fsModule, layout.envFile),
-        secretFiles : async () => {
+        envCarrier : () => digestOfFile(host.fsModule, layout.envFile),
+        secretFiles: async () => {
             const files = await host.fsModule.readdir(layout.secretsDir).catch(error => error?.code === 'ENOENT' ? [] : Promise.reject(error));
 
             if (files.length === 0) {
@@ -273,113 +276,6 @@ export async function answerQuestions({evaluate, answers, record, recordPath, ho
 }
 
 /**
- * @summary The credential step and the effects after it. The preset's env set is refused BEFORE any
- * write when the profile would not honour it (`presetEnvRefusals` over the checkout's config and
- * Compose files); the credentials are read from the operator's files and composed into secret files
- * (the admission token, a minted Fleet plane bearer, a hosted preset's provider key) and `_FILE` env
- * values — the carrier and the record carry paths, never a value.
- */
-async function performEffects({record, recordPath, host, layout, target, evaluation, stderr}) {
-    const
-        consent = stepId => record.consents.find(row => row.stepId === stepId)?.answer ?? null,
-        preset  = presets.find(row => row.id === consent('preset')),
-        patPath = consent('plane-credential'),
-        keyPath = consent('provider-key');
-
-    if (!preset || !patPath) {
-        return record;
-    }
-
-    const refusals = presetEnvRefusals({
-        preset,
-        configSource: await host.fsModule.readFile(path.join(brainRoot, 'ai/configBase.mjs'), 'utf8'),
-        composeTexts: await Promise.all(layout.composeFiles.map(file => host.fsModule.readFile(path.join(layout.composeDir, file), 'utf8')))
-    });
-
-    if (refusals.length > 0) {
-        stderr.write(`preset '${preset.id}' refused before any write:\n  ${refusals.join('\n  ')}\n`);
-
-        return record;
-    }
-
-    const credentials = composeCredentialEffects({
-        preset,
-        pat        : await host.fsModule.readFile(patPath, 'utf8'),
-        providerKey: keyPath ? await host.fsModule.readFile(keyPath, 'utf8') : '',
-        secretsDir : layout.secretsDir
-    });
-
-    if (credentials.refusals.length > 0) {
-        stderr.write(`credentials refused before any write:\n  ${credentials.refusals.join('\n  ')}\n`);
-
-        return record;
-    }
-
-    const entries = {
-        ...preset.env,
-        ...credentials.envEntries,
-        NEO_PLANE_ID       : target.planeId,
-        NEO_PLANE_DATA_ROOT: target.dataRoot
-    };
-
-    let current = record;
-
-    for (const [effectId, input] of [
-        [EFFECT_IDS.writeSecrets, {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))}],
-        [EFFECT_IDS.writeEnv,     {path: layout.envFile, entries}],
-        [EFFECT_IDS.composeUp,    {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles}]
-    ]) {
-        const stepStatus = evaluation.steps.find(step => step.effectId === effectId)?.status;
-
-        if (stepStatus === STEP_STATUSES.ok) {
-            continue;
-        }
-
-        // an unsettled effect is never replayed, and nothing is performed on top of it
-        if (stepStatus === STEP_STATUSES.reconcileRequired) {
-            break;
-        }
-
-        const result = await applyEffect({effectId, input, record: current, recordPath, host});
-
-        current = result.record;
-
-        if (result.receipt.outcome !== 'accepted') {
-            break;
-        }
-    }
-
-    return current;
-}
-
-/**
- * @summary Settles every interrupted effect — `pending` on disk, or already `reconcile-required` — whose
- * result is observable while the served plane is the target's: the fresh matching observation
- * bootstrap-record decision§2.6 asks for. One that does not settle is left `reconcile-required` by the writer, never replayed.
- */
-async function settlePending({record, recordPath, host, evaluation}) {
-    const planeMatches = evaluation.steps.find(row => row.id === 'served-plane')?.status === STEP_STATUSES.ok;
-
-    let current = record;
-
-    for (const step of evaluation.steps.filter(row => row.kind === STEP_KINDS.effect && row.status === STEP_STATUSES.reconcileRequired)) {
-        const
-            observed = step.observed,
-            matches  = planeMatches && observed?.present === true && !observed.problem;
-
-        current = (await settleReceipt({
-            effectId   : step.effectId,
-            observation: {status: matches ? 'ok' : 'failed', matchesTarget: matches, observedAt: step.observedAt, digest: observed?.digest ?? null, reason: matches ? null : 'the served plane does not match the target yet, or the result is not observable'},
-            record     : current,
-            recordPath,
-            host
-        })).record;
-    }
-
-    return current;
-}
-
-/**
  * @summary One run: read or create the record, evaluate, answer, perform, re-evaluate, print, exit.
  * @param {String[]} [argv=process.argv.slice(2)]
  * @param {Object} [io] `{stdout, stderr, stdin, env, isTTY}` — injectable for the spec.
@@ -470,7 +366,7 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     record     = await settlePending({record, recordPath, host, evaluation});
     // performing reads the settled state: a settled effect is skipped as ok, an unsettled one halts the run
     evaluation = await evaluate();
-    record     = await performEffects({record, recordPath, host, layout, target, evaluation, stderr});
+    record     = await performEffects({record, recordPath, host, layout, target, evaluation, report: line => stderr.write(`${line}\n`), configSourcePath: path.join(brainRoot, 'ai/configBase.mjs')});
     evaluation = await evaluate();
 
     stdout.write(options.json || !interactive ? `${JSON.stringify({runId, recordPath, ...evaluation}, null, 2)}\n` : renderText(evaluation));
