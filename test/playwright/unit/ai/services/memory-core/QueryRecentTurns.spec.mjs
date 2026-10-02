@@ -1013,10 +1013,13 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         const parameter                = spec.paths['/memories/recent'].get.parameters.find(entry => entry.name === 'memorySharing');
         expect(parameter.schema.enum).toEqual(['private', 'team', 'legacy']);
         expect(parameter.schema.default).toBeUndefined();
+        GraphService.upsertNode({id: 'operation-foreign-741', type: 'AGENT_MEMORY', name: 'operation', description: 'operation',
+            semanticVectorId: 'operation-foreign-741', properties: {agentIdentity: '@operation-peer-741', userId: 'operation-other',
+                sessionId: 'operation-741', timestamp: '2037-01-01T00:00:00.000Z', miniSummary: 'operation public summary'}});
         const operation = makeSafe(MemoryService, spec);
         const result    = await RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: '@sharing-caller'}, () =>
-            operation.queryRecentTurns({agentIdentity: '@sharing-recovery-741', memorySharing: 'team'}));
-        expect(result.turns.some(turn => turn.id === 'sharing-foreign-741')).toBe(true);
+            operation.queryRecentTurns({agentIdentity: '@operation-peer-741', memorySharing: 'team'}));
+        expect(result.turns.some(turn => turn.id === 'operation-foreign-741')).toBe(true);
         expect(result.memorySharing).toEqual({policy: 'team', clamped: false});
     });
 
@@ -1170,7 +1173,7 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
 
     test('an unreadable WAL fails an explicit read instead of claiming an empty shared stream', async () => {
         const fs     = (await import('node:fs/promises')).default;
-        const config = (await import('../../../../../../ai/mcp/server/memory-core/config.mjs')).default;
+        const config = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
         const dir    = config.memoryWal.dir, readdir = fs.readdir;
         fs.readdir = async (...args) => {
             if (args[0] === dir) throw Object.assign(new Error('fixture WAL unreadable'), {code: 'EACCES'});
@@ -1178,9 +1181,9 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         };
         try {
             const read = options => RequestContextService.run({userId: 'sharing-caller', agentIdentityNodeId: '@sharing-caller'}, () =>
-                MemoryService.queryRecentTurns({agentIdentity: '@sharing-recovery-741', ...options}));
+                MemoryService.queryRecentTurns({agentIdentity: '@availability-wal-741', ...options}));
             const defaultRead = await read({});
-            expect(defaultRead.turns.some(turn => turn.id === 'sharing-own-741')).toBe(true);
+            expect(defaultRead.turns.some(turn => turn.id === 'availability-own-741')).toBe(true);
             const shared = await read({memorySharing: 'team'});
             expect(shared).toMatchObject({code: 'RECENT_TURNS_ERROR'});
             expect(shared.message).toContain('WAL unreadable');
