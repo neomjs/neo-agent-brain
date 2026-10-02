@@ -105,8 +105,8 @@ test.describe('connectSeatPlane', () => {
         let   created      = 0;
         const createClient = () => {created++; return {}};
 
-        expect(seatPlaneGap({planeBase: ' ', identity: '@neo-seat'})).toMatch(/fleet\.planeBase is not configured/);
-        expect((await connectSeatPlane({planeBase: '', identity: 'neo-seat', createClient})).reason).toMatch(/fleet\.planeBase/);
+        expect(seatPlaneGap({planeBase: ' ', identity: '@neo-seat'})).toMatch(/seat\.planeBase is not configured/);
+        expect((await connectSeatPlane({planeBase: '', identity: 'neo-seat', createClient})).reason).toMatch(/seat\.planeBase/);
         expect((await connectSeatPlane({planeBase: 'http://127.0.0.1:3102', identity: '', createClient})).reason).toMatch(/NEO_AGENT_IDENTITY/);
         expect(created).toBe(0)
     });

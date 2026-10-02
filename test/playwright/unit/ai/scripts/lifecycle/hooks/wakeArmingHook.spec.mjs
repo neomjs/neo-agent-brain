@@ -17,13 +17,13 @@ test('an unconfigured or unproven seat is reported UNARMED with the reason, and 
 
     const result = await armClaudeSeat({
         config : {...config, planeBase: ''},
-        connect: async () => ({reason: 'fleet.planeBase is not configured, so there is no Memory Core plane to reach'}),
+        connect: async () => ({reason: 'seat.planeBase is not configured, so there is no Memory Core plane to reach'}),
         arm    : async () => {armed++}
     });
 
-    expect(result).toEqual({armed: false, reason: 'fleet.planeBase is not configured, so there is no Memory Core plane to reach'});
+    expect(result).toEqual({armed: false, reason: 'seat.planeBase is not configured, so there is no Memory Core plane to reach'});
     expect(armed).toBe(0);
-    expect(describeArming(result)).toBe('[WARN] [wake-arming] seat is UNARMED — fleet.planeBase is not configured, so there is no Memory Core plane to reach')
+    expect(describeArming(result)).toBe('[WARN] [wake-arming] seat is UNARMED — seat.planeBase is not configured, so there is no Memory Core plane to reach')
 });
 
 test('arms the proven seat for pull and closes the plane session afterwards', async () => {

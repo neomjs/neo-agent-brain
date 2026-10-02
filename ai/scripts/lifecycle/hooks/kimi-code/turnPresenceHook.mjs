@@ -4,6 +4,7 @@ import {
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 import {normalizeAgentIdentityNodeId} from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
+import {readPlaneConfig}              from '../seatConfig.mjs';
 
 const EVENT_MAP = Object.freeze({
     Interrupt: Object.freeze({
@@ -61,37 +62,16 @@ export function resolveKimiTurnPresenceEvent(hookPayload) {
 }
 
 /**
- * @summary Reads the plane leaves from `AiConfig`, the one config read in this process.
- *
- * Imported lazily so the module stays loadable — and its pure helpers unit-testable — without booting
- * the Neo state Provider. The hook process is an entrypoint, so reading the config singleton here is
- * the sanctioned shape; the writer it feeds is not one, and deliberately resolves nothing itself.
- * @returns {Promise<Object>} `{baseUrl, credential}`
- */
-export async function readPlaneConfig() {
-    await import('neo.mjs/src/Neo.mjs');
-    await import('neo.mjs/src/core/_export.mjs');
-
-    const {default: AiConfig} = await import('../../../../config.mjs'),
-          planeBase           = AiConfig.fleet.planeBase.trim().replace(/\/+$/, '');
-
-    return {
-        baseUrl   : planeBase ? `${planeBase}/mc/mcp` : '',
-        credential: AiConfig.fleet.planeBearer
-    };
-}
-
-/**
  * @summary Records Kimi Code turn presence into the store the deployment serves.
  *
- * **This is the entrypoint, and the only place config is resolved.** It injects the plane leaves into
- * a writer that resolves nothing — replacing a path the writer used to derive from its own module
- * location, which sent every beacon to a private checkout no reader queries.
+ * **This is the entrypoint, and the only place config is resolved.** It injects the seat's plane
+ * (`seatConfig.readPlaneConfig`) into a writer that resolves nothing — replacing a path the writer used
+ * to derive from its own module location, which sent every beacon to a private checkout no reader queries.
  * @param {Object} options
  * @param {Object} [options.env=process.env] Environment inherited by the hook command.
  * @param {*} [options.hookPayload] Parsed Kimi hook payload.
  * @param {String|Date|Number} [options.now] Clock override for tests.
- * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from `AiConfig` when absent.
+ * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from the seat leaves when absent.
  * @param {Function} [options.record] Transport seam.
  * @returns {Promise<Object|undefined>}
  */

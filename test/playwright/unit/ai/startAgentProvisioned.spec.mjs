@@ -511,6 +511,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                 resolvedCredential    : repositoryPat,
                 resolvedResidentMcpEnv: {},
                 resolvedMcpCredential : planePat,
+                resolvedMcpEndpoint   : 'https://tenant.example.com',
                 remoteMcpCapability   : {
                     harnessType     : 'codex',
                     binaryPath      : '/bin/harness',
@@ -572,6 +573,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                 resolvedCredential    : 'ghp_seat_only',
                 resolvedResidentMcpEnv: {},
                 resolvedMcpCredential : 'glpat_plane_only',
+                resolvedMcpEndpoint   : 'https://tenant.example.com',
                 remoteMcpCapability   : {
                     harnessType     : 'codex',
                     binaryPath      : '/bin/harness',
@@ -1145,12 +1147,14 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
         }]);
         expect(prepareWorkspace.calls[0].mcpTarget).toEqual({kind: 'tenant', credentialEnvVar: 'NEO_MCP_REMOTE_TOKEN', resources: RESOURCES});
         expect(lifecycle.calls.inspection[0].mcpTarget).toEqual({kind: 'tenant', resources: RESOURCES});
-        // the checkout PAT stays the repository's; the plane gets only the seat's plane credential
+        // the checkout PAT stays the repository's; the plane gets only the seat's plane credential, and
+        // the seat is told which plane that credential was proven on
         expect(lifecycle.calls.start[0].opts).toEqual({
             cwd                   : '/managed/a/neomjs-neo',
             resolvedCredential    : 'ghp_seat_checkout',
             resolvedResidentMcpEnv: {},
             resolvedMcpCredential : 'seat-plane-pat',
+            resolvedMcpEndpoint   : PLANE,
             remoteMcpCapability   : CAPABILITY
         })
     });

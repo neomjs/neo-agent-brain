@@ -9,7 +9,7 @@ import {connectSeatPlane, resolvePullRoute, seatPlaneGap} from '../../../../daem
 import {toBareIdentity}                                   from '../../../../daemons/wake/armSeatWakeRoute.mjs';
 import {withOutboxLock}                                   from '../../../../daemons/wake/outboxLock.mjs';
 import {readHookPayload}                                  from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
-import {readSeatConfig}                                   from './wakeArmingHook.mjs';
+import {readSeatConfig}                                   from '../seatConfig.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -156,7 +156,7 @@ async function writeRecord(statePath, record, fs) {
  * @param {Object} options
  * @param {Object} options.payload The hook's stdin: `session_id` names the session.
  * @param {String} [options.homeDir=os.homedir()]
- * @param {Object} [options.config] Injected `{planeBase, planeBearer, identity}`; read from `AiConfig` when absent.
+ * @param {Object} [options.config] Injected `{planeBase, planeBearer, identity}`; read from the seat leaves when absent.
  * @param {Function} [options.connect=connectSeatPlane]
  * @param {Function} [options.resolveRoute=resolvePullRoute]
  * @param {Function} [options.findSession=findSessionProcess]

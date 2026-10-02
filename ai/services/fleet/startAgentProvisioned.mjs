@@ -390,7 +390,7 @@ export async function startAgentProvisioned({
             resolvedCredential,
             resolvedResidentMcpEnv,
             ...(remote
-                ? {resolvedMcpCredential, remoteMcpCapability: remoteCapability}
+                ? {resolvedMcpCredential, resolvedMcpEndpoint: remotePlan.endpoint, remoteMcpCapability: remoteCapability}
                 : {})
         }
     });

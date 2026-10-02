@@ -35,12 +35,12 @@ const PUSH_TARGETS = ['a2a-webhook', 'bridge-daemon'];
 /**
  * @summary Names what keeps a seat from reaching its plane before any request is made, or `null`.
  * @param {Object} options
- * @param {String} options.planeBase `fleet.planeBase`, read by the entrypoint.
+ * @param {String} options.planeBase `seat.planeBase`, read by the entrypoint.
  * @param {String} options.identity The seat as `NEO_AGENT_IDENTITY` names it, with or without `@`.
  * @returns {String|null}
  */
 export function seatPlaneGap({planeBase, identity}) {
-    if (!String(planeBase ?? '').trim()) return 'fleet.planeBase is not configured, so there is no Memory Core plane to reach';
+    if (!String(planeBase ?? '').trim()) return 'seat.planeBase is not configured, so there is no Memory Core plane to reach';
     if (!toBareIdentity(identity))      return 'NEO_AGENT_IDENTITY is not set, so the seat cannot name itself';
 
     return null
@@ -49,8 +49,8 @@ export function seatPlaneGap({planeBase, identity}) {
 /**
  * @summary Opens a plane session proven to be this seat, or names why it cannot.
  * @param {Object} options
- * @param {String} options.planeBase `fleet.planeBase`, read by the entrypoint.
- * @param {String} [options.planeBearer=''] `fleet.planeBearer`, read by the entrypoint.
+ * @param {String} options.planeBase `seat.planeBase`, read by the entrypoint.
+ * @param {String} [options.planeBearer=''] `seat.planeBearer`, read by the entrypoint.
  * @param {String} options.identity The seat as `NEO_AGENT_IDENTITY` names it, with or without `@`.
  * @param {Function} [options.createClient=createPlaneMailboxClient]
  * @returns {Promise<Object>} `{client, identity}`, or `{reason, refused}` without a client. `refused`

@@ -136,13 +136,13 @@ test.describe('turnPresenceHook — emission survives projection to an arbitrary
         expect(calls, 'the transport ran despite there being no configured destination').toHaveLength(0)
     });
 
-    test('the projected hook resolves its plane from AiConfig, not from its own location', () => {
+    test('the projected hook resolves its plane from the runtime\'s seat config, not from its own location', () => {
         // Asserted on the projected BYTES rather than by executing readPlaneConfig(), which would
-        // boot the config singleton inside a unit run. What matters structurally is that the only
-        // thing the endpoint is derived from is the config leaf.
+        // boot the config singleton inside a unit run (seatConfig.spec reads it in a child). What
+        // matters structurally is that the only thing the endpoint is derived from is the config.
         const contents = renderProjection(HOOK_SOURCE, REPO_ROOT).contents;
 
-        expect(contents).toContain('AiConfig.fleet.planeBase');
+        expect(contents).toContain(`from '${path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/seatConfig.mjs')}'`);
 
         // No self-location derivation. These are the constructs that produced the original defect.
         expect(contents).not.toMatch(/import\.meta\.url[^\n]*\b(dirname|resolve|join)\b/);

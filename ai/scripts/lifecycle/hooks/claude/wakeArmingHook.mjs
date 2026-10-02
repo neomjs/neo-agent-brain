@@ -1,6 +1,7 @@
 import {pathToFileURL} from 'node:url';
 
 import {armSeatWakePull, connectSeatPlane} from '../../../../daemons/wake/armSeatWakePull.mjs';
+import {readSeatConfig}                    from '../seatConfig.mjs';
 
 /**
  * The `timeout` this hook is registered with on `SessionStart` in `hooks/claude/events.manifest.json`,
@@ -18,32 +19,6 @@ export const HOOK_TIMEOUT_MS = 15000;
 export const REPORT_MARGIN_MS = 2000;
 
 /**
- * @summary Reads the plane leaves and the seat's identity leaf from `AiConfig`, the one config read in
- * this process.
- *
- * Imported lazily so the module stays loadable — and its pure helpers unit-testable — without booting
- * the Neo state Provider. The hook process is an entrypoint, so importing `AiConfig` here is the
- * sanctioned shape for an entrypoint; doing it at module scope would make every importer pay for a
- * Provider boot. The identity is the leaf `NEO_AGENT_IDENTITY` binds, never the variable itself.
- * @returns {Promise<Object>} `{planeBase, planeBearer, identity}`
- */
-export async function readSeatConfig() {
-    // Namespace bootstrap before the config import, the entry-point invariant `devFleetServer.mjs`
-    // documents: `Neo` + `core/_export` populate `globalThis.Neo` so the Provider's `setupClass`
-    // succeeds at module-load. Without them `ai/config.mjs` throws `Neo is not defined`.
-    await import('neo.mjs/src/Neo.mjs');
-    await import('neo.mjs/src/core/_export.mjs');
-
-    const {default: AiConfig} = await import('../../../../config.mjs');
-
-    return {
-        planeBase  : AiConfig.fleet.planeBase,
-        planeBearer: AiConfig.fleet.planeBearer,
-        identity   : AiConfig.stopHook.projection.agentId
-    }
-}
-
-/**
  * @summary Arms this seat for pull at session start, reporting the outcome without ever failing the session.
  *
  * A Claude seat is woken by its own `wakeListenerHook`, which polls the seat's pull route. Arming makes
@@ -51,11 +26,12 @@ export async function readSeatConfig() {
  * a window (`armSeatWakePull`). Running on every session start keeps the switch idempotent and undoes
  * drift, such as a Fleet Start subscribing an `osascript` route again.
  *
- * **This is the entrypoint, and the only place config is resolved.** It reads the plane and identity
- * leaves and injects them. An unconfigured plane is a NAMED SKIP, never a localhost guess.
+ * **This is the entrypoint, and the only place config is resolved.** It reads the seat's plane and
+ * identity (`seatConfig.readSeatConfig`) and injects them. An unconfigured plane is a NAMED SKIP, never
+ * a localhost guess.
  *
  * @param {Object} [options]
- * @param {Object} [options.config] Injected `{planeBase, planeBearer, identity}`; read from `AiConfig` when absent.
+ * @param {Object} [options.config] Injected `{planeBase, planeBearer, identity}`; read from the seat leaves when absent.
  * @param {Function} [options.connect=connectSeatPlane] Plane-session seam.
  * @param {Function} [options.arm=armSeatWakePull] Arming seam.
  * @returns {Promise<Object>} `{armed: true, identity, subscriptionId, retired}` or `{armed: false, reason}`.
