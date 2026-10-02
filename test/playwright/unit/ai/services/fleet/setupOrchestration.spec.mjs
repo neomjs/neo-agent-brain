@@ -1,0 +1,235 @@
+import {expect, test}                                                                   from '@playwright/test';
+import fs                                                                               from 'node:fs/promises';
+import os                                                                               from 'node:os';
+import path                                                                             from 'node:path';
+import {fileURLToPath}                                                                  from 'node:url';
+import {EFFECT_IDS, createHost, persistSetupRecord, recordConsent}                      from '../../../../../../ai/services/fleet/hostEffects.mjs';
+import {RECIPE_VERSION, STEP_STATUSES, evaluateRecipe}                                  from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
+import {presets}                                                                        from '../../../../../../ai/services/fleet/placementPresets.mjs';
+import {EFFECT_ORDER, performEffects, settlePending}                                    from '../../../../../../ai/services/fleet/setupOrchestration.mjs';
+import {RECEIPT_OUTCOMES, createSetupRecord, findReceipt, setupRecordPath, withReceipt} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+
+// The orchestration over a real temp layout and the checkout's own config and Compose files; the command
+// runner, the clock and every observation are scripted, and each run's file reads are recorded.
+
+const
+    here             = path.dirname(fileURLToPath(import.meta.url)),
+    brainRoot        = path.resolve(here, '../../../../../..'),
+    configSourcePath = path.join(brainRoot, 'ai/configBase.mjs'),
+    MODULE_SOURCE    = path.join(brainRoot, 'ai/services/fleet/setupOrchestration.mjs'),
+    RUN_ID           = '0f1e2d3c-4b5a-4968-8777-6655443322aa',
+    NOW              = Date.UTC(2026, 9, 2, 15, 0, 0),
+    PAT              = 'ghp_FAKEPAT0123456789abcdefghijklmnopqrstuv',
+    target           = {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'};
+
+/**
+ * @summary A run whose preset and PAT are consented and nothing is performed yet.
+ * @param {Object} [options]
+ * @param {String} [options.preset='local-small']
+ * @returns {Promise<Object>} `{root, stateRoot, recordPath, patPath, calls, reads, host, layout, record}`
+ */
+async function consentedRun({preset = 'local-small'} = {}) {
+    const
+        root       = await fs.mkdtemp(path.join(os.tmpdir(), 'setup-orchestration-')),
+        stateRoot  = path.join(root, 'state'),
+        recordPath = setupRecordPath(path.join(stateRoot, 'setup'), RUN_ID),
+        patPath    = path.join(root, 'operator', 'plane-pat'),
+        calls      = [],
+        reads      = [],
+        fsModule   = {...fs, readFile: (file, ...rest) => { reads.push(String(file)); return fs.readFile(file, ...rest) }},
+        host       = createHost({fsModule, run: async (command, args, options) => { calls.push({command, args, cwd: options?.cwd}); return {stdout: '', stderr: ''} }, now: () => NOW}),
+        layout     = {
+            envFile       : path.join(stateRoot, 'config', 'local-agent-os.env'),
+            secretsDir    : path.join(stateRoot, 'secrets'),
+            composeDir    : path.join(brainRoot, 'deploy', 'cloud'),
+            composeFiles  : ['docker-compose.yml', 'docker-compose.local-agent-os.yml'],
+            composeProject: 'neo-local-agent-os'
+        };
+
+    await fs.mkdir(path.dirname(patPath), {recursive: true});
+    await fs.writeFile(patPath, `${PAT}\n`, {mode: 0o600});
+
+    let record = createSetupRecord({runId: RUN_ID, target, recipeVersion: RECIPE_VERSION, now: () => NOW});
+
+    await persistSetupRecord(recordPath, record, host);
+    record = (await recordConsent({stepId: 'preset', answer: preset, record, recordPath, host})).record;
+    record = (await recordConsent({stepId: 'plane-credential', answer: patPath, record, recordPath, host})).record;
+
+    return {root, stateRoot, recordPath, patPath, calls, reads, host, layout, record};
+}
+
+/**
+ * @summary The recipe's own evaluation of a run, with each effect's result on the host scripted.
+ * @param {Object} record
+ * @param {Object} [present={}] `{[effectId]: true}` for each result the host shows.
+ * @param {Object} [servedPlane] What the served plane reports; the target's by default.
+ * @returns {Promise<Object>}
+ */
+function evaluate(record, present = {}, servedPlane = {id: target.planeId, dataRoot: target.dataRoot}) {
+    const observe = effectId => async () => present[effectId] ? {present: true, digest: null, problem: null} : {present: false, reason: 'not performed'};
+
+    return evaluateRecipe({
+        target,
+        record,
+        presets,
+        now      : () => NOW,
+        observers: {
+            secretFiles : observe(EFFECT_IDS.writeSecrets),
+            envCarrier  : observe(EFFECT_IDS.writeEnv),
+            runningPlane: observe(EFFECT_IDS.composeUp),
+            servedPlane : async () => servedPlane
+        }
+    });
+}
+
+/**
+ * @summary Runs `performEffects` the way a renderer does, collecting what it reports.
+ * @returns {Promise<{record: Object, reports: String[]}>}
+ */
+async function perform(run, {record = run.record, evaluation, ...options}) {
+    const reports = [];
+
+    return {record: await performEffects({record, recordPath: run.recordPath, host: run.host, layout: run.layout, target, evaluation, report: message => reports.push(message), configSourcePath, ...options}), reports};
+}
+
+/**
+ * @summary Parks an effect the way a crash between its handler and its receipt leaves it.
+ */
+async function interrupted(run, effectId) {
+    const record = withReceipt(run.record, {effectId, outcome: RECEIPT_OUTCOMES.pending, inputDigest: 'x', startedAt: 't0'});
+
+    await persistSetupRecord(run.recordPath, record, run.host);
+
+    return record;
+}
+
+const receipts = record => record.receipts.map(receipt => [receipt.effectId, receipt.outcome]);
+
+const exists = filePath => fs.access(filePath).then(() => true, () => false);
+
+test.describe('setupOrchestration', () => {
+    test('AC-2: with no filter the three effects run in their execution order, every one accepted', async () => {
+        const
+            run      = await consentedRun(),
+            {record} = await perform(run, {evaluation: await evaluate(run.record)});
+
+        expect(EFFECT_ORDER).toEqual([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp]);
+        expect(receipts(record)).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted']]);
+        expect(run.calls.map(call => [call.command, call.args[0], call.cwd])).toEqual([['docker', 'compose', run.layout.composeDir]]);
+        expect(await fs.readFile(run.layout.envFile, 'utf8')).toContain('NEO_PLANE_ID=plane-a\n')
+    });
+
+    test('AC-2: [\'write-env\'] applies that effect and nothing after it once write-secrets is ok', async () => {
+        const
+            run      = await consentedRun(),
+            {record} = await perform(run, {evaluation: await evaluate(run.record, {[EFFECT_IDS.writeSecrets]: true}), effectIds: [EFFECT_IDS.writeEnv]});
+
+        expect(receipts(record)).toEqual([['write-env', 'accepted']]);
+        expect(await exists(run.layout.envFile)).toBe(true);
+        expect(await exists(run.layout.secretsDir)).toBe(false);
+        expect(run.calls).toEqual([])
+    });
+
+    test('a selected effect never runs past an unfinished predecessor it was not given', async () => {
+        const
+            run      = await consentedRun(),
+            {record} = await perform(run, {evaluation: await evaluate(run.record), effectIds: [EFFECT_IDS.writeEnv]});
+
+        expect(record).toBe(run.record);
+        expect(await exists(run.layout.envFile)).toBe(false);
+        expect(run.calls).toEqual([])
+    });
+
+    test('an unsettled predecessor halts the run although it was not selected', async () => {
+        const
+            run      = await consentedRun(),
+            parked   = await interrupted(run, EFFECT_IDS.writeSecrets),
+            {record} = await perform(run, {record: parked, evaluation: await evaluate(parked, {[EFFECT_IDS.writeEnv]: true}), effectIds: [EFFECT_IDS.composeUp]});
+
+        expect(receipts(record)).toEqual([['write-secrets', 'pending']]);
+        expect(run.calls).toEqual([])
+    });
+
+    test('an empty selection does nothing; an unknown effect is refused through report, reading and writing nothing', async () => {
+        const
+            run     = await consentedRun(),
+            empty   = await perform(run, {evaluation: await evaluate(run.record), effectIds: []}),
+            unknown = await perform(run, {evaluation: await evaluate(run.record), effectIds: [EFFECT_IDS.writeEnv, 'deploy']});
+
+        expect(empty.record).toBe(run.record);
+        expect(empty.reports).toEqual([]);
+        expect(unknown.record).toBe(run.record);
+        expect(unknown.reports).toEqual(["unknown effect 'deploy': the effects are write-secrets, write-env, compose-up"]);
+        expect(run.reads).toEqual([]);
+        expect(run.calls).toEqual([])
+    });
+
+    test('AC-3: a refusal reaches report and writes nothing — the preset\'s env set, then the credentials', async () => {
+        const
+            run           = await consentedRun(),
+            emptyConfig   = path.join(run.root, 'configBase.mjs'),
+            presetRefused = await (async () => { await fs.writeFile(emptyConfig, ''); return perform(run, {evaluation: await evaluate(run.record), configSourcePath: emptyConfig}) })(),
+            hosted        = await consentedRun({preset: 'hosted'}),
+            keyRefused    = await perform(hosted, {evaluation: await evaluate(hosted.record)});
+
+        expect(presetRefused.record).toBe(run.record);
+        expect(presetRefused.reports).toHaveLength(1);
+        expect(presetRefused.reports[0]).toMatch(/^preset 'local-small' refused before any write:\n {2}\S/);
+
+        expect(keyRefused.record).toBe(hosted.record);
+        expect(keyRefused.reports).toEqual(["credentials refused before any write:\n  the 'hosted' preset requires a provider key and none was given"]);
+
+        for (const {layout, calls} of [run, hosted]) {
+            expect(await exists(layout.envFile)).toBe(false);
+            expect(await exists(layout.secretsDir)).toBe(false);
+            expect(calls).toEqual([])
+        }
+    });
+
+    test('AC-4: settlePending settles a reconcile-required effect only while the served plane matches the target', async () => {
+        const
+            run     = await consentedRun(),
+            parked  = await interrupted(run, EFFECT_IDS.writeEnv),
+            wrong   = await settlePending({record: parked, recordPath: run.recordPath, host: run.host, evaluation: await evaluate(parked, {[EFFECT_IDS.writeEnv]: true}, {id: 'plane-b', dataRoot: target.dataRoot})}),
+            settled = await settlePending({record: wrong, recordPath: run.recordPath, host: run.host, evaluation: await evaluate(wrong, {[EFFECT_IDS.writeEnv]: true})});
+
+        expect(findReceipt(wrong, EFFECT_IDS.writeEnv).outcome).toBe(RECEIPT_OUTCOMES.reconcileRequired);
+        expect(findReceipt(settled, EFFECT_IDS.writeEnv)).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, settledBy: 'observation'});
+        expect(run.calls).toEqual([])
+    });
+
+    test('AC-5: an interrupted effect, resumed through another renderer against a stale plane, is never applied again, with or without the filter', async () => {
+        const
+            run       = await consentedRun(),
+            parked    = await interrupted(run, EFFECT_IDS.writeSecrets),
+            stale     = {id: target.planeId, dataRoot: '/srv/elsewhere'},
+            unsettled = await settlePending({record: parked, recordPath: run.recordPath, host: run.host, evaluation: await evaluate(parked, {}, stale)}),
+            evaluated = await evaluate(unsettled, {}, stale),
+            whole     = await perform(run, {record: unsettled, evaluation: evaluated}),
+            one       = await perform(run, {record: unsettled, evaluation: evaluated, effectIds: [EFFECT_IDS.writeSecrets]});
+
+        expect(evaluated.steps.find(step => step.effectId === EFFECT_IDS.writeSecrets).status).toBe(STEP_STATUSES.reconcileRequired);
+
+        for (const {record} of [whole, one]) {
+            expect(receipts(record)).toEqual([['write-secrets', 'reconcile-required']])
+        }
+
+        expect(await exists(run.layout.secretsDir)).toBe(false);
+        expect(run.calls).toEqual([])
+    });
+
+    test('AC-6: outside the layout a run reads only the config source and the consented credential file, and the module reads no Agent OS config', async () => {
+        const run = await consentedRun();
+
+        await perform(run, {evaluation: await evaluate(run.record)});
+
+        const outside = run.reads.filter(file => !file.startsWith(run.stateRoot + path.sep) && !file.startsWith(run.layout.composeDir + path.sep));
+
+        expect([...new Set(outside)].sort()).toEqual([configSourcePath, run.patPath].sort());
+
+        // nothing derived from config or from the module's own location
+        const source = await fs.readFile(MODULE_SOURCE, 'utf8');
+
+        expect(source).not.toMatch(/AiConfig|config\.mjs'|process\.env|import\.meta\.url/)
+    })
+});
