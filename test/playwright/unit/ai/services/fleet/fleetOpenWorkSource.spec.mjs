@@ -1,5 +1,6 @@
 import {expect, test}              from '@playwright/test';
 import {createFleetOpenWorkSource} from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
+import {normalizePullRequest}      from '../../../../../../ai/services/fleet/openWorkReducer.mjs';
 
 const
     OBSERVED = '2026-10-02T10:00:00.000Z',
@@ -54,6 +55,24 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         expect(read.awaitingMerge.map(({number, stale}) => [number, stale])).toEqual([[7, false], [8, true]]);
         expect(read.unobserved).toBe(1);
         expect(source(state({}, [approved(7)]), 120).readOpenWork()).toMatchObject({state: 'unavailable', awaitingMerge: []})
+    });
+
+    test('a review list the producer read truncated keeps its visible approval out of awaitingMerge (#779)', () => {
+        const
+            identities = {byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt'})[login] ?? null, byName: name => ({Ada: '@neo-opus-ada'})[name] ?? null},
+            // one visible approval of the head; `hasNextPage` says whether more reviews went unread
+            node       = hasNextPage => ({
+                number: 9, headRefOid: 'h9', reviewDecision: 'APPROVED', mergeable: 'MERGEABLE', isDraft: false,
+                body: 'Authored by Ada (Claude Opus 5.5, Claude Code).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'},
+                reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []},
+                latestReviews : {pageInfo: {hasNextPage}, nodes: [{author: {login: 'neo-gpt'}, state: 'APPROVED', commit: {oid: 'h9'}}]},
+                commits       : {nodes: [{commit: {oid: 'h9', statusCheckRollup: {state: 'SUCCESS'}}}]}
+            }),
+            read       = hasNextPage => source(state({}, [{...normalizePullRequest(node(hasNextPage), identities), observedAt: OBSERVED}])).readOpenWork();
+
+        expect(read(false).awaitingMerge.map(({number, holder}) => [number, holder.role])).toEqual([[9, 'operator']]);
+        expect(read(true).awaitingMerge).toEqual([]);
+        expect(read(true).seats['@neo-opus-ada'].authored.map(({holder}) => holder)).toEqual([{role: 'unknown', ids: []}])
     });
 
     test('one seat reads its own lists, empty under the same envelope when it holds nothing', () => {

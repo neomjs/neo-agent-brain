@@ -47,4 +47,19 @@ test.describe('openWorkHolder — OQ2\'s holder table on the current head, first
         expect(holderOf(row({})).role).toBe('none');
         expect(holderOf(row({ci: 'pending', reviews: [review('APPROVED')]})).role).toBe('none')
     });
+
+    test('a partial read decides only on positive evidence; an absence a missing page could hold is unknown', () => {
+        const unknown = {role: 'unknown', ids: []};
+
+        // an unseen on-head change request or review request could hold the approval back
+        expect(holderOf(row({verdict: 'APPROVED', reviews: [review('APPROVED')], partial: true}))).toEqual(unknown);
+        // an unreturned page may hold a review of the head
+        expect(holderOf(row({owner: outside, partial: true}))).toEqual(unknown);
+        // an unseen on-head change request precedes the reviewer rule
+        expect(holderOf(row({requested: ['@neo-gpt'], partial: true}))).toEqual(unknown);
+        expect(holderOf(row({partial: true}))).toEqual(unknown);
+        // positive evidence still decides
+        expect(holderOf(row({ci: 'red', partial: true}))).toEqual({role: 'author', ids: ['@neo-opus-ada']});
+        expect(holderOf(row({reviews: [review('CHANGES_REQUESTED')], partial: true}))).toEqual({role: 'author', ids: ['@neo-opus-ada']})
+    });
 });

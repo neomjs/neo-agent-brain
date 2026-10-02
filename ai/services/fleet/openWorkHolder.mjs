@@ -6,25 +6,33 @@
  * A review counts only when it judged the current head: `reviewDecision` keeps a change request the
  * author has since pushed past, and an earlier head's approval. `operator` and `rotation` are roles
  * that name nobody; the reader that renders or wakes resolves them, so no operator's handle lives here.
+ *
+ * A partial read (a review or request list truncated or unresolved) decides only on positive evidence:
+ * a red head, or a change request on the head, is the author's. Every other rule reads an absence that
+ * a missing page could hold, so the holder is `unknown`, never `none`.
  */
 
 /**
  * @summary The holder of one open snapshot row; the first rule below that matches wins.
  * @param {Object} row An open row of the producer's snapshot.
- * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none', ids: String[]}}
+ * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown', ids: String[]}}
  */
-export function holderOf({ci, mergeable, draft, owner, requested = [], reviews = []}) {
+export function holderOf({ci, mergeable, draft, owner, partial = false, requested = [], reviews = []}) {
     const
         onHead    = state => reviews.some(review => review.onHead && review.state === state),
         finished  = ci === 'red' || ci === 'green',
         untouched = !requested.length && !reviews.some(review => review.onHead);
 
     if (owner?.kind === 'outside' && finished && untouched) {
-        return {role: 'rotation', ids: []}
+        return {role: partial ? 'unknown' : 'rotation', ids: []}
     }
 
     if (ci === 'red' || onHead('CHANGES_REQUESTED')) {
         return {role: 'author', ids: owner?.seat ? [owner.seat] : []}
+    }
+
+    if (partial) {
+        return {role: 'unknown', ids: []}
     }
 
     if (ci === 'green' && requested.length) {
