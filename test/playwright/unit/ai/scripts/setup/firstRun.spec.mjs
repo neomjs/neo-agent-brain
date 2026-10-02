@@ -278,7 +278,7 @@ test.describe('firstRun CLI', () => {
 
         const
             fake   = greenFake({patPath}),
-            hosted = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {provider: {ok: true, model: 'gemini-3.5-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath}}}),
+            hosted = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath}}}),
             output = JSON.parse(hosted.stdout),
             layout = hostLayout({stateRoot}),
             env    = await fs.readFile(layout.envFile, 'utf8');

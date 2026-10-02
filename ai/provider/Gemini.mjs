@@ -16,9 +16,9 @@ class GeminiProvider extends Base {
          */
         className: 'Neo.ai.provider.Gemini',
         /**
-         * @member {String} modelName='gemini-3.5-flash'
+         * @member {String} modelName='gemini-3.8-flash'
          */
-        modelName: 'gemini-3.5-flash',
+        modelName: 'gemini-3.8-flash',
         /**
          * @member {String[]} requiredEnv=['GEMINI_API_KEY']
          */

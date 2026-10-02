@@ -131,7 +131,7 @@ const
     // the one mounted key feeds both key-file leaves (the credential step). Gemini's documentation
     // lists the `reasoning_effort` value `none` for 2.5 models only, so the graph extractor is told `low`.
     GEMINI_OPENAI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/openai',
-    GEMINI_FLASH           = 'gemini-3.5-flash';
+    GEMINI_FLASH           = 'gemini-3.8-flash';
 
 /**
  * @summary The supported presets. Fields: `id`, `label`, `inference` (`hosted` | `local`), `profile`,

@@ -64,7 +64,7 @@ test.describe('placementPresets — three presets as env sets over declared leav
 
         expect(byId('local-small')).toMatchObject({inference: 'local', vectorDimension: 1024, embedder: 'text-embedding-qwen3-embedding-0.6b', chatModel: 'google/gemma-4-26b-a4b', pendingBindings: []});
         expect(byId('local-full')).toMatchObject({inference: 'local', vectorDimension: 4096, embedder: 'text-embedding-qwen3-embedding-8b', chatModel: 'google/gemma-4-26b-a4b', pendingBindings: []});
-        expect(byId('hosted')).toMatchObject({inference: 'hosted', vectorDimension: 3072, embedder: 'gemini-embedding-001', chatModel: 'gemini-3.5-flash', requires: ['providerKey', 'pat', 'repos']});
+        expect(byId('hosted')).toMatchObject({inference: 'hosted', vectorDimension: 3072, embedder: 'gemini-embedding-001', chatModel: 'gemini-3.8-flash', requires: ['providerKey', 'pat', 'repos']});
         // AC-4: every preset names its models through declared env bindings — nothing pending since the Gemini leaves gained theirs
         for (const preset of presets) {
             expect(preset.pendingBindings, preset.id).toEqual([])
@@ -79,7 +79,7 @@ test.describe('placementPresets — three presets as env sets over declared leav
         // hosted: chat and embeddings on the Gemini client, graph generation through Gemini's OpenAI-compatible
         // endpoint over the overlay's inputs (the dispatch serves ollama and openAiCompatible only), the
         // extractor's reasoning effort set because Gemini's 3.x models take no `none`
-        expect(byId('hosted').env).toEqual({NEO_MODEL_PROVIDER: 'gemini', NEO_GRAPH_PROVIDER: 'openAiCompatible', NEO_EMBEDDING_PROVIDER: 'gemini', NEO_GEMINI_MODEL: 'gemini-3.5-flash', NEO_GEMINI_EMBEDDING_MODEL: 'gemini-embedding-001', NEO_LOCAL_AGENT_OS_PROVIDER_HOST: 'https://generativelanguage.googleapis.com/v1beta/openai', NEO_LOCAL_AGENT_OS_MODEL: 'gemini-3.5-flash', NEO_LOCAL_MODELS_CHAT_GRAPH_REASONING_EFFORT: 'low', NEO_VECTOR_DIMENSION: '3072'});
+        expect(byId('hosted').env).toEqual({NEO_MODEL_PROVIDER: 'gemini', NEO_GRAPH_PROVIDER: 'openAiCompatible', NEO_EMBEDDING_PROVIDER: 'gemini', NEO_GEMINI_MODEL: 'gemini-3.8-flash', NEO_GEMINI_EMBEDDING_MODEL: 'gemini-embedding-001', NEO_LOCAL_AGENT_OS_PROVIDER_HOST: 'https://generativelanguage.googleapis.com/v1beta/openai', NEO_LOCAL_AGENT_OS_MODEL: 'gemini-3.8-flash', NEO_LOCAL_MODELS_CHAT_GRAPH_REASONING_EFFORT: 'low', NEO_VECTOR_DIMENSION: '3072'});
         expect(byId('hosted').env.NEO_GEMINI_MODEL).toBe(byId('hosted').chatModel);
         expect(byId('hosted').env.NEO_LOCAL_AGENT_OS_MODEL).toBe(byId('hosted').chatModel);
         expect(byId('hosted').env.NEO_GEMINI_EMBEDDING_MODEL).toBe(byId('hosted').embedder);
@@ -161,7 +161,7 @@ test.describe('placementPresets — three presets as env sets over declared leav
         expect(unconsumedPresetEnvKeys({env: {NEO_OPENAI_COMPATIBLE_MODEL: 'm'}}, shadowed, declared)).toEqual(['NEO_OPENAI_COMPATIBLE_MODEL: not an input of the profile\'s Compose files']);
 
         // the scan reads bindings, not names in prose: a leaf without a binding declares no env key
-        expect(declaredEnvBindings("leaf('gemini-3.5-flash'),\n leaf(4096, 'NEO_X', 'number')")).toEqual(new Set(['NEO_X']));
+        expect(declaredEnvBindings("leaf('gemini-3.8-flash'),\n leaf(4096, 'NEO_X', 'number')")).toEqual(new Set(['NEO_X']));
         expect(declaredEnvBindings("leaf(path.resolve(a, 'b'), 'NEO_WITH_CALL', 'string')")).toEqual(new Set(['NEO_WITH_CALL']))
     });
 

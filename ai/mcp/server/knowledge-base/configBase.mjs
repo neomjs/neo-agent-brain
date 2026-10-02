@@ -691,7 +691,7 @@ class ConfigBase extends ConfigProvider {
              * The name of the Google Generative AI model for content generation.
              * @type {string}
              */
-            modelName: leaf('gemini-3.5-flash'),
+            modelName: leaf('gemini-3.8-flash'),
             /**
              * The number of chunks to process in a single batch when embedding.
              *

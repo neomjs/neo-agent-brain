@@ -1084,7 +1084,7 @@ class ConfigBase extends ConfigProvider {
              * another model through the env binding, as it does for the other providers.
              * @type {String}
              */
-            modelName: leaf('gemini-3.5-flash', 'NEO_GEMINI_MODEL', 'string'),
+            modelName: leaf('gemini-3.8-flash', 'NEO_GEMINI_MODEL', 'string'),
             /**
              * @summary Deployment-wide Gemini embedding model default.
              * @type {String}

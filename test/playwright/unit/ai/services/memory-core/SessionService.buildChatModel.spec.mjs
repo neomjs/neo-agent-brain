@@ -194,7 +194,7 @@ test.describe('buildChatModel provider selector (#11965 Sub-2)', () => {
         const model = buildChatModel({
             modelProvider                  : 'openAiCompatible',
             geminiApiKey                   : 'AIza-present-but-ignored',
-            geminiModelName                : 'gemini-3.5-flash',
+            geminiModelName                : 'gemini-3.8-flash',
             openAiCompatibleConfig         : {host: 'http://lms.local:1234', model: 'local-chat', keep_alive: -1},
             openAiCompatibleProviderFactory: () => fakeProvider,
             geminiClientFactory            : () => { throw new Error('Gemini must not be constructed when modelProvider=openAiCompatible'); }
