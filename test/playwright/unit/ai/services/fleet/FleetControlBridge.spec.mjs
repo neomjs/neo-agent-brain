@@ -14,6 +14,7 @@ setup({
 });
 
 import {test, expect}         from '@playwright/test';
+import fs                     from 'fs';
 import Neo                    from 'neo.mjs/src/Neo.mjs';
 import * as core              from 'neo.mjs/src/core/_export.mjs';
 import FleetControlBridge     from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
@@ -495,13 +496,32 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
                 expect(JSON.stringify(wire)).not.toMatch(/Applications|FleetManager\.|startAgentProvisioned:|at \w+ \(/)
             }
 
-            // anything unnamed stays the dispatcher's generic failure, its message never on the wire
-            refusal = new Error('/secret/storage/path failed');
+            // every code the preparation raises is answered, so the bridge's list cannot fall behind its producer
+            const codes = new Set(fs.readFileSync(new URL('../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs', import.meta.url), 'utf8')
+                .match(/FLEET_WORKSPACE_[A-Z_]+/g));
 
-            const wire = await dispatchFleetRequest(createFleetWireRequest('startAgent', 'alice'), FleetControlBridge);
+            expect(codes).toContain('FLEET_WORKSPACE_PREPARATION_FAILED');
 
-            expect(wire).toMatchObject({ok: false, state: FLEET_WIRE_RESPONSE_STATES.operationFailed, error: "fleet: 'startAgent' failed"});
-            expect(JSON.stringify(wire)).not.toMatch(/secret/)
+            for (const code of codes) {
+                refusal = new ManagedWorkspacePreparationError('prepareManagedAgentWorkspace: failed', {code});
+
+                expect((await dispatchFleetRequest(createFleetWireRequest('startAgent', 'alice'), FleetControlBridge)).result, code)
+                    .toEqual({status: 'rejected', reason: `the seat's workspace could not be prepared (${code}); the Fleet log names the artifact.`})
+            }
+
+            // anything unnamed stays the dispatcher's generic failure, its message never on the wire, and
+            // so does a preparation code its producer never raises
+            for (const unnamed of [
+                new Error('/secret/storage/path failed'),
+                new ManagedWorkspacePreparationError('/secret/storage/path failed', {code: 'FLEET_WORKSPACE_SECRET_CANARY'})
+            ]) {
+                refusal = unnamed;
+
+                const wire = await dispatchFleetRequest(createFleetWireRequest('startAgent', 'alice'), FleetControlBridge);
+
+                expect(wire).toMatchObject({ok: false, state: FLEET_WIRE_RESPONSE_STATES.operationFailed, error: "fleet: 'startAgent' failed"});
+                expect(JSON.stringify(wire)).not.toMatch(/secret|SECRET/)
+            }
         } finally {
             FleetManager.lifecycleService    = null;
             FleetManager.managedRoot         = null;

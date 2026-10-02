@@ -17,11 +17,21 @@ import {FLEET_COCKPIT_SOURCES}                              from '../../../src/f
 
 /**
  * The callers whose refusals a start or restart answers as data: the manager's start gate, the
- * provisioned start and the lifecycle spawn. Their messages are authored text that reads no secret.
+ * provisioned start and the lifecycle spawn. They word a refusal from authored text and configured
+ * values, never from a caught error's message.
  * @type {String[]}
  */
 const START_REFUSAL_CALLERS = Object.freeze([
     'FleetManager.startAgent', 'FleetManager.restartAgent', 'startAgentProvisioned', 'FleetLifecycleService.start'
+]);
+
+/**
+ * The workspace preparation error's codes, the only part of it the wire carries. Its producer stays
+ * unimported here (the plan/apply composer keeps one production caller); a spec pins this list to it.
+ * @type {String[]}
+ */
+const WORKSPACE_PREPARATION_CODES = Object.freeze([
+    'FLEET_WORKSPACE_DIVERGENT', 'FLEET_WORKSPACE_PREPARATION_FAILED', 'FLEET_WORKSPACE_UNSUPPORTED'
 ]);
 
 /**
@@ -43,9 +53,9 @@ function rejectionOf(error, callers) {
 
 /**
  * @summary A provisioned start or restart as a domain outcome: the lifecycle record resolves, a refusal
- * its start path names is rejected, a workspace that could not be prepared answers its code (never its
- * message, which can carry local paths), and any other failure rethrows. The preparation error is
- * matched by name, so the plan/apply composer keeps its one production caller.
+ * its start path names is rejected, a workspace that could not be prepared answers its declared code
+ * (never its message, which can carry local paths), and any other failure rethrows. The preparation
+ * error is matched by name, so the plan/apply composer keeps its one production caller.
  * @param {Function} start Resolves the agent's lifecycle status.
  * @returns {Promise<Object>} the lifecycle status, or `{status: 'rejected', reason}`.
  * @private
@@ -54,7 +64,7 @@ async function startOutcome(start) {
     try {
         return await start()
     } catch (error) {
-        if (error?.name === 'ManagedWorkspacePreparationError' && /^FLEET_WORKSPACE_[A-Z_]+$/.test(error.code)) {
+        if (error?.name === 'ManagedWorkspacePreparationError' && WORKSPACE_PREPARATION_CODES.includes(error.code)) {
             return {status: 'rejected', reason: `the seat's workspace could not be prepared (${error.code}); the Fleet log names the artifact.`}
         }
 
