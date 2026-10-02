@@ -205,7 +205,9 @@ export function summarizeRuns(runs, {preset, chatModel, documentsDigest: digest,
 }
 
 /**
- * @summary The child's program: boot Neo, refuse a graph provider outside the dispatch, extract one
+ * @summary The child's program: boot Neo and the config, judge the resolved destinations BEFORE any
+ * module that can write is imported (the cwd is the scratch root by construction; the predicate is
+ * the parent's own `isolatedUnder`), refuse a graph provider outside the dispatch, extract one
  * document through the shipped path, keep the payload at `beforeCommit` and refuse the write.
  * The last stdout line is the JSON the parent reads.
  * @param {String} root The Brain root the child imports from.
@@ -221,6 +223,12 @@ export function childSource(root) {
         const fs = await import('node:fs/promises');
         const {default: AiConfig} = await import(${JSON.stringify(file('ai/mcp/server/memory-core/config.mjs'))});
         const isolation = {graph: AiConfig.storagePaths.graph, remRunStateDir: AiConfig.remRunStateDir, dataRoot: AiConfig.plane.dataRoot};
+        const {isolatedUnder} = await import(${JSON.stringify(file('ai/scripts/diagnostics/presetQualityFloor.mjs'))});
+        const refusal = isolatedUnder(isolation, process.cwd());
+        if (refusal) {
+            print({isolation, unmeasured: 'the child was not isolated: ' + refusal});
+            process.exit(0);
+        }
         const {GRAPH_MODEL_PROVIDERS, resolveGraphModelProvider} = await import(${JSON.stringify(file('ai/services/graph/providerDispatch.mjs'))});
         const graphProvider = resolveGraphModelProvider(AiConfig);
         if (!GRAPH_MODEL_PROVIDERS.includes(graphProvider)) {
@@ -242,19 +250,21 @@ export function childSource(root) {
 }
 
 /**
- * @summary The env that isolates a child from every plane: the consumed unit-test flag resolves the
- * graph store to ':memory:' (and the test WAL to the OS temp dir); the plane anchor and the REM
- * marker directory — the one writer that runs before the commit hook — point under the scratch root.
- * The child reports what it resolved ('isolation'), and {@link isolatedUnder} refuses a run that
- * resolved anything else.
+ * @summary The env that isolates a child from every plane: the consumed unit-test flag selects the
+ * test graph store, pinned to ':memory:' here so no inherited test path can redirect it (and the
+ * test WAL goes to the OS temp dir); the plane anchor and the REM marker directory — the one writer
+ * that runs before the commit hook — point under the scratch root. The child judges what it
+ * resolved with {@link isolatedUnder} before importing anything that can write, and the parent
+ * judges the report again.
  * @param {String} scratchRoot An empty directory the parent created for this run.
  * @returns {Object}
  */
 export function isolationEnv(scratchRoot) {
     return {
-        UNIT_TEST_MODE        : 'true',
-        NEO_PLANE_DATA_ROOT   : scratchRoot,
-        NEO_REM_RUN_STATE_DIR : path.join(scratchRoot, 'rem-runs')
+        UNIT_TEST_MODE          : 'true',
+        NEO_MEMORY_DB_PATH_TEST : ':memory:',
+        NEO_PLANE_DATA_ROOT     : scratchRoot,
+        NEO_REM_RUN_STATE_DIR   : path.join(scratchRoot, 'rem-runs')
     };
 }
 
@@ -375,7 +385,8 @@ export async function measurePreset({presetId, documentsDir = DEFAULT_DOCUMENTS_
     const
         contents    = new Map(await Promise.all(documents.map(async file => [file, await fs.readFile(file, 'utf8')]))),
         digest      = documentsDigest(documents.map(file => ({name: path.basename(file), content: contents.get(file)}))),
-        scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'preset-quality-floor-')),
+        // a real path: the child judges its destinations against process.cwd(), which the OS reports resolved
+        scratchRoot = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'preset-quality-floor-'))),
         runs        = [];
     let chatModel = null, isolation = null;
 

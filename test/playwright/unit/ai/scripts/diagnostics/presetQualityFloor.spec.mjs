@@ -271,7 +271,7 @@ test.describe('presetQualityFloor', () => {
         expect(isolatedUnder({graph: ':memory:', remRunStateDir: '/elsewhere/rem-runs', dataRoot: '/tmp/x'}, '/tmp/x')).toMatch(/outside its scratch root/);
         expect(isolatedUnder(undefined, '/tmp/x')).toBe('the child reported no isolation');
         expect(isolatedUnder({graph: ':memory:', remRunStateDir: '/tmp/x/rem-runs', dataRoot: '/tmp/x'}, '/tmp/x')).toBeNull();
-        expect(isolationEnv('/tmp/x')).toEqual({UNIT_TEST_MODE: 'true', NEO_PLANE_DATA_ROOT: '/tmp/x', NEO_REM_RUN_STATE_DIR: '/tmp/x/rem-runs'});
+        expect(isolationEnv('/tmp/x')).toEqual({UNIT_TEST_MODE: 'true', NEO_MEMORY_DB_PATH_TEST: ':memory:', NEO_PLANE_DATA_ROOT: '/tmp/x', NEO_REM_RUN_STATE_DIR: '/tmp/x/rem-runs'});
 
         const failed = await measurePreset({presetId: 'local-small', documentsDir: dir, exec: fakeExec({chatModel: 'google/gemma-4-26b-a4b', payload: null, failure: {ok: false, deferReason: 'schema-failure', evidence: {errorMessage: 'fetch failed'}}})});
 
@@ -307,8 +307,8 @@ test.describe('presetQualityFloor', () => {
                 measured  = await measurePreset({
                     presetId    : 'local-small',
                     providerHost: provider.host,
-                    // no ambient test flag reaches the child: the isolation is the instrument's own env
-                    baseEnv     : {PATH: process.env.PATH, HOME: process.env.HOME},
+                    // no ambient test flag reaches the child, and an inherited test graph path is pinned away: the isolation is the instrument's own env
+                    baseEnv     : {PATH: process.env.PATH, HOME: process.env.HOME, NEO_MEMORY_DB_PATH_TEST: '/outside/should-not-open.sqlite'},
                     exec
                 }),
                 root = roots[0];
@@ -329,6 +329,39 @@ test.describe('presetQualityFloor', () => {
         } finally {
             await provider.close();
         }
+    });
+
+    test('boundary: a child whose resolved graph store is not memory refuses BEFORE importing anything that can write — no extractor import, no marker directory, no file at the inherited path', async () => {
+        test.setTimeout(120000);
+
+        const
+            outside  = path.join(await mkdtemp(path.join(os.tmpdir(), 'preset-floor-outside-')), 'should-not-open.sqlite'),
+            stdouts  = [],
+            roots    = [],
+            seen     = [],
+            // the instrument's spawn with its pin defeated: the child inherits a test graph path the env no longer pins away
+            exec     = async (file, args, options) => {
+                const result = await execFileAsync(file, args, {...options, env: {...options.env, NEO_MEMORY_DB_PATH_TEST: outside}});
+
+                stdouts.push(result.stdout);
+                roots.push(options.cwd);
+                seen.push(await readdir(options.cwd, {recursive: true}));
+
+                return result;
+            },
+            measured = await measurePreset({presetId: 'local-small', providerHost: 'http://127.0.0.1:9', baseEnv: {PATH: process.env.PATH, HOME: process.env.HOME}, exec});
+
+        expect(roots).toHaveLength(1);
+        expect(measured).toMatchObject({
+            preset    : 'local-small',
+            isolation : {graph: outside, remRunStateDir: path.join(roots[0], 'rem-runs'), dataRoot: roots[0]},
+            unmeasured: `the child was not isolated: the child resolved the graph store to ${outside}, not :memory:`
+        });
+        // the refusal came before the extractor was imported: no extractor log line, no marker directory, no file at the path
+        expect(stdouts[0]).not.toContain('[SemanticGraphExtractor]');
+        expect(seen[0]).toEqual([]);
+        await expect(access(outside)).rejects.toThrow();
+        await expect(access(roots[0])).rejects.toThrow();
     });
 
     test('the CLI prints the measurement and exits 0 when measured, 2 when unmeasured; the shipped fixtures are three public engine threads', async () => {
