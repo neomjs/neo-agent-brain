@@ -317,9 +317,13 @@ async function boot() {
         // all (opening the host graph/mailbox is the split-brain read this mode exists to end). The
         // PR/lane slot too: this process has no corpus, so the plane serves the slot from the corpus
         // its orchestrator materializes (`get_pr_lane_activity`), stall findings included.
+        // The PR contributor is this process's own open-work producer (wired below, read at request
+        // time), for every repository the registry's seats work on; the plane keeps the issue, lane-claim
+        // and stall contributors.
         wireFleetActivityReadSource({
             listMessages         : args => planeClient.listMessages(args),
             readPrLane           : createPlanePrLaneActivityReader(planeClient),
+            openWorkProducer     : () => openWork?.producer ?? null,
             resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
         });
 
@@ -335,6 +339,7 @@ async function boot() {
                 contentRoot          : AiConfig.fleet.contentRoot,
                 listMessages         : MailboxService.listMessages.bind(MailboxService),
                 graphService         : GraphService,
+                openWorkProducer     : () => openWork?.producer ?? null,
                 resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
             });
 

@@ -15,7 +15,11 @@
  */
 export function createPlanePrLaneActivityReader(planeClient) {
     return async params => {
-        const payload = await planeClient.callTool('get_pr_lane_activity', {limit: params?.limit});
+        // `prEvents: false` travels only when asked: a caller whose PR contributor is the open-work
+        // producer wants the plane's bound spent on the other contributors alone
+        const payload = await planeClient.callTool('get_pr_lane_activity', params?.prEvents === false
+            ? {limit: params.limit, prEvents: false}
+            : {limit: params?.limit});
 
         if (typeof payload?.capability?.state !== 'string' || !Array.isArray(payload?.events)) {
             throw new Error('plane get_pr_lane_activity answer unreadable')

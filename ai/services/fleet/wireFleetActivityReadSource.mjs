@@ -2,6 +2,7 @@ import FleetControlBridge              from './FleetControlBridge.mjs';
 import {createFleetActivityReadSource} from './fleetActivityComposer.mjs';
 import {readFleetA2AActivitySnapshot}  from './fleetA2AActivityAdapter.mjs';
 import {makeReadPrLaneSnapshot}        from './readPrLaneActivitySnapshot.mjs';
+import {withProducerPrLane}            from './producerPrLaneEvents.mjs';
 import {resolveContentOrigins}         from '../graph/contentOrigins.mjs';
 import {CORPUS_PROJECTION_ORIGIN}      from '../graph/corpusProjectionContract.mjs';
 
@@ -69,6 +70,10 @@ function makeReadA2ASnapshot(listMessages) {
  *     caller's use site. Absent → the PR/lane slot emits no pr-activity events (honest-empty).
  * @param {Function} [options.readPrLane] A PR/lane slot reader in place of a local tree (plane mode:
  *     `planePrLaneActivityReader`); with one, no content root is read.
+ * @param {Object|Function} [options.openWorkProducer] The open-work producer (`{getState}`), or a function
+ *     answering it at read time. With one, the slot's pull-request events are the producer's transitions
+ *     for every repository (`withProducerPrLane`); the tree or plane reader keeps the issue, lane-claim
+ *     and stall events. A producer alone is a readable slot.
  * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox scope, resolved per call.
  * @param {Number} [options.limit] Default event bound forwarded to the composer.
  * @param {Object} [options.bridge=FleetControlBridge] The control bridge to wire (a stub in specs).
@@ -82,6 +87,7 @@ export function wireFleetActivityReadSource({
     graphService,
     pullsDir,
     readPrLane,
+    openWorkProducer = null,
     resolveViewerIdentity,
     limit,
     bridge       = FleetControlBridge,
@@ -92,8 +98,9 @@ export function wireFleetActivityReadSource({
               ? resolveContentOrigins(contentRoot)
               : (typeof issuesDir === 'string' && issuesDir.length > 0 ? [{repoSlug: CORPUS_PROJECTION_ORIGIN, issuesDir, pullsDir}] : []);
 
-    const hasA2A    = typeof listMessages === 'function',
-          hasPrLane = injected || origins.length > 0;
+    const hasA2A      = typeof listMessages === 'function',
+          hasProducer = Boolean(openWorkProducer),
+          hasPrLane   = injected || origins.length > 0 || hasProducer;
 
     // No readable slot at all → leave the seam unwired (honest not-wired), never fabricate a source.
     if (!hasA2A && !hasPrLane) {
@@ -106,9 +113,12 @@ export function wireFleetActivityReadSource({
         ? makeReadA2ASnapshot(listMessages)
         : () => { throw new Error('a2a activity source not wired — no listMessages bound') };
 
-    const readPrLaneSnapshot = injected ? readPrLane : hasPrLane
-        ? makeReadPrLaneSnapshot({origins, graphService})
-        : () => { throw new Error('pr-lane activity source not wired — no contentRoot or issuesDir') };
+    // the base reader: the plane's slot, or the local tree's; null when this process has neither
+    const readPrLaneBase = injected ? readPrLane : origins.length > 0 ? makeReadPrLaneSnapshot({origins, graphService}) : null;
+
+    const readPrLaneSnapshot = hasProducer
+        ? withProducerPrLane(readPrLaneBase, {producer: openWorkProducer})
+        : readPrLaneBase ?? (() => { throw new Error('pr-lane activity source not wired — no contentRoot or issuesDir') });
 
     bridge.activitySource = createSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity, limit});
 

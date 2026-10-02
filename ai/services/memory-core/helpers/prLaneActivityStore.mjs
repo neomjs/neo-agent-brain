@@ -19,13 +19,16 @@ import {makeReadPrLaneSnapshot} from '../../fleet/readPrLaneActivitySnapshot.mjs
  * @param {Object}   [options]
  * @param {Function} [options.makeReader=makeReadPrLaneSnapshot] The slot's read path (injected in specs).
  * @param {Function} [options.stat=fs.stat] The `_index.json` stat whose mtime keys the kept answer (injected in specs).
- * @returns {{read: Function}} `read({root, graphService, limit})` → `{capability, counts, events, corpusIndexedAt}`.
+ * @returns {{read: Function}} `read({root, graphService, limit, prEvents})` → `{capability, counts, events, corpusIndexedAt}`;
+ *     `prEvents: false` is an answer without pull-request events. Within one materialization every
+ *     asked shape (`limit`, `prEvents`) keeps its own answer, so two Fleets asking differently — one
+ *     with its own PR producer, one without — do not evict each other's read on every call.
  */
 export function createPrLaneActivityStore({makeReader = makeReadPrLaneSnapshot, stat = fs.stat} = {}) {
     let kept = null;
 
     return {
-        async read({root, graphService, limit} = {}) {
+        async read({root, graphService, limit, prEvents = true} = {}) {
             let indexedAtMs = null;
 
             try {
@@ -34,14 +37,21 @@ export function createPrLaneActivityStore({makeReader = makeReadPrLaneSnapshot, 
                 // no index — absent, not yet materialized, or mid-swap; the reader names what it finds
             }
 
-            if (kept && indexedAtMs !== null && kept.indexedAtMs === indexedAtMs && kept.limit === limit) {
-                return kept.answer
+            const key = `${limit}|${prEvents}`;
+
+            if (kept && indexedAtMs !== null && kept.indexedAtMs === indexedAtMs && kept.answers.has(key)) {
+                return kept.answers.get(key)
             }
 
-            const snapshot = await makeReader({origins: resolveContentOrigins(root), graphService})({limit}),
+            const snapshot = await makeReader({origins: resolveContentOrigins(root), graphService})({limit, prEvents}),
                   answer   = {...snapshot, corpusIndexedAt: indexedAtMs === null ? null : new Date(indexedAtMs).toISOString()};
 
-            kept = indexedAtMs !== null && snapshot.capability?.state === 'wired' ? {indexedAtMs, limit, answer} : null;
+            if (indexedAtMs !== null && snapshot.capability?.state === 'wired') {
+                kept = kept?.indexedAtMs === indexedAtMs ? kept : {indexedAtMs, answers: new Map()};
+                kept.answers.set(key, answer)
+            } else {
+                kept = null
+            }
 
             return answer
         }

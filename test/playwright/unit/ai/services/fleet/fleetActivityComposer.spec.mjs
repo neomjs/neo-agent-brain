@@ -60,6 +60,23 @@ test.describe('fleetActivityComposer — composing two truths means composing tw
         expect(events.map(event => event.eventId)).toEqual(['pr-new', 'a2a-old'])
     });
 
+    test('each contributor\'s own capability survives the composition under `slots`, keyed by the slot the composer asked', async () => {
+        const source = createFleetActivityReadSource({
+            readA2ASnapshot   : wired([]),
+            readPrLaneSnapshot: async () => ({
+                capability: {source: 'fleet:pr-lane', state: 'wired', confidence: 'observed', capturedAt: '2026-07-16T12:00:00.000Z', producer: {observedAt: '2026-07-16T11:59:00.000Z', coverage: 'complete'}},
+                events    : []
+            })
+        });
+
+        const {capability} = await source.readActivitySnapshot();
+
+        expect(Object.keys(capability.slots).sort()).toEqual(['a2a', 'pr-lane']);
+        // what the slot observed is delivered as the slot said it, not re-stamped by this read
+        expect(capability.slots['pr-lane']).toMatchObject({slot: 'pr-lane', state: 'wired', capturedAt: '2026-07-16T12:00:00.000Z', producer: {observedAt: '2026-07-16T11:59:00.000Z', coverage: 'complete'}});
+        expect(capability.capturedAt).not.toBe('2026-07-16T12:00:00.000Z')
+    });
+
     test('keeps only producer-complete source counts — never promotes a partial slot into a fleet total', async () => {
         const source = createFleetActivityReadSource({
             readA2ASnapshot: wired([], [{

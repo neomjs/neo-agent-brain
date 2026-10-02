@@ -281,7 +281,12 @@ function composeCounts(contributions) {
  * @private
  */
 function composeCapability(capabilities, capturedAt) {
-    const blind = capabilities.filter(capability => capability?.state !== 'wired');
+    const
+        blind = capabilities.filter(capability => capability?.state !== 'wired'),
+        // each contributor's own capability, by the slot this composer asked: what a contributor
+        // observed (a producer's high-water time, its coverage, its retained window) survives the
+        // composition instead of being replaced by this read's clock
+        slots = Object.fromEntries(capabilities.filter(capability => capability?.slot).map(capability => [capability.slot, capability]));
 
     if (blind.length === 0) {
         return {
@@ -289,7 +294,8 @@ function composeCapability(capabilities, capturedAt) {
             state     : 'wired',
             confidence: 'observed',
             capturedAt,
-            reason    : null
+            reason    : null,
+            slots
         }
     }
 
@@ -320,7 +326,8 @@ function composeCapability(capabilities, capturedAt) {
         state     : blind.length === capabilities.length ? 'not-wired' : 'degraded',
         confidence: 'none',
         capturedAt,
-        reason
+        reason,
+        slots
     }
 }
 

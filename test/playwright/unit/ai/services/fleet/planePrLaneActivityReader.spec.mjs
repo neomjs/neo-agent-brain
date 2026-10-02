@@ -29,6 +29,23 @@ test.describe('planePrLaneActivityReader — the plane-mode PR/lane read', () =>
         expect(calls).toEqual([['get_pr_lane_activity', {limit: 25}]])
     });
 
+    test('asked for no pull-request events, the request carries `prEvents: false` to the plane; otherwise the flag never travels', async () => {
+        const
+            calls  = [],
+            reader = createPlanePrLaneActivityReader({
+                callTool: (name, args) => {
+                    calls.push(args);
+                    return Promise.resolve(planeSnapshot())
+                }
+            });
+
+        await reader({limit: 200, prEvents: false});
+        await reader({limit: 25, prEvents: true});
+        await reader({limit: 25});
+
+        expect(calls).toEqual([{limit: 200, prEvents: false}, {limit: 25}, {limit: 25}])
+    });
+
     test('a degraded plane snapshot is the slot\'s answer too — the plane\'s reason reaches the feed', async () => {
         const
             degraded = {capability: {state: 'degraded', reason: 'neo: ENOENT'}, counts: [], events: [{eventId: 'pr-lane:source-degraded', type: 'source-degraded'}]},

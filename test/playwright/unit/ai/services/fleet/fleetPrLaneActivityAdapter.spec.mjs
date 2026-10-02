@@ -204,7 +204,7 @@ test.describe('fleetPrLaneActivityAdapter - PR/lane activity mapping', () => {
         expect(createStallActivityEvents([{findingClass: 'x', subject: {title: 'no stable id'}}])).toEqual([])
     });
 
-    // ---- human-gate truth at the consumer boundary (Cycle-2 RA3: draft + formal-disposition) ----
+    // ---- human-gate truth at the consumer boundary: draft state and the formal disposition ----
 
     test('draft state is preserved truthfully — unknown stays null, never fabricated false', () => {
         const [unknown] = createPrActivityEvents([{number: 1, author: {login: 'a'}, updatedAt: '2026-07-04T03:00:00Z'}])
@@ -343,5 +343,22 @@ test.describe('fleetPrLaneActivityAdapter - corpus origins', () => {
         expect(snapshot.capability).toMatchObject({state: 'degraded', confidence: 'observed'})
         expect(snapshot.capability.reason).toContain('devindex')
         expect(snapshot.events.map(event => event.type)).toEqual(['source-degraded', 'pr-activity'])
+    })
+
+    test('`prEvents: false` emits no pull-request events and spends the bound on the other contributors; the capability is unchanged', () => {
+        const
+            facts = {
+                prs          : [{number: 7, repoSlug: 'neo', title: 't', state: 'OPEN', updatedAt: '2026-09-22T12:00:00Z'}, {number: 8, repoSlug: 'neo', title: 't', state: 'OPEN', updatedAt: '2026-09-22T12:00:00Z'}],
+                issues       : [{number: 9, repoSlug: 'neo', title: 'i', state: 'OPEN', updatedAt: '2026-09-22T11:00:00Z'}],
+                stallFindings: [{findingClass: 'STALE_DEFER', waitingSince: '2026-09-01T00:00:00Z', subject: {number: 9, repoSlug: 'neo', owner: '@a'}}],
+                capturedAt   : '2026-09-22T12:00:00Z',
+                limit        : 2
+            },
+            full = createFleetPrLaneActivitySnapshot(facts),
+            lean = createFleetPrLaneActivitySnapshot({...facts, prEvents: false})
+
+        expect(full.events.map(event => event.type)).toEqual(['pr-activity', 'pr-activity'])
+        expect(lean.events.map(event => event.type)).toEqual(['issue-activity', 'work-stall'])
+        expect(lean.capability).toEqual(full.capability)
     })
 })
