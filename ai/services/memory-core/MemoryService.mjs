@@ -1683,6 +1683,9 @@ class MemoryService extends Base {
                 return {_channelSeparation: channelSeparation, count: 0, turns: [], nextCursor: null};
             }
 
+            // Without a request-bound tenant, a cross-session read would span tenants.
+            // Unresolved scope therefore answers empty instead of inheriting the session-
+            // scoped single-tenant "return all" fallback; identity alone is not ownership.
             const userId = normalizeUserId(RequestContextService.getUserId());
             if (!userId) {
                 return {_channelSeparation: channelSeparation, count: 0, turns: [], nextCursor: null, scope: 'fail-closed: no resolvable tenant'};
