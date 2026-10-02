@@ -1321,6 +1321,14 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(keys(tenant)).toEqual(['neural-link', 'github-workflow']);
     });
 
+    test("a GitLab seat's default envelope carries its own forge's workflow server, not GitHub's", () => {
+        install();
+        FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')});
+        expect(Object.keys(FleetLifecycleService.resolveResidentMcpEnvironment({
+            id: 'a', harnessType: 'claude-desktop', forge: 'gitlab', forgeHost: 'https://gitlab.example.com', mcpServers: null
+        }))).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'gitlab-workflow']);
+    });
+
     test("the default producer gives the GitLab workflow server its plane slots and never a GitLab seat value", () => {
         install();
         FleetLifecycleService.residentMcpEnvSource = null;

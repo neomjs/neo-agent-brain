@@ -22,6 +22,8 @@ import * as core            from 'neo.mjs/src/core/_export.mjs';
 import FleetRegistryService from '../../../../ai/services/fleet/FleetRegistryService.mjs';
 import aiConfig             from '../../../../ai/config.template.mjs';
 
+import {mcpCatalogFor, resolveMcpMatrix} from '../../../../src/fleet/contract/mcpServers.mjs';
+
 const createdDirs = [];
 
 /**
@@ -343,6 +345,21 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService', () => {
 
         expect(() => FleetRegistryService.configureAgent({id: 'gl-seat', forgeHost: 'https://evil.example'})).toThrow(/unsupported field 'forgeHost'/);
         expect(FleetRegistryService.getDefinition('gl-seat')).toMatchObject({forge: 'gitlab', forgeHost: 'https://gitlab.example.com'})
+    });
+
+    test("a GitLab seat's defaults follow its forge, and an explicit override survives define and configure", () => {
+        const gitlab = {harnessType: 'codex', credential: 'glpat_seat', forge: 'gitlab', forgeHost: 'https://gitlab.example.com'};
+        const seat   = FleetRegistryService.defineAgent({githubUsername: 'gl-defaults', ...gitlab});
+
+        expect(seat.mcpServers).toBeNull();
+        expect(resolveMcpMatrix(seat.mcpServers, mcpCatalogFor(seat.forge))).toMatchObject({'github-workflow': false, 'gitlab-workflow': true});
+
+        // GitHub's server on a GitLab seat is an override against GitLab's defaults, so it is stored
+        expect(FleetRegistryService.defineAgent({githubUsername: 'gl-both', ...gitlab, mcpServers: {'github-workflow': true}}).mcpServers)
+            .toEqual({'github-workflow': true});
+        expect(FleetRegistryService.configureAgent({id: 'gl-defaults', mcpServers: {'github-workflow': true}}).mcpServers)
+            .toEqual({'github-workflow': true});
+        expect(FleetRegistryService.configureAgent({id: 'gl-defaults', mcpServers: {'gitlab-workflow': true}}).mcpServers).toBeNull()
     });
 
     test('resolveCredential fails closed for an unknown agent', () => {

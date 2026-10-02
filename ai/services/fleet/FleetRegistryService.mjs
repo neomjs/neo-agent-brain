@@ -5,7 +5,7 @@ import aiConfig                                  from '../../config.mjs';
 import Base                                      from 'neo.mjs/src/core/Base.mjs';
 import {HARNESS_TYPES}                           from '../../../src/fleet/contract/harnessTypes.mjs';
 import {writeFileAtomicSync}                     from '../shared/atomicFileWrite.mjs';
-import {normalizeMcpOverrides, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
+import {mcpCatalogFor, normalizeMcpOverrides, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
 import {REPO_FORGES}                             from './deriveAgentRepoPath.mjs';
 import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePlan.mjs';
 import {normalizeMcpTarget}                      from './mcpServers.mjs';
@@ -403,10 +403,11 @@ class FleetRegistryService extends Base {
         const
             agentId = id || githubUsername,
             now     = new Date().toISOString(),
-            matrix  = mcpServers === undefined ? null : normalizeMcpOverrides(mcpServers),
+            catalog = mcpCatalogFor(account.forge),
+            matrix  = mcpServers === undefined ? null : normalizeMcpOverrides(mcpServers, catalog),
             target  = mcpTarget === undefined ? null : normalizeMcpTarget(mcpTarget);
 
-        const refusal = mcpDeclarationRefusal({harnessType, mcpMatrix: resolveMcpMatrix(matrix), tenant: !!target, forge: account.forge});
+        const refusal = mcpDeclarationRefusal({harnessType, mcpMatrix: resolveMcpMatrix(matrix, catalog), tenant: !!target, forge: account.forge});
 
         if (refusal) {
             throw new TypeError(`FleetRegistryService.defineAgent: ${refusal}`)
@@ -569,13 +570,15 @@ class FleetRegistryService extends Base {
             reject(`invalid harnessType '${harnessType}'. Must be one of: ${this.harnessTypes.join(', ')}.`)
         }
 
+        const catalog = mcpCatalogFor(existing.forge);
+
         let
             matrix = existing.mcpServers ?? null,
             target = normalizeStoredMcpTarget(existing.mcpTarget);
 
         if (Object.hasOwn(intent, 'mcpServers')) {
             try {
-                matrix = normalizeMcpOverrides(mcpServers)
+                matrix = normalizeMcpOverrides(mcpServers, catalog)
             } catch (error) {
                 reject(error.message)
             }
@@ -591,7 +594,7 @@ class FleetRegistryService extends Base {
 
         const nextHarnessType = Object.hasOwn(intent, 'harnessType') ? harnessType : existing.harnessType;
 
-        const refusal = mcpDeclarationRefusal({harnessType: nextHarnessType, mcpMatrix: resolveMcpMatrix(matrix), tenant: !!target, forge: existing.forge});
+        const refusal = mcpDeclarationRefusal({harnessType: nextHarnessType, mcpMatrix: resolveMcpMatrix(matrix, catalog), tenant: !!target, forge: existing.forge});
 
         if (refusal) {
             reject(refusal)

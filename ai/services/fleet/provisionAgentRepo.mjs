@@ -64,6 +64,33 @@ export function gitCloneCommand(cloneUrl, repoPath, credential, env = process.en
 }
 
 /**
+ * @summary Whether a clone URL addresses a seat's bound GitLab instance. An `https` URL must carry the instance's
+ * exact origin, so the same host on another port is another instance. An `ssh` URL or scp-style remote
+ * (`git@host:group/project.git`) matches by host alone, because SSH has its own port. Any other shape matches nothing.
+ * @param {String} cloneUrl
+ * @param {URL}    instance The seat's parsed `forgeHost`.
+ * @returns {Boolean}
+ */
+export function isOnInstance(cloneUrl, instance) {
+    if (typeof cloneUrl !== 'string') return false;
+
+    const scpHost = cloneUrl.match(/^[^@/:]+@(\[[^\]]+\]|[^/:]+):/)?.[1];
+
+    try {
+        // a non-special scheme normalizes an IPv6 host but keeps a DNS name's case
+        if (scpHost) return new URL(`ssh://${scpHost}`).hostname.toLowerCase() === instance.hostname;
+
+        const url = new URL(cloneUrl);
+
+        if (url.protocol === 'https:') return url.origin === instance.origin;
+
+        return url.protocol === 'ssh:' && url.hostname.toLowerCase() === instance.hostname
+    } catch {
+        return false
+    }
+}
+
+/**
  * @summary Whether a clone URL is an `https` URL with no userinfo on exactly this origin.
  * @param {String} cloneUrl
  * @param {String} origin

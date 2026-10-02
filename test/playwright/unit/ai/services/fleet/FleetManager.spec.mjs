@@ -187,6 +187,34 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleet-authority definition
         expect(calls, 'only the valid entry was written').toHaveLength(1)
     });
 
+    test("a seat keeps its working repository on its own forge, so its PAT reaches it", () => {
+        registryStub.getAgent = id => ({
+            gl    : {id, forge: 'gitlab', forgeHost: 'https://gitlab.example.com',      metadata: {}},
+            gl8443: {id, forge: 'gitlab', forgeHost: 'https://gitlab.example.com:8443', metadata: {}},
+            gl6   : {id, forge: 'gitlab', forgeHost: 'https://[2001:db8::1]:8443',      metadata: {}}
+        })[id] ?? {id, metadata: {}};
+
+        for (const [id, payload, rule] of [
+            ['gl',     {repoSlug: 'x/y'},                                                                        /works on its GitLab instance/],
+            ['gl',     {forge: 'gitlab', repoSlug: 'g/p', cloneUrl: 'https://gitlab.other.example/g/p.git'},    /must live on its GitLab instance, https:\/\/gitlab\.example\.com/],
+            ['gh',     {forge: 'gitlab', repoSlug: 'g/p', cloneUrl: 'https://gitlab.example.com/g/p.git'},      /works on GitHub/],
+            ['gl8443', {forge: 'gitlab', repoSlug: 'g/p', cloneUrl: 'https://gitlab.example.com:9443/g/p.git'}, /must live on its GitLab instance, https:\/\/gitlab\.example\.com:8443/], // another port
+            ['gl8443', {forge: 'gitlab', repoSlug: 'g/p', cloneUrl: 'https://gitlab.example.com/g/p.git'},      /must live on its GitLab instance/],   // the implicit 443
+            ['gl6',    {forge: 'gitlab', repoSlug: 'g/p', cloneUrl: 'https://[2001:db8::2]:8443/g/p.git'},     /must live on its GitLab instance/]    // another address
+        ]) {
+            expect(() => FleetManager.setRepo({id, ...payload}), `${id} ${JSON.stringify(payload)}`).toThrow(rule)
+        }
+
+        expect(calls, 'nothing was written').toEqual([]);
+
+        FleetManager.setRepo({id: 'gl',     forge: 'gitlab', repoSlug: 'g/sub/p', cloneUrl: 'git@gitlab.example.com:g/sub/p.git'});
+        FleetManager.setRepo({id: 'gh',     repoSlug: 'x/y'});
+        FleetManager.setRepo({id: 'gl8443', forge: 'gitlab', repoSlug: 'g/p', cloneUrl: 'https://gitlab.example.com:8443/g/p.git'});
+        FleetManager.setRepo({id: 'gl6',    forge: 'gitlab', repoSlug: 'g/p', cloneUrl: 'https://[2001:DB8::1]:8443/g/p.git'});
+
+        expect(calls.map(([, id]) => id)).toEqual(['gl', 'gh', 'gl8443', 'gl6'])
+    });
+
     test('a seat\'s checkouts never share a path or nest, across forges, in setRepo and setRepos', () => {
         const working = {repoSlug: 'acme/tools', cloneUrl: 'https://github.com/acme/tools.git'};
 
