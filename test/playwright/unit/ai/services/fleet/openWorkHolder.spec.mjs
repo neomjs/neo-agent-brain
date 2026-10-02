@@ -73,6 +73,9 @@ test.describe('openWorkHolder — OQ2\'s holder table on the current head, first
         expect(holderOf(row({partial: true}))).toEqual(unknown);
         // positive evidence still decides
         expect(holderOf(row({ci: 'red', partial: true}))).toEqual({role: 'author', ids: ['@neo-opus-ada']});
+        // an untouched outside PR is the rotation's only on a complete read; a partial read cannot show
+        // "untouched", so its red head decides, as on any other row
+        expect(holderOf(row({owner: outside, ci: 'red', partial: true}))).toEqual({role: 'author', ids: []});
         expect(holderOf(row({...judged('CHANGES_REQUESTED'), partial: true}))).toEqual({role: 'author', ids: ['@neo-opus-ada']})
     });
 });

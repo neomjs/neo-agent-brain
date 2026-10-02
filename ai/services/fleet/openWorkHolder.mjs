@@ -27,8 +27,9 @@ export function holderOf({ci, mergeable, draft, owner, partial = false, requeste
         finished   = ci === 'red' || ci === 'green',
         untouched  = !requested.length && !reviews.some(review => review.onHead);
 
-    if (owner?.kind === 'outside' && finished && untouched) {
-        return {role: incomplete ? 'unknown' : 'rotation', ids: []}
+    // "untouched" is an absence, so only a complete read hands an outside PR to the rotation
+    if (owner?.kind === 'outside' && finished && untouched && !incomplete) {
+        return {role: 'rotation', ids: []}
     }
 
     if (ci === 'red' || onHead('CHANGES_REQUESTED')) {
