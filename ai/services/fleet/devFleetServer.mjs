@@ -51,6 +51,8 @@ import memoryCoreConfig                                                from '../
 import RequestContextService                                           from '../../mcp/server/shared/services/RequestContextService.mjs';
 import FleetControlBridge                                              from './FleetControlBridge.mjs';
 import FleetManager                                                    from './FleetManager.mjs';
+import FleetRegistryService                                            from './FleetRegistryService.mjs';
+import {resolveGithubToken}                                            from '../ingestion/githubActions.mjs';
 import {describeOperatorSeatConflation, operatorSeatConflationWarning} from './operatorSeatConflation.mjs';
 import {startFleetBridgeServer}                                        from './fleetBridgeServer.mjs';
 import {probeExistingFleetServer, resolveFleetBearer, resolveFleetViewer,
@@ -76,6 +78,7 @@ import {wireFleetTasksSource}                                            from '.
 import {wireFleetGoldenPathSource}                                       from './wireFleetGoldenPathSource.mjs';
 import {wireFleetGraphSceneSource}                                       from './wireFleetGraphSceneSource.mjs';
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
+import {wireFleetOpenWorkSource}                                         from './wireFleetOpenWorkSource.mjs';
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
 import {wireOperatorComposeWriter}                                       from './wireOperatorComposeWriter.mjs';
@@ -463,6 +466,10 @@ async function boot() {
         }
     };
 
+    // Each seat's open work, observe-only: the producer reads GitHub and wakes no one. Its token is a
+    // process secret no AiConfig leaf binds, so the entrypoint resolves it.
+    const openWork = wireFleetOpenWorkSource({token: resolveGithubToken(), registry: FleetRegistryService});
+
         const server = await startFleetBridgeServer({
             port,
             bearerToken,
@@ -484,6 +491,7 @@ async function boot() {
         const cleanShutdown = async signal => {
             console.log(`[fleet] received ${signal}; stopping.`);
             fleetWakeStreamConsumer?.stop();
+            openWork?.stop();
             await planeClient?.close();
             server.close(() => process.exit(0))
         };
