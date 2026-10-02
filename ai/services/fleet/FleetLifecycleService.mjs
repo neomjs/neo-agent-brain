@@ -132,6 +132,9 @@ const SURVIVING_HARNESS_TYPES = new Set(listHarnessTypes().filter(entry => entry
 
 const SEAT_LEASE_FILE = '.neo-fleet-seat-lease.json';
 
+// A Node system error code (`EACCES`, `ERR_…`): the only part of a caught failure a refusal may carry.
+const SYSTEM_ERROR_CODE = /^E[A-Z0-9_]+$/;
+
 /**
  * @summary Read a live process's start time, state and command line through `ps`. The start time
  * pins a pid to one process, so a reused pid never passes for the seat that held it; the fixed locale
@@ -1225,7 +1228,11 @@ class FleetLifecycleService extends Base {
             return null
         } catch (error) {
             try { fs.rmSync(tmpPath, {force: true}) } catch {}
-            return `its lease could not be written: ${error.code || error.message}`
+
+            if (SYSTEM_ERROR_CODE.test(error?.code ?? '')) return `its lease could not be written: ${error.code}`;
+
+            console.error(`[fleet] the lease of agent '${record.id}' could not be written:`, error);
+            return 'its lease could not be written; the Fleet log names the cause'
         }
     }
 

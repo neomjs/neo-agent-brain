@@ -14,12 +14,15 @@ setup({
 });
 
 import {test, expect}         from '@playwright/test';
+import fs                     from 'fs';
 import Neo                    from 'neo.mjs/src/Neo.mjs';
 import * as core              from 'neo.mjs/src/core/_export.mjs';
 import FleetControlBridge     from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
 import FleetManager           from '../../../../../../ai/services/fleet/FleetManager.mjs';
 import FleetRegistryService   from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
 import {dispatchFleetRequest} from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+
+import {ManagedWorkspacePreparationError} from '../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs';
 
 import {createFleetWireRequest, FLEET_WIRE_RESPONSE_STATES} from '../../../../../../src/fleet/contract/wire.mjs';
 
@@ -459,6 +462,71 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             expect(FleetControlBridge.setRepos({id: 'alice', repos: [{repoSlug: 'x/y'}]}).reason).toMatch(/no working repository/)
         } finally {
             FleetManager.lifecycleService = null
+        }
+    });
+
+    test('startAgent and restartAgent answer every refusal their start path names as a rejection, on the wire too (#751)', async () => {
+        let refusal;
+
+        // the real manager's own start gate, then the provisioned start behind it
+        FleetManager.lifecycleService = {getRegistry: () => ({
+            getAgent: id => id === 'released' ? {id, launchOwner: 'external', launchOwnerSince: '2026-10-02T00:00:00.000Z'} : {id}
+        })};
+        FleetManager.managedRoot         = '/managed';
+        FleetManager.provisionAndStartFn = async () => { throw refusal };
+        FleetControlBridge.manager       = FleetManager;
+
+        try {
+            for (const [method, id, thrown, reason] of [
+                ['startAgent',   'released', null, "agent 'released' was released to its own harness: adopt it to start it here."],
+                ['startAgent',   'alice', new Error("startAgentProvisioned: agent 'alice' has no GitHub PAT stored; store one before starting it."),
+                    "agent 'alice' has no GitHub PAT stored; store one before starting it."],
+                ['restartAgent', 'alice', new Error("FleetLifecycleService.start: harness binary 'claude' not found or not executable for agent 'alice'."),
+                    "harness binary 'claude' not found or not executable for agent 'alice'."],
+                // the workspace failure answers its code: its message can carry a local path
+                ['startAgent',   'alice', new ManagedWorkspacePreparationError('prepareManagedAgentWorkspace: ENOENT /Applications/Neo Harness.app/.codex/config.template.toml'),
+                    "the seat's workspace could not be prepared (FLEET_WORKSPACE_PREPARATION_FAILED); the Fleet log names the artifact."]
+            ]) {
+                refusal = thrown;
+                FleetManager.stopAgent = async () => ({success: true});
+
+                const wire = await dispatchFleetRequest(createFleetWireRequest(method, id), FleetControlBridge);
+
+                expect(wire, `${method} ${id}`).toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok, result: {status: 'rejected', reason}});
+                expect(JSON.stringify(wire)).not.toMatch(/Applications|FleetManager\.|startAgentProvisioned:|at \w+ \(/)
+            }
+
+            // every code the preparation raises is answered, so the bridge's list cannot fall behind its producer
+            const codes = new Set(fs.readFileSync(new URL('../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs', import.meta.url), 'utf8')
+                .match(/FLEET_WORKSPACE_[A-Z_]+/g));
+
+            expect(codes).toContain('FLEET_WORKSPACE_PREPARATION_FAILED');
+
+            for (const code of codes) {
+                refusal = new ManagedWorkspacePreparationError('prepareManagedAgentWorkspace: failed', {code});
+
+                expect((await dispatchFleetRequest(createFleetWireRequest('startAgent', 'alice'), FleetControlBridge)).result, code)
+                    .toEqual({status: 'rejected', reason: `the seat's workspace could not be prepared (${code}); the Fleet log names the artifact.`})
+            }
+
+            // anything unnamed stays the dispatcher's generic failure, its message never on the wire, and
+            // so does a preparation code its producer never raises
+            for (const unnamed of [
+                new Error('/secret/storage/path failed'),
+                new ManagedWorkspacePreparationError('/secret/storage/path failed', {code: 'FLEET_WORKSPACE_SECRET_CANARY'})
+            ]) {
+                refusal = unnamed;
+
+                const wire = await dispatchFleetRequest(createFleetWireRequest('startAgent', 'alice'), FleetControlBridge);
+
+                expect(wire).toMatchObject({ok: false, state: FLEET_WIRE_RESPONSE_STATES.operationFailed, error: "fleet: 'startAgent' failed"});
+                expect(JSON.stringify(wire)).not.toMatch(/secret|SECRET/)
+            }
+        } finally {
+            FleetManager.lifecycleService    = null;
+            FleetManager.managedRoot         = null;
+            FleetManager.provisionAndStartFn = null;
+            delete FleetManager.stopAgent
         }
     });
 

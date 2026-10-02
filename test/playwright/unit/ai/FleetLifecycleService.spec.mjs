@@ -21,10 +21,14 @@ import path                            from 'path';
 import Neo                          from 'neo.mjs/src/Neo.mjs';
 import * as core                    from 'neo.mjs/src/core/_export.mjs';
 import AiConfig                     from '../../../../ai/config.template.mjs';
+import FleetControlBridge           from '../../../../ai/services/fleet/FleetControlBridge.mjs';
 import FleetLifecycleService        from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
 import FleetManager                 from '../../../../ai/services/fleet/FleetManager.mjs';
 import ToolService                  from '../../../../ai/mcp/ToolService.mjs';
+import {dispatchFleetRequest}       from '../../../../ai/services/fleet/dispatchFleetRequest.mjs';
 import {generateOpenCodeSeatConfig} from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
+
+import {createFleetWireRequest, FLEET_WIRE_RESPONSE_STATES} from '../../../../src/fleet/contract/wire.mjs';
 
 let nextPid = 1000;
 
@@ -1993,6 +1997,48 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
             expect(() => FleetLifecycleService.start('seat'), name).toThrow(/the seat could not be leased \(.+\), so it was stopped/);
             expect(seat.spawn.calls[0].child.signals, name).toEqual(['SIGTERM']);
             expect(fs.existsSync(path.join(seat.home, `${LEASE_FILE}.${process.pid}.tmp`)), name).toBe(false)
+        }
+    });
+
+    test('a lease write failure reaches the wire as its system code or bounded words, never its message; the Fleet log keeps the cause (#751)', async () => {
+        const
+            canary   = '/Users/private-canary/harness',
+            write    = fs.writeFileSync,
+            logError = console.error,
+            logged   = [];
+
+        FleetManager.managedRoot         = '/managed';
+        FleetManager.provisionAndStartFn = ({lifecycleService, agentId}) => lifecycleService.start(agentId);
+        FleetControlBridge.manager       = FleetManager;
+        console.error                    = (...args) => logged.push(args.map(String).join(' '));
+
+        try {
+            for (const [failure, cause] of [
+                [Object.assign(new Error(`EACCES: permission denied, open '${canary}'`), {code: 'EACCES'}), 'its lease could not be written: EACCES'],
+                [new Error(`write failed under ${canary}`), 'its lease could not be written; the Fleet log names the cause']
+            ]) {
+                const seat = installSeat('claude-desktop');
+
+                FleetLifecycleService.processInspectFn = () => ({startedAt: STARTED_AT, command: ''});
+                fs.writeFileSync = (file, ...rest) => String(file).includes(LEASE_FILE) ? (() => { throw failure })() : write(file, ...rest);
+
+                const wire = await dispatchFleetRequest(createFleetWireRequest('startAgent', 'seat'), FleetControlBridge);
+
+                expect(wire, cause).toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok, result: {
+                    status: 'rejected',
+                    reason: `the seat could not be leased (${cause}), so it was stopped — agent 'seat'.`
+                }});
+                expect(JSON.stringify(wire), cause).not.toContain('private-canary');
+                expect(seat.spawn.calls[0].child.signals, cause).toEqual(['SIGTERM'])
+            }
+
+            expect(logged.join('\n')).toContain(`write failed under ${canary}`)
+        } finally {
+            fs.writeFileSync                 = write;
+            console.error                    = logError;
+            FleetManager.managedRoot         = null;
+            FleetManager.provisionAndStartFn = null;
+            FleetControlBridge.manager       = null
         }
     });
 
