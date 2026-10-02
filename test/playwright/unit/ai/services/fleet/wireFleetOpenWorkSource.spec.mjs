@@ -20,6 +20,7 @@ import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 import {
     createGithubGraphqlQuery,
+    fileStore,
     githubSlugsOf,
     seatIdentities,
     wireFleetOpenWorkSource
@@ -78,6 +79,27 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
 
             expect(restarted.producer.getState().observedAt).not.toBeNull();
             restarted.stop()
+        } finally {
+            fs.rmSync(dataDir, {recursive: true, force: true})
+        }
+    });
+
+    test('only an absent state file is a first pulse; one that cannot be read or parsed throws', () => {
+        const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-store-'));
+
+        try {
+            const
+                file  = path.join(dataDir, 'open-work.json'),
+                store = fileStore(file);
+
+            expect(store.load()).toBeNull();
+
+            fs.writeFileSync(file, '{"snapshot": ');
+            expect(() => store.load()).toThrow(SyntaxError);
+
+            fs.rmSync(file);
+            fs.mkdirSync(file);
+            expect(() => store.load()).toThrow(/EISDIR/)
         } finally {
             fs.rmSync(dataDir, {recursive: true, force: true})
         }

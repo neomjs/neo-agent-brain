@@ -1,9 +1,10 @@
 /**
  * @module ai/services/github-workflow/queries/openWorkQueries
  * @summary The open-work producer's two reads (`ai/services/fleet/openWorkProducer.mjs`): the open
- * pull requests of the repositories the Fleet's seats work on, and the ones merged or closed since a
- * watermark. Both are one search per page, and `pageInfo` is part of the contract: a page the budget
- * cuts off, or a review-request list past its first 20, makes the pulse partial, never complete.
+ * pull requests of the repositories the Fleet's seats work on, and the ones merged or closed within a
+ * window of close times. Both are one search per page, and `pageInfo` is part of the contract: a page
+ * the budget cuts off, or a review-request or latest-review list past its first 20, makes the pulse
+ * partial, never complete.
  *
  * Variables: `$query` (a search string with `is:pr` and the `repo:` qualifiers), `$cursor`.
  */
@@ -55,6 +56,20 @@ export const OPEN_WORK_SNAPSHOT = `
               }
             }
           }
+          latestReviews(first: 20) {
+            pageInfo {
+              hasNextPage
+            }
+            nodes {
+              state
+              author {
+                login
+              }
+              commit {
+                oid
+              }
+            }
+          }
           commits(last: 1) {
             nodes {
               commit {
@@ -72,7 +87,7 @@ export const OPEN_WORK_SNAPSHOT = `
 `;
 
 /**
- * The terminal half: merged or closed PRs updated since the watermark.
+ * The terminal half: merged or closed PRs whose close falls in the producer's window.
  * @type {String}
  */
 export const OPEN_WORK_TERMINAL = `

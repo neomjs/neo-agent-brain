@@ -81,19 +81,24 @@ export function createGithubGraphqlQuery({token, fetchImpl = globalThis.fetch, a
 }
 
 /**
- * @summary The producer's state as one JSON file, written atomically; an absent or unreadable file
- * is a first pulse.
+ * @summary The producer's state as one JSON file, written atomically. Only an absent file is a first
+ * pulse; a file that exists but cannot be read or parsed throws, so its history is never overwritten.
  * @param {String} filePath
  * @returns {{load: Function, save: Function}}
  */
 export function fileStore(filePath) {
     return {
         load() {
+            let text;
+
             try {
-                return JSON.parse(fs.readFileSync(filePath, 'utf8'))
-            } catch {
-                return null
+                text = fs.readFileSync(filePath, 'utf8')
+            } catch (error) {
+                if (error.code === 'ENOENT') return null;
+                throw error
             }
+
+            return JSON.parse(text)
         },
         save: state => writeFileAtomicSync(filePath, JSON.stringify(state))
     }

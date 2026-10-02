@@ -6,9 +6,12 @@
  *
  * A transition's identity is its observation: the PR, its head, the kind of change, from and to,
  * and the pulse that saw it. So a head that goes red, then green, then red again yields two red
- * episodes, and an identical poll yields nothing. A merge or a close is known only from the
- * terminal query and only when it happened since the last fully covered pulse; a PR leaving the
- * open snapshot is never read as either.
+ * episodes, and an identical poll yields nothing. A merge or a close comes only from the terminal
+ * read, once per close (its time is the episode); a PR leaving the open snapshot is never one.
+ *
+ * Coverage is part of the baseline. A truncated or missing review-request list adds what it shows to
+ * the last complete list and removes nothing, and a row no pulse observed keeps the time it was last
+ * seen, so a later partial pulse never makes it look fresh.
  */
 
 /**
@@ -49,33 +52,62 @@ function ownerOf(node, identities) {
 }
 
 /**
+ * @summary A reviewer (a user or a team) as a seat, a `login:` or a `team:` key.
+ * @param {Object} reviewer
+ * @param {{byLogin: Function}} identities
+ * @returns {String|null}
+ * @private
+ */
+function reviewerOf(reviewer, identities) {
+    if (reviewer?.login) return identities.byLogin(reviewer.login) ?? `login:${reviewer.login}`;
+
+    return reviewer?.slug ? `team:${reviewer.organization?.login}/${reviewer.slug}` : null
+}
+
+/**
+ * @summary A connection's nodes, and whether they are all of them. A connection without its
+ * `pageInfo`, or one with a next page, is known only as far as it shows.
+ * @param {Object} connection
+ * @returns {{nodes: Object[], complete: Boolean}}
+ * @private
+ */
+function connectionOf(connection) {
+    const nodes = Array.isArray(connection?.nodes) ? connection.nodes : null;
+
+    return {nodes: nodes ?? [], complete: Boolean(nodes) && connection.pageInfo?.hasNextPage === false}
+}
+
+/**
  * @summary One open search node as a snapshot row.
  * @param {Object} node A `PullRequest` node from the open-work search.
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
- * @returns {Object} `{key, repo, number, head, ci, verdict, mergeable, draft, owner, requested, partial}`.
+ * @returns {Object} `{key, repo, number, head, ci, verdict, mergeable, draft, owner, requested, reviews,
+ *     requestsComplete, partial}`.
  */
 export function normalizePullRequest(node, identities) {
     const
         repo     = node.repository?.nameWithOwner ?? null,
         commit   = node.commits?.nodes?.[0]?.commit,
-        requests = node.reviewRequests?.nodes ?? [];
+        head     = node.headRefOid ?? commit?.oid ?? null,
+        requests = connectionOf(node.reviewRequests),
+        reviews  = connectionOf(node.latestReviews);
 
     return {
         key      : `${repo}#${node.number}`,
         repo,
         number   : node.number,
-        head     : node.headRefOid ?? commit?.oid ?? null,
+        head,
         ci       : CI_STATES[commit?.statusCheckRollup?.state] ?? null,
         verdict  : node.reviewDecision ?? null,
         mergeable: node.mergeable ?? null,
         draft    : Boolean(node.isDraft),
         owner    : ownerOf(node, identities),
-        requested: requests.map(({requestedReviewer: reviewer}) => reviewer?.login
-            ? identities.byLogin(reviewer.login) ?? `login:${reviewer.login}`
-            : reviewer?.slug ? `team:${reviewer.organization?.login}/${reviewer.slug}` : null
-        ).filter(Boolean).sort(),
-        // a truncated request list is unknown, never "everyone else was removed"
-        partial  : Boolean(node.reviewRequests?.pageInfo?.hasNextPage)
+        requested: requests.nodes.map(({requestedReviewer}) => reviewerOf(requestedReviewer, identities)).filter(Boolean).sort(),
+        // each reviewer's latest review, and whether it judged the current head
+        reviews         : reviews.nodes.map(({author, state, commit: reviewed}) => ({reviewer: reviewerOf(author, identities), state, onHead: reviewed?.oid === head}))
+            .filter(review => review.reviewer),
+        requestsComplete: requests.complete,
+        partial         : !requests.complete || !reviews.complete
     }
 }
 
@@ -125,7 +157,7 @@ function transition(row, kind, from, to, pulse) {
 }
 
 /**
- * @summary The transitions between two observations of one open PR.
+ * @summary The transitions between two observations of one open PR. A removal needs a complete list.
  * @param {Object} before
  * @param {Object} after
  * @param {String} pulse
@@ -142,7 +174,7 @@ function changesOf(before, after, pulse) {
     after.requested.filter(seat => !before.requested.includes(seat))
         .forEach(seat => changes.push(transition(after, 'review-requested', null, seat, pulse)));
 
-    if (!before.partial && !after.partial) {
+    if (after.requestsComplete) {
         before.requested.filter(seat => !after.requested.includes(seat))
             .forEach(seat => changes.push(transition(after, 'review-removed', seat, null, pulse)))
     }
@@ -153,35 +185,40 @@ function changesOf(before, after, pulse) {
 /**
  * @summary Reduce one pulse: the next snapshot and the transitions observed since the previous one.
  *
- * The first pulse (no previous snapshot) is the baseline and records no transition. A merge or close
- * is recorded once: `closed` remembers it until the watermark passes it, so a pulse that re-reads it
- * (the watermark holds while coverage is partial) records nothing. A PR absent from a complete
+ * The first pulse (no previous snapshot) is the baseline and records no transition. `closed` maps a
+ * PR to the close it last recorded, so a re-read of that close records nothing, while a PR observed
+ * open again retires its marker and its next close is a new episode. A PR absent from a complete
  * observation leaves the snapshot only when the terminal read was complete too; while either was
- * partial it is carried forward, because missing evidence is not a close.
+ * partial it is carried forward with its own `observedAt`, because missing evidence is not a close.
  * @param {Object} pulse
  * @param {Object|null} pulse.previous `{rows: {[key]: row}, closed: {[key]: at}}`, or null on the first pulse.
  * @param {{rows: Object[], complete: Boolean}} pulse.observed The open rows this pulse read.
  * @param {{rows: Object[], complete: Boolean}} pulse.terminal Terminal rows ({@link normalizeTerminal}) read since `since`.
- * @param {String|null} pulse.since The watermark: the last fully covered pulse's time, ISO.
- * @param {String} pulse.id This pulse's identity.
+ * @param {String|null} pulse.since The watermark: where the terminal read began, ISO.
+ * @param {String} pulse.id This pulse's identity, its time.
  * @returns {{rows: Object, closed: Object, transitions: Object[]}}
  */
 export function reduceOpenWork({previous, observed, terminal, since, id}) {
     const
-        rows        = Object.fromEntries(observed.rows.map(row => [row.key, row])),
+        rows        = {},
         closed      = Object.fromEntries(Object.entries(previous?.closed ?? {}).filter(([, at]) => !since || at >= since)),
         transitions = [];
 
-    if (!previous) return {rows, closed, transitions};
-
     for (const row of observed.rows) {
-        const before = previous.rows[row.key];
+        const
+            before = previous?.rows[row.key],
+            merged = before && !row.requestsComplete ? {...row, requested: [...new Set([...before.requested, ...row.requested])].sort()} : row;
 
-        transitions.push(...before ? changesOf(before, row, id) : [transition(row, 'opened', null, 'open', id)])
+        rows[row.key] = {...merged, observedAt: id};
+        delete closed[row.key];
+
+        previous && transitions.push(...before ? changesOf(before, merged, id) : [transition(merged, 'opened', null, 'open', id)])
     }
 
+    if (!previous) return {rows, closed, transitions: []};
+
     for (const row of terminal.rows) {
-        if (!rows[row.key] && !closed[row.key] && (!since || row.at >= since)) {
+        if (!rows[row.key] && closed[row.key] !== row.at && (!since || row.at >= since)) {
             const before = previous.rows[row.key] ?? row;
 
             closed[row.key] = row.at;

@@ -15,7 +15,8 @@ const identities = {
  * @param {Object} [overrides]
  * @returns {Object}
  */
-function node({number=7, head='a1', rollup='SUCCESS', verdict='REVIEW_REQUIRED', reviewers=['neo-gpt'], partial=false, body='Authored by Ada (Claude Opus 5, Claude Code).', login='neo-opus-ada'}={}) {
+function node({number=7, head='a1', rollup='SUCCESS', verdict='REVIEW_REQUIRED', reviewers=['neo-gpt'], partial=false, requests=true, reviews=[],
+               body='Authored by Ada (Claude Opus 5, Claude Code).', login='neo-opus-ada'}={}) {
     return {
         number,
         headRefOid    : head,
@@ -25,96 +26,139 @@ function node({number=7, head='a1', rollup='SUCCESS', verdict='REVIEW_REQUIRED',
         body,
         author        : {login},
         repository    : {nameWithOwner: 'acme/app'},
-        reviewRequests: {pageInfo: {hasNextPage: partial}, nodes: reviewers.map(reviewer => ({requestedReviewer: {__typename: 'User', login: reviewer}}))},
+        reviewRequests: requests ? {pageInfo: {hasNextPage: partial}, nodes: reviewers.map(reviewer => ({requestedReviewer: {__typename: 'User', login: reviewer}}))} : undefined,
+        latestReviews : {pageInfo: {hasNextPage: false}, nodes: reviews},
         commits       : {nodes: [{commit: {oid: head, statusCheckRollup: {state: rollup}}}]}
     }
 }
 
 /**
- * @summary Reduce a sequence of observations from a baseline, returning every pulse's transitions.
+ * @summary Reduce a sequence of observations from a baseline.
  * @param {Object[][]} pulses Each pulse's open nodes.
- * @returns {Object[][]}
+ * @returns {{transitions: Object[][], states: Object[]}}
  */
 function run(pulses) {
     let previous = null;
 
-    return pulses.map((nodes, index) => {
-        const next = reduceOpenWork({
+    const states = pulses.map((nodes, index) => {
+        const rows = nodes.map(item => normalizePullRequest(item, identities));
+
+        return previous = reduceOpenWork({
             previous,
-            observed: {rows: nodes.map(item => normalizePullRequest(item, identities)), complete: true},
+            observed: {rows, complete: !rows.some(row => row.partial)},
             terminal: {rows: [], complete: true},
             since   : null,
             id      : `p${index}`
-        });
+        })
+    });
 
-        previous = next;
-        return next.transitions
-    })
+    return {transitions: states.map(state => state.transitions), states}
 }
 
 test.describe('openWorkReducer — transitions, never a holder-only diff (#760)', () => {
     test('the first pulse is the baseline, and an identical poll observes nothing', () => {
-        expect(run([[node()], [node()], [node()]])).toEqual([[], [], []])
+        expect(run([[node()], [node()], [node()]]).transitions).toEqual([[], [], []])
     });
 
     test('a verdict that changes under a red head is one transition, though the holder stays the author', () => {
-        const [, changed] = run([[node({rollup: 'FAILURE', verdict: 'CHANGES_REQUESTED'})], [node({rollup: 'FAILURE', verdict: 'APPROVED'})]]);
+        const [, changed] = run([[node({rollup: 'FAILURE', verdict: 'CHANGES_REQUESTED'})], [node({rollup: 'FAILURE', verdict: 'APPROVED'})]]).transitions;
 
         expect(changed.map(({kind, from, to}) => [kind, from, to])).toEqual([['verdict', 'CHANGES_REQUESTED', 'APPROVED']])
     });
 
     test('red, green, red on one head is two red episodes, each its own identity', () => {
-        const
-            pulses = run([[node()], [node({rollup: 'FAILURE'})], [node()], [node({rollup: 'FAILURE'})]]),
-            reds   = pulses.flat().filter(change => change.kind === 'ci' && change.to === 'red');
+        const reds = run([[node()], [node({rollup: 'FAILURE'})], [node()], [node({rollup: 'FAILURE'})]]).transitions.flat()
+            .filter(change => change.kind === 'ci' && change.to === 'red');
 
         expect(reds).toHaveLength(2);
         expect(new Set(reds.map(change => change.id)).size).toBe(2)
     });
 
-    test('two requested reviewers are two requests, and a truncated request list removes no one', () => {
-        const [, requested] = run([[node({reviewers: []})], [node({reviewers: ['neo-gpt', 'neo-gpt-emmy']})]]);
+    test('two requested reviewers are two requests', () => {
+        const [, requested] = run([[node({reviewers: []})], [node({reviewers: ['neo-gpt', 'neo-gpt-emmy']})]]).transitions;
 
-        expect(requested.map(({kind, to}) => [kind, to])).toEqual([['review-requested', '@neo-gpt'], ['review-requested', '@neo-gpt-emmy']]);
-
-        const [, truncated] = run([[node({reviewers: ['neo-gpt', 'neo-gpt-emmy']})], [node({reviewers: ['neo-gpt'], partial: true})]]);
-
-        expect(truncated).toEqual([])
+        expect(requested.map(({kind, to}) => [kind, to])).toEqual([['review-requested', '@neo-gpt'], ['review-requested', '@neo-gpt-emmy']])
     });
 
-    test('a PR opened after the baseline is an opened transition', () => {
-        const [, opened] = run([[node()], [node(), node({number: 8})]]);
+    test('a truncated request list keeps the last complete baseline: unchanged invents nothing, a genuine removal is one', () => {
+        const
+            both      = ['neo-gpt', 'neo-gpt-emmy'],
+            unchanged = run([[node({reviewers: both})], [node({reviewers: ['neo-gpt-emmy'], partial: true})], [node({reviewers: both})]]),
+            removed   = run([[node({reviewers: both})], [node({reviewers: ['neo-gpt-emmy'], partial: true})], [node({reviewers: ['neo-gpt-emmy']})]]);
 
-        expect(opened.map(({key, kind}) => [key, kind])).toEqual([['acme/app#8', 'opened']])
+        expect(unchanged.transitions).toEqual([[], [], []]);
+        // the partial pulse still projects both reviewers
+        expect(unchanged.states[1].rows['acme/app#7'].requested).toEqual(['@neo-gpt', '@neo-gpt-emmy']);
+        expect(removed.transitions[2].map(({kind, from}) => [kind, from])).toEqual([['review-removed', '@neo-gpt']])
+    });
+
+    test('a missing request list is unknown, never empty: the row is partial and removes no one', () => {
+        const row = normalizePullRequest(node({requests: false}), identities);
+
+        expect(row).toMatchObject({requested: [], requestsComplete: false, partial: true});
+        expect(run([[node()], [node({requests: false})]]).transitions[1]).toEqual([])
+    });
+
+    test('a PR opened after the baseline is an opened transition, and every observed row carries its pulse', () => {
+        const {transitions, states} = run([[node()], [node(), node({number: 8})]]);
+
+        expect(transitions[1].map(({key, kind}) => [key, kind])).toEqual([['acme/app#8', 'opened']]);
+        expect(Object.values(states[1].rows).map(row => row.observedAt)).toEqual(['p1', 'p1'])
+    });
+
+    test('each reviewer\'s latest review is kept, and whether it judged the current head', () => {
+        const row = normalizePullRequest(node({head: 'b2', reviews: [
+            {state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: 'b2'}},
+            {state: 'CHANGES_REQUESTED', author: {login: 'neo-gpt-emmy'}, commit: {oid: 'a1'}}
+        ]}), identities);
+
+        expect(row.reviews).toEqual([
+            {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},
+            {reviewer: '@neo-gpt-emmy', state: 'CHANGES_REQUESTED', onHead: false}
+        ])
     });
 });
 
 test.describe('openWorkReducer — merges come from the terminal read, never from absence (#760)', () => {
     const
-        baseline = reduceOpenWork({previous: null, observed: {rows: [normalizePullRequest(node(), identities)], complete: true}, terminal: {rows: [], complete: true}, since: null, id: 'p0'}),
-        merged   = normalizeTerminal({number: 7, headRefOid: 'a1', state: 'MERGED', mergedAt: '2026-10-02T10:05:00Z', body: 'Authored by Ada (Claude).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'}}, identities);
+        base     = () => reduceOpenWork({previous: null, observed: {rows: [normalizePullRequest(node(), identities)], complete: true}, terminal: {rows: [], complete: true}, since: null, id: 'p0'}),
+        terminal = (state, at, number=7) => normalizeTerminal({number, headRefOid: 'a1', state, mergedAt: state === 'MERGED' ? at : null, closedAt: at, body: 'Authored by Ada (Claude).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'}}, identities),
+        pulse    = (previous, {open=[], ended=[], observedComplete=true, id}) => reduceOpenWork({
+            previous, observed: {rows: open.map(item => normalizePullRequest(item, identities)), complete: observedComplete}, terminal: {rows: ended, complete: true}, since: '2026-10-02T10:00:00Z', id
+        });
 
-    test('a PR missing from the open read is not a merge, and stays while a read was partial', () => {
-        const next = reduceOpenWork({previous: baseline, observed: {rows: [], complete: false}, terminal: {rows: [], complete: true}, since: '2026-10-02T10:00:00Z', id: 'p1'});
+    test('a PR missing from the open read is not a merge, and stays with its own observation time while a read was partial', () => {
+        const next = pulse(base(), {observedComplete: false, id: 'p1'});
 
         expect(next.transitions).toEqual([]);
-        expect(Object.keys(next.rows)).toEqual(['acme/app#7'])
+        expect(next.rows['acme/app#7'].observedAt).toBe('p0')
     });
 
     test('the terminal read records the merge once, even when the next pulse reads it again', () => {
         const
-            first = reduceOpenWork({previous: baseline, observed: {rows: [], complete: true}, terminal: {rows: [merged], complete: true}, since: '2026-10-02T10:00:00Z', id: 'p1'}),
-            again = reduceOpenWork({previous: first, observed: {rows: [], complete: true}, terminal: {rows: [merged], complete: true}, since: '2026-10-02T10:00:00Z', id: 'p2'});
+            merged = terminal('MERGED', '2026-10-02T10:05:00Z'),
+            first  = pulse(base(), {ended: [merged], id: 'p1'}),
+            again  = pulse(first, {ended: [merged], id: 'p2'});
 
         expect(first.transitions.map(({key, kind, owner}) => [key, kind, owner.seat])).toEqual([['acme/app#7', 'merged', '@neo-opus-ada']]);
         expect(first.rows).toEqual({});
         expect(again.transitions).toEqual([])
     });
 
+    test('close, reopen, close under a held watermark: two closes, each once, each replay deduped', () => {
+        const
+            closed1  = pulse(base(), {ended: [terminal('CLOSED', '2026-10-02T10:05:00Z')], id: 'p1'}),
+            reopened = pulse(closed1, {open: [node()], id: 'p2'}),
+            closed2  = pulse(reopened, {ended: [terminal('CLOSED', '2026-10-02T10:20:00Z')], id: 'p3'}),
+            replay   = pulse(closed2, {ended: [terminal('CLOSED', '2026-10-02T10:20:00Z')], id: 'p4'});
+
+        expect([closed1, reopened, closed2, replay].map(state => state.transitions.map(({kind}) => kind))).toEqual([['closed'], ['opened'], ['closed'], []])
+    });
+
     test('a merge older than the watermark was an earlier pulse\'s, and a PR merged between pulses is still recorded', () => {
         const
-            old    = reduceOpenWork({previous: baseline, observed: {rows: [normalizePullRequest(node(), identities)], complete: true}, terminal: {rows: [{...merged, key: 'acme/app#3', at: '2026-10-02T09:00:00Z'}], complete: true}, since: '2026-10-02T10:00:00Z', id: 'p1'}),
-            unseen = reduceOpenWork({previous: baseline, observed: {rows: [normalizePullRequest(node(), identities)], complete: true}, terminal: {rows: [{...merged, key: 'acme/app#9', number: 9}], complete: true}, since: '2026-10-02T10:00:00Z', id: 'p1'});
+            old    = pulse(base(), {open: [node()], ended: [terminal('MERGED', '2026-10-02T09:00:00Z', 3)], id: 'p1'}),
+            unseen = pulse(base(), {open: [node()], ended: [terminal('MERGED', '2026-10-02T10:05:00Z', 9)], id: 'p1'});
 
         expect(old.transitions).toEqual([]);
         expect(unseen.transitions.map(({key, kind}) => [key, kind])).toEqual([['acme/app#9', 'merged']])
