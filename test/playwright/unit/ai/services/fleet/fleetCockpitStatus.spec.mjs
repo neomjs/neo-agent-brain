@@ -513,4 +513,167 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
             expect(['on', 'off', 'suppressed', 'unknown']).toContain(row.wake.state)
         }
     })
+
+    test.describe('held A2A lane observation', () => {
+        const capturedAt = '2026-10-02T12:00:00+02:00',
+              capability = {source: FLEET_COCKPIT_SOURCES.a2a, state: 'wired', confidence: 'observed', capturedAt},
+              claim      = (agentId, occurredAt, subject) => ({
+                  type: 'lane-claim', source: FLEET_COCKPIT_SOURCES.a2a, agentId, occurredAt, payload: {subject}
+              });
+
+        test('joins actual A2A producer output after its sender normalization', async () => {
+            const {createFleetA2AActivitySnapshot} = await import('../../../../../../ai/services/fleet/fleetA2AActivityAdapter.mjs'),
+                  laneStatus                       = createFleetA2AActivitySnapshot({
+                      capturedAt,
+                      messages: [{
+                          messageId: 'lane-claim-gpt',
+                          from     : '@neo-gpt', to: 'AGENT:*',
+                          subject  : '[lane-claim] evaluating #740',
+                          sentAt   : '2026-10-02T09:30:00.000Z'
+                      }]
+                  }),
+                  snapshot = createFleetCockpitStatus({
+                      agents: [{id: 'gpt-secondary-seat', githubUsername: 'neo-gpt'}, {id: 'neo-gpt'}],
+                      laneStatus
+                  });
+
+            expect(laneStatus.events).toHaveLength(1);
+            expect(laneStatus.events[0]).toMatchObject({
+                type: 'lane-claim', source: FLEET_COCKPIT_SOURCES.a2a, agentId: 'neo-gpt'
+            });
+            expect(snapshot.rows.map(row => [row.laneLine, row.laneClaimedAt])).toEqual([
+                ['[lane-claim] evaluating #740', '2026-10-02T09:30:00.000Z'],
+                [null, null]
+            ]);
+            expect(snapshot.capabilities.lane).toMatchObject({
+                state: 'wired', capturedAt: laneStatus.capability.capturedAt, scanned: 1
+            });
+        });
+
+        test('folds shuffled claims by instant and joins normalized sender logins to usernames, never registry keys', () => {
+            const claims = [
+                claim('neo-gpt', '2026-10-02T09:00:00.000Z', '[lane-claim] older'),
+                claim('neo-opus-ada', '2026-10-02T09:15:00.000Z', '[lane-claim] engine'),
+                claim('neo-gpt', '2026-10-02T11:30:00+02:00', '[lane-claim] fleet'),
+                claim('seat-1', '2026-10-02T09:45:00.000Z', '[lane-claim] wrong registry join')
+            ];
+
+            for (const events of [claims, [...claims].reverse(), [claims[2], claims[0], claims[3], claims[1]]]) {
+                const snapshot = createFleetCockpitStatus({
+                    agents: [
+                        {id: 'seat-1', githubUsername: 'neo-gpt'},
+                        {id: 'neo-gpt', githubUsername: 'someone-else'},
+                        {id: 'neo-opus-ada'},
+                        {id: 'seat-2', githubUsername: 'neo-opus-ada'}
+                    ],
+                    laneStatus: {capability, events, scanned: 50}
+                });
+
+                expect(snapshot.rows.map(row => [row.laneLine, row.laneClaimedAt])).toEqual([
+                    ['[lane-claim] fleet', '2026-10-02T11:30:00+02:00'],
+                    [null, null],
+                    [null, null],
+                    ['[lane-claim] engine', '2026-10-02T09:15:00.000Z']
+                ]);
+                expect(snapshot.capabilities.lane).toEqual({
+                    ...capability, reason: null, scanned: 50
+                });
+                expect(snapshot.rows[0].sources.lane).toEqual({
+                    source: FLEET_COCKPIT_SOURCES.a2a, state: 'wired', confidence: 'observed', reason: null
+                });
+                expect(snapshot.events).toEqual([]);
+            }
+        });
+
+        test('malformed or non-mailbox claims cannot displace a valid claim', () => {
+            const valid    = claim('neo-gpt', '2026-10-02T09:00:00.000Z', '[lane-claim] valid'),
+                  late     = claim('neo-gpt', '2026-10-02T09:50:00.000Z', '[lane-claim] invalid'),
+                  snapshot = createFleetCockpitStatus({
+                      agents    : [{id: 'seat', githubUsername: 'neo-gpt'}],
+                      laneStatus: {
+                          capability, scanned: 9,
+                          events: [
+                              valid,
+                              {...late, occurredAt: 'not-an-instant'},
+                              {...late, occurredAt: null},
+                              {...late, payload: {subject: '  '}},
+                              {...late, payload: {subject: {text: 'not a subject'}}},
+                              {...late, payload: null},
+                              {...late, type: 'a2a-activity'},
+                              {...late, source: FLEET_COCKPIT_SOURCES.commentLane},
+                              {...late, agentId: '@neo-gpt'},
+                              null
+                          ]
+                      }
+                  });
+
+            expect(snapshot.rows[0]).toMatchObject({
+                laneLine: '[lane-claim] valid', laneClaimedAt: valid.occurredAt,
+                sources : {lane: {state: 'wired'}}
+            });
+        });
+
+        test('a wired empty page reports no claim within its captured window', () => {
+            const snapshot = createFleetCockpitStatus({
+                agents    : [{id: 'seat', githubUsername: 'neo-gpt', laneLine: 'old registry value', statusReason: 'benched'}],
+                laneStatus: {capability, events: [], scanned: 0}
+            });
+
+            expect(snapshot.rows[0]).toMatchObject({
+                laneLine: null, laneClaimedAt: null,
+                sources : {lane: {state: 'wired', confidence: 'observed', reason: null}}
+            });
+            expect(snapshot.capabilities.lane).toEqual({...capability, reason: null, scanned: 0});
+        });
+
+        test('no held page reports a named not-wired fact, never a registry lane or an override', () => {
+            const snapshot = createFleetCockpitStatus({
+                agents      : [{id: 'seat', githubUsername: 'neo-gpt', laneLine: 'old registry value'}],
+                capabilities: {lane: capability}
+            });
+
+            expect(snapshot.rows[0]).toMatchObject({
+                laneLine: null, laneClaimedAt: null,
+                sources : {lane: {
+                    source: FLEET_COCKPIT_SOURCES.a2a, state: 'not-wired', confidence: 'none',
+                    reason: 'no activity page held in this process yet'
+                }}
+            });
+            expect(snapshot.capabilities.lane).toEqual({
+                ...snapshot.rows[0].sources.lane, capturedAt: null, scanned: null
+            });
+        });
+
+        test('a degraded page carries its bounded cause and capture while withholding retained claims', () => {
+            const reason   = '  mailbox unavailable: ' + 'x'.repeat(250) + '  ',
+                  snapshot = createFleetCockpitStatus({
+                      agents    : [{id: 'seat', githubUsername: 'neo-gpt'}],
+                      laneStatus: {
+                          capability: {...capability, state: 'degraded', confidence: 'none', reason},
+                          scanned   : 17,
+                          events    : [claim('neo-gpt', '2026-10-02T09:00:00.000Z', '[lane-claim] stale')]
+                      }
+                  });
+
+            expect(snapshot.rows[0]).toMatchObject({
+                laneLine: null, laneClaimedAt: null,
+                sources : {lane: {state: 'degraded', confidence: 'none', reason: reason.trim().slice(0, 200)}}
+            });
+            expect(snapshot.capabilities.lane).toEqual({
+                ...capability, state: 'degraded', confidence: 'none', reason: reason.trim().slice(0, 200), scanned: 17
+            });
+        });
+
+        test('a page without a valid capability degrades instead of publishing a claim', () => {
+            const snapshot = createFleetCockpitStatus({
+                agents    : [{id: 'seat', githubUsername: 'neo-gpt'}],
+                laneStatus: {scanned: 1, events: [claim('neo-gpt', capturedAt, '[lane-claim] unadmitted')]}
+            });
+
+            expect(snapshot.rows[0]).toMatchObject({
+                laneLine: null, laneClaimedAt: null,
+                sources : {lane: {state: 'degraded', confidence: 'none', reason: 'held A2A activity page has no valid capability'}}
+            });
+        });
+    });
 })

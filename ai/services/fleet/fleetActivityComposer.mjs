@@ -195,6 +195,7 @@ async function readSlot(read, slot, params, capturedAt) {
         // The slot owns the attribution: an adapter's own `source` is its claim about itself, and a
         // composite reason built from it lets a broken contributor name a healthy slot.
         capability: {...snapshot.capability, slot},
+        scanned   : Number.isInteger(snapshot.scanned) && snapshot.scanned >= 0 ? snapshot.scanned : null,
         counts    : Array.isArray(snapshot.counts) ? snapshot.counts : [],
         events    : Array.isArray(snapshot.events) ? snapshot.events : []
     }
@@ -333,12 +334,13 @@ function composeCapability(capabilities, capturedAt) {
  *   PR/lane adapter's read path. The adapter itself is a pure builder over already-read facts, so
  *   the caller owns the reading and this composer never reaches for GitHub or the graph directly.
  * @param {Number}   [options.limit=DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT] Default event bound.
- * @returns {{readActivitySnapshot: Function}} The `FleetControlBridge.activitySource` contract.
+ * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox viewer at each call; absent disables retention.
+ * @returns {{readActivitySnapshot: Function, readHeldA2ASnapshot: Function}} The activity read and its viewer-bound first-page observation.
  * @throws {TypeError} When a reader is missing — an unreadable half must be an explicit degraded
  *   capability from a real adapter, never a composer quietly composing one contributor and calling
  *   the result the fleet's activity.
  */
-export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT} = {}) {
+export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity = () => null, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT} = {}) {
     if (typeof readA2ASnapshot !== 'function' || typeof readPrLaneSnapshot !== 'function') {
         throw new TypeError('[fleetActivityComposer] readA2ASnapshot and readPrLaneSnapshot must be injected')
     }
@@ -357,18 +359,49 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
         {read: readPrLaneSnapshot, slot: FLEET_ACTIVITY_SLOTS.prLane}
     ];
 
+    let heldA2A       = null,
+        newestA2ARead = 0;
+
     return {
+        /**
+         * @summary Read the admitted first mailbox page without I/O, only within its bound viewer.
+         * @returns {Object|null} An independent snapshot, or null before a matching viewer's read.
+         */
+        readHeldA2ASnapshot() {
+            const viewerIdentity = resolveViewerIdentity();
+
+            return viewerIdentity && viewerIdentity === heldA2A?.viewerIdentity
+                ? structuredClone(heldA2A.snapshot)
+                : null
+        },
+
+        /**
+         * @summary Read the requested slots, retaining only the newest viewer-bound first mailbox page.
+         * @param {Object} params Activity selection and paging.
+         * @returns {Promise<Object>} The bounded composite activity snapshot.
+         */
         async readActivitySnapshot(params = {}) {
             const
-                capturedAt = new Date().toISOString(),
-                bound      = normalizeBound(params.limit, limit),
-                offset     = normalizeOffset(params.offset),
+                capturedAt     = new Date().toISOString(),
+                bound          = normalizeBound(params.limit, limit),
+                offset         = normalizeOffset(params.offset),
+                selected       = selectSlots(params.slots, slots),
+                holdsA2A       = offset === 0 && selected.some(({slot}) => slot === FLEET_ACTIVITY_SLOTS.a2a),
+                generation     = holdsA2A ? ++newestA2ARead : null,
+                viewerIdentity = holdsA2A ? resolveViewerIdentity() : null,
                 // Every asked slot is read even when one is expected to fail: a contributor that cannot
                 // read must return its OWN degraded capability, and short-circuiting would replace
                 // that adapter's stated reason with the composer's guess about it. A caller's
                 // `slots` is a question about lanes, not a skip of a failing one.
-                contributions = await Promise.all(selectSlots(params.slots, slots).map(({read, slot}) =>
+                contributions = await Promise.all(selected.map(({read, slot}) =>
                     readSlot(read, slot, {...params, limit: bound, offset}, capturedAt)));
+
+            // History and late completions cannot replace the newest admitted mailbox window.
+            if (holdsA2A && generation === newestA2ARead) {
+                heldA2A = viewerIdentity
+                    ? {viewerIdentity, snapshot: structuredClone(contributions.find(({capability}) => capability.slot === FLEET_ACTIVITY_SLOTS.a2a))}
+                    : null
+            }
 
             return {
                 capability: composeCapability(contributions.map(contribution => contribution.capability), capturedAt),

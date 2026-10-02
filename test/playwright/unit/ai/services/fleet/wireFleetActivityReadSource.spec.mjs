@@ -34,12 +34,13 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
         const created  = {readActivitySnapshot() {}};
 
         const result = wireFleetActivityReadSource({
-            issuesDir   : '/synced/issues',
-            listMessages: () => [],
-            graphService: {},
-            limit       : 25,
+            issuesDir            : '/synced/issues',
+            listMessages         : () => [],
+            resolveViewerIdentity: () => '@viewer',
+            graphService         : {},
+            limit                : 25,
             bridge,
-            createSource: opts => { captured = opts; return created }
+            createSource         : opts => { captured = opts; return created }
         });
 
         expect(result).toBe(created);
@@ -47,6 +48,7 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
         expect(typeof captured.readA2ASnapshot).toBe('function');
         expect(typeof captured.readPrLaneSnapshot).toBe('function');
         expect(captured.limit).toBe(25);
+        expect(captured.resolveViewerIdentity()).toBe('@viewer');
     });
 
     test('an injected readPrLane IS the PR/lane slot — plane mode reads the plane, and the content root is never read', () => {
@@ -87,8 +89,8 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
                 asks.push(args);
                 return {messages: [], offset: args.offset ?? 0, totalCount: 120, truncated: true}
             },
-            readPrLane  : async () => ({capability: {source: FLEET_COCKPIT_SOURCES.activity, state: 'wired'}, counts: [], events: []}),
-            bridge      : stubBridge()
+            readPrLane: async () => ({capability: {source: FLEET_COCKPIT_SOURCES.activity, state: 'wired'}, counts: [], events: []}),
+            bridge    : stubBridge()
         });
 
         await source.readActivitySnapshot({limit: 50});

@@ -495,6 +495,32 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(calls).toEqual([['fleetRuntimeStatus']]);
     });
 
+
+    test('fleetRoster reuses the held mailbox page and never reads the mailbox itself', async () => {
+        const {wireFleetActivityReadSource} = await import('../../../../../../ai/services/fleet/wireFleetActivityReadSource.mjs');
+        let   mailboxCalls                  = 0;
+        registryStub.listAgents = () => [{id: 'registry-seat', githubUsername: 'alice'}];
+        managerStub.fleetRuntimeStatus = () => [];
+        FleetControlBridge.identityResolver = () => ({});
+        wireFleetActivityReadSource({
+            bridge               : FleetControlBridge,
+            resolveViewerIdentity: () => '@viewer',
+            listMessages         : async () => {
+                mailboxCalls++;
+                return {messages: [{messageId: 'MESSAGE:lane', subject: '[lane-claim] taking one lane', from: '@alice', to: 'AGENT:*', sentAt: '2026-10-02T09:00:00.000Z'}], totalCount: 1, truncated: false}
+            },
+            readPrLane: async () => ({capability: {state: 'wired'}, events: []})
+        });
+        expect((await FleetControlBridge.fleetRoster()).rows[0].sources.lane.state).toBe('not-wired');
+        expect(mailboxCalls).toBe(0);
+        await FleetControlBridge.fleetActivity();
+        expect(mailboxCalls).toBe(1);
+        const row = (await FleetControlBridge.fleetRoster()).rows[0];
+        expect(row).toMatchObject({laneLine: '[lane-claim] taking one lane', laneClaimedAt: '2026-10-02T09:00:00.000Z', sources: {lane: {state: 'wired'}}});
+        expect(mailboxCalls).toBe(1);
+        expect((await FleetControlBridge.fleetRoster()).capabilities.lane.scanned).toBe(1);
+    });
+
     // ---- fleetRoster: the assembled cockpit DTO with the identity join (the Brain-side assembler) ----
 
     test('fleetRoster assembles roster + repo + runtime and joins identity display facts through the resolver seam', async () => {

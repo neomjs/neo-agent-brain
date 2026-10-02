@@ -66,7 +66,7 @@ export async function readFleetA2AActivitySnapshot({
         return createFleetA2AActivitySnapshot({
             capturedAt,
             limit,
-            messages: result?.messages || [],
+            messages  : result?.messages || [],
             pageOffset: result?.offset ?? listArgs.offset ?? 0,
             totalCount: result?.totalCount,
             truncated : result?.truncated === true,
@@ -94,7 +94,7 @@ export async function readFleetA2AActivitySnapshot({
  * @param {Boolean} options.truncated Whether more matching rows exist after this page.
  * @param {Date|String|null} options.since Lower timestamp bound for mapped events.
  * @param {Date|String|null} options.until Upper timestamp bound for mapped events.
- * @returns {{capability: Object, counts: Object[], events: Object[]}}
+ * @returns {{capability: Object, scanned: Number|null, counts: Object[], events: Object[]}} The observed page size is null on read failure.
  */
 export function createFleetA2AActivitySnapshot({
     messages = [],
@@ -119,8 +119,9 @@ export function createFleetA2AActivitySnapshot({
                 reason,
                 state     : 'degraded'
             }),
-            counts: [],
-            events: [createFleetCockpitEvent({
+            scanned: null,
+            counts : [],
+            events : [createFleetCockpitEvent({
                 eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.a2a, 'source-degraded'),
                 type      : 'source-degraded',
                 source    : FLEET_COCKPIT_SOURCES.a2a,
@@ -145,7 +146,8 @@ export function createFleetA2AActivitySnapshot({
             confidence: 'observed',
             state     : 'wired'
         }),
-        counts: createA2AActivityCounts({capturedAt, messages, pageOffset, totalCount, truncated}),
+        scanned: messages.length,
+        counts : createA2AActivityCounts({capturedAt, messages, pageOffset, totalCount, truncated}),
         events
     }
 }

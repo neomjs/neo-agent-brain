@@ -69,6 +69,7 @@ function makeReadA2ASnapshot(listMessages) {
  *     caller's use site. Absent → the PR/lane slot emits no pr-activity events (honest-empty).
  * @param {Function} [options.readPrLane] A PR/lane slot reader in place of a local tree (plane mode:
  *     `planePrLaneActivityReader`); with one, no content root is read.
+ * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox scope, resolved per call.
  * @param {Number} [options.limit] Default event bound forwarded to the composer.
  * @param {Object} [options.bridge=FleetControlBridge] The control bridge to wire (a stub in specs).
  * @param {Function} [options.createSource=createFleetActivityReadSource] The composer factory (injected in specs).
@@ -81,6 +82,7 @@ export function wireFleetActivityReadSource({
     graphService,
     pullsDir,
     readPrLane,
+    resolveViewerIdentity,
     limit,
     bridge       = FleetControlBridge,
     createSource = createFleetActivityReadSource
@@ -108,7 +110,7 @@ export function wireFleetActivityReadSource({
         ? makeReadPrLaneSnapshot({origins, graphService})
         : () => { throw new Error('pr-lane activity source not wired — no contentRoot or issuesDir') };
 
-    bridge.activitySource = createSource({readA2ASnapshot, readPrLaneSnapshot, limit});
+    bridge.activitySource = createSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity, limit});
 
     return bridge.activitySource
 }

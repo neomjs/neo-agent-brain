@@ -559,3 +559,103 @@ test.describe('fleetActivityComposer ↔ FleetControlBridge — the real consume
         expect(result.capability.reason).toContain('github unreachable')
     })
 });
+
+test.describe('fleetActivityComposer — held mailbox admission', () => {
+    const stamp = '2026-10-02T09:00:00.000Z';
+    const page  = (subject = 'current', state = 'wired') => ({
+        capability: {source: 'memory-core:mailbox', state, confidence: state === 'wired' ? 'observed' : 'none', capturedAt: stamp, reason: state === 'wired' ? null : 'mailbox unavailable'},
+        scanned   : 7,
+        events    : state === 'wired' ? [{eventId: subject, type: 'lane-claim', source: 'memory-core:mailbox', agentId: '@alice', occurredAt: stamp, payload: {subject}}] : []
+    });
+    let createSource;
+    test.beforeAll(async () => {
+        createSource = (await import('../../../../../../ai/services/fleet/fleetActivityComposer.mjs')).createFleetActivityReadSource
+    });
+
+    test('holds the A2A contribution before the composite bound and returns independent copies only to its viewer', async () => {
+        let   viewer = '@viewer-a';
+        const source = createSource({
+            resolveViewerIdentity: () => viewer,
+            readA2ASnapshot      : async () => page(),
+            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: [{eventId: 'new-pr', occurredAt: '2026-10-02T10:00:00.000Z'}]})
+        });
+        expect(source.readHeldA2ASnapshot()).toBeNull();
+        const result = await source.readActivitySnapshot({limit: 1, viewerIdentity: '@forged'});
+        expect(result.events.map(event => event.eventId)).toEqual(['new-pr']);
+        const held = source.readHeldA2ASnapshot();
+        expect(held).toMatchObject({scanned: 7, capability: {capturedAt: stamp}, events: [{payload: {subject: 'current'}}]});
+        held.events[0].payload.subject = 'mutated';
+        expect(source.readHeldA2ASnapshot().events[0].payload.subject).toBe('current');
+        viewer = '@viewer-b';
+        expect(source.readHeldA2ASnapshot()).toBeNull();
+        viewer = null;
+        expect(source.readHeldA2ASnapshot()).toBeNull();
+    });
+
+    test('history and PR-only reads cannot replace the first mailbox page', async () => {
+        let   mailboxReads = 0;
+        const source       = createSource({
+            resolveViewerIdentity: () => '@viewer',
+            readA2ASnapshot      : async params => { mailboxReads++; return page(params.offset ? 'history' : 'current') },
+            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: []})
+        });
+        await source.readActivitySnapshot();
+        await source.readActivitySnapshot({offset: 10});
+        const before = mailboxReads;
+        await source.readActivitySnapshot({slots: ['pr-lane']});
+        expect(mailboxReads).toBe(before);
+        expect(source.readHeldA2ASnapshot().events[0].payload.subject).toBe('current');
+    });
+
+    test('captures the viewer before an asynchronous read settles', async () => {
+        let   viewer = '@viewer-a', release;
+        const source = createSource({
+            resolveViewerIdentity: () => viewer,
+            readA2ASnapshot      : () => new Promise(resolve => { release = resolve }),
+            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: []})
+        });
+        const pending = source.readActivitySnapshot();
+        viewer = '@viewer-b';
+        release(page());
+        await pending;
+        expect(source.readHeldA2ASnapshot()).toBeNull();
+        viewer = '@viewer-a';
+        expect(source.readHeldA2ASnapshot().events[0].payload.subject).toBe('current');
+    });
+
+    test('a late older completion cannot overwrite a newer first-page read', async () => {
+        let release, reads = 0;
+        const source = createSource({
+            resolveViewerIdentity: () => '@viewer',
+            readA2ASnapshot      : () => ++reads === 1 ? new Promise(resolve => { release = resolve }) : Promise.resolve(page('new')),
+            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: []})
+        });
+        const older = source.readActivitySnapshot();
+        await source.readActivitySnapshot();
+        release(page('old'));
+        await older;
+        expect(source.readHeldA2ASnapshot().events[0].payload.subject).toBe('new');
+    });
+
+    test('a newer failed read replaces prior successful claims with the slot\'s degradation', async () => {
+        let   fail   = false;
+        const source = createSource({
+            resolveViewerIdentity: () => '@viewer',
+            readA2ASnapshot      : async () => { if (fail) throw new Error('mailbox failed'); return page() },
+            readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: []})
+        });
+        await source.readActivitySnapshot();
+        fail = true;
+        await source.readActivitySnapshot();
+        expect(source.readHeldA2ASnapshot()).toMatchObject({capability: {state: 'degraded', reason: expect.stringContaining('mailbox failed')}, events: []});
+    });
+
+    test('an unbound source never retains a page from caller-supplied identity', async () => {
+        const source = createSource({
+            readA2ASnapshot   : async () => page(),
+            readPrLaneSnapshot: async () => ({capability: {state: 'wired'}, events: []})
+        });
+        await source.readActivitySnapshot({viewerIdentity: '@forged'});
+        expect(source.readHeldA2ASnapshot()).toBeNull();
+    });
+});
