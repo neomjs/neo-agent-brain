@@ -204,7 +204,7 @@ test.describe('fleetPrLaneActivityAdapter - PR/lane activity mapping', () => {
         expect(createStallActivityEvents([{findingClass: 'x', subject: {title: 'no stable id'}}])).toEqual([])
     });
 
-    // ---- human-gate truth at the consumer boundary (Cycle-2 RA3: draft + formal-disposition) ----
+    // ---- human-gate truth at the consumer boundary: draft state and the formal disposition ----
 
     test('draft state is preserved truthfully — unknown stays null, never fabricated false', () => {
         const [unknown] = createPrActivityEvents([{number: 1, author: {login: 'a'}, updatedAt: '2026-07-04T03:00:00Z'}])
