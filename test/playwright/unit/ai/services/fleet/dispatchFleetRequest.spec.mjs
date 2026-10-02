@@ -186,10 +186,12 @@ test.describe('dispatchFleetRequest — the app↔fleet wire allowlist + routing
             // the two explicit write verbs. Catch-up mark is process-local only; compose persists
             // payload while the server stamps identity. Adopt / release record who launches a seat.
             // A seat's plane credential rides in like a tenant's bearer and never back out.
-            ['adoptAgent', 'composeOperatorMessage', 'configureAgent', 'connectTenant', 'defineAgent', 'fleetActivity', 'fleetDeploymentState', 'fleetGoldenPath', 'fleetGraphScene', 'fleetHistory', 'fleetMailboxMirror', 'fleetMemories', 'fleetRoster', 'fleetRuntimeStatus', 'fleetSessionMemories', 'fleetStatus', 'fleetTasks', 'fleetWakeRoutes', 'getAgent', 'getBootIdentity', 'listAgents', 'listTenants', 'markFleetCaughtUp', 'releaseAgent', 'removeAgent', 'resolveViewerIdentity', 'restartAgent', 'setAvatar', 'setPlaneCredential', 'setRepo', 'setRepos', 'startAgent', 'stopAgent'].sort()
+            ['adoptAgent', 'composeOperatorMessage', 'configureAgent', 'connectTenant', 'defineAgent', 'fleetActivity', 'fleetDeploymentState', 'fleetGoldenPath', 'fleetGraphScene', 'fleetHistory', 'fleetMailboxMirror', 'fleetMemories', 'fleetOpenWork', 'fleetRoster', 'fleetRuntimeStatus', 'fleetSessionMemories', 'fleetStatus', 'fleetTasks', 'fleetWakeRoutes', 'getAgent', 'getBootIdentity', 'listAgents', 'listTenants', 'markFleetCaughtUp', 'releaseAgent', 'removeAgent', 'resolveViewerIdentity', 'restartAgent', 'setAvatar', 'setPlaneCredential', 'setRepo', 'setRepos', 'startAgent', 'stopAgent'].sort()
         );
         // the deployment's task picture — bounded read-observe over the existing truth verbs, no resolver seam
         expect(FLEET_WIRE_METHODS).toContain('fleetTasks');
+        // each seat's open work under the open-work producer's freshness: read-observe, never a write
+        expect(FLEET_WIRE_METHODS).toContain('fleetOpenWork');
         // the computed Golden Path with its admission — the producer's route passed through, never re-ranked
         expect(FLEET_WIRE_METHODS).toContain('fleetGoldenPath');
         expect(FLEET_WIRE_METHODS).toContain('fleetGraphScene');

@@ -186,6 +186,13 @@ class FleetControlBridge extends Base {
      */
     tasksSource = null
     /**
+     * Open-work source — an injected collaborator exposing `readOpenWork(params)`: each seat's open
+     * pull requests and requested reviews as the open-work producer last observed them, under the
+     * producer's own freshness. Same DI contract as {@link #tasksSource}.
+     * @member {Object|null} openWorkSource=null
+     */
+    openWorkSource = null
+    /**
      * Golden Path source — an injected collaborator exposing `readGoldenPath(params)`: the computed
      * route the synthesizer wrote, passed through under the producer's own status and freshness,
      * beside the corpus-projection admission (current / last known good / withheld) and the REM
@@ -721,6 +728,19 @@ class FleetControlBridge extends Base {
                 recent    : [],
                 counts    : {running: 0, queued: 0, recent: 0}
             };
+    }
+
+    /**
+     * @summary READ-OBSERVE: each seat's open work as the open-work producer last observed it: the
+     * pull requests it owns and the reviews requested of it. The source envelope passes through
+     * untouched; an unwired source is named as unavailable, never as no open work.
+     * @param {Object} [params] `{seat}` narrows the answer to one seat.
+     * @returns {Object}
+     */
+    fleetOpenWork(params = {}) {
+        return typeof this.openWorkSource?.readOpenWork === 'function'
+            ? this.openWorkSource.readOpenWork(params)
+            : {state: 'unavailable', observedAt: null, coverage: 'unavailable', reason: 'fleet open-work source not wired', seats: {}};
     }
 
     /**

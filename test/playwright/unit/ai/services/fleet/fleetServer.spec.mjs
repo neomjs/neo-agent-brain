@@ -923,6 +923,7 @@ test.describe('Fleet S1 wire policy', () => {
             fleetTasks            : 'awaiting-s3',
             fleetGoldenPath       : 'awaiting-s3',
             fleetGraphScene       : 'awaiting-s3',
+            fleetOpenWork         : 'awaiting-s3',
             defineAgent           : 'awaiting-s4',
             configureAgent        : 'awaiting-s4',
             adoptAgent            : 'awaiting-s4',
