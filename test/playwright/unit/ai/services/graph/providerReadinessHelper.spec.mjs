@@ -1513,18 +1513,21 @@ test.describe('#305 — deterministic LMS load failures have a terminal disposit
 });
 
 test.describe('#746 — the readiness probe presents the lane\'s key', () => {
-    let checkProvider, fetchOpenAiCompatibleModelIds, server, host, seen;
+    let checkProvider, clearProviderDiscoveryProbeCache, fetchOpenAiCompatibleModelIds, server, host, seen;
 
     test.beforeAll(async () => {
-        ({checkProvider, fetchOpenAiCompatibleModelIds} = await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
+        ({checkProvider, clearProviderDiscoveryProbeCache, fetchOpenAiCompatibleModelIds} =
+            await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
 
-        // an endpoint behind a key: 401 without the lane's bearer, the model list with it
+        // an endpoint behind a key, at the root and under a hosted prefix: 401 without the lane's bearer, 404 off the route
         server = http.createServer((request, response) => {
-            const ok = request.headers.authorization === 'Bearer lane-key';
+            const
+                routed = request.url === '/v1/models' || request.url === '/v1beta/openai/v1/models',
+                status = !routed ? 404 : request.headers.authorization === 'Bearer lane-key' ? 200 : 401;
 
-            seen.push(request.headers.authorization ?? null);
-            response.writeHead(ok ? 200 : 401, {'content-type': 'application/json'});
-            response.end(ok ? JSON.stringify({data: [{id: 'graph-model'}]}) : '{"error":"missing key"}')
+            seen.push(`${request.url} ${request.headers.authorization ?? 'anonymous'}`);
+            response.writeHead(status, {'content-type': 'application/json'});
+            response.end(status === 200 ? JSON.stringify({data: [{id: 'graph-model'}]}) : '{"error":"refused"}')
         });
         await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
         host = `http://127.0.0.1:${server.address().port}`
@@ -1533,7 +1536,8 @@ test.describe('#746 — the readiness probe presents the lane\'s key', () => {
     test.afterAll(() => new Promise(resolve => server.close(resolve)));
 
     test.beforeEach(() => {
-        seen = []
+        seen = [];
+        clearProviderDiscoveryProbeCache()
     });
 
     const laneConfig = lane => ({graphProvider: 'openAiCompatible', openAiCompatible: {host, model: 'graph-model', apiKey: '', apiKeyFile: '', ...lane}});
@@ -1548,6 +1552,48 @@ test.describe('#746 — the readiness probe presents the lane\'s key', () => {
 
         expect(calls[0].headers).toEqual({authorization: 'Bearer k'});
         expect(calls[1]).not.toHaveProperty('headers')
+    });
+
+    test('the enumeration keeps the configured host\'s path, as the client does, with the bearer on it', async () => {
+        const
+            calls   = [],
+            fetchFn = async (url, options) => (calls.push(`${url} ${options.headers?.authorization ?? 'anonymous'}`), {ok: true, json: async () => ({data: []})});
+
+        await fetchOpenAiCompatibleModelIds({host: 'https://generativelanguage.googleapis.com/v1beta/openai',  timeoutMs: 1000, apiKey: 'k', fetchFn});
+        await fetchOpenAiCompatibleModelIds({host: 'https://generativelanguage.googleapis.com/v1beta/openai/', timeoutMs: 1000, apiKey: 'k', fetchFn});
+        await fetchOpenAiCompatibleModelIds({host: 'http://127.0.0.1:1234', timeoutMs: 1000, fetchFn});
+
+        expect(calls).toEqual([
+            'https://generativelanguage.googleapis.com/v1beta/openai/v1/models Bearer k',
+            'https://generativelanguage.googleapis.com/v1beta/openai/v1/models Bearer k',
+            'http://127.0.0.1:1234/v1/models anonymous'
+        ])
+    });
+
+    test('each credential gets its own answer: the routine cache and in-flight coalescing are scoped by the key', async () => {
+        const
+            calls   = [],
+            fetchFn = async (url, options) => {
+                const asker = options.headers?.authorization ?? 'anonymous';
+
+                calls.push(asker);
+                return {ok: true, json: async () => ({data: [{id: `for ${asker}`}]})}
+            },
+            routine = apiKey => fetchOpenAiCompatibleModelIds({host: 'http://lane.example', timeoutMs: 1000, apiKey, fetchFn, freshness: 'routine', cacheTtlMs: 60_000}),
+            force   = apiKey => fetchOpenAiCompatibleModelIds({host: 'http://lane.example', timeoutMs: 1000, apiKey, fetchFn});
+
+        expect(await routine('key-a')).toEqual(['for Bearer key-a']);
+        expect(await routine('key-b')).toEqual(['for Bearer key-b']); // B asks with B's key, never served A's answer
+        expect(await routine('key-a')).toEqual(['for Bearer key-a']); // A's own observation stays cached
+        expect(await routine()).toEqual(['for anonymous']);
+        expect(calls).toEqual(['Bearer key-a', 'Bearer key-b', 'anonymous']);
+
+        calls.length = 0;
+
+        const [a, sameA, b] = await Promise.all([force('key-a'), force('key-a'), force('key-b')]);
+
+        expect([a, sameA, b]).toEqual([['for Bearer key-a'], ['for Bearer key-a'], ['for Bearer key-b']]);
+        expect(calls).toEqual(['Bearer key-a', 'Bearer key-b']) // one credential's overlapping probes still share one fetch
     });
 
     test('a refusal carries its HTTP status', async () => {
@@ -1566,12 +1612,16 @@ test.describe('#746 — the readiness probe presents the lane\'s key', () => {
             expect(await checkProvider({config: laneConfig({apiKey: 'lane-key'}), timeoutMs: 2000})).toBe(true);
             expect(await checkProvider({config: laneConfig({}), timeoutMs: 2000})).toBe(false);
             expect(await checkProvider({config: laneConfig({apiKeyFile: keyFile}), timeoutMs: 2000})).toBe(true);
-            expect(seen).toEqual(['Bearer lane-key', null, 'Bearer lane-key']);
+            // the hosted shape: the endpoint lives under a path prefix
+            expect(await checkProvider({config: laneConfig({host: `${host}/v1beta/openai`, apiKey: 'lane-key'}), timeoutMs: 2000})).toBe(true);
+            expect(seen).toEqual([
+                '/v1/models Bearer lane-key', '/v1/models anonymous', '/v1/models Bearer lane-key', '/v1beta/openai/v1/models Bearer lane-key'
+            ]);
 
             // a misconfigured carrier is the carrier's own error, never folded into "not ready"
             expect(() => checkProvider({config: laneConfig({apiKey: 'lane-key', apiKeyFile: keyFile}), timeoutMs: 2000}))
                 .toThrow(/exactly one of openAiCompatible\.apiKey or openAiCompatible\.apiKeyFile/);
-            expect(seen).toHaveLength(3)
+            expect(seen).toHaveLength(4)
         } finally {
             fs.rmSync(keyFile, {force: true})
         }

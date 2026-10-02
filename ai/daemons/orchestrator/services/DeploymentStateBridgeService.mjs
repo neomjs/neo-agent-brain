@@ -288,6 +288,14 @@ export class DeploymentStateBridgeService extends Base {
          */
         providerModelIdentityProbe: null,
         /**
+         * The lane key the identity probe presents, injected beside {@link #providerModelIdentityProbe} so specs
+         * isolate it by construction. `null` reads `openAiCompatible.apiKey` / `apiKeyFile` through
+         * `readSecretCarrier` at the use site.
+         * @member {Function|null} providerModelIdentityKey=null
+         * @protected
+         */
+        providerModelIdentityKey: null,
+        /**
          * Read-only provider-activity seam. The orchestrator injects the recorder-owned ledger
          * projection; this service never opens or mutates the telemetry database itself.
          * @member {Function|null} providerActivityProbe=null
@@ -1368,7 +1376,7 @@ export class DeploymentStateBridgeService extends Base {
         let apiKey, servedModelIds = null;
 
         try {
-            apiKey = readSecretCarrier({
+            apiKey = this.providerModelIdentityKey ? this.providerModelIdentityKey() : readSecretCarrier({
                 value    : AiConfig.openAiCompatible.apiKey,
                 file     : AiConfig.openAiCompatible.apiKeyFile,
                 valueName: 'openAiCompatible.apiKey',

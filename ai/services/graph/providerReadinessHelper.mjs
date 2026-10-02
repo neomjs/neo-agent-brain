@@ -1,5 +1,6 @@
 import http                              from 'http';
 import {execFile}                        from 'child_process';
+import {createHash}                      from 'node:crypto';
 import os                                from 'os';
 import path                              from 'path';
 import aiConfig                          from '../../mcp/server/memory-core/config.mjs';
@@ -730,14 +731,17 @@ export async function fetchOpenAiCompatibleModelIds({
         throw new TypeError('fetchOpenAiCompatibleModelIds: timeoutMs is required');
     }
 
+    // an observation belongs to the credential that asked: the cache is scoped by a fingerprint, never the key itself
+    const scope = apiKey ? `bearer:${createHash('sha256').update(apiKey).digest('hex').slice(0, 16)}` : 'anonymous';
+
     return runProviderDiscoveryProbe({
-        // a keyed and a keyless probe never share an answer; the key itself never enters the cache key
-        key   : `openai-compatible-models:${host}:${timeoutMs}:${apiKey ? 'bearer' : 'anonymous'}`,
+        key   : `openai-compatible-models:${host}:${timeoutMs}:${scope}`,
         freshness,
         cacheTtlMs,
         caller: 'fetchOpenAiCompatibleModelIds',
         async runProbe() {
-            const url      = new URL('/v1/models', host).toString();
+            // composed as the client composes `${host}/v1/chat/completions`, so a hosted prefix (`/v1beta/openai`) stays
+            const url      = `${host.replace(/\/+$/, '')}/v1/models`;
             const response = await fetchFn(url, {
                 method: 'GET',
                 ...(apiKey && {headers: {authorization: `Bearer ${apiKey}`}}),

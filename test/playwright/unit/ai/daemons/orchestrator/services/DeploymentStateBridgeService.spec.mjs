@@ -16,6 +16,7 @@ import {
 } from '../../../../../../../ai/daemons/orchestrator/services/DeploymentStateBridgeService.mjs';
 import {ContainerHealthDiagnosisService} from '../../../../../../../ai/daemons/orchestrator/services/ContainerHealthDiagnosisService.mjs';
 import {DeploymentRuntimeAccessService}  from '../../../../../../../ai/daemons/orchestrator/services/DeploymentRuntimeAccessService.mjs';
+import {readSecretCarrier}               from '../../../../../../../ai/services/shared/secretCarrier.mjs';
 import {
     createRecoveryDiagnosisEvent,
     createRecoveryRunStateEntry,
@@ -111,6 +112,7 @@ function createService({
     providerResidencyProbe = async () => null,
     providerLaneShapeProbe = null,
     providerModelIdentityProbe = null,
+    providerModelIdentityKey = null,
     providerActivityProbe = null,
     providerActivityWindowMs = 24 * 60 * 60 * 1000,
     providerActivityLimit = 50,
@@ -134,6 +136,7 @@ function createService({
         providerResidencyProbe,
         providerLaneShapeProbe,
         providerModelIdentityProbe,
+        providerModelIdentityKey,
         providerActivityProbe,
         providerActivityWindowMs,
         providerActivityLimit,
@@ -4156,9 +4159,7 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — embeddin
         'orchestrator.deploymentStateBridge.providerLaneShapeServiceKeys',
         'orchestrator.deploymentStateBridge.providerResidencyServiceKeys',
         'openAiCompatible.host',
-        'openAiCompatible.embeddingModel',
-        'openAiCompatible.apiKey',
-        'openAiCompatible.apiKeyFile'
+        'openAiCompatible.embeddingModel'
     ];
 
     let restoreIdentityConfig;
@@ -4175,12 +4176,18 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — embeddin
     });
 
     test('the identity probe presents the lane\'s key, and a refused key is named as the key', async () => {
-        const seen = [], refusal = status => Object.assign(new Error(`HTTP ${status}`), {status});
+        // the lane is built here, never written onto the shared config: carriers are read through the real adapter
+        const
+            seen    = [],
+            refusal = status => Object.assign(new Error(`HTTP ${status}`), {status}),
+            carrier = {value: 'lane-key', file: ''};
         let answer = async () => ['qwen3-embedding-0.6b'];
 
-        const bridge = createService({providerModelIdentityProbe: async options => (seen.push(options.apiKey), answer())});
+        const bridge = createService({
+            providerModelIdentityKey  : () => readSecretCarrier({...carrier, valueName: 'openAiCompatible.apiKey', fileName: 'openAiCompatible.apiKeyFile'}),
+            providerModelIdentityProbe: async options => (seen.push(options.apiKey), answer())
+        });
 
-        AiConfig.openAiCompatible.apiKey = 'lane-key';
         expect((await bridge.collectProviderModelIdentity({observedAt: 1})).state).toBe('match');
         expect(seen).toEqual(['lane-key']);
 
@@ -4190,23 +4197,38 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — embeddin
         expect(identity.reason).toContain('refused the lane\'s key');
         expect(identity.reason).toContain('openAiCompatible.apiKey');
 
-        AiConfig.openAiCompatible.apiKey = '';
+        carrier.value = '';
         answer   = async () => {throw refusal(403)};
         identity = await bridge.collectProviderModelIdentity({observedAt: 3});
         expect(identity.reason).toContain('wants a key, and the lane has none');
 
         // both carriers set: the carrier's own refusal, and the endpoint is never asked
-        AiConfig.openAiCompatible.apiKey     = 'lane-key';
-        AiConfig.openAiCompatible.apiKeyFile = '/run/secrets/lane-key';
+        Object.assign(carrier, {value: 'lane-key', file: '/run/secrets/lane-key'});
         identity = await bridge.collectProviderModelIdentity({observedAt: 4});
         expect(identity.reason).toContain('exactly one of openAiCompatible.apiKey or openAiCompatible.apiKeyFile');
         expect(seen).toHaveLength(3);
 
         // any other failure keeps its own words
-        AiConfig.openAiCompatible.apiKeyFile = '';
+        carrier.file = '';
         answer   = async () => {throw new Error('connect ECONNREFUSED')};
         identity = await bridge.collectProviderModelIdentity({observedAt: 5});
         expect(identity.reason).toContain('the endpoint did not answer GET /v1/models (connect ECONNREFUSED)');
+
+        bridge.destroy()
+    });
+
+    test('without the seam, the identity probe presents what the configured carriers hold', async () => {
+        const
+            seen   = [],
+            bridge = createService({providerModelIdentityProbe: async options => (seen.push(options.apiKey), ['qwen3-embedding-0.6b'])});
+
+        expect((await bridge.collectProviderModelIdentity({observedAt: 6})).state).toBe('match');
+        expect(seen).toEqual([readSecretCarrier({
+            value    : AiConfig.openAiCompatible.apiKey,
+            file     : AiConfig.openAiCompatible.apiKeyFile,
+            valueName: 'openAiCompatible.apiKey',
+            fileName : 'openAiCompatible.apiKeyFile'
+        })]);
 
         bridge.destroy()
     });
