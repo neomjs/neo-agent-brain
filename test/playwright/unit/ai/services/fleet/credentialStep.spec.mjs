@@ -38,11 +38,13 @@ test.describe('credentialStep', () => {
         expect(result.secretFiles[1].content).toBe('07'.repeat(32));
         expect(result.secretFiles[1].content).not.toBe(PAT);
 
+        // one written key, three env values: the Gemini client's two and the graph lane's (the same mount)
         expect(result.envEntries).toEqual({
-            NEO_MCP_AUTH_TOKEN_FILE   : '/srv/state/secrets/mcp-auth-token',
-            NEO_FLEET_PLANE_TOKEN_FILE: '/srv/state/secrets/fleet-plane-token',
-            NEO_GEMINI_API_KEY_FILE   : '/srv/state/secrets/gemini-api-key',
-            GEMINI_API_KEY_FILE       : SECRET_MOUNTS.geminiApiKey
+            NEO_MCP_AUTH_TOKEN_FILE           : '/srv/state/secrets/mcp-auth-token',
+            NEO_FLEET_PLANE_TOKEN_FILE        : '/srv/state/secrets/fleet-plane-token',
+            NEO_GEMINI_API_KEY_FILE           : '/srv/state/secrets/gemini-api-key',
+            GEMINI_API_KEY_FILE               : SECRET_MOUNTS.geminiApiKey,
+            NEO_OPENAI_COMPATIBLE_API_KEY_FILE: SECRET_MOUNTS.geminiApiKey
         });
         expect(JSON.stringify(result.envEntries)).not.toContain(PAT);
         expect(JSON.stringify(result.envEntries)).not.toContain(KEY);
@@ -80,7 +82,7 @@ test.describe('credentialStep', () => {
         }
 
         // the credential step's own env values are profile inputs: a bare secret source and a leaf-landing mount
-        const withCredentials = {...byId('hosted'), env: {...byId('hosted').env, NEO_GEMINI_API_KEY_FILE: '/srv/state/secrets/gemini-api-key', GEMINI_API_KEY_FILE: '/run/secrets/gemini-api-key', NEO_MCP_AUTH_TOKEN_FILE: '/x', NEO_FLEET_PLANE_TOKEN_FILE: '/y'}};
+        const withCredentials = {...byId('hosted'), env: {...byId('hosted').env, NEO_GEMINI_API_KEY_FILE: '/srv/state/secrets/gemini-api-key', GEMINI_API_KEY_FILE: '/run/secrets/gemini-api-key', NEO_OPENAI_COMPATIBLE_API_KEY_FILE: '/run/secrets/gemini-api-key', NEO_MCP_AUTH_TOKEN_FILE: '/x', NEO_FLEET_PLANE_TOKEN_FILE: '/y'}};
         expect(presetEnvRefusals({preset: withCredentials, configSource: CONFIG, composeTexts: COMPOSE})).toEqual([]);
 
         const typo = {...byId('hosted'), env: {...byId('hosted').env, NEO_GEMINI_MODLE: 'x'}};

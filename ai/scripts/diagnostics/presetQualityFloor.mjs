@@ -32,11 +32,12 @@ import {PLANE_PROFILE, presets, profileInputs} from '../../services/fleet/placem
  * `placementPresets.presets[].qualityFloor` by hand — the script writes nothing, because a
  * measurement is an observation, never a stored status.
  *
- * `unmeasured` is the honest answer for a preset the path cannot run: graph generation dispatches to
- * `ollama` or an OpenAI-compatible endpoint only, so a preset whose `NEO_GRAPH_PROVIDER` is `gemini`
- * reports that before any request; an unreachable model reports the provider's failure. Neither is a
- * pass. The declared local provider host names Docker's `host.docker.internal`; on the host itself
- * the loopback form is used and both are printed, or `--provider-host` names the endpoint outright.
+ * `unmeasured` is the honest answer for a preset the path cannot run: the child reports the dispatch's
+ * refusal of a graph provider it does not serve before any request, and an unreachable model reports
+ * the provider's failure. Neither is a pass. The declared local provider host names Docker's
+ * `host.docker.internal`; on the host itself the loopback form is used and both are printed, or
+ * `--provider-host` names the endpoint outright. A hosted preset's endpoint is used as declared, and
+ * its key reaches the child from the environment (`NEO_OPENAI_COMPATIBLE_API_KEY_FILE`).
  */
 
 const
@@ -50,9 +51,6 @@ export const INSTRUMENT = 'tri-vector-three-documents';
 
 /** The documents shipped beside the script: three public engine threads, never session memories. */
 export const DEFAULT_DOCUMENTS_DIR = path.join(here, 'fixtures', 'presetQualityFloor');
-
-/** Graph generation's accepted providers (`providerDispatch.GRAPH_MODEL_PROVIDERS`, restated here so the parent stays free of Neo). */
-export const GRAPH_PROVIDERS = Object.freeze(['ollama', 'openAiCompatible']);
 
 /**
  * @summary The floor a run is measured against: the reference model's recorded result on the same
@@ -370,10 +368,6 @@ export async function measurePreset({presetId, documentsDir = DEFAULT_DOCUMENTS_
 
     if (host.used) {
         env.NEO_OPENAI_COMPATIBLE_HOST = host.used;
-    }
-
-    if (!GRAPH_PROVIDERS.includes(env.NEO_GRAPH_PROVIDER)) {
-        return {...base, unmeasured: `graph provider '${env.NEO_GRAPH_PROVIDER}' is outside the Tri-Vector dispatch (${GRAPH_PROVIDERS.join(' | ')})`};
     }
 
     const documents = await listDocuments(documentsDir);

@@ -33,6 +33,7 @@ const
     here      = path.dirname(fileURLToPath(import.meta.url)),
     brainRoot = path.resolve(here, '../../../../../..'),
     byId      = id => presets.find(row => row.id === id),
+    GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/openai',
     DOCUMENT  = 'The dock Workspace header actions move to a HeaderActions plugin beside plugin/Maximize.mjs; the ratchet reports the façade over-target.';
 
 /** A payload in the extractor's schema; `nodes` / `edges` override the defaults. */
@@ -127,10 +128,23 @@ test.describe('presetQualityFloor', () => {
             NEO_VECTOR_DIMENSION                : '1024'
         });
         expect(Object.keys(local).some(key => key.startsWith('NEO_LOCAL_AGENT_OS_'))).toBe(false);
-        expect(hosted.NEO_GRAPH_PROVIDER).toBe('gemini');
+        // the hosted preset's graph lane is Gemini's OpenAI-compatible endpoint, mapped through the same inputs
+        expect(hosted).toEqual({
+            NEO_MODEL_PROVIDER                          : 'gemini',
+            NEO_GRAPH_PROVIDER                          : 'openAiCompatible',
+            NEO_EMBEDDING_PROVIDER                      : 'gemini',
+            NEO_GEMINI_MODEL                            : 'gemini-3.5-flash',
+            NEO_GEMINI_EMBEDDING_MODEL                  : 'gemini-embedding-001',
+            NEO_OPENAI_COMPATIBLE_HOST                  : GEMINI_ENDPOINT,
+            NEO_OPENAI_COMPATIBLE_MODEL                 : 'gemini-3.5-flash',
+            NEO_LOCAL_MODELS_CHAT_GRAPH_REASONING_EFFORT: 'low',
+            NEO_VECTOR_DIMENSION                        : '3072'
+        });
 
         expect(resolveProviderHost('http://host.docker.internal:1234')).toEqual({declared: 'http://host.docker.internal:1234', used: 'http://127.0.0.1:1234'});
         expect(resolveProviderHost('http://host.docker.internal:1234', 'http://lms.local:1234').used).toBe('http://lms.local:1234');
+        // a hosted endpoint is used as declared
+        expect(resolveProviderHost(GEMINI_ENDPOINT)).toEqual({declared: GEMINI_ENDPOINT, used: GEMINI_ENDPOINT});
         expect(resolveProviderHost(undefined)).toEqual({declared: null, used: null});
     });
 
@@ -214,13 +228,32 @@ test.describe('presetQualityFloor', () => {
         expect(meetsFloor(reference.result, null)).toBe(false);
     });
 
-    test('the hosted preset is unmeasured before any child runs: its graph provider is outside the Tri-Vector dispatch', async () => {
+    test('the hosted preset runs its children against Gemini\'s OpenAI-compatible endpoint as declared, isolated like a local one, measured against the reference floor', async () => {
         const
             calls  = [],
-            result = await measurePreset({presetId: 'hosted', documentsDir: await scratchDocuments(), exec: fakeExec({}, calls)});
+            result = await measurePreset({presetId: 'hosted', documentsDir: await scratchDocuments(), exec: fakeExec({chatModel: 'gemini-3.5-flash', payload: payload(), failure: null}, calls)});
 
-        expect(calls).toHaveLength(0);
-        expect(result).toMatchObject({preset: 'hosted', instrument: INSTRUMENT, unmeasured: "graph provider 'gemini' is outside the Tri-Vector dispatch (ollama | openAiCompatible)"});
+        expect(calls).toHaveLength(3);
+        expect(calls[0].env).toMatchObject({
+            NEO_GRAPH_PROVIDER                          : 'openAiCompatible',
+            NEO_OPENAI_COMPATIBLE_HOST                  : GEMINI_ENDPOINT,
+            NEO_OPENAI_COMPATIBLE_MODEL                 : 'gemini-3.5-flash',
+            NEO_LOCAL_MODELS_CHAT_GRAPH_REASONING_EFFORT: 'low',
+            UNIT_TEST_MODE                              : 'true',
+            NEO_PLANE_DATA_ROOT                         : calls[0].cwd
+        });
+        // the key is the operator's, from the environment; the table names no value
+        expect(Object.keys(byId('hosted').env).some(key => key.includes('API_KEY'))).toBe(false);
+        expect(result).toMatchObject({
+            preset      : 'hosted',
+            instrument  : INSTRUMENT,
+            chatModel   : 'gemini-3.5-flash',
+            providerHost: {declared: GEMINI_ENDPOINT, used: GEMINI_ENDPOINT},
+            isolation   : {graph: ':memory:', dataRoot: calls[0].cwd},
+            result      : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4', ungroundedNames: 0},
+            // scratch documents, not the recorded floor's set: measured, never a pass
+            floor       : {met: false, comparable: false, reference: referenceFloor()}
+        });
         expect(result.measuredAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
 
@@ -375,12 +408,13 @@ test.describe('presetQualityFloor', () => {
         expect(code).toBe(0);
         expect(printed.result).toEqual({schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4', ungroundedNames: 0});
 
+        // exit 2 is the child's refusal (the dispatch's own), never a verdict of the table
         const
-            hostedOut = [],
-            hosted    = await main(['node', 'presetQualityFloor', '--preset', 'hosted', '--documents', dir], {stdout: {write: text => { hostedOut.push(text); return true }}, exec: fakeExec({})});
+            refusedOut = [],
+            refused    = await main(['node', 'presetQualityFloor', '--preset', 'hosted', '--documents', dir], {stdout: {write: text => { refusedOut.push(text); return true }}, exec: fakeExec({unmeasured: "graph provider 'x' is outside the Tri-Vector dispatch (ollama | openAiCompatible)"})});
 
-        expect(hosted).toBe(2);
-        expect(JSON.parse(hostedOut.join('')).unmeasured).toMatch(/outside the Tri-Vector dispatch/);
+        expect(refused).toBe(2);
+        expect(JSON.parse(refusedOut.join('')).unmeasured).toMatch(/outside the Tri-Vector dispatch/);
 
         const fixtures = await listDocuments(DEFAULT_DOCUMENTS_DIR);
 
