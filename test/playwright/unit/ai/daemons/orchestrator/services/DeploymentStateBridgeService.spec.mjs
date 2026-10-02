@@ -4202,16 +4202,25 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — embeddin
         identity = await bridge.collectProviderModelIdentity({observedAt: 3});
         expect(identity.reason).toContain('wants a key, and the lane has none');
 
+        // the key file is the other carrier
+        const keyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-746-identity-'));
+        carrier.file = path.join(keyDir, 'lane-key');
+        fs.writeFileSync(carrier.file, 'file-key\n');
+        answer = async () => ['qwen3-embedding-0.6b'];
+        expect((await bridge.collectProviderModelIdentity({observedAt: 4})).state).toBe('match');
+        expect(seen.at(-1)).toBe('file-key');
+        fs.rmSync(keyDir, {recursive: true, force: true});
+
         // both carriers set: the carrier's own refusal, and the endpoint is never asked
         Object.assign(carrier, {value: 'lane-key', file: '/run/secrets/lane-key'});
-        identity = await bridge.collectProviderModelIdentity({observedAt: 4});
+        identity = await bridge.collectProviderModelIdentity({observedAt: 5});
         expect(identity.reason).toContain('exactly one of openAiCompatible.apiKey or openAiCompatible.apiKeyFile');
-        expect(seen).toHaveLength(3);
+        expect(seen).toHaveLength(4);
 
         // any other failure keeps its own words
         carrier.file = '';
         answer   = async () => {throw new Error('connect ECONNREFUSED')};
-        identity = await bridge.collectProviderModelIdentity({observedAt: 5});
+        identity = await bridge.collectProviderModelIdentity({observedAt: 6});
         expect(identity.reason).toContain('the endpoint did not answer GET /v1/models (connect ECONNREFUSED)');
 
         bridge.destroy()
