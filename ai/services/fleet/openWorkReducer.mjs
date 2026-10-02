@@ -89,11 +89,17 @@ function connectionOf(connection) {
  */
 export function normalizePullRequest(node, identities) {
     const
-        repo     = node.repository?.nameWithOwner ?? null,
-        commit   = node.commits?.nodes?.[0]?.commit,
-        head     = node.headRefOid ?? commit?.oid ?? null,
-        requests = connectionOf(node.reviewRequests),
-        reviews  = connectionOf(node.latestReviews);
+        repo      = node.repository?.nameWithOwner ?? null,
+        commit    = node.commits?.nodes?.[0]?.commit,
+        head      = node.headRefOid ?? commit?.oid ?? null,
+        requests  = connectionOf(node.reviewRequests),
+        reviews   = connectionOf(node.latestReviews),
+        requested = requests.nodes.map(item => reviewerOf(item?.requestedReviewer, identities)),
+        // each reviewer's latest review, and whether it judged the current head
+        reviewed  = reviews.nodes.map(item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head})),
+        // an item naming no reviewer is unknown, so its list is known only as far as it resolves
+        requestsComplete = requests.complete && requested.every(Boolean),
+        reviewsComplete  = reviews.complete && reviewed.every(review => review.reviewer);
 
     return {
         key      : `${repo}#${node.number}`,
@@ -105,12 +111,10 @@ export function normalizePullRequest(node, identities) {
         mergeable: node.mergeable ?? null,
         draft    : Boolean(node.isDraft),
         owner    : ownerOf(node, identities),
-        requested: requests.nodes.map(({requestedReviewer}) => reviewerOf(requestedReviewer, identities)).filter(Boolean).sort(),
-        // each reviewer's latest review, and whether it judged the current head
-        reviews         : reviews.nodes.map(({author, state, commit: reviewed}) => ({reviewer: reviewerOf(author, identities), state, onHead: reviewed?.oid === head}))
-            .filter(review => review.reviewer),
-        requestsComplete: requests.complete,
-        partial         : !requests.complete || !reviews.complete
+        requested: requested.filter(Boolean).sort(),
+        reviews  : reviewed.filter(review => review.reviewer),
+        requestsComplete,
+        partial  : !requestsComplete || !reviewsComplete
     }
 }
 

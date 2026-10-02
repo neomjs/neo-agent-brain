@@ -47,6 +47,12 @@ export const OPEN_WORK_SNAPSHOT = `
                 ... on User {
                   login
                 }
+                ... on Bot {
+                  login
+                }
+                ... on Mannequin {
+                  login
+                }
                 ... on Team {
                   slug
                   organization {

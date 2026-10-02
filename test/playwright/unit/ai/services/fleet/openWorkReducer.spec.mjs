@@ -99,6 +99,16 @@ test.describe('openWorkReducer — transitions, never a holder-only diff (#760)'
         expect(run([[node()], [node({requests: false})]]).transitions[1]).toEqual([])
     });
 
+    test('a complete list holding an item that names no reviewer is unknown: the row is partial and removes no one', () => {
+        const
+            unnamed = {...node(), reviewRequests: {pageInfo: {hasNextPage: false}, nodes: [{requestedReviewer: null}, null]}},
+            ghost   = {...node(), latestReviews: {pageInfo: {hasNextPage: false}, nodes: [{state: 'APPROVED', author: null, commit: {oid: 'a1'}}]}};
+
+        expect(normalizePullRequest(unnamed, identities)).toMatchObject({requested: [], requestsComplete: false, partial: true});
+        expect(run([[node({reviewers: ['neo-gpt', 'neo-gpt-emmy']})], [unnamed]]).transitions[1]).toEqual([]);
+        expect(normalizePullRequest(ghost, identities)).toMatchObject({reviews: [], requestsComplete: true, partial: true})
+    });
+
     test('a PR opened after the baseline is an opened transition with the reviews already requested on it, and every observed row carries its pulse', () => {
         const {transitions, states} = run([[node()], [node(), node({number: 8})]]);
 
