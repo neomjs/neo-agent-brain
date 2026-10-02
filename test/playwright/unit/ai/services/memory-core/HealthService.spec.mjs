@@ -2535,50 +2535,33 @@ test.describe('HealthService #10783 — buildWakeFeaturesBlock', () => {
         // Worst-case observability: brand new install, daemon never started, gate never written.
         // Block must not throw; surfaces all-defensive shape.
         //
-        // The delivery leg is pointed at a path that does not exist so this assertion is about the
-        // BLOCK'S SHAPE and not about whatever dispatch records the host running the suite happens
-        // to have. A health test that reads the real receiver directory passes or fails with the
-        // host's wake history, which is the opposite of a unit test.
-        // RESTORE, never `delete`. Playwright reuses a worker process across spec files, so
-        // deleting this removes the value `playwright.config.unit.mjs` gave the worker and every
-        // later `healthcheck()` in that worker reads the host's real dispatch records again — the
-        // exact leak the config line exists to close. Capture and put back.
-        const previousRecordsDir                    = process.env.NEO_WAKE_RECEIVER_RECORDS_DIR;
+        // The delivery leg reads the records directory `playwright.config.unit.mjs` declares, a path
+        // that does not exist, so this assertion is about the BLOCK'S SHAPE and never about the
+        // dispatch records of the host running the suite.
+        const result = await buildWakeFeaturesBlock();
 
-        process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = path.join(os.tmpdir(), 'no-such-wake-records');
-
-        try {
-            const result = await buildWakeFeaturesBlock();
-
-            expect(result).toEqual({
-                gateState    : 'unknown',
-                gateTrippedAt: null,
-                gateTrippedBy: null,
-                daemonRunning: false,
-                // Names what the read actually did. `no-pulse-file` is exactly ENOENT — never a claim
-                // about configuration, which this block does not consult. It separates a read that
-                // answered from one that could not happen, the same conflation the subscription note
-                // below refuses, one field over.
-                livenessReason       : 'no-pulse-file',
-                lastPulseAt          : null,
-                secondsSinceLastPulse: null,
-                // Arming reports `null`, never `false`, when it cannot determine: a healthcheck with no
-                // bound identity has no row to answer about, and claiming "not armed" there would
-                // manufacture an alarm out of a missing instrument rather than a real condition.
-                subscription         : {armed: null, reason: 'unbound-identity'},
-                // Absent records directory — a MEASURED absence of dispatch attempts, and explicitly
-                // not a claim that any seat is reachable. It reports readable with no subscriptions
-                // rather than an empty-but-healthy verdict, so "nothing was ever dispatched" and
-                // "everything is fine" cannot read the same.
-                delivery             : {deliveryReadable: true, deliveryReadReason: 'no-records', subscriptions: {}}
-            });
-        } finally {
-            if (previousRecordsDir === undefined) {
-                delete process.env.NEO_WAKE_RECEIVER_RECORDS_DIR
-            } else {
-                process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = previousRecordsDir
-            }
-        }
+        expect(result).toEqual({
+            gateState    : 'unknown',
+            gateTrippedAt: null,
+            gateTrippedBy: null,
+            daemonRunning: false,
+            // Names what the read actually did. `no-pulse-file` is exactly ENOENT — never a claim
+            // about configuration, which this block does not consult. It separates a read that
+            // answered from one that could not happen, the same conflation the subscription note
+            // below refuses, one field over.
+            livenessReason       : 'no-pulse-file',
+            lastPulseAt          : null,
+            secondsSinceLastPulse: null,
+            // Arming reports `null`, never `false`, when it cannot determine: a healthcheck with no
+            // bound identity has no row to answer about, and claiming "not armed" there would
+            // manufacture an alarm out of a missing instrument rather than a real condition.
+            subscription         : {armed: null, reason: 'unbound-identity'},
+            // Absent records directory — a MEASURED absence of dispatch attempts, and explicitly
+            // not a claim that any seat is reachable. It reports readable with no subscriptions
+            // rather than an empty-but-healthy verdict, so "nothing was ever dispatched" and
+            // "everything is fine" cannot read the same.
+            delivery             : {deliveryReadable: true, deliveryReadReason: 'no-records', subscriptions: {}}
+        });
     });
 
     test('explicit `now` parameter overrides Date.now() for deterministic seconds-since calculation', async () => {

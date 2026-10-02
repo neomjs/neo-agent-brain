@@ -27,6 +27,7 @@ if (!Neo.get) Neo.get = () => null;
 
 import RequestContextService       from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 import {buildWakeReceiverManifest} from '../../../../../../ai/daemons/wake/buildReceiverManifest.mjs';
+import {readWakeDelivery}          from '../../../../../../ai/services/memory-core/wakeDeliveryReader.mjs';
 
 // The per-machine receiver address a real boot envelope supplies. No committed file can hold it,
 // which is why bootstrap derives the transport but must be GIVEN the address.
@@ -3268,18 +3269,16 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
          * dispatch records joined to the seat's active subscriptions.
          */
         test.describe('whether a wake can reach the seat (#503)', () => {
-            let recordsDir, savedRecordsDir;
+            let recordsDir;
 
+            // the delivery read is bound to this test's own records, through the service's seam
             test.beforeEach(async () => {
-                savedRecordsDir = process.env.NEO_WAKE_RECEIVER_RECORDS_DIR;
-                recordsDir      = await fs.mkdtemp(path.join(os.tmpdir(), 'who-is-online-wake-'));
-                process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = recordsDir
+                recordsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'who-is-online-wake-'));
+                WakeSubscriptionService.wakeDeliveryReadFn = () => readWakeDelivery({recordsDir})
             });
 
             test.afterEach(async () => {
-                if (savedRecordsDir === undefined) delete process.env.NEO_WAKE_RECEIVER_RECORDS_DIR;
-                else process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = savedRecordsDir;
-
+                WakeSubscriptionService.wakeDeliveryReadFn = null;
                 await fs.rm(recordsDir, {force: true, recursive: true})
             });
 
@@ -3343,7 +3342,7 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 const notADirectory = path.join(recordsDir, 'records-file');
 
                 await fs.writeFile(notADirectory, '');
-                process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = notADirectory;
+                WakeSubscriptionService.wakeDeliveryReadFn = () => readWakeDelivery({recordsDir: notADirectory});
 
                 const terse = await WakeSubscriptionService.whoIsOnline({now: new Date(T0)});
 
@@ -3356,6 +3355,27 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 expect((await verboseRow('@neo-wake-blind')).wake).toEqual({
                     state : 'unknown',
                     reason: 'the wake receiver\'s dispatch records are unreadable from this process'
+                });
+            });
+
+            test('a process that declares no records directory says so, rather than calling the records unreadable', async () => {
+                seedAgent('@neo-wake-undeclared');
+                seedActivity('@neo-wake-undeclared');
+                route('@neo-wake-undeclared', 'WAKE_SUB:undeclared');
+
+                WakeSubscriptionService.wakeDeliveryReadFn = () => readWakeDelivery({recordsDir: ''});
+
+                const terse = await WakeSubscriptionService.whoIsOnline({now: new Date(T0)});
+
+                expect(terse).not.toHaveProperty('undeliverable');
+                expect(terse.axes.wake.capability).toMatchObject({
+                    state     : 'degraded',
+                    confidence: 'none',
+                    reason    : 'this process declares no wake receiver records directory'
+                });
+                expect((await verboseRow('@neo-wake-undeclared')).wake).toEqual({
+                    state : 'unknown',
+                    reason: 'this process declares no wake receiver records directory'
                 });
             });
         });

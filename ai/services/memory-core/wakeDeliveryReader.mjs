@@ -13,71 +13,45 @@
  * what happened to every wake and no surface carried it, so a subscription whose every dispatch
  * failed continued to report itself armed and deliverable.
  *
- * **On the state directory, stated plainly because it is a contract gap and not an implementation
- * detail.** The receiver takes its state directory as a `--state-dir` CLI flag with no config leaf
- * and no default, and this health surface runs in a *different process* from the receiver. So
- * nothing in the substrate currently lets one find the other: this module resolves the directory
- * from the same host convention its sibling `claudeCourierTransport` already uses
- * (`~/Library/Application Support/Neo/AgentOS/wake/…`), which is correct on the deployed host and is
- * an *assumption* everywhere else. That assumption is a second instance of the envelope-contract
- * drift in the sibling ticket's half 1 — a deployment fact both sides must agree on, held in
- * neither — and it is reported rather than papered over. When the two are unified, this reader
- * should take its directory from that single declaration, not from a convention.
+ * **The directory is a declaration, never a guess.** The receiver runs in a different process and
+ * takes its state directory as a `--state-dir` flag, so this reader finds the records only through
+ * the deployment's declaration: the `fleet.wakeReceiverRecordsDir` leaf. A process that declares
+ * none reads `unconfigured`, distinct from a declared directory holding no records.
  *
  * @module ai/services/memory-core/wakeDeliveryReader
  */
 
-import fs                  from 'fs/promises';
-import os                  from 'os';
-import path                from 'path';
+import fs                    from 'fs/promises';
+import path                  from 'path';
+import aiConfig              from '../../mcp/server/memory-core/config.mjs';
 import {projectWakeDelivery} from './wakeDeliveryProjection.mjs';
-
-/**
- * @summary The conventional receiver state directories on a host.
- *
- * Mirrors `defaultCourierDirs` in `ai/daemons/wake/claudeCourierTransport.mjs`, which resolves the
- * sibling spool beside the same root. `homedir` is injectable so a test never touches the real one.
- *
- * This host-AgentOS root is NOT the config plane-member family: those resolve under
- * `<repo>/.neo-ai-data` (see `resolvePlaneDataRoot`), so the receiver state, the routes manifest and
- * the courier spool all live outside every declared config leaf. That is a real gap and it is
- * reported, not papered over — see this module's header. What this function does provide is the
- * env override below, so the assumption is at least overridable and testable rather than hardcoded.
- *
- * @param {Function} [homedir=os.homedir]
- * @returns {{stateDir: String, recordsDir: String}}
- */
-export function defaultWakeReceiverDirs(homedir = os.homedir) {
-    const stateDir = path.join(homedir(), 'Library/Application Support/Neo/AgentOS/wake/state');
-
-    return {stateDir, recordsDir: path.join(stateDir, 'records')}
-}
 
 /**
  * @summary Reads every dispatch record and projects one delivery verdict per subscription.
  *
- * **Never throws, and an unreadable directory is `unknown` rather than empty.** An absent records
- * directory means no dispatch has ever been attempted, which is a measured fact about *absence of
- * attempts* and not evidence that any seat is reachable — so it projects to an empty verdict rather
- * than a healthy one. A directory that exists but cannot be read (a permission wall, a path
- * belonging to another container's realm) is the "I could not look" case rather than the "I looked
- * and found nothing" one: the question could not be ASKED, and reporting that as healthy would be
- * the same conflation that made this invisible in the first place. The distinction is surfaced as
- * `deliveryReadable: false` so a caller can tell "nothing attempted" from "could not look".
+ * **Never throws, and four outcomes stay distinct:**
+ * - `unconfigured`: no records directory is declared, so there is nothing to look at.
+ * - `no-records`: the declared directory is absent or holds no record. That is a measured absence of
+ *   dispatch attempts, not evidence that any seat is reachable, so it projects no subscriptions.
+ * - `unreadable`: the declared directory exists but cannot be read (a permission wall, another
+ *   container's realm). The question could not be asked, and reporting that as healthy is the
+ *   conflation that once let a 19-day delivery outage read healthy.
+ * - `observed`: records were read and projected.
  *
  * A malformed record is skipped rather than guessed at, matching the receiver's own reader: a
  * record that will not parse is not evidence in either direction.
  *
  * @param {Object} [options]
- * @param {String} [options.recordsDir] Records directory. Defaults to
- * `NEO_WAKE_RECEIVER_RECORDS_DIR`, then to the host convention.
- * @param {Function} [options.homedir=os.homedir] Injected for tests.
+ * @param {String} [options.recordsDir] Records directory; tests isolate through it. Defaults to the
+ * `fleet.wakeReceiverRecordsDir` leaf.
  * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object}>}
  */
-export async function readWakeDelivery({recordsDir, homedir = os.homedir} = {}) {
-    const directory = recordsDir
-        || process.env.NEO_WAKE_RECEIVER_RECORDS_DIR
-        || defaultWakeReceiverDirs(homedir).recordsDir;
+export async function readWakeDelivery({recordsDir} = {}) {
+    const directory = recordsDir ?? aiConfig.fleet.wakeReceiverRecordsDir;
+
+    if (!directory) {
+        return {deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}};
+    }
 
     let entries;
 
