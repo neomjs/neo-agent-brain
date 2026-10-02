@@ -146,6 +146,29 @@ test.describe('gitCloneCommand — who a clone authenticates as', () => {
         }
     });
 
+    test('an instance addressed by an IPv6 literal gets its token on its own address and port only', () => {
+        const
+            ORIGIN      = 'https://[2001:db8::1]:8443',
+            PROJECT     = `${ORIGIN}/group/project.git`,
+            {args, env} = gitCloneCommand(PROJECT, REPO, 'glpat_v6', {}, ORIGIN);
+
+        expect(args).toEqual([
+            '-c', 'credential.helper=',
+            '-c', `credential.${ORIGIN}.helper=!f() { echo username=x-access-token; echo "password=$NEO_SEAT_FORGE_TOKEN"; }; f`,
+            'clone', '--', PROJECT, REPO
+        ]);
+        expect(env.NEO_SEAT_FORGE_TOKEN).toBe('glpat_v6');
+
+        for (const cloneUrl of [
+            'https://[2001:db8::1]:9443/group/project.git', // another port
+            'https://[2001:db8::1]/group/project.git',      // the default port is another origin
+            'https://[2001:db8::2]:8443/group/project.git', // another address
+            'http://[2001:db8::1]:8443/group/project.git'   // never in the clear
+        ]) {
+            expect(gitCloneCommand(cloneUrl, REPO, 'glpat_v6', {}, ORIGIN), cloneUrl).toEqual({args: ['clone', '--', cloneUrl, REPO], env: undefined})
+        }
+    });
+
     test("the seat's clone runs outside the host's Git setup: no config file, no config or askpass from the environment", () => {
         const {env} = gitCloneCommand(GITHUB, REPO, 'ghp_seat', {
             PATH                 : '/usr/bin',

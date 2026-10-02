@@ -11,7 +11,7 @@ import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePl
 import {normalizeMcpTarget}                      from './mcpServers.mjs';
 
 const
-    FORGE_HOSTNAME_RE       = /^[a-z0-9._-]+$/,
+    FORGE_HOSTNAME_RE       = /^(?:[a-z0-9._-]+|\[[0-9a-f:]+\])$/,
     LAUNCH_OWNERS           = Object.freeze(['external', 'fleet']),
     RETIRED_TARGET_FIELD    = ['mcp', 'Transport'].join(''),
     PUBLIC_SENSITIVE_KEY_RE = /^(?:credentials?|secrets?|tokens?|(?:github)?pats?|passwords?|authorization|(?:api|client|private)(?:key|token|secret|credential|password)s?|personalaccess(?:key|token|secret|credential|password)s?|(?:access|auth|bearer|github|id|oauth|refresh|session)(?:key|token|secret|credential|password)s?|launch|command|args|argv|env|environment)$/;
@@ -168,8 +168,9 @@ function normalizeStoredMcpTarget(target) {
  * records nothing, so its PAT is presented to `https://github.com` only. A GitLab PAT records its instance's
  * origin, because a self-hosted host cannot be derived. Only {@link Neo.ai.services.fleet.FleetRegistryService#defineAgent}
  * writes these fields, beside the PAT, so no scoped verb (`setRepo` among them) can re-point where a clone
- * presents it. The hostname is letters, digits, `.`, `_` and `-` (an IDN arrives as punycode), so the origin can
- * key git's credential config verbatim: a URL parser admits `=` in a host, which would split git's `-c key=value`.
+ * presents it. The hostname is letters, digits, `.`, `_` and `-` (an IDN arrives as punycode), or a bracketed IPv6
+ * literal, which the parser serializes as hex and `:`. Either way the origin can key git's credential config
+ * verbatim: a URL parser admits `=` in a host, which would split git's `-c key=value`.
  * @param {String} forge       `github` or `gitlab`.
  * @param {*}      [forgeHost] The GitLab instance's bare `https` origin.
  * @returns {Object} `{}` for GitHub, `{forge: 'gitlab', forgeHost}` with the normalized origin for GitLab.

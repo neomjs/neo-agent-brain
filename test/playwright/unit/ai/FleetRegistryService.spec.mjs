@@ -293,6 +293,16 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService', () => {
         expect(agents['gl-seat']).toMatchObject({forge: 'gitlab', forgeHost: 'https://gitlab.example.com'})
     });
 
+    test('a GitLab instance addressed by an IPv6 literal on its own port binds like a hostname', () => {
+        const seat = FleetRegistryService.defineAgent({
+            githubUsername: 'gl-v6', harnessType: 'codex', credential: 'glpat_v6', forge: 'gitlab', forgeHost: 'https://[2001:DB8::1]:8443/'
+        });
+
+        // the parser's own serialization: lowercase hex and `:` in brackets, no `=` to split git's key on
+        expect(seat).toMatchObject({forge: 'gitlab', forgeHost: 'https://[2001:db8::1]:8443'});
+        expect(FleetRegistryService.resolveCredential('gl-v6')).toBe('glpat_v6')
+    });
+
     test('a GitLab define refuses a host it cannot bind the PAT to, and writes nothing', () => {
         const define = fields => () => FleetRegistryService.defineAgent({githubUsername: 'gl-bad', harnessType: 'codex', credential: 'glpat_seat', ...fields});
 
