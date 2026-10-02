@@ -1,7 +1,9 @@
 /**
  * @module ai/services/fleet/fleetOpenWorkSource
  * @summary Each seat's open work, projected from the open-work producer's state: the pull requests it
- * owns (CI, verdict, mergeability) and the ones whose review is requested of it.
+ * owns (CI, verdict, mergeability) and the ones whose review is requested of it. Every row names who
+ * holds its next action ({@link module:ai/services/fleet/openWorkHolder}), and `awaitingMerge` lists
+ * the rows the operator holds, whoever owns them: a PR no seat owns is in no seat's lists.
  *
  * The envelope carries the producer's freshness, never this read's: `ok` within the stale bound after
  * the producer's last pulse, `stale` past it or after a failed pulse, and `unavailable` before any
@@ -13,6 +15,8 @@
  * `unobserved`, never shown as current work.
  */
 
+import {holderOf} from './openWorkHolder.mjs';
+
 const
     /** @summary Past this since the last pulse, the projection is stale. */
     STALE_AFTER_MS       = 5 * 60 * 1000,
@@ -20,14 +24,16 @@ const
     UNAVAILABLE_AFTER_MS = 60 * 60 * 1000;
 
 /**
- * @summary The part of a row a holder acts on, with when it was last observed.
+ * @summary The part of a row a holder acts on, with when it was last observed and who holds it.
  * @param {Object} row
  * @param {Boolean} stale
  * @returns {Object}
  * @private
  */
-function summaryOf({repo, number, head, ci, verdict, mergeable, draft, reviews, observedAt}, stale) {
-    return {repo, number, head, ci, verdict, mergeable, draft, reviews: reviews ?? [], observedAt, stale}
+function summaryOf(row, stale) {
+    const {repo, number, head, ci, verdict, mergeable, draft, reviews, observedAt} = row;
+
+    return {repo, number, head, ci, verdict, mergeable, draft, reviews: reviews ?? [], observedAt, stale, holder: holderOf(row)}
 }
 
 /**
@@ -38,17 +44,18 @@ function summaryOf({repo, number, head, ci, verdict, mergeable, draft, reviews, 
  * @param {Number}   [options.staleAfterMs]
  * @param {Number}   [options.unavailableAfterMs]
  * @returns {{state: 'ok'|'stale'|'unavailable', observedAt: String|null, coverage: String, reason: String|null,
- *     detail: String|null, unobserved: Number, seats: Object}}
+ *     detail: String|null, unobserved: Number, seats: Object, awaitingMerge: Object[]}}
  */
 export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unavailableAfterMs = UNAVAILABLE_AFTER_MS}) {
     const
-        ageOf = at => at ? now() - Date.parse(at) : Infinity,
-        ageMs = ageOf(state?.observedAt),
-        seats = {},
-        seat  = id => seats[id] ??= {authored: [], reviewing: []};
+        ageOf         = at => at ? now() - Date.parse(at) : Infinity,
+        ageMs         = ageOf(state?.observedAt),
+        seats         = {},
+        awaitingMerge = [],
+        seat          = id => seats[id] ??= {authored: [], reviewing: []};
 
     if (ageMs > unavailableAfterMs) {
-        return {state: 'unavailable', observedAt: state?.observedAt ?? null, coverage: 'unavailable', reason: state?.reason ?? null, detail: state?.detail ?? null, unobserved: 0, seats}
+        return {state: 'unavailable', observedAt: state?.observedAt ?? null, coverage: 'unavailable', reason: state?.reason ?? null, detail: state?.detail ?? null, unobserved: 0, seats, awaitingMerge}
     }
 
     let unobserved = 0;
@@ -64,7 +71,8 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
         const summary = summaryOf(row, rowAgeMs > staleAfterMs);
 
         row.owner?.seat && seat(row.owner.seat).authored.push(summary);
-        row.requested.filter(id => id.startsWith('@')).forEach(id => seat(id).reviewing.push(summary))
+        row.requested.filter(id => id.startsWith('@')).forEach(id => seat(id).reviewing.push(summary));
+        summary.holder.role === 'operator' && awaitingMerge.push(summary)
     }
 
     return {
@@ -74,7 +82,8 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
         reason    : state.reason ?? null,
         detail    : state.detail ?? null,
         unobserved,
-        seats
+        seats,
+        awaitingMerge
     }
 }
 
@@ -90,7 +99,8 @@ export function projectOpenWork(state, {now, staleAfterMs = STALE_AFTER_MS, unav
 export function createFleetOpenWorkSource({producer, now = () => Date.now(), ...bounds}) {
     return {
         /**
-         * @summary One seat's open work, or every seat's, under the producer's envelope.
+         * @summary One seat's open work, or every seat's, under the producer's envelope. The
+         * operator's `awaitingMerge` is answered either way.
          * @param {Object} [params]
          * @param {String} [params.seat] A seat id such as `@neo-opus-ada`.
          * @returns {Object}

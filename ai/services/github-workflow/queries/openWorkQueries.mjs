@@ -3,8 +3,10 @@
  * @summary The open-work producer's two reads (`ai/services/fleet/openWorkProducer.mjs`): the open
  * pull requests of the repositories the Fleet's seats work on, and the ones merged or closed within a
  * window of close times. Both are one search per page, and `pageInfo` is part of the contract: a page
- * the budget cuts off, or a review-request or latest-review list past its first 20, makes the pulse
- * partial, never complete.
+ * the budget cuts off, or a review-request, latest-review or latest-opinion list past its first 20,
+ * makes the pulse partial, never complete. The latest review is any engagement, a comment included;
+ * the latest opinion is each reviewer's standing approval or change request, which a later comment
+ * on the same head does not withdraw.
  *
  * Variables: `$query` (a search string with `is:pr` and the `repo:` qualifiers), `$cursor`.
  */
@@ -63,6 +65,20 @@ export const OPEN_WORK_SNAPSHOT = `
             }
           }
           latestReviews(first: 20) {
+            pageInfo {
+              hasNextPage
+            }
+            nodes {
+              state
+              author {
+                login
+              }
+              commit {
+                oid
+              }
+            }
+          }
+          latestOpinionatedReviews(first: 20) {
             pageInfo {
               hasNextPage
             }
