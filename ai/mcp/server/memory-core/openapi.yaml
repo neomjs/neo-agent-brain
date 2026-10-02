@@ -984,7 +984,7 @@ paths:
       operationId: query_recent_turns
       x-neo-tool-tier: read
       x-pass-as-object: true
-      x-neo-tool-summary: Recall recent turns chronologically for recovery or handoff.
+      x-neo-tool-summary: Recall recent turns for recovery; opt in to policy-clamped public peer summaries.
       x-annotations:
         readOnlyHint: true
       description: |
@@ -995,6 +995,9 @@ paths:
         After a context compaction, to rebuild "what just happened, in order" — the chronological
         sequence semantic search cannot reconstruct. Returns compact per-turn summaries by default
         (detail=summary, straight from the graph) or full prompt/response content on demand (detail=full).
+        An explicit memorySharing request is narrowed by deployment policy and accepts only public
+        summaries when wider than private. Its result reports the effective policy and clamping;
+        omitted sharing preserves tenant-scoped recovery and own-private recall.
       tags: [Memories]
       parameters:
         - name: agentIdentity
@@ -1030,6 +1033,13 @@ paths:
             type: string
             enum: [summary, full]
             default: summary
+        - name: memorySharing
+          in: query
+          required: false
+          description: "Explicit narrow-only sharing for public summaries. Omit to keep caller-tenant recovery; team/legacy refuse full or private reads."
+          schema:
+            type: string
+            enum: [private, team, legacy]
         - name: projection
           in: query
           required: false
@@ -1045,6 +1055,17 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  memorySharing:
+                    type: object
+                    description: Effective scope on explicit sharing reads; absent on default recovery.
+                    required: [policy, clamped]
+                    properties:
+                      policy:
+                        type: string
+                        enum: [private, team, legacy]
+                      clamped:
+                        type: boolean
         '503':
           description: Cannot connect to database
           content:
