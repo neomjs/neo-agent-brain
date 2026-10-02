@@ -101,7 +101,38 @@ test.describe('hostEffects', () => {
         const settledEvaluation = await evaluateRecipe({target, record: settled.record, observers: {envCarrier: async () => ({present: true, digest: 'x'})}, presets: [], now: () => NOW});
 
         expect(settledEvaluation.steps.find(step => step.id === 'write-env').status).toBe(STEP_STATUSES.ok);
-        await expect(settleReceipt({effectId: EFFECT_IDS.writeEnv, observation: {status: 'ok', matchesTarget: true}, record: settled.record, recordPath, host})).rejects.toThrow(/holds no reconcile-required receipt/);
+        await expect(settleReceipt({effectId: EFFECT_IDS.writeEnv, observation: {status: 'ok', matchesTarget: true}, record: settled.record, recordPath, host})).rejects.toThrow(/holds no pending or reconcile-required receipt/);
+    });
+
+    test('settleReceipt owns the pending → reconcile-required transition: a non-matching observation persists it without running any handler, a matching one settles a pending receipt directly', async () => {
+        const
+            {recordPath, host, record} = await scratch(),
+            input  = {path: path.join(path.dirname(recordPath), 'plane.env'), entries: {NEO_PLANE_ID: 'plane-a'}},
+            parked = withReceipt(record, {effectId: EFFECT_IDS.writeEnv, outcome: RECEIPT_OUTCOMES.pending, inputDigest: effectInputDigest(input), startedAt: 't0'});
+
+        await persistSetupRecord(recordPath, parked, host);
+
+        const marked = await settleReceipt({effectId: EFFECT_IDS.writeEnv, observation: {status: 'failed', matchesTarget: false, reason: 'a different plane is answering'}, record: parked, recordPath, host});
+
+        expect(marked.settled).toBe(false);
+        expect(marked.reason).toBe('a different plane is answering');
+        expect(marked.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.reconcileRequired, inputDigest: effectInputDigest(input), startedAt: 't0'});
+        expect(marked.receipt.reason).toMatch(/may have run before its receipt was written/);
+        expect((await readSetupRecord(recordPath, {fsModule: fs})).record.receipts[0].outcome).toBe(RECEIPT_OUTCOMES.reconcileRequired);
+
+        // marking again changes nothing
+        const again = await settleReceipt({effectId: EFFECT_IDS.writeEnv, observation: {status: 'failed', matchesTarget: false}, record: marked.record, recordPath, host});
+
+        expect(again.receipt).toBe(marked.receipt);
+
+        // a pending receipt whose first observation matches settles in one step
+        await persistSetupRecord(recordPath, parked, host);
+
+        const direct = await settleReceipt({effectId: EFFECT_IDS.writeEnv, observation: {status: 'ok', matchesTarget: true, observedAt: '2026-10-02T08:30:00.000Z', digest: 'x'}, record: parked, recordPath, host});
+
+        expect(direct.settled).toBe(true);
+        expect(direct.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, settledBy: 'observation', digest: 'x'});
+        expect((await readSetupRecord(recordPath, {fsModule: fs})).record.receipts[0].outcome).toBe(RECEIPT_OUTCOMES.accepted);
     });
 
     test('an accepted effect never re-runs on resume for the same input; a different input or a failed receipt is a new application', async () => {

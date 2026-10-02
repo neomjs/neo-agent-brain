@@ -88,6 +88,31 @@ export function normalizeTarget(target = {}) {
 }
 
 /**
+ * @summary The target a resumed invocation evaluates against: each field the invocation names, and each
+ * it omits filled from the record's bound target. A record holding a corroborating root keeps that
+ * expectation when the resume names only the identity — the root is never optional where the run holds
+ * one (bootstrap-record decision§2.4). A field the invocation does name is compared by {@link describeBinding},
+ * never replaced.
+ * @param {Object} record
+ * @param {Object} [invocation={}]
+ * @returns {{planeId: String|null, dataRoot: String|null, endpoint: String|null}}
+ */
+export function resumeTarget(record, invocation = {}) {
+    const named = normalizeTarget(invocation), bound = normalizeTarget(record?.target);
+
+    // another identity names a new target: nothing of the old binding carries over
+    if (named.planeId !== null && named.planeId !== bound.planeId) {
+        return named;
+    }
+
+    return {
+        planeId : named.planeId  ?? bound.planeId,
+        dataRoot: named.dataRoot ?? bound.dataRoot,
+        endpoint: named.endpoint ?? bound.endpoint
+    };
+}
+
+/**
  * @summary A fresh record for one run.
  * @param {Object} options
  * @param {String} options.runId         A UUID; the CLI mints it, a resume passes the existing one.

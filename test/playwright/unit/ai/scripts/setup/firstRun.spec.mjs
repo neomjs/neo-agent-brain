@@ -46,13 +46,14 @@ function greenFake({patPath, planeId = 'plane-a', dataRoot = '/srv/plane-a', ser
     };
 }
 
-async function runCli({setupRoot, stateRoot, fake, extra = []}) {
+/** One CLI run; `dataRoot: null` omits `--data-root` (the resume that names only the identity). */
+async function runCli({setupRoot, stateRoot, fake, extra = [], dataRoot = '/srv/plane-a'}) {
     const fakePath = path.join(stateRoot, 'fake-host.json');
 
     await fs.mkdir(stateRoot, {recursive: true});
     await fs.writeFile(fakePath, JSON.stringify(fake));
 
-    const args = [script, '--json', '--setup-root', setupRoot, '--state-root', stateRoot, '--run-id', RUN_ID, '--plane-id', 'plane-a', '--data-root', '/srv/plane-a', '--endpoint', 'http://127.0.0.1:3102', '--fake-host', fakePath, ...extra];
+    const args = [script, '--json', '--setup-root', setupRoot, '--state-root', stateRoot, '--run-id', RUN_ID, '--plane-id', 'plane-a', ...(dataRoot ? ['--data-root', dataRoot] : []), '--endpoint', 'http://127.0.0.1:3102', '--fake-host', fakePath, ...extra];
 
     try {
         const {stdout, stderr} = await execFileAsync(process.execPath, args, {cwd: brainRoot, encoding: 'utf8', env: {...process.env, NEO_HOST_SETUP_RECORD_ROOT: ''}});
@@ -159,6 +160,102 @@ test.describe('firstRun CLI', () => {
         expect(record.history).toHaveLength(1);
         expect(record.history[0].reason).toBe('target-changed');
         expect(record.target.planeId).toBe('plane-c');
+    });
+
+    test('a resume that names only the identity keeps the record\'s bound root: a different served root still fails, a matching one resumes, and the explicit mismatch control stands', async () => {
+        const
+            {setupRoot, stateRoot, patPath} = await scratch(),
+            first    = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
+            // the same run without --data-root while the plane answers with the identity over another root
+            idOnly   = await runCli({setupRoot, stateRoot, dataRoot: null, fake: greenFake({patPath, servedPlane: {id: 'plane-a', dataRoot: '/srv/plane-b'}})}),
+            idOnlyOk = await runCli({setupRoot, stateRoot, dataRoot: null, fake: greenFake({patPath})}),
+            explicit = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, servedPlane: {id: 'plane-a', dataRoot: '/srv/plane-b'}})});
+
+        expect(first.code).toBe(0);
+        expect(idOnly.code).toBe(1);
+        expect(JSON.parse(idOnly.stdout).target).toEqual({planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'});
+        expect(JSON.parse(idOnly.stdout).steps.find(step => step.id === 'served-plane')).toMatchObject({status: 'failed'});
+        expect(JSON.parse(idOnly.stdout).steps.find(step => step.id === 'served-plane').reason).toMatch(/same identity, different storage/);
+        expect(idOnlyOk.code).toBe(0);
+        expect(JSON.parse(idOnlyOk.stdout).binding).toBe('bound');
+        expect(explicit.code).toBe(1);
+        // the record stayed bound to its root throughout: nothing was retired
+        expect(JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8')).history).toHaveLength(0);
+    });
+
+    test('a pasted token given as the credential answer is refused before the consent write and never appears in the record, stdout or stderr; a directory, a relative or a missing path are refused by their own rule; the real file is admitted', async () => {
+        const
+            {root, setupRoot, stateRoot, patPath} = await scratch(),
+            PASTED     = 'FAKE_PASTED_PAT_DO_NOT_STORE_20261002',
+            fake       = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
+            pasted     = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {preset: 'local-small', 'plane-credential': PASTED}}}),
+            recordText = await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8');
+
+        expect(pasted.code).toBe(2);
+        expect(pasted.stderr).toContain('plane-credential: not the absolute path of a file; the value was not recorded');
+        expect(pasted.stderr).not.toContain(PASTED);
+        expect(pasted.stdout).not.toContain(PASTED);
+        expect(recordText).not.toContain(PASTED);
+        expect(JSON.parse(pasted.stdout).steps.find(step => step.id === 'plane-credential')).toMatchObject({status: 'pending', reason: 'unanswered'});
+        expect(JSON.parse(recordText).consents.map(consent => consent.stepId)).toEqual(['preset']);
+        await expect(fs.access(path.join(stateRoot, 'config'))).rejects.toThrow();
+
+        const
+            dir      = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {'plane-credential': path.dirname(patPath)}}}),
+            relative = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {'plane-credential': 'operator/plane-pat'}}}),
+            missing  = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {'plane-credential': path.join(root, 'missing')}}}),
+            admitted = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
+
+        expect(dir.stderr).toContain('plane-credential: the path is not a regular file; the value was not recorded');
+        expect(relative.stderr).toContain('plane-credential: not the absolute path of a file; the value was not recorded');
+        expect(missing.stderr).toContain('plane-credential: no readable file at that path; the value was not recorded');
+        expect(admitted.code).toBe(0);
+        expect(JSON.parse(admitted.stdout).steps.find(step => step.id === 'plane-credential').answer).toBe(patPath);
+    });
+
+    test('a pending receipt left on disk resumes through the CLI as reconcile-required with JSON output and no replay: a wrong plane leaves it so, a matching observation settles it (ADR 0041 §3, the renderer\'s half)', async () => {
+        const
+            {setupRoot, stateRoot, patPath} = await scratch(),
+            recordPath = path.join(setupRoot, `${RUN_ID}.json`),
+            callsPath  = path.join(setupRoot, 'fake-run.json'),
+            first      = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
+            // what a crash between the handler and its receipt leaves on disk: write-env's receipt still pending
+            park       = async () => {
+                const record = JSON.parse(await fs.readFile(recordPath, 'utf8'));
+
+                record.receipts = record.receipts.map(receipt => receipt.effectId === 'write-env' ? {effectId: 'write-env', outcome: 'pending', inputDigest: receipt.inputDigest, startedAt: receipt.acceptedAt} : receipt);
+                await fs.writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+            };
+
+        expect(first.code).toBe(0);
+        await park();
+
+        const
+            wrong  = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, servedPlane: {id: 'plane-b', dataRoot: '/srv/plane-b'}})}),
+            parked = JSON.parse(await fs.readFile(recordPath, 'utf8'));
+
+        expect(wrong.code).toBe(1);
+        expect(JSON.parse(wrong.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'reconcile-required', effectId: 'write-env', receipt: 'reconcile-required'});
+        expect(parked.receipts.find(receipt => receipt.effectId === 'write-env')).toMatchObject({outcome: 'reconcile-required', reason: expect.stringMatching(/may have run before its receipt was written/)});
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+
+        const
+            settled = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
+            record  = JSON.parse(await fs.readFile(recordPath, 'utf8'));
+
+        expect(settled.code).toBe(0);
+        expect(JSON.parse(settled.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt'});
+        expect(record.receipts.find(receipt => receipt.effectId === 'write-env')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+
+        // a pending receipt whose first resume already matches settles directly
+        await park();
+
+        const direct = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
+
+        expect(direct.code).toBe(0);
+        expect(JSON.parse(await fs.readFile(recordPath, 'utf8')).receipts.find(receipt => receipt.effectId === 'write-env')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
     });
 
     test('parseArgs: defaults under the host state root, env overrides, unknown flags refused; a fake host turns thrown observers into failures', () => {

@@ -61,13 +61,14 @@ export const STEP_STATUSES = Object.freeze({
 
 /**
  * The v1 steps in order. `observer` names the injected reader a step consults; `effectId` the host effect
- * whose receipt and result an effect step reads; `terminal` marks the step whose `ok` ends the run.
+ * whose receipt and result an effect step reads; `answer: 'file'` marks a question answered by a file
+ * reference, admitted as one before it is recorded; `terminal` marks the step whose `ok` ends the run.
  * @type {Object[]}
  */
 export const RECIPE_STEPS = Object.freeze([
-    Object.freeze({id: 'placement',        kind: STEP_KINDS.observation, observer: 'placement',    summary: 'the host bears a supported preset with headroom'}),
+    Object.freeze({id: 'placement',        kind: STEP_KINDS.observation, observer: 'placement',    summary: 'the presets this host bears, each with its reason'}),
     Object.freeze({id: 'preset',           kind: STEP_KINDS.question,                              summary: 'the inference preset'}),
-    Object.freeze({id: 'plane-credential', kind: STEP_KINDS.question,                              summary: 'the plane credential, kept as a secret file (the record holds its path)'}),
+    Object.freeze({id: 'plane-credential', kind: STEP_KINDS.question,    answer: 'file',           summary: 'the plane credential, kept as a secret file (the record holds its path)'}),
     Object.freeze({id: 'advanced',         kind: STEP_KINDS.question,    optional: true,           summary: 'advanced bindings, folded by default'}),
     Object.freeze({id: 'write-env',        kind: STEP_KINDS.effect,      observer: 'envCarrier',   effectId: 'write-env',     summary: 'the plane env carrier holds the preset and the plane bindings'}),
     Object.freeze({id: 'write-secrets',    kind: STEP_KINDS.effect,      observer: 'secretFiles',  effectId: 'write-secrets', summary: 'the secret files exist, owner-only'}),
@@ -158,7 +159,7 @@ async function evaluateEffect(step, {record, bound, observers, target, observedA
     const
         receipt = bound ? findReceipt(record, step.effectId) : null,
         read    = await observe(observers, step.observer, target),
-        extra   = {receipt: receipt ? receipt.outcome : null, observedAt};
+        extra   = {effectId: step.effectId, receipt: receipt ? receipt.outcome : null, observedAt};
 
     if (receipt && [RECEIPT_OUTCOMES.pending, RECEIPT_OUTCOMES.reconcileRequired].includes(receipt.outcome)) {
         // the observed result rides along so a renderer can settle the receipt once the served plane matches
@@ -202,7 +203,11 @@ function evaluatePlacement(step, read, presets, observedAt) {
     }
 
     if (placement.possible.length > 0) {
-        return status(step, STEP_STATUSES.ok, `no preset clears the headroom; possible: ${placement.possible.map(row => row.id).join(', ')}`, {placement, observedAt});
+        // nothing recommended is not one cause: a possible preset may lack a floor or the headroom, a
+        // refused one names its shortfall — each row's own reason is the step's reason
+        const named = rows => rows.map(row => `${row.id} (${row.reason})`).join(', ');
+
+        return status(step, STEP_STATUSES.ok, `nothing recommended; possible: ${named(placement.possible)}${placement.refused.length > 0 ? `; refused: ${named(placement.refused)}` : ''}`, {placement, observedAt});
     }
 
     return status(step, STEP_STATUSES.failed, 'no supported preset fits this host', {placement, observedAt});

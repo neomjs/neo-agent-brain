@@ -22,11 +22,11 @@ import os              from 'node:os';
 import path            from 'node:path';
 import readline        from 'node:readline/promises';
 import {fileURLToPath} from 'node:url';
-import {RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../services/fleet/firstRunRecipe.mjs';
-import {EFFECT_IDS, applyEffect, createHost, persistSetupRecord, recordConsent, settleReceipt} from '../../services/fleet/hostEffects.mjs';
+import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../services/fleet/firstRunRecipe.mjs';
+import {EFFECT_IDS, admitCredentialReference, applyEffect, createHost, persistSetupRecord, recordConsent, settleReceipt} from '../../services/fleet/hostEffects.mjs';
 import {presets}                                                                              from '../../services/fleet/placementPresets.mjs';
 import {createDefaultReaders, probePlacement}                                                 from '../../services/fleet/probePlacement.mjs';
-import {RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, readSetupRecord, retireCurrentProof, setupRecordPath} from '../../services/fleet/setupRunRecord.mjs';
+import {RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath} from '../../services/fleet/setupRunRecord.mjs';
 import {runHealthcheck}                                                                       from '../diagnostics/mcpHealthcheck.mjs';
 
 const
@@ -205,7 +205,7 @@ async function ask(question, {input, output}) {
     }
 }
 
-async function answerQuestions({evaluation, answers, record, recordPath, host, io, interactive}) {
+async function answerQuestions({evaluation, answers, record, recordPath, host, io, interactive, stderr}) {
     let current = record;
 
     for (const step of evaluation.steps.filter(row => row.kind === STEP_KINDS.question && row.status === STEP_STATUSES.pending)) {
@@ -225,6 +225,19 @@ async function answerQuestions({evaluation, answers, record, recordPath, host, i
 
         if (step.id === 'preset' && !presets.some(preset => preset.id === answer)) {
             throw new Error(`'${answer}' is not a preset`);
+        }
+
+        // a file reference is admitted before the record sees it: a pasted token is refused here, never
+        // recorded, and the refusal repeats nothing of the input
+        if (RECIPE_STEPS.find(row => row.id === step.id)?.answer === 'file') {
+            const admitted = await admitCredentialReference({answer, fsModule: host.fsModule});
+
+            if (!admitted.ok) {
+                stderr.write(`${step.id}: ${admitted.reason}\n`);
+                continue;
+            }
+
+            answer = admitted.path;
         }
 
         current = (await recordConsent({stepId: step.id, answer, record: current, recordPath, host})).record;
@@ -259,10 +272,15 @@ async function performEffects({record, recordPath, host, layout, target, evaluat
         [EFFECT_IDS.writeSecrets, {files: [{path: path.join(layout.secretsDir, 'fleet-plane-token'), content: pat}]}],
         [EFFECT_IDS.composeUp,    {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles}]
     ]) {
-        const stepStatus = evaluation.steps.find(step => step.effectId === effectId || step.id === effectId)?.status;
+        const stepStatus = evaluation.steps.find(step => step.effectId === effectId)?.status;
 
         if (stepStatus === STEP_STATUSES.ok) {
             continue;
+        }
+
+        // an unsettled effect is never replayed, and nothing is performed on top of it
+        if (stepStatus === STEP_STATUSES.reconcileRequired) {
+            break;
         }
 
         const result = await applyEffect({effectId, input, record: current, recordPath, host});
@@ -278,8 +296,9 @@ async function performEffects({record, recordPath, host, layout, target, evaluat
 }
 
 /**
- * @summary Settles every reconcile-required effect whose result is observable while the served plane is
- * the target's — the fresh matching observation bootstrap-record decision§2.6 asks for. Anything else stays as it is.
+ * @summary Settles every interrupted effect — `pending` on disk, or already `reconcile-required` — whose
+ * result is observable while the served plane is the target's: the fresh matching observation
+ * bootstrap-record decision§2.6 asks for. One that does not settle is left `reconcile-required` by the writer, never replayed.
  */
 async function settlePending({record, recordPath, host, evaluation}) {
     const planeMatches = evaluation.steps.find(row => row.id === 'served-plane')?.status === STEP_STATUSES.ok;
@@ -324,10 +343,9 @@ export async function main(argv = process.argv.slice(2), io = {}) {
 
     const
         interactive = !options.json && (io.isTTY ?? Boolean(stdin.isTTY)) && !options.fakeHost,
-        target      = {planeId: options.planeId, dataRoot: options.dataRoot, endpoint: options.endpoint},
         layout      = hostLayout(options);
 
-    let host = createHost(), observers, answers = {};
+    let target = {planeId: options.planeId, dataRoot: options.dataRoot, endpoint: options.endpoint}, host = createHost(), observers, answers = {};
 
     if (options.fakeHost) {
         // the fake host: a recording runner (its compose-up counts as the plane running), the real file
@@ -373,6 +391,10 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         record = createSetupRecord({runId, target, recipeVersion: RECIPE_VERSION, now: host.now});
         await persistSetupRecord(recordPath, record, host);
     } else {
+        // a resume names what it names; the record's bound target fills the rest, so a root the record
+        // holds stays the expectation when the invocation omits it
+        target = resumeTarget(record, target);
+
         const binding = describeBinding(record, {target, recipeVersion: RECIPE_VERSION});
 
         if (binding !== 'bound') {
@@ -386,9 +408,11 @@ export async function main(argv = process.argv.slice(2), io = {}) {
 
     let evaluation = await evaluate();
 
-    record     = await answerQuestions({evaluation, answers, record, recordPath, host, io: {input: stdin, output: stdout}, interactive});
+    record     = await answerQuestions({evaluation, answers, record, recordPath, host, io: {input: stdin, output: stdout}, interactive, stderr});
     evaluation = await evaluate();
     record     = await settlePending({record, recordPath, host, evaluation});
+    // performing reads the settled state: a settled effect is skipped as ok, an unsettled one halts the run
+    evaluation = await evaluate();
     record     = await performEffects({record, recordPath, host, layout, target, evaluation});
     evaluation = await evaluate();
 

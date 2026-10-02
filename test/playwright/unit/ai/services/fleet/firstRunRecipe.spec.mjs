@@ -16,6 +16,7 @@ import {
     RETIRE_REASONS,
     createSetupRecord,
     describeBinding,
+    resumeTarget,
     retireCurrentProof,
     withConsent,
     withReceipt
@@ -143,6 +144,11 @@ test.describe('firstRunRecipe', () => {
         expect(describeBinding(recordA, {target: {...targetA, dataRoot: '/srv/other'}, recipeVersion: RECIPE_VERSION})).toBe('target-mismatch');
         // a run that holds no root expectation yet binds on the id
         expect(describeBinding(recordA, {target: {planeId: 'plane-a'}, recipeVersion: RECIPE_VERSION})).toBe('bound');
+        // a resume that names only the identity evaluates against the record's root; a named root is compared, never
+        // replaced; another identity carries nothing of the old binding over
+        expect(resumeTarget(recordA, {planeId: 'plane-a'})).toEqual({planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'});
+        expect(resumeTarget(recordA, {planeId: 'plane-a', dataRoot: '/srv/other'}).dataRoot).toBe('/srv/other');
+        expect(resumeTarget(recordA, {planeId: 'plane-b'})).toEqual({planeId: 'plane-b', dataRoot: null, endpoint: null});
 
         const retired = retireCurrentProof(recordA, {target: targetA, recipeVersion: RECIPE_VERSION + 1, reason: RETIRE_REASONS.versionChanged, now: () => NOW});
 
@@ -222,13 +228,19 @@ test.describe('firstRunRecipe', () => {
         expect(candidate.possible[0].reason).toMatch(/candidate, never recommended by default/);
     });
 
-    test('the placement step reports the recommendation, and a host nothing fits reads failed', async () => {
+    test('the placement step reports the recommendation; with nothing recommended it names each possible and refused preset with its reason; a host nothing fits reads failed', async () => {
         const
-            fits    = await evaluateRecipe({target: targetA, record: null, observers: greenObservers(), presets, now: () => NOW}),
-            nothing = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => probeOf({hostAvailable: 1 * GiB})}, presets: presets.filter(row => row.id !== 'hosted'), now: () => NOW});
+            fits     = await evaluateRecipe({target: targetA, record: null, observers: greenObservers(), presets, now: () => NOW}),
+            // the probe's own 32 GiB fixture (15.5 GiB host budget, a 16 GiB VM): hosted clears the headroom by 13 GiB and
+            // is possible only for lack of a floor; both local presets are refused — no row has a headroom shortfall
+            possible = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => probeOf({hostAvailable: 15.5 * GiB, guestAvailable: 13.5 * GiB, capBytes: 16 * GiB})}, presets, now: () => NOW}),
+            nothing  = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => probeOf({hostAvailable: 1 * GiB})}, presets: presets.filter(row => row.id !== 'hosted'), now: () => NOW});
 
         expect(byId(fits.steps).placement.reason).toMatch(/^recommended: /);
         expect(byId(fits.steps).placement.placement.headroomBytes).toBe(HEADROOM_BYTES);
+        expect(byId(possible.steps).placement.status).toBe(STEP_STATUSES.ok);
+        expect(byId(possible.steps).placement.reason).toBe('nothing recommended; possible: hosted (no recorded quality floor: a candidate, never recommended by default); refused: local-small (the host budget falls 2.2 GiB short), local-full (the host budget falls 5.9 GiB short)');
+        expect(byId(possible.steps).placement.summary).toBe('the presets this host bears, each with its reason');
         expect(byId(nothing.steps).placement.status).toBe(STEP_STATUSES.failed);
         expect(byId(nothing.steps).placement.placement.refused).toHaveLength(2);
     });
@@ -241,6 +253,9 @@ test.describe('firstRunRecipe', () => {
             expect(step.reason, step.id).toMatch(/^no '.+' observer$/);
         }
         expect(result.steps.map(step => step.id)).toEqual(RECIPE_STEPS.map(step => step.id));
+        // an effect row carries the effect it reads, so a renderer can settle the receipt it names
+        expect(result.steps.filter(row => row.kind === STEP_KINDS.effect).map(row => row.effectId)).toEqual(['write-env', 'write-secrets', 'compose-up']);
+        expect(RECIPE_STEPS.find(step => step.id === 'plane-credential').answer).toBe('file');
         expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'advanced', 'write-env', 'write-secrets', 'compose-up', 'served-plane', 'validation', 'done']);
         expect(result.recipeVersion).toBe(RECIPE_VERSION);
     });

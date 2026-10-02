@@ -226,12 +226,7 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
         }
 
         if (existing.outcome === RECEIPT_OUTCOMES.pending) {
-            const receipt = {
-                ...existing,
-                outcome            : RECEIPT_OUTCOMES.reconcileRequired,
-                reconcileRequiredAt: stamp(),
-                reason             : 'a pending receipt was found on resume: the effect may have run before its receipt was written; a fresh matching observation settles it'
-            }, next = withReceipt(record, receipt);
+            const receipt = reconcileRequiredReceipt(existing, host), next = withReceipt(record, receipt);
 
             await persistSetupRecord(recordPath, next, host);
 
@@ -285,12 +280,32 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
 }
 
 /**
- * @summary Settles a `reconcile-required` receipt with a fresh observation of the effect's result for the
- * bound target. Only an observation that reads `ok` AND matches the target settles it to `accepted`
- * (`settledBy: 'observation'`); anything else leaves the receipt as it is and says why.
+ * @summary The receipt an interrupted effect carries from the moment a resume finds it `pending`: the
+ * handler may have run before its receipt was written, so it is never run again — a fresh matching
+ * observation settles it (bootstrap-record decision§3).
+ * @param {Object} existing The `pending` receipt.
+ * @param {Object} host
+ * @returns {Object}
+ */
+function reconcileRequiredReceipt(existing, host) {
+    return {
+        ...existing,
+        outcome            : RECEIPT_OUTCOMES.reconcileRequired,
+        reconcileRequiredAt: new Date(host.now()).toISOString(),
+        reason             : 'a pending receipt was found on resume: the effect may have run before its receipt was written; a fresh matching observation settles it'
+    };
+}
+
+/**
+ * @summary Settles an interrupted effect — a `pending` receipt found on resume, or one already marked
+ * `reconcile-required` — with a fresh observation of its result for the bound target. Only an observation
+ * that reads `ok` AND matches the target settles it to `accepted` (`settledBy: 'observation'`). Anything
+ * else performs the one transition a resume owes and nothing more: a `pending` receipt becomes
+ * `reconcile-required` (persisted; the handler never re-runs), a `reconcile-required` one stays as it is,
+ * and the answer says why (bootstrap-record decision§2.6, §3).
  * @param {Object} options
  * @param {String} options.effectId
- * @param {Object} options.observation `{status, matchesTarget, observedAt, digest}` from the step's observer.
+ * @param {Object} options.observation `{status, matchesTarget, observedAt, digest, reason}` from the step's observer.
  * @param {Object} options.record
  * @param {String} options.recordPath
  * @param {Object} options.host
@@ -299,12 +314,22 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
 export async function settleReceipt({effectId, observation, record, recordPath, host}) {
     const existing = findReceipt(record, effectId);
 
-    if (!existing || existing.outcome !== RECEIPT_OUTCOMES.reconcileRequired) {
-        throw new Error(`settleReceipt: '${effectId}' holds no reconcile-required receipt.`);
+    if (!existing || ![RECEIPT_OUTCOMES.pending, RECEIPT_OUTCOMES.reconcileRequired].includes(existing.outcome)) {
+        throw new Error(`settleReceipt: '${effectId}' holds no pending or reconcile-required receipt.`);
     }
 
     if (observation?.status !== 'ok' || observation.matchesTarget !== true) {
-        return {record, receipt: existing, settled: false, reason: observation?.reason ?? 'the observation did not read ok for the bound target'};
+        const reason = observation?.reason ?? 'the observation did not read ok for the bound target';
+
+        if (existing.outcome !== RECEIPT_OUTCOMES.pending) {
+            return {record, receipt: existing, settled: false, reason};
+        }
+
+        const receipt = reconcileRequiredReceipt(existing, host), next = withReceipt(record, receipt);
+
+        await persistSetupRecord(recordPath, next, host);
+
+        return {record: next, receipt, settled: false, reason};
     }
 
     const receipt = {
@@ -320,6 +345,35 @@ export async function settleReceipt({effectId, observation, record, recordPath, 
     await persistSetupRecord(recordPath, next, host);
 
     return {record: next, receipt, settled: true, reason: null};
+}
+
+/**
+ * @summary Admits a credential REFERENCE before the record sees it: the answer must be the absolute path
+ * of a regular file this process can read. A pasted token is not a path, so it is refused here and never
+ * recorded, and the verdict repeats nothing of the input — a refusal names the rule, never the value.
+ * @param {Object} options
+ * @param {*}      options.answer
+ * @param {Object} [options.fsModule=fsPromises]
+ * @returns {Promise<{ok: Boolean, path: String|null, reason: String|null}>}
+ */
+export async function admitCredentialReference({answer, fsModule = fsPromises}) {
+    const text = typeof answer === 'string' ? answer.trim() : '';
+
+    if (!text || !path.isAbsolute(text)) {
+        return {ok: false, path: null, reason: 'not the absolute path of a file; the value was not recorded'};
+    }
+
+    try {
+        if (!(await fsModule.stat(text)).isFile()) {
+            return {ok: false, path: null, reason: 'the path is not a regular file; the value was not recorded'};
+        }
+
+        await fsModule.access(text, fsPromises.constants.R_OK);
+    } catch {
+        return {ok: false, path: null, reason: 'no readable file at that path; the value was not recorded'};
+    }
+
+    return {ok: true, path: text, reason: null};
 }
 
 /**
