@@ -722,7 +722,7 @@ test.describe('AI provider keep_alive payload shape (#12080, #12089)', () => {
         expect(capturedPayload.options.keep_alive).toBeUndefined();
     });
 
-    test('OpenAiCompatible.stream() defaults keep_alive to top-level payload', async () => {
+    test('OpenAiCompatible.stream() sends no keep_alive by default and none of the call-site bookkeeping — a strict endpoint refuses unknown fields', async () => {
         let capturedPayload;
 
         globalThis.fetch = async (url, init) => {
@@ -744,19 +744,51 @@ test.describe('AI provider keep_alive payload shape (#12080, #12089)', () => {
         });
         const chunks = [];
 
-        for await (const chunk of provider.stream('hello', {num_ctx: 8192, temperature: 0.2})) {
+        // the extractor's own options: a schema, the bookkeeping it keeps per call, an Ollama-ism
+        for await (const chunk of provider.stream('hello', {num_ctx: 8192, temperature: 0.2, operationLabel: 'REM Tri-Vector x', operationStage: 'rem-tri-vector', priority: 'batch', timeoutMs: 1000, maxCompletionTokens: 64, responseSchema: {type: 'object'}, responseSchemaName: 'probe'})) {
             chunks.push(chunk);
         }
 
         expect(chunks).toEqual(['ok']);
         expect(capturedPayload).toMatchObject({
-            model      : 'gemma4-test',
-            stream     : true,
-            keep_alive : -1,
-            temperature: 0.2
+            model          : 'gemma4-test',
+            stream         : true,
+            temperature    : 0.2,
+            max_tokens     : 64,
+            response_format: {type: 'json_schema', json_schema: {name: 'probe'}}
         });
-        expect(capturedPayload.options).toBeUndefined();
-        expect(capturedPayload.num_ctx).toBeUndefined();
+        // nothing a strict endpoint would refuse: Gemini's compat layer answered 400 "Unknown name" to these
+        for (const key of ['keep_alive', 'operationLabel', 'operationStage', 'priority', 'timeoutMs', 'signal', 'onProviderChunk', 'maxCompletionTokens', 'responseSchema', 'responseSchemaName', 'responseSchemaStrict', 'options', 'num_ctx']) {
+            expect(capturedPayload[key], key).toBeUndefined();
+        }
+    });
+
+    test('OpenAiCompatible.stream() sends keep_alive when the provider is configured with one', async () => {
+        let capturedPayload;
+
+        globalThis.fetch = async (url, init) => {
+            capturedPayload = JSON.parse(init.body);
+
+            return {
+                ok  : true,
+                body: createReadableStream([
+                    'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+                    'data: [DONE]\n\n'
+                ])
+            };
+        };
+
+        const provider = Neo.create(OpenAiCompatibleProvider, {
+            host     : 'http://openai-compatible.test',
+            keepAlive: -1,
+            modelName: 'gemma4-test'
+        });
+
+        for await (const chunk of provider.stream('hello', {temperature: 0.2})) {
+            expect(chunk).toBe('ok');
+        }
+
+        expect(capturedPayload).toMatchObject({model: 'gemma4-test', stream: true, keep_alive: -1, temperature: 0.2});
     });
 
     test('OpenAiCompatible.stream() keeps explicit keep_alive top-level', async () => {
@@ -823,9 +855,8 @@ test.describe('AI provider keep_alive payload shape (#12080, #12089)', () => {
 
         expect(chunks).toEqual(['json ok']);
         expect(capturedPayload).toMatchObject({
-            model     : 'gemma4-test',
-            stream    : true,
-            keep_alive: -1
+            model : 'gemma4-test',
+            stream: true
         });
         // A schema-less json_object request no longer emits the LM-Studio-rejected json_object form.
         expect(capturedPayload.response_format).toBeUndefined();
@@ -905,14 +936,13 @@ test.describe('AI provider keep_alive payload shape (#12080, #12089)', () => {
         expect(capturedPayload).toMatchObject({
             model      : 'gemma4-test',
             stream     : true,
-            keep_alive : -1,
             temperature: 0.2
         });
         expect(capturedPayload.operationLabel).toBeUndefined();
         expect(capturedPayload.timeoutMs).toBeUndefined();
     });
 
-    test('OpenAiCompatible.generate() defaults keep_alive through the streaming payload', async () => {
+    test('OpenAiCompatible.generate() carries the provider\'s configured keep_alive through the streaming payload, and none by default', async () => {
         let capturedPayload;
 
         globalThis.fetch = async (url, init) => {
@@ -928,20 +958,23 @@ test.describe('AI provider keep_alive payload shape (#12080, #12089)', () => {
             };
         };
 
-        const provider = Neo.create(OpenAiCompatibleProvider, {
+        const configured = Neo.create(OpenAiCompatibleProvider, {
+            host     : 'http://openai-compatible.test',
+            keepAlive: '10m',
+            modelName: 'gemma4-test'
+        });
+
+        expect((await configured.generate('hello', {temperature: 0.2})).content).toBe('ok');
+        expect(capturedPayload).toMatchObject({model: 'gemma4-test', stream: true, keep_alive: '10m', temperature: 0.2});
+
+        const plain = Neo.create(OpenAiCompatibleProvider, {
             host     : 'http://openai-compatible.test',
             modelName: 'gemma4-test'
         });
 
-        const result = await provider.generate('hello', {temperature: 0.2});
-
-        expect(result.content).toBe('ok');
-        expect(capturedPayload).toMatchObject({
-            model      : 'gemma4-test',
-            stream     : true,
-            keep_alive : -1,
-            temperature: 0.2
-        });
+        expect((await plain.generate('hello', {temperature: 0.2})).content).toBe('ok');
+        expect(capturedPayload).toMatchObject({model: 'gemma4-test', stream: true, temperature: 0.2});
+        expect(capturedPayload.keep_alive).toBeUndefined();
     });
 
     test('OpenAiCompatible.generate() preserves streaming finish_reason metadata (#13984)', async () => {
@@ -976,7 +1009,6 @@ test.describe('AI provider keep_alive payload shape (#12080, #12089)', () => {
         expect(capturedPayload).toMatchObject({
             model     : 'gemma4-test',
             stream    : true,
-            keep_alive: -1,
             max_tokens: 8192
         });
         expect(capturedPayload.maxCompletionTokens).toBeUndefined();
@@ -1020,9 +1052,8 @@ test.describe('AI provider keep_alive payload shape (#12080, #12089)', () => {
             }
         });
         expect(capturedPayload).toMatchObject({
-            model     : 'gemma4-test',
-            stream    : true,
-            keep_alive: -1
+            model : 'gemma4-test',
+            stream: true
         });
         // A schema-less application/json request no longer emits the rejected json_object form.
         expect(capturedPayload.response_format).toBeUndefined();

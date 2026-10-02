@@ -44,14 +44,15 @@ class OpenAiCompatibleProvider extends Base {
          */
         apiKey: '',
         /**
-         * @summary Provider keep-alive retention hint for OpenAI-compatible servers that
-         * honor Ollama-style cache-retention extensions.
+         * @summary Ollama's cache-retention hint for servers that honour the extension, sent as
+         * the request's `keep_alive` only when set.
          *
-         * `-1` requests resident model/cache retention; unsupported servers ignore the
-         * non-standard payload field.
-         * @member {Number|String} keepAlive=-1
+         * `null` (the default) sends nothing: the field has no OpenAI meaning, a lenient server
+         * ignores it, and a strict endpoint (Gemini's compat layer, OpenAI) refuses a request
+         * carrying an unknown field. `-1` requests resident retention where the extension exists.
+         * @member {Number|String|null} keepAlive=null
          */
-        keepAlive: -1,
+        keepAlive: null,
         /**
          * @member {String} systemPrompt=''
          */
@@ -102,10 +103,13 @@ class OpenAiCompatibleProvider extends Base {
         };
 
         const clonedOptions = { ...options };
-        delete clonedOptions.operationLabel;
-        delete clonedOptions.onProviderChunk;
-        delete clonedOptions.signal;
-        delete clonedOptions.timeoutMs;
+
+        // Neo's call-site bookkeeping never crosses the wire: a lenient server ignores an unknown
+        // field, a strict OpenAI-compatible endpoint (Gemini's compat layer, OpenAI) refuses the
+        // whole request — so every key a caller adds for its own ledger is named here.
+        for (const key of ['onProviderChunk', 'operationLabel', 'operationStage', 'priority', 'signal', 'timeoutMs']) {
+            delete clonedOptions[key];
+        }
 
         if (clonedOptions.maxCompletionTokens !== undefined) {
             if (clonedOptions.max_tokens === undefined && clonedOptions.max_completion_tokens === undefined) {
@@ -153,7 +157,8 @@ class OpenAiCompatibleProvider extends Base {
             delete clonedOptions.tools;
         }
 
-        if (clonedOptions.keep_alive === undefined) {
+        // Ollama's retention field rides the wire only when a caller or the provider config asks for it
+        if (clonedOptions.keep_alive === undefined && this.keepAlive != null) {
             payload.keep_alive = this.keepAlive;
         }
 

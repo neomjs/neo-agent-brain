@@ -207,7 +207,7 @@ x-provider-lane-env: &provider-lane-env
   # MODEL-RESIDENCY RETRIES — engage when the endpoint drops the model between calls.
   # NEO_OPENAI_COMPATIBLE_UNLOAD_RETRY_COUNT: "3"       # retries after a model-unloaded/404 response
   # NEO_OPENAI_COMPATIBLE_UNLOAD_RETRY_DELAY_MS: "500"  # wait before each residency retry
-  # NEO_OPENAI_COMPATIBLE_KEEP_ALIVE: "-1"              # -1 keeps the model resident indefinitely
+  # NEO_OPENAI_COMPATIBLE_KEEP_ALIVE: null              # unset by default (the field is sent only when set); -1 keeps the model resident where the server honours it
   #
   # Plane-class guidance: `-1` keeps THIS lane's model resident in its own engine indefinitely, so the
   # unload retries above stay an exception rather than a steady-state cost. It is not cross-engine

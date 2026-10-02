@@ -61,8 +61,14 @@ failure modes:
   or `ollama`.
 - **Graph generation** uses `graphProvider` (`NEO_GRAPH_PROVIDER`). This is the
   Dream pipeline path that extracts concepts, relationships, gaps, and Golden
-  Path topology. Today it supports local `openAiCompatible` or `ollama`
-  providers.
+  Path topology. Today it supports `openAiCompatible` or `ollama` providers —
+  the hosted preset points `openAiCompatible` at Gemini's compatible endpoint.
+  The OpenAI-compatible request carries request fields only: the client strips
+  its callers' bookkeeping (`operationLabel`, `operationStage`, `priority`,
+  `timeoutMs`, `signal`) and sends Ollama's `keep_alive` only when
+  `NEO_OPENAI_COMPATIBLE_KEEP_ALIVE` is set, because a strict endpoint (Gemini's
+  compat layer, OpenAI) refuses a request carrying an unknown field while a local
+  server merely ignores one.
 - **Knowledge Base ask synthesis** has its own `askSynthesis` block. It can be
   configured separately from the bulk chat path so an interactive ask can use a
   different budget, timeout, or provider from background summarization.

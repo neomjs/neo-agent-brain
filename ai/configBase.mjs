@@ -883,7 +883,14 @@ class ConfigBase extends ConfigProvider {
                 // longer than interactive single embeddings, but must not hold the provider queue forever.
                 batchEmbeddingTimeoutMs: leaf(300000, 'NEO_OPENAI_COMPATIBLE_BATCH_EMBEDDING_TIMEOUT_MS', 'number'),
                 batchEmbeddingYieldMs  : leaf(0, 'NEO_OPENAI_COMPATIBLE_BATCH_EMBEDDING_YIELD_MS', 'number'),
-                keep_alive             : leaf(-1, 'NEO_OPENAI_COMPATIBLE_KEEP_ALIVE', 'keepAlive'),
+                /**
+                 * Ollama's cache-retention field, sent as the request's `keep_alive` only when set.
+                 * `null` (the default) sends nothing: the field has no OpenAI meaning, LM Studio
+                 * ignores it, and a strict endpoint (Gemini's compat layer, OpenAI) refuses a
+                 * request carrying it. Set it for a server that honours the extension.
+                 * @type {Number|String|null}
+                 */
+                keep_alive             : leaf(null, 'NEO_OPENAI_COMPATIBLE_KEEP_ALIVE', 'keepAlive'),
                 requireParallelModels  : leaf(2, 'NEO_OPENAI_COMPATIBLE_REQUIRE_PARALLEL_MODELS', 'number')
             },
             /**
