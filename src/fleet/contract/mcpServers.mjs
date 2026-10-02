@@ -5,14 +5,16 @@
  */
 
 /**
- * @type {ReadonlyArray<{key: String, label: String, core: Boolean, defaultEnabled: Boolean}>}
+ * A workflow server names its `forge`: it works with that forge's PAT, which the Fleet injects only into a seat
+ * bound to that forge.
+ * @type {ReadonlyArray<{key: String, label: String, core: Boolean, defaultEnabled: Boolean, forge?: String}>}
  */
 export const MCP_SERVERS = Object.freeze([
     Object.freeze({key: 'memory-core',     label: 'Memory Core',     core: true,  defaultEnabled: true}),
     Object.freeze({key: 'knowledge-base',  label: 'Knowledge Base',  core: true,  defaultEnabled: true}),
     Object.freeze({key: 'neural-link',     label: 'Neural Link',     core: true,  defaultEnabled: true}),
-    Object.freeze({key: 'github-workflow', label: 'GitHub workflow', core: false, defaultEnabled: true}),
-    Object.freeze({key: 'gitlab-workflow', label: 'GitLab workflow', core: false, defaultEnabled: false})
+    Object.freeze({key: 'github-workflow', label: 'GitHub workflow', core: false, defaultEnabled: true,  forge: 'github'}),
+    Object.freeze({key: 'gitlab-workflow', label: 'GitLab workflow', core: false, defaultEnabled: false, forge: 'gitlab'})
 ]);
 
 /**

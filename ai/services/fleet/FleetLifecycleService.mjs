@@ -16,6 +16,7 @@ import memoryCoreConfig                                             from '../../
 import knowledgeBaseConfig                                          from '../../mcp/server/knowledge-base/config.mjs';
 import neuralLinkConfig                                             from '../../mcp/server/neural-link/config.mjs';
 import githubWorkflowConfig                                         from '../../mcp/server/github-workflow/config.mjs';
+import gitlabWorkflowConfig                                         from '../../mcp/server/gitlab-workflow/config.mjs';
 import {MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS}                   from './managedAgentWorkspacePlan.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities} from './manageCodexDesktopRuntime.mjs';
 
@@ -32,6 +33,56 @@ const TOOL_PROJECTION_MODE_ENV_VAR = 'NEO_NL_TOOL_PROJECTION_MODE';
 const AGENT_IDENTITY_ENV_VAR = 'NEO_AGENT_IDENTITY';
 
 const REMOTE_MCP_SERVER_KEYS = new Set(['memory-core', 'knowledge-base']);
+
+// The slots a GitLab seat's spawn fills (its PAT, its instance, its project), reserved like the PAT slot.
+const GITLAB_SEAT_ENV = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS['gitlab-workflow'].seatEnv;
+
+// Values the Fleet injects per seat, which the resident envelope never exports from the host's own config.
+const SEAT_ENV = new Set([
+    AGENT_IDENTITY_ENV_VAR,
+    ...Object.values(MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS).flatMap(descriptor => descriptor.seatEnv || [])
+]);
+
+/**
+ * @summary The GitLab project a seat works in: its working repository's slug, when that repository lives
+ * on the instance the seat's PAT is bound to.
+ * @param {Object} agent The registry definition.
+ * @returns {String|null}
+ * @private
+ */
+function gitlabProjectOf(agent) {
+    const repo = agent.metadata?.repo;
+
+    if (repo?.forge !== 'gitlab' || typeof repo.cloneUrl !== 'string') return null;
+
+    return isOnInstance(repo.cloneUrl, new URL(agent.forgeHost)) ? repo.repoSlug : null
+}
+
+/**
+ * @summary Whether a clone URL addresses the bound instance. An `https` URL must carry its exact origin, so the
+ * same host on another port is another instance. An `ssh` URL or scp-style address matches by host alone, because
+ * SSH has its own port.
+ * @param {String} cloneUrl
+ * @param {URL}    instance The seat's parsed `forgeHost`.
+ * @returns {Boolean}
+ * @private
+ */
+function isOnInstance(cloneUrl, instance) {
+    const scpHost = cloneUrl.match(/^[^@/:]+@(\[[^\]]+\]|[^/:]+):/)?.[1];
+
+    try {
+        // a non-special scheme normalizes an IPv6 host but keeps a DNS name's case
+        if (scpHost) return new URL(`ssh://${scpHost}`).hostname.toLowerCase() === instance.hostname;
+
+        const url = new URL(cloneUrl);
+
+        if (url.protocol === 'https:') return url.origin === instance.origin;
+
+        return url.protocol === 'ssh:' && url.hostname.toLowerCase() === instance.hostname
+    } catch {
+        return false
+    }
+}
 
 /**
  * @summary Parse Codex's normalized MCP list while tolerating its benign launcher warning outside
@@ -487,10 +538,11 @@ class FleetLifecycleService extends Base {
             REMOTE_MCP_CREDENTIAL_ENV_VAR,
             this.bridgeTokenEnvVar,
             TOOL_PROJECTION_MODE_ENV_VAR,
-            AGENT_IDENTITY_ENV_VAR
+            AGENT_IDENTITY_ENV_VAR,
+            ...GITLAB_SEAT_ENV
         ];
         if (envKeys.some(key => !key) || new Set(envKeys).size !== envKeys.length) {
-            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential slot, bridgeTokenEnvVar, the NL-policy var, and the agent-identity var must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
+            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential slot, bridgeTokenEnvVar, the NL-policy var, the agent-identity var, and the GitLab seat slots must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
         }
 
         // The launch env may not name a reserved slot: allowing it would either let registry-authored
@@ -581,14 +633,24 @@ class FleetLifecycleService extends Base {
             ? opts.resolvedCredential
             : this.getRegistry().resolveCredential(id);
 
-        // Every agent holds its GitHub PAT: without one the seat's `gh` falls back to the machine's
+        // Every agent holds its forge's PAT: without one a GitHub seat's `gh` falls back to the machine's
         // keyring account, someone else's identity. Every spawn passes here, restarts included, and a
         // blank value stored before the requirement is no PAT either.
         if (typeof pat !== 'string' || pat.trim() === '') {
-            throw new Error(`FleetLifecycleService.start: agent '${id}' has no GitHub PAT stored; store one before starting it.`)
+            throw new Error(`FleetLifecycleService.start: agent '${id}' has no ${agent.forge === 'gitlab' ? 'GitLab' : 'GitHub'} PAT stored; store one before starting it.`)
         }
 
-        env[this.credentialEnvVar] = pat;
+        // The PAT goes where its forge's workflow server reads it: a GitHub PAT under credentialEnvVar, a
+        // GitLab PAT beside its own instance and the working project — never under GH_TOKEN.
+        if (agent.forge === 'gitlab') {
+            const project = gitlabProjectOf(agent);
+
+            env.NEO_GITLAB_PAT  = pat;
+            env.NEO_GITLAB_HOST = agent.forgeHost;
+            if (project) env.NEO_GITLAB_PROJECT = project;
+        } else {
+            env[this.credentialEnvVar] = pat;
+        }
 
         // Remote plane bearer: a second provider credential resolved + authenticated by
         // startAgentProvisioned through FleetTenantService. It has NO implicit fallback to the
@@ -1818,7 +1880,7 @@ class FleetLifecycleService extends Base {
             const descriptor    = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
             const providerSlots = descriptor.providerCredentialEnv || {};
             const envNames      = descriptor.runtimeEnv.filter(name =>
-                !['NEO_AGENT_IDENTITY', 'GH_TOKEN', 'GITHUB_TOKEN', 'NEO_FLEET_BRIDGE_TOKEN', ...Object.values(providerSlots)].includes(name));
+                !SEAT_ENV.has(name) && !Object.values(providerSlots).includes(name));
             if (descriptor.providerCredentialEnv) {
                 for (const provider of [AiConfig.modelProvider, AiConfig.embeddingProvider]) {
                     if (providerSlots[provider]) envNames.push(providerSlots[provider]);
@@ -1826,7 +1888,8 @@ class FleetLifecycleService extends Base {
             }
             const values = this.residentMcpEnvSource ? this.residentMcpEnvSource(key) : ({
                 'memory-core': memoryCoreConfig, 'knowledge-base': knowledgeBaseConfig,
-                'neural-link': neuralLinkConfig, 'github-workflow': githubWorkflowConfig
+                'neural-link': neuralLinkConfig, 'github-workflow': githubWorkflowConfig,
+                'gitlab-workflow': gitlabWorkflowConfig
             })[key].exportEnv({
                 envNames,
                 includePlaneMembers: true

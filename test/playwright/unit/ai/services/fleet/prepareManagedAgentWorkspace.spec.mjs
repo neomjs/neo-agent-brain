@@ -269,9 +269,9 @@ function canonicalMcpMatrix(overrides={}) {
     }
 }
 
-function logicalInput({harnessType='codex', mcpMatrix=canonicalMcpMatrix(), mcpTarget=null}={}) {
+function logicalInput({harnessType='codex', mcpMatrix=canonicalMcpMatrix(), mcpTarget=null, forge}={}) {
     return {
-        agent: {id: 'agent-a', harnessType},
+        agent: {id: 'agent-a', harnessType, ...(forge ? {forge} : {})},
         mcpMatrix,
         mcpTarget
     }
@@ -515,6 +515,34 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
 
         expect(mcpDeclarationRefusal({harnessType: 'claude-desktop', mcpMatrix: canonicalMcpMatrix({'github-workflow': true})})).toBeNull();
         expect(mcpDeclarationRefusal({harnessType: 'claude-code', mcpMatrix: canonicalMcpMatrix({'github-workflow': true}), tenant: true})).toBeNull()
+    });
+
+    test('the GitLab workflow server runs only on a seat bound to GitLab, and only where the harness renders it', () => {
+        const gitlab = canonicalMcpMatrix({'gitlab-workflow': true});
+
+        for (const harnessType of ['codex', 'claude-code', 'claude-desktop']) {
+            expect(mcpDeclarationRefusal({harnessType, mcpMatrix: gitlab, forge: 'gitlab'}), harnessType).toBeNull();
+
+            const plan = createManagedAgentWorkspacePlan(logicalInput({harnessType, mcpMatrix: gitlab, forge: 'gitlab'}));
+
+            expect(plan.agent.forge, harnessType).toBe('gitlab');
+            expect(plan.mcpServers.find(server => server.key === 'gitlab-workflow'), harnessType).toMatchObject({
+                enabled   : true,
+                secretEnv : ['NEO_GITLAB_PAT'],
+                runtimeEnv: expect.arrayContaining(['NEO_GITLAB_HOST', 'NEO_GITLAB_PAT', 'NEO_GITLAB_PROJECT'])
+            })
+        }
+
+        // a GitHub seat holds no GitLab PAT; Kimi and OpenCode render fixed server lists without the server
+        expect(mcpDeclarationRefusal({harnessType: 'codex', mcpMatrix: gitlab})).toMatch(/needs a seat bound to a GitLab instance/);
+
+        for (const harnessType of ['kimi-code', 'opencode']) {
+            expect(mcpDeclarationRefusal({harnessType, mcpMatrix: gitlab, forge: 'gitlab'}), harnessType).toMatch(/fixed server list without it/)
+        }
+
+        // GitHub stays implicit, so a GitHub seat's plan is unchanged; an unknown forge is malformed input
+        expect(createManagedAgentWorkspacePlan(logicalInput()).agent).toEqual({id: 'agent-a', harnessType: 'codex'});
+        expect(() => createManagedAgentWorkspacePlan(logicalInput({forge: 'bitbucket'}))).toThrow(TypeError);
     });
 
     test('host apply accepts a structural clone and records only the bounded effect vocabulary', async () => {
@@ -1828,6 +1856,51 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
         await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
         expect(await fs.readdir(outside)).toEqual([]);
+    });
+
+    test("a GitLab seat's GitLab workflow server reaches every descriptor-rendered harness with its three slots", async () => {
+        const cases = [{
+            harnessType: 'codex',
+            inspect    : async opts => {
+                const table = (await read(path.join(opts.targetRepoRoot, '.codex', 'config.toml')))
+                    .match(/\[mcp_servers\."neo-mjs-gitlab-workflow"\][\s\S]*?(?=\n\[mcp_servers\."neo-mjs-(?!gitlab-workflow)|$)/)[0];
+
+                // an enabled row leaves the switch to the seat; only a disabled row writes `enabled = false`
+                expect(table).not.toContain('enabled = false');
+                for (const name of ['NEO_GITLAB_HOST', 'NEO_GITLAB_PAT', 'NEO_GITLAB_PROJECT']) expect(table).toContain(`"${name}"`)
+            }
+        }, {
+            harnessType: 'claude-code',
+            inspect    : async (opts, result) => {
+                const env = JSON.parse(await read(path.join(result.instanceHome, 'mcp-config.json'))).mcpServers['neo-mjs-gitlab-workflow'].env;
+
+                expect(env.NEO_GITLAB_PAT).toBe('${NEO_GITLAB_PAT}');
+                expect(Object.keys(env)).toEqual(expect.arrayContaining(['NEO_GITLAB_HOST', 'NEO_GITLAB_PROJECT']))
+            }
+        }, {
+            harnessType: 'claude-desktop',
+            inspect    : async opts => {
+                const env = JSON.parse(await read(path.join(opts.claudeConfigRoot, '.claude.json')))
+                    .projects[opts.targetRepoRoot].mcpServers['neo-mjs-gitlab-workflow'].env;
+
+                expect(env.NEO_GITLAB_PAT).toBe('${NEO_GITLAB_PAT}');
+                expect(Object.keys(env)).toEqual(expect.arrayContaining(['NEO_GITLAB_HOST', 'NEO_GITLAB_PROJECT']))
+            }
+        }];
+
+        for (const {harnessType, inspect} of cases) {
+            const
+                agent  = {
+                    ...makeAgent(harnessType, {id: `gl-${harnessType}`, mcpServers: {'github-workflow': false, 'gitlab-workflow': true}}),
+                    forge: 'gitlab', forgeHost: 'https://gitlab.example.com'
+                },
+                opts   = options(agent);
+
+            // what resolveResidentMcpEnvironment hands the enabled server at Start
+            opts.residentMcpEnv['gitlab-workflow'] = {NEO_PLANE_DATA_ROOT: path.join(root, 'placed-plane')};
+
+            await inspect(opts, await prepareManagedAgentWorkspace(opts))
+        }
     });
 
     test('only the Claude families get a memory pin', async () => {

@@ -1321,6 +1321,83 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         expect(keys(tenant)).toEqual(['neural-link', 'github-workflow']);
     });
 
+    test("the default producer gives the GitLab workflow server its plane slots and never a GitLab seat value", () => {
+        install();
+        FleetLifecycleService.residentMcpEnvSource = null;
+        const records = FleetLifecycleService.resolveResidentMcpEnvironment({
+            id        : 'a', harnessType: 'claude-desktop', forge: 'gitlab', forgeHost: 'https://gitlab.example.com',
+            mcpServers: {'github-workflow': false, 'gitlab-workflow': true}
+        });
+        expect(Object.keys(records)).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'gitlab-workflow']);
+        expect(records['gitlab-workflow'].NEO_PLANE_DATA_ROOT).toBe(AiConfig.plane.dataRoot);
+        // the host's own GitLab host, token and project are config; a seat's are injected at spawn
+        expect(Object.keys(records['gitlab-workflow']).filter(key => key.startsWith('NEO_GITLAB_'))).toEqual([]);
+    });
+
+    test('a GitLab seat starts with its own PAT, instance and project in the GitLab slots, never under GH_TOKEN', async () => {
+        const
+            ORIGIN    = 'https://gitlab.example.com',
+            spawnStub = install({agents: {a: agentDef('a', {
+                harnessType: 'claude-desktop', forge: 'gitlab', forgeHost: ORIGIN,
+                mcpServers : {'github-workflow': false, 'gitlab-workflow': true},
+                metadata   : {repo: {repoSlug: 'group/sub/project', cloneUrl: `${ORIGIN}/group/sub/project.git`, forge: 'gitlab'}}
+            })}}),
+            calls     = [];
+        FleetLifecycleService.instanceRoot = DESKTOP_ROOT;
+        FleetLifecycleService.harnessBinaryPaths = {'claude-desktop': process.execPath};
+        FleetLifecycleService.residentMcpEnvSource = key => {
+            calls.push(key);
+            return {NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane')};
+        };
+        await FleetLifecycleService.start('a');
+        const env = spawnStub.calls[0].opts.env;
+        expect(calls).toEqual(['memory-core', 'knowledge-base', 'neural-link', 'gitlab-workflow']);
+        expect(env).toMatchObject({NEO_GITLAB_PAT: FIXTURE_PAT, NEO_GITLAB_HOST: ORIGIN, NEO_GITLAB_PROJECT: 'group/sub/project'});
+        expect(env.GH_TOKEN).toBeUndefined();
+        await FleetLifecycleService.stop('a');
+        // a host GitLab token in the envelope is refused, never spawned
+        FleetLifecycleService.residentMcpEnvSource = () => ({NEO_PLANE_DATA_ROOT: path.join(DESKTOP_ROOT, 'plane'), NEO_GITLAB_PAT: 'host-token'});
+        expect(() => FleetLifecycleService.start('a')).toThrow(/reserved resident MCP/);
+        expect(spawnStub.calls).toHaveLength(1);
+    });
+
+    test("a GitLab seat's project is named only when its working repository is on the seat's instance", async () => {
+        const cases = [ // [the seat's instance, the working clone, is the project named]
+            ['https://gitlab.example.com',      'git@gitlab.example.com:group/project.git',            true],
+            ['https://gitlab.example.com',      'https://gitlab.other.example/group/project.git',      false],
+            ['https://gitlab.example.com',      'https://gitlab.example.com:443/group/project.git',    true],  // the default port, spelled out
+            ['https://gitlab.example.com:8443', 'https://gitlab.example.com:8443/group/project.git',   true],
+            ['https://gitlab.example.com:8443', 'https://gitlab.example.com:9443/group/project.git',   false], // another port is another instance
+            ['https://gitlab.example.com:8443', 'https://gitlab.example.com/group/project.git',        false], // and so is the implicit 443
+            ['https://gitlab.example.com:8443', 'ssh://git@gitlab.example.com:2222/group/project.git', true],  // SSH has its own port
+            ['https://gitlab.example.com:8443', 'git@GitLab.Example.com:group/project.git',            true],
+            ['https://[2001:db8::1]:8443',      'https://[2001:DB8::1]:8443/group/project.git',        true],
+            ['https://[2001:db8::1]:8443',      'https://[2001:db8::2]:8443/group/project.git',        false],
+            ['https://[2001:db8::1]:8443',      'git@[2001:db8::1]:group/project.git',                 true]
+        ];
+        const spawnStub = install({agents: Object.fromEntries(cases.map(([forgeHost, cloneUrl], index) => [`s${index}`, agentDef(`s${index}`, {
+            forge   : 'gitlab', forgeHost,
+            metadata: {launch: LAUNCH, repo: {repoSlug: 'group/project', cloneUrl, forge: 'gitlab'}}
+        })]))});
+
+        for (const index of cases.keys()) await FleetLifecycleService.start(`s${index}`);
+
+        cases.forEach(([forgeHost, cloneUrl, named], index) => {
+            const env = spawnStub.calls[index].opts.env;
+
+            named ? expect(env.NEO_GITLAB_PROJECT, `${cloneUrl} on ${forgeHost}`).toBe('group/project')
+                  : expect(env, `${cloneUrl} on ${forgeHost}`).not.toHaveProperty('NEO_GITLAB_PROJECT');
+            expect(env).toMatchObject({NEO_GITLAB_PAT: FIXTURE_PAT, NEO_GITLAB_HOST: forgeHost})
+        });
+    });
+
+    test('SECURITY: a launch env cannot pre-load a GitLab seat slot', () => {
+        for (const key of ['NEO_GITLAB_PAT', 'NEO_GITLAB_HOST', 'NEO_GITLAB_PROJECT']) {
+            install({agents: {a: agentDef('a', {metadata: {launch: {command: 'x', args: [], env: {[key]: 'spoofed'}}}})}, creds: {}});
+            expect(() => FleetLifecycleService.start('a'), key).toThrow(/collides with a reserved env slot/);
+        }
+    });
+
     test('accepts only the exact adapter grammar for every supported harness family', async () => {
         install();
         FleetLifecycleService.harnessBinaryPaths = {

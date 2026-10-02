@@ -3,6 +3,7 @@ import {MCP_SERVERS}                   from '../../../src/fleet/contract/mcpServ
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from './mcpServers.mjs';
 import {supportsTenantMcpTarget}       from '../../../src/fleet/contract/harnessTypes.mjs';
 import {LAUNCHABLE_HARNESS_TYPES}      from './deriveHarnessLaunchSpec.mjs';
+import {REPO_FORGES}                   from './deriveAgentRepoPath.mjs';
 
 const NEO_MCP_NAME_PREFIX = 'neo-mjs-';
 
@@ -31,7 +32,8 @@ const KNOWLEDGE_RUNTIME_ENV_BEFORE_PLACEMENT = Object.freeze([
  * @summary Curated, installed-checkout-relative MCP execution vocabulary. The Body-safe catalog remains the
  * durable key/default authority; this pure sibling adds no host binding, environment read, command,
  * or credential value. The host apply edge consumes the relative entrypoint only after validating a
- * logical plan produced here.
+ * logical plan produced here. `seatEnv` names the values the Fleet injects per seat at spawn: they never
+ * come from the host's own config, so the resident envelope excludes them.
  * @type {Readonly<Object<String, Object>>}
  */
 export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
@@ -56,22 +58,31 @@ export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
             'NEO_FLEET_BRIDGE_TOKEN'
         ]),
         requiredRuntimeEnv: Object.freeze(['NEO_AGENT_IDENTITY']),
-        secretEnv         : Object.freeze(['NEO_FLEET_BRIDGE_TOKEN'])
+        secretEnv         : Object.freeze(['NEO_FLEET_BRIDGE_TOKEN']),
+        seatEnv           : Object.freeze(['NEO_FLEET_BRIDGE_TOKEN'])
     }),
     'github-workflow': Object.freeze({
         entrypoint        : 'ai/mcp/server/github-workflow/mcp-server.mjs',
         runtimeEnv        : Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY']),
         requiredRuntimeEnv: Object.freeze(['GH_TOKEN', 'NEO_AGENT_IDENTITY']),
-        secretEnv         : Object.freeze(['GH_TOKEN'])
+        secretEnv         : Object.freeze(['GH_TOKEN']),
+        seatEnv           : Object.freeze(['GH_TOKEN', 'GITHUB_TOKEN'])
     }),
     'gitlab-workflow': Object.freeze({
         entrypoint        : 'ai/mcp/server/gitlab-workflow/mcp-server.mjs',
         runtimeEnv        : Object.freeze(['NEO_AGENT_IDENTITY', 'NEO_GITLAB_HOST', 'NEO_GITLAB_PAT', 'NEO_GITLAB_PROJECT']),
         requiredRuntimeEnv: Object.freeze(['NEO_AGENT_IDENTITY', 'NEO_GITLAB_PAT']),
         secretEnv         : Object.freeze(['NEO_GITLAB_PAT']),
-        unsupportedReason : 'FleetLifecycleService has no GitLab credential injection contract'
+        seatEnv           : Object.freeze(['NEO_GITLAB_HOST', 'NEO_GITLAB_PAT', 'NEO_GITLAB_PROJECT'])
     })
 });
+
+/**
+ * Harnesses whose seat configuration renders a fixed server list without the GitLab workflow server.
+ * @type {ReadonlyArray<String>}
+ * @private
+ */
+const HARNESSES_WITHOUT_GITLAB_WORKFLOW = Object.freeze(['kimi-code', 'opencode']);
 
 {
     const catalogKeys = new Set(MCP_SERVERS.map(entry => entry.key));
@@ -90,7 +101,8 @@ export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
 
 /**
  * @typedef {Object} ManagedAgentWorkspacePlanInput
- * @property {{id: String, harnessType: String}} agent Closed opaque seat + harness intent.
+ * @property {{id: String, harnessType: String, forge?: String}} agent Closed opaque seat + harness intent; `forge`
+ *     only for a seat bound to GitLab.
  * @property {Object<String, Boolean>} mcpMatrix Complete canonical MCP enablement matrix.
  * @property {Object|null} [mcpTarget=null] Closed non-secret tenant resource intent.
  */
@@ -112,7 +124,8 @@ export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
 
 /**
  * @typedef {Object} ManagedAgentWorkspacePlan
- * @property {{id: String, harnessType: String}} agent Closed opaque seat + harness intent.
+ * @property {{id: String, harnessType: String, forge?: String}} agent Closed opaque seat + harness intent; `forge`
+ *     only for a seat bound to GitLab.
  * @property {String} artifactProfile Curated harness artifact profile.
  * @property {Object<String, Boolean>} mcpMatrix Complete canonical MCP enablement matrix.
  * @property {ManagedAgentWorkspaceMcpPlan[]} mcpServers Closed logical MCP plan.
@@ -120,7 +133,7 @@ export const MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS = Object.freeze({
 
 const
     LOGICAL_INPUT_KEYS       = Object.freeze(['agent', 'mcpMatrix', 'mcpTarget']),
-    LOGICAL_AGENT_KEYS       = Object.freeze(['id', 'harnessType']),
+    LOGICAL_AGENT_KEYS       = Object.freeze(['id', 'harnessType', 'forge']),
     MCP_TARGET_KEYS          = Object.freeze(['kind', 'credentialEnvVar', 'resources']),
     MCP_TARGET_RESOURCE_KEYS = Object.freeze(['memory-core', 'knowledge-base']),
     MCP_RESOURCE_KEYS        = Object.freeze(['url']),
@@ -196,11 +209,16 @@ export function createManagedAgentWorkspacePlan(input={}) {
 
 /** @private */
 function normalizeLogicalAgent(agent) {
-    assertExactRecord(agent, 'agent', LOGICAL_AGENT_KEYS);
+    assertExactRecord(agent, 'agent', LOGICAL_AGENT_KEYS, ['id', 'harnessType']);
     assertLogicalString(agent.id, 'agent.id');
     assertLogicalString(agent.harnessType, 'agent.harnessType');
 
-    return {id: agent.id, harnessType: agent.harnessType}
+    if (Object.hasOwn(agent, 'forge') && !REPO_FORGES.includes(agent.forge)) {
+        throw new TypeError(`createManagedAgentWorkspacePlan: 'agent.forge' must be one of ${REPO_FORGES.join(', ')}.`)
+    }
+
+    // GitHub stays implicit, as on the registry row, so a GitHub seat's plan is unchanged
+    return {id: agent.id, harnessType: agent.harnessType, ...(agent.forge === 'gitlab' ? {forge: 'gitlab'} : {})}
 }
 
 /** @private */
@@ -289,9 +307,10 @@ function normalizeLogicalMcpTarget(target) {
  * @param {String} declaration.harnessType Durable harness key.
  * @param {Object<String, Boolean>} declaration.mcpMatrix Complete canonical MCP enablement matrix.
  * @param {Boolean} [declaration.tenant=false] Memory Core and Knowledge Base target a tenant plane.
+ * @param {String} [declaration.forge='github'] The forge the seat's PAT is bound to.
  * @returns {String|null} The refusal reason.
  */
-export function mcpDeclarationRefusal({harnessType, mcpMatrix, tenant=false}) {
+export function mcpDeclarationRefusal({harnessType, mcpMatrix, tenant=false, forge='github'}) {
     if (tenant && !supportsTenantMcpTarget(harnessType)) {
         return `harness '${harnessType}' has no proven secret-safe tenant MCP grammar.`
     }
@@ -304,6 +323,16 @@ export function mcpDeclarationRefusal({harnessType, mcpMatrix, tenant=false}) {
         return `MCP server '${unsupported}' is enabled but unsupported: ${MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[unsupported].unsupportedReason}`
     }
 
+    if (mcpMatrix['gitlab-workflow']) {
+        if (forge !== 'gitlab') {
+            return "MCP server 'gitlab-workflow' needs a seat bound to a GitLab instance: define the seat with forge 'gitlab' and its host."
+        }
+
+        if (HARNESSES_WITHOUT_GITLAB_WORKFLOW.includes(harnessType)) {
+            return `MCP server 'gitlab-workflow' cannot run on harness '${harnessType}': its seat configuration renders a fixed server list without it.`
+        }
+    }
+
     return null
 }
 
@@ -313,7 +342,7 @@ function assertLogicalHarnessSupported({agent, mcpMatrix, tenant}) {
         throw new RangeError(`createManagedAgentWorkspacePlan: harness '${agent.harnessType}' has no launch/workspace adapter.`)
     }
 
-    const refusal = mcpDeclarationRefusal({harnessType: agent.harnessType, mcpMatrix, tenant});
+    const refusal = mcpDeclarationRefusal({harnessType: agent.harnessType, mcpMatrix, tenant, forge: agent.forge});
 
     if (refusal) {
         throw new RangeError(`createManagedAgentWorkspacePlan: ${refusal}`)

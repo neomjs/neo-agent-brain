@@ -406,7 +406,7 @@ class FleetRegistryService extends Base {
             matrix  = mcpServers === undefined ? null : normalizeMcpOverrides(mcpServers),
             target  = mcpTarget === undefined ? null : normalizeMcpTarget(mcpTarget);
 
-        const refusal = mcpDeclarationRefusal({harnessType, mcpMatrix: resolveMcpMatrix(matrix), tenant: !!target});
+        const refusal = mcpDeclarationRefusal({harnessType, mcpMatrix: resolveMcpMatrix(matrix), tenant: !!target, forge: account.forge});
 
         if (refusal) {
             throw new TypeError(`FleetRegistryService.defineAgent: ${refusal}`)
@@ -591,7 +591,7 @@ class FleetRegistryService extends Base {
 
         const nextHarnessType = Object.hasOwn(intent, 'harnessType') ? harnessType : existing.harnessType;
 
-        const refusal = mcpDeclarationRefusal({harnessType: nextHarnessType, mcpMatrix: resolveMcpMatrix(matrix), tenant: !!target});
+        const refusal = mcpDeclarationRefusal({harnessType: nextHarnessType, mcpMatrix: resolveMcpMatrix(matrix), tenant: !!target, forge: existing.forge});
 
         if (refusal) {
             reject(refusal)
