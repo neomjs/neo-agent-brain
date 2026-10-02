@@ -1175,6 +1175,9 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         const fs     = (await import('node:fs/promises')).default;
         const config = (await import('../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default;
         const dir    = config.memoryWal.dir, readdir = fs.readdir;
+        GraphService.upsertNode({id: 'availability-own-741', type: 'AGENT_MEMORY', name: 'availability', description: 'availability',
+            semanticVectorId: 'availability-own-741', properties: {agentIdentity: '@availability-wal-741', userId: 'sharing-caller',
+                sessionId: 'availability-741', timestamp: '2038-01-01T00:00:00.000Z', miniSummary: 'available graph row'}});
         fs.readdir = async (...args) => {
             if (args[0] === dir) throw Object.assign(new Error('fixture WAL unreadable'), {code: 'EACCES'});
             return readdir.apply(fs, args);
