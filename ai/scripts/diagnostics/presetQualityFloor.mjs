@@ -145,9 +145,14 @@ export function measurePayload(payload, documentText) {
         nameOf      = node => String(node.name ?? String(node.id).split(':').slice(1).join(':')).trim(),
         // a name is grounded when every word of it (three letters or more) occurs in the document; a canonical
         // Neo path (`Neo.a.b.Identity`) counts by its identity alone — the namespace is the model's knowledge of
-        // the codebase, which a thread rarely spells, while the identity is what the thread does or does not name
+        // the codebase, which a thread rarely spells, while the identity is what the thread does or does not name.
+        // An identity under the three-letter floor (`Neo.util.Id`) keeps the full path: a one-letter identity
+        // would otherwise ground on any text that contains the letter
         grounded    = node => {
-            const words = (nameOf(node).toLowerCase().match(/[\p{L}\p{N}_.-]{3,}/gu) ?? []).map(word => word.startsWith('neo.') ? (word.split('.').at(-1) || word) : word);
+            const words = (nameOf(node).toLowerCase().match(/[\p{L}\p{N}_.-]{3,}/gu) ?? []).map(word => {
+                const identity = word.startsWith('neo.') ? word.split('.').at(-1) : word;
+                return identity.length >= 3 ? identity : word
+            });
             return words.length > 0 && words.every(word => haystack.includes(word))
         },
         // these types name what the model itself produced — a summary, a plan — so their names are labels, never claims about the text
