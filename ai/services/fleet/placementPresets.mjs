@@ -116,7 +116,7 @@ const
         // the fixture set's identity (the instrument's `documentsDigest`): a run over other documents is not comparable
         documentsDigest: 'f3cd8b711bc5a8905cd7ec171577c423be34b23583adbaa6c9feeef82116844e',
         result    : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '3-4', ungroundedNames: 0},
-        note      : 'one run over the three public engine threads shipped beside the instrument, through the isolated child (memory graph store, scratch root), 23 s; an earlier same-day run read 1 dangling edge — run-to-run variance; the 2026-09-23 run over three private session documents read 4-5 grounded nodes and 0 dangling edges; gpt-oss-20b was 3.7× faster on prefill but thin below the floor; Qwen3.6 blocked by the reasoning channel'
+        note      : 'one run over the three public engine threads shipped beside the instrument, through the isolated child (memory graph store, scratch root), 23 s; an earlier same-day run read 1 dangling edge — run-to-run variance; the 2026-09-23 run over three private session documents read 4-5 grounded nodes and 0 dangling edges; gpt-oss-20b was 3.7× faster on prefill but thin below the floor; Qwen3.6 blocked by the reasoning channel; re-measured the same day under the identity rule for canonical Neo paths with the same result, 27 s'
     }),
     // the local overlay's own inputs: it maps NEO_LOCAL_AGENT_OS_* onto the openAiCompatible leaves and
     // fixes the three providers to openAiCompatible unless a preset says otherwise
