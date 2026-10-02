@@ -23,7 +23,7 @@ function makeLifecycle({
     capabilityError = null,
     inspectionError = null
 } = {}) {
-    const calls = {capability: [], credential: [], inspection: [], start: [], status: []};
+    const calls = {capability: [], credential: [], inspection: [], repoOutcomes: [], start: [], status: []};
     return {
         calls,
         credentialEnvVar: 'GH_TOKEN',
@@ -62,7 +62,8 @@ function makeLifecycle({
             return {harnessType: args.agent.harnessType, inspected: true}
         },
         resolveResidentMcpEnvironment: () => ({}),
-        start          : (id, opts) => { events?.push('start'); calls.start.push({id, opts}); return {id, running: true, state: 'running', cwd: opts?.cwd}; }
+        setRepoOutcomes              : (id, repos, launch) => { calls.repoOutcomes.push({id, repos, launch}); return true },
+        start                        : (id, opts) => { events?.push('start'); calls.start.push({id, opts}); return {id, running: true, state: 'running', cwd: opts?.cwd, pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}; }
     };
 }
 
@@ -269,6 +270,9 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             {repoSlug: 'neomjs/neo-agent-brain',       state: 'prepared'},
             {repoSlug: 'neomjs/neo-agent-institution', state: 'prepared'}
         ]);
+
+        // the launch record keeps the same outcome for every later read, bound to this launch
+        expect(lifecycle.calls.repoOutcomes).toEqual([{id: 'a', repos: status.repos, launch: {pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}}]);
     });
 
     test('an other repository that cannot be cloned is reported on the status, and the seat still starts', async () => {
@@ -476,11 +480,11 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.start).toEqual([{
             id  : 'a',
             opts: {
-                cwd                  : '/managed/a/neomjs-neo',
-                resolvedCredential   : repositoryPat,
+                cwd                   : '/managed/a/neomjs-neo',
+                resolvedCredential    : repositoryPat,
                 resolvedResidentMcpEnv: {},
-                resolvedMcpCredential: planePat,
-                remoteMcpCapability  : {
+                resolvedMcpCredential : planePat,
+                remoteMcpCapability   : {
                     harnessType     : 'codex',
                     binaryPath      : '/bin/harness',
                     launchBinaryPath: '/bin/harness'
@@ -537,11 +541,11 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.start).toEqual([{
             id  : 'a',
             opts: {
-                cwd                  : '/managed/a/neomjs-neo',
-                resolvedCredential   : 'ghp_seat_only',
+                cwd                   : '/managed/a/neomjs-neo',
+                resolvedCredential    : 'ghp_seat_only',
                 resolvedResidentMcpEnv: {},
-                resolvedMcpCredential: 'glpat_plane_only',
-                remoteMcpCapability  : {
+                resolvedMcpCredential : 'glpat_plane_only',
+                remoteMcpCapability   : {
                     harnessType     : 'codex',
                     binaryPath      : '/bin/harness',
                     launchBinaryPath: '/bin/harness'
@@ -997,9 +1001,9 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
     test('a curated seat without a managed repo is guarded too: its harness home and lease live under the agents root', async () => {
         // unbound: refused before the envelope, the PAT read and the spawn — nothing under the root is touched
         const
-            events   = [],
-            unbound  = {a: {id: 'a', githubUsername: 'a', harnessType: 'codex-desktop', metadata: {}}},
-            refusal  = await startAgentProvisioned({lifecycleService: makeLifecycle({agents: unbound, events}), agentId: 'a', managedRoot: '/moved'}).catch(error => error);
+            events  = [],
+            unbound = {a: {id: 'a', githubUsername: 'a', harnessType: 'codex-desktop', metadata: {}}},
+            refusal = await startAgentProvisioned({lifecycleService: makeLifecycle({agents: unbound, events}), agentId: 'a', managedRoot: '/moved'}).catch(error => error);
 
         expect(refusal.code).toBe('FLEET_SEAT_HOME_UNBOUND');
         expect(refusal.derivedSeatHome).toBe('/moved/a');

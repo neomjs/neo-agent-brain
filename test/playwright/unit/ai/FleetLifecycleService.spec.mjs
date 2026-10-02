@@ -2081,3 +2081,36 @@ test.describe('FleetLifecycleService.setWakeRoute — the route the Fleet armed 
         expect(FleetLifecycleService.processes.get('gui-seat').wakeRoute).toEqual(ready);
     });
 });
+
+test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-repository outcome on its launch record', () => {
+    test.beforeEach(() => { FleetLifecycleService.leasesAdopted = true; FleetLifecycleService.processes.clear(); });
+    test.afterEach(() => { FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false; });
+
+    const launch = {pid: 4202, startedAt: '2026-10-01T20:00:05.000Z'};
+
+    test('status reports the launch\'s outcome after the start\'s answer is gone, and only the outcome fields', () => {
+        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'running', ...launch});
+
+        expect(FleetLifecycleService.status('seat').repos).toBeNull();
+        expect(FleetLifecycleService.status('nobody').repos).toBeNull();
+
+        expect(FleetLifecycleService.setRepoOutcomes('seat', [
+            {repoSlug: 'neomjs/neo-agent-brain', state: 'prepared'},
+            {repoSlug: 'neomjs/missing',         state: 'failed', reason: 'ensureAgentRepo: clone failed', cloneUrl: 'https://u:t@x'}
+        ], launch)).toBe(true);
+
+        expect(FleetLifecycleService.status('seat').repos).toEqual([
+            {repoSlug: 'neomjs/neo-agent-brain', state: 'prepared'},
+            {repoSlug: 'neomjs/missing',         state: 'failed', reason: 'ensureAgentRepo: clone failed'}
+        ])
+    });
+
+    test('an outcome for an earlier launch, an unknown seat or no launch at all is refused', () => {
+        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'running', ...launch});
+
+        expect(FleetLifecycleService.setRepoOutcomes('seat', [{repoSlug: 'x/y', state: 'prepared'}], {pid: 4101, startedAt: launch.startedAt})).toBe(false);
+        expect(FleetLifecycleService.setRepoOutcomes('seat', [{repoSlug: 'x/y', state: 'prepared'}])).toBe(false);
+        expect(FleetLifecycleService.setRepoOutcomes('nobody', [], launch)).toBe(false);
+        expect(FleetLifecycleService.status('seat').repos).toBeNull()
+    });
+});

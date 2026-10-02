@@ -380,6 +380,7 @@ class FleetManager extends Base {
             }
 
             if (status.failureReason != null) row.failureReason = status.failureReason;
+            if (status.repos != null)         row.repos         = status.repos;
 
             return row;
         });

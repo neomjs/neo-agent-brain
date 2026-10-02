@@ -273,6 +273,24 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         ]);
     });
 
+    test('a launch\'s per-repository outcome rides its runtime row, and a status without one adds nothing', () => {
+        const
+            registryStub = {listAgents: () => [{id: 'alice'}, {id: 'bob'}]},
+            repos        = [{repoSlug: 'neomjs/missing', state: 'failed', reason: 'ensureAgentRepo: clone failed'}];
+
+        FleetManager.lifecycleService = {
+            getRegistry: () => registryStub,
+            status     : id => id === 'alice'
+                ? {id, state: 'running', running: true, pid: 4242, startedAt: '2026-10-01T20:00:00Z', exitCode: null, repos}
+                : {id, state: 'running', running: true, pid: 4343, startedAt: '2026-10-01T20:00:00Z', exitCode: null, repos: null}
+        };
+
+        const [alice, bob] = FleetManager.fleetRuntimeStatus();
+
+        expect(alice.repos).toEqual(repos);
+        expect(Object.hasOwn(bob, 'repos')).toBe(false)
+    });
+
     test('an agent the fleet never launched reports unmanaged, NOT stopped — never-launched is not stopped (#17305)', () => {
         // The incident: nine external-harness seats rendered `benched / offline` because `status()`
         // answers `stopped` for an agent it holds no record of — a sound lifecycle default, an

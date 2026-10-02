@@ -884,7 +884,7 @@ class FleetLifecycleService extends Base {
      * @param {String} id
      * @returns {Object} `{id, state, running, adopted, pid, startedAt, uptimeMs, exitCode, exitedAt,
      *     stderrBytes, authRequired, instanceHome, authHome, launchCommand, authCommand,
-     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute}` — `authRequired`
+     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, repos}` — `authRequired`
      *     is the LIVE per-home
      *     auth-marker heuristic for curated launches (`true` = the operator-owned per-home login has
      *     not happened yet; recomputed each read so a completed login flips it without a restart);
@@ -900,13 +900,14 @@ class FleetLifecycleService extends Base {
      *     window's `userDataDir`). Server and signing credentials never enter the record or
      *     projection. `adopted` marks a
      *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
-     *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`).
+     *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`). `repos` is the
+     *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is.
      */
     status(id) {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null};
 
         this.refreshAdoptedSeat(record);
 
@@ -941,8 +942,29 @@ class FleetLifecycleService extends Base {
                 addressType    : record.wakeRoute.addressType ?? null,
                 instanceAddress: record.wakeRoute.instanceAddress ?? null,
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
-            } : null
+            } : null,
+            repos            : record.repos ? record.repos.map(repo => ({...repo})) : null
         };
+    }
+
+    /**
+     * @summary Records the per-repository outcome of the provisioned start behind a launch, so
+     * {@link status} still reports which of the seat's other repositories it prepared, and why one
+     * failed, after the start's own answer is gone. Bound to that launch like {@link setWakeRoute}: a
+     * fresh start writes a fresh record.
+     * @param {String} id
+     * @param {Object[]} repos `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, reasons already
+     *     redacted at the source.
+     * @param {Object} launch `{pid, startedAt}` from the status of that start.
+     * @returns {Boolean} `true` when recorded; `false` for an unknown seat or a launch it has since replaced.
+     */
+    setRepoOutcomes(id, repos, {pid, startedAt} = {}) {
+        const record = this.processes.get(id);
+
+        if (!record || record.pid !== pid || record.startedAt !== startedAt) return false;
+
+        record.repos = repos.map(({reason, repoSlug, state}) => ({repoSlug, state, ...(reason != null ? {reason} : {})}));
+        return true
     }
 
     /**
@@ -1793,9 +1815,9 @@ class FleetLifecycleService extends Base {
         const matrix = resolveMcpMatrix(agent.mcpServers), result = {};
         for (const {key} of MCP_SERVERS) {
             if (!matrix[key] || (remote && REMOTE_MCP_SERVER_KEYS.has(key))) continue;
-            const descriptor = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
+            const descriptor    = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];
             const providerSlots = descriptor.providerCredentialEnv || {};
-            const envNames = descriptor.runtimeEnv.filter(name =>
+            const envNames      = descriptor.runtimeEnv.filter(name =>
                 !['NEO_AGENT_IDENTITY', 'GH_TOKEN', 'GITHUB_TOKEN', 'NEO_FLEET_BRIDGE_TOKEN', ...Object.values(providerSlots)].includes(name));
             if (descriptor.providerCredentialEnv) {
                 for (const provider of [AiConfig.modelProvider, AiConfig.embeddingProvider]) {

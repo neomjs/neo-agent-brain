@@ -158,7 +158,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 participationStatus: publicAgent.participationStatus ?? null,
                 agent              : publicAgent,
                 repoStatus,
-                lifecycle          : supervised
+                // the last start's per-repository outcome from the launch record; null before a start
+                repoOutcomes: runtime?.repos ?? null,
+                lifecycle   : supervised
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.runtime,
                         state     : runtime.state ?? 'unknown',
@@ -313,8 +315,8 @@ export function createFleetCockpitEvent({eventId = null, type, source, agentId =
 /**
  * @summary Builds the producer-owned identity used by the Fleet activity Store.
  *
- * The source prefix is load-bearing: PR 7 and issue 7 are different durable facts, and a view
- * that keys both as `7` silently aliases them. Producers pass their own native identity here;
+ * The source prefix is load-bearing: a pull request and an issue can share a number and still be
+ * different durable facts, and a view that keys both by the bare number silently aliases them. Producers pass their own native identity here;
  * an absent identity returns `null` so the adapter can omit the event instead of letting the
  * consumer invent a presentation-derived key.
  * @param {String} source Stable producer namespace.
