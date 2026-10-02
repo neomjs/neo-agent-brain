@@ -498,6 +498,16 @@ class ConfigBase extends ConfigProvider {
                  */
                 wakeReceiverBase: leaf('', 'NEO_WAKE_RECEIVER_BASE', 'string'),
                 /**
+                 * Directory of that same receiver's per-dispatch records, as this process sees it — the
+                 * local overlay binds the receiver's `--state-dir` records read-only into the Memory
+                 * Core container. The health and roster delivery reads come from here. EMPTY means
+                 * the deployment declares no records source, which reads `unconfigured` — never a
+                 * guessed home path, which would turn "no source declared" into "looked and found no
+                 * dispatches". Not a plane member — host-edge consumer config, like its two siblings.
+                 * @type {string}
+                 */
+                wakeReceiverRecordsDir: leaf('', 'NEO_WAKE_RECEIVER_RECORDS_DIR', 'string'),
+                /**
                  * Externally-dialable base URL of THIS fleet server's own signed wake receiver —
                  * the address the plane's Shape-B dispatcher (`WebhookDeliveryService`) POSTs
                  * digests to (`<base>/wake` is derived at the use site). In the composed profile

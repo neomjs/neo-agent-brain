@@ -247,6 +247,7 @@
         "fleet.viewerMcAuthorizationFile",
         "fleet.wakeReceiverBase",
         "fleet.wakeReceiverManifestPath",
+        "fleet.wakeReceiverRecordsDir",
         "fleet.wakeSelfBase",
         "geminiApiKey",
         "geminiApiKeyFile",

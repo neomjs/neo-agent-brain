@@ -21,8 +21,6 @@ process.env.UNIT_TEST_MODE = 'true';
 // to the resolved config mutates a singleton every other spec shares. The env layer is the sanctioned
 // seam: the leaf keeps one declarative default, and the test context overrides it the same way any
 // deployment would.
-// ticket-ref-ok: ADR-0019 names both shapes (A4, B4) and is the authority a reader needs to check
-// this placement against; the rule outlives any ticket.
 //
 // What this buys is coverage that was previously traded away for seconds. A retry spec asserts the
 // retry DEPTH and the terminal disposition; the sleep between attempts is not under test, so paying
@@ -33,15 +31,15 @@ process.env.UNIT_TEST_MODE = 'true';
 // A spec that genuinely tests timing must not rely on these values; it sets its own and says so.
 process.env.NEO_KB_EMBEDDING_BACKOFF_BASE_MS = '1';
 
-// The wake delivery projection reads the receiver's dispatch records, and the receiver's state
-// directory is a host-AgentOS path outside the config plane-member family — so without this, a unit
-// run on a developer machine silently reads that host's real wake history. That is both a
-// correctness problem (a health assertion passes or fails with the host's dispatch record) and a
+// The wake delivery projection reads the records directory the deployment declares
+// (`fleet.wakeReceiverRecordsDir`, bound to this env), and a developer's environment may declare the
+// real receiver's — so without this, a unit run silently reads that host's wake history. That is both
+// a correctness problem (a health assertion passes or fails with the host's dispatch record) and a
 // performance one: the block runs inside `healthcheck()`, so every call re-read the whole records
-// directory, which is what pushed a timing-sensitive canary spec over its budget. Pointing at a
-// path that does not exist makes the block report its measured-absence shape, deterministically.
+// directory, which is what pushed a timing-sensitive canary spec over its budget. Declaring a path
+// that does not exist makes the block report its measured-absence shape, deterministically.
 //
-// This is the same rule ADR 0019 B4 states for config: tests isolate BY CONSTRUCTION rather than by
+// The same rule holds for config: tests isolate BY CONSTRUCTION rather than by
 // mutating and restoring shared state. A spec that needs real records injects `recordsDir`
 // explicitly — see `wakeDeliveryReader.spec.mjs`, which writes its own temp tree.
 process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = path.join(os.tmpdir(), 'neo-unit-absent-wake-records');
@@ -131,7 +129,7 @@ export function sqliteHost() {
  * the binary into `build/Release/`, and ships zero `.node` files in its tarball; `13.x` dropped the
  * install script and `prebuild-install` entirely and ships eight prebuilt binaries under
  * `prebuilds/<target>.node`, so `build/Release/` is never created. Probing only the latter reported a
- * healthy `13.x` install as a partial tier and failed CI before collection (`#360`) — a gate whose
+ * healthy `13.x` install as a partial tier and failed CI before collection — a gate whose
  * whole purpose is refusing a silent skip, producing a silent false alarm instead.
  *
  * `linuxmusl` is a live third case rather than a hypothesis: it is a different filename on the same

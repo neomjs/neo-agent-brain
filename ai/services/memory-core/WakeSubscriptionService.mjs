@@ -106,6 +106,15 @@ class WakeSubscriptionService extends Base {
     }
 
     /**
+     * The wake-delivery read behind `who_is_online`'s wake axis; `null` reads the configured records
+     * directory (`readWakeDelivery`). A test injects a reader bound to its own directory instead of
+     * mutating the shared config.
+     * @member {Function|null} wakeDeliveryReadFn=null
+     * @protected
+     */
+    wakeDeliveryReadFn = null
+
+    /**
      * @member {String[]} validTriggers
      * @protected
      */
@@ -921,7 +930,7 @@ class WakeSubscriptionService extends Base {
 
         try {
             [delivery, routes] = await Promise.all([
-                readWakeDelivery(),
+                (this.wakeDeliveryReadFn || readWakeDelivery)(),
                 readActiveWakeSubscriptionIdsByIdentity({graphService: GraphService})
             ])
         } catch {
@@ -929,7 +938,9 @@ class WakeSubscriptionService extends Base {
         }
 
         if (!delivery.deliveryReadable) {
-            return {available: false, reason: 'the wake receiver\'s dispatch records are unreadable from this process'}
+            return {available: false, reason: delivery.deliveryReadReason === 'unconfigured'
+                ? 'this process declares no wake receiver records directory'
+                : 'the wake receiver\'s dispatch records are unreadable from this process'}
         }
 
         return {

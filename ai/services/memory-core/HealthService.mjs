@@ -555,8 +555,8 @@ export async function buildWakeFeaturesBlock(now = Date.now()) {
  * unambiguous is not the same as reachable.
  *
  * The reader is import-level rather than injected so the health surface cannot disagree with any
- * other consumer about what counts as a failure. See `wakeDeliveryReader` for the state-directory
- * contract this inherits — a host convention, and a reported gap rather than a settled one.
+ * other consumer about what counts as a failure. It reads the records directory the deployment
+ * declares (`fleet.wakeReceiverRecordsDir`); a process that declares none reports `unconfigured`.
  *
  * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object}>}
  */

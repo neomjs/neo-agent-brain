@@ -1,14 +1,17 @@
-import {expect, test}    from '@playwright/test';
+import {expect, test}     from '@playwright/test';
+import Neo                from 'neo.mjs/src/Neo.mjs';
+import * as core          from 'neo.mjs/src/core/_export.mjs';
+import {execFileSync}     from 'child_process';
 import fs                 from 'fs/promises';
 import os                 from 'os';
 import path               from 'path';
-import {readWakeDelivery, defaultWakeReceiverDirs} from
-    '../../../../../../ai/services/memory-core/wakeDeliveryReader.mjs';
+import {pathToFileURL}    from 'url';
+import {readWakeDelivery} from '../../../../../../ai/services/memory-core/wakeDeliveryReader.mjs';
 
 /**
  * The reader's whole job is the distinction between "I looked and there is nothing" and "I could
- * not look". #17647 is the mirror-image sibling: off, dead and blind arriving as one payload. This
- * is the same conflation one level down — an absent records directory and an unreadable one are
+ * not look". Its mirror image is off, dead and blind arriving as one payload, and this is the same
+ * conflation one level down — an absent records directory and an unreadable one are
  * different facts, and a reader that reports both as "no failures" is an instrument that cannot be
  * wrong, which is the property that let a 19-day delivery outage read healthy everywhere.
  */
@@ -99,13 +102,44 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
         await fs.rm(root, {recursive: true, force: true});
     });
 
-    test('the conventional records directory matches the deployed host layout', async () => {
-        // Pinned because the reader's default is a host CONVENTION rather than a declared contract
-        // (see this module's header). If the deployment moves, this arm is the one that says so
-        // instead of the projection quietly reporting zero subscriptions forever.
-        const {recordsDir, stateDir} = defaultWakeReceiverDirs(() => '/home/seat');
+    test('an undeclared records directory reads unconfigured, distinct from a declared empty one', async () => {
+        const result = await readWakeDelivery({recordsDir: ''});
 
-        expect(stateDir).toBe('/home/seat/Library/Application Support/Neo/AgentOS/wake/state');
-        expect(recordsDir).toBe('/home/seat/Library/Application Support/Neo/AgentOS/wake/state/records');
+        expect(result).toEqual({deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}})
+    });
+
+    test('with no declaration the reader reads the config leaf, never a guessed home path', async () => {
+        // A record planted where the old home convention looked: a reader that still guessed would
+        // read it and answer `observed`. The config resolves its env once, in the process that loads
+        // it, so each case runs in a child with exactly the env under test.
+        const
+            home    = await tmpRoot(),
+            guessed = path.join(home, 'Library/Application Support/Neo/AgentOS/wake/state/records'),
+            reader  = pathToFileURL(path.resolve('ai/services/memory-core/wakeDeliveryReader.mjs')).href,
+            script  = [
+                "await import('neo.mjs/src/Neo.mjs');",
+                "await import('neo.mjs/src/core/_export.mjs');",
+                `const {readWakeDelivery} = await import(${JSON.stringify(reader)});`,
+                "process.stdout.write('\\nDELIVERY=' + JSON.stringify(await readWakeDelivery()));"
+            ].join('\n'),
+            readIn  = env => {
+                const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
+                    encoding: 'utf8',
+                    env     : {PATH: process.env.PATH, HOME: home, UNIT_TEST_MODE: 'true', ...env}
+                });
+
+                return JSON.parse(output.slice(output.lastIndexOf('DELIVERY=') + 'DELIVERY='.length))
+            };
+
+        await writeRecord(guessed, {
+            recordKey: 'k1', subscriptionId: 'WAKE_SUB:home', state: 'delivered',
+            acceptedAt: '2026-09-25T00:00:00.000Z', dispatchFinishedAt: '2026-09-25T00:00:01.000Z'
+        });
+
+        expect(readIn({}).deliveryReadReason, 'nothing declared').toBe('unconfigured');
+        expect(readIn({NEO_WAKE_RECEIVER_RECORDS_DIR: path.join(home, 'declared-absent')}).deliveryReadReason, 'declared, absent').toBe('no-records');
+        expect(readIn({NEO_WAKE_RECEIVER_RECORDS_DIR: guessed}).deliveryReadReason, 'declared, with records').toBe('observed');
+
+        await fs.rm(home, {recursive: true, force: true});
     });
 });
