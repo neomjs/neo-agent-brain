@@ -29,7 +29,7 @@ test.describe('deriveFleetRoster (registry-derived cockpit roster, #15621)', () 
         expect(doc.data.length).toBeGreaterThanOrEqual(10);
     });
 
-    test('state truth: no active maintainer renders off; known non-active statuses render off with the bench reason preserved', () => {
+    test('state truth: no active maintainer renders off; non-active status never becomes a lane claim', () => {
         for (const row of doc.data) {
             if (row.participationStatus === 'active') {
                 expect(row.state, `${row.agentId} is active and must not render off`).toBe('ok');
@@ -38,9 +38,9 @@ test.describe('deriveFleetRoster (registry-derived cockpit roster, #15621)', () 
             }
         }
 
-        // The operator-benched identity keeps its bench reason visible (provenance, not prose erasure).
+        // Participation is independent of observed work; a bench reason is never a lane claim.
         const benched = doc.data.find(row => row.participationStatus !== 'active');
-        expect(benched.laneLine).toBeTruthy();
+        expect(benched.laneLine).toBeNull();
     });
 
     test('honesty invariants: participationStatus stamped per row; no fabricated lane counts or lane lines', () => {

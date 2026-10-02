@@ -33,11 +33,15 @@ function githubAvatarUrl(githubUsername) {
  * @param {Object[]} options.fleetStatus   Repo-status entries from `registryBridge.fleetStatus()`.
  * @param {Object[]} options.runtimeStatus Optional per-agent process entries from
  *     `registryBridge.fleetRuntimeStatus()` — rows carry an observed `lifecycle` when present.
+ * @param {Object}   [options.laneStatus] Held A2A contribution `{capability, events, scanned}` from the
+ *     activity read admitted for this viewer. Sender logins are already normalized by the A2A
+ *     producer and join only to `githubUsername`, never the registry key. Capture time and scanned
+ *     mailbox rows bound the observation window.
  * @param {Object[]} options.events        Optional already-normalized cockpit events.
  * @param {Object}   options.capabilities  Optional source-capability overrides from wired adapters.
  * @returns {Object} serializable cockpit DTO `{sources, capabilities, rows, events}`.
  */
-export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtimeStatus = [], wakeStatus = [], throttleStatus = [], presenceStatus = [], events = [], capabilities = {}} = {}) {
+export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtimeStatus = [], wakeStatus = [], throttleStatus = [], presenceStatus = [], laneStatus = null, events = [], capabilities = {}} = {}) {
     const suppliedCapabilities = capabilities || {}
 
     const statusByAgentId = new Map(
@@ -59,6 +63,41 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
     const presenceByAgentId = new Map(
         presenceStatus.map(entry => [entry.agentId || entry.id, sanitizePayload(entry)])
     )
+
+    const laneSource      = laneStatus?.capability,
+          validLaneSource = ['wired', 'degraded', 'not-wired'].includes(laneSource?.state),
+          laneCapability  = laneStatus == null
+              ? {...createNotWiredCapability(FLEET_COCKPIT_SOURCES.a2a, 'no activity page held in this process yet'), capturedAt: null, scanned: null}
+              : {
+                  source    : FLEET_COCKPIT_SOURCES.a2a,
+                  state     : validLaneSource ? laneSource.state : 'degraded',
+                  confidence: validLaneSource ? (laneSource.confidence ?? 'none') : 'none',
+                  reason    : boundReason(laneSource?.reason) ?? (validLaneSource ? null : 'held A2A activity page has no valid capability'),
+                  capturedAt: laneSource?.capturedAt ?? null,
+                  scanned   : Number.isInteger(laneStatus.scanned) && laneStatus.scanned >= 0 ? laneStatus.scanned : null
+              },
+          laneByLogin  = new Map();
+
+    // Fold the admitted mailbox page once, before joining rows. A degraded page cannot lend its
+    // retained claims to a current observation; malformed claims cannot displace a valid one.
+    if (laneCapability.state === 'wired') {
+        for (const event of Array.isArray(laneStatus.events) ? laneStatus.events : []) {
+            const {agentId, occurredAt, payload, source, type} = event || {},
+                  claimedAt                                    = typeof occurredAt === 'string' ? Date.parse(occurredAt) : NaN;
+
+            if (type !== 'lane-claim' || source !== FLEET_COCKPIT_SOURCES.a2a ||
+                typeof agentId !== 'string' || !agentId.trim() || agentId.startsWith('@') ||
+                !Number.isFinite(claimedAt) || typeof payload?.subject !== 'string' || !payload.subject.trim()) {
+                continue
+            }
+
+            const previous = laneByLogin.get(agentId);
+
+            if (!previous || claimedAt > previous.claimedAt) {
+                laneByLogin.set(agentId, {laneLine: payload.subject, laneClaimedAt: occurredAt, claimedAt});
+            }
+        }
+    }
 
     // The newest ATTRIBUTABLE activity instant per agent, folded from the supplied normalized
     // events (their `occurredAt`) — one pass, so the per-row stamp below is a lookup. Only events
@@ -95,7 +134,8 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
             // idle | dark | benched | neverConnected | unknown`), the third independent signal —
             // presence-fresh ≠ wake-route-healthy ≠ identity-bound. Not-wired is the honest
             // default until the assembler passes a snapshot; a band is never guessed.
-            presence: suppliedCapabilities.presence || createNotWiredCapability(FLEET_COCKPIT_SOURCES.presence, 'presence producer not wired')
+            presence: suppliedCapabilities.presence || createNotWiredCapability(FLEET_COCKPIT_SOURCES.presence, 'presence producer not wired'),
+            lane    : laneCapability
         },
         rows: agents.map(agent => {
             const publicAgent = sanitizePayload(agent),
@@ -112,7 +152,10 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                   supervised  = runtime != null && runtime.state !== 'unmanaged',
                   wake        = wakeByAgentId.get(agentId) || null,
                   throttle    = throttleByAgentId.get(agentId) || null,
-                  presence    = presenceByAgentId.get(agentId) || null
+                  presence    = presenceByAgentId.get(agentId) || null,
+                  lane        = typeof publicAgent.githubUsername === 'string' && publicAgent.githubUsername
+                      ? laneByLogin.get(publicAgent.githubUsername) ?? null
+                      : null
 
             return {
                 id            : agentId,
@@ -129,6 +172,8 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 // card badge). Same tri-state honesty as `launchable`: null = no enricher has
                 // stamped a count, and the card renders NO badge then — never a fabricated zero.
                 openLaneCount: publicAgent.openLaneCount ?? null,
+                laneLine     : lane?.laneLine ?? null,
+                laneClaimedAt: lane?.laneClaimedAt ?? null,
                 // The newest attributable per-agent activity instant, stamped HERE from what this
                 // assembler already holds: the activity-event fold above merged with the presence
                 // producer's own `lastSeenAt` recency. Tri-state honest like its siblings — null =
@@ -272,6 +317,12 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                         state     : throttle ? 'wired' : 'not-wired',
                         confidence: throttle ? (throttle.confidence ?? 'none') : 'none',
                         reason    : throttle ? boundReason(throttle.reason) : 'throttle-state producer not wired'
+                    },
+                    lane: {
+                        source    : laneCapability.source,
+                        state     : laneCapability.state,
+                        confidence: laneCapability.confidence,
+                        reason    : laneCapability.reason
                     },
                     presence: {
                         source    : FLEET_COCKPIT_SOURCES.presence,

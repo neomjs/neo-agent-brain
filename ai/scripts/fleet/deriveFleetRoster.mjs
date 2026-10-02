@@ -86,7 +86,7 @@ function toRosterRow(entry) {
         family             : props.family ?? props.modelFamily ?? null,
         state              : status === 'active' ? 'ok' : 'off',
         avatarUrl          : `https://github.com/${agentId}.png?size=80`,
-        laneLine           : props.statusReason ?? null,
+        laneLine           : null,
         participationStatus: status,
         openLaneCount      : null,
         // declared expected-absence: the live roster producer is not wired for a static seed row,

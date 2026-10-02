@@ -315,8 +315,9 @@ async function boot() {
         // PR/lane slot too: this process has no corpus, so the plane serves the slot from the corpus
         // its orchestrator materializes (`get_pr_lane_activity`), stall findings included.
         wireFleetActivityReadSource({
-            listMessages: args => planeClient.listMessages(args),
-            readPrLane  : createPlanePrLaneActivityReader(planeClient)
+            listMessages         : args => planeClient.listMessages(args),
+            readPrLane           : createPlanePrLaneActivityReader(planeClient),
+            resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
         });
 
         wireOperatorComposeWriter({
@@ -328,9 +329,10 @@ async function boot() {
             import('../memory-core/GraphService.mjs')
         ]).then(([{default: MailboxService}, {default: GraphService}]) => {
             wireFleetActivityReadSource({
-                contentRoot : AiConfig.fleet.contentRoot,
-                listMessages: MailboxService.listMessages.bind(MailboxService),
-                graphService: GraphService
+                contentRoot          : AiConfig.fleet.contentRoot,
+                listMessages         : MailboxService.listMessages.bind(MailboxService),
+                graphService         : GraphService,
+                resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
             });
 
             // The write-side sibling: the composeOperatorMessage verb's writer. Same lazy-singleton
