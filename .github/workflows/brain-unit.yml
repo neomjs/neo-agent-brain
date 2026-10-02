@@ -94,7 +94,7 @@ jobs:
             # A side whose report is missing is refused by name in the next step.
             - name: Collect both reports
               continue-on-error: true
-              uses: actions/download-artifact@v7
+              uses: actions/download-artifact@v8
               with:
                   pattern: unit-report-*
                   path: reports
