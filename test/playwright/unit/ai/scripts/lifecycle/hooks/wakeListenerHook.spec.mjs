@@ -21,6 +21,7 @@ import {
 
 const
     IDENTITY = 'neo-seat',
+    SOURCE   = 'http://127.0.0.1:3102',
     OLDER    = {pid: 100, ppid: 1, startedAt: 'Fri Oct 2 10:00:00 2026', command: '/Applications/Claude.app/claude'},
     NEWER    = {pid: 200, ppid: 1, startedAt: 'Fri Oct 2 11:00:00 2026', command: '/Applications/Claude.app/claude'},
     LISTENER = {pid: 900, ppid: 100, startedAt: 'Fri Oct 2 12:00:00 2026', command: 'node wakeListenerHook.mjs'};
@@ -76,7 +77,7 @@ async function listen({answers = [], session = OLDER, sessionId = 'session-older
     const outcome = await runListener({
         payload     : {session_id: sessionId, hook_event_name: event},
         homeDir,
-        config      : config ?? {planeBase: 'http://127.0.0.1:3102', planeBearer: 'token', identity: `@${IDENTITY}`},
+        config      : config ?? {planeBase: SOURCE, planeBearer: 'token', identity: `@${IDENTITY}`},
         connect     : async options => {connects.push(options); return refusal ?? {client, identity: `@${IDENTITY}`}},
         resolveRoute: async () => 'WAKE_SUB:pull',
         findSession : async () => session,
@@ -106,7 +107,7 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
     });
 
     test('a stored watermark wakes on the first poll past it', async () => {
-        writeState({watermark: 50});
+        writeState({watermark: 50, source: SOURCE});
 
         const {outcome, polls} = await listen({answers: [{pending: 2, digest: 'D', watermark: 60}]});
 
@@ -114,8 +115,23 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
         expect(polls).toEqual([50])
     });
 
+    test('a watermark another plane wrote is not carried over: the seat rebaselines on its own plane', async () => {
+        // Plane A's log ran to 1000; this plane's head is 50. Sent as a cursor, 1000 would sit ahead
+        // of every new event, and the seat would never wake.
+        writeState({watermark: 1000, source: 'https://plane-a.example'});
+
+        const {outcome, polls} = await listen({answers: [
+            {pending: 0, watermark: 50},
+            {pending: 1, digest: 'D', watermark: 51}
+        ]});
+
+        expect(outcome).toEqual({exit: 2, digest: 'D'});
+        expect(polls).toEqual([0, 50]);
+        expect(readState()).toMatchObject({source: SOURCE, watermark: 51})
+    });
+
     test('failures back off and retry, and pending events without a digest never wake', async () => {
-        writeState({watermark: 7});
+        writeState({watermark: 7, source: SOURCE});
 
         const {outcome, sleeps} = await listen({answers: [
             new Error('plane unreachable'),
@@ -129,7 +145,7 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
     });
 
     test('at SessionStart the first poll waits one interval for the arming hook', async () => {
-        writeState({watermark: 1});
+        writeState({watermark: 1, source: SOURCE});
 
         const {sleeps, polls} = await listen({event: 'SessionStart', answers: [{pending: 1, digest: 'D', watermark: 2}]});
 
@@ -146,6 +162,24 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
         expect(outcome).toEqual({exit: 0, reason: 'already-listening'});
         expect(connects).toEqual([]);
         expect(readState().listener.pid).toBe(901)
+    });
+
+    test('a resumed session takes the seat back from its own dead incarnation, PID reused and old listener alive', async () => {
+        // The session id survives a resume, and the OS may hand the new process the old PID. Only
+        // the start time tells the incarnations apart.
+        writeState({
+            owner    : {sessionId: 'session-older', session: {pid: OLDER.pid, startedAt: 'Fri Oct 2 09:00:00 2026'}},
+            listener : {pid: 901, startedAt: 'Fri Oct 2 09:30:00 2026'},
+            watermark: 3,
+            source   : SOURCE
+        });
+
+        const procs               = new Map([[OLDER.pid, OLDER], [LISTENER.pid, LISTENER], [901, {pid: 901, ppid: 1, startedAt: 'Fri Oct 2 09:30:00 2026', command: 'node'}]]),
+              {outcome, connects} = await listen({procs, answers: [{pending: 1, digest: 'D', watermark: 4}]});
+
+        expect(outcome).toEqual({exit: 2, digest: 'D'});
+        expect(connects).toHaveLength(1);
+        expect(readState().owner.session.startedAt).toBe(OLDER.startedAt)
     });
 
     test('a credential the plane binds to another identity stops by name instead of retrying', async () => {
@@ -187,7 +221,7 @@ test.describe('AC-3: the newest live session owns the seat', () => {
     });
 
     test('a newer session takes the seat from a live older owner', async () => {
-        writeState({owner: {sessionId: 'session-older', session: OLDER}, listener: null, watermark: 20});
+        writeState({owner: {sessionId: 'session-older', session: OLDER}, listener: null, watermark: 20, source: SOURCE});
 
         const {outcome} = await listen({session: NEWER, sessionId: 'session-newer', answers: [{pending: 1, digest: 'D', watermark: 21}]});
 
@@ -198,7 +232,7 @@ test.describe('AC-3: the newest live session owns the seat', () => {
     test('a dead owner frees the seat, even for an older session', async () => {
         const GONE = {pid: 300, startedAt: 'Fri Oct 2 13:00:00 2026'};
 
-        writeState({owner: {sessionId: 'session-gone', session: GONE}, listener: null, watermark: 30});
+        writeState({owner: {sessionId: 'session-gone', session: GONE}, listener: null, watermark: 30, source: SOURCE});
 
         const {outcome} = await listen({answers: [{pending: 1, digest: 'D', watermark: 31}]});
 
@@ -221,6 +255,14 @@ test.describe('AC-3: the newest live session owns the seat', () => {
 
         expect(decideClaim({record: {owner: {sessionId: 'a', session: OLDER}}, me, live: {owner: true}})).toBe('superseded');
         expect(decideClaim({record: null, me, live: {}})).toBe('listen')
+    });
+
+    test('decideClaim: a matching session id and PID are not the owner while the owner is dead', () => {
+        const record = {owner: {sessionId: 's', session: {pid: 1, startedAt: 'then'}}},
+              me     = {sessionId: 's', session: {pid: 1, startedAt: 'now'}};
+
+        expect(decideClaim({record, me, live: {owner: false, listener: true}})).toBe('listen');
+        expect(decideClaim({record, me, live: {owner: true, listener: true}})).toBe('already-listening')
     })
 });
 

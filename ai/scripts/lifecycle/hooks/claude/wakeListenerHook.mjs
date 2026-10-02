@@ -100,7 +100,8 @@ export async function isLive(proc, read = readProcess) {
  * @summary Decides what one hook run does with the seat. Pure.
  *
  * The newest live session owns the seat. A newcomer takes it from an older or dead owner. An owning
- * session whose listener is already running arms nothing new, so a second `Stop` is a no-op.
+ * session whose listener is already running arms nothing new, so a second `Stop` is a no-op. Owning
+ * needs the recorded process alive: a resumed session keeps its id and may get the old PID back.
  * @param {Object} options
  * @param {Object|null} options.record The seat's listener record.
  * @param {Object} options.me `{sessionId, session: {pid, startedAt}}`
@@ -115,7 +116,7 @@ export function decideClaim({record, me, live}) {
         return 'superseded'
     }
 
-    if (owner?.sessionId === me.sessionId && owner.session.pid === me.session.pid && live.listener) {
+    if (owner?.sessionId === me.sessionId && owner.session.pid === me.session.pid && live.owner && live.listener) {
         return 'already-listening'
     }
 
@@ -142,8 +143,9 @@ async function writeRecord(statePath, record, fs) {
  * @summary Runs this session's listener until it has a digest to wake with, or a reason to stop.
  *
  * One record per seat holds the owning session, its listener and the watermark, so a newer session
- * inherits where the last one stopped. The record is only read and written under its lock, and never
- * held across a network call.
+ * inherits where the last one stopped. A watermark is a position in one plane's GraphLog, so it is kept
+ * with the plane that wrote it, and a session on another plane starts from a fresh baseline instead.
+ * The record is only read and written under its lock, and never held across a network call.
  *
  * Polling stops with `exit: 0` when the plane is not configured, when the seat belongs to a newer
  * session, or when this session has ended. It returns `exit: 2` only with a digest, and only for
@@ -197,6 +199,7 @@ export async function runListener({
 
     const me        = {sessionId, session: {pid: session.pid, startedAt: session.startedAt}},
           listener  = {pid, startedAt: (await read(pid))?.startedAt},
+          source    = String(seat.planeBase).trim().replace(/\/+$/, ''),
           statePath = path.join(homeDir, LISTENER_STATE_RELATIVE, `${toBareIdentity(seat.identity)}.json`),
           mine      = record => record?.owner?.sessionId === sessionId && record.listener?.pid === pid;
 
@@ -207,7 +210,11 @@ export async function runListener({
               live   = {owner: await isLive(record?.owner?.session, read), listener: await isLive(record?.listener, read)},
               claim  = decideClaim({record, me, live});
 
-        if (claim === 'listen') await writeRecord(statePath, {...record, owner: me, listener}, fs);
+        if (claim === 'listen') {
+            await writeRecord(statePath, {
+                ...record, owner: me, listener, ...(record?.source === source ? {} : {source, watermark: null})
+            }, fs)
+        }
 
         return claim
     });
