@@ -157,12 +157,18 @@ test.describe('presetQualityFloor', () => {
         });
 
         // a label-typed node names what the model produced, so it is neither grounded nor ungrounded; a
-        // multi-word claim is grounded when every word of it occurs in the document
+        // multi-word claim is grounded when every word of it occurs in the document; a canonical Neo path is
+        // grounded by its identity (the document says "Workspace", never "Neo.dashboard.dock.Workspace", and
+        // neither "neo" nor "dashboard" occurs in it) and invented when the identity is absent ("Main"); an
+        // identity under the three-letter floor keeps the full path ("X" occurs in "Maximize", the path does not)
         const drift = measurePayload(payload({
             nodes: [
                 ...payload().session_artifact.graph.nodes,
                 {id: 'CLASS:Neo.dashboard.Main', type: 'CLASS', name: 'Neo.dashboard.Main', description: 'copied from the prompt example', logical_layer: 'UI', stability: 'STABLE'},
+                {id: 'CLASS:Neo.dashboard.X', type: 'CLASS', name: 'Neo.dashboard.X', description: 'a one-letter identity', logical_layer: 'UI', stability: 'STABLE'},
+                {id: 'CLASS:Neo.dashboard.dock.Workspace', type: 'CLASS', name: 'Neo.dashboard.dock.Workspace', description: 'the canonical path of the façade', logical_layer: 'UI', stability: 'STABLE'},
                 {id: 'CONCEPT:HeaderActions plugin', type: 'CONCEPT', name: 'HeaderActions plugin', description: 'two words, both in the text', logical_layer: 'UI', stability: 'STABLE'},
+                {id: 'CONCEPT:Ratchet Management', type: 'CONCEPT', name: 'Ratchet Management', description: 'two words, one of them invented', logical_layer: 'UI', stability: 'STABLE'},
                 {id: 'SESSION:Dock Handler Refactoring Session', type: 'SESSION', name: 'Dock Handler Refactoring Session', description: 'the model\'s label', logical_layer: 'Unknown', stability: 'UNKNOWN'}
             ],
             edges: [
@@ -172,7 +178,7 @@ test.describe('presetQualityFloor', () => {
             ]
         }), DOCUMENT);
 
-        expect(drift).toMatchObject({schemaValid: true, nodes: 7, edges: 5, danglingEdges: 1, groundedNodes: 5, ungroundedNames: ['Neo.dashboard.Main'], labelledNodes: 1});
+        expect(drift).toMatchObject({schemaValid: true, nodes: 10, edges: 5, danglingEdges: 1, groundedNodes: 6, ungroundedNames: ['Neo.dashboard.Main', 'Neo.dashboard.X', 'Ratchet Management'], labelledNodes: 1});
 
         expect(isTriVectorShape({a2a_version: '1.0', session_artifact: {graph: {nodes: [{id: 'x', type: 'CLASS', name: 'x'}], edges: []}}})).toBe(false);
         expect(measurePayload(null, DOCUMENT)).toEqual({schemaValid: false, nodes: 0, edges: 0, danglingEdges: 0, groundedNodes: 0, ungroundedNames: [], labelledNodes: 0, extracted: []});
