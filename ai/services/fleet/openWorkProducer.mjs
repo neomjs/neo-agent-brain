@@ -215,4 +215,7 @@ export function createOpenWorkProducer({
     }
 }
 
+// the declared retained window: a reader behind it reads a coverage gap (producerPrLaneEvents)
+export {TRANSITION_WINDOW};
+
 export default createOpenWorkProducer;

@@ -66,6 +66,66 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
         expect(captured.readPrLaneSnapshot).toBe(readPrLane)
     });
 
+    test('with the open-work producer, the PR/lane slot wraps the plane reader: the producer\'s transitions are the PR events, the plane keeps the rest (#763)', async () => {
+        // the wrapper reads the real clock here (the wiring injects no `now`), so the pulse is fresh
+        const
+            pulse      = new Date().toISOString(),
+            earlier    = new Date(Date.now() - 60_000).toISOString(),
+            readPrLane = async () => ({
+                capability: {source: FLEET_COCKPIT_SOURCES.activity, state: 'wired', confidence: 'observed', capturedAt: earlier, reason: null},
+                counts    : [],
+                events    : [
+                    {eventId: 'github-workflow:pull-requests:neo#1', type: 'pr-activity', source: FLEET_COCKPIT_SOURCES.githubPr, occurredAt: earlier, payload: {number: 1, repoSlug: 'neo'}},
+                    {eventId: 'github-workflow:issues:neo#2', type: 'issue-activity', source: FLEET_COCKPIT_SOURCES.githubIssue, occurredAt: earlier, payload: {number: 2, repoSlug: 'neo'}}
+                ]
+            }),
+            producer   = {getState: () => ({observedAt: pulse, coverage: 'complete', reason: null, transitions: [
+                {id: `neomjs/neo-agent-brain#764@da3bf6a:merged:open->merged#${pulse}`, key: 'neomjs/neo-agent-brain#764', repo: 'neomjs/neo-agent-brain', number: 764, head: 'da3bf6a', owner: {kind: 'seat', seat: '@neo-opus-grace', login: 'neo-opus-grace'}, kind: 'merged', from: 'open', to: 'merged', pulse}
+            ]})};
+        let captured = null;
+
+        wireFleetActivityReadSource({
+            readPrLane,
+            openWorkProducer: () => producer,
+            bridge          : stubBridge(),
+            createSource    : opts => { captured = opts; return {readActivitySnapshot() {}} }
+        });
+
+        expect(captured.readPrLaneSnapshot).not.toBe(readPrLane);
+
+        const snapshot = await captured.readPrLaneSnapshot({limit: 10});
+
+        expect(snapshot.events.map(event => [event.type, event.payload.repoSlug, event.payload.number])).toEqual([
+            ['pr-activity',    'neo-agent-brain', 764],
+            ['issue-activity', 'neo',             2]
+        ]);
+        expect(snapshot.capability.producer.observedAt).toBe(pulse)
+    });
+
+    test('a producer alone is a readable PR/lane slot: no tree, no plane, no mailbox — the source is wired and answers the producer\'s events', async () => {
+        const
+            pulse  = new Date().toISOString(),
+            bridge = stubBridge();
+        let captured = null;
+
+        const result = wireFleetActivityReadSource({
+            openWorkProducer: {getState: () => ({observedAt: pulse, coverage: 'complete', reason: null, transitions: [
+                {id: `neomjs/neo#19364@343c56c:opened:null->open#${pulse}`, key: 'neomjs/neo#19364', repo: 'neomjs/neo', number: 19364, head: '343c56c', owner: {kind: 'seat', seat: '@neo-opus-vega', login: 'neo-opus-vega'}, kind: 'opened', from: null, to: 'open', pulse}
+            ]})},
+            bridge,
+            createSource: opts => { captured = opts; return {readActivitySnapshot() {}} }
+        });
+
+        expect(result).not.toBeNull();
+        expect(bridge.activitySource).toBe(result);
+
+        const snapshot = await captured.readPrLaneSnapshot({limit: 10});
+
+        expect(snapshot.events.map(event => event.payload.number)).toEqual([19364]);
+        // a pulse this fresh is inside the stale bound: the slot is wired on the producer alone
+        expect(snapshot.capability.state).toBe('wired')
+    });
+
     test('an ABSENT slot source degrades honestly — its reader throws (contained by the composer), never a fabricated read', async () => {
         // Only the PR/lane source is present; the A2A slot has no listMessages.
         let captured = null;
