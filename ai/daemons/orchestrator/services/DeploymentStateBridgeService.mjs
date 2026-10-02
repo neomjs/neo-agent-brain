@@ -18,6 +18,7 @@ import {
     deriveMemoryPressure,
     foldMemoryPressureIntoStatus
 }                                          from './memoryPressureDisposition.mjs';
+import {readSecretCarrier}   from '../../../services/shared/secretCarrier.mjs';
 import {runHealthcheck}      from '../../../scripts/diagnostics/mcpHealthcheck.mjs';
 import {writeFileAtomicSync} from '../../../services/shared/atomicFileWrite.mjs';
 
@@ -286,6 +287,14 @@ export class DeploymentStateBridgeService extends Base {
          * @protected
          */
         providerModelIdentityProbe: null,
+        /**
+         * The lane key the identity probe presents, injected beside {@link #providerModelIdentityProbe} so specs
+         * isolate it by construction. `null` reads `openAiCompatible.apiKey` / `apiKeyFile` through
+         * `readSecretCarrier` at the use site.
+         * @member {Function|null} providerModelIdentityKey=null
+         * @protected
+         */
+        providerModelIdentityKey: null,
         /**
          * Read-only provider-activity seam. The orchestrator injects the recorder-owned ledger
          * projection; this service never opens or mutates the telemetry database itself.
@@ -1364,17 +1373,35 @@ export class DeploymentStateBridgeService extends Base {
 
         const probe = this.providerModelIdentityProbe || fetchOpenAiCompatibleModelIds;
 
-        let servedModelIds = null;
+        let apiKey, servedModelIds = null;
+
+        try {
+            apiKey = this.providerModelIdentityKey ? this.providerModelIdentityKey() : readSecretCarrier({
+                value    : AiConfig.openAiCompatible.apiKey,
+                file     : AiConfig.openAiCompatible.apiKeyFile,
+                valueName: 'openAiCompatible.apiKey',
+                fileName : 'openAiCompatible.apiKeyFile'
+            })
+        } catch (error) {
+            // a misconfigured key is named in the carrier's own words, never reported as a silent endpoint
+            return {
+                state : 'unobservable', configuredModel, servedModelIds: null, host, observedAt,
+                reason: `${error.message} GET /v1/models was not asked; identity is unobserved, not confirmed`
+            };
+        }
 
         try {
             servedModelIds = await probe({
                 host,
-                timeoutMs: AiConfig.orchestrator.providerReadiness.timeoutMs
+                timeoutMs: AiConfig.orchestrator.providerReadiness.timeoutMs,
+                apiKey
             });
         } catch (error) {
             return {
                 state : 'unobservable', configuredModel, servedModelIds: null, host, observedAt,
-                reason: `the endpoint did not answer GET /v1/models (${error.message}); identity is unobserved, not confirmed`
+                reason: error.status === 401 || error.status === 403
+                    ? `the endpoint ${apiKey ? 'refused the lane\'s key' : 'wants a key, and the lane has none'} on GET /v1/models (HTTP ${error.status}): check openAiCompatible.apiKey or apiKeyFile; identity is unobserved, not confirmed`
+                    : `the endpoint did not answer GET /v1/models (${error.message}); identity is unobserved, not confirmed`
             };
         }
 
