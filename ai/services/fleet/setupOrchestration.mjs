@@ -4,8 +4,8 @@
  * authority: the CLI (`ai/scripts/setup/firstRun.mjs`) and the vessel's setup broker. `performEffects`
  * turns the consented preset and the operator's credential files into the three effects' inputs and
  * applies them in their execution order; `settlePending` closes an interrupted effect from a fresh
- * matching observation. Both write only through `hostEffects`, so an accepted effect never runs again and
- * an interrupted one is settled by observation, never replayed.
+ * matching observation. Both write only through `hostEffects`, so an effect accepted for the same input never
+ * runs again, and an interrupted one is settled by observation, never replayed.
  *
  * **One writer is the caller's precondition.** Every write goes through `applyEffect` or `settleReceipt` on
  * the `recordPath` the caller names, and neither re-reads nor locks that file: the caller holds the current
