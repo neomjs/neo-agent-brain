@@ -1362,20 +1362,33 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
     });
 
     test("a GitLab seat's project is named only when its working repository is on the seat's instance", async () => {
-        const
-            gitlab    = (id, cloneUrl) => agentDef(id, {
-                forge   : 'gitlab', forgeHost: 'https://gitlab.example.com',
-                metadata: {launch: LAUNCH, repo: {repoSlug: 'group/project', cloneUrl, forge: 'gitlab'}}
-            }),
-            spawnStub = install({agents: {
-                on : gitlab('on',  'git@gitlab.example.com:group/project.git'),
-                off: gitlab('off', 'https://gitlab.other.example/group/project.git')
-            }});
-        await FleetLifecycleService.start('on');
-        await FleetLifecycleService.start('off');
-        expect(spawnStub.calls[0].opts.env.NEO_GITLAB_PROJECT).toBe('group/project');
-        expect(spawnStub.calls[1].opts.env).not.toHaveProperty('NEO_GITLAB_PROJECT');
-        expect(spawnStub.calls[1].opts.env.NEO_GITLAB_PAT).toBe(FIXTURE_PAT);
+        const cases = [ // [the seat's instance, the working clone, is the project named]
+            ['https://gitlab.example.com',      'git@gitlab.example.com:group/project.git',            true],
+            ['https://gitlab.example.com',      'https://gitlab.other.example/group/project.git',      false],
+            ['https://gitlab.example.com',      'https://gitlab.example.com:443/group/project.git',    true],  // the default port, spelled out
+            ['https://gitlab.example.com:8443', 'https://gitlab.example.com:8443/group/project.git',   true],
+            ['https://gitlab.example.com:8443', 'https://gitlab.example.com:9443/group/project.git',   false], // another port is another instance
+            ['https://gitlab.example.com:8443', 'https://gitlab.example.com/group/project.git',        false], // and so is the implicit 443
+            ['https://gitlab.example.com:8443', 'ssh://git@gitlab.example.com:2222/group/project.git', true],  // SSH has its own port
+            ['https://gitlab.example.com:8443', 'git@GitLab.Example.com:group/project.git',            true],
+            ['https://[2001:db8::1]:8443',      'https://[2001:DB8::1]:8443/group/project.git',        true],
+            ['https://[2001:db8::1]:8443',      'https://[2001:db8::2]:8443/group/project.git',        false],
+            ['https://[2001:db8::1]:8443',      'git@[2001:db8::1]:group/project.git',                 true]
+        ];
+        const spawnStub = install({agents: Object.fromEntries(cases.map(([forgeHost, cloneUrl], index) => [`s${index}`, agentDef(`s${index}`, {
+            forge   : 'gitlab', forgeHost,
+            metadata: {launch: LAUNCH, repo: {repoSlug: 'group/project', cloneUrl, forge: 'gitlab'}}
+        })]))});
+
+        for (const index of cases.keys()) await FleetLifecycleService.start(`s${index}`);
+
+        cases.forEach(([forgeHost, cloneUrl, named], index) => {
+            const env = spawnStub.calls[index].opts.env;
+
+            named ? expect(env.NEO_GITLAB_PROJECT, `${cloneUrl} on ${forgeHost}`).toBe('group/project')
+                  : expect(env, `${cloneUrl} on ${forgeHost}`).not.toHaveProperty('NEO_GITLAB_PROJECT');
+            expect(env).toMatchObject({NEO_GITLAB_PAT: FIXTURE_PAT, NEO_GITLAB_HOST: forgeHost})
+        });
     });
 
     test('SECURITY: a launch env cannot pre-load a GitLab seat slot', () => {

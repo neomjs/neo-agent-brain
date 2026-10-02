@@ -55,9 +55,33 @@ function gitlabProjectOf(agent) {
 
     if (repo?.forge !== 'gitlab' || typeof repo.cloneUrl !== 'string') return null;
 
-    const host = repo.cloneUrl.match(/^(?:https:\/\/|ssh:\/\/(?:[^@/]+@)?|[^@/:]+@)([^/:]+)/)?.[1]?.toLowerCase();
+    return isOnInstance(repo.cloneUrl, new URL(agent.forgeHost)) ? repo.repoSlug : null
+}
 
-    return host && host === new URL(agent.forgeHost).hostname ? repo.repoSlug : null
+/**
+ * @summary Whether a clone URL addresses the bound instance. An `https` URL must carry its exact origin, so the
+ * same host on another port is another instance. An `ssh` URL or scp-style address matches by host alone, because
+ * SSH has its own port.
+ * @param {String} cloneUrl
+ * @param {URL}    instance The seat's parsed `forgeHost`.
+ * @returns {Boolean}
+ * @private
+ */
+function isOnInstance(cloneUrl, instance) {
+    const scpHost = cloneUrl.match(/^[^@/:]+@(\[[^\]]+\]|[^/:]+):/)?.[1];
+
+    try {
+        // a non-special scheme normalizes an IPv6 host but keeps a DNS name's case
+        if (scpHost) return new URL(`ssh://${scpHost}`).hostname.toLowerCase() === instance.hostname;
+
+        const url = new URL(cloneUrl);
+
+        if (url.protocol === 'https:') return url.origin === instance.origin;
+
+        return url.protocol === 'ssh:' && url.hostname.toLowerCase() === instance.hostname
+    } catch {
+        return false
+    }
 }
 
 /**
