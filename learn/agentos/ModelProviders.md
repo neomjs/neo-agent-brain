@@ -141,7 +141,7 @@ For remote Gemini, set the selected role provider to `gemini` and provide the
 Gemini credential required by that role. Local providers do not require
 `GEMINI_API_KEY`; Gemini does, but only for the exact summary or embedding
 surface that selects Gemini. `NEO_GEMINI_MODEL` and `NEO_GEMINI_EMBEDDING_MODEL`
-name its chat and embedding models (`gemini-3.5-flash` and `gemini-embedding-001`
+name its chat and embedding models (`gemini-3.8-flash` and `gemini-embedding-001`
 by default).
 
 Every provider key has a file sibling for secret-file-aware runtimes:

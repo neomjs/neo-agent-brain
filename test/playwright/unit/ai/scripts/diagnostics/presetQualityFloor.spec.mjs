@@ -133,10 +133,10 @@ test.describe('presetQualityFloor', () => {
             NEO_MODEL_PROVIDER                          : 'gemini',
             NEO_GRAPH_PROVIDER                          : 'openAiCompatible',
             NEO_EMBEDDING_PROVIDER                      : 'gemini',
-            NEO_GEMINI_MODEL                            : 'gemini-3.5-flash',
+            NEO_GEMINI_MODEL                            : 'gemini-3.8-flash',
             NEO_GEMINI_EMBEDDING_MODEL                  : 'gemini-embedding-001',
             NEO_OPENAI_COMPATIBLE_HOST                  : GEMINI_ENDPOINT,
-            NEO_OPENAI_COMPATIBLE_MODEL                 : 'gemini-3.5-flash',
+            NEO_OPENAI_COMPATIBLE_MODEL                 : 'gemini-3.8-flash',
             NEO_LOCAL_MODELS_CHAT_GRAPH_REASONING_EFFORT: 'low',
             NEO_VECTOR_DIMENSION                        : '3072'
         });
@@ -231,13 +231,13 @@ test.describe('presetQualityFloor', () => {
     test('the hosted preset runs its children against Gemini\'s OpenAI-compatible endpoint as declared, isolated like a local one, measured against the reference floor', async () => {
         const
             calls  = [],
-            result = await measurePreset({presetId: 'hosted', documentsDir: await scratchDocuments(), exec: fakeExec({chatModel: 'gemini-3.5-flash', payload: payload(), failure: null}, calls)});
+            result = await measurePreset({presetId: 'hosted', documentsDir: await scratchDocuments(), exec: fakeExec({chatModel: 'gemini-3.8-flash', payload: payload(), failure: null}, calls)});
 
         expect(calls).toHaveLength(3);
         expect(calls[0].env).toMatchObject({
             NEO_GRAPH_PROVIDER                          : 'openAiCompatible',
             NEO_OPENAI_COMPATIBLE_HOST                  : GEMINI_ENDPOINT,
-            NEO_OPENAI_COMPATIBLE_MODEL                 : 'gemini-3.5-flash',
+            NEO_OPENAI_COMPATIBLE_MODEL                 : 'gemini-3.8-flash',
             NEO_LOCAL_MODELS_CHAT_GRAPH_REASONING_EFFORT: 'low',
             UNIT_TEST_MODE                              : 'true',
             NEO_PLANE_DATA_ROOT                         : calls[0].cwd
@@ -247,7 +247,7 @@ test.describe('presetQualityFloor', () => {
         expect(result).toMatchObject({
             preset      : 'hosted',
             instrument  : INSTRUMENT,
-            chatModel   : 'gemini-3.5-flash',
+            chatModel   : 'gemini-3.8-flash',
             providerHost: {declared: GEMINI_ENDPOINT, used: GEMINI_ENDPOINT},
             isolation   : {graph: ':memory:', dataRoot: calls[0].cwd},
             result      : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4', ungroundedNames: 0},

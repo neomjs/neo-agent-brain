@@ -111,7 +111,7 @@ test.describe('ai/configBase — delta-only subclass overlays (overlay-drift roo
             names.forEach(name => delete process.env[name]);
             fixture = createOverlayFixture('Neo.ai.unittest.GeminiModelBindingFixture', null);
 
-            expect(fixture.proxy.modelName).toBe('gemini-3.5-flash');
+            expect(fixture.proxy.modelName).toBe('gemini-3.8-flash');
             expect(fixture.proxy.embeddingModel).toBe('gemini-embedding-001');
 
             process.env.NEO_GEMINI_MODEL           = 'gemini-unit-chat';
