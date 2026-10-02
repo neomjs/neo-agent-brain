@@ -16,8 +16,9 @@ import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
  * ({@link assertRepoSlug}), and a remote naming that repo — https, ssh or the SCP-like
  * `git@host:owner/repo`, with no embedded credentials and never a local source. A GitHub slug is exactly
  * `<owner>/<repo>` and, without a clone URL, is the GitHub URL of the slug. A GitLab slug may name nested
- * groups and must name its clone URL, because a self-hosted host cannot be derived; the entry records
- * `forge: 'gitlab'`, while GitHub stays unrecorded. A refusal names the rule, never the refused value: a
+ * groups and must name its clone URL, because without a seat its host cannot be derived (a seat-aware verb
+ * derives it first, {@link seatRepoEntry}); the entry records `forge: 'gitlab'`, while GitHub stays
+ * unrecorded. A refusal names the rule, never the refused value: a
  * caller's string may be a URL with a credential in it, and an error message travels to logs and panes.
  * @param {Object} coordinates
  * @param {String} [coordinates.repoSlug] `owner/repo`, or `group/…/project` on GitLab.
@@ -67,6 +68,23 @@ function repoCoordinates({repoSlug, cloneUrl, forge = 'github'}, caller) {
     }
 
     return repo
+}
+
+/**
+ * @summary A seat-aware verb's entry before {@link repoCoordinates}: one that names no clone URL takes the
+ * seat's forge, and on a GitLab seat its clone URL is the slug on the seat's own instance (`forgeHost`).
+ * An entry naming its clone URL, and every entry of a GitHub seat, passes unchanged.
+ * @param {Object}      entry `{repoSlug, cloneUrl?, forge?}`.
+ * @param {Object|null} seat  The seat's public definition.
+ * @returns {Object} the entry {@link repoCoordinates} reads.
+ * @private
+ */
+function seatRepoEntry(entry, seat) {
+    const forge = entry.forge ?? seat?.forge;
+
+    return entry.cloneUrl == null && forge === 'gitlab' && seat?.forge === 'gitlab' && typeof entry.repoSlug === 'string'
+        ? {...entry, forge, cloneUrl: `${seat.forgeHost}/${entry.repoSlug}.git`}
+        : entry
 }
 
 /**
@@ -570,8 +588,9 @@ class FleetManager extends Base {
      * @param {Object}  payload
      * @param {String}  payload.id        Registry agent id.
      * @param {String} [payload.repoSlug] `owner/repo`: the checkout dir under the agents root.
-     * @param {String} [payload.cloneUrl] A remote naming that repo; defaults to `https://github.com/<repoSlug>.git`.
-     * @param {String} [payload.forge]    `'gitlab'` for a GitLab repository; GitHub otherwise.
+     * @param {String} [payload.cloneUrl] A remote naming that repo; defaults to the slug on the seat's forge,
+     * `https://github.com/<repoSlug>.git` or `<forgeHost>/<repoSlug>.git` ({@link seatRepoEntry}).
+     * @param {String} [payload.forge]    `'gitlab'` for a GitLab repository; without a clone URL, the seat's forge.
      * @returns {Object|null} The updated public definition, or `null` if the agent doesn't exist.
      * @throws {Error} On what {@link repoCoordinates} refuses, or a checkout that would collide with one
      * of the seat's other repositories.
@@ -582,7 +601,7 @@ class FleetManager extends Base {
             registry = this.getLifecycleService().getRegistry(),
             seat     = registry.getAgent(id),
             repo     = repoSlug != null || cloneUrl != null || forge != null
-                ? repoCoordinates({repoSlug, cloneUrl, forge}, caller)
+                ? repoCoordinates(seatRepoEntry({repoSlug, cloneUrl, forge}, seat), caller)
                 : {};
 
         if (repo.repoSlug) {
@@ -605,7 +624,8 @@ class FleetManager extends Base {
      * {@link setRepo}: a repository dropped from the list keeps its checkout.
      * @param {Object}   payload
      * @param {String}   payload.id    Registry agent id.
-     * @param {Object[]} payload.repos `[{repoSlug, cloneUrl?}]`.
+     * @param {Object[]} payload.repos `[{repoSlug, cloneUrl?, forge?}]`; an entry without a clone URL takes the
+     * seat's forge, as in {@link setRepo}.
      * @returns {Object|null} The updated public definition, or `null` if the agent doesn't exist.
      * @throws {Error} On a list that is not an array, an invalid entry, a duplicate, the working
      * repository, or a seat that has no working repository.
@@ -626,7 +646,7 @@ class FleetManager extends Base {
         const
             identity = repo => `${repo.forge ?? 'github'}:${repo.repoSlug}`,
             working  = agent.metadata?.repo,
-            entries  = repos.map(entry => repoCoordinates(entry && typeof entry === 'object' ? entry : {}, caller)),
+            entries  = repos.map(entry => repoCoordinates(seatRepoEntry(entry && typeof entry === 'object' ? entry : {}, agent), caller)),
             ids      = entries.map(identity);
 
         // worded for the operator, who reads these reasons in Accounts
