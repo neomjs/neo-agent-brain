@@ -4156,7 +4156,9 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — embeddin
         'orchestrator.deploymentStateBridge.providerLaneShapeServiceKeys',
         'orchestrator.deploymentStateBridge.providerResidencyServiceKeys',
         'openAiCompatible.host',
-        'openAiCompatible.embeddingModel'
+        'openAiCompatible.embeddingModel',
+        'openAiCompatible.apiKey',
+        'openAiCompatible.apiKeyFile'
     ];
 
     let restoreIdentityConfig;
@@ -4170,6 +4172,43 @@ test.describe('Neo.ai.daemons.services.DeploymentStateBridgeService — embeddin
 
     test.afterEach(() => {
         restoreIdentityConfig?.()
+    });
+
+    test('the identity probe presents the lane\'s key, and a refused key is named as the key', async () => {
+        const seen = [], refusal = status => Object.assign(new Error(`HTTP ${status}`), {status});
+        let answer = async () => ['qwen3-embedding-0.6b'];
+
+        const bridge = createService({providerModelIdentityProbe: async options => (seen.push(options.apiKey), answer())});
+
+        AiConfig.openAiCompatible.apiKey = 'lane-key';
+        expect((await bridge.collectProviderModelIdentity({observedAt: 1})).state).toBe('match');
+        expect(seen).toEqual(['lane-key']);
+
+        answer = async () => {throw refusal(401)};
+        let identity = await bridge.collectProviderModelIdentity({observedAt: 2});
+        expect(identity.state).toBe('unobservable');
+        expect(identity.reason).toContain('refused the lane\'s key');
+        expect(identity.reason).toContain('openAiCompatible.apiKey');
+
+        AiConfig.openAiCompatible.apiKey = '';
+        answer   = async () => {throw refusal(403)};
+        identity = await bridge.collectProviderModelIdentity({observedAt: 3});
+        expect(identity.reason).toContain('wants a key, and the lane has none');
+
+        // both carriers set: the carrier's own refusal, and the endpoint is never asked
+        AiConfig.openAiCompatible.apiKey     = 'lane-key';
+        AiConfig.openAiCompatible.apiKeyFile = '/run/secrets/lane-key';
+        identity = await bridge.collectProviderModelIdentity({observedAt: 4});
+        expect(identity.reason).toContain('exactly one of openAiCompatible.apiKey or openAiCompatible.apiKeyFile');
+        expect(seen).toHaveLength(3);
+
+        // any other failure keeps its own words
+        AiConfig.openAiCompatible.apiKeyFile = '';
+        answer   = async () => {throw new Error('connect ECONNREFUSED')};
+        identity = await bridge.collectProviderModelIdentity({observedAt: 5});
+        expect(identity.reason).toContain('the endpoint did not answer GET /v1/models (connect ECONNREFUSED)');
+
+        bridge.destroy()
     });
 
     test('the served list naming the configured model reads MATCH, and publishes on a healthy plane too', async () => {

@@ -9,6 +9,8 @@ setup({
 
 import {test, expect} from '@playwright/test';
 import {execFile}     from 'child_process';
+import fs             from 'fs';
+import http           from 'http';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import * as core      from 'neo.mjs/src/core/_export.mjs';
 import os             from 'os';
@@ -1507,5 +1509,71 @@ test.describe('#305 — deterministic LMS load failures have a terminal disposit
         expect(result.adoptedModels.map(item => item.model)).toEqual(['embedding-model']);
         expect(result.failedModels).toEqual([]);
         expect(guard.snapshot({host: 'http://127.0.0.1:1234', model: 'embedding-model'})).toBeNull();
+    });
+});
+
+test.describe('#746 — the readiness probe presents the lane\'s key', () => {
+    let checkProvider, fetchOpenAiCompatibleModelIds, server, host, seen;
+
+    test.beforeAll(async () => {
+        ({checkProvider, fetchOpenAiCompatibleModelIds} = await import('../../../../../../ai/services/graph/providerReadinessHelper.mjs'));
+
+        // an endpoint behind a key: 401 without the lane's bearer, the model list with it
+        server = http.createServer((request, response) => {
+            const ok = request.headers.authorization === 'Bearer lane-key';
+
+            seen.push(request.headers.authorization ?? null);
+            response.writeHead(ok ? 200 : 401, {'content-type': 'application/json'});
+            response.end(ok ? JSON.stringify({data: [{id: 'graph-model'}]}) : '{"error":"missing key"}')
+        });
+        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        host = `http://127.0.0.1:${server.address().port}`
+    });
+
+    test.afterAll(() => new Promise(resolve => server.close(resolve)));
+
+    test.beforeEach(() => {
+        seen = []
+    });
+
+    const laneConfig = lane => ({graphProvider: 'openAiCompatible', openAiCompatible: {host, model: 'graph-model', apiKey: '', apiKeyFile: '', ...lane}});
+
+    test('the enumeration sends the bearer only when it holds a key', async () => {
+        const
+            calls   = [],
+            fetchFn = async (url, options) => (calls.push(options), {ok: true, json: async () => ({data: [{id: 'm'}]})});
+
+        await fetchOpenAiCompatibleModelIds({host: 'http://lane.example', timeoutMs: 1000, apiKey: 'k', fetchFn});
+        await fetchOpenAiCompatibleModelIds({host: 'http://lane.example', timeoutMs: 1000, fetchFn});
+
+        expect(calls[0].headers).toEqual({authorization: 'Bearer k'});
+        expect(calls[1]).not.toHaveProperty('headers')
+    });
+
+    test('a refusal carries its HTTP status', async () => {
+        const fetchFn = async () => ({ok: false, status: 403, text: async () => 'forbidden'});
+
+        await expect(fetchOpenAiCompatibleModelIds({host: 'http://lane.example', timeoutMs: 1000, fetchFn}))
+            .rejects.toMatchObject({status: 403, message: expect.stringContaining('HTTP 403')})
+    });
+
+    test('checkProvider reads the key through its carriers: ready with it, not ready without, refused when both are set', async () => {
+        const keyFile = path.join(os.tmpdir(), `neo-746-lane-key-${process.pid}`);
+
+        fs.writeFileSync(keyFile, 'lane-key\n', {mode: 0o600});
+
+        try {
+            expect(await checkProvider({config: laneConfig({apiKey: 'lane-key'}), timeoutMs: 2000})).toBe(true);
+            expect(await checkProvider({config: laneConfig({}), timeoutMs: 2000})).toBe(false);
+            expect(await checkProvider({config: laneConfig({apiKeyFile: keyFile}), timeoutMs: 2000})).toBe(true);
+            expect(seen).toEqual(['Bearer lane-key', null, 'Bearer lane-key']);
+
+            // a misconfigured carrier is the carrier's own error, never folded into "not ready"
+            expect(() => checkProvider({config: laneConfig({apiKey: 'lane-key', apiKeyFile: keyFile}), timeoutMs: 2000}))
+                .toThrow(/exactly one of openAiCompatible\.apiKey or openAiCompatible\.apiKeyFile/);
+            expect(seen).toHaveLength(3)
+        } finally {
+            fs.rmSync(keyFile, {force: true})
+        }
     });
 });

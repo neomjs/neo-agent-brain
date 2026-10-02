@@ -21,6 +21,7 @@ import {
 import {
     observeUnqueuedProviderActivity
 } from '../shared/providerActivityLedger.mjs';
+import {readSecretCarrier} from '../shared/secretCarrier.mjs';
 
 let openAiCompatibleEmbeddingServingProbeQueue = Promise.resolve(),
     lmsResidencyMutationQueue                  = Promise.resolve(),
@@ -355,7 +356,7 @@ function createLmsCliError(operation, cause, stderr = '') {
  * `lms load` refuses with `A model with identifier <id> already exists.` when an instance under
  * that identifier is already resident. `loadLmsModel()` rejects every CLI failure uniformly, so
  * without this predicate the collision is indistinguishable from a real load failure — the ensure
- * verify stays unsatisfied and the supervisor retries forever (#29: twelve cycles in six minutes).
+ * verify stays unsatisfied and the supervisor retries forever (once measured: twelve cycles in six minutes).
  *
  * **A collision is not a failure.** It reports that the desired end state may already hold, which
  * is a question about the resident instance's *shape*, not about the load. Callers answer it by
@@ -707,6 +708,8 @@ export function getOllamaRunningModels(payload) {
  * @param {Object} options
  * @param {String} options.host Provider host.
  * @param {Number} options.timeoutMs HTTP timeout. Required; no module-level default.
+ * @param {String} [options.apiKey] The lane's key, sent as a bearer when given. An endpoint behind a key answers a
+ * keyless enumeration with 401/403, or 404 before it routes. A failure carries the HTTP `status`.
  * @param {Function} [options.fetchFn=fetch] Fetch seam for tests.
  * @param {String} [options.freshness='force'] `routine` enables TTL caching; `force` bypasses completed cache.
  * @param {Number} [options.cacheTtlMs] Required for routine caching.
@@ -715,6 +718,7 @@ export function getOllamaRunningModels(payload) {
 export async function fetchOpenAiCompatibleModelIds({
     host,
     timeoutMs,
+    apiKey,
     fetchFn    = fetch,
     freshness  = PROVIDER_DISCOVERY_FORCE,
     cacheTtlMs
@@ -727,7 +731,8 @@ export async function fetchOpenAiCompatibleModelIds({
     }
 
     return runProviderDiscoveryProbe({
-        key   : `openai-compatible-models:${host}:${timeoutMs}`,
+        // a keyed and a keyless probe never share an answer; the key itself never enters the cache key
+        key   : `openai-compatible-models:${host}:${timeoutMs}:${apiKey ? 'bearer' : 'anonymous'}`,
         freshness,
         cacheTtlMs,
         caller: 'fetchOpenAiCompatibleModelIds',
@@ -735,12 +740,17 @@ export async function fetchOpenAiCompatibleModelIds({
             const url      = new URL('/v1/models', host).toString();
             const response = await fetchFn(url, {
                 method: 'GET',
+                ...(apiKey && {headers: {authorization: `Bearer ${apiKey}`}}),
                 signal: AbortSignal.timeout(timeoutMs)
             });
 
             if (!response.ok) {
                 const text = typeof response.text === 'function' ? await response.text() : '';
-                throw new Error(`OpenAI-compatible model enumeration failed: HTTP ${response.status}${text ? ` - ${text}` : ''}`);
+
+                throw Object.assign(
+                    new Error(`OpenAI-compatible model enumeration failed: HTTP ${response.status}${text ? ` - ${text}` : ''}`),
+                    {status: response.status}
+                );
             }
 
             return getOpenAiCompatibleModelIds(await response.json());
@@ -1927,7 +1937,7 @@ async function ensureLmsModelsLoadedOnce({
     let   activeLoadedModels = [];
     const attemptedModels    = [],
           loadedModels    = [],
-          // #29: instances that were already resident and already sufficient, adopted rather than
+          // instances that were already resident and already sufficient, adopted rather than
           // replaced. Kept separate from `loadedModels` on purpose — a supervisor that cannot tell
           // "I loaded it" from "someone else already had it" loses the only signal that would show
           // this collision race recurring.
@@ -2195,7 +2205,7 @@ async function ensureLmsModelsLoadedOnce({
                 throw error;
             }
 
-            // #29 fix point 1 — a collision is a question, not a failure.
+            // A collision is a question, not a failure.
             //
             // LM Studio refuses the load because an instance under this identifier is already
             // resident, which is exactly the state the ensure wanted. Treating it as a failure
@@ -3225,7 +3235,9 @@ export function checkProvider({
     if (typeof timeoutMs !== 'number') {
         throw new TypeError('checkProvider: timeoutMs is required (pass from config.orchestrator.providerReadiness.timeoutMs)');
     }
-    const target = getGraphProviderReadinessTarget(config ?? aiConfig.data);
+    const
+        source = config ?? aiConfig.data,
+        target = getGraphProviderReadinessTarget(source);
 
     if (!target.supported || !target.url) {
         return Promise.resolve(false);
@@ -3235,6 +3247,13 @@ export function checkProvider({
         return fetchOpenAiCompatibleModelIds({
             host      : target.host,
             timeoutMs,
+            // read where it is used; a carrier misconfiguration throws here, never folded into "not ready"
+            apiKey    : readSecretCarrier({
+                value    : source.openAiCompatible.apiKey,
+                file     : source.openAiCompatible.apiKeyFile,
+                valueName: 'openAiCompatible.apiKey',
+                fileName : 'openAiCompatible.apiKeyFile'
+            }),
             freshness : modelDiscoveryFreshness,
             cacheTtlMs: modelDiscoveryFreshness === PROVIDER_DISCOVERY_ROUTINE
                 ? modelDiscoveryCacheTtlMs
