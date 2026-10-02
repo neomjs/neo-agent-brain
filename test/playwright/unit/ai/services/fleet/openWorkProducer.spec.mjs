@@ -1,6 +1,7 @@
-import {expect, test}           from '@playwright/test';
-import fs                       from 'fs';
-import {createOpenWorkProducer} from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
+import {expect, test}              from '@playwright/test';
+import fs                          from 'fs';
+import {createFleetOpenWorkSource} from '../../../../../../ai/services/fleet/fleetOpenWorkSource.mjs';
+import {createOpenWorkProducer}    from '../../../../../../ai/services/fleet/openWorkProducer.mjs';
 
 const identities = {
     byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt'})[login] ?? null,
@@ -189,6 +190,26 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         expect(stub.calls.filter(call => call.kind === 'terminal').map(call => call.cursor)).toEqual([null, '1', '2']);
         expect(tail).toMatchObject({coverage: 'complete', watermark: '2026-10-02T09:52:00.000Z', window: null})
+    });
+
+    test('an hour of partial pulses after a complete baseline never makes the row they missed fresh', async () => {
+        let script = {open: [[pr(), pr({number: 8})]], terminal: [[]]};
+
+        const
+            stub     = github({get open() { return script.open }, get terminal() { return script.terminal }}),
+            every10  = (() => { let ms = Date.parse('2026-10-02T10:00:00Z'); return () => new Date(ms += 10 * 60000) })(),
+            producer = createOpenWorkProducer({query: stub.query, repos: async () => ['acme/app'], identities, now: every10, pageBudget: 1});
+
+        // a complete baseline at 10:10, then seven pulses to 11:20 that read only the first page
+        await producer.pulse();
+        script = {open: [[pr()], [pr({number: 8})]], terminal: [[]]};
+
+        for (let pulse = 0; pulse < 7; pulse++) await producer.pulse();
+
+        const read = createFleetOpenWorkSource({producer, now: () => Date.parse('2026-10-02T11:21:00Z')}).readOpenWork();
+
+        expect(read).toMatchObject({state: 'ok', coverage: 'partial', unobserved: 1});
+        expect(read.seats['@neo-opus-ada'].authored.map(({number}) => number)).toEqual([7])
     });
 
     test('a failed pulse records what its answered requests cost, and marks the rest unknown', async () => {
