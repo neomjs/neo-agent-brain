@@ -19,6 +19,9 @@ import {GiB, fitsPreset, probePlacement} from '../../../../../../ai/services/fle
 const
     REPO_ROOT     = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
     CONFIG_SOURCE = fs.readFileSync(path.join(REPO_ROOT, 'ai/configBase.mjs'), 'utf8'),
+    // the dispatch's accepted graph providers, read from its source as the leaves are read from configBase's
+    // (the module itself needs the Neo global, which this pure spec never boots)
+    GRAPH_MODEL_PROVIDERS = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'ai/services/graph/providerDispatch.mjs'), 'utf8').match(/GRAPH_MODEL_PROVIDERS\s*=\s*Object\.freeze\((\[[^\]]*\])\)/)[1].replace(/'/g, '"')),
     byId          = id => presets.find(preset => preset.id === id);
 
 /** The probe's fixture readers at a given host size; models are read from the preset under test, not the host. */
@@ -73,8 +76,12 @@ test.describe('placementPresets — three presets as env sets over declared leav
             expect(byId(id).env).toMatchObject({NEO_MODEL_PROVIDER: 'openAiCompatible', NEO_GRAPH_PROVIDER: 'openAiCompatible', NEO_EMBEDDING_PROVIDER: 'openAiCompatible', NEO_LOCAL_AGENT_OS_PROVIDER_HOST: 'http://host.docker.internal:1234', NEO_LOCAL_AGENT_OS_MODEL: 'google/gemma-4-26b-a4b'});
             expect(byId(id).env.NEO_LOCAL_AGENT_OS_EMBEDDING_MODEL).toBe(byId(id).embedder)
         }
-        expect(byId('hosted').env).toEqual({NEO_MODEL_PROVIDER: 'gemini', NEO_GRAPH_PROVIDER: 'gemini', NEO_EMBEDDING_PROVIDER: 'gemini', NEO_GEMINI_MODEL: 'gemini-3.5-flash', NEO_GEMINI_EMBEDDING_MODEL: 'gemini-embedding-001', NEO_VECTOR_DIMENSION: '3072'});
+        // hosted: chat and embeddings on the Gemini client, graph generation through Gemini's OpenAI-compatible
+        // endpoint over the overlay's inputs (the dispatch serves ollama and openAiCompatible only), the
+        // extractor's reasoning effort set because Gemini's 3.x models take no `none`
+        expect(byId('hosted').env).toEqual({NEO_MODEL_PROVIDER: 'gemini', NEO_GRAPH_PROVIDER: 'openAiCompatible', NEO_EMBEDDING_PROVIDER: 'gemini', NEO_GEMINI_MODEL: 'gemini-3.5-flash', NEO_GEMINI_EMBEDDING_MODEL: 'gemini-embedding-001', NEO_LOCAL_AGENT_OS_PROVIDER_HOST: 'https://generativelanguage.googleapis.com/v1beta/openai', NEO_LOCAL_AGENT_OS_MODEL: 'gemini-3.5-flash', NEO_LOCAL_MODELS_CHAT_GRAPH_REASONING_EFFORT: 'low', NEO_VECTOR_DIMENSION: '3072'});
         expect(byId('hosted').env.NEO_GEMINI_MODEL).toBe(byId('hosted').chatModel);
+        expect(byId('hosted').env.NEO_LOCAL_AGENT_OS_MODEL).toBe(byId('hosted').chatModel);
         expect(byId('hosted').env.NEO_GEMINI_EMBEDDING_MODEL).toBe(byId('hosted').embedder);
 
         // the models' bytes are the loaded weights, summed once per preset; hosted carries none
@@ -111,12 +118,15 @@ test.describe('placementPresets — three presets as env sets over declared leav
         expect(profile.mappings.get('NEO_LOCAL_AGENT_OS_MODEL')).toBe('NEO_OPENAI_COMPATIBLE_MODEL');
         expect(profile.mappings.get('NEO_LOCAL_AGENT_OS_EMBEDDING_MODEL')).toBe('NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL');
         expect(profile.mappings.get('NEO_LOCAL_AGENT_OS_PROVIDER_HOST')).toBe('NEO_OPENAI_COMPATIBLE_HOST');
-        for (const name of ['NEO_MODEL_PROVIDER', 'NEO_GRAPH_PROVIDER', 'NEO_EMBEDDING_PROVIDER', 'NEO_VECTOR_DIMENSION', 'NEO_CHROMA_DATABASE', 'NEO_GEMINI_MODEL', 'NEO_GEMINI_EMBEDDING_MODEL']) {
+        for (const name of ['NEO_MODEL_PROVIDER', 'NEO_GRAPH_PROVIDER', 'NEO_EMBEDDING_PROVIDER', 'NEO_VECTOR_DIMENSION', 'NEO_CHROMA_DATABASE', 'NEO_GEMINI_MODEL', 'NEO_GEMINI_EMBEDDING_MODEL', 'NEO_OPENAI_COMPATIBLE_API_KEY_FILE', 'NEO_LOCAL_MODELS_CHAT_GRAPH_REASONING_EFFORT']) {
             expect(profile.inputs.has(name), name).toBe(true)
         }
 
         for (const preset of presets) {
             expect(unconsumedPresetEnvKeys(preset, profile, declared), preset.id).toEqual([]);
+            // graph generation dispatches to the providers it serves and no other: a preset naming one outside
+            // the dispatch would summarize and embed and extract no graph, so it never ships in the table
+            expect(GRAPH_MODEL_PROVIDERS, preset.id).toContain(preset.env.NEO_GRAPH_PROVIDER);
             // the leaf-name arm stays for the keys that are leaves themselves
             expect(unknownPresetEnvKeys({...preset, env: Object.fromEntries(Object.entries(preset.env).filter(([key]) => !key.startsWith('NEO_LOCAL_AGENT_OS_')))}, declared), preset.id).toEqual([])
         }

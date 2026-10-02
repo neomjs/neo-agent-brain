@@ -125,13 +125,20 @@ const
         NEO_GRAPH_PROVIDER              : 'openAiCompatible',
         NEO_EMBEDDING_PROVIDER          : 'openAiCompatible',
         NEO_LOCAL_AGENT_OS_PROVIDER_HOST: 'http://host.docker.internal:1234'
-    });
+    }),
+    // Gemini's OpenAI-compatible endpoint is the hosted preset's graph lane: graph generation dispatches
+    // to ollama or an OpenAI-compatible endpoint only, chat and embeddings keep the Gemini client, and
+    // the one mounted key feeds both key-file leaves (the credential step). Gemini's documentation
+    // lists the `reasoning_effort` value `none` for 2.5 models only, so the graph extractor is told `low`.
+    GEMINI_OPENAI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/openai',
+    GEMINI_FLASH           = 'gemini-3.5-flash';
 
 /**
  * @summary The supported presets. Fields: `id`, `label`, `inference` (`hosted` | `local`), `profile`,
  * `authorityProfile`, `env` (the profile's CONSUMED inputs — each key is either a declared leaf binding
  * the profile forwards or an overlay input the profile maps onto one; the parity spec proves both
- * against the Compose files and `configBase`), `requires` (what the recipe must still ask for),
+ * against the Compose files and `configBase`, and that every graph provider is one the dispatch
+ * serves), `requires` (what the recipe must still ask for),
  * `vectorDimension`, `embedder`, `chatModel`, `workload` (`{planeIdleBytes, planePeakBytes,
  * modelsBytes, vmCapRecommendedBytes}` for the probe's `fitsPreset`), `qualityFloor` (a recorded floor
  * run, or `null` → `candidate`), and `pendingBindings`: leaves a preset would still rely on by default
@@ -146,17 +153,20 @@ export const presets = Object.freeze([
         profile         : PLANE_PROFILE.id,
         authorityProfile: CONTAINER_AUTHORITY_PROFILE,
         env             : Object.freeze({
-            NEO_MODEL_PROVIDER        : 'gemini',
-            NEO_GRAPH_PROVIDER        : 'gemini',
-            NEO_EMBEDDING_PROVIDER    : 'gemini',
-            NEO_GEMINI_MODEL          : 'gemini-3.5-flash',
-            NEO_GEMINI_EMBEDDING_MODEL: 'gemini-embedding-001',
-            NEO_VECTOR_DIMENSION      : '3072'
+            NEO_MODEL_PROVIDER                          : 'gemini',
+            NEO_GRAPH_PROVIDER                          : 'openAiCompatible',
+            NEO_EMBEDDING_PROVIDER                      : 'gemini',
+            NEO_GEMINI_MODEL                            : GEMINI_FLASH,
+            NEO_GEMINI_EMBEDDING_MODEL                  : 'gemini-embedding-001',
+            NEO_LOCAL_AGENT_OS_PROVIDER_HOST            : GEMINI_OPENAI_ENDPOINT,
+            NEO_LOCAL_AGENT_OS_MODEL                    : GEMINI_FLASH,
+            NEO_LOCAL_MODELS_CHAT_GRAPH_REASONING_EFFORT: 'low',
+            NEO_VECTOR_DIMENSION                        : '3072'
         }),
         requires        : ['providerKey', 'pat', 'repos'],
         vectorDimension : 3072,
         embedder        : 'gemini-embedding-001',
-        chatModel       : 'gemini-3.5-flash',
+        chatModel       : GEMINI_FLASH,
         pendingBindings : [],
         workload        : Object.freeze({...FIXTURE_PLANE, modelsBytes: 0, vmCapRecommendedBytes: 6 * GiB}),
         qualityFloor    : null

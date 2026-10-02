@@ -9,8 +9,10 @@
  * the profile mounts as `mcp-auth-token` (bootstrap PAT and healthcheck token, one class), the Fleet's
  * own plane bearer is a distinct mint the step generates (the credential-class ledger forbids one
  * secret serving both classes), and a hosted preset's provider key becomes the `gemini-api-key` secret
- * read through the `GEMINI_API_KEY_FILE` leaf. No value crosses the env set, the record or a log — the
- * env set carries paths, and the host-effect receipts carry digests and paths.
+ * read through the `GEMINI_API_KEY_FILE` leaf (chat and embeddings) and the
+ * `NEO_OPENAI_COMPATIBLE_API_KEY_FILE` leaf (graph generation, through Gemini's OpenAI-compatible
+ * endpoint). No value crosses the env set, the record or a log — the env set carries paths, and the
+ * host-effect receipts carry digests and paths.
  */
 
 import {randomBytes} from 'node:crypto';
@@ -118,8 +120,10 @@ export function composeCredentialEffects({preset, pat, providerKey = '', secrets
         const keyPath = path.join(secretsDir, SECRET_FILES.geminiApiKey);
 
         secretFiles.push({path: keyPath, content: text(providerKey), role: 'geminiApiKey'});
-        envEntries.NEO_GEMINI_API_KEY_FILE = keyPath;
-        envEntries.GEMINI_API_KEY_FILE     = SECRET_MOUNTS.geminiApiKey;
+        envEntries.NEO_GEMINI_API_KEY_FILE            = keyPath;
+        envEntries.GEMINI_API_KEY_FILE                = SECRET_MOUNTS.geminiApiKey;
+        // the graph lane reads the same mount: Gemini's OpenAI-compatible endpoint takes the same key
+        envEntries.NEO_OPENAI_COMPATIBLE_API_KEY_FILE = SECRET_MOUNTS.geminiApiKey;
     }
 
     return {secretFiles, envEntries, refusals: []};

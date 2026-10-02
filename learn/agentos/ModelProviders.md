@@ -151,7 +151,12 @@ read the resolved pair at the use site through `readSecretCarrier`, and both set
 (where the role needs a key) neither set fails loud naming the two leaves. The local
 Compose profile mounts the hosted preset's key as the `gemini-api-key` secret and
 points the file leaf at `/run/secrets/gemini-api-key`; the first-run credential step
-writes that file owner-only and emits only paths into the env carrier.
+writes that file owner-only and emits only paths into the env carrier. Graph
+generation dispatches to `ollama` or `openAiCompatible` only, so the hosted preset
+routes it through Gemini's OpenAI-compatible endpoint
+(`https://generativelanguage.googleapis.com/v1beta/openai`, the same key through
+`NEO_OPENAI_COMPATIBLE_API_KEY_FILE` at the same mount) while chat and embeddings
+keep the Gemini client.
 
 The local context leaves are role-based, not provider-brand-based:
 `localModels.chat` protects chat, summaries, and graph generation;
