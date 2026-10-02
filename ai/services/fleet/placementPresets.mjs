@@ -105,12 +105,18 @@ const
     GEMMA_26B = Object.freeze({id: 'google/gemma-4-26b-a4b', bytes: 15641352350, source: 'lms ps sizeBytes, 4-bit'}),
     QWEN3_8B  = Object.freeze({id: 'text-embedding-qwen3-embedding-8b', bytes: 4680000000, dimension: 4096, source: 'lms ps sizeBytes'}),
     QWEN3_06B = Object.freeze({id: 'text-embedding-qwen3-embedding-0.6b', bytes: 640000000, dimension: 1024, source: 'LM Studio catalog, 8-bit'}),
+    // the reference model's run on the shipped fixture set, pasted from the instrument's output
+    // (ai/scripts/diagnostics/presetQualityFloor.mjs --preset local-small); a candidate model is
+    // supported at or above this result on the same documents
     GEMMA_FLOOR = Object.freeze({
         instrument: 'tri-vector-three-documents',
-        measuredAt: '2026-09-23',
+        measuredAt: '2026-10-02',
         chatModel : GEMMA_26B.id,
-        result    : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4-5', ungroundedNames: 0},
-        note      : 'sets the floor; gpt-oss-20b was 3.7× faster on prefill but thin below it; Qwen3.6 blocked by the reasoning channel'
+        documents : ['19339-dock-reveal-overlay-focus.md', '19354-dock-workspace-header-actions-plugin.md', '19356-grid-body-scroll-edge.md'],
+        // the fixture set's identity (the instrument's `documentsDigest`): a run over other documents is not comparable
+        documentsDigest: 'f3cd8b711bc5a8905cd7ec171577c423be34b23583adbaa6c9feeef82116844e',
+        result    : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '3-4', ungroundedNames: 0},
+        note      : 'one run over the three public engine threads shipped beside the instrument, through the isolated child (memory graph store, scratch root), 23 s; an earlier same-day run read 1 dangling edge — run-to-run variance; the 2026-09-23 run over three private session documents read 4-5 grounded nodes and 0 dangling edges; gpt-oss-20b was 3.7× faster on prefill but thin below the floor; Qwen3.6 blocked by the reasoning channel'
     }),
     // the local overlay's own inputs: it maps NEO_LOCAL_AGENT_OS_* onto the openAiCompatible leaves and
     // fixes the three providers to openAiCompatible unless a preset says otherwise
