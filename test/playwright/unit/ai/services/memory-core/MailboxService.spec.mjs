@@ -3854,7 +3854,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
     test('addMessage supports 6 new edge types and priority', async () => {
         GraphService.upsertNode({ id: 'SESSION:123', type: 'SESSION', name: 'S123', properties: {} });
         GraphService.upsertNode({ id: 'SESSION:456', type: 'SESSION', name: 'S456', properties: {} });
-        GraphService.upsertNode({ id: 'ISSUE:10168', type: 'ISSUE', name: 'I10168', properties: {} });
+        GraphService.upsertNode({ id: 'issue-10168', type: 'ISSUE', name: 'I10168', properties: {} });
         GraphService.upsertNode({ id: 'MESSAGE:abc', type: 'MESSAGE', name: 'MABC', properties: {} });
         GraphService.upsertNode({ id: 'THREAD:xyz', type: 'THREAD', name: 'TXYZ', properties: {} });
         GraphService.upsertNode({ id: 'CONCEPT:test', type: 'CONCEPT', name: 'CTest', properties: {} });
@@ -3872,7 +3872,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
                 priority       : 'high',
                 originSessionId: 'SESSION:123',
                 relatedSessions: ['SESSION:456'],
-                relatedTickets : ['ISSUE:10168'],
+                relatedTickets : ['neomjs/neo#10168'],
                 inReplyTo      : 'MESSAGE:abc',
                 partOfThread   : 'THREAD:xyz',
                 taggedConcepts : ['CONCEPT:test']
@@ -3893,7 +3893,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         let edges = GraphService.db.edges.items.filter(e => e.source === msgId);
         expect(edges.find(e => e.type === 'ORIGINATES_IN' && e.target === 'SESSION:123')).toBeDefined();
         expect(edges.find(e => e.type === 'RELATED_SESSION' && e.target === 'SESSION:456')).toBeDefined();
-        expect(edges.find(e => e.type === 'REFERENCES_TICKET' && e.target === 'ISSUE:10168')).toBeDefined();
+        expect(edges.find(e => e.type === 'REFERENCES_TICKET' && e.target === 'issue-10168')).toBeDefined();
         expect(edges.find(e => e.type === 'IN_REPLY_TO' && e.target === 'MESSAGE:abc')).toBeDefined();
         expect(edges.find(e => e.type === 'PART_OF_THREAD' && e.target === 'THREAD:xyz')).toBeDefined();
         expect(edges.find(e => e.type === 'TAGGED_CONCEPT' && e.target === 'test')).toBeDefined();

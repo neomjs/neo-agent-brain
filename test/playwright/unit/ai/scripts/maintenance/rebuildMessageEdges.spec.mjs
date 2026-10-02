@@ -13,6 +13,7 @@ import Database       from 'better-sqlite3';
 import fs             from 'fs-extra';
 import path           from 'path';
 import {
+    rebuildMessageEdges,
     runRebuildMessageEdges,
     targetsOf
 } from '../../../../../../ai/scripts/maintenance/rebuildMessageEdges.mjs';
@@ -78,27 +79,33 @@ test.describe('rebuildMessageEdges maintenance script', () => {
     test('a missing reply, thread, ticket and tag edge is linked the way the projection links it', () => {
         seedLive({nodes: [
             message('MESSAGE:parent', {}),
-            message('MESSAGE:child', {inReplyTo: 'MESSAGE:parent', partOfThread: 'MESSAGE:parent', relatedTickets: ['neomjs/neo-agent-brain#538'], taggedConcepts: ['merge-handoff']}),
-            node('neomjs/neo-agent-brain#538', 'ISSUE'), node('merge-handoff', 'CONCEPT')
+            message('MESSAGE:child', {inReplyTo: 'MESSAGE:parent', partOfThread: 'MESSAGE:parent', relatedTickets: ['neomjs/neo#538'], taggedConcepts: ['merge-handoff']}),
+            node('issue-538', 'ISSUE'), node('538', 'CONCEPT'), node('merge-handoff', 'CONCEPT')
         ]});
 
         const result = runRebuildMessageEdges({dbPath, apply: true, logger: quiet});
 
         expect(result.messages).toBe(2);
-        expect(result.types).toEqual({
-            IN_REPLY_TO      : {fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0},
-            PART_OF_THREAD   : {fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0},
-            REFERENCES_TICKET: {fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0},
-            TAGGED_CONCEPT   : {fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0}
+        const {REFERENCES_TICKET, ...otherTypes} = result.types;
+
+        expect(otherTypes).toEqual({
+            IN_REPLY_TO   : {fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0},
+            PART_OF_THREAD: {fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0},
+            TAGGED_CONCEPT: {fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0}
         });
+        expect(REFERENCES_TICKET).toMatchObject({fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0});
+        expect(REFERENCES_TICKET.unresolved ?? {}).toEqual({});
         const rows = liveEdges();
         expect(rows.map(row => [row.type, row.target])).toEqual([
-            ['IN_REPLY_TO', 'MESSAGE:parent'], ['PART_OF_THREAD', 'MESSAGE:parent'], ['REFERENCES_TICKET', 'neomjs/neo-agent-brain#538'], ['TAGGED_CONCEPT', 'merge-handoff']
+            ['IN_REPLY_TO', 'MESSAGE:parent'], ['PART_OF_THREAD', 'MESSAGE:parent'], ['REFERENCES_TICKET', 'issue-538'], ['TAGGED_CONCEPT', 'merge-handoff']
         ]);
         rows.forEach(row => {
             expect(row.source).toBe('MESSAGE:child');
             expect(row.userId).toBe('neo-opus-vega');
-            expect(row.properties).toEqual({weight: 1, timestamp: '2026-09-25T10:00:00.000Z', userId: 'neo-opus-vega', sharedEntity: true});
+            expect(row.properties).toEqual({
+                weight: 1, timestamp: '2026-09-25T10:00:00.000Z', userId: 'neo-opus-vega', sharedEntity: true,
+                ...(row.type === 'REFERENCES_TICKET' ? {externalRef: 'neomjs/neo#538'} : {})
+            });
         });
     });
 
@@ -117,7 +124,7 @@ test.describe('rebuildMessageEdges maintenance script', () => {
         expect(result.types).toEqual({
             IN_REPLY_TO      : {fields: 1, linked: 0, present: 0, missingTarget: 1, conceptsCreated: 0},
             PART_OF_THREAD   : {fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0},
-            REFERENCES_TICKET: {fields: 1, linked: 0, present: 0, missingTarget: 1, conceptsCreated: 0},
+            REFERENCES_TICKET: {fields: 1, linked: 0, present: 0, missingTarget: 1, conceptsCreated: 0, unresolved: {invalidReference: 1}},
             TAGGED_CONCEPT   : {fields: 1, linked: 1, present: 1, missingTarget: 0, conceptsCreated: 1}
         });
         expect(liveEdges().find(row => row.target === 'old-tag').properties).toEqual({weight: 0.62});
@@ -126,21 +133,31 @@ test.describe('rebuildMessageEdges maintenance script', () => {
     });
 
     test('a dry run counts the same work and writes nothing; a rerun after an apply links nothing', () => {
-        seedLive({nodes: [message('MESSAGE:parent', {}), message('MESSAGE:child', {inReplyTo: 'MESSAGE:parent', taggedConcepts: ['a-tag']})]});
+        seedLive({nodes: [
+            message('MESSAGE:parent', {}),
+            message('MESSAGE:child', {inReplyTo: 'MESSAGE:parent', relatedTickets: ['neomjs/neo#541'], taggedConcepts: ['a-tag']}),
+            node('issue-541', 'ISSUE')
+        ]});
 
         const dry = runRebuildMessageEdges({dbPath, logger: quiet});
 
         expect(dry.types.IN_REPLY_TO).toEqual({fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0});
         expect(dry.types.TAGGED_CONCEPT).toEqual({fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 1});
+        expect(dry.types.REFERENCES_TICKET).toMatchObject({fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0});
+        expect(dry.types.REFERENCES_TICKET.unresolved ?? {}).toEqual({});
         expect(liveEdges()).toEqual([]);
         expect(liveNode('a-tag')).toBeNull();
 
         runRebuildMessageEdges({dbPath, apply: true, logger: quiet});
-        const again = runRebuildMessageEdges({dbPath, apply: true, logger: quiet});
+        const applied = liveEdges(),
+              again   = runRebuildMessageEdges({dbPath, apply: true, logger: quiet});
 
         expect(again.types.IN_REPLY_TO).toEqual({fields: 1, linked: 0, present: 1, missingTarget: 0, conceptsCreated: 0});
         expect(again.types.TAGGED_CONCEPT).toEqual({fields: 1, linked: 0, present: 1, missingTarget: 0, conceptsCreated: 0});
-        expect(liveEdges()).toHaveLength(2);
+        expect(again.types.REFERENCES_TICKET).toMatchObject({fields: 1, linked: 0, present: 1, missingTarget: 0, conceptsCreated: 0});
+        expect(liveEdges()).toEqual(applied);
+        expect(liveEdges()).toHaveLength(3);
+        expect(applied.find(row => row.type === 'REFERENCES_TICKET')).toMatchObject({target: 'issue-541', properties: {externalRef: 'neomjs/neo#541'}});
     });
 
     test('--types links only the named types and counts nothing else', () => {
@@ -161,6 +178,109 @@ test.describe('rebuildMessageEdges maintenance script', () => {
 
         expect(result.types.IN_REPLY_TO).toEqual({fields: count, linked: count, present: 0, missingTarget: 0, conceptsCreated: 0});
         expect(liveEdges()).toHaveLength(count);
+    });
+
+    test('a qualified pull request resolves to its PULL_REQUEST node, never the numeric concept, and keeps the authored reference', () => {
+        const externalRef = 'neomjs/neo#539';
+
+        seedLive({nodes: [
+            message('MESSAGE:pr-reference', {relatedTickets: externalRef}),
+            node('pr-539', 'PULL_REQUEST'),
+            node('539', 'CONCEPT')
+        ]});
+
+        const result = runRebuildMessageEdges({dbPath, apply: true, logger: quiet});
+
+        expect(result.types.REFERENCES_TICKET).toMatchObject({fields: 1, linked: 1, present: 0, missingTarget: 0, conceptsCreated: 0});
+        expect(result.types.REFERENCES_TICKET.unresolved ?? {}).toEqual({});
+        expect(liveEdges()).toEqual([{
+            source    : 'MESSAGE:pr-reference',
+            target    : 'pr-539',
+            type      : 'REFERENCES_TICKET',
+            userId    : 'neo-opus-vega',
+            properties: {weight: 1, timestamp: '2026-09-25T10:00:00.000Z', userId: 'neo-opus-vega', sharedEntity: true, externalRef}
+        }]);
+    });
+
+    test('foreign, absent, numeric-concept, invalid and ambiguous references stay unlinked and are counted by their unresolved class', () => {
+        const refs = [
+            'neomjs/neo-agent-brain#556',
+            'neomjs/neo#557',
+            'neomjs/neo#558',
+            'neomjs/neo#bad',
+            'neomjs/neo#559'
+        ];
+
+        seedLive({nodes: [
+            message('MESSAGE:unresolved', {relatedTickets: refs}),
+            node('issue-556', 'ISSUE'),
+            node('neomjs/neo-agent-brain#556', 'ISSUE'),
+            node('558', 'CONCEPT'),
+            node('issue-559', 'ISSUE'),
+            node('pr-559', 'PULL_REQUEST')
+        ]});
+
+        const result = runRebuildMessageEdges({dbPath, apply: true, logger: quiet});
+
+        expect(result.types).toEqual({
+            REFERENCES_TICKET: {
+                fields: 1, linked: 0, present: 0, missingTarget: 5, conceptsCreated: 0,
+                unresolved: {foreignRepository: 1, notIngested: 1, conceptCollision: 1, invalidReference: 1, ambiguousTicket: 1}
+            }
+        });
+        expect(liveEdges()).toEqual([]);
+        expect(liveNode('558').label).toBe('CONCEPT');
+        expect(liveNode('MESSAGE:unresolved').properties.relatedTickets).toEqual(refs);
+    });
+
+    test('a target lookup failure is counted rather than inventing an edge or aborting the rebuild', () => {
+        seedLive({nodes: [
+            message('MESSAGE:lookup-failure', {relatedTickets: ['neomjs/neo#562']}),
+            node('issue-562', 'ISSUE')
+        ]});
+
+        const db = openDb();
+
+        // Preserve SQLite's real statements and transactions; only the named target lookup fails.
+        // Message enumeration and every other read still go through the fixture database.
+        const wrapStatement = statement => new Proxy(statement, {
+            get(target, property) {
+                if (property === 'get') {
+                    return (...args) => {
+                        if (args[0] === 'issue-562') throw new Error('fixture ticket lookup failed');
+                        return target.get(...args);
+                    };
+                }
+                if (property === 'pluck') return (...args) => wrapStatement(target.pluck(...args));
+
+                const value = target[property];
+
+                return typeof value === 'function' ? value.bind(target) : value;
+            }
+        });
+        const failingDb = new Proxy(db, {
+            get(target, property) {
+                if (property === 'prepare') return sql => wrapStatement(target.prepare(sql));
+
+                const value = target[property];
+
+                return typeof value === 'function' ? value.bind(target) : value;
+            }
+        });
+
+        try {
+            const result = rebuildMessageEdges({db: failingDb, apply: true});
+
+            expect(result.types).toEqual({
+                REFERENCES_TICKET: {
+                    fields: 1, linked: 0, present: 0, missingTarget: 1, conceptsCreated: 0,
+                    unresolved: {lookupFailed: 1}
+                }
+            });
+            expect(db.prepare('SELECT COUNT(*) FROM Edges').pluck().get()).toBe(0);
+        } finally {
+            db.close();
+        }
     });
 
     test('targetsOf reads one string or every string entry of an array, nothing else', () => {

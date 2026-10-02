@@ -1,3 +1,4 @@
+import {resolveTicketReference} from '../../services/graph/ticketReferences.mjs';
 import {Command}       from 'commander';
 import Database        from 'better-sqlite3';
 import path            from 'node:path';
@@ -57,7 +58,8 @@ export function targetsOf(value) {
  * @param {Boolean}  [options.apply=false] Write; otherwise count only.
  * @param {String[]} [options.types]       Edge types to link; every other field is skipped. Default: all four.
  * @param {Number}   [options.batchSize=1000] Writes per transaction.
- * @returns {{messages: Number, types: Object}} Per type: `{fields, linked, present, missingTarget, conceptsCreated}`.
+ * @returns {{messages: Number, types: Object}} Per type: `{fields, linked, present, missingTarget, conceptsCreated}`;
+ * ticket references also report `unresolved` counts by refusal class.
  */
 export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIELDS.map(entry => entry.type), batchSize = WRITE_BATCH_SIZE}) {
     const
@@ -104,7 +106,18 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
 
             counts.fields++;
 
-            for (const target of targets) {
+            for (const authoredTarget of targets) {
+                let target = authoredTarget, externalRef;
+
+                if (type === 'REFERENCES_TICKET') {
+                    counts.unresolved ||= {};
+                    const resolved = resolveTicketReference(authoredTarget, id => {
+                        const data = readNode.get(id);
+                        return data === undefined ? null : JSON.parse(data)
+                    }, {onUnresolved: reason => counts.unresolved[reason] = (counts.unresolved[reason] || 0) + 1});
+                    if (!resolved) { counts.missingTarget++; continue; }
+                    ({targetId: target, externalRef} = resolved);
+                }
                 if (edgeExists.get(messageId, target, type)) { counts.present++; continue; }
 
                 if (!nodeExists.get(target) && !seenConcepts.has(target)) {
@@ -121,7 +134,7 @@ export function rebuildMessageEdges({db, apply = false, types = MESSAGE_EDGE_FIE
                 if (apply) {
                     const
                         edgeId     = globalThis.crypto.randomUUID(),
-                        properties = {weight: 1, timestamp: props.sentAt ?? null, userId: props.userId ?? null, sharedEntity: true};
+                        properties = {weight: 1, timestamp: props.sentAt ?? null, userId: props.userId ?? null, sharedEntity: true, ...(externalRef ? {externalRef} : {})};
 
                     queue(() => {
                         const changes = insertEdge.run(edgeId, properties.userId, messageId, target, type, JSON.stringify({id: edgeId, source: messageId, target, type, properties}), messageId, target, type).changes;

@@ -16,6 +16,7 @@ import {projectNode}                   from './nodeProjection.mjs';
 import {LEGACY_RAW_MEMORY_NODE_LABEL}  from './helpers/rawMemoryGraphIdentity.mjs';
 
 /**
+ * @summary Applies canonical row visibility to a node or edge snapshot.
  * Row-level-security visibility predicate for an in-memory graph **node or edge**, mirroring
  * the SQL RLS clause that `SQLite.loadNodeVicinitySync` / `searchNodes` apply to BOTH the
  * `Nodes` and `Edges` tables. Applied at the public read return boundary because the
@@ -48,6 +49,7 @@ function isRlsVisible(entity, requesterUserId) {
 }
 
 /**
+ * @summary Resolves the acting request's normalized isolation key.
  * Resolves the canonical (normalized, no-`@`) RLS tenant key for the acting request. The isolation
  * key is the userId (`RequestContextService.getUserId`); `getAgentIdentityNodeId` is an `@`-prefixed
  * node id explicitly NOT for isolation, used only as a fallback when no userId is bound. Returning the
@@ -2238,5 +2240,7 @@ class GraphService extends Base {
         }
     }
 }
+
+export {isRlsVisible, resolveRlsUserId};
 
 export default Neo.setupClass(GraphService);
