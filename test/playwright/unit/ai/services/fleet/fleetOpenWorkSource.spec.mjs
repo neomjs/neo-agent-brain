@@ -15,15 +15,45 @@ const
 test.describe('fleetOpenWorkSource — each seat\'s open work under the producer\'s own freshness (#760)', () => {
     test('a fresh pulse answers the owner\'s PR and the requested reviewer\'s review; a login or team is no seat', () => {
         const
-            {state: freshness, seats, unobserved} = source(state()).readOpenWork(),
-            summary                               = {repo: 'acme/app', number: 7, head: 'a1', ci: 'red', verdict: 'CHANGES_REQUESTED', mergeable: 'MERGEABLE', draft: false, reviews: [review], observedAt: OBSERVED, stale: false};
+            {state: freshness, seats, unobserved, awaitingMerge} = source(state()).readOpenWork(),
+            summary = {repo: 'acme/app', number: 7, head: 'a1', ci: 'red', verdict: 'CHANGES_REQUESTED', mergeable: 'MERGEABLE', draft: false, reviews: [review], observedAt: OBSERVED, stale: false,
+                holder: {role: 'author', ids: ['@neo-opus-ada']}};
 
         expect(freshness).toBe('ok');
         expect(unobserved).toBe(0);
         expect(seats).toEqual({
             '@neo-opus-ada': {authored: [summary], reviewing: []},
             '@neo-gpt'     : {authored: [], reviewing: [summary]}
-        })
+        });
+        expect(awaitingMerge).toEqual([])
+    });
+
+    test('awaitingMerge lists every row the operator holds, whoever owns it; a PR no seat owns is in no seat\'s lists (#779)', () => {
+        const
+            approved = (number, owner) => ({...row(number), ci: 'green', verdict: 'APPROVED', owner, requested: [], reviews: [{reviewer: '@neo-gpt', state: 'APPROVED', onHead: true}]}),
+            read     = source(state({}, [
+                approved(1, {kind: 'seat', seat: '@neo-opus-ada'}),
+                approved(2, {kind: 'outside', seat: null, login: 'contributor'}),
+                approved(3, {kind: 'unowned', seat: null, login: 'neo-gpt'}),
+                row(4)
+            ])).readOpenWork();
+
+        expect(read.awaitingMerge.map(({number, holder}) => [number, holder.role])).toEqual([[1, 'operator'], [2, 'operator'], [3, 'operator']]);
+        expect(read.seats['@neo-opus-ada'].authored.map(({number}) => number)).toEqual([1, 4]);
+        // one seat's read still answers the operator's queue
+        expect(source(state({}, [approved(2, {kind: 'outside', seat: null})])).readOpenWork({seat: '@neo-opus-vega'}).awaitingMerge.map(({number}) => number)).toEqual([2])
+    });
+
+    test('an awaiting-merge row ages by its own observation, and an unavailable projection awaits nothing (#779)', () => {
+        const
+            approved = (number, observedAt) => ({...row(number, observedAt), ci: 'green', verdict: 'APPROVED', requested: [], reviews: [{reviewer: '@neo-gpt', state: 'APPROVED', onHead: true}]}),
+            partial  = state({observedAt: '2026-10-02T11:10:00.000Z', coverage: 'partial'}, [approved(7, '2026-10-02T11:10:00.000Z'), approved(8, '2026-10-02T11:00:00.000Z'), approved(9)]),
+            read     = source(partial, 71).readOpenWork();
+
+        // read at 11:11: 7 is current, 8 was last seen 11 minutes ago, 9 is past the unavailable bound
+        expect(read.awaitingMerge.map(({number, stale}) => [number, stale])).toEqual([[7, false], [8, true]]);
+        expect(read.unobserved).toBe(1);
+        expect(source(state({}, [approved(7)]), 120).readOpenWork()).toMatchObject({state: 'unavailable', awaitingMerge: []})
     });
 
     test('one seat reads its own lists, empty under the same envelope when it holds nothing', () => {
