@@ -16,20 +16,54 @@ import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpit
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
 
 /**
+ * The callers whose refusals a start or restart answers as data: the manager's start gate, the
+ * provisioned start and the lifecycle spawn. Their messages are authored text that reads no secret.
+ * @type {String[]}
+ */
+const START_REFUSAL_CALLERS = Object.freeze([
+    'FleetManager.startAgent', 'FleetManager.restartAgent', 'startAgentProvisioned', 'FleetLifecycleService.start'
+]);
+
+/**
  * @summary A refusal its caller names (`<caller>: <rule>`) as a domain outcome. The wire keeps those
  * inside `result` (`src/fleet/contract/wire.mjs`); the dispatcher turns any throw into a bare
  * `operation-failed`.
- * @param {Error}  error
- * @param {String} caller The refusing function, e.g. `FleetManager.setRepos`.
+ * @param {Error}           error
+ * @param {String|String[]} callers The refusing function(s), e.g. `FleetManager.setRepos`.
  * @returns {{status: 'rejected', reason: String}|null} `null` for any other failure.
  * @private
  */
-function rejectionOf(error, caller) {
-    const prefix = `${caller}:`;
+function rejectionOf(error, callers) {
+    const caller = [callers].flat().find(name => error?.message?.startsWith(`${name}:`));
 
-    return error?.message?.startsWith(prefix)
-        ? {status: 'rejected', reason: error.message.slice(prefix.length).trim()}
+    return caller
+        ? {status: 'rejected', reason: error.message.slice(caller.length + 1).trim()}
         : null
+}
+
+/**
+ * @summary A provisioned start or restart as a domain outcome: the lifecycle record resolves, a refusal
+ * its start path names is rejected, a workspace that could not be prepared answers its code (never its
+ * message, which can carry local paths), and any other failure rethrows. The preparation error is
+ * matched by name, so the plan/apply composer keeps its one production caller.
+ * @param {Function} start Resolves the agent's lifecycle status.
+ * @returns {Promise<Object>} the lifecycle status, or `{status: 'rejected', reason}`.
+ * @private
+ */
+async function startOutcome(start) {
+    try {
+        return await start()
+    } catch (error) {
+        if (error?.name === 'ManagedWorkspacePreparationError' && /^FLEET_WORKSPACE_[A-Z_]+$/.test(error.code)) {
+            return {status: 'rejected', reason: `the seat's workspace could not be prepared (${error.code}); the Fleet log names the artifact.`}
+        }
+
+        const rejection = rejectionOf(error, START_REFUSAL_CALLERS);
+
+        if (rejection) return rejection;
+
+        throw error
+    }
 }
 
 /**
@@ -441,12 +475,13 @@ class FleetControlBridge extends Base {
     /**
      * @summary Start a defined agent — provision its repo under the resolved managed root, then spawn
      * its harness inside that checkout. The PAT is resolved + injected Node-side; it never crosses to
-     * the pane. Fail-closed on a provisioning failure (the harness is not spawned).
+     * the pane. Fail-closed on a provisioning failure (the harness is not spawned); a refusal the start
+     * path words answers as data, so the operator reads its reason.
      * @param {String} id Registry agent id.
-     * @returns {Promise<Object>} the agent's lifecycle status.
+     * @returns {Promise<Object>} the agent's lifecycle status, or `{status: 'rejected', reason}`.
      */
     startAgent(id) {
-        return this.getManager().startAgent(id);
+        return startOutcome(() => this.getManager().startAgent(id));
     }
 
     /**
@@ -460,12 +495,12 @@ class FleetControlBridge extends Base {
 
     /**
      * @summary Restart a running agent through the provisioned path (repo re-ensured, harness runs in
-     * ITS checkout). Restarting a non-running agent is just a provisioned start.
+     * ITS checkout). Restarting a non-running agent is just a provisioned start, with its refusals.
      * @param {String} id Registry agent id.
-     * @returns {Promise<Object>} the agent's lifecycle status.
+     * @returns {Promise<Object>} the agent's lifecycle status, or `{status: 'rejected', reason}`.
      */
     restartAgent(id) {
-        return this.getManager().restartAgent(id);
+        return startOutcome(() => this.getManager().restartAgent(id));
     }
 
     /**
