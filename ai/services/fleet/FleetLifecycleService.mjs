@@ -135,6 +135,30 @@ const SEAT_LEASE_FILE = '.neo-fleet-seat-lease.json';
 // A Node system error code (`EACCES`, `ERR_…`): the only part of a caught failure a refusal may carry.
 const SYSTEM_ERROR_CODE = /^E[A-Z0-9_]+$/;
 
+// The Codex Desktop cleanup's callers: their refusals are written for the operator, pids and counts only.
+const CODEX_CLEANUP_CALLERS = ['cleanupCodexDesktopCrashpad', 'inspectCodexDesktopCrashpadProcesses'];
+
+/**
+ * @summary The words a status may carry about a caught failure: a named caller's refusal without its
+ * `<caller>: ` prefix, else the system error code. Anything else is `null` and the Fleet log keeps the
+ * cause, because a message can embed a path or a value no roster row may show.
+ * @param {Error} error
+ * @param {String} subject What failed, as the Fleet log line names it.
+ * @param {String[]} [callers=[]] Callers whose refusals are worded for the operator.
+ * @returns {String|null}
+ */
+function failureWords(error, subject, callers = []) {
+    const
+        message = String(error?.message ?? ''),
+        caller  = callers.find(name => message.startsWith(`${name}: `)),
+        words   = caller ? message.slice(caller.length + 2) : SYSTEM_ERROR_CODE.test(error?.code ?? '') ? error.code : null;
+
+    // what the words leave out (the whole message, or a refusal's own cause) stays in the Fleet log
+    if (!words || error.cause) console.error(`[fleet] ${subject}:`, error);
+
+    return words
+}
+
 /**
  * @summary Read a live process's start time, state and command line through `ps`. The start time
  * pins a pid to one process, so a reused pid never passes for the seat that held it; the fixed locale
@@ -1098,7 +1122,9 @@ class FleetLifecycleService extends Base {
                     this.adoptLeasedSeat(agent)
                 } catch (error) {
                     // One unreadable seat home must not take every agent's lifecycle reads down with it.
-                    this.processes.set(id, {id, child: null, adopted: false, state: 'failed', pid: null, startedAt: null, exitCode: null, exitedAt: null, stderrBytes: 0, failureReason: `the seat lease could not be read: ${error.code || error.message}`})
+                    const words = failureWords(error, `the seat lease of agent '${id}' could not be read`);
+
+                    this.processes.set(id, {id, child: null, adopted: false, state: 'failed', pid: null, startedAt: null, exitCode: null, exitedAt: null, stderrBytes: 0, failureReason: words ? `the seat lease could not be read: ${words}` : 'the seat lease could not be read; the Fleet log names the cause'})
                 }
             }
         }
@@ -1229,10 +1255,9 @@ class FleetLifecycleService extends Base {
         } catch (error) {
             try { fs.rmSync(tmpPath, {force: true}) } catch {}
 
-            if (SYSTEM_ERROR_CODE.test(error?.code ?? '')) return `its lease could not be written: ${error.code}`;
+            const words = failureWords(error, `the lease of agent '${record.id}' could not be written`);
 
-            console.error(`[fleet] the lease of agent '${record.id}' could not be written:`, error);
-            return 'its lease could not be written; the Fleet log names the cause'
+            return words ? `its lease could not be written: ${words}` : 'its lease could not be written; the Fleet log names the cause'
         }
     }
 
@@ -1496,8 +1521,10 @@ class FleetLifecycleService extends Base {
                 record.cleanupUnresolved = false;
             })
             .catch(error => {
+                const words = failureWords(error, `the Codex Desktop helper cleanup of agent '${record.id}' failed`, CODEX_CLEANUP_CALLERS);
+
                 record.state             = 'failed';
-                record.failureReason     = `Codex Desktop helper cleanup failed: ${error?.message || 'unknown failure'}`;
+                record.failureReason     = words ? `Codex Desktop helper cleanup failed: ${words}` : 'Codex Desktop helper cleanup failed; the Fleet log names the cause';
                 record.cleanupUnresolved = true;
             });
 
