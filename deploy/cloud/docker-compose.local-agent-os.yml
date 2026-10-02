@@ -14,13 +14,20 @@ x-local-auth: &local-auth
   NEO_AUTH_PIN_FIRST_PROVIDER_SUBJECT: "false"
   NEO_MCP_HEALTHCHECK_TOKEN_FILE: /run/secrets/mcp-auth-token
 
+# The plane's provider choice is an input with a local default, not a constant: a first-run preset
+# selects hosted inference (gemini) or local inference (openAiCompatible) through the three provider
+# names, and the index geometry rides with it — the vector dimension and the Chroma database the
+# Memory Core and Knowledge Base open. An empty value falls back to the config-template default, the
+# base profile's convention for every pass-through.
 x-local-provider: &local-provider
-  NEO_MODEL_PROVIDER: openAiCompatible
-  NEO_GRAPH_PROVIDER: openAiCompatible
-  NEO_EMBEDDING_PROVIDER: openAiCompatible
+  NEO_MODEL_PROVIDER: ${NEO_MODEL_PROVIDER:-openAiCompatible}
+  NEO_GRAPH_PROVIDER: ${NEO_GRAPH_PROVIDER:-openAiCompatible}
+  NEO_EMBEDDING_PROVIDER: ${NEO_EMBEDDING_PROVIDER:-openAiCompatible}
   NEO_OPENAI_COMPATIBLE_HOST: ${NEO_LOCAL_AGENT_OS_PROVIDER_HOST:-http://host.docker.internal:1234}
   NEO_OPENAI_COMPATIBLE_MODEL: ${NEO_LOCAL_AGENT_OS_MODEL:-google/gemma-4-26b-a4b}
   NEO_OPENAI_COMPATIBLE_EMBEDDING_MODEL: ${NEO_LOCAL_AGENT_OS_EMBEDDING_MODEL:-text-embedding-qwen3-embedding-8b}
+  NEO_VECTOR_DIMENSION: ${NEO_VECTOR_DIMENSION:-}
+  NEO_CHROMA_DATABASE: ${NEO_CHROMA_DATABASE:-}
 
 services:
   chroma:
