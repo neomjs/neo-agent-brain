@@ -10,8 +10,11 @@
  * - a search answer without its page structure is a failed read, never an empty one;
  * - the open read restarts each pulse and is `partial` when its page budget runs out;
  * - the terminal read is a fixed window of close times that resumes its cursor across pulses and
- *   restarts, so a backlog larger than one budget reaches its tail, and the watermark moves to the
- *   window's end only once the window completes;
+ *   restarts, so a backlog larger than one budget reaches its tail, and the watermark moves only once
+ *   the window completes. It moves to an overlap before the window's end, because GitHub's search
+ *   index can lag a close past the pulse that should have read it. The close markers dedupe the re-reads;
+ * - a PR that leaves complete reads with no terminal row is recorded as `vanished` on its pulse. The
+ *   `closed:` qualifier cannot reach some PRs closed without merging;
  * - a failed read keeps the snapshot under `stale` (`unavailable` without one), under a constant
  *   reason and a `redactReadFailure` detail, and its pulse records what the answered requests cost.
  *
@@ -30,6 +33,8 @@ const
     TRANSITION_WINDOW = 500,
     /** @summary Pulses retained: a day at a one-minute cadence, the observe-only day's record. */
     PULSE_WINDOW      = 1440,
+    /** @summary How far each terminal window reaches back past the previous one's end. */
+    OVERLAP_MS        = 10 * 60 * 1000,
     /** @summary A producer that has never pulsed. */
     FRESH             = Object.freeze({
         snapshot: null, observedAt: null, coverage: 'unavailable', watermark: null, window: null, reason: null, detail: null, transitions: [], pulses: []
@@ -42,6 +47,15 @@ const
  * @private
  */
 const searchTime = iso => iso.replace(/\.\d+Z$/, 'Z');
+
+/**
+ * @summary An ISO time moved by `ms`.
+ * @param {String} iso
+ * @param {Number} ms
+ * @returns {String}
+ * @private
+ */
+const shift = (iso, ms) => new Date(Date.parse(iso) + ms).toISOString();
 
 /**
  * @summary Read one search across its pages, from a cursor, up to the budget. Each answered request
@@ -107,6 +121,7 @@ function countBySeat(transitions) {
  * @param {Number}   [options.pageBudget]
  * @param {Number}   [options.transitionWindow]
  * @param {Number}   [options.pulseWindow]
+ * @param {Number}   [options.overlapMs]
  * @returns {{pulse: Function, getState: Function}}
  */
 export function createOpenWorkProducer({
@@ -117,7 +132,8 @@ export function createOpenWorkProducer({
     store            = null,
     pageBudget       = PAGE_BUDGET,
     transitionWindow = TRANSITION_WINDOW,
-    pulseWindow      = PULSE_WINDOW
+    pulseWindow      = PULSE_WINDOW,
+    overlapMs        = OVERLAP_MS
 }) {
     let state = FRESH, loadFailure = null, running = null;
 
@@ -171,22 +187,22 @@ export function createOpenWorkProducer({
 
         const
             rows     = open.nodes.map(node => normalizePullRequest(node, identities)),
-            observed = {rows, complete: open.complete && !rows.some(row => row.partial)},
             terminal = {rows: ended.nodes.map(node => normalizeTerminal(node, identities)), complete: ended.complete},
-            next     = reduceOpenWork({previous: state.snapshot, observed, terminal, since: state.watermark, id: at}),
-            complete = observed.complete && terminal.complete;
+            next     = reduceOpenWork({previous: state.snapshot, observed: {rows, complete: open.complete}, terminal, since: state.watermark, id: at}),
+            coverage = open.complete && !rows.some(row => row.partial) && ended.complete ? 'complete' : 'partial',
+            reached  = window && shift(window.until, -overlapMs);
 
         return commit({
-            snapshot  : {rows: next.rows, closed: next.closed},
+            snapshot  : {rows: next.rows, closed: next.closed, complete: next.complete},
             observedAt: at,
-            coverage  : complete ? 'complete' : 'partial',
-            // the first complete open read starts the watermark; a window moves it once the window completes
-            watermark  : window ? (ended.complete ? window.until : state.watermark) : (observed.complete ? at : null),
+            coverage,
+            // the first pulse starts the watermark; a window moves it, never backwards, once the window completes
+            watermark  : window ? (ended.complete && reached > state.watermark ? reached : state.watermark) : shift(at, -overlapMs),
             window     : window && !ended.complete ? {...window, cursor: ended.cursor} : null,
             reason     : null,
             detail     : null,
             transitions: [...state.transitions, ...next.transitions].slice(-transitionWindow)
-        }, {at, ...tally, coverage: complete ? 'complete' : 'partial', transitions: countBySeat(next.transitions)})
+        }, {at, ...tally, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished})
     }
 
     return {

@@ -27,12 +27,15 @@ const pr = ({number=7, verdict='REVIEW_REQUIRED', rollup='SUCCESS', partial=fals
 });
 
 /**
- * @summary One closed search node.
+ * @summary One closed or merged search node.
  * @param {Number} number
  * @param {String} closedAt
+ * @param {String} [state]
  * @returns {Object}
  */
-const closed = (number, closedAt) => ({number, state: 'CLOSED', headRefOid: 'a1', closedAt, body: 'Authored by Ada (Claude).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'}});
+const closed = (number, closedAt, state='CLOSED') => ({
+    number, state, headRefOid: 'a1', closedAt, mergedAt: state === 'MERGED' ? closedAt : null, body: 'Authored by Ada (Claude).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'}
+});
 
 /**
  * @summary A GraphQL stub answering each search from a script: open pages, then terminal pages.
@@ -88,9 +91,44 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         expect(state.coverage).toBe('complete');
         expect(state.transitions.map(({kind, to}) => [kind, to])).toEqual([['verdict', 'APPROVED']]);
         expect(state.pulses.at(-1)).toMatchObject({cost: 2, pages: 2, coverage: 'complete', transitions: {'@neo-opus-ada': 1}});
-        // one scope per repository, and the terminal read is the window of close times since the watermark
+        // one scope per repository, and the terminal read is the window of close times from the watermark, an overlap back
         expect(stub.calls[0].search).toBe('is:pr is:open archived:false repo:acme/app');
-        expect(stub.calls.at(-1).search).toBe('is:pr is:closed closed:2026-10-02T10:01:00Z..2026-10-02T10:02:00Z repo:acme/app')
+        expect(stub.calls.at(-1).search).toBe('is:pr is:closed closed:2026-10-02T09:51:00Z..2026-10-02T10:02:00Z repo:acme/app')
+    });
+
+    test('a merge the search indexes after its window ended is read in the next window\'s overlap, once', async () => {
+        let script = {open: [[pr()]], terminal: [[]]};
+
+        const
+            stub     = github({get open() { return script.open }, get terminal() { return script.terminal }}),
+            producer = createOpenWorkProducer({query: stub.query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
+
+        // merged at 10:01:50, but the 10:02 pulse still reads it open and its window finds nothing
+        await producer.pulse();
+        await producer.pulse();
+        script = {open: [[]], terminal: [[closed(7, '2026-10-02T10:01:50Z', 'MERGED')]]};
+        await producer.pulse();
+
+        const state = await producer.pulse();
+
+        expect(state.transitions.map(({key, kind}) => [key, kind])).toEqual([['acme/app#7', 'merged']]);
+        expect(stub.calls.filter(call => call.kind === 'terminal')[1].search).toBe('is:pr is:closed closed:2026-10-02T09:52:00Z..2026-10-02T10:03:00Z repo:acme/app')
+    });
+
+    test('a PR that leaves complete reads with no terminal row is vanished on its pulse, never a close', async () => {
+        let script = {open: [[pr()]]};
+
+        const
+            stub     = github({get open() { return script.open }, get terminal() { return script.terminal }}),
+            producer = createOpenWorkProducer({query: stub.query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
+
+        await producer.pulse();
+        script = {open: [[]], terminal: [[]]};
+
+        const state = await producer.pulse();
+
+        expect(state).toMatchObject({transitions: [], snapshot: {rows: {}}});
+        expect(state.pulses.at(-1)).toMatchObject({coverage: 'complete', vanished: ['acme/app#7']})
     });
 
     test('a pulse asked for while one runs is that pulse: an older read never lands over a newer one', async () => {
@@ -125,14 +163,14 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         expect(Object.keys(producer.getState().snapshot.rows)).toEqual(['acme/app#7'])
     });
 
-    test('a page past the budget, or a truncated request list, leaves the pulse partial and the watermark where it was', async () => {
+    test('a page past the budget, or a truncated request list, leaves the pulse partial, and the first still starts the watermark', async () => {
         const budgeted = createOpenWorkProducer({query: github({open: [[pr()], [pr({number: 8})], [pr({number: 9})]]}).query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z'), pageBudget: 2});
 
-        expect(await budgeted.pulse()).toMatchObject({coverage: 'partial', watermark: null});
+        expect(await budgeted.pulse()).toMatchObject({coverage: 'partial', watermark: '2026-10-02T09:51:00.000Z'});
 
         const truncated = createOpenWorkProducer({query: github({open: [[pr({partial: true})]]}).query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
 
-        expect(await truncated.pulse()).toMatchObject({coverage: 'partial', watermark: null})
+        expect(await truncated.pulse()).toMatchObject({coverage: 'partial', watermark: '2026-10-02T09:51:00.000Z'})
     });
 
     test('a terminal backlog past the budget reaches its tail across pulses and a restart, then moves the watermark', async () => {
@@ -150,7 +188,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         const tail = await make('2026-10-02T10:02:00Z').pulse();
 
         expect(stub.calls.filter(call => call.kind === 'terminal').map(call => call.cursor)).toEqual([null, '1', '2']);
-        expect(tail).toMatchObject({coverage: 'complete', watermark: '2026-10-02T10:02:00.000Z', window: null})
+        expect(tail).toMatchObject({coverage: 'complete', watermark: '2026-10-02T09:52:00.000Z', window: null})
     });
 
     test('a failed pulse records what its answered requests cost, and marks the rest unknown', async () => {
