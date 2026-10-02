@@ -24,6 +24,7 @@ const pr = ({number=7, verdict='REVIEW_REQUIRED', rollup='SUCCESS', partial=fals
     repository    : {nameWithOwner: 'acme/app'},
     reviewRequests: {pageInfo: {hasNextPage: partial}, nodes: [{requestedReviewer: {__typename: 'User', login: 'neo-gpt'}}]},
     latestReviews : {pageInfo: {hasNextPage: false}, nodes: []},
+    latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []},
     commits       : {nodes: [{commit: {oid: 'a1', statusCheckRollup: {state: rollup}}}]}
 });
 

@@ -286,6 +286,7 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
                 author: {login: 'neo-opus-vega'}, repository: {nameWithOwner: 'neomjs/neo'},
                 reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []},
                 latestReviews : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []},
                 commits       : {nodes: [{commit: {oid: 'h1', statusCheckRollup: {state: 'SUCCESS'}}}]}
             }),
             clock      = () => { let ms = Date.parse(T0); return () => new Date(ms += 60_000) },

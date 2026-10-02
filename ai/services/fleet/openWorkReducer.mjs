@@ -85,7 +85,7 @@ function connectionOf(connection) {
  * @param {Object} node A `PullRequest` node from the open-work search.
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
  * @returns {Object} `{key, repo, number, head, ci, verdict, mergeable, draft, owner, requested, reviews,
- *     requestsComplete, partial}`.
+ *     opinions, requestsComplete, partial}`.
  */
 export function normalizePullRequest(node, identities) {
     const
@@ -94,12 +94,17 @@ export function normalizePullRequest(node, identities) {
         head      = node.headRefOid ?? commit?.oid ?? null,
         requests  = connectionOf(node.reviewRequests),
         reviews   = connectionOf(node.latestReviews),
+        opinions  = connectionOf(node.latestOpinionatedReviews),
         requested = requests.nodes.map(item => reviewerOf(item?.requestedReviewer, identities)),
-        // each reviewer's latest review, and whether it judged the current head
-        reviewed  = reviews.nodes.map(item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head})),
+        // whether each review judged the current head
+        judged    = item => ({reviewer: reviewerOf(item?.author, identities), state: item?.state ?? null, onHead: item?.commit?.oid === head}),
+        // each reviewer's latest review (a comment included), and their standing approval or change request
+        reviewed  = reviews.nodes.map(judged),
+        opined    = opinions.nodes.map(judged),
         // an item naming no reviewer is unknown, so its list is known only as far as it resolves
         requestsComplete = requests.complete && requested.every(Boolean),
-        reviewsComplete  = reviews.complete && reviewed.every(review => review.reviewer);
+        reviewsComplete  = reviews.complete && reviewed.every(review => review.reviewer),
+        opinionsComplete = opinions.complete && opined.every(opinion => opinion.reviewer);
 
     return {
         key      : `${repo}#${node.number}`,
@@ -113,8 +118,9 @@ export function normalizePullRequest(node, identities) {
         owner    : ownerOf(node, identities),
         requested: requested.filter(Boolean).sort(),
         reviews  : reviewed.filter(review => review.reviewer),
+        opinions : opined.filter(opinion => opinion.reviewer),
         requestsComplete,
-        partial  : !requestsComplete || !reviewsComplete
+        partial  : !requestsComplete || !reviewsComplete || !opinionsComplete
     }
 }
 

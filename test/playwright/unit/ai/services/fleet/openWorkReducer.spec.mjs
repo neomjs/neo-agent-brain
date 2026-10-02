@@ -28,6 +28,8 @@ function node({number=7, head='a1', rollup='SUCCESS', verdict='REVIEW_REQUIRED',
         repository    : {nameWithOwner: 'acme/app'},
         reviewRequests: requests ? {pageInfo: {hasNextPage: partial}, nodes: reviewers.map(reviewer => ({requestedReviewer: {__typename: 'User', login: reviewer}}))} : undefined,
         latestReviews : {pageInfo: {hasNextPage: false}, nodes: reviews},
+        // each reviewer's standing approval or change request among the latest reviews
+        latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: reviews.filter(review => ['APPROVED', 'CHANGES_REQUESTED'].includes(review.state))},
         commits       : {nodes: [{commit: {oid: head, statusCheckRollup: {state: rollup}}}]}
     }
 }

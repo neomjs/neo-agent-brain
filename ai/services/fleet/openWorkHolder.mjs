@@ -3,13 +3,16 @@
  * @summary Who holds an open pull request's next action. The open-work projection and the wake path
  * both read this one function, so they never disagree about whose turn a PR is.
  *
- * A review counts only when it judged the current head: `reviewDecision` keeps a change request the
- * author has since pushed past, and an earlier head's approval. `operator` and `rotation` are roles
- * that name nobody; the reader that renders or wakes resolves them, so no operator's handle lives here.
+ * An opinion counts only when it judged the current head: `reviewDecision` keeps a change request the
+ * author has since pushed past, and an earlier head's approval. Opinions come from each reviewer's
+ * standing approval or change request, never their latest review, which a comment can be; a comment
+ * on the head is engagement only. `operator` and `rotation` are roles that name nobody; the reader
+ * that renders or wakes resolves them, so no operator's handle lives here.
  *
- * A partial read (a review or request list truncated or unresolved) decides only on positive evidence:
- * a red head, or a change request on the head, is the author's. Every other rule reads an absence that
- * a missing page could hold, so the holder is `unknown`, never `none`.
+ * A partial read (a review, opinion or request list truncated or unresolved, or no opinion list at
+ * all) decides only on positive evidence: a red head, or a change request on the head, is the
+ * author's. Every other rule reads an absence a missing page could hold, so the holder is `unknown`,
+ * never `none`.
  */
 
 /**
@@ -17,21 +20,22 @@
  * @param {Object} row An open row of the producer's snapshot.
  * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown', ids: String[]}}
  */
-export function holderOf({ci, mergeable, draft, owner, partial = false, requested = [], reviews = []}) {
+export function holderOf({ci, mergeable, draft, owner, partial = false, requested = [], reviews = [], opinions}) {
     const
-        onHead    = state => reviews.some(review => review.onHead && review.state === state),
-        finished  = ci === 'red' || ci === 'green',
-        untouched = !requested.length && !reviews.some(review => review.onHead);
+        incomplete = partial || !Array.isArray(opinions),
+        onHead     = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
+        finished   = ci === 'red' || ci === 'green',
+        untouched  = !requested.length && !reviews.some(review => review.onHead);
 
     if (owner?.kind === 'outside' && finished && untouched) {
-        return {role: partial ? 'unknown' : 'rotation', ids: []}
+        return {role: incomplete ? 'unknown' : 'rotation', ids: []}
     }
 
     if (ci === 'red' || onHead('CHANGES_REQUESTED')) {
         return {role: 'author', ids: owner?.seat ? [owner.seat] : []}
     }
 
-    if (partial) {
+    if (incomplete) {
         return {role: 'unknown', ids: []}
     }
 

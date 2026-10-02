@@ -31,7 +31,8 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
 
     test('awaitingMerge lists every row the operator holds, whoever owns it; a PR no seat owns is in no seat\'s lists (#779)', () => {
         const
-            approved = (number, owner) => ({...row(number), ci: 'green', verdict: 'APPROVED', owner, requested: [], reviews: [{reviewer: '@neo-gpt', state: 'APPROVED', onHead: true}]}),
+            approval = {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},
+            approved = (number, owner) => ({...row(number), ci: 'green', verdict: 'APPROVED', owner, requested: [], reviews: [approval], opinions: [approval]}),
             read     = source(state({}, [
                 approved(1, {kind: 'seat', seat: '@neo-opus-ada'}),
                 approved(2, {kind: 'outside', seat: null, login: 'contributor'}),
@@ -47,7 +48,8 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
 
     test('an awaiting-merge row ages by its own observation, and an unavailable projection awaits nothing (#779)', () => {
         const
-            approved = (number, observedAt) => ({...row(number, observedAt), ci: 'green', verdict: 'APPROVED', requested: [], reviews: [{reviewer: '@neo-gpt', state: 'APPROVED', onHead: true}]}),
+            approval = {reviewer: '@neo-gpt', state: 'APPROVED', onHead: true},
+            approved = (number, observedAt) => ({...row(number, observedAt), ci: 'green', verdict: 'APPROVED', requested: [], reviews: [approval], opinions: [approval]}),
             partial  = state({observedAt: '2026-10-02T11:10:00.000Z', coverage: 'partial'}, [approved(7, '2026-10-02T11:10:00.000Z'), approved(8, '2026-10-02T11:00:00.000Z'), approved(9)]),
             read     = source(partial, 71).readOpenWork();
 
@@ -57,22 +59,32 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
         expect(source(state({}, [approved(7)]), 120).readOpenWork()).toMatchObject({state: 'unavailable', awaitingMerge: []})
     });
 
-    test('a review list the producer read truncated keeps its visible approval out of awaitingMerge (#779)', () => {
+    test('the producer\'s rows: a list read short keeps an approval out of awaitingMerge, a later comment does not hide one (#779)', () => {
         const
             identities = {byLogin: login => ({'neo-opus-ada': '@neo-opus-ada', 'neo-gpt': '@neo-gpt'})[login] ?? null, byName: name => ({Ada: '@neo-opus-ada'})[name] ?? null},
-            // one visible approval of the head; `hasNextPage` says whether more reviews went unread
-            node       = hasNextPage => ({
+            approval   = {author: {login: 'neo-gpt'}, state: 'APPROVED', commit: {oid: 'h9'}},
+            // the reviewer's latest review and latest opinion of the head; `more…` says a list went unread past its page
+            node       = ({latest=approval, opinion=approval, moreReviews=false, moreOpinions=false}={}) => ({
                 number: 9, headRefOid: 'h9', reviewDecision: 'APPROVED', mergeable: 'MERGEABLE', isDraft: false,
                 body: 'Authored by Ada (Claude Opus 5.5, Claude Code).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'},
-                reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []},
-                latestReviews : {pageInfo: {hasNextPage}, nodes: [{author: {login: 'neo-gpt'}, state: 'APPROVED', commit: {oid: 'h9'}}]},
-                commits       : {nodes: [{commit: {oid: 'h9', statusCheckRollup: {state: 'SUCCESS'}}}]}
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestReviews           : {pageInfo: {hasNextPage: moreReviews}, nodes: [latest]},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: moreOpinions}, nodes: [opinion]},
+                commits                 : {nodes: [{commit: {oid: 'h9', statusCheckRollup: {state: 'SUCCESS'}}}]}
             }),
-            read       = hasNextPage => source(state({}, [{...normalizePullRequest(node(hasNextPage), identities), observedAt: OBSERVED}])).readOpenWork();
+            read       = overrides => source(state({}, [{...normalizePullRequest(node(overrides), identities), observedAt: OBSERVED}])).readOpenWork(),
+            awaiting   = overrides => read(overrides).awaitingMerge.map(({number, holder}) => [number, holder.role]),
+            commented  = {...approval, state: 'COMMENTED'};
 
-        expect(read(false).awaitingMerge.map(({number, holder}) => [number, holder.role])).toEqual([[9, 'operator']]);
-        expect(read(true).awaitingMerge).toEqual([]);
-        expect(read(true).seats['@neo-opus-ada'].authored.map(({holder}) => holder)).toEqual([{role: 'unknown', ids: []}])
+        expect(awaiting()).toEqual([[9, 'operator']]);
+        // more reviews or opinions went unread: the approval cannot be shown to stand alone
+        expect(awaiting({moreReviews: true})).toEqual([]);
+        expect(awaiting({moreOpinions: true})).toEqual([]);
+        expect(read({moreReviews: true}).seats['@neo-opus-ada'].authored.map(({holder}) => holder)).toEqual([{role: 'unknown', ids: []}]);
+        // the reviewer approved, then commented on the same head: the latest review is the comment
+        expect(awaiting({latest: commented})).toEqual([[9, 'operator']]);
+        // a change request survives a later comment the same way, and keeps the PR out of the queue
+        expect(awaiting({latest: commented, opinion: {...approval, state: 'CHANGES_REQUESTED'}})).toEqual([])
     });
 
     test('one seat reads its own lists, empty under the same envelope when it holds nothing', () => {
