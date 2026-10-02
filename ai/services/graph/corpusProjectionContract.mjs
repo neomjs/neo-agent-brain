@@ -17,7 +17,8 @@ export const CORPUS_PROJECTION_SCHEMA_VERSION = 'neo.corpus-projection/v1';
 export const CORPUS_PROJECTION_OWNER          = 'core-corpus-projection';
 
 /** @summary The existing unqualified Graph identities belong to neo; changing origin requires a Graph migration. */
-export const CORPUS_PROJECTION_ORIGIN = 'neo';
+export const CORPUS_GRAPH_ORIGIN = 'neomjs/neo';
+export const CORPUS_PROJECTION_ORIGIN = CORPUS_GRAPH_ORIGIN.split('/').pop();
 
 /**
  * @summary Qualifies a conversation identity with its origin repository.

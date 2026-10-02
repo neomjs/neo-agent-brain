@@ -1,9 +1,10 @@
+import {resolveTicketReference} from '../graph/ticketReferences.mjs';
 import Base                                     from 'neo.mjs/src/core/Base.mjs';
 import aiConfig                                 from '../../mcp/server/memory-core/config.mjs';
 import logger                                   from '../../mcp/server/memory-core/logger.mjs';
 import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
 import {canonicalizeTaggedConceptIds}           from '../graph/conceptSpineCanonicalization.mjs';
-import GraphService                             from './GraphService.mjs';
+import GraphService, {isRlsVisible, resolveRlsUserId} from './GraphService.mjs';
 import PermissionService                        from './PermissionService.mjs';
 import WakeSubscriptionService                  from './WakeSubscriptionService.mjs';
 import {inspectDefectNoteCapture}               from './helpers/defectObservationFold.mjs';
@@ -101,7 +102,8 @@ function parseRelatedPullRequestNumber(ticket = '') {
 }
 
 /**
- * @summary Reads the related ticket ids stored on a mailbox message plus any graph edges.
+ * @summary Reads authored ticket references plus external references on resolved edges; legacy
+ * edges keep their old spelling, without guessing an origin for a canonical target id.
  * @param {Object} db Graph database facade.
  * @param {String} messageId Message node id.
  * @param {Object} [messageNode] Message graph node.
@@ -115,11 +117,43 @@ function getRelatedTicketsForMessage(db, messageId, messageNode, sourceEdges = d
 
     for (const edge of sourceEdges) {
         if (getRecordField(edge, 'type') === 'REFERENCES_TICKET') {
-            relatedTickets.push(getRecordField(edge, 'target'));
+            const externalRef = getRecordField(edge, 'properties')?.externalRef;
+            relatedTickets.push(typeof externalRef === 'string' && externalRef ? externalRef : getRecordField(edge, 'target'));
         }
     }
 
     return [...new Set(relatedTickets)].sort()
+}
+
+
+/**
+ * @summary Creates a point lookup over one stored node snapshot and the canonical RLS predicate.
+ * Ticket resolution needs identity and label only; loading a ticket's vicinity would hydrate its
+ * whole mailbox history. The SQL owner column wins over a stale JSON owner.
+ * @param {Object} db Graph database facade.
+ * @returns {Function} id => {id, type}|null
+ * @private
+ */
+function createTicketNodeLookup(db) {
+    const sqlite = db.storage?.db;
+    let read;
+    const requester = resolveRlsUserId(db.storage?.RequestContextService);
+
+    return id => {
+        let node;
+        if (sqlite?.open) {
+            read ??= sqlite.prepare('SELECT id, user_id, data FROM Nodes WHERE id = ?');
+            const row = read.get(id);
+            if (!row) return null;
+            const stored = JSON.parse(row.data);
+            node = {id: row.id, label: stored.label, properties: {...stored.properties, userId: row.user_id}}
+        } else {
+            const cached = db.nodes.get(id);
+            if (!cached) return null;
+            node = {id: getRecordField(cached, 'id'), label: getRecordField(cached, 'label'), properties: getRecordField(cached, 'properties')}
+        }
+        return isRlsVisible(node, requester) ? {id: node.id, type: node.label} : null
+    }
 }
 
 /**
@@ -3026,7 +3060,8 @@ class MailboxService extends Base {
      *   POST-marker damage class, so the marker is already present by definition — re-appending
      *   inflated the marker index multiples past the accepted-record count (observed 7×/3× on
      *   2026-07-09/10) and masks projection-count diagnostics.
-     * @returns {Promise<void>}
+     * @returns {Promise<{messageId: String, ticketReferences: Object|null}>} Resolution counts;
+     * null when surgical repair did not consult semantic references.
      * @private
      */
     async _projectMessageWalRecord(record, {pumpWake = true, onlyIssues = null, appendMarker = !onlyIssues} = {}) {
@@ -3047,6 +3082,8 @@ class MailboxService extends Base {
             sentBy,
             to
         } = getCanonicalMessageWalRouting(record);
+        const ticketReferences   = onlyIssues ? null : {requested: 0, resolved: 0, unresolved: {}};
+        const lookupTicketNode   = onlyIssues ? null : createTicketNodeLookup(db);
         const optionalEdges      = record.optionalEdges || {};
         const senderUserId       = normalizeUserId(routing.senderUserId || sentBy);
         const timestamp          = getMessageWalTimestamp(record, messageProperties);
@@ -3149,8 +3186,17 @@ class MailboxService extends Base {
             for (const s of getMessageWalArray(optionalEdges.relatedSessions)) {
                 linkOptionalMailboxEdge(messageId, s, 'RELATED_SESSION', 1.0, edgeProperties);
             }
-            for (const t of getMessageWalArray(optionalEdges.relatedTickets)) {
-                linkOptionalMailboxEdge(messageId, t, 'REFERENCES_TICKET', 1.0, edgeProperties);
+            for (const reference of getMessageWalArray(optionalEdges.relatedTickets)) {
+                ticketReferences.requested++;
+                const resolved = resolveTicketReference(reference, lookupTicketNode, {
+                    onUnresolved: reason => ticketReferences.unresolved[reason] = (ticketReferences.unresolved[reason] || 0) + 1
+                });
+                if (!resolved) continue;
+
+                ticketReferences.resolved++;
+                linkOptionalMailboxEdge(messageId, resolved.targetId, 'REFERENCES_TICKET', 1.0, {
+                    ...edgeProperties, externalRef: resolved.externalRef
+                });
             }
             for (const c of getMessageWalArray(optionalEdges.taggedConcepts)) {
                 ensureTaggedConceptNode(c);
@@ -3174,6 +3220,8 @@ class MailboxService extends Base {
         if (pumpWake) {
             WakeSubscriptionService.pump().catch(e => logger.error('[wake-pump]', e));
         }
+
+        return {messageId, ticketReferences};
     }
 
     /**

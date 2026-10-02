@@ -1,3 +1,4 @@
+import {CORPUS_GRAPH_ORIGIN} from '../graph/corpusProjectionContract.mjs';
 import {createHash} from 'node:crypto';
 
 /**
@@ -40,7 +41,7 @@ import {createHash} from 'node:crypto';
  */
 
 const
-    DEFAULT_ORIGIN    = 'neomjs/neo',
+    DEFAULT_ORIGIN    = CORPUS_GRAPH_ORIGIN,
     DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 
 /**
