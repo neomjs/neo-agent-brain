@@ -11,9 +11,10 @@
     "silently shortens the window the hook believes it has.",
     "Commands are byte-identical to the pre-cut Engine template at c623b2f63c^, so the reconciliation",
     "restores the wiring that existed rather than a re-derived approximation.",
-    "turnPresenceHook runs async: presence is never a precondition, so no prompt or tool call waits",
-    "on it, and the harness enforces no timeout on an async hook. TurnPresenceConfig's",
-    "hookWriteTimeoutMs, the writer's one deadline across every MCP stage, bounds each run alone."
+    "turnPresenceHook's progress beacon runs async, so no tool call waits on it; the harness enforces no",
+    "timeout on an async hook, and the writer's one MCP deadline (TurnPresenceConfig hookWriteTimeoutMs)",
+    "bounds each run alone. Its start stays in the prompt's path: start opens the turn's interval, and one",
+    "landing after the turn completed would open a fresh interval for a finished turn."
   ],
   "events": {
     "SessionStart": [
@@ -38,7 +39,7 @@
           {
             "type": "command",
             "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/turnPresenceHook.mjs\" start",
-            "async": true
+            "timeout": 2
           }
         ]
       }

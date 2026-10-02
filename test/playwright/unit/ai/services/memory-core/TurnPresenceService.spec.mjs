@@ -241,6 +241,23 @@ test.describe('Neo.ai.services.memory-core.TurnPresenceService', () => {
         });
     });
 
+    test('a start landing after its turn completed opens a fresh active interval: the caller must deliver start first', async () => {
+        // Why a harness keeps the start hook in the prompt's path (the Claude manifest does): completion finds
+        // no interval to close, and the late start then opens one that reads fresh for a finished turn.
+        const completed = await asAgent(() => TurnPresenceService.recordTurnPresence({
+            action       : 'terminal',
+            terminalState: 'completed',
+            now          : '2026-06-19T00:00:00.500Z'
+        }));
+
+        await asAgent(() => TurnPresenceService.recordTurnPresence({action: 'start', now: '2026-06-19T00:00:01.000Z'}));
+
+        const presence = await asAgent(() => TurnPresenceService.getFreshTurnPresence('@agent-turn', '2026-06-19T00:00:01.100Z'));
+
+        expect(completed.status).toBe('noop');
+        expect(presence?.fresh).toBe(true)
+    });
+
     test('progress without turnId joins the newest active interval instead of refusing', async () => {
         // A harness hook reaching this over MCP holds no turn id — it stopped querying a database to get
         // one. Requiring the id from a client that cannot know it is precisely what pushed the hook into

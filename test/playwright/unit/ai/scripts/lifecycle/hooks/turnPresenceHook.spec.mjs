@@ -151,30 +151,35 @@ test.describe('turnPresenceHook — emission survives projection to an arbitrary
 });
 
 /**
- * Presence is never a precondition, so no prompt or tool call waits on it. The harness enforces no
- * timeout on an async hook, which leaves the writer's own deadline as the only bound — a `timeout`
- * on the entry would read as one.
+ * Presence is never a precondition, so no tool call waits on its progress beacon. The harness enforces no
+ * timeout on an async hook, which leaves the writer's own deadline as the only bound — a `timeout` on the
+ * entry would read as one. The start stays in the prompt's path: it opens the turn's interval, and a start
+ * landing after the turn completed would open one for a finished turn.
  */
-test.describe('turnPresenceHook — runs in the background, never in a prompt\'s or a tool call\'s path', () => {
-    const presenceEntries = events => Object.entries(events).flatMap(([event, buckets]) =>
-        buckets.flatMap(bucket => bucket.hooks.filter(entry => entry.command.includes(PRESENCE)).map(entry => ({event, entry}))));
+test.describe('turnPresenceHook — progress runs in the background, start before the turn can complete', () => {
+    const
+        presenceEntries = events => Object.entries(events).flatMap(([event, buckets]) =>
+            buckets.flatMap(bucket => bucket.hooks.filter(entry => entry.command.includes(PRESENCE)).map(entry => ({event, entry})))),
+        commandFor      = action => `/usr/bin/env node "$(git rev-parse --show-toplevel)${PRESENCE}" ${action}`;
 
-    test('both registrations are async, carry no timeout, and keep their commands', () => {
-        const entries = presenceEntries(MANIFEST.events);
+    test('progress is async with no timeout; start is synchronous within its 2 s bound; both keep their commands', () => {
+        const byEvent = Object.fromEntries(presenceEntries(MANIFEST.events).map(({event, entry}) => [event, entry]));
 
-        expect(entries.map(({event}) => event).sort()).toEqual(['PostToolUse', 'UserPromptSubmit']);
+        expect(Object.keys(byEvent).sort()).toEqual(['PostToolUse', 'UserPromptSubmit']);
 
-        entries.forEach(({event, entry}) => {
-            expect(entry.async, `${event} would block on presence`).toBe(true);
-            expect('timeout' in entry, `${event} carries a timeout the harness never enforces`).toBe(false);
-            expect(entry.command).toBe(`/usr/bin/env node "$(git rev-parse --show-toplevel)${PRESENCE}" ${event === 'PostToolUse' ? 'progress' : 'start'}`)
-        })
+        expect(byEvent.PostToolUse.async, 'PostToolUse would block every tool call on presence').toBe(true);
+        expect('timeout' in byEvent.PostToolUse, 'PostToolUse carries a timeout the harness never enforces').toBe(false);
+        expect(byEvent.PostToolUse.command).toBe(commandFor('progress'));
+
+        expect(byEvent.UserPromptSubmit.async, 'an async start can land after its turn completed').toBeUndefined();
+        expect(byEvent.UserPromptSubmit.timeout).toBe(2);
+        expect(byEvent.UserPromptSubmit.command).toBe(commandFor('start'))
     });
 
-    test('a seat\'s synchronous entries are replaced by the async ones on reconciliation', () => {
+    test('a seat\'s synchronous progress entry is replaced by the async one on reconciliation; start stays synchronous', () => {
         const
             operator   = {command: 'echo operator-hook', type: 'command'},
-            sync       = action => ({command: `/usr/bin/env node "$(git rev-parse --show-toplevel)${PRESENCE}" ${action}`, timeout: 2, type: 'command'}),
+            sync       = action => ({command: commandFor(action), timeout: 2, type: 'command'}),
             {settings} = reconcileClaudeEvents({
                 isOwned : command => command.includes(PRESENCE),
                 manifest: MANIFEST,
@@ -183,13 +188,12 @@ test.describe('turnPresenceHook — runs in the background, never in a prompt\'s
                     UserPromptSubmit: [{hooks: [sync('start')]}]
                 }}
             }),
-            entries    = presenceEntries(settings.hooks);
+            byEvent    = Object.fromEntries(presenceEntries(settings.hooks).map(({event, entry}) => [event, entry]));
 
-        expect(entries).toHaveLength(2);
-        entries.forEach(({entry}) => {
-            expect(entry.async).toBe(true);
-            expect('timeout' in entry).toBe(false)
-        });
+        expect(presenceEntries(settings.hooks)).toHaveLength(2);
+        expect(byEvent.PostToolUse.async).toBe(true);
+        expect('timeout' in byEvent.PostToolUse).toBe(false);
+        expect(byEvent.UserPromptSubmit).toEqual({type: 'command', command: commandFor('start'), timeout: 2});
         expect(settings.hooks.PostToolUse.flatMap(bucket => bucket.hooks)).toContainEqual(operator)
     })
 });
