@@ -929,7 +929,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
             crashpadExecutable: '/app/browser_crashpad_handler'
         });
         FleetLifecycleService.codexDesktopCleanupFn = async () => {
-            if (++cleanupAttempts === 1) throw new Error('ambiguous profile-owned process identity');
+            if (++cleanupAttempts === 1) throw new Error('cleanupCodexDesktopCrashpad: ambiguous profile-owned process identity (pid 4242); refusing cleanup.');
             return {terminated: [], escalated: []};
         };
 
@@ -938,7 +938,8 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
 
         expect(stopped).toMatchObject({success: false, state: 'failed'});
         expect(stopped.cleanupUnresolved).toBe(true);
-        expect(FleetLifecycleService.status('desktop').failureReason).toContain('ambiguous profile-owned process identity');
+        // the refusal is worded for the operator; only its caller's name stays out of the status
+        expect(FleetLifecycleService.status('desktop').failureReason).toBe('Codex Desktop helper cleanup failed: ambiguous profile-owned process identity (pid 4242); refusing cleanup.');
         expect(() => FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'})).toThrow(/refusing to spawn.*lifecycle failure/);
 
         await expect(FleetLifecycleService.stop('desktop')).resolves.toMatchObject({success: true, state: 'stopped', cleanupUnresolved: false});
@@ -946,6 +947,43 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
 
         expect(FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'})).toMatchObject({state: 'running'});
         expect(spawn.calls).toHaveLength(2);
+    });
+
+    test('a cleanup failure reaches the status as its refusal\'s words or its system code, never another message; the Fleet log keeps the cause', async () => {
+        const
+            canary   = '/Users/private-canary/profile',
+            logError = console.error,
+            logged   = [],
+            inspect  = new Error('inspectCodexDesktopCrashpadProcesses: process-table inspection unavailable; ownership is ambiguous.', {cause: new Error(`pgrep failed under ${canary}`)}),
+            unworded = new Error(`helper scan broke under ${canary}`);
+
+        console.error = (...args) => logged.push(...args);
+
+        try {
+            for (const [failure, reason] of [
+                [inspect,                                                 'Codex Desktop helper cleanup failed: process-table inspection unavailable; ownership is ambiguous.'],
+                [Object.assign(new Error('kill EPERM'), {code: 'EPERM'}), 'Codex Desktop helper cleanup failed: EPERM'],
+                [unworded,                                                'Codex Desktop helper cleanup failed; the Fleet log names the cause']
+            ]) {
+                install({agents: {desktop: curatedAgent('desktop', 'codex-desktop')}, creds: {}});
+                FleetLifecycleService.instanceRoot       = DESKTOP_ROOT;
+                FleetLifecycleService.harnessBinaryPaths = {'codex-desktop': process.execPath, codex: process.execPath};
+                FleetLifecycleService.codexDesktopCapabilityProbeFn = () => ({available: true, crashpadExecutable: '/app/browser_crashpad_handler'});
+                FleetLifecycleService.codexDesktopCleanupFn         = async () => { throw failure };
+
+                FleetLifecycleService.start('desktop', {cwd: '/srv/checkouts/desktop'});
+                await FleetLifecycleService.stop('desktop');
+
+                expect(FleetLifecycleService.status('desktop').failureReason, reason).toBe(reason);
+                expect(JSON.stringify(FleetLifecycleService.status('desktop')), reason).not.toContain('private-canary')
+            }
+
+            // the unworded message and the refusal's own cause are kept where only the operator reads them
+            expect(logged).toContain(unworded);
+            expect(logged).toContain(inspect)
+        } finally {
+            console.error = logError
+        }
     });
 
     test('codex-desktop child error after spawn preserves stop authority until helper cleanup succeeds', async () => {
@@ -2112,6 +2150,36 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — seat survival', (
 
         expect(FleetLifecycleService.status('seat')).toMatchObject({state: 'stopped', running: false, adopted: true});
         expect(fs.existsSync(path.join(home, LEASE_FILE))).toBe(false)
+    });
+
+    test('a lease that cannot be read reaches the status as its system code or bounded words, never its message; the Fleet log keeps the cause', () => {
+        const
+            logError = console.error,
+            logged   = [];
+
+        console.error = (...args) => logged.push(...args);
+
+        try {
+            // the home cannot even be derived: the refusal names the value it received
+            installSeat('claude-desktop');
+            FleetLifecycleService.instanceRoot = 'relative/private-canary';
+
+            expect(FleetLifecycleService.status('seat').failureReason).toBe('the seat lease could not be read; the Fleet log names the cause');
+            expect(JSON.stringify(FleetLifecycleService.status('seat'))).not.toContain('private-canary');
+            expect(logged.map(String).join('\n')).toContain("received 'relative/private-canary'");
+
+            // the leased process cannot be inspected: a system error travels as its code alone
+            const {home} = installSeat('claude-desktop');
+
+            writeLease(home);
+            FleetLifecycleService.processSignalFn  = () => {};
+            FleetLifecycleService.processInspectFn = () => { throw Object.assign(new Error('ps failed under /Users/private-canary'), {code: 'EIO'}) };
+
+            expect(FleetLifecycleService.status('seat').failureReason).toBe('the seat lease could not be read: EIO');
+            expect(JSON.stringify(FleetLifecycleService.status('seat'))).not.toContain('private-canary')
+        } finally {
+            console.error = logError
+        }
     });
 
     test('REAL-PROCESS: an app-bundle seat leaves the Fleet server\'s process group; a fresh server adopts and stops it', async () => {
