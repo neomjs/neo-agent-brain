@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @summary Bans mechanical ADR-19 AiConfig SSOT antipatterns: inline `process.env`
+ * @summary Bans mechanical AiConfig SSOT antipatterns (the reactive-provider decision record): inline `process.env`
  * reads inside `leaf(...)` default expressions in `config.template.mjs`, implementation-file
  * config pass-throughs, hidden defaults, type coercions, exports, defensive optional chaining
  * around `AiConfig`, test imports of gitignored operator overlays, and test-side exports derived
@@ -108,7 +108,7 @@ export const BASELINE = Object.freeze([
 ]);
 
 /**
- * Pre-existing implementation-level ADR-19 B2/B3/B5 guard hits. These rows are not
+ * Pre-existing implementation-level AiConfig SSOT guard hits (the B2/B3/B5 antipatterns). These rows are not
  * permission to add more; they keep this lint fail-build for NEW regressions while the
  * broader AiConfig cleanup retires existing boundaries one by one.
  * @type {ReadonlyArray<{file: String, kind: String, text: String, ticket: String, reason: String}>}
@@ -245,7 +245,7 @@ function walkImplementationRoots(rootDir, walker = walkMjsFiles) {
 }
 
 /**
- * @summary Filters files to the Brain implementation scope for ADR-19 implementation linting.
+ * @summary Filters files to the Brain implementation scope for AiConfig SSOT implementation linting.
  * @param {String} file Repo-relative path.
  * @returns {Boolean}
  */
@@ -335,7 +335,7 @@ export function detectInlineEnvLeaves(source) {
 }
 
 /**
- * @summary Detects mechanical ADR-19 implementation violations around `AiConfig`.
+ * @summary Detects mechanical AiConfig SSOT implementation violations around `AiConfig`.
  *
  * The detector is intentionally conservative: it catches the recurrence shapes that
  * review keeps missing without parsing every legitimate direct leaf read. Nuanced
@@ -2585,7 +2585,7 @@ export function lintConfigTemplateSsot({rootDir = ROOT_DIR, files, baseline = BA
 }
 
 /**
- * @summary Scans Brain implementation files for mechanical ADR-19 AiConfig SSOT hits.
+ * @summary Scans Brain implementation files for mechanical AiConfig SSOT hits.
  * @param {Object} [options]
  * @param {String} [options.rootDir] Repo root.
  * @param {Array<{file: String, source: String}>} [options.files] Injected file records (test seam).

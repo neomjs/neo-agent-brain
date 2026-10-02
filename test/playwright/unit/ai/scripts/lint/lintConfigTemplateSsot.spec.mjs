@@ -39,7 +39,7 @@ import {
 /**
  * @summary Coverage for `ai/scripts/lint/lint-config-template-ssot.mjs` — the guard that bans
  * inline `process.env` reads inside `leaf(...)` defaults in `config.template.mjs` files and
- * mechanical ADR-19 AiConfig implementation pass-through/defaulting violations, executable test
+ * mechanical AiConfig SSOT implementation pass-through/defaulting violations, executable test
  * imports of ignored operator overlays, and exports derived from canonical config Providers.
  *
  * The antipattern it mechanizes: env-resolution branching (e.g. an inline
