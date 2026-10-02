@@ -7,9 +7,9 @@ import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/st
  * the store the deployment actually serves.
  *
  * Pure collaborator: every value it needs is INJECTED, nothing is resolved here. The entrypoint — the
- * harness hook adapter — reads the config leaves once and passes them in, mirroring
- * {@link module:ai/daemons/wake/readSubscriptionsOverMcp} and the `wakeArmingHook` entrypoint that
- * feeds it. Resolving a leaf at module scope here would re-derive config in a module that is not a
+ * harness hook adapter — reads the config leaves once and passes them in, mirroring the
+ * `wakeArmingHook` entrypoint that feeds {@link module:ai/daemons/wake/armSeatWakePull}. Resolving a
+ * leaf at module scope here would re-derive config in a module that is not a
  * thread entrypoint — the exact shape that is not permitted to read the config singleton, and the one
  * that made the writer this replaces resolve a path of its own in the first place.
  */

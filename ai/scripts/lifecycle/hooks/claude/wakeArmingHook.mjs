@@ -1,78 +1,33 @@
-import os              from 'node:os';
-import path            from 'node:path';
 import {pathToFileURL} from 'node:url';
 
-import {armSeatWakeRoute}         from '../../../../daemons/wake/armSeatWakeRoute.mjs';
-import {readSubscriptionsOverMcp} from '../../../../daemons/wake/readSubscriptionsOverMcp.mjs';
+import {armSeatWakePull, connectSeatPlane} from '../../../../daemons/wake/armSeatWakePull.mjs';
 
 /**
- * Where the wake receiver reads its route table. Matches the `--manifest` the running receiver is
- * launched with, so publishing here is what the receiver picks up — it watches this file's directory,
- * making a successful publish its own reload trigger.
- * @type {String}
- */
-export const DEFAULT_MANIFEST_RELATIVE = 'Library/Application Support/Neo/AgentOS/wake/routes.json';
-
-/**
- * Budget for the whole MCP exchange, and the publication margin left after it.
- *
- * These exist as one derived pair rather than two unrelated numbers because that is exactly how the
- * first version was wrong: the hook's registered timeout was 15s while the reader allowed 8s to connect
- * and another 8s to list, so a slow plane could consume the caller's entire budget and be killed AFTER
- * reading subscriptions and BEFORE publishing — the worst possible moment to stop. `HOOK_TIMEOUT_MS`
- * must stay equal to the `timeout` this hook is registered with, because two places holding the same
- * number silently drift.
- *
- * That registration moved: it is `SessionStart` in `hooks/claude/events.manifest.json`, reconciled
- * into the seat's `.claude/settings.json` by `projectSeatHooks`. It is no longer
- * `.claude/settings.template.json`, which after the leaf-11 cut declares only the Engine's own
- * `PreToolUse` guard.
- *
- * This comment previously said "a spec asserts it". No spec did — `git grep HOOK_TIMEOUT_MS` over
- * `test/` returned nothing, so the sentence was a guard existing only in prose while the number was
- * free to drift. `projectSeatHooks.spec.mjs` now asserts the parity for real.
+ * The `timeout` this hook is registered with on `SessionStart` in `hooks/claude/events.manifest.json`,
+ * which `projectSeatHooks` reconciles into the seat's `.claude/settings.json`. Two places hold the
+ * number, so `projectSeatHooks.spec.mjs` asserts they agree.
  * @type {Number}
  */
 export const HOOK_TIMEOUT_MS = 15000;
 
 /**
- * Margin reserved for deriving the tuple, writing the temp file, publishing the manifest, and process
- * teardown — everything after the exchange returns.
+ * Time left after the arming deadline to print the outcome and exit. The harness discards the output
+ * of a hook it cancels at its timeout, so a slow plane must be reported before then, not killed.
  * @type {Number}
  */
-export const PUBLISH_MARGIN_MS = 5000;
+export const REPORT_MARGIN_MS = 2000;
 
 /**
- * @summary The MCP exchange's total budget, derived so the outer deadline strictly exceeds inner work.
- * @param {Number} [hookTimeoutMs=HOOK_TIMEOUT_MS]
- * @param {Number} [publishMarginMs=PUBLISH_MARGIN_MS]
- * @returns {Number}
- */
-export function resolveExchangeDeadlineMs(hookTimeoutMs = HOOK_TIMEOUT_MS, publishMarginMs = PUBLISH_MARGIN_MS) {
-    return Math.max(1000, hookTimeoutMs - publishMarginMs)
-}
-
-/**
- * @summary Resolves the manifest path from the environment, falling back to the receiver's own default.
- * @param {Object} [options]
- * @param {Object} [options.env=process.env] Environment source.
- * @param {String} [options.homeDir] Overrides `os.homedir()` for deterministic tests.
- * @returns {String}
- */
-export function resolveManifestPath({env = process.env, homeDir = os.homedir()} = {}) {
-    return env.NEO_WAKE_RECEIVER_MANIFEST || path.join(homeDir, DEFAULT_MANIFEST_RELATIVE)
-}
-
-/**
- * @summary Reads the plane leaves from `AiConfig`, the one config read in this process.
+ * @summary Reads the plane leaves and the seat's identity leaf from `AiConfig`, the one config read in
+ * this process.
  *
  * Imported lazily so the module stays loadable — and its pure helpers unit-testable — without booting
  * the Neo state Provider. The hook process is an entrypoint, so importing `AiConfig` here is the
- * sanctioned shape for an entrypoint; doing it at module scope would make every consumer of
- * `resolveManifestPath` pay for a Provider boot.
- * @returns {Promise<Object>} `{planeBase, planeBearer}`
+ * sanctioned shape for an entrypoint; doing it at module scope would make every importer pay for a
+ * Provider boot. The identity is the leaf `NEO_AGENT_IDENTITY` binds, never the variable itself.
+ * @returns {Promise<Object>} `{planeBase, planeBearer, identity}`
  */
-export async function readPlaneConfig() {
+export async function readSeatConfig() {
     // Namespace bootstrap before the config import, the entry-point invariant `devFleetServer.mjs`
     // documents: `Neo` + `core/_export` populate `globalThis.Neo` so the Provider's `setupClass`
     // succeeds at module-load. Without them `ai/config.mjs` throws `Neo is not defined`.
@@ -81,83 +36,78 @@ export async function readPlaneConfig() {
 
     const {default: AiConfig} = await import('../../../../config.mjs');
 
-    return {planeBase: AiConfig.fleet.planeBase, planeBearer: AiConfig.fleet.planeBearer}
+    return {
+        planeBase  : AiConfig.fleet.planeBase,
+        planeBearer: AiConfig.fleet.planeBearer,
+        identity   : AiConfig.stopHook.projection.agentId
+    }
 }
 
 /**
- * @summary Arms this seat's wake route at session start, reporting the outcome without ever failing the session.
+ * @summary Arms this seat for pull at session start, reporting the outcome without ever failing the session.
  *
- * A once-ever manual arming step is lost the moment a seat is re-provisioned or a harness crashes,
- * which is how seats go silently unreachable for days: every intermediate state reports healthy, so
- * nothing surfaces the gap. Running on every session start turns that outage into one idempotent
- * re-arm — the manifest builder merges additively, so repeating it neither duplicates this seat's
- * route nor withdraws a peer's.
+ * A Claude seat is woken by its own `wakeListenerHook`, which polls the seat's pull route. Arming makes
+ * that the only route: it subscribes the pull route and unsubscribes the seat's routes that type into
+ * a window (`armSeatWakePull`). Running on every session start keeps the switch idempotent and undoes
+ * drift, such as a Fleet Start subscribing an `osascript` route again.
  *
- * **This is the entrypoint, and the only place config is resolved.** It reads `AiConfig.fleet.planeBase`
- * / `fleet.planeBearer` — the same leaves `devFleetServer.mjs` reads to reach the containerized plane —
- * and injects them into pure collaborators. The reader below deliberately resolves nothing itself; an
- * earlier version re-derived the endpoint from its own env vocabulary with a hardcoded localhost
- * fallback — module-level re-derivation of a config leaf — and invented a second credential carrier
- * beside the plane's own.
- *
- * An unconfigured plane is a NAMED SKIP, never a localhost guess: `fleet.planeBase` defaults to empty
- * precisely so "not configured" is expressible, and guessing an endpoint would either fail obscurely or
- * publish against whatever happens to be listening.
+ * **This is the entrypoint, and the only place config is resolved.** It reads the plane and identity
+ * leaves and injects them. An unconfigured plane is a NAMED SKIP, never a localhost guess.
  *
  * @param {Object} [options]
- * @param {Object} [options.env=process.env] Environment source.
- * @param {String} [options.harness='claude'] Harness key for instance-tuple derivation.
- * @param {String} [options.homeDir] Overrides `os.homedir()` for deterministic tests.
- * @param {Object} [options.config] Injected `{planeBase, planeBearer}`; read from `AiConfig` when absent.
- * @param {Function} [options.listSubscriptions=readSubscriptionsOverMcp] Subscription-reader seam.
- * @param {Function} [options.arm=armSeatWakeRoute] Arming seam.
- * @returns {Promise<Object>}
+ * @param {Object} [options.config] Injected `{planeBase, planeBearer, identity}`; read from `AiConfig` when absent.
+ * @param {Function} [options.connect=connectSeatPlane] Plane-session seam.
+ * @param {Function} [options.arm=armSeatWakePull] Arming seam.
+ * @returns {Promise<Object>} `{armed: true, identity, subscriptionId, retired}` or `{armed: false, reason}`.
  */
 export async function armClaudeSeat({
-    env               = process.env,
-    harness           = 'claude',
-    homeDir,
     config,
-    listSubscriptions = readSubscriptionsOverMcp,
-    arm               = armSeatWakeRoute
+    connect = connectSeatPlane,
+    arm     = armSeatWakePull
 } = {}) {
-    const resolved  = config ?? await readPlaneConfig(),
-          planeBase = String(resolved?.planeBase ?? '').trim().replace(/\/+$/, '');
+    const seat = await connect(config ?? await readSeatConfig());
 
-    if (!planeBase) {
-        return {
-            armed : false,
-            reason: 'fleet.planeBase is not configured, so there is no Memory Core plane to read subscriptions from'
-        };
+    if (!seat.client) return {armed: false, reason: seat.reason};
+
+    try {
+        return {armed: true, identity: seat.identity, ...await arm({client: seat.client, identity: seat.identity})}
+    } finally {
+        await Promise.resolve(seat.client.close?.()).catch(() => {})
     }
+}
 
-    return arm({
-        env,
-        harness,
-        homeDir,
-        listSubscriptions: ({identity} = {}) => listSubscriptions({
-            baseUrl   : `${planeBase}/mc/mcp`,
-            credential: resolved?.planeBearer ?? '',
-            deadlineMs: resolveExchangeDeadlineMs(),
-            identity
-        }),
-        manifestPath: resolveManifestPath({env, homeDir})
-    })
+/**
+ * @summary Formats the arming outcome as the one stderr line the harness shows.
+ * @param {Object} result An {@link armClaudeSeat} result.
+ * @returns {String}
+ */
+export function describeArming(result) {
+    if (!result?.armed) return `[WARN] [wake-arming] seat is UNARMED — ${result?.reason || 'no reason reported'}`;
+
+    const retired = result.retired?.length
+        ? `; unsubscribed ${result.retired.length} route(s) that typed into a window`
+        : '';
+
+    return `[INFO] [wake-arming] ${result.identity} armed for pull on ${result.subscriptionId}${retired}`
 }
 
 async function main() {
+    const deadlineMs = HOOK_TIMEOUT_MS - REPORT_MARGIN_MS;
+
     // Never rejects: a seat that cannot arm still boots and says so on stderr, where the harness
     // captures it. Wake is an enhancement, not a precondition for starting work.
-    const result = await armClaudeSeat().catch(error => ({
-        armed : false,
-        reason: `wake arming threw: ${error?.message || error}`
-    }));
+    const result = await Promise.race([
+        armClaudeSeat().catch(error => ({armed: false, reason: `wake arming threw: ${error?.message || error}`})),
+        new Promise(resolve => setTimeout(
+            () => resolve({armed: false, reason: `arming did not finish within ${deadlineMs}ms`}),
+            deadlineMs
+        ).unref())
+    ]);
 
-    if (result?.armed) {
-        console.error(`[INFO] [wake-arming] ${result.identity} armed: ${result.routeCount} route(s) published`);
-    } else {
-        console.error(`[WARN] [wake-arming] seat is UNARMED — ${result?.reason || 'no reason reported'}`);
-    }
+    console.error(describeArming(result));
+
+    // An unfinished exchange keeps sockets open; exit so the report lands before the harness timeout.
+    process.exit(0)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

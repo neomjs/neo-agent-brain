@@ -13,13 +13,13 @@ setup({
     }
 });
 
-import {test, expect}   from '@playwright/test';
-import Neo              from 'neo.mjs/src/Neo.mjs';
-import * as core        from 'neo.mjs/src/core/_export.mjs';
+import {test, expect}            from '@playwright/test';
+import Neo                       from 'neo.mjs/src/Neo.mjs';
+import * as core                 from 'neo.mjs/src/core/_export.mjs';
 import {execFileSync, spawnSync} from 'node:child_process';
-import fs               from 'node:fs';
-import os               from 'node:os';
-import path             from 'node:path';
+import fs                        from 'node:fs';
+import os                        from 'node:os';
+import path                      from 'node:path';
 import {
     assertRuntimeRoot,
     checkProjection,
@@ -99,7 +99,7 @@ function targetRepo() {
 /**
  * @summary Builds a target checkout that declares a package name of its own.
  *
- * The degenerate case of #79 is not a property of the *source* — it is a property of the target, so
+ * The degenerate case — a seat that IS the package — is not a property of the *source* — it is a property of the target, so
  * the fixture that expresses it is a manifest rather than a hook. Passing `exports` produces the
  * mapped variant, where a subpath no longer implies a file path.
  * @param {String} name The target's own `package.json` name.
@@ -147,14 +147,14 @@ test.afterAll(() => {
 });
 
 test.describe('projectSeatHooks — the census of the real population', () => {
-    test('enumerates exactly the seven Agent-OS-owned hooks, split 3/2/2', () => {
+    test('enumerates exactly the eight Agent-OS-owned hooks, split 4/2/2', () => {
         const hooks = enumerateHooks(REPO_ROOT);
 
-        // #250 asserts the count so a future re-read cannot silently re-conflate the executables
-        // with the config artifacts that leaf 6 also removed.
-        expect(hooks.length).toBe(7);
+        // The count is asserted so a future re-read cannot silently re-conflate the executables with
+        // the config artifacts that leaf 6 also removed. The fourth Claude hook is the wake listener.
+        expect(hooks.length).toBe(8);
 
-        expect(hooks.filter(hook => hook.harness === 'claude').length).toBe(3);
+        expect(hooks.filter(hook => hook.harness === 'claude').length).toBe(4);
         expect(hooks.filter(hook => hook.harness === 'codex').length).toBe(2);
         expect(hooks.filter(hook => hook.harness === 'kimi-code').length).toBe(2);
 
@@ -186,7 +186,7 @@ test.describe('projectSeatHooks — specifier rewriting', () => {
     });
 
     test('MUTANT — the seat that IS the package resolves its own specifiers inside itself', () => {
-        // #79: `neo.mjs/src/Neo.mjs` resolves upward from the projected file to
+        // A seat that is the package: `neo.mjs/src/Neo.mjs` resolves upward from the projected file to
         // `<engine>/node_modules/neo.mjs`, and the Engine checkout IS `neo.mjs`, so that directory
         // cannot exist. All three Claude hooks threw `Cannot find package 'neo.mjs'` and exited 0 —
         // the fleet's wake-arming path was dead from 2026-08-24 with every surface green.
@@ -271,7 +271,7 @@ test.describe('projectSeatHooks — the real corpus, rendered', () => {
     // for this question: whether the REAL seven hooks survive projection with working paths. The
     // previous rewriter passed every fixture assertion and still rendered two corrupted artifacts,
     // because no fixture happened to hold a relative literal outside specifier position. The real
-    // corpus does, in two files. Found by @neo-gpt-emmy reviewing #250.
+    // corpus does, in two files. Found by @neo-gpt-emmy in peer review.
     const rendered = suffix => {
         const hook = enumerateHooks(REPO_ROOT).find(entry => entry.source.endsWith(suffix));
 
@@ -310,7 +310,7 @@ test.describe('projectSeatHooks — runtime-root identity', () => {
     // `requireRoot` proves a root was bound and exists. Neither fact says it is the RIGHT root, and
     // an empty population trivially satisfies every condition `--check` audits — so both arms
     // reported success on a wrong binding, the write arm after mutating the target's exclude file.
-    // Found by @neo-gpt-emmy reviewing #250.
+    // Found by @neo-gpt-emmy in peer review.
     test('MUTANT — a directory that is not a hook source reds both arms and mutates nothing', () => {
         const
             root        = scratch('not-an-agentos-root'),
@@ -369,7 +369,8 @@ test.describe('projectSeatHooks — projection', () => {
             target = targetRepo(),
             result = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
 
-        expect(result.written).toEqual(['.claude/hooks/a.mjs', '.codex/hooks/b.mjs']);
+        // The receipt records the revision the projection came from.
+        expect(result.written).toEqual(['.claude/hooks/a.mjs', '.codex/hooks/b.mjs', '.agents/seat-projection.json']);
 
         const projected = fs.readFileSync(path.join(target, '.claude/hooks/a.mjs'), 'utf8');
 
@@ -377,7 +378,7 @@ test.describe('projectSeatHooks — projection', () => {
         expect(projected.startsWith('#!/usr/bin/env node\n')).toBe(true);
         expect(projected.split('\n')[1]).toContain('GENERATED by');
 
-        // Untracked is not ignored: acceptance for #250 is a clean status, not merely untracked files.
+        // Untracked is not ignored: the acceptance is a clean status, not merely untracked files.
         expect(execFileSync('git', ['status', '--porcelain'], {cwd: target, encoding: 'utf8'}).trim()).toBe('')
     });
 
@@ -452,7 +453,7 @@ test.describe('projectSeatHooks — projection', () => {
     });
 
     test('never treats a tracked file as an orphan to prune', () => {
-        // The Engine-only guard carve-out of ADR 0040 §2.7 lives at exactly such a path.
+        // The Engine-only guard carve-out lives at exactly such a path.
         const
             root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE}}),
             target = targetRepo();
@@ -549,7 +550,7 @@ test.describe('projectSeatHooks --check — every #250 mutant drives it red', ()
 
 test.describe('projectSeatHooks — CLI root binding', () => {
     test('fails loud when a root is absent rather than defaulting to cwd', () => {
-        // ADR 0040 §2.5: a defaulted root would project a full hook set into whatever directory the
+        // Two roots, never defaulted: a defaulted root would project a full hook set into whatever directory the
         // process happened to start in, and report success doing it.
         expect(() => main([])).toThrow(/missing required root/);
         expect(() => main([`--runtime-root=${REPO_ROOT}`])).toThrow(/AGENTOS_TARGET_REPO_ROOT/)
@@ -602,15 +603,15 @@ const KIMI_CONFIG = '[[hooks]]\nevent = "Stop"\ncommand = \'node ' +
     '"$(git rev-parse --show-toplevel)/.kimi-code/hooks/turnPresenceHook.mjs"\'\ntimeout = 5\n';
 
 test.describe('projectSeatHooks — the deleted config artifacts (#250 census kind 2)', () => {
-    test('the real census is 7 executables + 2 config artifacts, and never re-conflates them', () => {
+    test('the real census is 8 executables + 2 config artifacts, and never re-conflates them', () => {
         const
             configs    = enumerateConfigs(REPO_ROOT),
             projection = enumerateProjection(REPO_ROOT);
 
         // The counts are the ticket's own, asserted so a re-read cannot silently merge the kinds.
-        expect(enumerateHooks(REPO_ROOT).length).toBe(7);
+        expect(enumerateHooks(REPO_ROOT).length).toBe(8);
         expect(configs.length).toBe(2);
-        expect(projection.length).toBe(9);
+        expect(projection.length).toBe(10);
 
         expect(configs.map(entry => entry.target).sort())
             .toEqual(['.codex/hooks.json', '.kimi-code/hooks/turn-presence.example.toml']);
@@ -635,6 +636,7 @@ test.describe('projectSeatHooks — the deleted config artifacts (#250 census ki
             {written} = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
 
         expect(written.sort()).toEqual([
+            '.agents/seat-projection.json',
             '.codex/hooks.json',
             '.codex/hooks/codex-context.mjs',
             '.kimi-code/hooks/turn-presence.example.toml',
@@ -665,7 +667,7 @@ test.describe('projectSeatHooks — the deleted config artifacts (#250 census ki
         // `../` inside a config is a *string value*, not a module specifier. Rewriting it would
         // point the harness at an absolute path to a file that does not exist.
         const
-            root = runtimeRoot({codex: {'hooks.json': codexConfig('../escaped/thing.mjs')}}),
+            root   = runtimeRoot({codex: {'hooks.json': codexConfig('../escaped/thing.mjs')}}),
             target = targetRepo();
 
         projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
@@ -717,7 +719,7 @@ test.describe('projectSeatHooks — AC-5: every declared command resolves to som
     });
 
     test('MUTANT — a seat config declares a script the projector did not place', () => {
-        // This is the #250 symptom itself: a seat born pointing at a file no repository contains,
+        // This is the original symptom itself: a seat born pointing at a file no repository contains,
         // with the harness reporting nothing when it silently runs none of it.
         const {root, target} = projected('.codex/hooks/never-placed.mjs');
 
@@ -818,7 +820,7 @@ test.describe('projectSeatHooks — AC-5: every declared command resolves to som
         // Before the manifest drove the sweep, orphan detection was hardcoded to `.mjs`, so a
         // retired config artifact would have stayed behind and kept being read forever.
         const {root, target} = projected(),
-            stale = path.join(target, '.kimi-code/hooks/retired.example.toml');
+            stale            = path.join(target, '.kimi-code/hooks/retired.example.toml');
 
         fs.writeFileSync(stale, '# left over\n', 'utf8');
 
@@ -833,7 +835,7 @@ test.describe('projectSeatHooks — AC-5: every declared command resolves to som
         // its config lands beside content that is none of its business — deleting an unclaimed file
         // there would be destroying somebody else's work to tidy our own.
         const {root, target} = projected(),
-            bystander = path.join(target, '.codex/config.json');
+            bystander        = path.join(target, '.codex/config.json');
 
         fs.writeFileSync(bystander, '{"unrelated": true}\n', 'utf8');
 
@@ -845,7 +847,7 @@ test.describe('projectSeatHooks — AC-5: every declared command resolves to som
 });
 
 /**
- * The Claude seat is the one surface #250 reconciles rather than generates, so it is the one place
+ * The Claude seat is the one surface the projector reconciles rather than generates, so it is the one place
  * the projector can destroy somebody else's work. Every test below is shaped around that: the
  * question is never "did our four events land" alone, but "did they land *without* taking anything
  * with them".
@@ -955,8 +957,8 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
 
     test('retires our stale command while the tracked Engine entry survives untouched', () => {
         const
-            root   = runtimeWithManifest(),
-            target = hydratedTarget(),
+            root         = runtimeWithManifest(),
+            target       = hydratedTarget(),
             {reconciled} = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target}),
             settings     = settingsOf(target);
 
@@ -1026,7 +1028,7 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
 
         projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
 
-        const first = fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8'),
+        const first        = fs.readFileSync(path.join(target, '.claude/settings.json'), 'utf8'),
               {reconciled} = projectHooks({agentosRuntimeRoot: root, targetRepoRoot: target});
 
         expect(reconciled.changed).toBe(false);
@@ -1041,7 +1043,7 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
      * indistinguishable, to any caller checking an exit code, from a correctly wired one. That is
      * the silently-dead-hook failure the module header opens with, reproduced one layer up.
      *
-     * Found by @neo-gpt-emmy reviewing #250. Both arms assert the refusal AND that nothing was
+     * Found by @neo-gpt-emmy in peer review. Both arms assert the refusal AND that nothing was
      * written: "it threw" is not the property that matters if it threw after writing eight files.
      */
     test('declared manifest + absent settings: refuses, writes nothing, exits nonzero', () => {
@@ -1136,7 +1138,7 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
 });
 
 /**
- * ADR 0040 §2.5's re-materialization covenant: a seat provisioned by an EARLIER revision has to be
+ * The re-materialization covenant: a seat provisioned by an EARLIER revision has to be
  * brought current by re-running the projector, and that has to be demonstrated by reading the seat
  * back — not inferred from the sources being correct now.
  *
@@ -1149,8 +1151,8 @@ test.describe('projectSeatHooks — Claude settings reconciliation (ADR 0040 §2
 test.describe('projectSeatHooks — re-materializing an already-provisioned seat (ADR 0040 §2.5)', () => {
     test('a seat provisioned at an earlier revision is brought fully current', () => {
         const
-            root   = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE, 'retired.mjs': HOOK_SOURCE}}),
-            target = targetRepo(),
+            root         = runtimeRoot({claude: {'a.mjs': HOOK_SOURCE, 'retired.mjs': HOOK_SOURCE}}),
+            target       = targetRepo(),
             manifestPath = path.join(root, 'ai/scripts/lifecycle/hooks/claude/events.manifest.json'),
             command      = name => `/usr/bin/env node "$(git rev-parse --show-toplevel)/.claude/hooks/${name}"`;
 
@@ -1249,12 +1251,11 @@ test.describe('the real Claude manifest — contract properties of the shipped f
 
     test('wakeArmingHook\'s HOOK_TIMEOUT_MS equals the timeout it is registered with', async () => {
         // The parity `wakeArmingHook.mjs` asserted in prose for months without any spec behind it —
-        // `git grep HOOK_TIMEOUT_MS test/` returned nothing. The hook derives its MCP connect and
-        // list budgets from this constant, so a manifest registering less does not merely mismatch:
-        // it kills the process AFTER reading subscriptions and BEFORE publishing, which is the one
-        // moment where stopping loses work rather than deferring it.
+        // `git grep HOOK_TIMEOUT_MS test/` returned nothing. The hook reports its outcome before this
+        // deadline, so a manifest registering less does not merely mismatch: the harness cancels the
+        // hook first and discards the report that says whether the seat is armed.
         //
-        // Found by @neo-gpt-emmy in peer review of #250.
+        // Found by @neo-gpt-emmy in peer review.
         const
             {HOOK_TIMEOUT_MS} = await import('../../../../../../../ai/scripts/lifecycle/hooks/claude/wakeArmingHook.mjs'),
             registered        = manifest.events.SessionStart[0].hooks[0].timeout;
@@ -1263,6 +1264,29 @@ test.describe('the real Claude manifest — contract properties of the shipped f
             .toBeGreaterThan(0);
 
         expect(HOOK_TIMEOUT_MS).toBe(registered * 1000)
+    });
+
+    test('wakeListenerHook rides SessionStart and Stop in the background, and reaches the seat that way', () => {
+        // The listener wakes a session only when the harness runs it in the background
+        // (`asyncRewake`) on both events: SessionStart arms a new session, Stop re-arms after each turn.
+        // A plain entry would block the turn it polls for; a missing one leaves an idle seat deaf.
+        const
+            LISTENER   = '/.claude/hooks/wakeListenerHook.mjs',
+            {settings} = reconcileClaudeEvents({isOwned: () => false, manifest, settings: {}});
+
+        ['SessionStart', 'Stop'].forEach(event => {
+            const
+                declared   = manifest.events[event].flatMap(bucket => bucket.hooks).filter(entry => entry.command.includes(LISTENER)),
+                reconciled = settings.hooks[event].flatMap(bucket => bucket.hooks).filter(entry => entry.command.includes(LISTENER));
+
+            expect(declared, `${event} wires the listener exactly once`).toHaveLength(1);
+            expect(declared[0].asyncRewake).toBe(true);
+            // Above the harness's 600 s default, which would end an idle seat's listener.
+            expect(declared[0].timeout).toBeGreaterThan(600);
+            expect(reconciled, `${event} keeps the listener's background flag through reconciliation`).toEqual(declared)
+        });
+
+        expect(enumerateHooks(REPO_ROOT).map(hook => hook.target)).toContain('.claude/hooks/wakeListenerHook.mjs')
     });
 
     test('every declared command targets a hook this repository actually ships', () => {
@@ -1275,7 +1299,7 @@ test.describe('the real Claude manifest — contract properties of the shipped f
 
         expect(commands.length).toBeGreaterThan(0);
 
-        // Widened for #317, which introduced a second custody kind: a runtime-resident entrypoint is
+        // Widened for a second custody kind: a runtime-resident entrypoint is
         // wired into the seat but deliberately never projected into it, so it names the runtime root
         // rather than `.claude/hooks`. The guarantee above is unchanged and now covers both kinds —
         // every command must still resolve to a file this repository ships. The exclusive-or is new
@@ -1312,9 +1336,9 @@ test.describe('the real Claude manifest — contract properties of the shipped f
         //
         // Every path here is fictional. If anything in the core touched disk or git, this throws.
         const
-            seen  = [],
-            owned = '/usr/bin/env node "/nowhere/.claude/hooks/ours.mjs"',
-            alien = 'echo not-ours',
+            seen                       = [],
+            owned                      = '/usr/bin/env node "/nowhere/.claude/hooks/ours.mjs"',
+            alien                      = 'echo not-ours',
             {added, removed, settings} = reconcileClaudeEvents({
                 isOwned : command => {seen.push(command); return command === owned},
                 manifest: {events: {Stop: [{hooks: [{command: 'fresh', type: 'command'}]}]}},
