@@ -884,7 +884,7 @@ class FleetLifecycleService extends Base {
      * @param {String} id
      * @returns {Object} `{id, state, running, adopted, pid, startedAt, uptimeMs, exitCode, exitedAt,
      *     stderrBytes, authRequired, instanceHome, authHome, launchCommand, authCommand,
-     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute}` — `authRequired`
+     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, repos}` — `authRequired`
      *     is the LIVE per-home
      *     auth-marker heuristic for curated launches (`true` = the operator-owned per-home login has
      *     not happened yet; recomputed each read so a completed login flips it without a restart);
@@ -900,7 +900,8 @@ class FleetLifecycleService extends Base {
      *     window's `userDataDir`). Server and signing credentials never enter the record or
      *     projection. `adopted` marks a
      *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
-     *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`).
+     *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`). `repos` is the
+     *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is.
      */
     status(id) {
         this.adoptLeasedSeats();
