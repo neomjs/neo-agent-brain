@@ -26,6 +26,32 @@ export function listMcpServers() {
 }
 
 /**
+ * The catalog per forge: the forge's own workflow server defaults on, every other forge's off.
+ * @type {Readonly<Object<String, ReadonlyArray<Object>>>}
+ * @private
+ */
+const FORGE_CATALOGS = Object.freeze(Object.fromEntries([...new Set(MCP_SERVERS.map(entry => entry.forge).filter(Boolean))]
+    .map(forge => [forge, Object.freeze(MCP_SERVERS.map(entry => entry.forge
+        ? Object.freeze({...entry, defaultEnabled: entry.forge === forge})
+        : entry))])));
+
+/**
+ * @summary The catalog a seat resolves and normalizes against, so its defaults follow its forge: a GitLab seat
+ * starts its GitLab workflow server, not GitHub's. GitHub's catalog has today's defaults. Normalizing and resolving
+ * one seat must use the same catalog, or a stored override is read against defaults it was not written for.
+ * @param {String} [forge='github'] The forge the seat's PAT is bound to.
+ * @returns {ReadonlyArray<Object>}
+ * @throws {TypeError} For a forge no workflow server names.
+ */
+export function mcpCatalogFor(forge='github') {
+    if (!Object.hasOwn(FORGE_CATALOGS, forge)) {
+        throw new TypeError(`Unknown forge '${forge}'.`)
+    }
+
+    return FORGE_CATALOGS[forge]
+}
+
+/**
  * @summary Build the effective default matrix for the supplied catalog. The optional catalog seam
  * makes default-evolution behavior directly falsifiable without mutating the frozen authority.
  * @param {Object[]} [catalog=MCP_SERVERS]

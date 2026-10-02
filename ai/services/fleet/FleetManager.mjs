@@ -1,6 +1,7 @@
 import Base                             from 'neo.mjs/src/core/Base.mjs';
 import FleetLifecycleService            from './FleetLifecycleService.mjs';
 import {armFleetSeatWake}               from './armFleetSeatWake.mjs';
+import {isOnInstance}                   from './provisionAgentRepo.mjs';
 import {REPO_FORGES, assertNoCheckoutCollision, assertRepoSlug} from './deriveAgentRepoPath.mjs';
 import {inspectFleetRepos}              from './inspectFleetRepos.mjs';
 import {launchRefusalOf}                from '../../../src/fleet/contract/launchAuthority.mjs';
@@ -66,6 +67,30 @@ function repoCoordinates({repoSlug, cloneUrl, forge = 'github'}, caller) {
     }
 
     return repo
+}
+
+/**
+ * @summary Refuse a working repository off the seat's forge. A seat's PAT is bound to one host (its
+ * `forgeHost` on GitLab, github.com otherwise), so a working repository elsewhere could neither clone with
+ * it nor reach the seat's workflow server. The reason is worded for the operator, who reads it in Accounts.
+ * @param {{repoSlug: String, cloneUrl: String, forge?: String}} repo Coordinates {@link repoCoordinates} accepted.
+ * @param {Object|null} seat The seat's public definition; none means there is nothing to set.
+ * @param {String} caller For the error message.
+ * @throws {Error}
+ * @private
+ */
+function assertOnSeatForge(repo, seat, caller) {
+    if (!seat) return;
+
+    const forge = seat.forge ?? 'github';
+
+    if ((repo.forge ?? 'github') !== forge) {
+        throw new Error(`${caller}: this seat works on ${forge === 'gitlab' ? 'its GitLab instance' : 'GitHub'}, so its working repository must live there too.`)
+    }
+
+    if (forge === 'gitlab' && !isOnInstance(repo.cloneUrl, new URL(seat.forgeHost))) {
+        throw new Error(`${caller}: this seat's working repository must live on its GitLab instance, ${seat.forgeHost}.`)
+    }
 }
 
 /**
@@ -555,12 +580,14 @@ class FleetManager extends Base {
         const
             caller   = 'FleetManager.setRepo',
             registry = this.getLifecycleService().getRegistry(),
+            seat     = registry.getAgent(id),
             repo     = repoSlug != null || cloneUrl != null || forge != null
                 ? repoCoordinates({repoSlug, cloneUrl, forge}, caller)
                 : {};
 
         if (repo.repoSlug) {
-            assertNoCheckoutCollision([repo.repoSlug, ...(registry.getAgent(id)?.metadata?.repos ?? []).map(entry => entry.repoSlug)], caller)
+            assertOnSeatForge(repo, seat, caller);
+            assertNoCheckoutCollision([repo.repoSlug, ...(seat?.metadata?.repos ?? []).map(entry => entry.repoSlug)], caller)
         }
 
         return registry.updateAgent(id, {metadata: {repo}});

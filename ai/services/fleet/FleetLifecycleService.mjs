@@ -5,7 +5,7 @@ import {isDeepStrictEqual}                                          from 'node:u
 import AiConfig                                                     from '../../config.mjs';
 import {generateLocalBearerToken}                                   from '../../mcp/server/shared/helpers/localBearer.mjs';
 import Base                                                         from 'neo.mjs/src/core/Base.mjs';
-import {MCP_SERVERS, resolveMcpMatrix}                              from '../../../src/fleet/contract/mcpServers.mjs';
+import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}               from '../../../src/fleet/contract/mcpServers.mjs';
 import {listHarnessTypes}                                           from '../../../src/fleet/contract/harnessTypes.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                              from './mcpServers.mjs';
 import {deriveAgentInstanceHome}                                    from './deriveAgentInstanceHome.mjs';
@@ -18,6 +18,7 @@ import neuralLinkConfig                                             from '../../
 import githubWorkflowConfig                                         from '../../mcp/server/github-workflow/config.mjs';
 import gitlabWorkflowConfig                                         from '../../mcp/server/gitlab-workflow/config.mjs';
 import {MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS}                   from './managedAgentWorkspacePlan.mjs';
+import {isOnInstance}                                               from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities} from './manageCodexDesktopRuntime.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
@@ -53,35 +54,9 @@ const SEAT_ENV = new Set([
 function gitlabProjectOf(agent) {
     const repo = agent.metadata?.repo;
 
-    if (repo?.forge !== 'gitlab' || typeof repo.cloneUrl !== 'string') return null;
+    if (repo?.forge !== 'gitlab') return null;
 
     return isOnInstance(repo.cloneUrl, new URL(agent.forgeHost)) ? repo.repoSlug : null
-}
-
-/**
- * @summary Whether a clone URL addresses the bound instance. An `https` URL must carry its exact origin, so the
- * same host on another port is another instance. An `ssh` URL or scp-style address matches by host alone, because
- * SSH has its own port.
- * @param {String} cloneUrl
- * @param {URL}    instance The seat's parsed `forgeHost`.
- * @returns {Boolean}
- * @private
- */
-function isOnInstance(cloneUrl, instance) {
-    const scpHost = cloneUrl.match(/^[^@/:]+@(\[[^\]]+\]|[^/:]+):/)?.[1];
-
-    try {
-        // a non-special scheme normalizes an IPv6 host but keeps a DNS name's case
-        if (scpHost) return new URL(`ssh://${scpHost}`).hostname.toLowerCase() === instance.hostname;
-
-        const url = new URL(cloneUrl);
-
-        if (url.protocol === 'https:') return url.origin === instance.origin;
-
-        return url.protocol === 'ssh:' && url.hostname.toLowerCase() === instance.hostname
-    } catch {
-        return false
-    }
 }
 
 /**
@@ -1874,7 +1849,7 @@ class FleetLifecycleService extends Base {
      */
     resolveResidentMcpEnvironment(agent, {remote = agent.mcpTarget?.kind === 'tenant'} = {}) {
         if (agent.metadata?.launch) return {};
-        const matrix = resolveMcpMatrix(agent.mcpServers), result = {};
+        const matrix = resolveMcpMatrix(agent.mcpServers, mcpCatalogFor(agent.forge)), result = {};
         for (const {key} of MCP_SERVERS) {
             if (!matrix[key] || (remote && REMOTE_MCP_SERVER_KEYS.has(key))) continue;
             const descriptor    = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[key];

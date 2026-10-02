@@ -71,6 +71,19 @@ test.describe('installed Fleet client contract', () => {
         expect(contract.resolveMcpMatrix({'memory-core': 'yes'})['memory-core']).toBe(false);
     });
 
+    test("a seat's forge picks its catalog: its own workflow server defaults on, another forge's off", () => {
+        const gitlab = contract.mcpCatalogFor('gitlab');
+
+        expect(contract.defaultMcpMatrix(contract.mcpCatalogFor('github'))).toEqual(contract.defaultMcpMatrix());
+        expect(contract.defaultMcpMatrix(contract.mcpCatalogFor())).toEqual(contract.defaultMcpMatrix());
+        expect(contract.defaultMcpMatrix(gitlab)).toEqual({...contract.defaultMcpMatrix(), 'github-workflow': false, 'gitlab-workflow': true});
+        // one catalog both ways: on a GitLab seat, GitHub's server is the override and GitLab's the default
+        expect(contract.normalizeMcpOverrides({'github-workflow': true}, gitlab)).toEqual({'github-workflow': true});
+        expect(contract.normalizeMcpOverrides({'gitlab-workflow': true}, gitlab)).toBeNull();
+        expect(() => contract.mcpCatalogFor('bitbucket')).toThrow(/Unknown forge/);
+        expect(() => contract.mcpCatalogFor('constructor')).toThrow(/Unknown forge/);
+    });
+
     test('public harness capabilities preserve tenant support without exposing target policy', () => {
         const supported = ['codex', 'codex-desktop', 'claude-code', 'claude-desktop', 'opencode', 'kimi-code'];
         for (const entry of contract.listHarnessTypes()) {

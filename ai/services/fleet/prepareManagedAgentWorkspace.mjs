@@ -7,7 +7,7 @@ import crypto                                      from 'node:crypto';
 import {isDeepStrictEqual}                         from 'node:util';
 import {parse as parseToml}                        from 'smol-toml';
 import {hydrateCurrentWorktree}                    from '../../scripts/migrations/bootstrapWorktree.mjs';
-import {MCP_SERVERS, resolveMcpMatrix}             from '../../../src/fleet/contract/mcpServers.mjs';
+import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
 import {deriveNodeRuntimeEnv}                      from './deriveNodeRuntimeEnv.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig} from './generateKimiSeatConfig.mjs';
 import {
@@ -483,7 +483,7 @@ export async function prepareManagedAgentWorkspace({
     try {
         plan = createManagedAgentWorkspacePlan({
             agent    : {id: agent.id, harnessType: agent.harnessType, ...(agent.forge ? {forge: agent.forge} : {})},
-            mcpMatrix: resolveMatrix(agent.mcpServers),
+            mcpMatrix: resolveMatrix(agent.mcpServers, mcpCatalogFor(agent.forge)),
             mcpTarget
         })
     } catch (error) {
