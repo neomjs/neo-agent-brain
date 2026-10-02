@@ -312,15 +312,19 @@ export async function startAgentProvisioned({
     // is never spawned into an unprovisioned / conflicting directory (fail-closed). Input validation
     // (managedRoot / agentId / repoSlug / a missing cloneUrl when a clone is needed) is inherited from
     // the provisioning chain's own contracts — not re-implemented here. The seat's own PAT
-    // authenticates its clone, so a private repo needs no credentials on the Fleet host.
-    const {repoPath: targetRepoRoot} = await ensureRepo({
-        managedRoot,
-        agentId,
-        repoSlug  : repo.repoSlug,
-        cloneUrl  : repo.cloneUrl,
-        credential: resolvedCredential,
-        cloneRepo
-    });
+    // authenticates its clone, so a private repo needs no credentials on the Fleet host. The PAT is
+    // presented only to the origin it was stored for (a GitLab seat's `forgeHost`, else GitHub's).
+    const
+        credentialOrigin           = agent.forgeHost,
+        {repoPath: targetRepoRoot} = await ensureRepo({
+            managedRoot,
+            agentId,
+            repoSlug  : repo.repoSlug,
+            cloneUrl  : repo.cloneUrl,
+            credential: resolvedCredential,
+            credentialOrigin,
+            cloneRepo
+        });
 
     // The seat's other repositories go beside the working checkout, with the same PAT. One that fails is
     // reported on the status and the launch goes on: the working checkout is the seat's cwd and its gate,
@@ -330,7 +334,7 @@ export async function startAgentProvisioned({
 
     for (const {repoSlug, cloneUrl} of agent.metadata?.repos ?? []) {
         try {
-            await ensureRepo({managedRoot, agentId, repoSlug, cloneUrl, credential: resolvedCredential, cloneRepo});
+            await ensureRepo({managedRoot, agentId, repoSlug, cloneUrl, credential: resolvedCredential, credentialOrigin, cloneRepo});
             repos.push({repoSlug, state: 'prepared'})
         } catch (error) {
             repos.push({repoSlug, state: 'failed', reason: redactReadFailure(error) ?? 'no legible error'})

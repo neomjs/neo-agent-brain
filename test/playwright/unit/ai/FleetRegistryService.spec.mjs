@@ -274,6 +274,77 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService', () => {
         expect(FleetRegistryService.resolveCredential('no-pat')).toBeNull()
     });
 
+    test("a GitLab seat records its forge and host beside its PAT, on disk; a GitHub seat's row is unchanged", () => {
+        const gitlab = FleetRegistryService.defineAgent({
+            githubUsername: 'gl-seat', harnessType: 'codex', credential: 'glpat_seat', forge: 'gitlab', forgeHost: 'https://GitLab.Example.com/'
+        });
+
+        expect(gitlab).toMatchObject({forge: 'gitlab', forgeHost: 'https://gitlab.example.com'});
+        expect(JSON.stringify(gitlab)).not.toContain('glpat_seat');
+        expect(FleetRegistryService.resolveCredential('gl-seat')).toBe('glpat_seat');
+
+        const github = FleetRegistryService.defineAgent({githubUsername: 'gh-seat', harnessType: 'codex', credential: 'ghp_seat'});
+
+        expect(Object.keys(github)).not.toContain('forge');
+        expect(Object.keys(github)).not.toContain('forgeHost');
+
+        const {agents} = JSON.parse(fs.readFileSync(path.join(FleetRegistryService.dataDir, 'registry.json'), 'utf8'));
+
+        expect(agents['gl-seat']).toMatchObject({forge: 'gitlab', forgeHost: 'https://gitlab.example.com'})
+    });
+
+    test('a GitLab instance addressed by an IPv6 literal on its own port binds like a hostname', () => {
+        const seat = FleetRegistryService.defineAgent({
+            githubUsername: 'gl-v6', harnessType: 'codex', credential: 'glpat_v6', forge: 'gitlab', forgeHost: 'https://[2001:DB8::1]:8443/'
+        });
+
+        // the parser's own serialization: lowercase hex and `:` in brackets, no `=` to split git's key on
+        expect(seat).toMatchObject({forge: 'gitlab', forgeHost: 'https://[2001:db8::1]:8443'});
+        expect(FleetRegistryService.resolveCredential('gl-v6')).toBe('glpat_v6')
+    });
+
+    test('a GitLab define refuses a host it cannot bind the PAT to, and writes nothing', () => {
+        const define = fields => () => FleetRegistryService.defineAgent({githubUsername: 'gl-bad', harnessType: 'codex', credential: 'glpat_seat', ...fields});
+
+        for (const forgeHost of [
+            undefined, 'gitlab.example.com', 'http://gitlab.example.com', 'https://gitlab.example.com/gitlab',
+            'https://gitlab.example.com/?tab=1', 'https://a=b.example' // a parser admits `=` in a host; git's `-c` would split on it
+        ]) {
+            expect(define({forge: 'gitlab', forgeHost}), String(forgeHost)).toThrow(/'forgeHost' must be its instance's https origin/)
+        }
+
+        // a token in the host's userinfo is refused, never echoed
+        let leak = null;
+
+        try {
+            define({forge: 'gitlab', forgeHost: 'https://oauth2:glpat_leak@gitlab.example.com'})()
+        } catch (error) {
+            leak = error
+        }
+
+        expect(leak?.message).toMatch(/https origin/);
+        expect(leak.message).not.toContain('glpat_leak');
+
+        expect(define({forgeHost: 'https://gitlab.example.com'})).toThrow(/a GitHub PAT belongs to github\.com/);
+        expect(define({forge: 'bitbucket'})).toThrow(/'forge' must be one of github, gitlab/);
+        expect(define({forge: 'gitlab', forgeHost: 'https://gitlab.example.com', credential: ' '})).toThrow(/every agent holds its GitLab PAT/);
+
+        expect(FleetRegistryService.getAgent('gl-bad')).toBeNull();
+        expect(FleetRegistryService.resolveCredential('gl-bad')).toBeNull()
+    });
+
+    test("no scoped verb re-points the host a seat's PAT is bound to", () => {
+        FleetRegistryService.defineAgent({
+            githubUsername: 'gl-seat', harnessType: 'codex', credential: 'glpat_seat', forge: 'gitlab', forgeHost: 'https://gitlab.example.com'
+        });
+
+        // setRepo and setAvatar patch through updateAgent: metadata merges, the row's fields stay
+        FleetRegistryService.updateAgent('gl-seat', {metadata: {forgeHost: 'https://evil.example'}, forge: 'github', forgeHost: 'https://evil.example'});
+
+        expect(() => FleetRegistryService.configureAgent({id: 'gl-seat', forgeHost: 'https://evil.example'})).toThrow(/unsupported field 'forgeHost'/);
+        expect(FleetRegistryService.getDefinition('gl-seat')).toMatchObject({forge: 'gitlab', forgeHost: 'https://gitlab.example.com'})
+    });
+
     test('resolveCredential fails closed for an unknown agent', () => {
         expect(FleetRegistryService.resolveCredential('nobody')).toBeNull();
     });

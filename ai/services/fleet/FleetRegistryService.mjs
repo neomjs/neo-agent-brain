@@ -6,10 +6,12 @@ import Base                                      from 'neo.mjs/src/core/Base.mjs
 import {HARNESS_TYPES}                           from '../../../src/fleet/contract/harnessTypes.mjs';
 import {writeFileAtomicSync}                     from '../shared/atomicFileWrite.mjs';
 import {normalizeMcpOverrides, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
+import {REPO_FORGES}                             from './deriveAgentRepoPath.mjs';
 import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePlan.mjs';
 import {normalizeMcpTarget}                      from './mcpServers.mjs';
 
 const
+    FORGE_HOSTNAME_RE       = /^(?:[a-z0-9._-]+|\[[0-9a-f:]+\])$/,
     LAUNCH_OWNERS           = Object.freeze(['external', 'fleet']),
     RETIRED_TARGET_FIELD    = ['mcp', 'Transport'].join(''),
     PUBLIC_SENSITIVE_KEY_RE = /^(?:credentials?|secrets?|tokens?|(?:github)?pats?|passwords?|authorization|(?:api|client|private)(?:key|token|secret|credential|password)s?|personalaccess(?:key|token|secret|credential|password)s?|(?:access|auth|bearer|github|id|oauth|refresh|session)(?:key|token|secret|credential|password)s?|launch|command|args|argv|env|environment)$/;
@@ -162,6 +164,47 @@ function normalizeStoredMcpTarget(target) {
 }
 
 /**
+ * @summary The forge account a seat's PAT belongs to, as its definition records it. GitHub is the default and
+ * records nothing, so its PAT is presented to `https://github.com` only. A GitLab PAT records its instance's
+ * origin, because a self-hosted host cannot be derived. Only {@link Neo.ai.services.fleet.FleetRegistryService#defineAgent}
+ * writes these fields, beside the PAT, so no scoped verb (`setRepo` among them) can re-point where a clone
+ * presents it. The hostname is letters, digits, `.`, `_` and `-` (an IDN arrives as punycode), or a bracketed IPv6
+ * literal, which the parser serializes as hex and `:`. Either way the origin can key git's credential config
+ * verbatim: a URL parser admits `=` in a host, which would split git's `-c key=value`.
+ * @param {String} forge       `github` or `gitlab`.
+ * @param {*}      [forgeHost] The GitLab instance's bare `https` origin.
+ * @returns {Object} `{}` for GitHub, `{forge: 'gitlab', forgeHost}` with the normalized origin for GitLab.
+ * @throws {Error} On an unknown forge, a host given with GitHub, or a GitLab host that is not a bare `https`
+ * origin. The refusal never echoes the host, which could carry a token in its userinfo.
+ */
+function forgeAccount(forge, forgeHost) {
+    if (!REPO_FORGES.includes(forge)) {
+        throw new Error(`FleetRegistryService.defineAgent: 'forge' must be one of ${REPO_FORGES.join(', ')}.`)
+    }
+
+    if (forge === 'github') {
+        if (forgeHost != null) {
+            throw new Error("FleetRegistryService.defineAgent: 'forgeHost' names a GitLab instance; a GitHub PAT belongs to github.com.")
+        }
+
+        return {}
+    }
+
+    let url = null;
+
+    try {
+        url = new URL(forgeHost)
+    } catch {}
+
+    if (url?.protocol !== 'https:' || url.username || url.password || url.pathname !== '/' || url.search || url.hash ||
+        !FORGE_HOSTNAME_RE.test(url.hostname)) {
+        throw new Error("FleetRegistryService.defineAgent: a GitLab seat's 'forgeHost' must be its instance's https origin, such as 'https://gitlab.example.com'.")
+    }
+
+    return {forge, forgeHost: url.origin}
+}
+
+/**
  * @class Neo.ai.services.fleet.FleetRegistryService
  * @extends Neo.core.Base
  * @singleton
@@ -172,9 +215,10 @@ function normalizeStoredMcpTarget(target) {
  * *define agents → start/stop → repos managed under the hood*.
  *
  * An **agent definition** is `{id, githubUsername, harnessType, modelProvider, mcpServers,
- * mcpTarget, launchOwner, metadata, createdAt, updatedAt}` —
+ * mcpTarget, launchOwner, metadata, createdAt, updatedAt}`, plus `forge` and `forgeHost` for a GitLab seat —
  * never a secret. `modelProvider` (the agent's model-provider login) resolves via the AiConfig
- * `modelProvider` SSOT leaf when not supplied — read-only, no service-local default shadow. The associated **credential** (a GitHub PAT) is stored separately, encrypted at
+ * `modelProvider` SSOT leaf when not supplied — read-only, no service-local default shadow. The associated **credential** (the seat's
+ * forge PAT: GitHub's, or a GitLab instance's) is stored separately, encrypted at
  * rest, and is the load-bearing security boundary of this service:
  *
  * **Two-hemisphere security rule** (the graduated Agent Harness design rule): the PAT is a
@@ -288,15 +332,19 @@ class FleetRegistryService extends Base {
     // ---- public API ---------------------------------------------------------
 
     /**
-     * Create an agent and store its credential. Every agent holds its GitHub PAT: a seat started
-     * without one runs `gh` untokened, and `gh` falls back to the machine's keyring account. Existing
+     * Create an agent and store its credential. Every agent holds its forge's PAT (GitHub's unless
+     * `forge` says GitLab): a GitHub seat started without one runs `gh` untokened, and `gh` falls back
+     * to the machine's keyring account. Existing
      * ids reject: every edit of an established resident must use a scoped authority
      * (`configureAgent`, `setRepo`, `setAvatar`, or the Brain-only launch override), never replay this
      * credential-bearing creation surface.
      * @param {Object}  opts
      * @param {String}  opts.githubUsername     The agent's GitHub username (required).
      * @param {String}  opts.harnessType        One of {@link harnessTypes} (required).
-     * @param {String}  opts.credential         The GitHub PAT (required) — stored Node-side encrypted; never echoed back.
+     * @param {String}  opts.credential         The forge PAT (required) — stored Node-side encrypted; never echoed back.
+     * @param {String} [opts.forge='github']    `gitlab` for a seat whose PAT belongs to a GitLab instance.
+     * @param {String} [opts.forgeHost]         That instance's bare `https` origin, required with `gitlab`. It binds
+     *     the PAT: a clone presents it to this origin only (see `forgeAccount`).
      * @param {String} [opts.id=githubUsername] Stable id; pass an explicit id to register multiple instances per user.
      * @param {Object} [opts.metadata={}]       Free-form non-secret metadata.
      * @param {String} [opts.modelProvider]     The agent's model-provider login (e.g. `openAiCompatible`, `ollama`). Resolves via the AiConfig `modelProvider` SSOT leaf when omitted — no service-local default shadow. Non-secret; carried in the public definition.
@@ -320,6 +368,8 @@ class FleetRegistryService extends Base {
             githubUsername,
             harnessType,
             credential,
+            forge,
+            forgeHost,
             id,
             launchOwner='external',
             metadata={},
@@ -338,6 +388,8 @@ class FleetRegistryService extends Base {
         if (!this.harnessTypes.includes(harnessType)) {
             throw new Error(`FleetRegistryService.defineAgent: invalid harnessType '${harnessType}'. Must be one of: ${this.harnessTypes.join(', ')}.`);
         }
+
+        const account = forgeAccount(forge ?? 'github', forgeHost);
 
         // SECURITY STOP-LINE (mechanical): `metadata.launch` is executed with Brain credentials by
         // the lifecycle service, and `defineAgent` is a wire-allowlisted verb — accepting a launch
@@ -373,7 +425,7 @@ class FleetRegistryService extends Base {
         }
 
         if (typeof credential !== 'string' || credential.trim() === '') {
-            throw new Error("FleetRegistryService.defineAgent: 'credential' is required — every agent holds its GitHub PAT.")
+            throw new Error(`FleetRegistryService.defineAgent: 'credential' is required — every agent holds its ${account.forge === 'gitlab' ? 'GitLab' : 'GitHub'} PAT.`)
         }
 
         const previousCredentials = this.readCredentials();
@@ -383,6 +435,7 @@ class FleetRegistryService extends Base {
                 id            : agentId,
                 githubUsername,
                 harnessType,
+                ...account,
                 // provider-login resolves via the AiConfig SSOT leaf when unset (no service-local
                 // default shadow); an explicit arg wins on creation.
                 modelProvider: modelProvider || aiConfig.modelProvider,

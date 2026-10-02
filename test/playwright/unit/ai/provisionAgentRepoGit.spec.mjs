@@ -111,4 +111,22 @@ test.describe('gitCloneCommand — a seat clone ignores the host\'s Git configur
         expect(await probe(host), 'the control: the host\'s git sends its netrc entry').toBe(true);
         expect(await probe(env), 'the seat clone\'s environment reads no netrc').toBe(false)
     });
+
+    test('real git hands the seat\'s token only to the origin its helper key names, an IPv6 literal on its port included', async () => {
+        // `git credential fill` under the clone's own `-c` pairs and environment: the password git produces, or null
+        const fill = (origin, host) => new Promise(resolve => {
+            const
+                {args, env} = gitCloneCommand(`${origin}/group/project.git`, path.join(rootDir, 'unused'), 'glpat_fixture', process.env, origin),
+                child       = execFile('git', [...args.slice(0, args.indexOf('clone')), 'credential', 'fill'], {cwd: rootDir, env, timeout: 20000},
+                    (error, stdout) => resolve(error ? null : (/^password=(.*)$/m.exec(stdout)?.[1] ?? null)));
+
+            child.stdin.end(`protocol=https\nhost=${host}\n\n`)
+        });
+
+        expect(await fill('https://[2001:db8::1]:8443', '[2001:db8::1]:8443')).toBe('glpat_fixture');
+        expect(await fill('https://[2001:db8::1]:8443', '[2001:db8::1]:9443'), 'another port').toBeNull();
+        expect(await fill('https://[2001:db8::1]:8443', '[2001:db8::2]:8443'), 'another address').toBeNull();
+        expect(await fill('https://gitlab.example.com', 'gitlab.example.com')).toBe('glpat_fixture');
+        expect(await fill('https://gitlab.example.com', 'gitlab.example.com.evil.example'), 'a suffix host').toBeNull()
+    });
 });
