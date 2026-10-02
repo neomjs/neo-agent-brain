@@ -188,9 +188,17 @@ test.describe('projectIdentityWakeReachability — one seat across its routes', 
         expect(projectIdentityWakeReachability(['older', 'ok', 'newer'], verdicts)).toEqual({state: 'reachable'});
     });
 
-    test('with only failing routes the seat is undeliverable, with the newest failing route\'s reason and streak', () => {
-        expect(projectIdentityWakeReachability(['older', 'newer', 'quiet'], verdicts))
+    test('with every active route concluded failing the seat is undeliverable, with the newest failing route\'s reason and streak', () => {
+        expect(projectIdentityWakeReachability(['older', 'newer'], verdicts))
             .toEqual({state: 'undeliverable', reason: 'new reason', consecutiveFailures: 2});
+    });
+
+    test('a failing route beside one the receiver never concluded keeps the seat unknown: one failure is not evidence about every route', () => {
+        // The mixed cases: a failed route with an unknown sibling, and with a sibling that has no
+        // records at all. Before this arm both read undeliverable, and the pure spec pinned that.
+        for (const ids of [['older', 'newer', 'quiet'], ['newer', 'absent'], ['quiet', 'older']]) {
+            expect(projectIdentityWakeReachability(ids, verdicts), JSON.stringify(ids)).toEqual({state: 'unknown'});
+        }
     });
 
     test('a route never concluded, a route with no records and no route at all read unknown, never reachable', () => {

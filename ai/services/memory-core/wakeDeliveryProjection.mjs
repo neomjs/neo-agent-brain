@@ -183,25 +183,30 @@ export function projectWakeDelivery(records = []) {
 /**
  * @summary Joins one identity's active subscriptions to their delivery verdicts: can a wake reach this
  * seat? One route that lands is enough, so any `reachable` subscription makes the seat `reachable`.
- * With none, a subscription the receiver keeps failing makes it `undeliverable`, with the newest
- * failing route's reason. Anything else is `unknown`, a route the receiver has never concluded,
- * because the loud direction never resolves to healthy on absence of evidence.
+ * `undeliverable` is a claim about EVERY active route, so it needs every one of them concluded
+ * `unreachable`; the newest failing route lends its reason and streak. A route the receiver never
+ * concluded — no record at all, or an `unknown` verdict — might still deliver, so one such route
+ * keeps the seat `unknown` whatever its siblings did. No active route at all is `unknown` too: the
+ * loud direction never resolves to healthy on absence of evidence.
  * @param {String[]} subscriptionIds The identity's ACTIVE subscriptions.
  * @param {Object} verdicts {@link projectWakeDelivery}'s output.
  * @returns {{state: 'reachable'|'undeliverable'|'unknown', reason?: String|null, consecutiveFailures?: Number}}
  */
 export function projectIdentityWakeReachability(subscriptionIds = [], verdicts = {}) {
-    const own = subscriptionIds.map(id => verdicts[id]).filter(Boolean);
+    const own = subscriptionIds.map(id => verdicts[id] ?? null);
 
-    if (own.some(verdict => verdict.state === 'reachable')) {
+    if (own.some(verdict => verdict?.state === 'reachable')) {
         return {state: 'reachable'}
     }
 
-    const [newest] = own
-        .filter(verdict => verdict.state === 'unreachable')
-        .sort((left, right) => String(right.lastAttemptedAt ?? '').localeCompare(String(left.lastAttemptedAt ?? '')));
+    // Failure evidence on one route says nothing about a sibling the receiver never concluded.
+    if (own.length === 0 || own.some(verdict => verdict?.state !== 'unreachable')) {
+        return {state: 'unknown'}
+    }
 
-    return newest
-        ? {state: 'undeliverable', reason: newest.lastOutcomeReason, consecutiveFailures: newest.consecutiveFailures}
-        : {state: 'unknown'}
+    const [newest] = own.sort((left, right) =>
+        String(right.lastAttemptedAt ?? '').localeCompare(String(left.lastAttemptedAt ?? ''))
+    );
+
+    return {state: 'undeliverable', reason: newest.lastOutcomeReason, consecutiveFailures: newest.consecutiveFailures}
 }

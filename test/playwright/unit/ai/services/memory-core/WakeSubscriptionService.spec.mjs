@@ -3311,18 +3311,25 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 expect((await verboseRow('@neo-wake-fine')).wake).toEqual({state: 'reachable'});
             });
 
-            test('one route that lands is enough; a route never concluded reads unknown, and no route reads unsubscribed', async () => {
-                for (const id of ['@neo-wake-two', '@neo-wake-new', '@neo-wake-none']) { seedAgent(id); seedActivity(id) }
-                route('@neo-wake-two', 'WAKE_SUB:two-old');
-                route('@neo-wake-two', 'WAKE_SUB:two-gui');
-                route('@neo-wake-new', 'WAKE_SUB:new');
-                await record('WAKE_SUB:two-old', 'failed',    4, REASON);
-                await record('WAKE_SUB:two-gui', 'delivered', 3);
+            test('one route that lands is enough; a failing route beside one without records, a route never concluded, and no route read reachable-not: unknown, unknown, unsubscribed', async () => {
+                for (const id of ['@neo-wake-two', '@neo-wake-half', '@neo-wake-new', '@neo-wake-none']) { seedAgent(id); seedActivity(id) }
+                route('@neo-wake-two',  'WAKE_SUB:two-old');
+                route('@neo-wake-two',  'WAKE_SUB:two-gui');
+                route('@neo-wake-half', 'WAKE_SUB:half-failed');
+                route('@neo-wake-half', 'WAKE_SUB:half-quiet');
+                route('@neo-wake-new',  'WAKE_SUB:new');
+                await record('WAKE_SUB:two-old',     'failed',    4, REASON);
+                await record('WAKE_SUB:two-gui',     'delivered', 3);
+                await record('WAKE_SUB:half-failed', 'failed',    5, REASON);
+                // WAKE_SUB:half-quiet: active, and the receiver has never dispatched to it
 
                 const terse = await WakeSubscriptionService.whoIsOnline({now: new Date(T0)});
 
+                // the seat with a failing route AND an unobserved one stays out of the map: one
+                // failure is not evidence that every route fails
                 expect(terse.undeliverable).toEqual({});
                 expect((await verboseRow('@neo-wake-two')).wake).toEqual({state: 'reachable'});
+                expect((await verboseRow('@neo-wake-half')).wake).toEqual({state: 'unknown'});
                 expect((await verboseRow('@neo-wake-new')).wake).toEqual({state: 'unknown'});
                 expect((await verboseRow('@neo-wake-none')).wake).toEqual({state: 'unsubscribed'});
             });

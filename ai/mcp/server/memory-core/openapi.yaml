@@ -646,8 +646,9 @@ paths:
 
         Wake axis: whether a wake can reach each seat, from the wake receiver's own dispatch records
         (host truth, the reader healthcheck uses) joined to each identity's active subscriptions —
-        one route that lands makes a seat reachable. Terse carries the sparse undeliverable map
-        (identity → the receiver's last outcome reason, for rostered seats whose routes all fail);
+        one route that lands makes a seat reachable, and undeliverable needs every active route
+        concluded failing (a route the receiver never concluded keeps the seat unknown). Terse
+        carries the sparse undeliverable map (identity → the receiver's last outcome reason);
         verbose rows carry {state, reason?, consecutiveFailures?}. Unreadable records degrade the
         wake envelope and omit the map, so they never read as reachable.
 
@@ -719,9 +720,10 @@ paths:
                     additionalProperties: {type: string, nullable: true}
                     description: >
                       Terse default — the sparse wake map: identity → the wake receiver's last
-                      outcome reason, only rostered seats whose active wake routes all fail. An absent
-                      seat is reachable, unsubscribed or not yet attempted, never failing. Omitted
-                      whole when the receiver's records are unreadable; the wake envelope says why.
+                      outcome reason, only rostered seats whose every active wake route has concluded
+                      failing. An absent seat is reachable, unsubscribed, or has a route the receiver
+                      never concluded — never known failing. Omitted whole when the receiver's
+                      records are unreadable; the wake envelope says why.
                   summary:
                     type: string
                     description: >
@@ -805,9 +807,10 @@ paths:
                           type: object
                           description: >
                             Whether a wake can reach this seat: reachable when one active route
-                            delivers; undeliverable, with the receiver's last reason and failure
-                            streak, when its routes keep failing; unknown when nothing concluded or
-                            the records are unreadable; unsubscribed with no active route.
+                            delivers; undeliverable, with the newest failing route's reason and
+                            streak, only when every active route has concluded failing; unknown
+                            when any active route has not concluded or the records are unreadable;
+                            unsubscribed with no active route.
                           properties:
                             state: {type: string, enum: [reachable, undeliverable, unknown, unsubscribed]}
                             reason: {type: string, nullable: true}
