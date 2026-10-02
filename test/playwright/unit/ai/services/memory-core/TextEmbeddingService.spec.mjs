@@ -1282,6 +1282,74 @@ test.describe.serial('TextEmbeddingService #15694 — provider-neutral cancellat
         expect(providerCalls).toBe(0);
     });
 
+    test('the Gemini embedding owner reads its key through the two carriers: file-only initializes the client and passes both request guards, neither refuses naming both leaves, both refuses at construct (review round 1, RA-1)', async () => {
+        const
+            fs      = await import('node:fs/promises'),
+            os      = await import('node:os'),
+            path    = await import('node:path'),
+            keyPath = path.join(os.tmpdir(), `gemini-key-file-${process.pid}`);
+
+        await fs.writeFile(keyPath, 'file-carried-key\n', {mode: 0o600});
+
+        // the request guards, with the SDK model stubbed AFTER construct so no request leaves the process
+        const served = async () => {
+            const {default: Service} = await import('./ai/services/memory-core/TextEmbeddingService.mjs');
+            const initialized = Boolean(Service.embeddingModel), calls = [];
+
+            Service.embeddingModel = {
+                model: 'stub-model',
+                async embedContent()       { calls.push('single'); return {embedding: {values: [0.1]}} },
+                async batchEmbedContents() { calls.push('batch');  return {embeddings: [{values: [0.2]}, {values: [0.3]}]} }
+            };
+
+            await Service.embedText('one', 'gemini');
+            const batch = await Service.embedTexts(['two', 'three'], 'gemini');
+
+            console.log(JSON.stringify({initialized, calls, batchLength: batch.length}));
+        };
+        const refused = async () => {
+            const {default: Service} = await import('./ai/services/memory-core/TextEmbeddingService.mjs');
+            const initialized = Boolean(Service.embeddingModel), reasons = [];
+
+            Service.embeddingModel = {model: 'stub-model', async embedContent() { reasons.push('single ran') }, async batchEmbedContents() { reasons.push('batch ran') }};
+
+            for (const call of [() => Service.embedText('one', 'gemini'), () => Service.embedTexts(['two'], 'gemini')]) {
+                try { await call() } catch (error) { reasons.push(error.message) }
+            }
+
+            console.log(JSON.stringify({initialized, reasons}));
+        };
+        const construct = async () => {
+            try {
+                await import('./ai/services/memory-core/TextEmbeddingService.mjs');
+                console.log(JSON.stringify({constructed: true}));
+            } catch (error) {
+                console.log(JSON.stringify({constructed: false, reason: error.message}));
+            }
+        };
+
+        const fileOnly = await runIsolatedEmbeddingProbe(served, {NEO_EMBEDDING_PROVIDER: 'gemini', GEMINI_API_KEY: '', GEMINI_API_KEY_FILE: keyPath});
+
+        expect(fileOnly).toEqual({initialized: true, calls: ['single', 'batch'], batchLength: 2});
+
+        const direct = await runIsolatedEmbeddingProbe(served, {NEO_EMBEDDING_PROVIDER: 'gemini', GEMINI_API_KEY: 'direct-key', GEMINI_API_KEY_FILE: ''});
+
+        expect(direct).toEqual({initialized: true, calls: ['single', 'batch'], batchLength: 2});
+
+        const neither = await runIsolatedEmbeddingProbe(refused, {NEO_EMBEDDING_PROVIDER: 'gemini', GEMINI_API_KEY: '', GEMINI_API_KEY_FILE: ''});
+
+        expect(neither.initialized).toBe(false);
+        expect(neither.reasons).toEqual([
+            'Semantic search unavailable: no Gemini key is set (geminiApiKey or geminiApiKeyFile).',
+            'Semantic search unavailable: no Gemini key is set (geminiApiKey or geminiApiKeyFile).'
+        ]);
+
+        const both = await runIsolatedEmbeddingProbe(construct, {NEO_EMBEDDING_PROVIDER: 'gemini', GEMINI_API_KEY: 'direct-key', GEMINI_API_KEY_FILE: keyPath});
+
+        expect(both.constructed).toBe(false);
+        expect(both.reason).toMatch(/exactly one of geminiApiKey or geminiApiKeyFile may be set; both are/);
+    });
+
     test('Gemini forwards signals and preserves the complete SDK abort taxonomy in an isolated config process', async () => {
         const evidence = await runIsolatedEmbeddingProbe(async () => {
             const {GoogleGenerativeAIAbortError} = await import('@google/generative-ai');

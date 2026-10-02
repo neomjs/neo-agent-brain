@@ -206,10 +206,35 @@ async function ask(question, {input, output}) {
     }
 }
 
-async function answerQuestions({evaluation, answers, record, recordPath, host, io, interactive, stderr}) {
-    let current = record;
+/**
+ * @summary Answers the pending questions in recipe order, re-evaluating after every consent, so a
+ * question the consented preset decides (the provider key) is asked only once that preset requires it.
+ * A question left unanswered or refused is not asked twice in one pass. Exported for the renderer spec.
+ * @param {Object} options
+ * @param {Function} options.evaluate `(record) → Promise<evaluation>`: the run's evaluation over a candidate record.
+ * @param {Object}   options.answers  Answers by step id (a fake host's, or none when prompting).
+ * @param {Object}   options.record
+ * @param {String}   options.recordPath
+ * @param {Object}   options.host
+ * @param {Object}   options.io `{input, output}` for the prompts.
+ * @param {Boolean}  options.interactive
+ * @param {Object}   options.stderr
+ * @returns {Promise<Object>} The record after the consents this pass could record.
+ */
+export async function answerQuestions({evaluate, answers, record, recordPath, host, io, interactive, stderr}) {
+    const asked = new Set();
 
-    for (const step of evaluation.steps.filter(row => row.kind === STEP_KINDS.question && row.status === STEP_STATUSES.pending)) {
+    let current = record, evaluation = await evaluate(current);
+
+    for (;;) {
+        const step = evaluation.steps.find(row => row.kind === STEP_KINDS.question && row.status === STEP_STATUSES.pending && !asked.has(row.id));
+
+        if (!step) {
+            return current;
+        }
+
+        asked.add(step.id);
+
         let answer = answers[step.id] ?? null;
 
         if (answer === null && interactive) {
@@ -241,10 +266,10 @@ async function answerQuestions({evaluation, answers, record, recordPath, host, i
             answer = admitted.path;
         }
 
-        current = (await recordConsent({stepId: step.id, answer, record: current, recordPath, host})).record;
+        current    = (await recordConsent({stepId: step.id, answer, record: current, recordPath, host})).record;
+        // the next question is decided by what was just consented
+        evaluation = await evaluate(current);
     }
-
-    return current;
 }
 
 /**
@@ -436,11 +461,11 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         }
     }
 
-    const evaluate = () => evaluateRecipe({target, record, observers, presets, now: host.now});
+    const evaluate = (candidate = record) => evaluateRecipe({target, record: candidate, observers, presets, now: host.now});
 
-    let evaluation = await evaluate();
+    let evaluation;
 
-    record     = await answerQuestions({evaluation, answers, record, recordPath, host, io: {input: stdin, output: stdout}, interactive, stderr});
+    record     = await answerQuestions({evaluate, answers, record, recordPath, host, io: {input: stdin, output: stdout}, interactive, stderr});
     evaluation = await evaluate();
     record     = await settlePending({record, recordPath, host, evaluation});
     // performing reads the settled state: a settled effect is skipped as ok, an unsettled one halts the run

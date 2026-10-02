@@ -320,6 +320,23 @@ test.describe('firstRun CLI', () => {
         expect(JSON.parse(result.stdout).steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'pending', reason: 'unanswered'});
     });
 
+    test('a fake host\'s provider-key answer for a local preset is never recorded: the question is decided after the preset consent (review round 1, RA-2)', async () => {
+        const
+            {root, setupRoot, stateRoot, patPath} = await scratch(),
+            keyPath = path.join(root, 'operator', 'gemini-key');
+
+        await fs.writeFile(keyPath, 'AIzaFAKEKEY\n', {mode: 0o600});
+
+        const
+            fake   = greenFake({patPath}),
+            local  = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {preset: 'local-small', 'plane-credential': patPath, 'provider-key': keyPath}}}),
+            record = JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8'));
+
+        expect(local.code, local.stderr).toBe(0);
+        expect(record.consents.map(consent => consent.stepId)).toEqual(['preset', 'plane-credential']);
+        expect(JSON.parse(local.stdout).steps.find(step => step.id === 'provider-key')).toMatchObject({status: 'ok', reason: "not needed: the 'local-small' preset requires no providerKey", answer: null});
+    });
+
     test('parseArgs: defaults under the host state root, env overrides, unknown flags refused; a fake host turns thrown observers into failures', () => {
         const defaults = parseArgs([], {});
 
