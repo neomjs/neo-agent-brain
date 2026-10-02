@@ -13,18 +13,20 @@ setup({
     }
 });
 
-import {test, expect}   from '@playwright/test';
-import Neo              from 'neo.mjs/src/Neo.mjs';
-import * as core        from 'neo.mjs/src/core/_export.mjs';
-import fs               from 'node:fs';
-import os               from 'node:os';
-import path             from 'node:path';
-import {pathToFileURL}  from 'node:url';
-import {renderProjection} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
+import {test, expect}                            from '@playwright/test';
+import Neo                                       from 'neo.mjs/src/Neo.mjs';
+import * as core                                 from 'neo.mjs/src/core/_export.mjs';
+import fs                                        from 'node:fs';
+import os                                        from 'node:os';
+import path                                      from 'node:path';
+import {pathToFileURL}                           from 'node:url';
+import {reconcileClaudeEvents, renderProjection} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
 
 const
     REPO_ROOT   = path.resolve(process.cwd()),
-    HOOK_SOURCE = path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude/turnPresenceHook.mjs');
+    HOOK_SOURCE = path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude/turnPresenceHook.mjs'),
+    MANIFEST    = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude/events.manifest.json'), 'utf8')),
+    PRESENCE    = '/.claude/hooks/turnPresenceHook.mjs';
 
 let scratchDirs = [];
 
@@ -56,7 +58,7 @@ test.afterAll(() => {
 });
 
 /**
- * #250 AC-8 — the presence hooks still emit after the move, with the MCP storage path unchanged.
+ * The presence hooks still emit after their move into the Brain, with the MCP storage path unchanged.
  *
  * The hazard is named in `turnPresenceHook.mjs`'s own JSDoc: an earlier shape let the writer derive
  * a filesystem path from its own module location, "which is how every beacon ended up in a private
@@ -145,5 +147,53 @@ test.describe('turnPresenceHook — emission survives projection to an arbitrary
         // No self-location derivation. These are the constructs that produced the original defect.
         expect(contents).not.toMatch(/import\.meta\.url[^\n]*\b(dirname|resolve|join)\b/);
         expect(contents).not.toMatch(/\bprocess\.cwd\(\)/)
+    })
+});
+
+/**
+ * Presence is never a precondition, so no tool call waits on its progress beacon. The harness enforces no
+ * timeout on an async hook, which leaves the writer's own deadline as the only bound — a `timeout` on the
+ * entry would read as one. The start stays in the prompt's path: it opens the turn's interval, and a start
+ * landing after the turn completed would open one for a finished turn.
+ */
+test.describe('turnPresenceHook — progress runs in the background, start before the turn can complete', () => {
+    const
+        presenceEntries = events => Object.entries(events).flatMap(([event, buckets]) =>
+            buckets.flatMap(bucket => bucket.hooks.filter(entry => entry.command.includes(PRESENCE)).map(entry => ({event, entry})))),
+        commandFor      = action => `/usr/bin/env node "$(git rev-parse --show-toplevel)${PRESENCE}" ${action}`;
+
+    test('progress is async with no timeout; start is synchronous within its 2 s bound; both keep their commands', () => {
+        const byEvent = Object.fromEntries(presenceEntries(MANIFEST.events).map(({event, entry}) => [event, entry]));
+
+        expect(Object.keys(byEvent).sort()).toEqual(['PostToolUse', 'UserPromptSubmit']);
+
+        expect(byEvent.PostToolUse.async, 'PostToolUse would block every tool call on presence').toBe(true);
+        expect('timeout' in byEvent.PostToolUse, 'PostToolUse carries a timeout the harness never enforces').toBe(false);
+        expect(byEvent.PostToolUse.command).toBe(commandFor('progress'));
+
+        expect(byEvent.UserPromptSubmit.async, 'an async start can land after its turn completed').toBeUndefined();
+        expect(byEvent.UserPromptSubmit.timeout).toBe(2);
+        expect(byEvent.UserPromptSubmit.command).toBe(commandFor('start'))
+    });
+
+    test('a seat\'s synchronous progress entry is replaced by the async one on reconciliation; start stays synchronous', () => {
+        const
+            operator   = {command: 'echo operator-hook', type: 'command'},
+            sync       = action => ({command: commandFor(action), timeout: 2, type: 'command'}),
+            {settings} = reconcileClaudeEvents({
+                isOwned : command => command.includes(PRESENCE),
+                manifest: MANIFEST,
+                settings: {hooks: {
+                    PostToolUse     : [{hooks: [sync('progress'), operator]}],
+                    UserPromptSubmit: [{hooks: [sync('start')]}]
+                }}
+            }),
+            byEvent    = Object.fromEntries(presenceEntries(settings.hooks).map(({event, entry}) => [event, entry]));
+
+        expect(presenceEntries(settings.hooks)).toHaveLength(2);
+        expect(byEvent.PostToolUse.async).toBe(true);
+        expect('timeout' in byEvent.PostToolUse).toBe(false);
+        expect(byEvent.UserPromptSubmit).toEqual({type: 'command', command: commandFor('start'), timeout: 2});
+        expect(settings.hooks.PostToolUse.flatMap(bucket => bucket.hooks)).toContainEqual(operator)
     })
 });
