@@ -1440,11 +1440,13 @@ function collectComposeEnvironment(environment, out = new Map()) {
 }
 
 /**
- * @summary Serializes scalar/CSV config defaults the same way Compose environment values arrive.
+ * @summary Serializes scalar/CSV config defaults the same way Compose environment values arrive;
+ * a `null` default is projected as the literal `null` (an unset leaf is a value an operator reads).
  * @param {*} value Config descriptor default.
  * @returns {String|undefined}
  */
 function serializeConfigDefault(value) {
+    if (value === null) return 'null';
     if (Array.isArray(value)) return value.join(',');
     if (['boolean', 'number', 'string'].includes(typeof value)) return String(value);
 }

@@ -321,7 +321,8 @@ test.describe('Tier 1 Config Immutability', () => {
             contentionTimeoutMs    : Number(process.env.NEO_OPENAI_COMPATIBLE_CONTENTION_TIMEOUT_MS) || 15000,
             batchEmbeddingChunkSize: Number(process.env.NEO_OPENAI_COMPATIBLE_BATCH_EMBEDDING_CHUNK_SIZE) || 5,
             batchEmbeddingYieldMs  : Number(process.env.NEO_OPENAI_COMPATIBLE_BATCH_EMBEDDING_YIELD_MS) || 0,
-            keep_alive             : Env.parseKeepAlive('NEO_OPENAI_COMPATIBLE_KEEP_ALIVE') ?? -1,
+            // null by default: the OpenAI-compatible client sends `keep_alive` only when an operator set it
+            keep_alive             : Env.parseKeepAlive('NEO_OPENAI_COMPATIBLE_KEEP_ALIVE') ?? null,
             requireParallelModels  : Env.parseNumber('NEO_OPENAI_COMPATIBLE_REQUIRE_PARALLEL_MODELS') ?? 2
         });
         expect(Config.localModels).toMatchObject({

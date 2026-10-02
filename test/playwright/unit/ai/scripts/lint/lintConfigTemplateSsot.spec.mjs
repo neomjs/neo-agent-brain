@@ -760,6 +760,14 @@ test.describe('ai/scripts/lint-config-template-ssot (#12451 — declarative conf
         })).toEqual(['projection-default-mismatch']);
     });
 
+    test('a null default is projected as the literal null — an unset leaf is a value an operator reads; a number or an empty string there is stale', () => {
+        const unset = {NEO_DEMO_CONTENTION_TIMEOUT_MS: [{configPath: 'demo.contentionTimeoutMs', default: null}]};
+
+        expect(projectionKinds({source: '  # NEO_DEMO_CONTENTION_TIMEOUT_MS: null   # unset: the field is sent only when set', envDefaults: unset})).toEqual([]);
+        expect(projectionKinds({source: '  # NEO_DEMO_CONTENTION_TIMEOUT_MS: "-1"   # stale', envDefaults: unset})).toEqual(['projection-default-mismatch']);
+        expect(projectionKinds({source: '  # NEO_DEMO_CONTENTION_TIMEOUT_MS: ""   # stale', envDefaults: unset})).toEqual(['projection-default-mismatch']);
+    });
+
     test('RED: prose that merely names the variable is not a projection', () => {
         expect(projectionKinds({
             source: '  # NEO_DEMO_CONTENTION_TIMEOUT_MS exists somewhere'
