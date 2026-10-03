@@ -1,29 +1,30 @@
 import {test, expect} from '@playwright/test';
+import fs             from 'node:fs';
+import os             from 'node:os';
+import path           from 'node:path';
 import Neo            from 'neo.mjs/src/Neo.mjs';
 import 'neo.mjs/src/core/_export.mjs';
 import ConfigProvider, {createConfigProxy} from '../../../../../../../../ai/ConfigProvider.mjs';
 import RootConfigBase                      from '../../../../../../../../ai/configBase.mjs';
+import ForgeConnectionRegistryService      from '../../../../../../../../ai/services/fleet/ForgeConnectionRegistryService.mjs';
 
 /**
- * Witness matrix for owner-principal normalization: measures BLAST RADIUS PER AXIS and
- * deliberately asserts no target behaviour.
+ * Witness matrix for owner-principal normalization, axis by axis.
  *
- * Whether normalization should be frozen or versioned, and whether it belongs at the config
- * leaf or at the principal boundary, are open design questions at the time of writing. A spec
- * that assumed either would pin a decision nobody has taken. What is pinned here is only what
- * is TRUE TODAY, so that the moment normalization lands anywhere — a leaf `metadata.parse`, or
- * a principal-side projection — these assertions change and force a deliberate re-read instead
- * of silently absorbing a re-key.
+ * The selected model: the owner principal is `owner:<connectionId>:<providerUserId>`, the connection a
+ * plane-governed record whose endpoints the operator approves, behind a frozen v1 endpoint floor.
+ * Where that model decides — whether two spellings, a rename, or two
+ * accounts are one owner — the axes assert its contract through the real registry. Where it does not
+ * — the config leaf's spelling, the verifier's produced coordinate, the graph's AgentIdentity key —
+ * they keep measuring what is TRUE TODAY, so a change there still forces a deliberate re-read.
  *
- * Why this matters beyond tidiness: `ownerPrincipal` is
- * `(authProvider, normalizedProviderBaseUrl, providerUserId)`. Every axis on which the base URL
- * is NOT normalized is an axis on which one human resolves to two principals — and a principal
- * is an ownership key, so a split re-owns Fleet records and grant edges.
+ * Why this matters beyond tidiness: a principal is an ownership key, so an axis on which one human
+ * resolves to two principals re-owns Fleet records and grant edges.
  *
- * Isolation is by construction per ADR-0019 §4/B4 (ticket-ref-ok: the no-singleton-mutation rule
- * this spec obeys is defined there; without the citation the isolation looks like style):
- * each case builds its own `RootConfigBase`
- * instance and never mutates the shared `AiConfig` singleton. The real declaration is used
+ * Isolation is by construction, never style: a test that writes the shared `AiConfig` singleton can
+ * point a later consumer at its own database, so each case builds its own `RootConfigBase`
+ * instance and never mutates the shared `AiConfig` singleton. The registry the owner axes resolve
+ * against is a temp directory behind its instance seam. The real declaration is used
  * rather than a replica leaf, because a replica would assert the framework's behaviour instead
  * of this repository's configuration — a witness that cannot fail.
  */
@@ -155,13 +156,30 @@ async function produceGithubAuthInfo({baseUrl = 'https://api.github.com', login 
 }
 
 test.describe('ownerPrincipal normalization axes — OQ9 witness matrix (#16738)', () => {
+    const
+        registry = ForgeConnectionRegistryService,
+        admin    = {actor: 'plane-admin', apply: true},
+        ownerOf  = authInfo => registry.resolveOwner(authInfo);
+
+    let registryDir;
+
     test.beforeAll(async () => {
         AuthService   = (await import('../../../../../../../../ai/mcp/server/shared/services/AuthService.mjs')).default;
         originalFetch = globalThis.fetch
     });
 
+    // every axis resolves against its own registry, with the canonical GitLab host registered
+    test.beforeEach(() => {
+        registryDir      = fs.mkdtempSync(path.join(os.tmpdir(), 'owner-axes-'));
+        registry.dataDir = registryDir;
+        registry.initialize(admin);
+        registry.register({...admin, authProvider: 'gitlab', endpoint: EQUIVALENT_SPELLINGS.canonical})
+    });
+
     test.afterEach(() => {
-        globalThis.fetch = originalFetch
+        globalThis.fetch = originalFetch;
+        registry.dataDir = null;
+        fs.rmSync(registryDir, {recursive: true, force: true})
     });
 
     test('the leaf normalizes on NO axis: every spelling resolves byte-identical to its env input', () => {
@@ -197,10 +215,27 @@ test.describe('ownerPrincipal normalization axes — OQ9 witness matrix (#16738)
 
         ['upperCaseHost', 'defaultPort', 'relativeRoot'].forEach(axis => {
             expect(byAxis[axis], `${axis} still produces its own coordinate`).not.toBe(byAxis.canonical)
-        })
+        });
+
+        // The CONTRACT: what those coordinates own. The v1 floor makes host case, the default port
+        // and the slash one endpoint, so four spellings are one owner. The relative root is another
+        // path: no owner until the operator approves it as the same connection.
+        const
+            owner     = coordinate => ownerOf({authProvider: 'gitlab', providerBaseUrl: coordinate, providerUserId: '4242'}),
+            principal = owner(byAxis.canonical).principal;
+
+        ['trailingSlash', 'upperCaseHost', 'defaultPort'].forEach(axis => {
+            expect(owner(byAxis[axis]).principal, `${axis} is the same owner`).toBe(principal)
+        });
+
+        expect(owner(byAxis.relativeRoot).state, 'the relative root owns nothing before approval').toBe('unregistered');
+
+        registry.approveAlias({...admin, connectionId: principal.split(':')[1], endpoint: EQUIVALENT_SPELLINGS.relativeRoot});
+
+        expect(owner(byAxis.relativeRoot).principal, 'and is the same owner after it').toBe(principal)
     });
 
-    test('IDENTITY SPLIT: one stable tuple whose login is renamed becomes two durable graph nodes', async () => {
+    test('IDENTITY SPLIT: one stable tuple whose login is renamed becomes two durable graph nodes, while its owner stays one', async () => {
         const {normalizeAgentIdentityNodeId} = await import('../../../../../../../../ai/graph/normalizeAgentIdentityNodeId.mjs');
 
         // Same human, same instance, same immutable provider id — only the handle changed. The
@@ -216,10 +251,14 @@ test.describe('ownerPrincipal normalization axes — OQ9 witness matrix (#16738)
         expect(
             normalizeAgentIdentityNodeId(after.userId),
             'the durable key splits even though the stable tuple did not'
-        ).not.toBe(normalizeAgentIdentityNodeId(before.userId))
+        ).not.toBe(normalizeAgentIdentityNodeId(before.userId));
+
+        // the contract: the owner principal carries no login, so the rename moves nothing it owns
+        expect(ownerOf(after).principal, 'the owner does not split').toBe(ownerOf(before).principal);
+        expect(ownerOf(before).principal).toMatch(/^owner:/)
     });
 
-    test('IDENTITY COLLISION: two DIFFERENT stable tuples sharing one login become ONE durable graph node', async () => {
+    test('IDENTITY COLLISION: two DIFFERENT stable tuples sharing one login become ONE durable graph node, while their owners stay two', async () => {
         const {normalizeAgentIdentityNodeId} = await import('../../../../../../../../ai/graph/normalizeAgentIdentityNodeId.mjs');
 
         // The dangerous direction, and the one a count cannot show. Two different accounts — a
@@ -244,10 +283,16 @@ test.describe('ownerPrincipal normalization axes — OQ9 witness matrix (#16738)
         expect(
             normalizeAgentIdentityNodeId(distinct.userId),
             'a different login is a different key — the collision is login-specific'
-        ).not.toBe(normalizeAgentIdentityNodeId(self.userId))
+        ).not.toBe(normalizeAgentIdentityNodeId(self.userId));
+
+        // the contract: each instance is its own connection, so the shared login merges no owners
+        registry.register({...admin, authProvider: 'gitlab', endpoint: 'https://gitlab.other-host.com'});
+
+        expect(ownerOf(other).principal, 'two accounts, two owners').not.toBe(ownerOf(self).principal);
+        expect(ownerOf(other).state).toBe('admitted')
     });
 
-    test('CROSS-PROVIDER COLLISION: a GitLab and a GitHub account sharing one login share one durable key', async () => {
+    test('CROSS-PROVIDER COLLISION: a GitLab and a GitHub account sharing one login share one durable key, while their owners stay two', async () => {
         const {normalizeAgentIdentityNodeId} = await import('../../../../../../../../ai/graph/normalizeAgentIdentityNodeId.mjs');
 
         // The widest form of the collision, and the one the earlier arms could not reach because
@@ -277,7 +322,13 @@ test.describe('ownerPrincipal normalization axes — OQ9 witness matrix (#16738)
         expect(
             normalizeAgentIdentityNodeId(otherLogin.userId),
             'a different GitHub login is still a different key'
-        ).not.toBe(normalizeAgentIdentityNodeId(gitlabInfo.userId))
+        ).not.toBe(normalizeAgentIdentityNodeId(gitlabInfo.userId));
+
+        // the contract: a connection belongs to one forge, so the providers' owners stay apart
+        registry.register({...admin, authProvider: 'github', endpoint: 'https://api.github.com'});
+
+        expect(ownerOf(githubInfo).principal, 'two providers, two owners').not.toBe(ownerOf(gitlabInfo).principal);
+        expect(ownerOf(githubInfo).state).toBe('admitted')
     });
 
     test('the same configured value yields TWO spellings — leaf vs produced AuthInfo, both executed', async () => {
@@ -297,7 +348,13 @@ test.describe('ownerPrincipal normalization axes — OQ9 witness matrix (#16738)
         // supplies it, and both values are observed here rather than inferred.
         expect(leafSpelling,     'the leaf keeps the configured slash').toBe('https://gitlab.example.com/');
         expect(producedSpelling, 'the produced coordinate drops it').toBe('https://gitlab.example.com');
-        expect(leafSpelling,     'one configured value, two live spellings').not.toBe(producedSpelling)
+        expect(leafSpelling,     'one configured value, two live spellings').not.toBe(producedSpelling);
+
+        // the contract: the resolver normalizes at the principal boundary, so either reader's
+        // spelling resolves to the one owner
+        const owner = coordinate => ownerOf({authProvider: 'gitlab', providerBaseUrl: coordinate, providerUserId: '4242'}).principal;
+
+        expect(owner(leafSpelling), 'two spellings, one owner').toBe(owner(producedSpelling))
     });
 
     test('MECHANISM REACH: a leaf `parse` normalizes the env layer ONLY — default and runtime override bypass it', async () => {
@@ -404,6 +461,11 @@ test.describe('ownerPrincipal normalization axes — OQ9 witness matrix (#16738)
         // domains. Whichever way OQ2/OQ3 resolves, that inconsistency is now recorded rather
         // than rediscovered.
         expect(resolveLeafUnderEnv(EQUIVALENT_SPELLINGS.upperCaseHost))
-            .not.toBe(resolveLeafUnderEnv(EQUIVALENT_SPELLINGS.canonical))
+            .not.toBe(resolveLeafUnderEnv(EQUIVALENT_SPELLINGS.canonical));
+
+        // The owner principal decides its own rule: host case is not identity at the v1 floor.
+        const owner = coordinate => ownerOf({authProvider: 'gitlab', providerBaseUrl: coordinate, providerUserId: '4242'}).principal;
+
+        expect(owner(EQUIVALENT_SPELLINGS.upperCaseHost)).toBe(owner(EQUIVALENT_SPELLINGS.canonical))
     })
 });
