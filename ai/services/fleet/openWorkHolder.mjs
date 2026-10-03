@@ -20,12 +20,17 @@
  * @param {Object} row An open row of the producer's snapshot.
  * @returns {{role: 'rotation'|'author'|'reviewer'|'operator'|'none'|'unknown', ids: String[]}}
  */
-export function holderOf({ci, mergeable, draft, owner, partial = false, requested = [], reviews = [], opinions}) {
+export function holderOf({ci, mergeable, draft, owner, partial = false, requested = [], reviews = [], opinions, awaitingApproval = false}) {
     const
         incomplete = partial || !Array.isArray(opinions),
         onHead     = state => (opinions ?? []).some(opinion => opinion.onHead && opinion.state === state),
         finished   = ci === 'red' || ci === 'green',
         untouched  = !requested.length && !reviews.some(review => review.onHead);
+
+    // a fork's runs waiting for a maintainer's approval are positive evidence: nothing runs until one acts
+    if (owner?.kind === 'outside' && awaitingApproval) {
+        return {role: 'rotation', ids: []}
+    }
 
     // "untouched" is an absence, so only a complete read hands an outside PR to the rotation
     if (owner?.kind === 'outside' && finished && untouched && !incomplete) {
@@ -46,6 +51,11 @@ export function holderOf({ci, mergeable, draft, owner, partial = false, requeste
 
     if (ci === 'green' && onHead('APPROVED') && mergeable === 'MERGEABLE' && !draft) {
         return {role: 'operator', ids: []}
+    }
+
+    // approved and green, but it no longer merges: only the author can rebase
+    if (ci === 'green' && onHead('APPROVED') && mergeable === 'CONFLICTING' && !draft) {
+        return {role: 'author', ids: owner?.seat ? [owner.seat] : []}
     }
 
     return {role: 'none', ids: []}

@@ -99,6 +99,11 @@ export const OPEN_WORK_SNAPSHOT = `
                 statusCheckRollup {
                   state
                 }
+                checkSuites(first: 5) {
+                  nodes {
+                    conclusion
+                  }
+                }
               }
             }
           }

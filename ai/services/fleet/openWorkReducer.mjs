@@ -85,7 +85,8 @@ function connectionOf(connection) {
  * @param {Object} node A `PullRequest` node from the open-work search.
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
  * @returns {Object} `{key, repo, number, head, ci, verdict, mergeable, draft, owner, requested, reviews,
- *     opinions, requestsComplete, partial}`.
+ *     opinions, requestsComplete, partial, awaitingApproval}`. `awaitingApproval` is a head's check suite
+ *     waiting for a maintainer to approve its runs (a fork's): its rollup stays empty until one does.
  */
 export function normalizePullRequest(node, identities) {
     const
@@ -120,7 +121,8 @@ export function normalizePullRequest(node, identities) {
         reviews  : reviewed.filter(review => review.reviewer),
         opinions : opined.filter(opinion => opinion.reviewer),
         requestsComplete,
-        partial  : !requestsComplete || !reviewsComplete || !opinionsComplete
+        partial         : !requestsComplete || !reviewsComplete || !opinionsComplete,
+        awaitingApproval: (commit?.checkSuites?.nodes ?? []).some(suite => suite?.conclusion === 'ACTION_REQUIRED')
     }
 }
 

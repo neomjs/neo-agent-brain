@@ -50,15 +50,26 @@ test.describe('openWorkHolder — OQ2\'s holder table on the current head, first
         expect(holderOf(row({...judged('APPROVED'), opinions: undefined}))).toEqual({role: 'unknown', ids: []})
     });
 
-    test('a draft, an unknown or conflicting mergeability, or an approval of an earlier head is nobody\'s', () => {
+    test('a draft, an unknown mergeability, or an approval of an earlier head is nobody\'s', () => {
         const approved = {verdict: 'APPROVED', ...judged('APPROVED')};
 
         expect(holderOf(row({...approved, draft: true})).role).toBe('none');
         expect(holderOf(row({...approved, mergeable: 'UNKNOWN'})).role).toBe('none');
-        expect(holderOf(row({...approved, mergeable: 'CONFLICTING'})).role).toBe('none');
+        expect(holderOf(row({...approved, draft: true, mergeable: 'CONFLICTING'})).role).toBe('none');
         expect(holderOf(row({verdict: 'APPROVED', ...judged('APPROVED', false)})).role).toBe('none');
         expect(holderOf(row({})).role).toBe('none');
         expect(holderOf(row({ci: 'pending', ...judged('APPROVED')})).role).toBe('none')
+    });
+
+    test('approved and green but conflicting is the author\'s: only the author can rebase', () => {
+        expect(holderOf(row({verdict: 'APPROVED', ...judged('APPROVED'), mergeable: 'CONFLICTING'}))).toEqual({role: 'author', ids: ['@neo-opus-ada']})
+    });
+
+    test('an outside PR whose runs await a maintainer\'s approval is the rotation\'s, however its other reads stand', () => {
+        expect(holderOf(row({owner: outside, ci: null, awaitingApproval: true}))).toEqual({role: 'rotation', ids: []});
+        expect(holderOf(row({owner: outside, ci: null, awaitingApproval: true, partial: true}))).toEqual({role: 'rotation', ids: []});
+        // a seat's own PR never waits on a maintainer's approval of its runs
+        expect(holderOf(row({ci: null, awaitingApproval: true})).role).toBe('none')
     });
 
     test('a partial read decides only on positive evidence; an absence a missing page could hold is unknown', () => {
