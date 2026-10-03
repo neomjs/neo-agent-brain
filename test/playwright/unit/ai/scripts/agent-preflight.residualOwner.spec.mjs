@@ -1,5 +1,5 @@
-import {expect, test}                      from '@playwright/test';
-import {resolveIssueState, validatePrBody} from '../../../../../ai/scripts/agent-preflight.mjs';
+import {expect, test}                                          from '@playwright/test';
+import {resolveCurrentRepo, resolveIssueState, validatePrBody} from '../../../../../ai/scripts/agent-preflight.mjs';
 
 /**
  * Deferred work must name a home that SURVIVES the merge.
@@ -484,8 +484,8 @@ test.describe('validatePrBody — Residual-Owner STATE gate (#17314)', () => {
     test('RED-PROOF: the PR #17308 incident fails now and passed silently before', () => {
         // The specimen, and the number IS the fixture: an owner set at 18:04 on 2026-08-17 against a
         // ticket that had closed at 17:55:42Z, eight minutes earlier, which `lint-pr-body` passed.
-        // ticket-ref-ok: the arm reproduces one dated incident; an anonymised number would make it a
-        // generic closed-owner case and lose the only evidence that this gate ever let one through.
+        // The arm reproduces one dated incident: an anonymised number would make it a generic
+        // closed-owner case and lose the only evidence that this gate ever let one through.
         const body = owned(17271);
 
         // Pre-fix behaviour is still reachable, and is exactly what shipped: no resolver, shape only.
@@ -716,5 +716,110 @@ test.describe('resolveIssueState — a reading, or the honest absence of one (#1
         // two entity kinds, so the projection itself is the contract worth pinning.
         expect(seen.args[3]).toContain('has("pull_request")');
         expect(seen.cwd).toBe('/repo');
+    });
+});
+
+test.describe('validatePrBody — a Residual-Owner in another repository', () => {
+    // Since the Engine / Brain / Institution split, a Brain fix whose residual is an installed check
+    // has its honest owner in another repository. `#N` alone forced a same-repo stand-in.
+    const
+        crossRepo = 'neomjs/neo-agent-institution',
+        owned     = owner => withPmv(`- [ ] run the installed check\nResidual-Owner: ${owner}`),
+        inline    = owner => [
+            'Resolves #100', '',
+            `Evidence: L2 (unit) → L4 required (AC5 installed). Residual: AC5 installed check, Residual-Owner: ${owner}.`, '',
+            '## AC Evidence', '| AC-1 | unit spec: this file |', '',
+            '## Deltas', 'one file', '',
+            '## Test Evidence', 'green', '',
+            '## Post-Merge Validation', 'None deferred.', '',
+            'Authored by @neo-opus-grace'
+        ].join('\n'),
+        findings  = (body, options) => validatePrBody(body, options).missingVisible.filter(entry => /still owes work|Residual-Owner: /.test(entry));
+
+    test('an owner in another repository discharges the obligation, in the section and in the inline form', () => {
+        expect(findings(owned(`${crossRepo}#12`))).toEqual([]);
+        expect(findings(inline(`${crossRepo}#12`))).toEqual([]);
+    });
+
+    test('a cross-repo owner sharing the close target\'s number is a different ticket only where this repository is known', () => {
+        const options = {currentRepo: 'neomjs/neo-agent-brain'};
+
+        expect(findings(owned(`${crossRepo}#100`), options)).toEqual([]);
+        // an unknown context proves nothing foreign, so the same owner may be the close target itself
+        expect(findings(owned(`${crossRepo}#100`))[0]).toContain("may be this PR's own close target");
+        expect(findings(owned('neomjs/neo-agent-brain#100'))[0]).toContain("may be this PR's own close target");
+        // control: the same number in THIS repository still dies with the merge
+        expect(findings(owned('#100'), options)[0]).toContain("is this PR's own close target");
+    });
+
+    test('an owner token is one coordinate and one number: a dot segment or a partial number declares nothing', () => {
+        expect(findings(owned('../repo#12'))[0]).toContain('still owes work');
+        expect(findings(owned('neomjs/..#12'))[0]).toContain('still owes work');
+        expect(findings(owned(`${crossRepo}#12/more`))[0]).toContain('still owes work');
+        expect(findings(inline('#12XYZ'))[0]).toContain('still owes work');
+        // the ladder's sentence-final period still ends a valid owner
+        expect(findings(inline(`${crossRepo}#12`))).toEqual([]);
+    });
+
+    test('spelling out THIS repository does not slip the close-target rule', () => {
+        const options = {currentRepo: 'neomjs/neo-agent-brain'};
+
+        expect(findings(owned('neomjs/neo-agent-brain#100'), options)[0]).toContain("this PR's own close target");
+        expect(findings(owned('NEOMJS/neo-agent-brain#100'), options)[0]).toContain("this PR's own close target");
+        expect(findings(owned(`${crossRepo}#100`), options)).toEqual([]);
+    });
+
+    test('the state read goes to the named repository, and every message quotes the owner as written', () => {
+        const
+            reads = [],
+            check = state => validatePrBody(owned(`${crossRepo}#12`), {
+                resolveOwnerState: (number, {repo} = {}) => (reads.push({number, repo}), {isPullRequest: false, state})
+            });
+
+        expect(check('closed').missingVisible.some(entry => entry.includes(`\`Residual-Owner: ${crossRepo}#12\` is CLOSED`))).toBe(true);
+        expect(check('open').valid).toBe(true);
+        expect(check('unknown').warnings.some(entry => entry.includes(`${crossRepo}#12\` was NOT state-checked`))).toBe(true);
+        expect(reads).toEqual(Array(3).fill({number: '12', repo: crossRepo}));
+    });
+
+    test('resolveIssueState reads a named repository, and gh\'s current-repo placeholders otherwise', () => {
+        const seen = [];
+        const exec = (command, args) => (seen.push(args[1]), '{"state":"open","isPullRequest":false}');
+
+        resolveIssueState(12, {repo: crossRepo, cwd: '/repo', execFileSyncImpl: exec});
+        resolveIssueState(12, {cwd: '/repo', execFileSyncImpl: exec});
+
+        expect(seen).toEqual([`repos/${crossRepo}/issues/12`, 'repos/{owner}/{repo}/issues/12']);
+    });
+
+    test('resolveCurrentRepo reads the origin remote offline, and an unreadable remote is null', () => {
+        const remote = url => () => `${url}\n`;
+
+        // every clone form GitHub documents, SSH over the HTTPS port included
+        for (const url of [
+            'git@github.com:neomjs/neo-agent-brain.git',
+            'https://github.com/neomjs/neo-agent-brain',
+            'https://github.com/neomjs/neo-agent-brain/',
+            'ssh://git@github.com/neomjs/neo-agent-brain.git',
+            'ssh://git@ssh.github.com:443/neomjs/neo-agent-brain.git'
+        ]) {
+            expect(resolveCurrentRepo({execFileSyncImpl: remote(url)}), url).toBe('neomjs/neo-agent-brain')
+        }
+
+        // the authority decides: another forge, a look-alike host, a subdomain, github.com in a path, the
+        // SSH carrier over HTTPS, or a path past owner/repo is not this checkout's GitHub repository
+        for (const url of [
+            'git@gitlab.com:neomjs/neo-agent-brain.git',
+            'https://evilgithub.com/neomjs/neo-agent-brain.git',
+            'https://evil.github.com/neomjs/neo-agent-brain.git',
+            'git@evil.github.com:neomjs/neo-agent-brain.git',
+            'https://example.org/github.com/neomjs/neo-agent-brain.git',
+            'https://ssh.github.com/neomjs/neo-agent-brain.git',
+            'https://github.com/neomjs/neo-agent-brain/extra'
+        ]) {
+            expect(resolveCurrentRepo({execFileSyncImpl: remote(url)}), url).toBe(null)
+        }
+
+        expect(resolveCurrentRepo({execFileSyncImpl: () => { throw new Error('no remote') }})).toBe(null);
     });
 });

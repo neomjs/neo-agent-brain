@@ -76,7 +76,8 @@ export const INVISIBLE_PR_BODY_ANCHORS = [
  * Routing readers to "the template" without naming the split has a 50% chance of handing
  * them the wrong file.
  *
- * ticket-ref-ok: #15141 is the recorded failure that makes naming the split load-bearing here.
+ * That already happened once: a reader routed to "the template" took the wrong file, which is why
+ * the split is named here.
  */
 export const PR_BODY_TEMPLATE_REFERENCE =
     '.agents/skills/pull-request/references/pull-request-workflow.md — §9 carries the agent body template';
@@ -94,8 +95,8 @@ export const PULL_REQUEST_WORKFLOW_REFERENCE =
  * anchors are missing — the silence is the mechanism, not a gap. Controls must assert no
  * anchor literal from either list appears anywhere in this output.
  *
- * ticket-ref-ok: #11501 + #15828 are load-bearing here — citing them beside the emitter is
- * the fix; without them a reader cannot distinguish deliberate silence from a broken tool.
+ * The silence is stated here, beside the emitter, on purpose: without it a reader cannot
+ * distinguish deliberate silence from a broken tool.
  *
  * @returns {String[]}
  */
@@ -111,6 +112,21 @@ export function buildStructuralAnchorMissGuidance() {
         'agent-preflight: reread those before editing the body.'
     ];
 }
+
+const
+    /**
+     * An `owner/repo` coordinate as GitHub admits one: an owner of letters, digits and inner hyphens,
+     * and a repository of letters, digits, `.`, `_` and `-` that is not `.` or `..`. Owner tokens and
+     * `--pr-repo` are both read through it, so a query, a fragment, an extra segment or a dot segment
+     * never reaches a resolver.
+     * @type {String}
+     */
+    REPO_COORDINATE = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/(?!\.\.?(?![\w.-]))[\w.-]+`,
+    /**
+     * A declared owner: `#N`, or `owner/repo#N`, ending at its number.
+     * @type {String}
+     */
+    OWNER_TOKEN     = String.raw`(?:${REPO_COORDINATE})?#\d+(?![\w/])`;
 
 const
     // A REAL level-two heading on its own line. `indexOf` would anchor on the first substring, so a
@@ -129,19 +145,23 @@ const
     //
     // 1. SECTION shape: the owner is the LINE's content, after optional blockquote / list markers. The
     //    ticket says line — *"an explicit `Residual-Owner: #N` line"*. Anchoring matters here because a
-    //    section is prose: `We considered Residual-Owner: #200 but rejected that owner.` discharged work
+    //    section is prose: `We considered Residual-Owner: #N but rejected that owner.` discharged work
     //    while SAYING it rejected the owner.
-    RESIDUAL_OWNER_LINE_PATTERN   = /^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]+)?Residual-Owner:[ \t]+#(\d+)[ \t]*$/im,
+    //
+    // In both shapes the owner may name its repository (`owner/repo#N`): an
+    // installed check owned by another repo's issue is an honest owner, and `#N` alone forced a
+    // same-repo stand-in.
+    RESIDUAL_OWNER_LINE_PATTERN   = new RegExp(String.raw`^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]+)?Residual-Owner:[ \t]+(${OWNER_TOKEN})[ \t]*$`, 'im'),
     // 2. INLINE shape: `evidence-ladder.md` prescribes a **1-line** declaration whose owner is mid-line —
     //    `Evidence: L2 (…) → L4 required (AC5 …). Residual: AC5, Residual-Owner: #<an existing open ticket>.` Anchoring THIS
     //    would refuse the documented template, which is what my first attempt did; a spec arm written the
     //    round before caught it. The owner must follow the `Residual:` clause on that same line, so a
     //    bare mid-line mention still cannot qualify.
-    RESIDUAL_OWNER_INLINE_PATTERN = /Residual:[^\n]*?,[ \t]*Residual-Owner:[ \t]+#(\d+)/i,
+    RESIDUAL_OWNER_INLINE_PATTERN = new RegExp(String.raw`Residual:[^\n]*?,[ \t]*Residual-Owner:[ \t]+(${OWNER_TOKEN})`, 'i'),
     RESOLVES_PATTERN              = /\bResolves:?\s+#\d+/i,
     // A REAL level-two heading, for the same shadowing reason as the Post-Merge pattern above.
     AC_EVIDENCE_H2                = /^##[ \t]+AC Evidence[ \t]*$/m,
-    // One certificate row: `| AC-1 | <proof> |`, or target-qualified `| #123 AC-1 | <proof> |`
+    // One certificate row: `| AC-1 | <proof> |`, or target-qualified `| #N AC-1 | <proof> |`
     // (mandatory when a body carries several close targets). The table's header (`| AC | ... |`)
     // carries no digit and its separator row no `AC` at all, so neither can pose as a certificate.
     AC_EVIDENCE_ROW_PATTERN       = /^\|[ \t]*(?:#(\d+)[ \t]+)?(?:\*\*)?AC[- ]?(\d+)[.:]?(?:\*\*)?[ \t]*\|[ \t]*(.*?)[ \t]*\|[ \t]*$/,
@@ -189,6 +209,7 @@ export function createProgram() {
         .option('--pr-body <file>', 'Run local PR-body template lint against the given markdown file.')
         .option('--pr-base <ref>', 'Compare stacked PR commit tickets against this intended base.', 'origin/dev')
         .option('--pr-draft', 'Validate --pr-body as a draft PR: Refs/Related may temporarily stand in for Resolves.')
+        .option('--pr-repo <owner/repo>', 'The repository the --pr-body PR belongs to, when it is not this checkout\'s: its #N references and close target are read there. The git gates (the stacked-commit audit) still read this checkout, so run from that repository\'s clone.')
         .option('--no-fix', 'Check-only mode: skip the check-block-alignment --fix repair pass.')
         .argument('[files...]', 'Optional file paths. When omitted, staged ACMR files are read from git.')
 }
@@ -216,6 +237,7 @@ export function parseArgs(argv) {
         prBase       : options.prBase,
         prBody       : options.prBody || null,
         prDraft      : options.prDraft || false,
+        prRepo       : options.prRepo || null,
         prTitle      : options.prTitle || null
     }
 }
@@ -385,7 +407,7 @@ function withoutFencedBlocks(body = '') {
 /**
  * @summary Blanks inline code spans, preserving length so offsets stay comparable.
  *
- * A backticked `Residual-Owner: #200` inside a Post-Merge Validation section DOCUMENTS the spelling; it
+ * A backticked `Residual-Owner: #N` inside a Post-Merge Validation section DOCUMENTS the spelling; it
  * does not declare ownership. Reading it as a declaration let a section satisfy its own live obligation
  * by quoting the syntax that would have satisfied it — the same class as a fenced heading standing in
  * for a real one, one grain finer.
@@ -402,7 +424,7 @@ function withoutHtmlComments(text = '') {
     // `(?:-->|$)` — an UNTERMINATED comment runs to end-of-body and must blank too. Requiring the
     // closing delimiter made the gate's notion of "commented out" stricter than the renderer's:
     // GitHub swallows everything from `<!--` to EOF, so `## Post-Merge Validation / - [ ] do real
-    // work / <!-- / Residual-Owner: #200` renders as an unowned obligation while the gate read the
+    // work / <!-- / Residual-Owner: #N` renders as an unowned obligation while the gate read the
     // owner and passed. Verified against the real renderer (`POST /markdown`): the response carries
     // the heading and the list item and NO owner. The rule is the same one every arm here restates —
     // judge what a READER SEES — and the closing delimiter was an assumption about how the evasion
@@ -582,15 +604,17 @@ const GH_PROBE_TIMEOUT_MS = 5000;
  * the caller a reading it cannot un-collapse — the precise failure this gate exists to remove.
  *
  * `gh` resolves `{owner}`/`{repo}` from the working directory's remote, which works from a linked
- * worktree as well as from the clone.
+ * worktree as well as from the clone. An owner that names another repository is read there.
  * @param {Number|String} number Issue number, already extracted from the declaration.
  * @param {Object} [options]
+ * @param {String|null} [options.repo=null] Another repository's `owner/repo`; `null` reads this one.
  * @param {String} [options.cwd=process.cwd()]
  * @param {Function} [options.execFileSyncImpl=execFileSync]
  * @param {Number} [options.timeoutMs=GH_PROBE_TIMEOUT_MS]
  * @returns {{isPullRequest: Boolean, state: 'open'|'closed'|'missing'|'unknown'}}
  */
 export function resolveIssueState(number, {
+    repo             = null,
     cwd              = process.cwd(),
     execFileSyncImpl = execFileSync,
     timeoutMs        = GH_PROBE_TIMEOUT_MS
@@ -600,7 +624,7 @@ export function resolveIssueState(number, {
     try {
         const raw = String(execFileSyncImpl(
             'gh',
-            ['api', `repos/{owner}/{repo}/issues/${number}`, '--jq', '{state, isPullRequest: has("pull_request")}'],
+            ['api', `repos/${repo ?? '{owner}/{repo}'}/issues/${number}`, '--jq', '{state, isPullRequest: has("pull_request")}'],
             {cwd, encoding: 'utf8', stdio: 'pipe', timeout: timeoutMs}
         )).trim();
 
@@ -626,12 +650,14 @@ export function resolveIssueState(number, {
  * ticket; `unknown` is the absence of an answer, and callers must never convert it into a verdict.
  * @param {Number|String} number
  * @param {Object} [options]
+ * @param {String|null} [options.repo=null] The PR's repository, when it is not this checkout's; `null` reads this one.
  * @param {String} [options.cwd]
  * @param {Function} [options.execFileSyncImpl]
  * @param {Number} [options.timeoutMs]
  * @returns {{state: 'ok'|'missing'|'unknown', acs: String[]}}
  */
 export function resolveTicketAcs(number, {
+    repo             = null,
     cwd              = process.cwd(),
     execFileSyncImpl = execFileSync,
     timeoutMs        = GH_PROBE_TIMEOUT_MS
@@ -639,7 +665,7 @@ export function resolveTicketAcs(number, {
     try {
         const raw = String(execFileSyncImpl(
             'gh',
-            ['api', `repos/{owner}/{repo}/issues/${number}`, '--jq', '.body // ""'],
+            ['api', `repos/${repo ?? '{owner}/{repo}'}/issues/${number}`, '--jq', '.body // ""'],
             {cwd, encoding: 'utf8', stdio: 'pipe', timeout: timeoutMs}
         ));
 
@@ -652,35 +678,62 @@ export function resolveTicketAcs(number, {
 }
 
 /**
- * @summary Every owner number a body DECLARES, across all owing units.
+ * @summary One declared owner, as written and as resolved. A repository equal to `currentRepo` is
+ * this repository, so spelling out the PR's own repo cannot slip the close-target rule. An owner is
+ * `foreign` only when this repository is known and differs: an unknown context proves nothing.
+ * @param {String} token The owner as written: `#N` or `owner/repo#N`.
+ * @param {String|null} currentRepo This repository's `owner/repo`, when known.
+ * @returns {{token: String, repo: String|null, number: String, foreign: Boolean}} `repo` is null for
+ *     this repository, and otherwise names where the owner is read.
+ * @private
+ */
+function parseResidualOwner(token, currentRepo) {
+    const
+        [declared, number] = token.split('#'),
+        own                = !declared || declared.toLowerCase() === currentRepo?.toLowerCase();
+
+    return {token, repo: own ? null : declared, number, foreign: !own && Boolean(currentRepo)}
+}
+
+/**
+ * @summary Every owner a body DECLARES, across all owing units.
  *
  * The shape check upstream deliberately reports on ONE section — the first unowned one, so its
  * message names genuinely orphaned work. The state check must not inherit that selection: a body
  * whose first owing section is correctly owned and whose second names a closed ticket would
  * otherwise never have the second owner read.
  *
- * Inline code is blanked for the same reason it is upstream: a backticked `Residual-Owner: #200`
+ * Inline code is blanked for the same reason it is upstream: a backticked `Residual-Owner: #N`
  * documents the spelling rather than declaring an owner.
  * @param {Object} options
  * @param {String} options.fenceless Body with fences and HTML comments removed.
  * @param {String[]} options.owingSections Post-Merge Validation sections that still owe work.
- * @returns {String[]} Declared owner numbers, in body order, duplicates included.
+ * @param {String|null} options.currentRepo This repository's `owner/repo`, when known.
+ * @returns {Object[]} Declared owners ({@link parseResidualOwner}), in body order, one per repo and number.
  * @private
  */
-function collectDeclaredResidualOwners({fenceless, owingSections}) {
-    const owners = [];
+function collectDeclaredResidualOwners({fenceless, owingSections, currentRepo}) {
+    const owners = new Map();
+
+    const add = token => {
+        const
+            owner = parseResidualOwner(token, currentRepo),
+            key   = `${owner.repo ?? ''}#${owner.number}`;
+
+        owners.has(key) || owners.set(key, owner)
+    };
 
     owingSections.forEach(section => {
         const match = withoutInlineCode(section).match(RESIDUAL_OWNER_LINE_PATTERN);
 
-        match && owners.push(match[1])
+        match && add(match[1])
     });
 
     const inline = withoutInlineCode(fenceless).match(RESIDUAL_OWNER_INLINE_PATTERN);
 
-    inline && owners.push(inline[1]);
+    inline && add(inline[1]);
 
-    return owners
+    return [...owners.values()]
 }
 
 /**
@@ -697,11 +750,14 @@ function collectDeclaredResidualOwners({fenceless, owingSections}) {
  * @param {String} body
  * @param {Object} [options]
  * @param {Boolean} [options.draft=false]
- * @param {Function|null} [options.resolveOwnerState=null] `(number) => 'open'|'closed'|'missing'|'unknown'`.
+ * @param {Function|null} [options.resolveOwnerState=null] `(number, {repo}) => {isPullRequest, state}`; `repo` is
+ *     the owner's `owner/repo` when it names another repository, `null` for this one.
  * @param {Function|null} [options.resolveTicketAcs=null] `(number) => {state: 'ok'|'missing'|'unknown', acs: String[]}`.
+ * @param {String|null} [options.currentRepo=null] This repository's `owner/repo`; an owner naming it is a same-repo
+ *     owner. Unknown, an owner that names any repository is read as another repository's.
  * @returns {{missingInvisible: String[], missingVisible: String[], valid: Boolean, warnings: String[]}}
  */
-export function validatePrBody(body, {draft = false, resolveOwnerState = null, resolveTicketAcs = null} = {}) {
+export function validatePrBody(body, {draft = false, resolveOwnerState = null, resolveTicketAcs = null, currentRepo = null} = {}) {
     const
         warnings               = [],
         missingVisible         = VISIBLE_PR_BODY_ANCHORS.filter(anchor => !body.includes(anchor)),
@@ -746,7 +802,7 @@ export function validatePrBody(body, {draft = false, resolveOwnerState = null, r
         inlineLine        = inlineResidual
             ? fenceless.slice(0, inlineResidual.index).split('\n').length - 1
             : -1,
-        // Inline code is blanked in the scope: a backticked `Residual-Owner: #200` documents the spelling
+        // Inline code is blanked in the scope: a backticked `Residual-Owner: #N` documents the spelling
         // rather than declaring an owner, and reading it as a declaration let a section discharge its own
         // obligation by quoting the syntax that would have discharged it.
         ownerScope       = withoutInlineCode(sectionObligation
@@ -773,7 +829,9 @@ export function validatePrBody(body, {draft = false, resolveOwnerState = null, r
         // judged at all. The surrounding code already learned this once for the missing-owner case;
         // both the close-target rule and the state check had reintroduced the single-representative
         // shape one dimension along. Deduplicated, so a repeated owner costs one message and one read.
-        const declaredOwners = [...new Set(collectDeclaredResidualOwners({fenceless, owingSections}))];
+        const
+            declaredOwners = collectDeclaredResidualOwners({fenceless, owingSections, currentRepo}),
+            isCloseTarget  = owner => !owner.foreign && owner.number === closeTarget;
 
         if (!owner) {
             missingVisible.push(`This PR still owes work — "${obligation}" — with no \`Residual-Owner: #N\`. Finish it before merge, or name an EXISTING open ticket that owns it, or drop the obligation. Do not open a ticket to satisfy this.`)
@@ -784,34 +842,37 @@ export function validatePrBody(body, {draft = false, resolveOwnerState = null, r
         // something no state read can — that the owner dies BECAUSE of this merge. A later section
         // parking work on the close target is the case that slipped: the single-owner check could not
         // see it, and the state loop below then filtered it out as "not to be read".
-        declaredOwners.filter(number => number === closeTarget).forEach(number => {
-            missingVisible.push(`\`Residual-Owner: #${number}\` is this PR's own close target, so the owner disappears when the merge closes it. Name an EXISTING open ticket, or finish the work, or drop it.`)
+        // A same-number owner in ANOTHER repository is a different ticket, which the merge does not close.
+        declaredOwners.filter(isCloseTarget).forEach(({token, repo}) => {
+            missingVisible.push(repo
+                ? `\`Residual-Owner: ${token}\` may be this PR's own close target: this checkout's repository could not be read, so \`${repo}\` cannot be told apart from it. Pass \`--pr-repo <owner/repo>\`, or name another owner.`
+                : `\`Residual-Owner: ${token}\` is this PR's own close target, so the owner disappears when the merge closes it. Name an EXISTING open ticket, or finish the work, or drop it.`)
         });
 
         if (resolveOwnerState) {
-            declaredOwners.filter(number => number !== closeTarget).forEach(number => {
+            declaredOwners.filter(owner => !isCloseTarget(owner)).forEach(({token, repo, number}) => {
                 // The close-target rule above is already a SURVIVABILITY rule — a home that will not
                 // outlive the merge is refused. A ticket that closed BEFORE the citation fails that
                 // requirement more completely: the close target at least survives until merge. The
                 // pattern `#(\d+)` cannot see the difference, and this is the read that separates them.
-                const {isPullRequest, state} = resolveOwnerState(number) ?? {};
+                const {isPullRequest, state} = resolveOwnerState(number, {repo}) ?? {};
 
                 if (state === 'closed') {
-                    missingVisible.push(`\`Residual-Owner: #${number}\` is CLOSED. Deferred work must name a home that survives the merge. Finish it, drop the obligation, or name an OPEN ticket. Do not open a ticket to satisfy this.`)
+                    missingVisible.push(`\`Residual-Owner: ${token}\` is CLOSED. Deferred work must name a home that survives the merge. Finish it, drop the obligation, or name an OPEN ticket. Do not open a ticket to satisfy this.`)
                 } else if (state === 'missing') {
-                    missingVisible.push(`\`Residual-Owner: #${number}\` does not exist. Name an EXISTING open ticket that owns the work, finish it, or drop the obligation. Do not open a ticket to satisfy this.`)
+                    missingVisible.push(`\`Residual-Owner: ${token}\` does not exist. Name an EXISTING open ticket that owns the work, finish it, or drop the obligation. Do not open a ticket to satisfy this.`)
                 } else if (state === 'open' && isPullRequest) {
                     // A pull request IS an issue to the REST API and reports `state: open` exactly
                     // like a ticket. It is a WORSE owner than a closed one: it disappears by design,
                     // on merge, and takes the deferral with it. Collapsing the two to the string
                     // `open` is the same conflation this gate exists to remove.
-                    missingVisible.push(`\`Residual-Owner: #${number}\` is a PULL REQUEST, not a ticket. It closes when it merges, so the deferral dies with it. Name an EXISTING open ISSUE that owns the work, finish it, or drop the obligation.`)
+                    missingVisible.push(`\`Residual-Owner: ${token}\` is a PULL REQUEST, not a ticket. It closes when it merges, so the deferral dies with it. Name an EXISTING open ISSUE that owns the work, finish it, or drop the obligation.`)
                 } else if (state !== 'open') {
                     // Could-not-verify is not did-not-happen. An offline run, an expired token, a rate
                     // limit and an outage are all facts about the transport, and a gate that turns one
                     // into a verdict manufactures the diagnosis. Neither a pass nor a failure: the
                     // author is told which check did not run, so silence never reads as clearance.
-                    warnings.push(`\`Residual-Owner: #${number}\` was NOT state-checked — GitHub could not be read. The owner's shape is valid; whether it is still an open ticket is unverified.`)
+                    warnings.push(`\`Residual-Owner: ${token}\` was NOT state-checked — GitHub could not be read. The owner's shape is valid; whether it is still an open ticket is unverified.`)
                 }
             })
         }
@@ -1241,8 +1302,90 @@ function runTicketArchaeologyGate({cwd, files, findTicketRefsImpl, readFileSyncI
     }
 }
 
-function runPrBodyGate({cwd, execFileSyncImpl, existsSyncImpl, prBody, prDraft, readFileSyncImpl}) {
+/**
+ * @summary The `owner/repo` a GitHub remote names, read from its authority and its whole path. The
+ * host is exactly `github.com`, or `ssh.github.com` over `ssh:` (SSH over the HTTPS port); a
+ * subdomain, a look-alike host or `github.com` in a path is another origin and names nothing.
+ * @param {String} url A remote URL, or an SCP-style `[user@]host:path`.
+ * @returns {String|null}
+ * @private
+ */
+function githubRepoOf(url) {
+    const coordinate = location => location.replace(/(?:\.git)?\/?$/, '').match(new RegExp(`^(${REPO_COORDINATE})$`))?.[1] ?? null;
+
+    if (url.includes('://')) {
+        let parsed;
+
+        try {
+            parsed = new URL(url)
+        } catch {
+            return null
+        }
+
+        const host = parsed.hostname.toLowerCase();
+
+        return host === 'github.com' || (host === 'ssh.github.com' && parsed.protocol === 'ssh:')
+            ? coordinate(parsed.pathname.slice(1))
+            : null
+    }
+
+    const scp = url.match(/^(?:[^@/:]+@)?([^:/]+):(.+)$/);
+
+    return scp?.[1].toLowerCase() === 'github.com' ? coordinate(scp[2]) : null
+}
+
+/**
+ * @summary This checkout's `owner/repo`, read offline from the `origin` remote, so an owner that
+ * spells out this repository is judged as this repository's. Every clone form GitHub documents is
+ * read: HTTPS, SCP-style SSH, `ssh://`, and SSH over the HTTPS port (`ssh.github.com:443`). `null`
+ * when the remote cannot be read or is not GitHub's.
+ * @param {Object} [options]
+ * @param {String} [options.cwd=process.cwd()]
+ * @param {Function} [options.execFileSyncImpl=execFileSync]
+ * @returns {String|null}
+ */
+export function resolveCurrentRepo({cwd = process.cwd(), execFileSyncImpl = execFileSync} = {}) {
+    try {
+        return githubRepoOf(String(execFileSyncImpl('git', ['remote', 'get-url', 'origin'], {cwd, encoding: 'utf8', stdio: 'pipe'})).trim())
+    } catch {
+        return null
+    }
+}
+
+/**
+ * @summary Whether `--pr-repo` names exactly one `owner/repo`.
+ * @param {String} repo
+ * @returns {Boolean}
+ * @private
+ */
+const isRepoCoordinate = repo => new RegExp(`^${REPO_COORDINATE}$`).test(repo);
+
+/**
+ * @summary Lints a PR body file. The PR's repository is `prRepo` when the body belongs to another
+ * repository than this checkout (an Institution PR linted from a Brain clone, where this tool lives),
+ * and this checkout's otherwise: its same-repo `#N` owners and its close target are read there.
+ * @param {Object} options
+ * @param {String} options.cwd
+ * @param {Function} options.execFileSyncImpl
+ * @param {Function} options.existsSyncImpl
+ * @param {String} options.prBody
+ * @param {Boolean} options.prDraft
+ * @param {String|null} [options.prRepo=null]
+ * @param {Function} options.readFileSyncImpl
+ * @returns {Object}
+ * @private
+ */
+function runPrBodyGate({cwd, execFileSyncImpl, existsSyncImpl, prBody, prDraft, prRepo = null, readFileSyncImpl}) {
     const filePath = path.resolve(cwd, prBody);
+
+    if (prRepo !== null && !isRepoCoordinate(prRepo)) {
+        return {
+            missingInvisible: [],
+            missingVisible  : [`--pr-repo \`${prRepo}\` is not one \`owner/repo\`: no query, fragment, extra segment or dot segment.`],
+            valid           : false,
+            warnings        : []
+        }
+    }
 
     if (!existsSyncImpl(filePath)) {
         return {
@@ -1254,15 +1397,16 @@ function runPrBodyGate({cwd, execFileSyncImpl, existsSyncImpl, prBody, prDraft, 
     }
 
     return validatePrBody(readFileSyncImpl(filePath, 'utf8'), {
-        draft: prDraft,
+        draft      : prDraft,
+        currentRepo: prRepo ?? resolveCurrentRepo({cwd, execFileSyncImpl}),
         // Wired unconditionally rather than behind a flag: the read only happens when a body
         // actually declares a `Residual-Owner`, which is rare, and every failure of it degrades to
         // `unknown` rather than to a verdict. So the gate is never network-DEPENDENT — it is
         // network-INFORMED when it can be, and says so when it cannot.
-        resolveOwnerState: owner => resolveIssueState(owner, {cwd, execFileSyncImpl}),
+        resolveOwnerState: (owner, {repo} = {}) => resolveIssueState(owner, {repo: repo ?? prRepo, cwd, execFileSyncImpl}),
         // Same contract for the AC-coverage read: one cheap metadata fetch of the close target,
         // degrading to a WARNING when GitHub cannot be read.
-        resolveTicketAcs: ticket => resolveTicketAcs(ticket, {cwd, execFileSyncImpl})
+        resolveTicketAcs: ticket => resolveTicketAcs(ticket, {repo: prRepo, cwd, execFileSyncImpl})
     })
 }
 
@@ -1394,6 +1538,7 @@ export function runAgentPreflight({
             existsSyncImpl,
             prBody : options.prBody,
             prDraft: options.prDraft,
+            prRepo : options.prRepo,
             readFileSyncImpl
         });
 
