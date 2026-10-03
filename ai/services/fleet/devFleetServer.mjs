@@ -79,6 +79,7 @@ import {wireFleetGoldenPathSource}                                       from '.
 import {wireFleetGraphSceneSource}                                       from './wireFleetGraphSceneSource.mjs';
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
 import {wireFleetOpenWorkSource}                                         from './wireFleetOpenWorkSource.mjs';
+import {wireFleetRecentTurnsSource}                                      from './wireFleetRecentTurnsSource.mjs';
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
 import {wireOperatorComposeWriter}                                       from './wireOperatorComposeWriter.mjs';
@@ -443,6 +444,14 @@ async function boot() {
     // team-visible read; the plane's own sharing policy governs what the operation answers.
     wireFleetSessionMemoriesSource({
         getSessionMemories   : args => callHistoryOperation('get_session_memories', args),
+        resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
+    });
+
+    // The thought stream rides the same operation boundary: the single registered
+    // `query_recent_turns` op answers a seat's newest public turn summaries, and the plane's own
+    // sharing policy decides what a viewer may see of a peer.
+    wireFleetRecentTurnsSource({
+        queryRecentTurns     : args => callHistoryOperation('query_recent_turns', args),
         resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
     });
 
