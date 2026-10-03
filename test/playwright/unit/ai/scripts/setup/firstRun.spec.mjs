@@ -545,7 +545,7 @@ test.describe('firstRun CLI', () => {
         expect(step).toMatchObject({status: 'ok', witnessedAt: 't1'});
 
         // the plane's health word rides with the identity: the same complete witness against a DEGRADED matching plane
-        // does not complete — validation is not asked, done stays pending with the timestamp (ADR 0041 §2.5)
+        // does not complete — validation is not asked, done stays pending with the timestamp (bootstrap-record decision §2.5)
         const
             degradedObservers = productionObservers({layout: hostLayout({stateRoot: '/srv/state'}), host, healthcheck: async () => ({status: 'degraded', plane: {id: 'plane-a', dataRoot: '/srv/plane-a'}}), validate: async () => { throw new Error('must not be asked against a degraded plane') }}),
             byId              = steps => Object.fromEntries(steps.map(row => [row.id, row])),

@@ -299,7 +299,7 @@ test.describe('firstRunRecipe', () => {
         expect(wrong.done).toMatchObject({status: STEP_STATUSES.failed, witnessedAt: witnessed.at, reason: 'witnessed at 2026-10-03T06:00:00.000Z; served-plane is failed'});
         expect(asked).toEqual([]);
 
-        // the matching plane while `degraded` (ADR 0041 §2.5): identified — the served-plane step stays ok and says so —
+        // the matching plane while `degraded` (bootstrap-record decision §2.5): identified — the served-plane step stays ok and says so —
         // but not ready: validation is not asked, done stays open with the witnessed timestamp, nothing turns green
         asked.length = 0;
 
