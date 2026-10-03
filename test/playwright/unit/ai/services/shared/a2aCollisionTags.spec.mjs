@@ -34,8 +34,8 @@ test.describe('a2aCollisionTags — the structural reader', () => {
             .toBeNull()
     });
 
-    // #822: the claims the roster missed on 2026-10-03, verbatim up to the first `·`. A signature mark
-    // may open the segment, and a bracket may combine the tag with others.
+    // Real claim subjects, verbatim up to the first `·`: a signature mark may open the segment, and a
+    // bracket may combine the tag with others.
     test('a claim behind a signature mark or inside a combined bracket counts', () => {
         for (const subject of [
             '🖖 [lane-claim] Institution #508 build (System service cards read in full), FM v1 leaf under #505',

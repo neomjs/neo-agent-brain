@@ -95,7 +95,7 @@ test.describe('fleetA2AActivityAdapter - Memory Core A2A activity mapping', () =
         })
     })
 
-    // #822: the per-seat lane record needs releases as well as claims, so every event names the
+    // The per-seat lane record needs releases as well as claims, so every event names the
     // collision tag it carries; a summary's declared concepts type it without a bracket in sight.
     test('every event names its collision tag: a declared claim, a release, and none', () => {
         const [claim, release, plain] = createA2AMessageActivityEvents([

@@ -52,7 +52,7 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
         expect(typeof captured.readPrLaneSnapshot).toBe('function');
         expect(captured.limit).toBe(25);
         expect(captured.resolveViewerIdentity()).toBe('@viewer');
-        // #822: the per-seat lane record's store reaches the composer
+        // the per-seat lane record's store reaches the composer
         expect(captured.laneClaimStore).toBe(laneClaimStore);
     });
 

@@ -676,7 +676,7 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
             });
         });
 
-        // #822: the composer's per-seat record, not the page, is the seat's lane
+        // The composer's per-seat record, not the page, is the seat's lane
         test('the per-seat record reaches the row when the page no longer holds the claim; a degraded page still withholds it', () => {
             const kept  = claim('neo-gpt', '2026-10-02T08:00:00.000Z', '[lane-claim] kept off the page'),
                   agents = [{id: 'seat', githubUsername: 'neo-gpt'}],

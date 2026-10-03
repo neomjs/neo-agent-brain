@@ -677,7 +677,7 @@ test.describe('fleetActivityComposer — held mailbox admission', () => {
     });
 });
 
-// #822: a lane lives for days, a held page for hours, a Fleet process until its next restart.
+// A lane lives for days, a held page for hours, a Fleet process until its next restart.
 test.describe('fleetActivityComposer — the per-seat lane record', () => {
     const
         event   = (agentId, occurredAt, subject, collisionTag = 'lane-claim') => ({
