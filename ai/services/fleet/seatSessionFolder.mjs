@@ -5,7 +5,7 @@ import path from 'path';
  * @module ai/services/fleet/seatSessionFolder
  * @summary Where a Claude Desktop seat's session opened, read from the seat's own profile.
  *
- * Claude Desktop cannot be launched into a folder (#669), and a session opened anywhere but the
+ * Claude Desktop cannot be launched into a folder, and a session opened anywhere but the
  * managed checkout loads none of what the Fleet projects there while the process reads ready. The
  * seat's Desktop profile records each Code-tab session under
  * `claude-code-sessions/<account>/<org>/local_<id>.json` with the folder it opened in. The profile is
