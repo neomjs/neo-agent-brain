@@ -116,7 +116,7 @@ test.describe('verifyEffect', () => {
         const second = await performVerify({...run, record: first.record, target, plane});
 
         expect(second.performed).toBe('resumed');
-        expect(second.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.pending, resumable: true, reason: expect.stringContaining('not recalled it semantically yet')});
+        expect(second.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.pending, resumable: true, reason: expect.stringContaining('did not return it yet (0 rows answered')});
 
         const third = await performVerify({...run, record: second.record, target, plane});
 
@@ -202,12 +202,55 @@ test.describe('verifyEffect', () => {
         expect(read.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.reconcileRequired, reason: expect.stringContaining('the reconciliation read failed (ECONNREFUSED)')});
         expect(plane.calls.addMemory).toHaveLength(1);
 
-        const refusing = scriptedPlane({addMemory: [answered], recentTurns: [refused('viewer lacks READ')], recall: [nothing]});
+        // a refused read-only sub-step is recorded on the section (`failure`) with the plane's reason, the accepted
+        // sub-steps kept; a resume that lands it clears the failure and proceeds — never a second write
+        const refusing = scriptedPlane({addMemory: [answered], recentTurns: [refused('viewer lacks READ'), turns(rowFor('mk-7f3a'))], recall: [args => recalled(args.query)]});
         const second   = await scratch();
         const result   = await performVerify({...second, target, plane: refusing, mintMarker: () => 'mk-7f3a'});
 
         expect(result.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.failed, reason: 'the plane refused the readback: viewer lacks READ'});
-        expect(result.record.verification.memory).toMatchObject({id: 'mem-1'});
+        expect(result.record.verification).toMatchObject({memory: {id: 'mem-1'}, readback: null, failure: {step: 'readback', at: new Date(NOW).toISOString(), reason: 'viewer lacks READ'}});
+
+        const landed = await performVerify({...second, record: result.record, target, plane: refusing});
+
+        expect(landed.receipt.outcome).toBe(RECEIPT_OUTCOMES.accepted);
+        expect(landed.record.verification.failure).toBeNull();
+        expect(refusing.calls.addMemory).toHaveLength(1);
+
+        // the service's catch-all on the write (MEMORY_ADD_ERROR, no `refused` flag) is a LOST acknowledgement, not a
+        // refusal: the attempt stays open, the next run reads and adopts the row that did land — one write
+        const catchAll = scriptedPlane({addMemory: [Object.assign(new Error('plane add_memory failed (MEMORY_ADD_ERROR): EIO close'), {code: 'MEMORY_ADD_ERROR'})], recentTurns: [turns(rowFor('mk-7f3a'))], recall: [args => recalled(args.query)]});
+        const third    = await scratch();
+        const lostAck  = await performVerify({...third, target, plane: catchAll, mintMarker: () => 'mk-7f3a'});
+
+        expect(lostAck.receipt.outcome).toBe(RECEIPT_OUTCOMES.reconcileRequired);
+        expect(lostAck.record.verification.attempt.refused).toBeUndefined();
+
+        const adoptedLater = await performVerify({...third, record: lostAck.record, target, plane: catchAll});
+
+        expect(adoptedLater).toMatchObject({performed: 'adopted', receipt: {outcome: RECEIPT_OUTCOMES.accepted}});
+        expect(catchAll.calls.addMemory).toHaveLength(1);
+
+        // the plane's own words for a semantic query it could not run: degraded and quarantined envelopes are NORMAL
+        // results and stay pending with the producer's cause; a plain miss says how many rows answered, never "draining"
+        const flaky = scriptedPlane({
+            addMemory  : [answered],
+            recentTurns: [turns(rowFor('mk-7f3a'))],
+            recall     : [{degraded: true, code: 'QUERY_PATH_DEGRADED', message: 'vector store unavailable', results: []}, {quarantined: true, results: []}, {count: 3, results: [{id: 'other-1'}, {id: 'other-2'}, {id: 'other-3'}]}, args => recalled(args.query)]
+        });
+        const fourth = await scratch();
+
+        let state = await performVerify({...fourth, target, plane: flaky, mintMarker: () => 'mk-7f3a'});
+
+        expect(state.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.pending, resumable: true, reason: expect.stringContaining("semantic query is degraded (QUERY_PATH_DEGRADED): vector store unavailable")});
+        state = await performVerify({...fourth, record: state.record, target, plane: flaky});
+        expect(state.receipt.reason).toContain('semantic query is quarantined');
+        state = await performVerify({...fourth, record: state.record, target, plane: flaky});
+        expect(state.receipt.reason).toContain('did not return it yet (3 rows answered, none this attempt\'s)');
+        expect(state.receipt.reason).not.toContain('draining');
+        state = await performVerify({...fourth, record: state.record, target, plane: flaky});
+        expect(state.receipt.outcome).toBe(RECEIPT_OUTCOMES.accepted);
+        expect(flaky.calls.addMemory).toHaveLength(1);
 
         expect(rowCarriesMarker({response: 'witness abc: written'}, 'abc')).toBe(true);
         expect(rowCarriesMarker({summary: 'nothing here'}, 'abc')).toBe(false);

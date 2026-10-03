@@ -7,9 +7,10 @@
  * Deliberately not the Fleet server's `planeMailboxClient`: that client proves a boot-resolved viewer
  * identity on every session (the single-viewer invariant), while the first run holds no identity yet —
  * the credential IS the operator's, and the plane answers under whatever subject it validates. This client
- * proves nothing and replays nothing: a tool-level refusal the plane answered (`isError`) throws with
- * `refused: true` so the effect settles the attempt; a transport failure or timeout throws without it, and
- * the effect treats that as ambiguous (a lost acknowledgement), never as a reason to write again.
+ * proves nothing and replays nothing: an error envelope whose code is one the plane answers BEFORE accepting
+ * a write ({@link PRE_ACCEPTANCE_REFUSAL_CODES}) throws with `refused: true` so the effect settles the attempt;
+ * every other error — a transport failure, a timeout, the service's catch-all `MEMORY_ADD_ERROR` — throws
+ * without it, and the effect treats it as ambiguous (a lost acknowledgement), never as a reason to write again.
  *
  * Same endpoint boundary as every plane client (`normalizeSecureMcpEndpoint`): http/https only, no
  * URL-embedded credentials, TLS off-loopback. Reads no config: `baseUrl` and `credential` arrive from the
@@ -28,16 +29,39 @@ import {PLANE_MEMORY_CORE_PATH, normalizeSecureMcpEndpoint, readMcpToolResultPay
 export const DEFAULT_CALL_TIMEOUT_MS = 60000;
 
 /**
- * @summary A refusal the plane ANSWERED (a tool result flagged `isError`), as opposed to a failure to reach it.
+ * The error codes a Memory Core tool answers BEFORE accepting a write — the validation gate and the identity
+ * gate. Only these settle a witness attempt as refused: `MEMORY_ADD_ERROR` is the service's catch-all for a
+ * failure anywhere on the acceptance path (a WAL append whose close rejected after the bytes landed reaches it
+ * too), so it is ambiguous by construction and the effect reconciles it through a positive read instead.
+ * @type {Set<String>}
+ */
+export const PRE_ACCEPTANCE_REFUSAL_CODES = new Set(['MEMORY_VALIDATION_ERROR', 'MISSING_AGENT_IDENTITY', 'INVALID_PARAMETERS']);
+
+/**
+ * @summary The error a tool result flagged `isError` becomes. A code from {@link PRE_ACCEPTANCE_REFUSAL_CODES}
+ * marks a refusal the plane answered before acceptance (`error.refused === true`); any other error envelope
+ * is ambiguous — the plane failed somewhere on the way, and a row may or may not exist — so it carries the
+ * code (`error.code`) and no `refused` flag.
  * @param {String} name
  * @param {Object} result
- * @returns {Error} `error.refused === true`
+ * @returns {Error}
  */
-export function refusalError(name, result) {
-    const text  = result?.content?.find?.(item => item?.type === 'text')?.text,
-          error = new Error(`plane ${name} refused: ${typeof text === 'string' && text.trim() ? text.trim().slice(0, 300) : 'the tool answered isError without a message'}`);
+export function toolError(name, result) {
+    const
+        envelope = result?.structuredContent && typeof result.structuredContent === 'object' ? result.structuredContent : null,
+        text     = result?.content?.find?.(item => item?.type === 'text')?.text,
+        code     = typeof envelope?.code === 'string' ? envelope.code : null,
+        message  = envelope?.message ?? envelope?.error ?? (typeof text === 'string' && text.trim() ? text.trim().slice(0, 300) : 'the tool answered isError without a message'),
+        refused  = code !== null && PRE_ACCEPTANCE_REFUSAL_CODES.has(code),
+        error    = new Error(`plane ${name} ${refused ? 'refused' : 'failed'}${code ? ` (${code})` : ''}: ${message}`);
 
-    error.refused = true;
+    if (refused) {
+        error.refused = true;
+    }
+
+    if (code) {
+        error.code = code;
+    }
 
     return error;
 }
@@ -83,7 +107,7 @@ export function createPlaneWitnessClient({endpoint, credential = '', timeoutMs =
         const result = await bounded(session.client.callTool({name, arguments: args}), name);
 
         if (result?.isError) {
-            throw refusalError(name, result);
+            throw toolError(name, result);
         }
 
         const payload = readMcpToolResultPayload(result);

@@ -203,11 +203,23 @@ export async function performVerify({record, recordPath, host, target, plane, ne
         performed = 'resumed';
     }
 
+    // a read-only sub-step the plane REFUSES is recorded on the section (`failure`) so every reader — the
+    // effect row, `done` — projects the plane's own reason; a later resume that lands the sub-step clears it
+    const refusedSubStep = (name, error) => {
+        section = {...section, failure: {step: name, at: stampOf(host), reason: reasonOf(error)}};
+
+        return settle(failedReceipt(section, host, `the plane refused the ${name}: ${reasonOf(error)}`), performed);
+    };
+
+    if (section.failure) {
+        section = {...section, failure: null};
+    }
+
     if (!section.readback) {
         const read = await plane.recentTurns({limit: WITNESS_READ_LIMIT}).then(value => ({ok: true, value}), error => ({ok: false, error}));
 
         if (!read.ok) {
-            return settle(isRefusal(read.error) ? failedReceipt(section, host, `the plane refused the readback: ${reasonOf(read.error)}`) : pendingReceipt(section, host, `the readback did not answer (${reasonOf(read.error)}); re-check repeats it`), performed);
+            return isRefusal(read.error) ? refusedSubStep('readback', read.error) : settle(pendingReceipt(section, host, `the readback did not answer (${reasonOf(read.error)}); re-check repeats it`), performed);
         }
 
         if (!(read.value?.turns ?? []).some(turn => rowCarriesMarker(turn, section.attempt.marker))) {
@@ -224,11 +236,25 @@ export async function performVerify({record, recordPath, host, target, plane, ne
     const recall = await plane.recall({query: witnessContent({runId: record.runId, planeId: target.planeId, marker: section.attempt.marker}).prompt, limit: WITNESS_READ_LIMIT}).then(value => ({ok: true, value}), error => ({ok: false, error}));
 
     if (!recall.ok) {
-        return settle(isRefusal(recall.error) ? failedReceipt(section, host, `the plane refused the recall: ${reasonOf(recall.error)}`) : pendingReceipt(section, host, `the recall did not answer (${reasonOf(recall.error)}); re-check repeats it`), performed);
+        return isRefusal(recall.error) ? refusedSubStep('recall', recall.error) : settle(pendingReceipt(section, host, `the recall did not answer (${reasonOf(recall.error)}); re-check repeats it`), performed);
     }
 
-    if (!(recall.value?.results ?? []).some(row => rowCarriesMarker(row, section.attempt.marker) || (section.memory.id && row?.id === section.memory.id))) {
-        return settle(pendingReceipt(section, host, 'the witness is written and read back; the plane has not recalled it semantically yet (its embedding lane is still draining) — re-check repeats the recall'), performed);
+    const answer = recall.value ?? {};
+
+    // the producer's own words for a query it could not run properly: a degraded or quarantined semantic path is
+    // reported as such, never read as "not embedded yet"
+    if (answer.quarantined === true) {
+        return settle(pendingReceipt(section, host, 'the plane\'s semantic query is quarantined; the witness is written and read back, its recall waits for the plane — re-check repeats it'), performed);
+    }
+
+    if (answer.degraded === true) {
+        return settle(pendingReceipt(section, host, `the plane's semantic query is degraded${answer.code ? ` (${answer.code})` : ''}${answer.message ? `: ${answer.message}` : ''}; the witness is written and read back, its recall waits for the plane — re-check repeats it`), performed);
+    }
+
+    const results = Array.isArray(answer.results) ? answer.results : [];
+
+    if (!results.some(row => rowCarriesMarker(row, section.attempt.marker) || (section.memory.id && row?.id === section.memory.id))) {
+        return settle(pendingReceipt(section, host, `the witness is written and read back; the plane's semantic recall did not return it yet (${results.length} rows answered, none this attempt's) — re-check repeats the recall`), performed);
     }
 
     section = {...section, recall: {at: stampOf(host), hit: true}};

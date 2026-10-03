@@ -477,7 +477,7 @@ test.describe('firstRun CLI', () => {
             consented  = withConsent(createSetupRecord({runId: RUN_ID, target, recipeVersion: RECIPE_VERSION, now: host.now}), {stepId: 'plane-credential', answer: patPath, consentedAt: 't'});
 
         // bound record with the credential consent: the route, the bearer (trimmed file content), the report flag, no expectations
-        await expect(observers.servedPlane(target, {record: consented})).resolves.toEqual(served);
+        await expect(observers.servedPlane(target, {record: consented})).resolves.toEqual({...served, status: 'healthy'});
         expect(calls).toEqual([{url: target.endpoint, mcpPath: PLANE_MEMORY_CORE_PATH, bearerToken: PAT, expectedStatus: 'healthy,degraded', reportServedPlane: true}]);
         expect(PLANE_MEMORY_CORE_PATH).toBe('/mc/mcp');
 
@@ -537,11 +537,34 @@ test.describe('firstRun CLI', () => {
         const refused = {...witnessed, verification: {...witnessed.verification, memory: null, readback: null, recall: null, attempt: {marker: 'mk', dispatchedAt: 't0', refused: {at: 't1', reason: 'no grant'}}}};
 
         expect(await observers.done(target, {record: refused})).toEqual({persisted: false, queryAnswered: false, at: null, reason: 'the plane refused the witness write at t1: no grant'});
-        expect(await observers.verification(target, {record: refused})).toEqual({present: true, digest: null, problem: 'the plane refused the witness write: no grant'});
+        expect(await observers.verification(target, {record: refused})).toEqual({present: true, digest: null, problem: 'the plane refused the witness write at t1: no grant'});
 
         // through the recipe: the witnessed record completes only with the fresh steps ok in the same evaluation
         const step = (await evaluateRecipe({target, record: witnessed, observers: {servedPlane: observers.servedPlane, validation: observers.validation, verification: observers.verification, done: observers.done}, presets, now: host.now})).steps.find(row => row.id === 'done');
 
         expect(step).toMatchObject({status: 'ok', witnessedAt: 't1'});
+
+        // the plane's health word rides with the identity: the same complete witness against a DEGRADED matching plane
+        // does not complete — validation is not asked, done stays pending with the timestamp (ADR 0041 §2.5)
+        const
+            degradedObservers = productionObservers({layout: hostLayout({stateRoot: '/srv/state'}), host, healthcheck: async () => ({status: 'degraded', plane: {id: 'plane-a', dataRoot: '/srv/plane-a'}}), validate: async () => { throw new Error('must not be asked against a degraded plane') }}),
+            byId              = steps => Object.fromEntries(steps.map(row => [row.id, row])),
+            degradedSteps     = byId((await evaluateRecipe({target, record: witnessed, observers: {servedPlane: degradedObservers.servedPlane, validation: degradedObservers.validation, verification: degradedObservers.verification, done: degradedObservers.done}, presets, now: host.now})).steps);
+
+        expect(await degradedObservers.servedPlane(target, {record: hosted})).toEqual({id: 'plane-a', dataRoot: '/srv/plane-a', status: 'degraded'});
+        expect(degradedSteps['served-plane']).toMatchObject({status: 'ok', reason: 'the served identity matches the target; the plane reports itself degraded'});
+        expect(degradedSteps.validation).toMatchObject({status: 'unknown', reason: 'not observed: served-plane is degraded'});
+        expect(degradedSteps.done).toMatchObject({status: 'pending', witnessedAt: 't1', reason: 'witnessed at t1; served-plane is degraded'});
+
+        // a refused read-only sub-step the section recorded projects as failed with the plane's reason, on the effect row and on done
+        const readbackRefused = {...witnessed, verification: {...witnessed.verification, readback: null, recall: null, failure: {step: 'readback', at: 't2', reason: 'viewer lacks READ'}}};
+
+        expect(await observers.verification(target, {record: readbackRefused})).toEqual({present: true, digest: null, problem: 'the plane refused the readback at t2: viewer lacks READ'});
+        expect(await observers.done(target, {record: readbackRefused})).toEqual({persisted: true, queryAnswered: false, at: 't1', reason: 'the plane refused the readback at t2: viewer lacks READ'});
+
+        const projected = byId((await evaluateRecipe({target, record: {...readbackRefused, receipts: [{effectId: 'verify', outcome: 'failed', inputDigest: 'x', startedAt: 't0', failedAt: 't2', reason: 'the plane refused the readback: viewer lacks READ'}]}, observers: {servedPlane: observers.servedPlane, validation: observers.validation, verification: observers.verification, done: observers.done}, presets, now: host.now})).steps);
+
+        expect(projected.verify).toMatchObject({status: 'failed', reason: 'the plane refused the readback at t2: viewer lacks READ'});
+        expect(projected.done).toMatchObject({status: 'failed', reason: 'the plane refused the readback at t2: viewer lacks READ'});
     });
 });

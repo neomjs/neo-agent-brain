@@ -1,6 +1,6 @@
 import {expect, test} from '@playwright/test';
 import {PLANE_MEMORY_CORE_PATH}                                       from '../../../../../../ai/services/fleet/mcpWireParsing.mjs';
-import {DEFAULT_CALL_TIMEOUT_MS, createPlaneWitnessClient, refusalError} from '../../../../../../ai/services/fleet/planeWitnessClient.mjs';
+import {DEFAULT_CALL_TIMEOUT_MS, PRE_ACCEPTANCE_REFUSAL_CODES, createPlaneWitnessClient, toolError} from '../../../../../../ai/services/fleet/planeWitnessClient.mjs';
 
 // The witness client over an SDK-shaped session double: the three calls' arguments, refusal vs ambiguity, bounds.
 
@@ -59,12 +59,25 @@ test.describe('planeWitnessClient', () => {
         expect(PLANE_MEMORY_CORE_PATH).toBe('/mc/mcp');
     });
 
-    test('a tool result the plane flags isError is a REFUSAL (error.refused); a transport failure, a malformed payload and a timeout are ambiguous (no flag)', async () => {
+    test('only a pre-acceptance code is a REFUSAL (error.refused); the service\'s catch-all MEMORY_ADD_ERROR, a code-less isError, a transport failure, a malformed payload and a timeout are ambiguous (no flag)', async () => {
         const
-            refusing = sessionDouble({add_memory: {isError: true, content: [{type: 'text', text: 'tenant has no write grant'}]}}),
-            client   = createPlaneWitnessClient({endpoint: 'http://127.0.0.1:3102', createSession: refusing.createSession});
+            envelope = (code, message) => ({isError: true, structuredContent: {error: 'Failed to add memory', message, code}, content: [{type: 'text', text: `Tool Error: Failed to add memory. Message: ${message}`}]}),
+            at       = answers => createPlaneWitnessClient({endpoint: 'http://127.0.0.1:3102', createSession: sessionDouble(answers).createSession});
 
-        await expect(client.addMemory({prompt: 'p'})).rejects.toMatchObject({refused: true, message: 'plane add_memory refused: tenant has no write grant'});
+        // the validation gate and the identity gate answer before any row exists: refused, settled
+        await expect(at({add_memory: envelope('MEMORY_VALIDATION_ERROR', 'Rejected empty/below-minimum field(s): thought')}).addMemory({prompt: 'p'})).rejects.toMatchObject({refused: true, code: 'MEMORY_VALIDATION_ERROR', message: 'plane add_memory refused (MEMORY_VALIDATION_ERROR): Rejected empty/below-minimum field(s): thought'});
+        await expect(at({add_memory: envelope('MISSING_AGENT_IDENTITY', 'no identity')}).addMemory({prompt: 'p'})).rejects.toMatchObject({refused: true, code: 'MISSING_AGENT_IDENTITY'});
+        // the catch-all: a WAL append whose close rejected after the bytes landed reaches it — a row may exist, so it is ambiguous
+        const catchAll = await at({add_memory: envelope('MEMORY_ADD_ERROR', 'EIO: close')}).addMemory({prompt: 'p'}).catch(error => error);
+
+        expect(catchAll).toMatchObject({code: 'MEMORY_ADD_ERROR', message: 'plane add_memory failed (MEMORY_ADD_ERROR): EIO: close'});
+        expect(catchAll).not.toHaveProperty('refused');
+        // an isError without a code is ambiguous too
+        const codeless = await at({add_memory: {isError: true, content: [{type: 'text', text: 'tenant has no write grant'}]}}).addMemory({prompt: 'p'}).catch(error => error);
+
+        expect(codeless.message).toBe('plane add_memory failed: tenant has no write grant');
+        expect(codeless).not.toHaveProperty('refused');
+        expect(PRE_ACCEPTANCE_REFUSAL_CODES.has('MEMORY_ADD_ERROR')).toBe(false);
 
         const transport = sessionDouble({add_memory: new Error('fetch failed')});
 
@@ -83,7 +96,7 @@ test.describe('planeWitnessClient', () => {
 
         await expect(createPlaneWitnessClient({endpoint: 'http://127.0.0.1:3102', createSession: unreachable.createSession}).recentTurns({limit: 1})).rejects.toMatchObject({message: 'ECONNREFUSED'});
 
-        expect(refusalError('x', {isError: true}).message).toBe('plane x refused: the tool answered isError without a message');
+        expect(toolError('x', {isError: true}).message).toBe('plane x failed: the tool answered isError without a message');
         expect(DEFAULT_CALL_TIMEOUT_MS).toBe(60000);
     });
 

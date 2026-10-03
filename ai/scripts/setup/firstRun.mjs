@@ -177,6 +177,12 @@ export function productionObservers({layout, host, probe = probePlacement, healt
         return section;
     };
 
+    // the plane's own reason for a witness that cannot proceed: a refused write settles the attempt, a refused
+    // read-only sub-step (readback, recall) is recorded on the section until a resume lands it
+    const witnessRefusal = section => section?.attempt?.refused
+        ? `the plane refused the witness write at ${section.attempt.refused.at}: ${section.attempt.refused.reason}`
+        : section?.failure ? `the plane refused the ${section.failure.step} at ${section.failure.at}: ${section.failure.reason}` : null;
+
     return {
         placement,
         envCarrier : () => digestOfFile(host.fsModule, layout.envFile),
@@ -220,7 +226,9 @@ export function productionObservers({layout, host, probe = probePlacement, healt
                 reportServedPlane: true
             });
 
-            return health?.plane ?? null;
+            // identity AND the plane's own health word: a matching plane while `degraded` is identified, not ready
+            // (bootstrap-record decision §2.5) — the recipe gates validation and completion on the status
+            return health?.plane ? {...health.plane, status: health.status} : null;
         },
         validation : async (target, {record = null} = {}) => {
             const preset = presets.find(row => row.id === (record ? findConsent(record, 'preset')?.answer : null));
@@ -234,10 +242,13 @@ export function productionObservers({layout, host, probe = probePlacement, healt
         verification: async (target, {record = null} = {}) => {
             const section = record?.verification;
 
-            // the effect step's observation beside its receipt: a refused attempt is a present, failed result
-            // (the card's next action is an explicit new attempt); an incomplete one is not performed yet
-            if (section?.attempt?.refused) {
-                return {present: true, digest: null, problem: `the plane refused the witness write: ${section.attempt.refused.reason}`};
+            // the effect step's observation beside its receipt: a refused attempt, or a refused read-only sub-step
+            // the section recorded, is a present, failed result with the plane's reason (the card's next action
+            // is re-check or an explicit new attempt); an incomplete one is not performed yet
+            const refusal = witnessRefusal(section);
+
+            if (refusal) {
+                return {present: true, digest: null, problem: refusal};
             }
 
             return {present: Boolean(section?.memory && section.recall?.hit), digest: null, problem: null, reason: section ? 'the witness has not been written and recalled yet' : 'the verify effect has not run'};
@@ -249,7 +260,7 @@ export function productionObservers({layout, host, probe = probePlacement, healt
                 persisted    : Boolean(section.memory?.id),
                 queryAnswered: section.recall?.hit === true,
                 at           : section.memory?.at ?? null,
-                reason       : section.attempt?.refused ? `the plane refused the witness write at ${section.attempt.refused.at}: ${section.attempt.refused.reason}` : null
+                reason       : witnessRefusal(section)
             };
         }
     };

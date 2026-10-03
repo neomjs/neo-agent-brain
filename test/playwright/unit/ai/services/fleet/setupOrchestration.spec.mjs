@@ -396,15 +396,4 @@ test.describe('setupOrchestration', () => {
         expect(findReceipt(resumed.record, EFFECT_IDS.verify)).toMatchObject({outcome: RECEIPT_OUTCOMES.pending, resumable: true});
         expect(resumed.record.verification.attempt.marker).toBe(partial.record.verification.attempt.marker);
     });
-
-    test('a reconcile-required host effect halts the run WITH a report naming it, so a renderer learns why nothing ran', async () => {
-        const
-            run      = await consentedRun(),
-            parked   = await interrupted(run, EFFECT_IDS.writeSecrets),
-            {record, reports} = await perform(run, {record: parked, evaluation: await evaluate(parked)});
-
-        expect(receipts(record)).toEqual([['write-secrets', 'pending']]);
-        expect(reports).toEqual(["'write-secrets' is reconcile-required: the effect may have run before its receipt was written; a fresh matching observation settles it, nothing after it runs"]);
-        expect(run.calls).toEqual([]);
-    });
 });

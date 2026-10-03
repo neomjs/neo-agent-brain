@@ -270,7 +270,7 @@ function evaluateServedPlane(step, read, target, observedAt) {
         return status(step, STEP_STATUSES.failed, `served plane dataRoot is '${served.dataRoot ?? '<missing>'}', expected '${target.dataRoot}': same identity, different storage`, {served, observedAt});
     }
 
-    return status(step, STEP_STATUSES.ok, 'the served identity matches the target', {served, observedAt});
+    return status(step, STEP_STATUSES.ok, served.status === 'degraded' ? 'the served identity matches the target; the plane reports itself degraded' : 'the served identity matches the target', {served, observedAt});
 }
 
 function evaluateValidation(step, read, {record, bound, presets, observedAt}) {
@@ -316,6 +316,12 @@ function staleGate(steps, ids) {
 
         if (step?.status !== STEP_STATUSES.ok) {
             return {status: step?.status ?? STEP_STATUSES.unknown, reason: `${id} is ${step?.status ?? 'not evaluated'}`};
+        }
+
+        // a matching plane that reports itself `degraded` is identified, not ready (bootstrap-record decision
+        // §2.5): the identity step stays ok, the steps that need a ready plane wait
+        if (id === 'served-plane' && step.served?.status === 'degraded') {
+            return {status: STEP_STATUSES.pending, reason: 'served-plane is degraded'};
         }
     }
 
