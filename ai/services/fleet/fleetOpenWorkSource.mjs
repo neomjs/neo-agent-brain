@@ -24,16 +24,17 @@ const
     UNAVAILABLE_AFTER_MS = 60 * 60 * 1000;
 
 /**
- * @summary The part of a row a holder acts on, with when it was last observed and who holds it.
+ * @summary The part of a row a holder acts on, with its title, when it was last observed and who holds
+ * it. A row stored before the snapshot carried titles reads `null`.
  * @param {Object} row
  * @param {Boolean} stale
  * @returns {Object}
  * @private
  */
 function summaryOf(row, stale) {
-    const {repo, number, head, ci, verdict, mergeable, draft, reviews, observedAt} = row;
+    const {repo, number, title, head, ci, verdict, mergeable, draft, reviews, observedAt} = row;
 
-    return {repo, number, head, ci, verdict, mergeable, draft, reviews: reviews ?? [], observedAt, stale, holder: holderOf(row)}
+    return {repo, number, title: title ?? null, head, ci, verdict, mergeable, draft, reviews: reviews ?? [], observedAt, stale, holder: holderOf(row)}
 }
 
 /**

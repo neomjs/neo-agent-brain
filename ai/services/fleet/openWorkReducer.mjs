@@ -84,8 +84,9 @@ function connectionOf(connection) {
  * @summary One open search node as a snapshot row.
  * @param {Object} node A `PullRequest` node from the open-work search.
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
- * @returns {Object} `{key, repo, number, head, ci, verdict, mergeable, draft, owner, requested, reviews,
- *     opinions, requestsComplete, partial}`.
+ * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, draft, owner, requested,
+ *     reviews, opinions, requestsComplete, partial}`. `title` is the forge's prose with its whitespace
+ *     collapsed, or `null`; it names the PR and is never a transition.
  */
 export function normalizePullRequest(node, identities) {
     const
@@ -110,6 +111,7 @@ export function normalizePullRequest(node, identities) {
         key      : `${repo}#${node.number}`,
         repo,
         number   : node.number,
+        title    : typeof node.title === 'string' ? node.title.replace(/\s+/g, ' ').trim() || null : null,
         head,
         ci       : CI_STATES[commit?.statusCheckRollup?.state] ?? null,
         verdict  : node.reviewDecision ?? null,
