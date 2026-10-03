@@ -48,18 +48,43 @@ export async function readPlaneConfig() {
 }
 
 /**
- * @summary The turn-presence writer's deadline, one budget for its whole MCP exchange, by how the
- * harness registered the calling hook: `turnPresence.hookWriteTimeoutMs` for a synchronous registration,
- * which it must stay below, or the harness kills the hook before its named skip;
- * `turnPresence.asyncHookWriteTimeoutMs` for an asynchronous one, which the harness never times out.
- * @param {Object} [options]
- * @param {Boolean} [options.async=false] Whether the calling hook's registration is asynchronous.
- * @returns {Promise<Number>}
+ * @summary The part of a synchronous registration the hook process itself spends (boot, config, the
+ * MCP client) before and after the writer's exchange. A synchronous deadline must leave it free.
+ * @type {Number}
  */
-export async function readTurnPresenceDeadlineMs({async = false} = {}) {
+export const HOOK_PROCESS_SHARE_MS = 500;
+
+/**
+ * @summary The turn-presence writer's deadline, one budget for its whole MCP exchange, by how the
+ * harness registered the calling hook: `turnPresence.asyncHookWriteTimeoutMs` for an asynchronous
+ * registration, which the harness never times out, else `turnPresence.hookWriteTimeoutMs`.
+ *
+ * A synchronous registration kills the hook at its own timeout, before the named skip. So a synchronous
+ * deadline that does not leave {@link HOOK_PROCESS_SHARE_MS} of the calling hook's registration free is
+ * refused here, by name, and the hook reports that instead of being killed silently.
+ * @param {Object} options
+ * @param {Boolean} [options.async=false] Whether the calling hook's registration is asynchronous.
+ * @param {Number} [options.registrationMs] The calling hook's registration timeout; required unless `async`.
+ * @returns {Promise<Number>}
+ * @throws {Error} When the synchronous deadline does not fit `registrationMs`.
+ */
+export async function readTurnPresenceDeadlineMs({async = false, registrationMs} = {}) {
     await bootNeo();
 
-    const {default: memoryCoreConfig} = await import('../../../mcp/server/memory-core/config.mjs');
+    const
+        {default: memoryCoreConfig}                   = await import('../../../mcp/server/memory-core/config.mjs'),
+        {asyncHookWriteTimeoutMs, hookWriteTimeoutMs} = memoryCoreConfig.turnPresence;
 
-    return async ? memoryCoreConfig.turnPresence.asyncHookWriteTimeoutMs : memoryCoreConfig.turnPresence.hookWriteTimeoutMs
+    if (async) return asyncHookWriteTimeoutMs;
+
+    const ceilingMs = registrationMs - HOOK_PROCESS_SHARE_MS;
+
+    if (!(hookWriteTimeoutMs <= ceilingMs)) {
+        throw new Error(
+            `the synchronous turn-presence deadline (${hookWriteTimeoutMs} ms) does not fit this hook's ` +
+            `${registrationMs} ms registration; set NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS to at most ${ceilingMs} ms`
+        )
+    }
+
+    return hookWriteTimeoutMs
 }

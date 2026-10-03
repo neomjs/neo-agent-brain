@@ -89,8 +89,9 @@ export function readHookPayload({stdin = process.stdin} = {}) {
  * @param {Object} options
  * @param {Object} options.plane Injected `{baseUrl, credential}` for the deployment's Memory Core. The
  * hook adapter is the entrypoint that resolves these; this module reads no config of its own.
- * @param {Number} options.deadlineMs Injected the same way: the `turnPresence.hookWriteTimeoutMs` leaf,
- * the one budget for the whole MCP exchange.
+ * @param {Number} options.deadlineMs Injected the same way, by the calling hook's registration
+ * (`seatConfig.readTurnPresenceDeadlineMs`): the one budget for the whole MCP exchange. A hook projected
+ * before its runtime moved the deadline to the entrypoint injects none, and gets a named skip.
  * @param {'start'|'progress'|'terminal'} [options.action='start'] Event kind.
  * @param {Object} [options.env=process.env] Environment source.
  * @param {*} [options.hookPayload] Raw hook payload, used for optional wake nonce extraction.
@@ -143,7 +144,12 @@ export async function recordTurnPresenceFromHook({
     }
 
     if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {
-        return {status: 'skipped', reason: 'turn-presence hook write timeout is not configured', action, agentIdentity};
+        return {
+            status: 'skipped',
+            reason: 'the hook injected no turn-presence deadline: re-project the seat\'s hooks if this copy predates its runtime',
+            action,
+            agentIdentity
+        };
     }
 
     const recorded = await record({

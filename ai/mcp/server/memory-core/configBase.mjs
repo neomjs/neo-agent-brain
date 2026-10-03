@@ -257,20 +257,25 @@ class ConfigBase extends ConfigProvider {
              * The seat hook writer spends one budget for its whole MCP exchange (connect, initialize,
              * call), chosen by how the harness registered the hook:
              * - `hookWriteTimeoutMs` for a synchronous registration, which kills the hook at its own
-             *   timeout, before the named skip, if the budget is not below it. Claude's start, at
-             *   2 s, is the tightest, and the rest of those 2 s belong to the hook process itself. A
-             *   loopback plane answers well inside 1500 ms; a remote plane's cold TLS exchange may not.
+             *   timeout, before the named skip, unless the budget leaves the hook process its share.
+             *   The seat reader refuses, by name, a value that does not fit the calling hook's
+             *   registration (`seatConfig.readTurnPresenceDeadlineMs`). Claude's start, at 2 s, is the
+             *   tightest. A loopback plane answers well inside 1500 ms; a remote plane's cold TLS
+             *   exchange may not.
              * - `asyncHookWriteTimeoutMs` for an asynchronous registration (Claude's progress), which
              *   the harness never times out. Its size is the transport's own default for one remote
              *   exchange; its cost is overlap: async runs are not deduplicated, so an unanswering
              *   plane holds up to tool-call rate × budget runs at once.
+             *
+             * Both are `positiveInt`: an env value that is not a whole number of ms warns by name and
+             * the default stands.
              */
             turnPresence: {
                 freshMs                : leaf(30 * 60 * 1000, 'NEO_TURN_PRESENCE_FRESH_MS',                    'number'),
                 ttlMs                  : leaf(60 * 60 * 1000, 'NEO_TURN_PRESENCE_TTL_MS',                      'number'),
                 noteMaxChars           : leaf(512,            'NEO_TURN_PRESENCE_NOTE_MAX_CHARS',              'number'),
-                hookWriteTimeoutMs     : leaf(1500,           'NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS',       'number'),
-                asyncHookWriteTimeoutMs: leaf(8000,           'NEO_TURN_PRESENCE_ASYNC_HOOK_WRITE_TIMEOUT_MS', 'number')
+                hookWriteTimeoutMs     : leaf(1500,           'NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS',       'positiveInt'),
+                asyncHookWriteTimeoutMs: leaf(8000,           'NEO_TURN_PRESENCE_ASYNC_HOOK_WRITE_TIMEOUT_MS', 'positiveInt')
             },
             /**
              * `who_is_online` roster-projection windows.

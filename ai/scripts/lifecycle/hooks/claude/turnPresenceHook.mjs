@@ -13,6 +13,13 @@ import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
  */
 export const ASYNC_ACTIONS = new Set(['progress']);
 
+/**
+ * @summary The timeout `events.manifest.json` gives every synchronous presence registration (start),
+ * in ms. A spec holds it equal to the manifest; the synchronous deadline must fit inside it.
+ * @type {Number}
+ */
+export const SYNC_REGISTRATION_MS = 2000;
+
 function parseHookPayload(raw) {
     if (!raw) return null;
 
@@ -84,7 +91,7 @@ export async function recordClaudeTurnPresence({
 
     return recordTurnPresenceFromHook({
         action,
-        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs({async: ASYNC_ACTIONS.has(action)}),
+        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(ASYNC_ACTIONS.has(action) ? {async: true} : {registrationMs: SYNC_REGISTRATION_MS}),
         env,
         hookPayload,
         note      : resolveNote({action, hookPayload}),

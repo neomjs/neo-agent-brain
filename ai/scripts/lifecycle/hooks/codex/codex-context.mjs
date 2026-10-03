@@ -9,6 +9,13 @@ import {
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
 
+/**
+ * @summary The timeout `hooks.json` gives this hook's prompt registration, in ms. A spec holds it equal
+ * to that config; the synchronous presence deadline must fit inside it.
+ * @type {Number}
+ */
+export const PROMPT_REGISTRATION_MS = 10000;
+
 const LOG_DIR_NAME              = 'codex-lane-state-hook',
       PROMPT_CONTEXT_FILE_NAME  = 'codex-prompt-context.json',
       PROMPT_CONTEXT_TEXT_LIMIT = 4000,
@@ -186,7 +193,7 @@ export async function recordTurnStarted({
     }
 
     return recordTurnPresenceFromHook({
-        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(),
+        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs({registrationMs: PROMPT_REGISTRATION_MS}),
         env,
         hookPayload,
         note      : 'codex UserPromptSubmit',
@@ -272,7 +279,14 @@ async function main({sessionStart = false} = {}) {
         // Fail-soft hook: absence of parseable stdin only drops nonce correlation, not context loading.
     }
 
-    await recordTurnStarted({hookPayload}).catch(() => {});
+    // Never blocks the prompt's context: it loads below whatever presence does. But a skip or a throw
+    // says so on stderr, where the harness captures it, the same line the Claude hook writes.
+    const presence = await recordTurnStarted({hookPayload})
+        .catch(error => ({status: 'failed', reason: `turn-presence threw: ${error?.message || error}`}));
+
+    if (presence?.status && presence.status !== 'recorded') {
+        process.stderr.write(`[WARN] [turn-presence] not recorded — ${presence.reason || presence.status}\n`)
+    }
 
     const context = readCodexContext();
 

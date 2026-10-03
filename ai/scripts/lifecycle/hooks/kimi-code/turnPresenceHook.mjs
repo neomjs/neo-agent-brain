@@ -6,6 +6,13 @@ import {
 import {normalizeAgentIdentityNodeId}                from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
 import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
 
+/**
+ * @summary The timeout the generated Kimi config gives every presence registration, in ms; all of them
+ * are synchronous. A spec holds it equal to `generateKimiSeatConfig`; the deadline must fit inside it.
+ * @type {Number}
+ */
+export const REGISTRATION_MS = 5000;
+
 const EVENT_MAP = Object.freeze({
     Interrupt: Object.freeze({
         action       : 'terminal',
@@ -114,7 +121,7 @@ export async function recordKimiTurnPresence({
 
     return recordTurnPresenceFromHook({
         action,
-        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(),
+        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs({registrationMs: REGISTRATION_MS}),
         env,
         hookPayload,
         note      : `kimi ${eventName}${toolSuffix}`,
