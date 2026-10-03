@@ -124,7 +124,18 @@ export function recommendPlacement({probe, presets, headroomBytes = HEADROOM_BYT
     return result;
 }
 
-async function observe(observers, name, target) {
+/**
+ * @summary One observer read, never thrown: a missing or failing observer is an `unknown` reason. The
+ * observer sees the target and, under a bound binding only, the record — prior consent is the record's
+ * authority, and a reader that needs a consented reference (the plane credential file, the preset) takes it
+ * from there; another target's record hands out nothing.
+ * @param {Object} observers
+ * @param {String} name
+ * @param {Object} target
+ * @param {{record: Object|null}} context
+ * @returns {Promise<{ok: Boolean, reason: String|null, value: *}>}
+ */
+async function observe(observers, name, target, context) {
     const observer = observers?.[name];
 
     if (typeof observer !== 'function') {
@@ -132,7 +143,7 @@ async function observe(observers, name, target) {
     }
 
     try {
-        return {ok: true, reason: null, value: await observer(target)};
+        return {ok: true, reason: null, value: await observer(target, context)};
     } catch (error) {
         return {ok: false, reason: error?.message ?? String(error), value: null};
     }
@@ -171,10 +182,10 @@ function evaluateQuestion(step, {record, bound, bindingReason, presets}) {
     return status(step, STEP_STATUSES.pending, bound ? 'unanswered' : `unanswered (${bindingReason})`, {answer: null});
 }
 
-async function evaluateEffect(step, {record, bound, observers, target, observedAt}) {
+async function evaluateEffect(step, {record, bound, observers, target, context, observedAt}) {
     const
         receipt = bound ? findReceipt(record, step.effectId) : null,
-        read    = await observe(observers, step.observer, target),
+        read    = await observe(observers, step.observer, target, context),
         extra   = {effectId: step.effectId, receipt: receipt ? receipt.outcome : null, observedAt};
 
     if (receipt && [RECEIPT_OUTCOMES.pending, RECEIPT_OUTCOMES.reconcileRequired].includes(receipt.outcome)) {
@@ -310,7 +321,8 @@ function evaluateDone(step, read, observedAt) {
  * @param {Object} options
  * @param {Object}      options.target  `{planeId, dataRoot, endpoint}` (nulls before create).
  * @param {Object|null} [options.record=null]
- * @param {Object}      [options.observers={}] Named readers, each `(target) → Promise<value>`.
+ * @param {Object}      [options.observers={}] Named readers, each `(target, {record}) → Promise<value>`; the record
+ *     is handed over under a bound binding only, `null` otherwise.
  * @param {Object[]}    [options.presets=[]]
  * @param {Function}    [options.now=Date.now]
  * @returns {Promise<{recipeVersion: Number, target: Object, binding: String, steps: Object[], terminal: Object}>}
@@ -324,6 +336,7 @@ export async function evaluateRecipe({target, record = null, observers = {}, pre
             'target-mismatch' : 'the record is bound to another target',
             'version-mismatch': `the record was evaluated under recipe version ${record?.recipeVersion}`
         }[binding],
+        context       = {record: bound ? record : null},
         observedAt    = new Date(now()).toISOString(),
         steps         = [];
 
@@ -334,11 +347,11 @@ export async function evaluateRecipe({target, record = null, observers = {}, pre
         }
 
         if (step.kind === STEP_KINDS.effect) {
-            steps.push(await evaluateEffect(step, {record, bound, observers, target, observedAt}));
+            steps.push(await evaluateEffect(step, {record, bound, observers, target, context, observedAt}));
             continue;
         }
 
-        const read = await observe(observers, step.observer, target);
+        const read = await observe(observers, step.observer, target, context);
 
         switch (step.id) {
             case 'placement':

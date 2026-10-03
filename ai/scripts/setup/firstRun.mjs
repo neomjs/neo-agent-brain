@@ -28,7 +28,7 @@ import {admitCredentialReference, createHost, persistSetupRecord, recordConsent}
 import {presets}                                                                              from '../../services/fleet/placementPresets.mjs';
 import {createDefaultReaders, probePlacement}                                                 from '../../services/fleet/probePlacement.mjs';
 import {
-    RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath
+    RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, findConsent, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath
 } from '../../services/fleet/setupRunRecord.mjs';
 import {performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
 import {runHealthcheck}                from '../diagnostics/mcpHealthcheck.mjs';
@@ -116,9 +116,22 @@ async function digestOfFile(fsModule, filePath) {
 }
 
 /**
+ * The Memory Core's route below a plane endpoint — the one every plane client composes (the ingress
+ * routes `/mc/*` to it and answers 404 elsewhere).
+ * @type {String}
+ */
+export const PLANE_MEMORY_CORE_PATH = '/mc/mcp';
+
+/**
  * @summary The production observers over the host layout: the placement probe, the carrier and secret
  * files by digest and mode, the compose project, the served plane's identity through the MCP healthcheck.
  * `validation` and `done` are not observed yet — the recipe reports them `unknown`, never green.
+ *
+ * `servedPlane` asks the plane the way its clients do: the Memory Core route below the endpoint, the
+ * consented plane credential as the bearer (read from the file the record references at call time — the
+ * token lives in the request only, never in a log or the record), and the plane block as observed, asserted
+ * against nothing: the recipe compares identity and root itself, so a wrong plane reads `failed` there. Before
+ * the credential consent no bearer is sent; the plane's refusal is then the observer's reason (`unknown`).
  * @param {Object} options
  * @param {Object} options.layout
  * @param {Object} options.host
@@ -133,6 +146,12 @@ export function productionObservers({layout, host, probe = probePlacement, healt
         probed = await probe({target: 'local', readers: createDefaultReaders({run: host.run})});
 
         return probed;
+    };
+
+    const consentedCredential = async record => {
+        const credentialPath = record ? findConsent(record, 'plane-credential')?.answer : null;
+
+        return typeof credentialPath === 'string' ? (await host.fsModule.readFile(credentialPath, 'utf8')).trim() || null : null;
     };
 
     return {
@@ -160,8 +179,14 @@ export function productionObservers({layout, host, probe = probePlacement, healt
 
             return {present: result.runningPlane?.project === layout.composeProject, digest: null, reason: 'the compose project is not running'};
         },
-        servedPlane : async target => {
-            const health = await healthcheck({url: target.endpoint, expectedStatus: 'healthy,degraded'});
+        servedPlane : async (target, {record = null} = {}) => {
+            const health = await healthcheck({
+                url              : target.endpoint,
+                mcpPath          : PLANE_MEMORY_CORE_PATH,
+                bearerToken      : await consentedCredential(record),
+                expectedStatus   : 'healthy,degraded',
+                reportServedPlane: true
+            });
 
             return health?.plane ?? null;
         }
