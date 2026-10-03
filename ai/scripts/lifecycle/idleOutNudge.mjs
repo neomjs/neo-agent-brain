@@ -128,7 +128,7 @@ export async function idleOutNudge(identity, {wakeDaemonDir}={}) {
     const pulseId = `idle-out-nudge.${Buffer.from(JSON.stringify({
         source    : 'idle-out-nudge',
         reason    : 'idle: no recent AGENT_MEMORY while the swarm is active',
-        nextAction: 'drain the lifecycle queue (own-PR changes → designated reviews → own-PR green → request review), then claim a non-colliding backlog lane'
+        nextAction: 'drain the lifecycle queue (own-PR changes → designated reviews → own-PR green → request review), then take the accepted plan\'s next unresolved step'
     })).toString('base64url')}`;
 
     // 5. Emit Shape B heartbeat pulse. Creates an ephemeral GraphLog entry tagged
