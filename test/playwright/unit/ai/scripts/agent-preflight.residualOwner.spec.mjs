@@ -741,10 +741,24 @@ test.describe('validatePrBody — a Residual-Owner in another repository', () =>
         expect(findings(inline(`${crossRepo}#12`))).toEqual([]);
     });
 
-    test('a cross-repo owner sharing the close target\'s number is a different ticket, not the close target', () => {
-        expect(findings(owned(`${crossRepo}#100`))).toEqual([]);
+    test('a cross-repo owner sharing the close target\'s number is a different ticket only where this repository is known', () => {
+        const options = {currentRepo: 'neomjs/neo-agent-brain'};
+
+        expect(findings(owned(`${crossRepo}#100`), options)).toEqual([]);
+        // an unknown context proves nothing foreign, so the same owner may be the close target itself
+        expect(findings(owned(`${crossRepo}#100`))[0]).toContain("may be this PR's own close target");
+        expect(findings(owned('neomjs/neo-agent-brain#100'))[0]).toContain("may be this PR's own close target");
         // control: the same number in THIS repository still dies with the merge
-        expect(findings(owned('#100'))[0]).toContain("this PR's own close target");
+        expect(findings(owned('#100'), options)[0]).toContain("is this PR's own close target");
+    });
+
+    test('an owner token is one coordinate and one number: a dot segment or a partial number declares nothing', () => {
+        expect(findings(owned('../repo#12'))[0]).toContain('still owes work');
+        expect(findings(owned('neomjs/..#12'))[0]).toContain('still owes work');
+        expect(findings(owned(`${crossRepo}#12/more`))[0]).toContain('still owes work');
+        expect(findings(inline('#12XYZ'))[0]).toContain('still owes work');
+        // the ladder's sentence-final period still ends a valid owner
+        expect(findings(inline(`${crossRepo}#12`))).toEqual([]);
     });
 
     test('spelling out THIS repository does not slip the close-target rule', () => {
@@ -781,8 +795,20 @@ test.describe('validatePrBody — a Residual-Owner in another repository', () =>
     test('resolveCurrentRepo reads the origin remote offline, and an unreadable remote is null', () => {
         const remote = url => () => `${url}\n`;
 
-        expect(resolveCurrentRepo({execFileSyncImpl: remote('git@github.com:neomjs/neo-agent-brain.git')})).toBe('neomjs/neo-agent-brain');
-        expect(resolveCurrentRepo({execFileSyncImpl: remote('https://github.com/neomjs/neo-agent-brain')})).toBe('neomjs/neo-agent-brain');
+        // every clone form GitHub documents, SSH over the HTTPS port included
+        for (const url of [
+            'git@github.com:neomjs/neo-agent-brain.git',
+            'https://github.com/neomjs/neo-agent-brain',
+            'https://github.com/neomjs/neo-agent-brain/',
+            'ssh://git@github.com/neomjs/neo-agent-brain.git',
+            'ssh://git@ssh.github.com:443/neomjs/neo-agent-brain.git'
+        ]) {
+            expect(resolveCurrentRepo({execFileSyncImpl: remote(url)}), url).toBe('neomjs/neo-agent-brain')
+        }
+
+        // another forge, or a host that only ends in the name, is not GitHub's
+        expect(resolveCurrentRepo({execFileSyncImpl: remote('git@gitlab.com:neomjs/neo-agent-brain.git')})).toBe(null);
+        expect(resolveCurrentRepo({execFileSyncImpl: remote('https://evilgithub.com/neomjs/neo-agent-brain.git')})).toBe(null);
         expect(resolveCurrentRepo({execFileSyncImpl: () => { throw new Error('no remote') }})).toBe(null);
     });
 });

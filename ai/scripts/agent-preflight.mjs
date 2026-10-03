@@ -114,6 +114,21 @@ export function buildStructuralAnchorMissGuidance() {
 }
 
 const
+    /**
+     * An `owner/repo` coordinate as GitHub admits one: an owner of letters, digits and inner hyphens,
+     * and a repository of letters, digits, `.`, `_` and `-` that is not `.` or `..`. Owner tokens and
+     * `--pr-repo` are both read through it, so a query, a fragment, an extra segment or a dot segment
+     * never reaches a resolver.
+     * @type {String}
+     */
+    REPO_COORDINATE = String.raw`[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/(?!\.\.?(?![\w.-]))[\w.-]+`,
+    /**
+     * A declared owner: `#N`, or `owner/repo#N`, ending at its number.
+     * @type {String}
+     */
+    OWNER_TOKEN     = String.raw`(?:${REPO_COORDINATE})?#\d+(?![\w/])`;
+
+const
     // A REAL level-two heading on its own line. `indexOf` would anchor on the first substring, so a
     // body that merely quotes the heading in prose or a fenced block would have its section read
     // from the wrong offset.
@@ -136,13 +151,13 @@ const
     // In both shapes the owner may name its repository (`owner/repo#N`): an
     // installed check owned by another repo's issue is an honest owner, and `#N` alone forced a
     // same-repo stand-in.
-    RESIDUAL_OWNER_LINE_PATTERN   = /^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]+)?Residual-Owner:[ \t]+((?:[\w.-]+\/[\w.-]+)?#\d+)[ \t]*$/im,
+    RESIDUAL_OWNER_LINE_PATTERN   = new RegExp(String.raw`^[ \t]*(?:>[ \t]*)*(?:[-*+][ \t]+)?Residual-Owner:[ \t]+(${OWNER_TOKEN})[ \t]*$`, 'im'),
     // 2. INLINE shape: `evidence-ladder.md` prescribes a **1-line** declaration whose owner is mid-line —
     //    `Evidence: L2 (…) → L4 required (AC5 …). Residual: AC5, Residual-Owner: #<an existing open ticket>.` Anchoring THIS
     //    would refuse the documented template, which is what my first attempt did; a spec arm written the
     //    round before caught it. The owner must follow the `Residual:` clause on that same line, so a
     //    bare mid-line mention still cannot qualify.
-    RESIDUAL_OWNER_INLINE_PATTERN = /Residual:[^\n]*?,[ \t]*Residual-Owner:[ \t]+((?:[\w.-]+\/[\w.-]+)?#\d+)/i,
+    RESIDUAL_OWNER_INLINE_PATTERN = new RegExp(String.raw`Residual:[^\n]*?,[ \t]*Residual-Owner:[ \t]+(${OWNER_TOKEN})`, 'i'),
     RESOLVES_PATTERN              = /\bResolves:?\s+#\d+/i,
     // A REAL level-two heading, for the same shadowing reason as the Post-Merge pattern above.
     AC_EVIDENCE_H2                = /^##[ \t]+AC Evidence[ \t]*$/m,
@@ -194,7 +209,7 @@ export function createProgram() {
         .option('--pr-body <file>', 'Run local PR-body template lint against the given markdown file.')
         .option('--pr-base <ref>', 'Compare stacked PR commit tickets against this intended base.', 'origin/dev')
         .option('--pr-draft', 'Validate --pr-body as a draft PR: Refs/Related may temporarily stand in for Resolves.')
-        .option('--pr-repo <owner/repo>', 'The repository the --pr-body PR belongs to, when it is not this checkout\'s: its #N references are read there.')
+        .option('--pr-repo <owner/repo>', 'The repository the --pr-body PR belongs to, when it is not this checkout\'s: its #N references and close target are read there. The git gates (the stacked-commit audit) still read this checkout, so run from that repository\'s clone.')
         .option('--no-fix', 'Check-only mode: skip the check-block-alignment --fix repair pass.')
         .argument('[files...]', 'Optional file paths. When omitted, staged ACMR files are read from git.')
 }
@@ -664,16 +679,20 @@ export function resolveTicketAcs(number, {
 
 /**
  * @summary One declared owner, as written and as resolved. A repository equal to `currentRepo` is
- * this repository, so spelling out the PR's own repo cannot slip the close-target rule.
+ * this repository, so spelling out the PR's own repo cannot slip the close-target rule. An owner is
+ * `foreign` only when this repository is known and differs: an unknown context proves nothing.
  * @param {String} token The owner as written: `#N` or `owner/repo#N`.
  * @param {String|null} currentRepo This repository's `owner/repo`, when known.
- * @returns {{token: String, repo: String|null, number: String}} `repo` is null for this repository.
+ * @returns {{token: String, repo: String|null, number: String, foreign: Boolean}} `repo` is null for
+ *     this repository, and otherwise names where the owner is read.
  * @private
  */
 function parseResidualOwner(token, currentRepo) {
-    const [repo, number] = token.split('#');
+    const
+        [declared, number] = token.split('#'),
+        own                = !declared || declared.toLowerCase() === currentRepo?.toLowerCase();
 
-    return {token, repo: repo && repo.toLowerCase() !== currentRepo?.toLowerCase() ? repo : null, number}
+    return {token, repo: own ? null : declared, number, foreign: !own && Boolean(currentRepo)}
 }
 
 /**
@@ -812,7 +831,7 @@ export function validatePrBody(body, {draft = false, resolveOwnerState = null, r
         // shape one dimension along. Deduplicated, so a repeated owner costs one message and one read.
         const
             declaredOwners = collectDeclaredResidualOwners({fenceless, owingSections, currentRepo}),
-            isCloseTarget  = owner => owner.repo === null && owner.number === closeTarget;
+            isCloseTarget  = owner => !owner.foreign && owner.number === closeTarget;
 
         if (!owner) {
             missingVisible.push(`This PR still owes work — "${obligation}" — with no \`Residual-Owner: #N\`. Finish it before merge, or name an EXISTING open ticket that owns it, or drop the obligation. Do not open a ticket to satisfy this.`)
@@ -824,8 +843,10 @@ export function validatePrBody(body, {draft = false, resolveOwnerState = null, r
         // parking work on the close target is the case that slipped: the single-owner check could not
         // see it, and the state loop below then filtered it out as "not to be read".
         // A same-number owner in ANOTHER repository is a different ticket, which the merge does not close.
-        declaredOwners.filter(isCloseTarget).forEach(({token}) => {
-            missingVisible.push(`\`Residual-Owner: ${token}\` is this PR's own close target, so the owner disappears when the merge closes it. Name an EXISTING open ticket, or finish the work, or drop it.`)
+        declaredOwners.filter(isCloseTarget).forEach(({token, repo}) => {
+            missingVisible.push(repo
+                ? `\`Residual-Owner: ${token}\` may be this PR's own close target: this checkout's repository could not be read, so \`${repo}\` cannot be told apart from it. Pass \`--pr-repo <owner/repo>\`, or name another owner.`
+                : `\`Residual-Owner: ${token}\` is this PR's own close target, so the owner disappears when the merge closes it. Name an EXISTING open ticket, or finish the work, or drop it.`)
         });
 
         if (resolveOwnerState) {
@@ -1283,7 +1304,9 @@ function runTicketArchaeologyGate({cwd, files, findTicketRefsImpl, readFileSyncI
 
 /**
  * @summary This checkout's `owner/repo`, read offline from the `origin` remote, so an owner that
- * spells out this repository is judged as this repository's. `null` when the remote cannot be read.
+ * spells out this repository is judged as this repository's. Every clone form GitHub documents is
+ * read: HTTPS, SCP-style SSH, `ssh://`, and SSH over the HTTPS port (`ssh.github.com:443`). `null`
+ * when the remote cannot be read or is not GitHub's.
  * @param {Object} [options]
  * @param {String} [options.cwd=process.cwd()]
  * @param {Function} [options.execFileSyncImpl=execFileSync]
@@ -1293,11 +1316,19 @@ export function resolveCurrentRepo({cwd = process.cwd(), execFileSyncImpl = exec
     try {
         const url = String(execFileSyncImpl('git', ['remote', 'get-url', 'origin'], {cwd, encoding: 'utf8', stdio: 'pipe'})).trim();
 
-        return url.match(/github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?$/)?.[1] ?? null
+        return url.replace(/(?:\.git)?\/?$/, '').match(new RegExp(String.raw`(?:^|[@/.])github\.com(?::\d+)?[:/](${REPO_COORDINATE})$`))?.[1] ?? null
     } catch {
         return null
     }
 }
+
+/**
+ * @summary Whether `--pr-repo` names exactly one `owner/repo`.
+ * @param {String} repo
+ * @returns {Boolean}
+ * @private
+ */
+const isRepoCoordinate = repo => new RegExp(`^${REPO_COORDINATE}$`).test(repo);
 
 /**
  * @summary Lints a PR body file. The PR's repository is `prRepo` when the body belongs to another
@@ -1316,6 +1347,15 @@ export function resolveCurrentRepo({cwd = process.cwd(), execFileSyncImpl = exec
  */
 function runPrBodyGate({cwd, execFileSyncImpl, existsSyncImpl, prBody, prDraft, prRepo = null, readFileSyncImpl}) {
     const filePath = path.resolve(cwd, prBody);
+
+    if (prRepo !== null && !isRepoCoordinate(prRepo)) {
+        return {
+            missingInvisible: [],
+            missingVisible  : [`--pr-repo \`${prRepo}\` is not one \`owner/repo\`: no query, fragment, extra segment or dot segment.`],
+            valid           : false,
+            warnings        : []
+        }
+    }
 
     if (!existsSyncImpl(filePath)) {
         return {

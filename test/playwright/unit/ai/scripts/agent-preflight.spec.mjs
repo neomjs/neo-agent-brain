@@ -417,6 +417,56 @@ test.describe('agent-preflight utility', () => {
         expect(reads.some(path => path.startsWith('repos/{owner}/{repo}/'))).toBe(false)
     });
 
+    test('an owner spelling out this repository is its close target from any origin form, and from no origin at all', () => {
+        const body = validBody.replace('Resolves #12345', 'Resolves #100')
+            .replace('## Post-Merge Validation\n- None.', '## Post-Merge Validation\n- [ ] the installed check\nResidual-Owner: neomjs/neo-agent-brain#100');
+
+        for (const origin of ['ssh://git@ssh.github.com:443/neomjs/neo-agent-brain.git', 'git@github.com:neomjs/neo-agent-brain.git', null]) {
+            let stderr = '';
+
+            const status = runAgentPreflight({
+                argv            : ['--pr-body', 'body.md'],
+                cwd             : '/repo',
+                execFileSyncImpl: (cmd, args) => {
+                    if (cmd === 'git' && args[0] === 'remote') {
+                        if (origin === null) throw new Error('no origin');
+                        return `${origin}\n`
+                    }
+
+                    return cmd === 'gh' ? '{"state":"open","isPullRequest":false}' : ''
+                },
+                existsSyncImpl  : () => true,
+                readFileSyncImpl: () => body,
+                stderr          : {write: chunk => { stderr += chunk }},
+                stdout          : {write: () => {}}
+            });
+
+            expect(status, String(origin)).toBe(1);
+            expect(stderr, String(origin)).toContain(origin ? "is this PR's own close target" : "may be this PR's own close target")
+        }
+    });
+
+    test('--pr-repo is one owner/repo: a query, a fragment, an extra segment or a dot segment is refused before any read', () => {
+        for (const prRepo of ['neomjs/neo-agent-institution/issues/12?ignored=', 'neomjs/neo-agent-institution#x', 'neomjs/..', '../repo', 'neomjs']) {
+            const reads = [];
+            let stderr = '';
+
+            const status = runAgentPreflight({
+                argv            : ['--pr-body', 'body.md', '--pr-repo', prRepo],
+                cwd             : '/repo',
+                execFileSyncImpl: (cmd, args) => (cmd === 'gh' && reads.push(args[1]), ''),
+                existsSyncImpl  : () => true,
+                readFileSyncImpl: () => validBody,
+                stderr          : {write: chunk => { stderr += chunk }},
+                stdout          : {write: () => {}}
+            });
+
+            expect(status, prRepo).toBe(1);
+            expect(stderr, prRepo).toContain(`--pr-repo \`${prRepo}\` is not one \`owner/repo\``);
+            expect(reads, prRepo).toEqual([])
+        }
+    });
+
     test('fails before PR creation when a stacked commit ticket is undeclared', () => {
         let stdout = '';
         let stderr = '';
