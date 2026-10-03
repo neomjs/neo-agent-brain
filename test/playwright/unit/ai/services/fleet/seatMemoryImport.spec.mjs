@@ -140,29 +140,74 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
         expect(fs.existsSync(path.join(agents, 'neo-fable', 'memory', 'id_rsa'))).toBe(false)
     });
 
-    test('links inside the source are skipped, and a same-named file the seat already has is kept', async () => {
-        write(claudeSource(), {'MEMORY.md': 'index', 'note.md': 'source note'});
+    test('a link on any segment above the memory folder refuses the import and hides it from detection', async () => {
+        const outside = path.join(root, 'outside', 'projects'),
+              linked  = path.join(home, '.claude', 'projects');
+
+        write(path.join(outside, '-Users-x-neo', 'memory'), {'MEMORY.md': 'not agent memory'});
+        fs.mkdirSync(path.dirname(linked), {recursive: true});
+        fs.symlinkSync(outside, linked);
+
+        const refusal = await importFor(seat(claudeSource())).catch(error => error);
+
+        expect(refusal).toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: claudeSource(), step: 'memory import'});
+        expect(refusal.message).toContain(`'${linked}' is a link or a file, not a real folder`);
+        expect(fs.existsSync(path.join(agents, 'neo-fable')), 'nothing read, nothing written').toBe(false);
+        expect(await detectMemoryCandidates({homeDir: home})).toEqual([])
+    });
+
+    test('links inside the source, to a file or to a folder, are neither copied nor counted', async () => {
+        write(claudeSource(), {'MEMORY.md': 'index'});
         write(path.join(home, '.ssh'), {'id_rsa': 'never'});
         fs.symlinkSync(path.join(home, '.ssh', 'id_rsa'), path.join(claudeSource(), 'leak.md'));
+        fs.symlinkSync(path.join(home, '.ssh'), path.join(claudeSource(), 'keys'));
 
         const destination = path.join(agents, 'neo-fable', 'memory');
 
-        write(destination, {'note.md': 'the seat already wrote this'});
-
-        expect((await importFor(seat(claudeSource()))).state, 'not identical: no receipt, still present').toBe('present');
-        expect(fs.existsSync(path.join(destination, 'leak.md'))).toBe(false);
-        expect(fs.readFileSync(path.join(destination, 'note.md'), 'utf8')).toBe('the seat already wrote this');
-        expect(fs.readFileSync(path.join(destination, 'MEMORY.md'), 'utf8')).toBe('index')
+        expect(await importFor(seat(claudeSource()))).toEqual({state: 'copied', source: claudeSource(), destination, files: 1});
+        expect(fs.readdirSync(destination)).toEqual(['MEMORY.md']);
+        expect(await detectMemoryCandidates({homeDir: home})).toEqual([{family: 'claude', path: claudeSource(), files: 1}])
     });
 
-    test('a Codex seat imports into its own CODEX_HOME', async () => {
-        const source = path.join(home, '.codex', 'memories');
+    test('a first import the seat contradicts is refused and changes nothing, until it is reconciled', async () => {
+        write(claudeSource(), {'MEMORY.md': 'index', 'note.md': 'source note'});
+
+        const destination = path.join(agents, 'neo-fable', 'memory'),
+              receipt     = path.join(agents, 'neo-fable', 'harness', 'claude-desktop', MEMORY_IMPORT_RECEIPT);
+
+        write(destination, {'note.md': 'the seat already wrote this'});
+
+        const refusal = await importFor(seat(claudeSource())).catch(error => error);
+
+        expect(refusal).toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: claudeSource(), destination, step: 'memory import'});
+        expect(refusal.message).toContain('the seat already holds a different note.md');
+        expect(fs.readdirSync(destination), 'nothing copied').toEqual(['note.md']);
+        expect(fs.readFileSync(path.join(destination, 'note.md'), 'utf8')).toBe('the seat already wrote this');
+        expect(fs.existsSync(receipt)).toBe(false);
+
+        // a source that holds nothing is a consent left unhonored too, whatever the seat holds
+        await expect(importFor(seat(path.join(home, '.claude', 'projects', '-Users-x-empty', 'memory')))).rejects.toMatchObject({
+            code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', message: expect.stringContaining('the source holds no memory to copy')
+        });
+
+        // reconciled: the seat now holds the source's words, and the next Start completes the import
+        fs.writeFileSync(path.join(destination, 'note.md'), 'source note');
+
+        expect(await importFor(seat(claudeSource()))).toEqual({state: 'copied', source: claudeSource(), destination, files: 2});
+        expect(fs.existsSync(receipt)).toBe(true)
+    });
+
+    test('a Codex seat imports into its own CODEX_HOME, and a folder its preparation made ends owner-only', async () => {
+        const source      = path.join(home, '.codex', 'memories'),
+              destination = path.join(agents, 'neo-fable', 'harness', 'codex-desktop', 'codex-home', 'memories');
 
         write(source, {'MEMORY.md': 'codex index', 'raw_memories.md': 'raw'});
 
-        const result = await importFor(seat(source, 'codex-desktop'));
+        // as the Codex preparer leaves it under umask 022, before Start imports
+        fs.mkdirSync(destination, {recursive: true});
+        fs.chmodSync(destination, 0o755);
 
-        expect(result.destination).toBe(path.join(agents, 'neo-fable', 'harness', 'codex-desktop', 'codex-home', 'memories'));
-        expect(result).toMatchObject({state: 'copied', files: 2})
+        expect(await importFor(seat(source, 'codex-desktop'))).toEqual({state: 'copied', source, destination, files: 2});
+        expect(fs.statSync(destination).mode & 0o777).toBe(0o700)
     });
 });

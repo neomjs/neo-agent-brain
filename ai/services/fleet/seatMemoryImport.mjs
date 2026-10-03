@@ -8,8 +8,8 @@ import {writeFileAtomic}                              from '../shared/atomicFile
 /**
  * @module ai/services/fleet/seatMemoryImport
  * @summary An adopted seat's markdown memory: where an existing agent keeps it, where the seat's family
- * loads it from, the copy that converges it at Start, and the refusal when a consented import left the
- * seat empty.
+ * loads it from, the copy that converges it at Start, and the refusal when a consented import did not
+ * converge.
  *
  * The consent is the registry row's `memoryImport`: a source path or `'none'`, recorded at birth by
  * `defineAgent`. A seat with no consent is a fresh one and starts empty by design. The destination is
@@ -132,8 +132,58 @@ async function childDirectories(dir, fileSystem) {
 }
 
 /**
+ * @summary The first path beneath `homeDir` on the way down to `dir` that is not a real folder: a link
+ * or a file. The consent is judged by its words, so a link on any segment would carry an agent memory
+ * path into some other tree.
+ * @param {String} homeDir
+ * @param {String} dir        A path {@link isMemoryFolder} accepts.
+ * @param {Object} fileSystem
+ * @returns {Promise<String|null>} `null` when every segment that exists is a real folder.
+ */
+async function firstNonFolder(homeDir, dir, fileSystem) {
+    let current = homeDir;
+
+    for (const segment of path.relative(homeDir, dir).split(path.sep)) {
+        current = path.join(current, segment);
+
+        const entry = await fileSystem.lstat(current).catch(error => {
+            if (error.code === 'ENOENT') return null;
+            throw error
+        });
+
+        if (!entry) return null;
+        if (!entry.isDirectory()) return current
+    }
+
+    return null
+}
+
+/**
+ * @summary How each of `files` stands in the seat against the source: `'same'` bytes, `'missing'` or
+ * `'different'`.
+ * @param {String[]} files       Paths relative to both folders.
+ * @param {String}   source
+ * @param {String}   destination
+ * @param {Object}   fileSystem
+ * @returns {Promise<String[]>} One state per file, in order.
+ */
+function compareFiles(files, source, destination, fileSystem) {
+    return Promise.all(files.map(async file => {
+        const held = await fileSystem.readFile(path.join(destination, file)).catch(error => {
+            if (error.code === 'ENOENT') return null;
+            throw error
+        });
+
+        if (!held) return 'missing';
+
+        return held.equals(await fileSystem.readFile(path.join(source, file))) ? 'same' : 'different'
+    }))
+}
+
+/**
  * @summary Existing markdown memory an adopted seat could import, read-only: every folder
- * {@link normalizeMemoryImport} accepts that holds files, with its file count, most files first.
+ * {@link normalizeMemoryImport} accepts that holds files and lies under real folders only, with its
+ * file count, most files first.
  * @param {Object} [options]
  * @param {String} [options.homeDir=os.homedir()]
  * @param {Object} [options.fileSystem=fs]
@@ -151,6 +201,8 @@ export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem
         candidates = [];
 
     for (const folder of folders.filter(({path: dir}) => isMemoryFolder(dir, homeDir))) {
+        if (await firstNonFolder(homeDir, folder.path, fileSystem)) continue;
+
         const files = await regularFiles(folder.path, fileSystem);
 
         files?.length && candidates.push({...folder, files: files.length})
@@ -161,9 +213,11 @@ export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem
 
 /**
  * @summary Converges an adopted seat's memory at Start, then reads it fresh. With a source consented
- * and no receipt, the source is copied into the family's destination (never moved, links skipped,
- * same-named files the seat already has kept), proven identical and receipted. Then the destination
- * must hold memory, or Start refuses, naming the source, the destination and the step.
+ * and no receipt, the first import must complete: the source is copied into the family's destination
+ * (never moved, links skipped, the folder owner-only), proven identical and receipted. A source that
+ * holds nothing, or a file the seat already holds with other bytes, refuses before anything is copied.
+ * Once receipted, the destination must hold memory. Every refusal names the source, the destination
+ * and the step.
  * @param {Object} options
  * @param {Object} options.agent        The registry row (`id`, `harnessType`, `memoryImport`).
  * @param {String} options.instanceRoot The absolute agents root.
@@ -171,7 +225,7 @@ export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem
  * @param {Object} [options.fileSystem=fs]
  * @param {Function} [options.now]      The receipt's clock.
  * @returns {Promise<{state: 'none'|'copied'|'present', source?: String, destination?: String, files?: Number}>}
- * @throws {Error} `FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED` when a consented import left the destination empty.
+ * @throws {Error} `FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED` when a consented import did not converge.
  */
 export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedir(), fileSystem = fs, now = () => new Date().toISOString()}) {
     const source = agent.memoryImport;
@@ -188,13 +242,9 @@ export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedi
         throw unconverged(agent, source, destination, 'the consent names no agent memory folder')
     }
 
-    // the folder itself, never a link it stands for: the copy reads agent memory and nothing else
-    const sourceEntry = await fileSystem.lstat(source).catch(error => {
-        if (error.code === 'ENOENT') return null;
-        throw error
-    });
+    const link = await firstNonFolder(homeDir, source, fileSystem);
 
-    if (sourceEntry && !sourceEntry.isDirectory()) throw unconverged(agent, source, destination, 'the source is not a real folder');
+    if (link) throw unconverged(agent, source, destination, `'${link}' is a link or a file, not a real folder`);
 
     const
         instanceHome = deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}),
@@ -209,49 +259,56 @@ export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedi
     if (!receipt && path.resolve(source) !== destination) {
         const sourceFiles = await regularFiles(source, fileSystem);
 
-        if (sourceFiles?.length) {
-            await fileSystem.mkdir(destination, {recursive: true, mode: 0o700});
-            await fileSystem.cp(source, destination, {
-                recursive         : true,
-                force             : false,
-                errorOnExist      : false,
-                preserveTimestamps: true,
-                filter            : async entry => !(await fileSystem.lstat(entry)).isSymbolicLink()
-            });
+        if (!sourceFiles?.length) throw unconverged(agent, source, destination, 'the source holds no memory to copy');
 
-            const identical = await Promise.all(sourceFiles.map(async file =>
-                (await fileSystem.readFile(path.join(source, file))).equals(await fileSystem.readFile(path.join(destination, file)))
-            ));
+        const held      = await compareFiles(sourceFiles, source, destination, fileSystem),
+              conflicts = sourceFiles.filter((file, index) => held[index] === 'different');
 
-            if (identical.every(Boolean)) {
-                await fileSystem.mkdir(instanceHome, {recursive: true});
-                await writeFileAtomic(receiptPath, `${JSON.stringify({source, destination, files: sourceFiles.length, copiedAt: now()}, null, 2)}\n`, {mode: 0o600});
-                copied = true
-            }
+        if (conflicts.length) {
+            throw unconverged(agent, source, destination, `the seat already holds a different ${conflicts.join(', ')}; reconcile the seat's copy with the source, then start again`)
         }
+
+        await fileSystem.mkdir(destination, {recursive: true, mode: 0o700});
+        // mkdir leaves a folder the family's preparation already made at its mode
+        await fileSystem.chmod(destination, 0o700);
+        await fileSystem.cp(source, destination, {
+            recursive         : true,
+            force             : false,
+            errorOnExist      : false,
+            preserveTimestamps: true,
+            filter            : async entry => !(await fileSystem.lstat(entry)).isSymbolicLink()
+        });
+
+        const arrived    = await compareFiles(sourceFiles, source, destination, fileSystem),
+              unverified = sourceFiles.filter((file, index) => arrived[index] !== 'same');
+
+        if (unverified.length) throw unconverged(agent, source, destination, `the copy did not arrive identical: ${unverified.join(', ')}`);
+
+        await fileSystem.mkdir(instanceHome, {recursive: true});
+        await writeFileAtomic(receiptPath, `${JSON.stringify({source, destination, files: sourceFiles.length, copiedAt: now()}, null, 2)}\n`, {mode: 0o600});
+        copied = true
     }
 
     const present = await regularFiles(destination, fileSystem);
 
     if (!present?.length) {
-        throw unconverged(agent, source, destination, receipt ? 'it was imported once and is empty now' : 'the source holds no memory to copy')
+        throw unconverged(agent, source, destination, receipt ? `'${destination}' holds none (it was imported once and is empty now)` : `'${destination}' holds none`)
     }
 
     return {state: copied ? 'copied' : 'present', source, destination, files: present.length}
 }
 
 /**
- * @summary The Start refusal for a consented import that left the seat without memory.
+ * @summary The Start refusal for a consented import that did not converge.
  * @param {Object}      agent
  * @param {String}      source
  * @param {String|null} destination
- * @param {String}      why
+ * @param {String}      why         What stands in the way, in words the operator can act on.
  * @returns {Error}
  */
 function unconverged(agent, source, destination, why) {
     return Object.assign(new Error(
-        `startAgentProvisioned: agent '${agent.id}' consented to import its memory from '${source}', but ` +
-        `${destination ? `'${destination}'` : 'its seat'} holds none (${why}). The memory-import step did not converge; ` +
-        'copy the memory there before starting it.'
+        `startAgentProvisioned: agent '${agent.id}' consented to import its memory from '${source}', but ${why}. ` +
+        'The memory-import step did not converge, so the seat does not start.'
     ), {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source, destination, step: 'memory import'})
 }
