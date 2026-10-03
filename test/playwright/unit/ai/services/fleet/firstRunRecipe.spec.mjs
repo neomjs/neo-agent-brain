@@ -262,4 +262,37 @@ test.describe('firstRunRecipe', () => {
         expect(result.steps.find(step => step.id === 'provider-key')).toMatchObject({status: STEP_STATUSES.pending, reason: 'decided by the preset: none consented yet'});
         expect(result.recipeVersion).toBe(RECIPE_VERSION);
     });
+
+    test('every observer is called with the target and, under a bound binding only, the record: no record, another target\'s record and another version\'s record hand over null', async () => {
+        const
+            calls     = [],
+            recording = Object.fromEntries(Object.entries(greenObservers()).map(([name, observer]) => [name, async (target, context) => {
+                calls.push({name, target, context});
+
+                return observer(target, context);
+            }])),
+            recordA   = fullRecord(targetA),
+            seen      = async (target, record) => {
+                calls.length = 0;
+                await evaluateRecipe({target, record, observers: recording, presets, now: () => NOW});
+
+                return calls;
+            };
+
+        // bound: the record rides along to every observation and effect observer, with the target
+        const bound = await seen(targetA, recordA);
+
+        expect(bound.map(call => call.name).sort()).toEqual(['done', 'envCarrier', 'placement', 'runningPlane', 'secretFiles', 'servedPlane', 'validation']);
+        for (const call of bound) {
+            expect(call.target, call.name).toEqual(targetA);
+            expect(call.context, call.name).toEqual({record: recordA});
+        }
+
+        // not bound: the observer gets the target and `{record: null}` — never another target's or version's consents
+        for (const [target, record] of [[targetA, null], [targetB, recordA], [targetA, {...recordA, recipeVersion: RECIPE_VERSION + 1}]]) {
+            for (const call of await seen(target, record)) {
+                expect(call.context, `${call.name} for ${target.planeId}`).toEqual({record: null});
+            }
+        }
+    });
 });

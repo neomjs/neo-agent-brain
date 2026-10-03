@@ -5,7 +5,11 @@ import os             from 'node:os';
 import path           from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify}    from 'node:util';
-import {fakeHostObservers, hostLayout, parseArgs} from '../../../../../../ai/scripts/setup/firstRun.mjs';
+import {PLANE_MEMORY_CORE_PATH, fakeHostObservers, hostLayout, parseArgs, productionObservers} from '../../../../../../ai/scripts/setup/firstRun.mjs';
+import {RECIPE_VERSION, evaluateRecipe}                  from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
+import {createHost}                                      from '../../../../../../ai/services/fleet/hostEffects.mjs';
+import {presets}                                         from '../../../../../../ai/services/fleet/placementPresets.mjs';
+import {createSetupRecord, withConsent}                  from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
 
 // The CLI on a fake host: a child process per arm, stdin closed (never a TTY), the record under a temp setup root.
 
@@ -353,5 +357,44 @@ test.describe('firstRun CLI', () => {
 
         expect(answers).toEqual({preset: 'hosted'});
         return expect(observers.done()).rejects.toThrow('kb unreachable');
+    });
+
+    test('the production served-plane observer asks the plane the way its clients do: the Memory Core route, the consented credential as the bearer, the block as observed; no consent sends no bearer, and the recipe keeps the verdict', async () => {
+        const
+            {patPath}  = await scratch(),
+            target     = {planeId: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data', endpoint: 'http://127.0.0.1:3102'},
+            served     = {id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'},
+            calls      = [],
+            healthcheck = async options => {
+                calls.push(options);
+
+                if (!options.bearerToken) {
+                    throw new Error('Streamable HTTP error: Error POSTing to endpoint (HTTP 401)');
+                }
+
+                return {status: 'healthy', url: `${options.url}/`, plane: served, timings: {startupMs: 1, timeoutMs: 8000}};
+            },
+            host       = createHost({now: () => Date.UTC(2026, 9, 3)}),
+            observers  = productionObservers({layout: hostLayout({stateRoot: '/srv/state'}), host, healthcheck}),
+            consented  = withConsent(createSetupRecord({runId: RUN_ID, target, recipeVersion: RECIPE_VERSION, now: host.now}), {stepId: 'plane-credential', answer: patPath, consentedAt: 't'});
+
+        // bound record with the credential consent: the route, the bearer (trimmed file content), the report flag, no expectations
+        await expect(observers.servedPlane(target, {record: consented})).resolves.toEqual(served);
+        expect(calls).toEqual([{url: target.endpoint, mcpPath: PLANE_MEMORY_CORE_PATH, bearerToken: PAT, expectedStatus: 'healthy,degraded', reportServedPlane: true}]);
+        expect(PLANE_MEMORY_CORE_PATH).toBe('/mc/mcp');
+
+        // before the consent (or unbound): no bearer leaves the host; the plane's refusal is the observer's thrown reason
+        await expect(observers.servedPlane(target, {record: null})).rejects.toThrow('401');
+        await expect(observers.servedPlane(target)).rejects.toThrow('401');
+        expect(calls.slice(1).map(call => call.bearerToken)).toEqual([null, null]);
+
+        // the recipe's own comparison keeps the verdict: a thrown probe is unknown, a wrong plane is failed — never the other way round
+        const
+            evaluate = (record, planeId) => evaluateRecipe({target: {...target, planeId}, record, observers: {servedPlane: observers.servedPlane}, presets, now: host.now}).then(result => result.steps.find(step => step.id === 'served-plane')),
+            thrown   = await evaluate(null, 'neo-local-canonical'),
+            wrong    = await evaluate(withConsent(createSetupRecord({runId: RUN_ID, target: {...target, planeId: 'plane-b'}, recipeVersion: RECIPE_VERSION, now: host.now}), {stepId: 'plane-credential', answer: patPath, consentedAt: 't'}), 'plane-b');
+
+        expect(thrown).toMatchObject({status: 'unknown', reason: expect.stringContaining('401')});
+        expect(wrong).toMatchObject({status: 'failed', reason: expect.stringContaining("served plane id is 'neo-local-canonical', expected 'plane-b'")});
     });
 });
