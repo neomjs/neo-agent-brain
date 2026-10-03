@@ -3,11 +3,6 @@ import path                   from 'path';
 import ConfigProvider, {leaf} from '../../../ConfigProvider.mjs';
 import {fileURLToPath}        from 'url';
 import {resolvePlaneDataRoot} from '../../../planeConfig.mjs';
-import {
-    MEMORY_CORE_GRAPH_DB_ENV,
-    TURN_PRESENCE_DEFAULTS,
-    TURN_PRESENCE_ENV
-} from './helpers/TurnPresenceConfig.mjs';
 
 /**
  * @summary Parses a liveness-window override, refusing values a window cannot have.
@@ -218,7 +213,7 @@ class ConfigBase extends ConfigProvider {
                  * Production graph SQLite path. Declarative leaf; env override via `NEO_MEMORY_DB_PATH`.
                  * @type {string}
                  */
-                graphProd      : leaf(path.resolve(planeDataRoot, 'sqlite/memory-core-graph.sqlite'), MEMORY_CORE_GRAPH_DB_ENV, 'string', {planeMember: true}),
+                graphProd      : leaf(path.resolve(planeDataRoot, 'sqlite/memory-core-graph.sqlite'), 'NEO_MEMORY_DB_PATH', 'string', {planeMember: true}),
                 /**
                  * Unit-test graph path: in-memory SQLite (ephemeral, per-process). Declarative leaf.
                  * @type {string}
@@ -258,12 +253,29 @@ class ConfigBase extends ConfigProvider {
              * `freshMs` is the online freshness window refreshed by start/progress writes,
              * `ttlMs` is the hard expiry backstop, and `noteMaxChars` bounds hook diagnostics.
              * Consumers read resolved leaves at use sites through the AiConfig Provider SSOT.
+             *
+             * The seat hook writer spends one budget for its whole MCP exchange (connect, initialize,
+             * call), chosen by how the harness registered the hook:
+             * - `hookWriteTimeoutMs` for a synchronous registration, which kills the hook at its own
+             *   timeout, before the named skip, unless the budget leaves the hook process its share.
+             *   The seat reader refuses, by name, a value that does not fit the calling hook's
+             *   registration (`seatConfig.readTurnPresenceDeadlineMs`). Claude's start, at 2 s, is the
+             *   tightest. A loopback plane answers well inside 1500 ms; a remote plane's cold TLS
+             *   exchange may not.
+             * - `asyncHookWriteTimeoutMs` for an asynchronous registration (Claude's progress), which
+             *   the harness never times out. Its size is the transport's own default for one remote
+             *   exchange; its cost is overlap: async runs are not deduplicated, so an unanswering
+             *   plane holds up to tool-call rate × budget runs at once.
+             *
+             * Both are `positiveInt`: an env value that is not a whole number of ms warns by name and
+             * the default stands.
              */
             turnPresence: {
-                freshMs           : leaf(TURN_PRESENCE_DEFAULTS.freshMs,            TURN_PRESENCE_ENV.freshMs,            'number'),
-                ttlMs             : leaf(TURN_PRESENCE_DEFAULTS.ttlMs,              TURN_PRESENCE_ENV.ttlMs,              'number'),
-                noteMaxChars      : leaf(TURN_PRESENCE_DEFAULTS.noteMaxChars,       TURN_PRESENCE_ENV.noteMaxChars,       'number'),
-                hookWriteTimeoutMs: leaf(TURN_PRESENCE_DEFAULTS.hookWriteTimeoutMs, TURN_PRESENCE_ENV.hookWriteTimeoutMs, 'number')
+                freshMs                : leaf(30 * 60 * 1000, 'NEO_TURN_PRESENCE_FRESH_MS',                    'number'),
+                ttlMs                  : leaf(60 * 60 * 1000, 'NEO_TURN_PRESENCE_TTL_MS',                      'number'),
+                noteMaxChars           : leaf(512,            'NEO_TURN_PRESENCE_NOTE_MAX_CHARS',              'number'),
+                hookWriteTimeoutMs     : leaf(1500,           'NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS',       'positiveInt'),
+                asyncHookWriteTimeoutMs: leaf(8000,           'NEO_TURN_PRESENCE_ASYNC_HOOK_WRITE_TIMEOUT_MS', 'positiveInt')
             },
             /**
              * `who_is_online` roster-projection windows.

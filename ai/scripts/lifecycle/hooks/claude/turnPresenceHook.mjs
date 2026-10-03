@@ -3,7 +3,22 @@ import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
-import {readPlaneConfig} from '../seatConfig.mjs';
+import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
+
+/**
+ * @summary The actions `events.manifest.json` registers asynchronously. Progress runs in the background,
+ * so it spends the async deadline; every other action runs in the prompt's path and spends the
+ * synchronous one. A spec holds this set equal to the manifest's async registrations.
+ * @type {Set<String>}
+ */
+export const ASYNC_ACTIONS = new Set(['progress']);
+
+/**
+ * @summary The timeout `events.manifest.json` gives every synchronous presence registration (start),
+ * in ms. A spec holds it equal to the manifest; the synchronous deadline must fit inside it.
+ * @type {Number}
+ */
+export const SYNC_REGISTRATION_MS = 2000;
 
 function parseHookPayload(raw) {
     if (!raw) return null;
@@ -48,13 +63,14 @@ function resolveNote({action, hookPayload} = {}) {
  * @summary Records Claude Code turn-presence into the store the deployment serves.
  *
  * **This is the entrypoint, and the only place config is resolved.** It reads the seat's plane
- * (`seatConfig.readPlaneConfig`) and injects it into a writer that resolves nothing — the same split
- * `wakeArmingHook` uses. The
+ * (`seatConfig.readPlaneConfig`) and the writer's deadline (`seatConfig.readTurnPresenceDeadlineMs`)
+ * and injects both into a writer that resolves nothing — the same split `wakeArmingHook` uses. The
  * previous shape let the writer derive a filesystem path from its own module location, which is how
  * every beacon ended up in a private checkout that no reader queries.
  *
  * @param {Object} options
  * @param {'start'|'progress'|'terminal'} [options.actionArg] Optional action override.
+ * @param {Number} [options.deadlineMs] Injected deadline; read from the `turnPresence` leaf when absent.
  * @param {Object} [options.env=process.env] Environment source.
  * @param {*} [options.hookPayload] Parsed Claude Code hook payload.
  * @param {String|Date|Number} [options.now] Clock override for tests.
@@ -64,6 +80,7 @@ function resolveNote({action, hookPayload} = {}) {
  */
 export async function recordClaudeTurnPresence({
     actionArg,
+    deadlineMs,
     env = process.env,
     hookPayload,
     now,
@@ -74,12 +91,13 @@ export async function recordClaudeTurnPresence({
 
     return recordTurnPresenceFromHook({
         action,
+        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(ASYNC_ACTIONS.has(action) ? {async: true} : {registrationMs: SYNC_REGISTRATION_MS}),
         env,
         hookPayload,
-        note  : resolveNote({action, hookPayload}),
+        note      : resolveNote({action, hookPayload}),
         now,
-        plane : plane ?? await readPlaneConfig(),
-        source: resolveSource({action, hookPayload}),
+        plane     : plane ?? await readPlaneConfig(),
+        source    : resolveSource({action, hookPayload}),
         ...(record ? {record} : {})
     });
 }

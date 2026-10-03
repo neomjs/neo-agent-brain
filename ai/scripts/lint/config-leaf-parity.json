@@ -813,6 +813,7 @@
         "toolTelemetry.slowAfterMs",
         "transport",
         "turnPresence",
+        "turnPresence.asyncHookWriteTimeoutMs",
         "turnPresence.freshMs",
         "turnPresence.hookWriteTimeoutMs",
         "turnPresence.noteMaxChars",
