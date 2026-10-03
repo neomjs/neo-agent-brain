@@ -150,6 +150,20 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows.map(row => row.repoOutcomes)).toEqual([repos, null, null])
     })
 
+    test('carries where a desktop seat\'s session opened from the runtime row — null for every other row', () => {
+        const
+            sessionFolder = {state: 'wrong', expected: '/agents/alice/neomjs/neo', observed: '/old/neo'},
+            snapshot      = createFleetCockpitStatus({
+                agents       : [{id: 'alice'}, {id: 'bob'}],
+                runtimeStatus: [
+                    {agentId: 'alice', state: 'running', running: true, confidence: 'observed', sessionFolder},
+                    {agentId: 'bob',   state: 'running', running: true, confidence: 'observed'}
+                ]
+            })
+
+        expect(snapshot.rows.map(row => row.sessionFolder)).toEqual([sessionFolder, null])
+    })
+
     test('an unmanaged runtime row is NOT wired — row-existence is a roster fact, not a supervision fact (#17305)', () => {
         const snapshot = createFleetCockpitStatus({
             agents       : [{id: 'grace'}],

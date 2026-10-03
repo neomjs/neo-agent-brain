@@ -343,6 +343,24 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(Object.hasOwn(bob, 'repos')).toBe(false)
     });
 
+    test('where a desktop seat\'s session opened rides its runtime row, and a status without one adds nothing', () => {
+        const
+            registryStub  = {listAgents: () => [{id: 'alice'}, {id: 'bob'}]},
+            sessionFolder = {state: 'pending', expected: '/agents/alice/neomjs/neo'};
+
+        FleetManager.lifecycleService = {
+            getRegistry: () => registryStub,
+            status     : id => id === 'alice'
+                ? {id, state: 'running', running: true, pid: 4242, startedAt: '2026-10-03T19:00:00Z', exitCode: null, sessionFolder}
+                : {id, state: 'running', running: true, pid: 4343, startedAt: '2026-10-03T19:00:00Z', exitCode: null, sessionFolder: null}
+        };
+
+        const [alice, bob] = FleetManager.fleetRuntimeStatus();
+
+        expect(alice.sessionFolder).toEqual(sessionFolder);
+        expect(Object.hasOwn(bob, 'sessionFolder')).toBe(false)
+    });
+
     test('an agent the fleet never launched reports unmanaged, NOT stopped — never-launched is not stopped (#17305)', () => {
         // The incident: nine external-harness seats rendered `benched / offline` because `status()`
         // answers `stopped` for an agent it holds no record of — a sound lifecycle default, an
