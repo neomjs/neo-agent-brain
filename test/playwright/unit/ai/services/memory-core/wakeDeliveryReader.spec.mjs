@@ -30,12 +30,12 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
               records = path.join(root, 'records');
 
         await writeRecord(records, {
-            recordKey: 'k1', subscriptionId: 'WAKE_SUB:ok', state: 'delivered',
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:ok', state: 'delivered',
             acceptedAt: '2026-09-25T00:00:00.000Z', dispatchFinishedAt: '2026-09-25T00:00:01.000Z'
         });
         await writeRecord(records, {
-            recordKey: 'k2', subscriptionId: 'WAKE_SUB:broken', state: 'failed',
-            acceptedAt: '2026-09-25T00:00:00.000Z', dispatchFinishedAt: '2026-09-25T00:00:01.000Z',
+            recordKey    : 'k2', subscriptionId: 'WAKE_SUB:broken', state: 'failed',
+            acceptedAt   : '2026-09-25T00:00:00.000Z', dispatchFinishedAt: '2026-09-25T00:00:01.000Z',
             outcomeReason: "opencode-server envelope requires 'agentIdentity'"
         });
 
@@ -90,7 +90,7 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
 
         await fs.mkdir(records, {recursive: true});
         await fs.writeFile(path.join(records, 'good.json'), JSON.stringify({
-            recordKey: 'k1', subscriptionId: 'WAKE_SUB:a', state: 'delivered',
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:a', state: 'delivered',
             acceptedAt: '2026-09-25T00:00:00.000Z', dispatchFinishedAt: '2026-09-25T00:00:01.000Z'
         }));
         await fs.writeFile(path.join(records, 'truncated.json'), '{"recordKey": "k2", "subscr');
@@ -98,6 +98,123 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
         const {subscriptions} = await readWakeDelivery({recordsDir: records});
 
         expect(subscriptions['WAKE_SUB:a'].state, 'the parseable record still projects').toBe('reachable');
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
+
+    test('a terminal record is read once: a repeat call holds it, even when its file changes', async () => {
+        // A terminal record's file is final (receiverState refuses to transition it), so a repeat
+        // call must not pay for it again. Rewriting the file stands in for "not read again": the
+        // held record still answers.
+        const root    = await tmpRoot(),
+              records = path.join(root, 'records');
+
+        await writeRecord(records, {
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:done', state: 'delivered',
+            acceptedAt: '2026-10-03T00:00:00.000Z', dispatchFinishedAt: '2026-10-03T00:00:01.000Z'
+        });
+
+        expect((await readWakeDelivery({recordsDir: records})).subscriptions['WAKE_SUB:done'].state).toBe('reachable');
+
+        await writeRecord(records, {
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:done', state: 'failed', outcomeReason: 'rewritten',
+            acceptedAt: '2026-10-03T00:00:00.000Z', dispatchFinishedAt: '2026-10-03T00:00:02.000Z'
+        });
+
+        expect((await readWakeDelivery({recordsDir: records})).subscriptions['WAKE_SUB:done'].state, 'the held record answers').toBe('reachable');
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
+
+    test('a pending record is read again on every call until it settles', async () => {
+        const root    = await tmpRoot(),
+              records = path.join(root, 'records');
+
+        await writeRecord(records, {recordKey: 'k1', subscriptionId: 'WAKE_SUB:open', state: 'pending', acceptedAt: '2026-10-03T00:00:00.000Z'});
+
+        expect((await readWakeDelivery({recordsDir: records})).subscriptions['WAKE_SUB:open'].state).toBe('unknown');
+
+        await writeRecord(records, {
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:open', state: 'delivered',
+            acceptedAt: '2026-10-03T00:00:00.000Z', dispatchFinishedAt: '2026-10-03T00:00:01.000Z'
+        });
+
+        expect((await readWakeDelivery({recordsDir: records})).subscriptions['WAKE_SUB:open'].state, 'the settled record is seen').toBe('reachable');
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
+
+    test('a record the directory no longer lists is let go: it leaves the verdict, and a return is read fresh', async () => {
+        const root    = await tmpRoot(),
+              records = path.join(root, 'records');
+
+        await writeRecord(records, {
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:gone', state: 'delivered',
+            acceptedAt: '2026-10-03T00:00:00.000Z', dispatchFinishedAt: '2026-10-03T00:00:01.000Z'
+        });
+        await writeRecord(records, {
+            recordKey : 'k2', subscriptionId: 'WAKE_SUB:stays', state: 'delivered',
+            acceptedAt: '2026-10-03T00:00:00.000Z', dispatchFinishedAt: '2026-10-03T00:00:01.000Z'
+        });
+
+        expect(Object.keys((await readWakeDelivery({recordsDir: records})).subscriptions).sort()).toEqual(['WAKE_SUB:gone', 'WAKE_SUB:stays']);
+
+        await fs.rm(path.join(records, 'k1.json'));
+
+        expect(Object.keys((await readWakeDelivery({recordsDir: records})).subscriptions)).toEqual(['WAKE_SUB:stays']);
+
+        // the same name returns with a different terminal record: nothing of the first may answer
+        await writeRecord(records, {
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:gone', state: 'failed', outcomeReason: 'returned',
+            acceptedAt: '2026-10-03T00:00:00.000Z', dispatchFinishedAt: '2026-10-03T00:00:02.000Z'
+        });
+
+        expect((await readWakeDelivery({recordsDir: records})).subscriptions['WAKE_SUB:gone'].lastOutcomeReason).toBe('returned');
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
+
+    test('overlapping calls share one read', async () => {
+        const root    = await tmpRoot(),
+              records = path.join(root, 'records');
+
+        await writeRecord(records, {
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:a', state: 'delivered',
+            acceptedAt: '2026-10-03T00:00:00.000Z', dispatchFinishedAt: '2026-10-03T00:00:01.000Z'
+        });
+
+        const [first, second] = await Promise.all([readWakeDelivery({recordsDir: records}), readWakeDelivery({recordsDir: records})]);
+
+        expect(second, 'one read answered both calls').toBe(first);
+        expect(await readWakeDelivery({recordsDir: records}), 'a later call reads again').not.toBe(first);
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
+
+    test('a directory that cannot be listed drops what was held: a later read sees the files as they are', async () => {
+        const root      = await tmpRoot(),
+              records   = path.join(root, 'records'),
+              delivered = {
+                  recordKey : 'k1', subscriptionId: 'WAKE_SUB:a', state: 'delivered',
+                  acceptedAt: '2026-10-03T00:00:00.000Z', dispatchFinishedAt: '2026-10-03T00:00:01.000Z'
+              };
+
+        await writeRecord(records, delivered);
+        expect((await readWakeDelivery({recordsDir: records})).subscriptions['WAKE_SUB:a'].state).toBe('reachable');
+
+        // unreadable: a file where the directory was
+        await fs.rm(records, {recursive: true});
+        await fs.writeFile(records, 'not a directory');
+        expect(await readWakeDelivery({recordsDir: records})).toEqual({deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}});
+
+        // the directory returns with a different terminal record under the same name
+        await fs.rm(records);
+        await writeRecord(records, {...delivered, state: 'failed', outcomeReason: 'after the outage'});
+
+        const {subscriptions} = await readWakeDelivery({recordsDir: records});
+
+        expect(subscriptions['WAKE_SUB:a'].state, 'nothing held survives an unlistable directory').toBe('unreachable');
+        expect(subscriptions['WAKE_SUB:a'].lastOutcomeReason).toBe('after the outage');
 
         await fs.rm(root, {recursive: true, force: true});
     });
@@ -132,7 +249,7 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
             };
 
         await writeRecord(guessed, {
-            recordKey: 'k1', subscriptionId: 'WAKE_SUB:home', state: 'delivered',
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:home', state: 'delivered',
             acceptedAt: '2026-09-25T00:00:00.000Z', dispatchFinishedAt: '2026-09-25T00:00:01.000Z'
         });
 

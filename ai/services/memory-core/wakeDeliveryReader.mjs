@@ -24,10 +24,24 @@
 import fs                    from 'fs/promises';
 import path                  from 'path';
 import aiConfig              from '../../mcp/server/memory-core/config.mjs';
+import {TERMINAL_STATES}     from '../../daemons/wake/receiverState.mjs';
 import {projectWakeDelivery} from './wakeDeliveryProjection.mjs';
 
 /**
+ * @summary Per records directory: the terminal records already read, by file name, and the read in
+ * flight.
+ * @type {Map<String, {held: Map<String, Object>, reading: Promise<Object>|null}>}
+ */
+const directories = new Map();
+
+/**
  * @summary Reads every dispatch record and projects one delivery verdict per subscription.
+ *
+ * **A repeat call reads only what can have changed.** A terminal record's file is final
+ * (`TERMINAL_STATES`), so it is read once and held by file name; each call lists the directory and
+ * reads only the names it does not hold, which are new records and `pending` or `dispatching`
+ * ones. A name the directory no longer lists leaves the held set. Overlapping calls join the read
+ * already running, so a burst of `who_is_online` calls costs one directory read, not one each.
  *
  * **Never throws, and four outcomes stay distinct:**
  * - `unconfigured`: no records directory is declared, so there is nothing to look at.
@@ -53,11 +67,36 @@ export async function readWakeDelivery({recordsDir} = {}) {
         return {deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}};
     }
 
+    let state = directories.get(directory);
+
+    if (!state) {
+        state = {held: new Map(), reading: null};
+        directories.set(directory, state)
+    }
+
+    state.reading ??= readDirectory(directory, state.held).finally(() => {
+        state.reading = null
+    });
+
+    return state.reading
+}
+
+/**
+ * @summary One read of a records directory: list it, read the names not held, hold the terminal
+ * records, and project.
+ * @param {String} directory
+ * @param {Map<String, Object>} held The directory's terminal records, by file name.
+ * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object}>}
+ */
+async function readDirectory(directory, held) {
     let entries;
 
     try {
         entries = await fs.readdir(directory);
     } catch (error) {
+        // a directory that cannot be listed holds nothing this reader may still vouch for
+        held.clear();
+
         // ENOENT is a measured absence: nothing has ever been dispatched from here. Anything else
         // is an unanswerable question, and the two must not read the same way.
         return error?.code === 'ENOENT'
@@ -65,22 +104,39 @@ export async function readWakeDelivery({recordsDir} = {}) {
             : {deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}};
     }
 
-    const records = [];
+    const
+        listed  = new Set(),
+        records = [];
 
     for (const entry of entries) {
         if (!entry.endsWith('.json')) continue;
 
-        try {
-            records.push(JSON.parse(await fs.readFile(path.join(directory, entry), 'utf8')));
-        } catch {
-            // A record that will not parse is not evidence in either direction — not a delivery,
-            // and not a failure. Skipping it is the receiver's own rule and this inherits it.
+        listed.add(entry);
+
+        let record = held.get(entry);
+
+        if (!record) {
+            try {
+                record = JSON.parse(await fs.readFile(path.join(directory, entry), 'utf8'));
+            } catch {
+                // A record that will not parse is not evidence in either direction — not a delivery,
+                // and not a failure. Skipping it is the receiver's own rule and this inherits it.
+                continue
+            }
+
+            TERMINAL_STATES.has(record?.state) && held.set(entry, record)
         }
+
+        records.push(record)
+    }
+
+    for (const name of held.keys()) {
+        listed.has(name) || held.delete(name)
     }
 
     return {
-        deliveryReadable   : true,
-        deliveryReadReason : records.length > 0 ? 'observed' : 'no-records',
+        deliveryReadable  : true,
+        deliveryReadReason: records.length > 0 ? 'observed' : 'no-records',
         subscriptions     : projectWakeDelivery(records)
     };
 }
