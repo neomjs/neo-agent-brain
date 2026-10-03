@@ -113,9 +113,10 @@ export function fileStore(filePath) {
  * @param {Object}   [options.bridge]
  * @param {Function} [options.query]      Replaces the GitHub call (tests).
  * @param {Function} [options.now]
+ * @param {Function|null} [options.onPulse] Receives the producer's state after each pulse: the wake round.
  * @returns {{producer: Object, source: Object, stop: Function}|null} null without a registry.
  */
-export function wireFleetOpenWorkSource({token, registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, now} = {}) {
+export function wireFleetOpenWorkSource({token, registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, now, onPulse = null} = {}) {
     if (typeof registry?.listAgents !== 'function' || typeof registry.getDataDir !== 'function') {
         return null
     }
@@ -129,7 +130,7 @@ export function wireFleetOpenWorkSource({token, registry, pulseMs = PULSE_MS, br
             store     : fileStore(path.join(registry.getDataDir(), 'open-work.json')),
             ...(now ? {now} : {})
         }),
-        pulse           = () => producer.pulse().catch(error => console.error('[fleet] open-work pulse failed:', error)),
+        pulse           = () => producer.pulse().then(state => onPulse?.(state), error => console.error('[fleet] open-work pulse failed:', error)),
         timer           = setInterval(pulse, pulseMs);
 
     timer.unref?.();
