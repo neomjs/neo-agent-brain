@@ -7,7 +7,8 @@ import {
     SECRET_MOUNTS,
     composeCredentialEffects,
     mintFleetPlaneToken,
-    presetEnvRefusals
+    presetEnvRefusals,
+    secretFileNames
 } from '../../../../../../ai/services/fleet/credentialStep.mjs';
 import {PLANE_PROFILE, presets} from '../../../../../../ai/services/fleet/placementPresets.mjs';
 
@@ -50,6 +51,18 @@ test.describe('credentialStep', () => {
         expect(JSON.stringify(result.envEntries)).not.toContain(KEY);
         expect(mintFleetPlaneToken()).toMatch(/^[0-9a-f]{64}$/);
         expect(mintFleetPlaneToken()).not.toBe(mintFleetPlaneToken());
+    });
+
+    test('one list names a preset\'s secret files for the composer that writes them and the observer that looks for them', () => {
+        expect(secretFileNames(byId('hosted'))).toEqual(['mcp-auth-token', 'fleet-plane-token', 'gemini-api-key']);
+        expect(secretFileNames(byId('local-small'))).toEqual(['mcp-auth-token', 'fleet-plane-token']);
+        expect(secretFileNames(null), 'no consented preset: the files every plane needs').toEqual(['mcp-auth-token', 'fleet-plane-token']);
+
+        for (const [id, providerKey] of [['hosted', KEY], ['local-small', '']]) {
+            const composed = composeCredentialEffects({preset: byId(id), pat: PAT, providerKey, secretsDir: '/srv/state/secrets', random: fixedRandom});
+
+            expect(composed.secretFiles.map(file => path.basename(file.path)), id).toEqual(secretFileNames(byId(id)))
+        }
     });
 
     test('a local preset takes no provider key: two files, no key env; a key offered anyway is refused before anything is composed', () => {

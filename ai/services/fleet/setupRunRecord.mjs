@@ -196,7 +196,7 @@ export function describeRecordProblem(record) {
 
 /**
  * @summary Reads a record file. An absent file is a fresh run; an unreadable or malformed file is reported
- * by name so the run starts fresh *and says so* — never silently.
+ * by name, and its caller refuses to run over it — a receipt it cannot read may guard an effect that ran.
  * @param {String} filePath
  * @param {Object} [options]
  * @param {Object} [options.fsModule] `node:fs/promises`-shaped; injected by the host.

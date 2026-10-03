@@ -227,49 +227,145 @@ test.describe('firstRun CLI', () => {
         expect(JSON.parse(admitted.stdout).steps.find(step => step.id === 'plane-credential').answer).toBe(patPath);
     });
 
-    test('a pending receipt left on disk resumes through the CLI as reconcile-required with JSON output and no replay: a wrong plane leaves it so, a matching observation settles it (ADR 0041 §3, the renderer\'s half)', async () => {
+    test('a pending receipt left on disk resumes through the CLI as reconcile-required with JSON output and no replay: the plane\'s own effect stays so under a wrong plane and the halt is reported, a matching observation settles it; a host-file effect settles by its own observation with no plane answering (ADR 0041 §3, the renderer\'s half)', async () => {
         const
             {setupRoot, stateRoot, patPath} = await scratch(),
             recordPath = path.join(setupRoot, `${RUN_ID}.json`),
             callsPath  = path.join(setupRoot, 'fake-run.json'),
             first      = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
-            // what a crash between the handler and its receipt leaves on disk: write-env's receipt still pending
-            park       = async () => {
+            receiptOf  = async effectId => JSON.parse(await fs.readFile(recordPath, 'utf8')).receipts.find(receipt => receipt.effectId === effectId),
+            // what a crash between the handler and its receipt leaves on disk: the effect's receipt still pending
+            park       = async effectId => {
                 const record = JSON.parse(await fs.readFile(recordPath, 'utf8'));
 
-                record.receipts = record.receipts.map(receipt => receipt.effectId === 'write-env' ? {effectId: 'write-env', outcome: 'pending', inputDigest: receipt.inputDigest, startedAt: receipt.acceptedAt} : receipt);
+                record.receipts = record.receipts.map(receipt => receipt.effectId === effectId ? {effectId, outcome: 'pending', inputDigest: receipt.inputDigest, startedAt: receipt.acceptedAt} : receipt);
                 await fs.writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
             };
 
         expect(first.code).toBe(0);
-        await park();
+        await park('compose-up');
 
-        const
-            wrong  = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, servedPlane: {id: 'plane-b', dataRoot: '/srv/plane-b'}})}),
-            parked = JSON.parse(await fs.readFile(recordPath, 'utf8'));
+        const wrong = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, servedPlane: {id: 'plane-b', dataRoot: '/srv/plane-b'}})});
 
         expect(wrong.code).toBe(1);
-        expect(JSON.parse(wrong.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'reconcile-required', effectId: 'write-env', receipt: 'reconcile-required'});
-        expect(parked.receipts.find(receipt => receipt.effectId === 'write-env')).toMatchObject({outcome: 'reconcile-required', reason: expect.stringMatching(/may have run before its receipt was written/)});
+        expect(JSON.parse(wrong.stdout).steps.find(step => step.id === 'compose-up')).toMatchObject({status: 'reconcile-required', effectId: 'compose-up', receipt: 'reconcile-required'});
+        expect(await receiptOf('compose-up')).toMatchObject({outcome: 'reconcile-required', reason: expect.stringMatching(/may have run before its receipt was written/)});
+        expect(wrong.stderr).toContain('\'compose-up\' was interrupted and is not settled, so nothing runs past it: the served plane does not match the target yet, or the result is not observable');
         expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
 
-        const
-            settled = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
-            record  = JSON.parse(await fs.readFile(recordPath, 'utf8'));
+        const settled = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
 
         expect(settled.code).toBe(0);
-        expect(JSON.parse(settled.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt'});
-        expect(record.receipts.find(receipt => receipt.effectId === 'write-env')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
+        expect(JSON.parse(settled.stdout).steps.find(step => step.id === 'compose-up')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt'});
+        expect(await receiptOf('compose-up')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
         expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
 
         // a pending receipt whose first resume already matches settles directly
-        await park();
+        await park('compose-up');
 
         const direct = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
 
         expect(direct.code).toBe(0);
-        expect(JSON.parse(await fs.readFile(recordPath, 'utf8')).receipts.find(receipt => receipt.effectId === 'write-env')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
+        expect(await receiptOf('compose-up')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
         expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+
+        // the carrier is a host file: its own observation settles it while another plane answers
+        await park('write-env');
+
+        const file = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, servedPlane: {id: 'plane-b', dataRoot: '/srv/plane-b'}})});
+
+        expect(file.code, 'the served plane still fails the run').toBe(1);
+        expect(JSON.parse(file.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt'});
+        expect(await receiptOf('write-env')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
+        expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+    });
+
+    test('an interrupted hosted secret write that left one of its three files stays unsettled and names the missing files; the complete set settles it', async () => {
+        const
+            {root, setupRoot, stateRoot, patPath} = await scratch(),
+            keyPath                               = path.join(root, 'operator', 'gemini-key'),
+            recordPath                            = path.join(setupRoot, `${RUN_ID}.json`),
+            layout                                = hostLayout({stateRoot}),
+            fake                                  = greenFake({patPath}),
+            hosted                                = servedPlane => ({...fake, observers: {...fake.observers, servedPlane, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath}}),
+            cold                                  = {throw: 'connect ECONNREFUSED 127.0.0.1:3102'},
+            secrets                               = async () => (await fs.readdir(layout.secretsDir)).sort(),
+            stepOf                                = run => JSON.parse(run.stdout).steps.find(step => step.id === 'write-secrets');
+
+        await fs.writeFile(keyPath, 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh\n', {mode: 0o600});
+
+        expect((await runCli({setupRoot, stateRoot, fake: hosted(fake.observers.servedPlane)})).code).toBe(0);
+        expect(await secrets()).toEqual(['fleet-plane-token', 'gemini-api-key', 'mcp-auth-token']);
+
+        // what an interruption after the first of three atomic file writes leaves: one file, the receipt still pending
+        const
+            record = JSON.parse(await fs.readFile(recordPath, 'utf8')),
+            held   = await Promise.all(['fleet-plane-token', 'gemini-api-key'].map(async name => [name, await fs.readFile(path.join(layout.secretsDir, name), 'utf8')]));
+
+        record.receipts = record.receipts.map(receipt => receipt.effectId === 'write-secrets' ? {effectId: 'write-secrets', outcome: 'pending', inputDigest: receipt.inputDigest, startedAt: receipt.acceptedAt} : receipt);
+        await fs.writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+        await Promise.all(held.map(([name]) => fs.rm(path.join(layout.secretsDir, name))));
+
+        const partial = await runCli({setupRoot, stateRoot, fake: hosted(cold)});
+
+        expect(partial.code).toBe(1);
+        expect(stepOf(partial)).toMatchObject({status: 'reconcile-required', receipt: 'reconcile-required'});
+        expect(partial.stderr).toContain(`'write-secrets' was interrupted and is not settled, so nothing runs past it: missing under ${layout.secretsDir}: fleet-plane-token, gemini-api-key`);
+        expect(await secrets(), 'nothing ran over the partial set').toEqual(['mcp-auth-token']);
+
+        // the complete set is the positive control: the same receipt settles by observation
+        await Promise.all(held.map(([name, content]) => fs.writeFile(path.join(layout.secretsDir, name), content, {mode: 0o600})));
+
+        const complete = await runCli({setupRoot, stateRoot, fake: hosted(cold)});
+
+        expect(stepOf(complete)).toMatchObject({status: 'ok'});
+        expect(JSON.parse(await fs.readFile(recordPath, 'utf8')).receipts.find(receipt => receipt.effectId === 'write-secrets')).toMatchObject({outcome: 'accepted', settledBy: 'observation'})
+    });
+
+    test('the secret-file observer reads the consented preset\'s whole set: a partial set is not present and names what is missing, a file readable beyond its owner is a problem', async () => {
+        const
+            {stateRoot} = await scratch(),
+            layout      = hostLayout({stateRoot}),
+            observe     = preset => productionObservers({layout, host: createHost()}).secretFiles({}, {record: preset ? {consents: [{stepId: 'preset', answer: preset}]} : null}),
+            write       = async (name, mode = 0o600) => { await fs.writeFile(path.join(layout.secretsDir, name), 'x'); await fs.chmod(path.join(layout.secretsDir, name), mode) };
+
+        expect(await observe('hosted')).toEqual({present: false, reason: `no secret files under ${layout.secretsDir}`});
+
+        await fs.mkdir(layout.secretsDir, {recursive: true});
+        await write('mcp-auth-token');
+
+        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token, gemini-api-key`});
+        expect(await observe('local-small')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token`});
+
+        await write('fleet-plane-token');
+
+        // a local preset's set is complete; the hosted one still lacks its provider key; without a consent the base set is read
+        expect(await observe('local-small')).toEqual({present: true, digest: null, problem: null});
+        expect(await observe(null)).toEqual({present: true, digest: null, problem: null});
+        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: gemini-api-key`});
+
+        await write('gemini-api-key', 0o644);
+
+        expect(await observe('hosted')).toEqual({present: true, digest: null, problem: 'gemini-api-key is readable beyond its owner'})
+    });
+
+    test('a record the CLI cannot read is refused by name and left as it is; nothing runs over it', async () => {
+        const
+            {setupRoot, stateRoot, patPath} = await scratch(),
+            recordPath = path.join(setupRoot, `${RUN_ID}.json`);
+
+        await fs.mkdir(setupRoot, {recursive: true});
+        await fs.writeFile(recordPath, '{not json');
+
+        const refused = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
+
+        expect(refused.code).toBe(1);
+        expect(refused.stdout).toBe('');
+        expect(refused.stderr.startsWith(`record ${recordPath} is malformed: `), refused.stderr).toBe(true);
+        expect(refused.stderr.endsWith(': refusing to run over it — move the file away, or name another --run-id\n'), refused.stderr).toBe(true);
+        expect(await fs.readFile(recordPath, 'utf8')).toBe('{not json');
+        expect(await fs.access(path.join(stateRoot, 'secrets')).then(() => true, () => false), 'no effect ran').toBe(false);
+        expect(await fs.access(path.join(setupRoot, 'fake-run.json')).then(() => true, () => false), 'no command ran').toBe(false)
     });
 
     test('AC-2 end to end: a hosted preset writes the provider key as an owner-only secret and points the leaf at the mount; the key is in no record, carrier or log', async () => {

@@ -68,6 +68,20 @@ export function presetEnvRefusals({preset, configSource, composeTexts}) {
     ];
 }
 
+const requiresProviderKey = preset => Array.isArray(preset?.requires) && preset.requires.includes('providerKey');
+
+/**
+ * @summary The secret files a preset's `write-secrets` effect leaves under the secrets directory, in
+ * the order it writes them: the admission token and the Fleet plane bearer always, the provider key
+ * when the preset requires one. One list for the composer that writes the set and the observer that
+ * looks for it, so "the secret files exist" means the whole set and never any one file.
+ * @param {Object|null} preset The consented preset; `null` names the files every plane needs.
+ * @returns {String[]} File names.
+ */
+export function secretFileNames(preset) {
+    return [SECRET_FILES.admissionToken, SECRET_FILES.fleetPlaneToken, ...(requiresProviderKey(preset) ? [SECRET_FILES.geminiApiKey] : [])];
+}
+
 /**
  * @summary Composes the credential effects for a consented preset. Pure: nothing is read or written.
  * @param {Object} options
@@ -90,7 +104,7 @@ export function composeCredentialEffects({preset, pat, providerKey = '', secrets
         refusals.push('the plane credential (PAT) is empty');
     }
 
-    const needsProviderKey = Array.isArray(preset?.requires) && preset.requires.includes('providerKey');
+    const needsProviderKey = requiresProviderKey(preset);
 
     if (needsProviderKey && !text(providerKey)) {
         refusals.push(`the '${preset.id}' preset requires a provider key and none was given`);
