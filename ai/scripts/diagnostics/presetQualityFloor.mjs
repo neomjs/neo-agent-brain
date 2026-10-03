@@ -53,13 +53,21 @@ export const INSTRUMENT = 'tri-vector-three-documents';
 export const DEFAULT_DOCUMENTS_DIR = path.join(here, 'fixtures', 'presetQualityFloor');
 
 /**
+ * The preset whose recorded floor is THE bar: the reference model (gemma on `local-small`). A promoted
+ * candidate carries its own recorded floor too, and that row is a receipt of meeting the bar, never the
+ * bar itself — so the reference is named, not "the first preset with a floor".
+ * @type {String}
+ */
+export const REFERENCE_PRESET_ID = 'local-small';
+
+/**
  * @summary The floor a run is measured against: the reference model's recorded result on the same
- * fixture set — the table's recorded `qualityFloor` (the local presets' gemma run), never a number
- * written here. A result at or above it makes a preset `supported`.
+ * fixture set — the table's recorded `qualityFloor` of {@link REFERENCE_PRESET_ID} (the gemma run), never a
+ * number written here. A result at or above it makes a preset `supported`.
  * @returns {{instrument: String, measuredAt: String, chatModel: String, documents: String[]|undefined, result: Object}|null}
  */
 export function referenceFloor() {
-    return presets.find(row => row.qualityFloor?.result)?.qualityFloor ?? null;
+    return presets.find(row => row.id === REFERENCE_PRESET_ID)?.qualityFloor ?? null;
 }
 
 /**
