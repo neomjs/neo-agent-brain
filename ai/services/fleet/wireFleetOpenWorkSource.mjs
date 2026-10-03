@@ -1,12 +1,17 @@
 /**
  * @module ai/services/fleet/wireFleetOpenWorkSource
- * @summary Wire the open-work producer into a Fleet server: its GitHub reads, the repositories the
- * registry's seats work on, the seat identities, a state file beside the registry, the pulse cadence,
- * and the bridge's `fleetOpenWork` source.
+ * @summary Wire the open-work producer into a Fleet server: each seat's GitHub reads with that seat's
+ * own PAT, the repositories the registry's seats work on, the seat identities, a state file beside
+ * the registry, the pulse cadence, and the bridge's `fleetOpenWork` source.
+ *
+ * A seat's PAT comes from the Fleet's credential store (`resolveCredential`), the credential ledger's
+ * declared observe read. A token the entrypoint passes in (the process's `GH_TOKEN`-class environment) is the
+ * explicit override for headless and dev runs: every seat then reads with it. A seat without a
+ * readable PAT still wires, and the pulse names it with its next step.
  *
  * A login resolves to a seat from the registry first (`@<githubUsername>`), then from `identityRoots`,
  * so another operator's seats resolve from their own registry. The PR body's social name resolves
- * through `identityRoots`. A server without a GitHub token still wires: every pulse answers its reason.
+ * through `identityRoots`.
  */
 
 import fs                          from 'fs';
@@ -50,6 +55,29 @@ export function githubSlugsOf(definitions) {
 }
 
 /**
+ * @summary The seats that read GitHub, each with its own GraphQL call: every GitHub seat in the
+ * registry, reading with its PAT from the Fleet's credential store, or with the override when the
+ * entrypoint passed one. A seat without either reads nothing, and its `query` is null.
+ * @param {Object}   options
+ * @param {Function} options.listDefinitions   `() → Object[]`, the registry's definitions.
+ * @param {Function} options.resolveCredential `(agentId) → String|null`, the seat's PAT.
+ * @param {String|null} [options.override]     The headless/dev token every seat then reads with.
+ * @param {Function} [options.createQuery]     `(token) → query`; the GitHub call by default.
+ * @returns {Function} `() → Promise<{seat: String, login: String, query: Function|null}[]>`
+ */
+export function seatReaders({listDefinitions, resolveCredential, override = null, createQuery = token => createGithubGraphqlQuery({token})}) {
+    return async () => listDefinitions()
+        .filter(definition => definition.githubUsername && (definition.forge ?? 'github') === 'github')
+        .map(definition => {
+            const
+                login = String(definition.githubUsername).replace(/^@/, ''),
+                token = override || resolveCredential(definition.id);
+
+            return {seat: `@${login}`, login, query: token ? createQuery(token) : null}
+        })
+}
+
+/**
  * @summary One GitHub GraphQL call. A missing token, an HTTP failure or a GraphQL error throws, and
  * the producer records it as a failed read.
  * @param {Object}   options
@@ -61,7 +89,7 @@ export function githubSlugsOf(definitions) {
  */
 export function createGithubGraphqlQuery({token, fetchImpl = globalThis.fetch, apiBase = 'https://api.github.com', timeoutMs = 30000}) {
     return async (query, variables) => {
-        if (!token) throw new Error('no GitHub token: the Fleet server reads GH_TOKEN or GITHUB_TOKEN');
+        if (!token) throw new Error('no GitHub token for this read');
 
         const
             response = await fetchImpl(`${apiBase}/graphql`, {
@@ -107,15 +135,17 @@ export function fileStore(filePath) {
 /**
  * @summary Wire the producer and the bridge's source, take the first pulse, and keep pulsing.
  * @param {Object}   options
- * @param {String|null} options.token     The GitHub token the entrypoint resolved.
- * @param {{listAgents: Function, getDataDir: Function}} options.registry
+ * @param {String|null} [options.token]   The headless/dev override the entrypoint resolved from its
+ *     environment; every seat reads with it. Null on an installed Fleet, where each seat reads with its own PAT.
+ * @param {{listAgents: Function, getDataDir: Function, resolveCredential: Function}} options.registry
  * @param {Number}   [options.pulseMs]
  * @param {Object}   [options.bridge]
- * @param {Function} [options.query]      Replaces the GitHub call (tests).
+ * @param {Function} [options.query]      Replaces every seat's GitHub call, credential included (tests).
+ * @param {Function} [options.createQuery] `(token) → query`; replaces the GitHub call per token (tests).
  * @param {Function} [options.now]
  * @returns {{producer: Object, source: Object, stop: Function}|null} null without a registry.
  */
-export function wireFleetOpenWorkSource({token, registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, now} = {}) {
+export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, createQuery, now} = {}) {
     if (typeof registry?.listAgents !== 'function' || typeof registry.getDataDir !== 'function') {
         return null
     }
@@ -123,7 +153,12 @@ export function wireFleetOpenWorkSource({token, registry, pulseMs = PULSE_MS, br
     const
         listDefinitions = () => registry.listAgents(),
         producer        = createOpenWorkProducer({
-            query     : query ?? createGithubGraphqlQuery({token}),
+            readers   : seatReaders({
+                listDefinitions,
+                resolveCredential: id => query ? 'injected' : registry.resolveCredential?.(id) ?? null,
+                override         : token,
+                ...(query ? {createQuery: () => query} : createQuery ? {createQuery} : {})
+            }),
             repos     : async () => githubSlugsOf(listDefinitions()),
             identities: seatIdentities(listDefinitions),
             store     : fileStore(path.join(registry.getDataDir(), 'open-work.json')),

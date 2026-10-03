@@ -13,14 +13,14 @@ const identities = {
  * @param {Object} [overrides]
  * @returns {Object}
  */
-const pr = ({number=7, verdict='REVIEW_REQUIRED', rollup='SUCCESS', partial=false}={}) => ({
+const pr = ({number=7, verdict='REVIEW_REQUIRED', rollup='SUCCESS', partial=false, author='neo-opus-ada', name='Ada'}={}) => ({
     number,
     headRefOid    : 'a1',
     reviewDecision: verdict,
     mergeable     : 'MERGEABLE',
     isDraft       : false,
-    body          : 'Authored by Ada (Claude Opus 5, Claude Code).',
-    author        : {login: 'neo-opus-ada'},
+    body          : `Authored by ${name} (Claude Opus 5, Claude Code).`,
+    author        : {login: author},
     repository    : {nameWithOwner: 'acme/app'},
     reviewRequests: {pageInfo: {hasNextPage: partial}, nodes: [{requestedReviewer: {__typename: 'User', login: 'neo-gpt'}}]},
     latestReviews : {pageInfo: {hasNextPage: false}, nodes: []},
@@ -40,8 +40,16 @@ const closed = (number, closedAt, state='CLOSED') => ({
 });
 
 /**
- * @summary A GraphQL stub answering each search from a script: open pages, then terminal pages.
- * @param {Object} script `{open: Object[][], terminal: Object[][]}`: nodes per page.
+ * @summary The kind of search a read sent: a seat's authored or held open work, or its closed work.
+ * @param {String} search
+ * @returns {'open'|'held'|'terminal'}
+ */
+const kindOf = search => !search.includes('is:open') ? 'terminal' : search.includes('review-requested:') ? 'held' : 'open';
+
+/**
+ * @summary A GraphQL stub answering each search from a script: open (authored), held and terminal
+ * pages. Held pages default to one empty page.
+ * @param {Object} script `{open: Object[][], held: Object[][], terminal: Object[][]}`: nodes per page.
  * @returns {{query: Function, calls: Object[]}}
  */
 function github(script) {
@@ -51,7 +59,7 @@ function github(script) {
         calls,
         query: async (text, {query: search, cursor}) => {
             const
-                kind  = search.includes('is:open') ? 'open' : 'terminal',
+                kind  = kindOf(search),
                 pages = script[kind] ?? [[]],
                 index = cursor ? Number(cursor) : 0;
 
@@ -64,6 +72,13 @@ function github(script) {
         }
     }
 }
+
+/**
+ * @summary The readers for one seat, Ada, reading with `query`.
+ * @param {Function} query
+ * @returns {Function}
+ */
+const ada = query => async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query}];
 
 const clock = start => {
     let ms = Date.parse(start);
@@ -83,7 +98,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         const
             stub     = github({get open() { return script.open }, get terminal() { return script.terminal }}),
-            producer = createOpenWorkProducer({query: stub.query, repos: async () => ['acme/app', 'acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
+            producer = createOpenWorkProducer({readers: ada(stub.query), repos: async () => ['acme/app', 'acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
 
         await producer.pulse();
         script = {open: [[pr({verdict: 'APPROVED'})]], terminal: [[]]};
@@ -92,10 +107,14 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         expect(state.coverage).toBe('complete');
         expect(state.transitions.map(({kind, to}) => [kind, to])).toEqual([['verdict', 'APPROVED']]);
-        expect(state.pulses.at(-1)).toMatchObject({cost: 2, pages: 2, coverage: 'complete', transitions: {'@neo-opus-ada': 1}});
-        // one scope per repository, and the terminal read is the window of close times from the watermark, an overlap back
-        expect(stub.calls[0].search).toBe('is:pr is:open archived:false repo:acme/app');
-        expect(stub.calls.at(-1).search).toBe('is:pr is:closed closed:2026-10-02T09:51:00Z..2026-10-02T10:02:00Z repo:acme/app')
+        expect(state.pulses.at(-1)).toMatchObject({cost: 3, pages: 3, coverage: 'complete', transitions: {'@neo-opus-ada': 1}});
+        // the seat reads what it authored and holds, one scope per repository; the terminal read is its
+        // window of close times from its watermark, an overlap back
+        expect(stub.calls.slice(0, 2).map(call => call.search)).toEqual([
+            'is:pr is:open archived:false author:neo-opus-ada repo:acme/app',
+            'is:pr is:open archived:false review-requested:neo-opus-ada repo:acme/app'
+        ]);
+        expect(stub.calls.at(-1).search).toBe('is:pr is:closed closed:2026-10-02T09:51:00Z..2026-10-02T10:02:00Z author:neo-opus-ada repo:acme/app')
     });
 
     test('a merge the search indexes after its window ended is read in the next window\'s overlap, once', async () => {
@@ -103,7 +122,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         const
             stub     = github({get open() { return script.open }, get terminal() { return script.terminal }}),
-            producer = createOpenWorkProducer({query: stub.query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
+            producer = createOpenWorkProducer({readers: ada(stub.query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
 
         // merged at 10:01:50, but the 10:02 pulse still reads it open and its window finds nothing
         await producer.pulse();
@@ -114,7 +133,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         const state = await producer.pulse();
 
         expect(state.transitions.map(({key, kind}) => [key, kind])).toEqual([['acme/app#7', 'merged']]);
-        expect(stub.calls.filter(call => call.kind === 'terminal')[1].search).toBe('is:pr is:closed closed:2026-10-02T09:52:00Z..2026-10-02T10:03:00Z repo:acme/app')
+        expect(stub.calls.filter(call => call.kind === 'terminal')[1].search).toBe('is:pr is:closed closed:2026-10-02T09:52:00Z..2026-10-02T10:03:00Z author:neo-opus-ada repo:acme/app')
     });
 
     test('a PR that leaves complete reads with no terminal row is vanished on its pulse, never a close', async () => {
@@ -122,7 +141,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         const
             stub     = github({get open() { return script.open }, get terminal() { return script.terminal }}),
-            producer = createOpenWorkProducer({query: stub.query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
+            producer = createOpenWorkProducer({readers: ada(stub.query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
 
         await producer.pulse();
         script = {open: [[]], terminal: [[]]};
@@ -138,8 +157,9 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         const
             calls    = [],
-            query    = (text, variables) => (calls.push(variables), new Promise(resolve => { release = () => resolve({rateLimit: {cost: 1}, search: {nodes: [pr()], pageInfo: {hasNextPage: false}}}) })),
-            producer = createOpenWorkProducer({query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')}),
+            gate     = new Promise(resolve => { release = resolve }),
+            query    = async (text, variables) => (calls.push(variables), await gate, {rateLimit: {cost: 1}, search: {nodes: [pr()], pageInfo: {hasNextPage: false}}}),
+            producer = createOpenWorkProducer({readers: ada(query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')}),
             first    = producer.pulse(),
             second   = producer.pulse();
 
@@ -147,7 +167,8 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         release();
 
         expect(await second).toBe(await first);
-        expect(calls).toHaveLength(1)
+        // one pulse's two open reads, never a second pulse's
+        expect(calls).toHaveLength(2)
     });
 
     test('a page without its structure is a failed read: the snapshot stays and the watermark holds', async () => {
@@ -156,7 +177,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         const
             stub     = github({get open() { return script.open }, get terminal() { return script.terminal }}),
             query    = async (text, variables) => script.broken ? {rateLimit: {cost: 1}, search: {nodes: []}} : stub.query(text, variables),
-            producer = createOpenWorkProducer({query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')}),
+            producer = createOpenWorkProducer({readers: ada(query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')}),
             baseline = await producer.pulse();
 
         script = {broken: true};
@@ -166,11 +187,11 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
     });
 
     test('a page past the budget, or a truncated request list, leaves the pulse partial, and the first still starts the watermark', async () => {
-        const budgeted = createOpenWorkProducer({query: github({open: [[pr()], [pr({number: 8})], [pr({number: 9})]]}).query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z'), pageBudget: 2});
+        const budgeted = createOpenWorkProducer({readers: ada(github({open: [[pr()], [pr({number: 8})], [pr({number: 9})]]}).query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z'), pageBudget: 2});
 
         expect(await budgeted.pulse()).toMatchObject({coverage: 'partial', watermark: '2026-10-02T09:51:00.000Z'});
 
-        const truncated = createOpenWorkProducer({query: github({open: [[pr({partial: true})]]}).query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
+        const truncated = createOpenWorkProducer({readers: ada(github({open: [[pr({partial: true})]]}).query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
 
         expect(await truncated.pulse()).toMatchObject({coverage: 'partial', watermark: '2026-10-02T09:51:00.000Z'})
     });
@@ -179,18 +200,18 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         const
             store    = memoryStore(),
             stub     = github({open: [[pr()]], terminal: [[closed(1, '2026-10-02T10:01:10Z')], [closed(2, '2026-10-02T10:01:20Z')], [closed(3, '2026-10-02T10:01:30Z')]]}),
-            make     = start => createOpenWorkProducer({query: stub.query, repos: async () => ['acme/app'], identities, now: clock(start), store, pageBudget: 2}),
+            make     = start => createOpenWorkProducer({readers: ada(stub.query), repos: async () => ['acme/app'], identities, now: clock(start), store, pageBudget: 2}),
             baseline = await make('2026-10-02T10:00:00Z').pulse(),
             first    = await make('2026-10-02T10:01:00Z').pulse();
 
         expect(first).toMatchObject({coverage: 'partial', watermark: baseline.watermark});
-        expect(first.window).toMatchObject({since: baseline.watermark, until: '2026-10-02T10:02:00.000Z', cursor: '2'});
+        expect(first.readers['neo-opus-ada'].window).toMatchObject({since: baseline.watermark, until: '2026-10-02T10:02:00.000Z', cursor: '2'});
 
-        // a restarted producer resumes the same window at the same cursor, so page 3 is finally read
+        // a restarted producer resumes the seat's window at the same cursor, so page 3 is finally read
         const tail = await make('2026-10-02T10:02:00Z').pulse();
 
         expect(stub.calls.filter(call => call.kind === 'terminal').map(call => call.cursor)).toEqual([null, '1', '2']);
-        expect(tail).toMatchObject({coverage: 'complete', watermark: '2026-10-02T09:52:00.000Z', window: null})
+        expect(tail).toMatchObject({coverage: 'complete', watermark: '2026-10-02T09:52:00.000Z', readers: {'neo-opus-ada': {window: null}}})
     });
 
     test('an hour of partial pulses after a complete baseline never makes the row they missed fresh', async () => {
@@ -199,7 +220,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         const
             stub     = github({get open() { return script.open }, get terminal() { return script.terminal }}),
             every10  = (() => { let ms = Date.parse('2026-10-02T10:00:00Z'); return () => new Date(ms += 10 * 60000) })(),
-            producer = createOpenWorkProducer({query: stub.query, repos: async () => ['acme/app'], identities, now: every10, pageBudget: 1});
+            producer = createOpenWorkProducer({readers: ada(stub.query), repos: async () => ['acme/app'], identities, now: every10, pageBudget: 1});
 
         // a complete baseline at 10:10, then seven pulses to 11:20 that read only the first page
         await producer.pulse();
@@ -217,12 +238,12 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         const
             stub     = github({open: [[pr()]]}),
             query    = async (text, variables) => { if (variables.query.includes('is:closed')) throw new Error('timeout'); return stub.query(text, variables) },
-            producer = createOpenWorkProducer({query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
+            producer = createOpenWorkProducer({readers: ada(query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
 
         await producer.pulse();
         await producer.pulse();
 
-        expect(producer.getState().pulses.at(-1)).toMatchObject({failed: true, cost: 1, pages: 1, costUnknown: true})
+        expect(producer.getState().pulses.at(-1)).toMatchObject({failed: true, cost: 2, pages: 2, costUnknown: true})
     });
 
     test('a failed read is stale over a snapshot and unavailable without one, under a constant reason and a redacted detail', async () => {
@@ -230,12 +251,13 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         const
             query    = async (...args) => { if (fail) throw new Error('Bad credentials for ghp_privateCanary0123456789abcdefABCDEF'); return github({open: [[pr()]]}).query(...args) },
-            producer = createOpenWorkProducer({query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
+            producer = createOpenWorkProducer({readers: ada(query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')});
 
         const first = await producer.pulse();
 
         expect(first).toMatchObject({coverage: 'unavailable', reason: 'the GitHub read failed'});
         expect(first.detail).toContain('Bad credentials');
+        expect(first.detail).toContain('@neo-opus-ada');
         expect(JSON.stringify(first)).not.toContain('privateCanary');
 
         fail = false;
@@ -247,7 +269,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
     });
 
     test('no seat on a GitHub repository is unavailable with its reason, not an empty board', async () => {
-        const producer = createOpenWorkProducer({query: github({}).query, repos: async () => [], identities});
+        const producer = createOpenWorkProducer({readers: ada(github({}).query), repos: async () => [], identities});
 
         expect(await producer.pulse()).toMatchObject({coverage: 'unavailable', reason: 'no seat works on a GitHub repository'})
     });
@@ -255,9 +277,9 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
     test('the store carries the snapshot across a restart, so the next pulse diffs instead of re-baselining', async () => {
         const store = memoryStore();
 
-        await createOpenWorkProducer({query: github({open: [[pr()]]}).query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z'), store}).pulse();
+        await createOpenWorkProducer({readers: ada(github({open: [[pr()]]}).query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z'), store}).pulse();
 
-        const restarted = createOpenWorkProducer({query: github({open: [[pr({rollup: 'FAILURE'})]], terminal: [[]]}).query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:05:00Z'), store});
+        const restarted = createOpenWorkProducer({readers: ada(github({open: [[pr({rollup: 'FAILURE'})]], terminal: [[]]}).query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:05:00Z'), store});
 
         expect((await restarted.pulse()).transitions.map(({kind, to}) => [kind, to])).toEqual([['ci', 'red']])
     });
@@ -265,7 +287,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
     test('saved state that cannot be read is unavailable, is never saved over, and is read again on the next pulse', async () => {
         const store = memoryStore();
 
-        await createOpenWorkProducer({query: github({open: [[pr()]]}).query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z'), store}).pulse();
+        await createOpenWorkProducer({readers: ada(github({open: [[pr()]]}).query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z'), store}).pulse();
 
         const
             saved = store.saved,
@@ -275,7 +297,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         store.load = () => { if (unreadable) throw Object.assign(new Error('EACCES: permission denied'), {code: 'EACCES'}); return load() };
 
-        const producer = createOpenWorkProducer({query: github({open: [[pr({rollup: 'FAILURE'})]], terminal: [[]]}).query, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:05:00Z'), store});
+        const producer = createOpenWorkProducer({readers: ada(github({open: [[pr({rollup: 'FAILURE'})]], terminal: [[]]}).query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:05:00Z'), store});
 
         expect(await producer.pulse()).toMatchObject({coverage: 'unavailable', reason: 'the saved open-work state could not be read'});
         expect(store.saves).toBe(saves);
@@ -292,5 +314,105 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
             expect(source, file).not.toMatch(/planeMailboxClient|add_message|addMessage/)
         }
+    });
+});
+
+test.describe('openWorkProducer — each seat reads its own work with its own PAT (ADR 0038 §2.5.1 row 7)', () => {
+    /**
+     * @summary A query that answers as one seat: only that seat's authored or held work, recording
+     * every search it was asked.
+     * @param {Object} work `{authored: Object[], held: Object[], closed: Object[]}`
+     * @returns {{query: Function, searches: String[]}}
+     */
+    const asSeat = ({authored = [], held = [], closed: ended = []}) => {
+        const searches = [];
+
+        return {
+            searches,
+            query: async (text, {query: search}) => {
+                searches.push(search);
+
+                const nodes = {open: authored, held, terminal: ended}[kindOf(search)];
+
+                return {rateLimit: {cost: 1}, search: {nodes, pageInfo: {hasNextPage: false}}}
+            }
+        }
+    };
+
+    test('every seat reads only its own login\'s work, and the rows merge: a PR one seat holds is read once', async () => {
+        const
+            adaSeat    = asSeat({authored: [pr()]}),
+            euclidSeat = asSeat({authored: [pr({number: 9, author: 'neo-gpt', name: 'Euclid'})], held: [pr()]}),
+            producer   = createOpenWorkProducer({
+                readers   : async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query: adaSeat.query}, {seat: '@neo-gpt', login: 'neo-gpt', query: euclidSeat.query}],
+                repos     : async () => ['acme/app'],
+                identities,
+                now       : clock('2026-10-02T10:00:00Z')
+            }),
+            state      = await producer.pulse();
+
+        expect(adaSeat.searches.every(search => search.includes('neo-opus-ada') && !search.includes('neo-gpt'))).toBe(true);
+        expect(euclidSeat.searches.every(search => search.includes(':neo-gpt ') && !search.includes('neo-opus-ada'))).toBe(true);
+        expect(Object.keys(state.snapshot.rows).sort()).toEqual(['acme/app#7', 'acme/app#9']);
+        expect(state).toMatchObject({coverage: 'complete', reason: null})
+    });
+
+    test('a seat without a readable PAT is named with its next step, never "set GH_TOKEN", and the others still read', async () => {
+        const
+            adaSeat  = asSeat({authored: [pr()]}),
+            readers  = async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query: adaSeat.query}, {seat: '@neo-gpt', login: 'neo-gpt', query: null}],
+            producer = createOpenWorkProducer({readers, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')}),
+            state    = await producer.pulse();
+
+        expect(state).toMatchObject({coverage: 'partial', reason: '@neo-gpt has no readable PAT: connect again with a current token for it'});
+        expect(Object.keys(state.snapshot.rows)).toEqual(['acme/app#7']);
+        expect(state.pulses.at(-1).unread).toEqual(['@neo-gpt']);
+        expect(JSON.stringify(state)).not.toMatch(/GH_TOKEN|GITHUB_TOKEN/);
+
+        const nobody = createOpenWorkProducer({readers: async () => [{seat: '@neo-gpt', login: 'neo-gpt', query: null}], repos: async () => ['acme/app'], identities});
+
+        expect(await nobody.pulse()).toMatchObject({coverage: 'unavailable', reason: '@neo-gpt has no readable PAT: connect again with a current token for it'})
+    });
+
+    test('a seat whose read fails leaves the pulse partial and named, and its rows carry instead of vanishing', async () => {
+        let failing = false;
+
+        const
+            adaSeat    = asSeat({authored: [pr()]}),
+            euclidSeat = asSeat({authored: [pr({number: 9, author: 'neo-gpt', name: 'Euclid'})]}),
+            euclid     = async (...args) => { if (failing) throw new Error('Bad credentials'); return euclidSeat.query(...args) },
+            producer   = createOpenWorkProducer({
+                readers   : async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query: adaSeat.query}, {seat: '@neo-gpt', login: 'neo-gpt', query: euclid}],
+                repos     : async () => ['acme/app'],
+                identities,
+                now       : clock('2026-10-02T10:00:00Z')
+            });
+
+        await producer.pulse();
+        failing = true;
+
+        const state = await producer.pulse();
+
+        expect(state).toMatchObject({coverage: 'partial', reason: 'the GitHub read failed for @neo-gpt'});
+        expect(state.detail).toContain('Bad credentials');
+        expect(Object.keys(state.snapshot.rows).sort()).toEqual(['acme/app#7', 'acme/app#9']);
+        expect(state.pulses.at(-1).vanished).toEqual([])
+    });
+
+    test('a saved single watermark seeds every seat\'s window, so an upgrade keeps its catch-up', async () => {
+        const store = memoryStore();
+
+        store.saved = {
+            snapshot: {rows: {}, closed: {}, complete: true}, observedAt: '2026-10-02T10:00:00.000Z', coverage: 'complete',
+            watermark: '2026-10-02T09:50:00.000Z', window: null, reason: null, detail: null, transitions: [], pulses: []
+        };
+
+        const
+            stub     = github({open: [[]], terminal: [[]]}),
+            producer = createOpenWorkProducer({readers: ada(stub.query), repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:01:00Z'), store}),
+            state    = await producer.pulse();
+
+        expect(stub.calls.find(call => call.kind === 'terminal').search).toBe('is:pr is:closed closed:2026-10-02T09:50:00Z..2026-10-02T10:02:00Z author:neo-opus-ada repo:acme/app');
+        expect(state.readers['neo-opus-ada'].watermark).toBe('2026-10-02T09:52:00.000Z')
     });
 });

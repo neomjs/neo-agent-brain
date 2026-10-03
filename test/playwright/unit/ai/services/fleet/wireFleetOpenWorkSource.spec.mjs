@@ -59,20 +59,63 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
         expect(await answering({body: {data: {search: {nodes: []}}}})('{x}', {})).toEqual({search: {nodes: []}})
     });
 
-    test('a server without a GitHub token still wires, and its pulse answers why', async () => {
+    test('a server whose seats have no readable PAT still wires, and its pulse names each seat and the next step', async () => {
         const
             dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wire-')),
             bridge  = {};
 
         try {
-            const wired = wireFleetOpenWorkSource({token: null, registry: {listAgents: () => definitions, getDataDir: () => dataDir}, bridge, pulseMs: 3600000});
+            const wired = wireFleetOpenWorkSource({token: null, registry: {listAgents: () => definitions, getDataDir: () => dataDir, resolveCredential: () => null}, bridge, pulseMs: 3600000});
 
             await wired.producer.pulse();
             wired.stop();
 
             expect(bridge.openWorkSource).toBeDefined();
-            expect(wired.producer.getState()).toMatchObject({coverage: 'unavailable', reason: 'the GitHub read failed'});
-            expect(wired.producer.getState().detail).toMatch(/no GitHub token/)
+            expect(wired.producer.getState()).toMatchObject({
+                coverage: 'unavailable',
+                reason  : '@neo-opus-ada, @lab-seat, @idle-seat have no readable PAT: connect again with a current token for each'
+            });
+            expect(JSON.stringify(wired.producer.getState())).not.toMatch(/GH_TOKEN|GITHUB_TOKEN/)
+        } finally {
+            fs.rmSync(dataDir, {recursive: true, force: true})
+        }
+    });
+
+    test('with no token in the environment, each seat reads with its own PAT from the credential store (#823)', async () => {
+        const
+            dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wire-')),
+            tokens  = [],
+            node    = {
+                number: 7, headRefOid: 'a1', reviewDecision: 'REVIEW_REQUIRED', mergeable: 'MERGEABLE', isDraft: false,
+                body: 'Authored by Ada (Claude).', author: {login: 'neo-opus-ada'}, repository: {nameWithOwner: 'acme/app'},
+                reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []}, latestReviews: {pageInfo: {hasNextPage: false}, nodes: []},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []}, commits: {nodes: [{commit: {oid: 'a1', statusCheckRollup: {state: 'SUCCESS'}}}]}
+            },
+            createQuery = token => async (text, {query: search}) => {
+                tokens.push([token, search.match(/(?:author|review-requested):(\S+)/)[1]]);
+                return {rateLimit: {cost: 1}, search: {pageInfo: {hasNextPage: false}, nodes: token === 'pat-ada' && search.includes('author:neo-opus-ada') ? [node] : []}}
+            },
+            registry = {listAgents: () => definitions, getDataDir: () => dataDir, resolveCredential: id => id === 'ada' ? 'pat-ada' : null};
+
+        try {
+            const wired = wireFleetOpenWorkSource({registry, bridge: {}, createQuery, pulseMs: 3600000});
+
+            await wired.producer.pulse();
+            wired.stop();
+
+            expect(Object.keys(wired.producer.getState().snapshot.rows)).toEqual(['acme/app#7']);
+            // every search ran as the seat whose work it reads
+            expect([...new Set(tokens.map(([token, login]) => `${token}:${login}`))]).toEqual(['pat-ada:neo-opus-ada']);
+            expect(wired.producer.getState().reason).toBe('@lab-seat, @idle-seat have no readable PAT: connect again with a current token for each');
+
+            // an explicit override is what every seat reads with
+            const overridden = wireFleetOpenWorkSource({token: 'override', registry: {...registry, getDataDir: () => fs.mkdtempSync(path.join(dataDir, 'o-'))}, bridge: {}, createQuery, pulseMs: 3600000});
+
+            tokens.length = 0;
+            await overridden.producer.pulse();
+            overridden.stop();
+
+            expect([...new Set(tokens.map(([token]) => token))]).toEqual(['override'])
         } finally {
             fs.rmSync(dataDir, {recursive: true, force: true})
         }

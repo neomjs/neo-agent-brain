@@ -110,9 +110,31 @@ function countBySeat(transitions) {
 }
 
 /**
- * @summary Create the producer.
+ * @summary The coverage reason for the seats a pulse could not read, each with its next step.
+ * @param {String[]} unread Seats without a readable PAT.
+ * @param {String[]} failed Seats whose read failed.
+ * @returns {String|null}
+ * @private
+ */
+function unreadReason(unread, failed) {
+    const parts = [];
+
+    unread.length && parts.push(`${unread.join(', ')} ${unread.length > 1 ? 'have' : 'has'} no readable PAT: connect again with a current token for ${unread.length > 1 ? 'each' : 'it'}`);
+    failed.length && parts.push(`the GitHub read failed for ${failed.join(', ')}`);
+
+    return parts.length ? parts.join('; ') : null
+}
+
+/**
+ * @summary Create the producer. Each seat reads its own work with its own PAT, the Fleet's observe
+ * read: the open pull requests it authored or holds a review request on, and the
+ * ones it authored that closed in its catch-up window. One seat's PAT never reads another seat's
+ * work, so every row was read as the seat it belongs to. A seat without a readable PAT, or whose read
+ * fails, leaves the pulse `partial` and is named with its next step; its rows carry, never vanish.
  * @param {Object}   options
- * @param {Function} options.query      `(text, variables) → Promise<data>`, a GitHub GraphQL call.
+ * @param {Function} options.readers    `() → Promise<{seat: String, login: String, query: Function|null}[]>`:
+ *     each seat with its GitHub login and its GraphQL call `(text, variables) → Promise<data>`, null
+ *     when the seat has no readable PAT.
  * @param {Function} options.repos      `() → Promise<String[]>`, the `owner/repo` slugs the seats work on.
  * @param {{byName: Function, byLogin: Function}} options.identities Resolve a social name or a login to a seat.
  * @param {Function} [options.now]      Clock.
@@ -125,7 +147,7 @@ function countBySeat(transitions) {
  * @returns {{pulse: Function, getState: Function}}
  */
 export function createOpenWorkProducer({
-    query,
+    readers,
     repos,
     identities,
     now              = () => new Date(),
@@ -172,37 +194,79 @@ export function createOpenWorkProducer({
         const
             scope  = slugs.map(slug => `repo:${slug}`).join(' '),
             tally  = {cost: 0, pages: 0},
-            resume = state.window?.scope === scope && state.window.since === state.watermark,
-            window = state.snapshot && state.watermark ? (resume ? state.window : {scope, since: state.watermark, until: at, cursor: null}) : null;
-        let open, ended;
+            seats  = await readers(),
+            unread = seats.filter(seat => !seat.query).map(seat => seat.seat),
+            reads  = [];
 
-        try {
-            open  = await readSearch({query, text: OPEN_WORK_SNAPSHOT, search: `is:pr is:open archived:false ${scope}`, pageBudget, tally});
-            ended = window
-                ? await readSearch({query, text: OPEN_WORK_TERMINAL, search: `is:pr is:closed closed:${searchTime(window.since)}..${searchTime(window.until)} ${scope}`, cursor: window.cursor, pageBudget, tally})
-                : {nodes: [], complete: true, cursor: null}
-        } catch (error) {
-            return commit({coverage: state.snapshot ? 'stale' : 'unavailable', reason: 'the GitHub read failed', detail: redactReadFailure(error)}, {at, failed: true, ...tally, costUnknown: true})
+        for (const {seat, login, query} of seats.filter(seat => seat.query)) {
+            // a seat's terminal window and watermark are its own; a saved single watermark seeds them
+            const
+                mark   = state.readers?.[login] ?? {watermark: state.watermark ?? null, window: null},
+                resume = mark.window?.scope === scope && mark.window.since === mark.watermark,
+                window = state.snapshot && mark.watermark ? (resume ? mark.window : {scope, since: mark.watermark, until: at, cursor: null}) : null,
+                open   = search => readSearch({query, text: OPEN_WORK_SNAPSHOT, search: `is:pr is:open archived:false ${search} ${scope}`, pageBudget, tally});
+
+            try {
+                const
+                    authored = await open(`author:${login}`),
+                    held     = await open(`review-requested:${login}`),
+                    ended    = window
+                        ? await readSearch({query, text: OPEN_WORK_TERMINAL, search: `is:pr is:closed closed:${searchTime(window.since)}..${searchTime(window.until)} author:${login} ${scope}`, cursor: window.cursor, pageBudget, tally})
+                        : {nodes: [], complete: true, cursor: null};
+
+                reads.push({seat, login, mark, window, nodes: [...authored.nodes, ...held.nodes], complete: authored.complete && held.complete, ended})
+            } catch (error) {
+                reads.push({seat, failure: redactReadFailure(error)})
+            }
         }
 
         const
-            rows     = open.nodes.map(node => normalizePullRequest(node, identities)),
-            terminal = {rows: ended.nodes.map(node => normalizeTerminal(node, identities)), complete: ended.complete},
-            next     = reduceOpenWork({previous: state.snapshot, observed: {rows, complete: open.complete}, terminal, since: state.watermark, id: at}),
-            coverage = open.complete && !rows.some(row => row.partial) && ended.complete ? 'complete' : 'partial',
-            reached  = window && shift(window.until, -overlapMs);
+            answered = reads.filter(read => !read.failure),
+            failed   = reads.filter(read => read.failure);
+
+        if (!answered.length) {
+            return commit({
+                coverage: state.snapshot ? 'stale' : 'unavailable',
+                reason  : failed.length ? 'the GitHub read failed' : unreadReason(unread, []) ?? 'no seat has a GitHub login',
+                detail  : failed.length ? unreadReason(unread, failed.map(read => read.seat)) + `: ${failed[0].failure}` : null
+            }, {at, failed: true, ...tally, ...(failed.length ? {costUnknown: true} : {})})
+        }
+
+        const
+            byKey    = rows => [...new Map(rows.map(row => [row.key, row])).values()],
+            rows     = byKey(answered.flatMap(read => read.nodes).map(node => normalizePullRequest(node, identities))),
+            terminal = {rows: byKey(answered.flatMap(read => read.ended.nodes).map(node => normalizeTerminal(node, identities))), complete: !failed.length && answered.every(read => read.ended.complete)},
+            complete = !unread.length && !failed.length && answered.every(read => read.complete),
+            // a seat unread this pulse keeps its mark for when it reads again; a seat no longer registered drops out
+            marks    = Object.fromEntries(seats.map(({login}) => [login, state.readers?.[login]]).filter(([, mark]) => mark));
+
+        for (const {login, mark, window, ended} of answered) {
+            const reached = window && shift(window.until, -overlapMs);
+
+            // the first pulse starts a seat's watermark; a window moves it, never backwards, once the window completes
+            marks[login] = {
+                watermark: window ? (ended.complete && reached > mark.watermark ? reached : mark.watermark) : shift(at, -overlapMs),
+                window   : window && !ended.complete ? {...window, cursor: ended.cursor} : null
+            }
+        }
+
+        const
+            // the earliest seat's watermark bounds what is still closing, and seeds a seat that joins later
+            watermark = Object.values(marks).map(mark => mark.watermark).filter(Boolean).sort()[0] ?? null,
+            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete}, terminal, since: state.watermark ?? null, id: at}),
+            coverage  = complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial';
 
         return commit({
-            snapshot  : {rows: next.rows, closed: next.closed, complete: next.complete},
-            observedAt: at,
+            snapshot   : {rows: next.rows, closed: next.closed, complete: next.complete},
+            observedAt : at,
             coverage,
-            // the first pulse starts the watermark; a window moves it, never backwards, once the window completes
-            watermark  : window ? (ended.complete && reached > state.watermark ? reached : state.watermark) : shift(at, -overlapMs),
-            window     : window && !ended.complete ? {...window, cursor: ended.cursor} : null,
-            reason     : null,
-            detail     : null,
+            readers    : marks,
+            watermark,
+            window     : null,
+            reason     : unreadReason(unread, failed.map(read => read.seat)),
+            detail     : failed[0]?.failure ?? null,
             transitions: [...state.transitions, ...next.transitions].slice(-transitionWindow)
-        }, {at, ...tally, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished})
+        }, {at, ...tally, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
     }
 
     return {
