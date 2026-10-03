@@ -48,15 +48,18 @@ export async function readPlaneConfig() {
 }
 
 /**
- * @summary The turn-presence writer's deadline: the `turnPresence.hookWriteTimeoutMs` leaf, one budget
- * for the writer's whole MCP exchange. It stays below every synchronous registration that spends it, or
- * the harness kills the hook before its named skip.
+ * @summary The turn-presence writer's deadline, one budget for its whole MCP exchange, by how the
+ * harness registered the calling hook: `turnPresence.hookWriteTimeoutMs` for a synchronous registration,
+ * which it must stay below, or the harness kills the hook before its named skip;
+ * `turnPresence.asyncHookWriteTimeoutMs` for an asynchronous one, which the harness never times out.
+ * @param {Object} [options]
+ * @param {Boolean} [options.async=false] Whether the calling hook's registration is asynchronous.
  * @returns {Promise<Number>}
  */
-export async function readTurnPresenceDeadlineMs() {
+export async function readTurnPresenceDeadlineMs({async = false} = {}) {
     await bootNeo();
 
     const {default: memoryCoreConfig} = await import('../../../mcp/server/memory-core/config.mjs');
 
-    return memoryCoreConfig.turnPresence.hookWriteTimeoutMs
+    return async ? memoryCoreConfig.turnPresence.asyncHookWriteTimeoutMs : memoryCoreConfig.turnPresence.hookWriteTimeoutMs
 }

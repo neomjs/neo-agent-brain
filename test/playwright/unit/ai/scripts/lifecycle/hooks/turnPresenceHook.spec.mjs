@@ -230,6 +230,19 @@ test.describe('turnPresenceHook — the writer\'s deadline fits inside every syn
         expect(codexPrompt.timeout * 1000).toBeGreaterThan(deadlineMs);
         expect(kimiTimeouts, 'Kimi registers presence on five events, all synchronous').toHaveLength(5);
         kimiTimeouts.forEach(timeout => expect(timeout * 1000).toBeGreaterThan(deadlineMs))
+    });
+
+    test('the Claude hook spends the async deadline on exactly the actions its manifest registers async', async () => {
+        const
+            {ASYNC_ACTIONS} = await projectedAt('async-actions'),
+            registered      = Object.values(MANIFEST.events)
+                .flatMap(buckets => buckets.flatMap(bucket => bucket.hooks))
+                .filter(entry => entry.command.includes(PRESENCE))
+                .map(entry => [entry.command.split(' ').at(-1), entry.async === true]);
+
+        expect(registered.length).toBeGreaterThan(0);
+        registered.forEach(([action, async]) => expect(ASYNC_ACTIONS.has(action), action).toBe(async));
+        expect([...ASYNC_ACTIONS].every(action => registered.some(([registeredAction]) => registeredAction === action))).toBe(true)
     })
 });
 
@@ -239,43 +252,47 @@ test.describe('turnPresenceHook — the writer\'s deadline fits inside every syn
  * exits 0: presence never fails a session, and it is never silent either.
  */
 test.describe('turnPresenceHook — a spent deadline is a visible skip, never a silent one', () => {
-    test('a plane that accepts the connection and never answers ends in a named warning, and the hook exits 0', async () => {
-        const
-            silentPlane = net.createServer(() => {}),
-            dir         = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'presence-deadline-'))),
-            target      = path.join(dir, '.claude/hooks/turnPresenceHook.mjs');
+    // both leaves are set to distinct values in every run, so the warning names which one was spent
+    for (const [action, spentMs] of [['start', 200], ['progress', 300]]) {
+        test(`${action}: a plane that accepts the connection and never answers ends in a named warning on its own deadline, and the hook exits 0`, async () => {
+            const
+                silentPlane = net.createServer(() => {}),
+                dir         = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'presence-deadline-'))),
+                target      = path.join(dir, '.claude/hooks/turnPresenceHook.mjs');
 
-        scratchDirs.push(dir);
-        fs.mkdirSync(path.dirname(target), {recursive: true});
-        fs.writeFileSync(target, renderProjection(HOOK_SOURCE, REPO_ROOT).contents, 'utf8');
+            scratchDirs.push(dir);
+            fs.mkdirSync(path.dirname(target), {recursive: true});
+            fs.writeFileSync(target, renderProjection(HOOK_SOURCE, REPO_ROOT).contents, 'utf8');
 
-        await new Promise(resolve => silentPlane.listen(0, '127.0.0.1', resolve));
+            await new Promise(resolve => silentPlane.listen(0, '127.0.0.1', resolve));
 
-        try {
-            const {code, stderr} = await new Promise((resolve, reject) => {
-                const child = spawn(process.execPath, [target, 'start'], {
-                    cwd: REPO_ROOT,
-                    env: {
-                        PATH                                   : process.env.PATH,
-                        UNIT_TEST_MODE                         : 'true',
-                        NEO_AGENT_IDENTITY                     : 'AGENT:neo-opus-grace',
-                        NEO_MCP_REMOTE_TOKEN                   : 'seat-plane-pat',
-                        NEO_SEAT_PLANE_BASE                    : `http://127.0.0.1:${silentPlane.address().port}`,
-                        NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS: '200'
-                    }
+            try {
+                const {code, stderr} = await new Promise((resolve, reject) => {
+                    const child = spawn(process.execPath, [target, action], {
+                        cwd: REPO_ROOT,
+                        env: {
+                            PATH                                         : process.env.PATH,
+                            UNIT_TEST_MODE                               : 'true',
+                            NEO_AGENT_IDENTITY                           : 'AGENT:neo-opus-grace',
+                            NEO_MCP_REMOTE_TOKEN                         : 'seat-plane-pat',
+                            NEO_SEAT_PLANE_BASE                          : `http://127.0.0.1:${silentPlane.address().port}`,
+                            NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS      : '200',
+                            NEO_TURN_PRESENCE_ASYNC_HOOK_WRITE_TIMEOUT_MS: '300'
+                        }
+                    });
+                    let stderr = '';
+
+                    child.stderr.on('data', chunk => {stderr += chunk});
+                    child.on('error', reject);
+                    child.on('close', code => resolve({code, stderr}));
+                    child.stdin.end('{}')
                 });
-                let stderr = '';
 
-                child.stderr.on('data', chunk => {stderr += chunk});
-                child.on('error', reject);
-                child.on('close', code => resolve({code, stderr}));
-                child.stdin.end('{}')
-            });
-
-            expect(code).toBe(0);
-            expect(stderr).toMatch(/\[WARN\] \[turn-presence\] not recorded — turn-presence threw: turn-presence MCP connect timed out with \d+ms left of the 200ms deadline/)
-        } finally {
-            silentPlane.close()
-        }
-    })
+                expect(code).toBe(0);
+                expect(stderr).toMatch(new RegExp(`\\[WARN\\] \\[turn-presence\\] not recorded — turn-presence threw: turn-presence MCP connect timed out with \\d+ms left of the ${spentMs}ms deadline`))
+            } finally {
+                silentPlane.close()
+            }
+        })
+    }
 });

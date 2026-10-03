@@ -5,6 +5,14 @@ import {
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
 import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
 
+/**
+ * @summary The actions `events.manifest.json` registers asynchronously. Progress runs in the background,
+ * so it spends the async deadline; every other action runs in the prompt's path and spends the
+ * synchronous one. A spec holds this set equal to the manifest's async registrations.
+ * @type {Set<String>}
+ */
+export const ASYNC_ACTIONS = new Set(['progress']);
+
 function parseHookPayload(raw) {
     if (!raw) return null;
 
@@ -76,7 +84,7 @@ export async function recordClaudeTurnPresence({
 
     return recordTurnPresenceFromHook({
         action,
-        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(),
+        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs({async: ASYNC_ACTIONS.has(action)}),
         env,
         hookPayload,
         note      : resolveNote({action, hookPayload}),

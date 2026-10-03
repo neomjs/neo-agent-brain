@@ -14,7 +14,7 @@
     "Commands are byte-identical to the pre-cut Engine template at c623b2f63c^, so the reconciliation",
     "restores the wiring that existed rather than a re-derived approximation.",
     "turnPresenceHook's progress beacon runs async, so no tool call waits on it; the harness enforces no",
-    "timeout on an async hook, and the writer's one MCP deadline (the turnPresence.hookWriteTimeoutMs leaf)",
+    "timeout on an async hook, and the writer's async MCP deadline (turnPresence.asyncHookWriteTimeoutMs)",
     "bounds each run alone. Its start stays in the prompt's path: start opens the turn's interval, and one",
     "landing after the turn completed would open a fresh interval for a finished turn."
   ],

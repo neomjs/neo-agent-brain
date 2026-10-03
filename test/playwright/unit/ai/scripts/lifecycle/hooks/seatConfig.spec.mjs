@@ -28,13 +28,13 @@ const
 /**
  * @summary Reads the seat config in a child process whose env is exactly `env`, plus PATH.
  * @param {Object} env
- * @returns {Object} `{seat, plane, deadlineMs}`: what `readSeatConfig`, `readPlaneConfig` and
- * `readTurnPresenceDeadlineMs` returned
+ * @returns {Object} `{seat, plane, deadlineMs, asyncDeadlineMs}`: what `readSeatConfig`, `readPlaneConfig`
+ * and `readTurnPresenceDeadlineMs` (sync and async) returned
  */
 function readInChild(env) {
     const script = [
         `const {readSeatConfig, readPlaneConfig, readTurnPresenceDeadlineMs} = await import(${JSON.stringify(pathToFileURL(SEAT_CONFIG).href)});`,
-        `process.stdout.write('\\nSEAT_CONFIG=' + JSON.stringify({seat: await readSeatConfig(), plane: await readPlaneConfig(), deadlineMs: await readTurnPresenceDeadlineMs()}));`
+        `process.stdout.write('\\nSEAT_CONFIG=' + JSON.stringify({seat: await readSeatConfig(), plane: await readPlaneConfig(), deadlineMs: await readTurnPresenceDeadlineMs(), asyncDeadlineMs: await readTurnPresenceDeadlineMs({async: true})}));`
     ].join('\n');
 
     const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
@@ -69,9 +69,12 @@ test.describe('seatConfig — a seat hook reaches the plane as the seat', () => 
         expect(plane).toEqual({baseUrl: '', credential: ''})
     });
 
-    test('the turn-presence deadline is the Memory Core leaf, with its env binding', () => {
-        expect(readInChild({}).deadlineMs, 'the leaf default').toBe(1500);
-        expect(readInChild({NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS: '900'}).deadlineMs, 'the leaf\'s env layer').toBe(900)
+    test('the turn-presence deadlines are the Memory Core leaves, sync and async, each with its env binding', () => {
+        expect(readInChild({}), 'the leaf defaults').toMatchObject({deadlineMs: 1500, asyncDeadlineMs: 8000});
+        expect(readInChild({
+            NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS      : '900',
+            NEO_TURN_PRESENCE_ASYNC_HOOK_WRITE_TIMEOUT_MS: '4000'
+        }), 'the leaves\' env layers').toMatchObject({deadlineMs: 900, asyncDeadlineMs: 4000})
     });
 
     test('every plane-reaching hook reads through this module from the runtime, and names no transport leaf', () => {
