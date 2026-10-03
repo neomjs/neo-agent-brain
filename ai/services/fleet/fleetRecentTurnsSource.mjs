@@ -9,7 +9,9 @@ import {redactReadFailure} from './redactReadFailure.mjs';
  * the envelope carries the operation's `memorySharing` verdict, so a plane that clamps the policy
  * reads as "shares no peer turns", never as a silent seat. Same discipline as the memories siblings:
  * no Fleet synthesis, ranking, cache, durable state, or permission simulation, and a failure
- * surfaces as an honest capability state, never a fabricated empty stream.
+ * surfaces as an honest capability state, never a fabricated empty stream. The operation answers
+ * some failures as payloads rather than throws — an error payload, a page marked with its own
+ * scope refusal — and each keeps its own reason before any rows are accepted.
  */
 
 const
@@ -85,7 +87,8 @@ function validateBefore(before) {
  *
  * @param {Object} options
  * @param {Function} options.queryRecentTurns Injected `query_recent_turns` operation returning the
- *     parsed payload (`{count, turns, nextCursor, memorySharing}`).
+ *     parsed payload (`{count, turns, nextCursor, memorySharing}`), or one of the operation's own
+ *     failure forms: an error payload (`{error, message, code}`) or a page carrying `scope`.
  * @param {Function} options.resolveViewerIdentity Returns the transport-stamped canonical @identity.
  * @param {Function} [options.now] Clock returning a Date/epoch/ISO value.
  * @returns {{readRecentTurns: Function}}
@@ -114,11 +117,13 @@ export function createFleetRecentTurnsSource({
         /**
          * @summary Read one page of a seat's newest turn summaries through the source-owned
          * operation. Success passes the operation's rows, its next cursor and its `memorySharing`
-         * verdict through untouched under a `wired` capability; an operation failure or an
-         * unrecognized payload becomes an `unavailable` envelope carrying zero rows — a wired
-         * empty page is claimed ONLY when the operation itself answered one. A failure envelope
-         * additionally carries a sanitized `detail` so the surface can say WHY beside the
-         * constant reason.
+         * verdict through untouched under a `wired` capability. Every other outcome is an
+         * `unavailable` envelope carrying zero rows and its own constant reason: a failure the
+         * operation throws or RETURNS (`recent-turns-read-failed`), a page it marks with a scope
+         * refusal (`recent-turns-scope-refused`), a payload it never declared
+         * (`recent-turns-payload-unrecognized`). A wired empty page is claimed ONLY when the
+         * operation itself answered one. A failure or a refusal additionally carries a sanitized
+         * `detail` so the surface can say WHY beside the constant reason.
          * @param {Object} params
          * @param {String} params.agentIdentity The seat whose turns to read, as a canonical @identity.
          * @param {Number} [params.limit] Page size, 1..50.
@@ -135,11 +140,27 @@ export function createFleetRecentTurnsSource({
             }
 
             const
-                limit      = validateLimit(params?.limit),
-                before     = validateBefore(params?.before),
-                capturedAt = new Date(toMs(now(), 'now')).toISOString(),
-                shared     = {viewer, target, page: {limit, before}},
-                empty      = {turns: [], count: 0, nextCursor: null, memorySharing: null};
+                limit       = validateLimit(params?.limit),
+                before      = validateBefore(params?.before),
+                capturedAt  = new Date(toMs(now(), 'now')).toISOString(),
+                shared      = {viewer, target, page: {limit, before}},
+                unavailable = (reason, detail) => ({
+                    capability   : {state: 'unavailable', reason, capturedAt, ...(detail ? {detail} : {})},
+                    ...shared,
+                    turns        : [],
+                    count        : 0,
+                    nextCursor   : null,
+                    memorySharing: null
+                }),
+                // one fact, two consumers: the envelope carries it to the operator surface, the
+                // warn is the fleet child's own server-side copy
+                failed      = failure => {
+                    const detail = redactReadFailure(failure);
+
+                    console.warn(`[fleet] recent turns read failed (${target}): ${detail ?? 'no legible error'}`);
+
+                    return unavailable('recent-turns-read-failed', detail)
+                };
 
             let result;
 
@@ -152,25 +173,29 @@ export function createFleetRecentTurnsSource({
                     ...(before ? {before} : {})
                 })
             } catch (error) {
-                const detail = redactReadFailure(error);
-
-                // one fact, two consumers: the envelope carries it to the operator surface, the
-                // warn is the fleet child's own server-side copy
-                console.warn(`[fleet] recent turns read failed (${target}): ${detail ?? 'no legible error'}`);
-
-                return {
-                    capability: {state: 'unavailable', reason: 'recent-turns-read-failed', capturedAt, ...(detail ? {detail} : {})},
-                    ...shared,
-                    ...empty
-                }
+                return failed(error)
             }
 
-            if (!result || typeof result !== 'object' || !Array.isArray(result.turns)) {
-                return {
-                    capability: {state: 'unavailable', reason: 'recent-turns-payload-unrecognized', capturedAt},
-                    ...shared,
-                    ...empty
-                }
+            if (!result || typeof result !== 'object') {
+                return unavailable('recent-turns-payload-unrecognized')
+            }
+
+            // the operation RETURNS its failures: an error payload is a failed read
+            if (typeof result.code === 'string' || typeof result.error === 'string') {
+                return failed([result.message, result.error, result.code].find(text => typeof text === 'string' && text))
+            }
+
+            // a page the operation marks with its own scope refusal says nothing about the seat
+            if (typeof result.scope === 'string' && result.scope) {
+                const detail = redactReadFailure(result.scope);
+
+                console.warn(`[fleet] recent turns read refused (${target}): ${detail ?? 'no legible reason'}`);
+
+                return unavailable('recent-turns-scope-refused', detail)
+            }
+
+            if (!Array.isArray(result.turns)) {
+                return unavailable('recent-turns-payload-unrecognized')
             }
 
             return {

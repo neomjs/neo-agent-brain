@@ -1196,4 +1196,30 @@ test.describe('Neo.ai.services.memory-core.queryRecentTurns', () => {
         }
     });
 
+    test('the Fleet recent-turns source keeps this method\'s returned outcomes apart: a tenant refusal, an empty team page and a failed read', async () => {
+        const {createFleetRecentTurnsSource} = await import('../../../../../../ai/services/fleet/fleetRecentTurnsSource.mjs');
+
+        const source = createFleetRecentTurnsSource({
+            queryRecentTurns     : options => MemoryService.queryRecentTurns(options),
+            resolveViewerIdentity: () => '@fleet-viewer'
+        });
+        const read  = () => source.readRecentTurns({agentIdentity: '@fleet-silent-seat'});
+        const bound = () => RequestContextService.run({userId: 'fleet-viewer', agentIdentityNodeId: '@fleet-viewer'}, read);
+        const db    = GraphService.db, warn = console.warn;
+        console.warn = () => {};
+        try {
+            expect(await read()).toMatchObject({capability: {state: 'unavailable', reason: 'recent-turns-scope-refused',
+                detail: 'fail-closed: no resolvable tenant'}, turns: [], memorySharing: null});
+            expect(await bound()).toMatchObject({capability: {state: 'wired'}, turns: [], count: 0,
+                memorySharing: {policy: 'team', clamped: false}});
+            GraphService.db = null;
+            const failed = await bound();
+            expect(failed).toMatchObject({capability: {state: 'unavailable', reason: 'recent-turns-read-failed'}, turns: [], memorySharing: null});
+            expect(failed.capability.detail).toContain('unavailable');
+        } finally {
+            GraphService.db = db;
+            console.warn    = warn;
+        }
+    });
+
 });

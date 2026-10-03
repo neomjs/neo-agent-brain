@@ -133,5 +133,61 @@ test.describe('fleetRecentTurnsSource — a seat\'s newest public turn summaries
 
         expect(clamped.capability.state).toBe('wired');
         expect(clamped).toMatchObject({turns: [], count: 0, nextCursor: null, memorySharing: {policy: 'private', clamped: true}})
+    });
+
+    test('a failure the operation RETURNS is a failed read with the redacted, bounded detail, never an unrecognized payload', async () => {
+        const {source, state} = harness(),
+              warns           = [],
+              origWarn        = console.warn;
+
+        state.result = {
+            error  : 'Failed to query recent turns',
+            message: `The graph recency reader is unavailable.\n\t token ghp_0123456789012345678901234567890123 ${'x'.repeat(400)}`,
+            code   : 'RECENT_TURNS_ERROR'
+        };
+        console.warn = (...args) => warns.push(args.join(' '));
+
+        try {
+            const result = await source.readRecentTurns({agentIdentity: '@neo-opus-ada'});
+
+            expect(result.capability).toMatchObject({state: 'unavailable', reason: 'recent-turns-read-failed', capturedAt: '2026-10-03T07:00:00.000Z'});
+            expect(result.capability.detail).toMatch(/^The graph recency reader is unavailable\. token /);
+            expect(result.capability.detail).not.toContain('ghp_0123456789012345678901234567890123');
+            expect(result.capability.detail.length).toBeLessThanOrEqual(240);
+            expect(result).toMatchObject({turns: [], count: 0, nextCursor: null, memorySharing: null});
+            expect(warns.some(line => line.includes('recent turns read failed (@neo-opus-ada)') && !line.includes('ghp_0123456789012345678901234567890123'))).toBe(true);
+
+            state.result = {error: 'Failed to query recent turns', code: 'RECENT_TURNS_ERROR'};
+
+            expect((await source.readRecentTurns({agentIdentity: '@neo-opus-ada'})).capability)
+                .toMatchObject({state: 'unavailable', reason: 'recent-turns-read-failed', detail: 'Failed to query recent turns'})
+        } finally {
+            console.warn = origWarn
+        }
+    });
+
+    test('a page the operation marks with its own scope refusal is unavailable with that reason; the genuine empty team page stays wired with its verdict', async () => {
+        const {source, state} = harness(),
+              origWarn        = console.warn;
+
+        console.warn = () => {};
+
+        try {
+            state.result = {count: 0, turns: [], nextCursor: null, scope: 'fail-closed: no resolvable tenant'};
+
+            const refused = await source.readRecentTurns({agentIdentity: '@neo-opus-ada'});
+
+            expect(refused.capability).toEqual({state: 'unavailable', reason: 'recent-turns-scope-refused', capturedAt: '2026-10-03T07:00:00.000Z', detail: 'fail-closed: no resolvable tenant'});
+            expect(refused).toMatchObject({turns: [], count: 0, nextCursor: null, memorySharing: null});
+
+            state.result = {count: 0, turns: [], nextCursor: null, memorySharing: {policy: 'team', clamped: false}};
+
+            const empty = await source.readRecentTurns({agentIdentity: '@neo-opus-ada'});
+
+            expect(empty.capability).toEqual({state: 'wired', capturedAt: '2026-10-03T07:00:00.000Z'});
+            expect(empty).toMatchObject({turns: [], count: 0, nextCursor: null, memorySharing: {policy: 'team', clamped: false}})
+        } finally {
+            console.warn = origWarn
+        }
     })
 });
