@@ -146,7 +146,7 @@ export function buildWakeDigest(identity, {messages = [], tasks = [], permission
         if (summary?.source === 'github-notification') {
             extra = `; latest GitHub ${summary.latest?.reason || 'notification'}: "${summary.latest?.title || summary.latest?.id || 'untitled'}"${formatPullRequestStateEcho(summary)}${summary.latest?.url ? ` (${summary.latest.url})` : ''}`;
         } else if (summary?.source === 'idle-out-nudge') {
-            extra = `; idle-out nudge — ${summary.reason || 'idle'}; next: ${summary.nextAction || 'claim a lane'}`;
+            extra = `; idle-out nudge — ${summary.reason || 'idle'}; next: ${summary.nextAction || 'take the plan\'s next step'}`;
         }
 
         breakdown += `\n- ${heartbeats.length} heartbeat pulses (latest GraphLog: ${latest.logId}${extra})`;

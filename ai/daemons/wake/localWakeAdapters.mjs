@@ -80,7 +80,7 @@ export function formatLocalWakeDigest(envelope = {}) {
                 `${summary.latest?.url ? ` (${summary.latest.url})` : ''}`;
         } else if (summary?.source === 'idle-out-nudge') {
             extra = `; idle-out nudge — ${summary.reason || 'idle'}; ` +
-                `next: ${summary.nextAction || 'claim a lane'}`;
+                `next: ${summary.nextAction || 'take the plan\'s next step'}`;
         }
 
         lines.push(`- ${breakdown.heartbeat_pulse.count} heartbeat pulses${extra}`);

@@ -93,6 +93,11 @@ test.describe.serial('ai/daemons/wake/localWakeAdapters', () => {
         const heartbeatDigest = formatLocalWakeDigest(pureHeartbeat);
         expect(heartbeatDigest).toContain('idle-out nudge — idle; next: review the queue');
         expect(heartbeatDigest).toContain('Directive — lifecycle-first:');
+
+        // without its own next action the nudge falls back to the plan's next step
+        pureHeartbeat.payload.breakdown.heartbeat_pulse.latest.pulseId =
+            `idle-out-nudge.${Buffer.from(JSON.stringify({source: 'idle-out-nudge', reason: 'idle'})).toString('base64url')}`;
+        expect(formatLocalWakeDigest(pureHeartbeat)).toContain('idle-out nudge — idle; next: take the plan\'s next step');
     });
 
     test('test adapter returns delivered without host process effects', async () => {

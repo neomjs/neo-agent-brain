@@ -1520,7 +1520,7 @@ test.describe('Wake Daemon', () => {
         const pulseSummary = Buffer.from(JSON.stringify({
             source    : 'idle-out-nudge',
             reason    : 'idle: no recent AGENT_MEMORY while the swarm is active',
-            nextAction: 'drain the lifecycle queue, then claim a non-colliding backlog lane'
+            nextAction: 'drain the lifecycle queue, then take the accepted plan\'s next unresolved step'
         })).toString('base64url');
         const pulseId = `HEARTBEAT_PULSE:${agentId}:idle-out-nudge.${pulseSummary}`;
         db.prepare('INSERT INTO GraphLog (entity_id, entity_type) VALUES (?, ?)').run(pulseId, 'heartbeat_pulse');
@@ -1529,7 +1529,7 @@ test.describe('Wake Daemon', () => {
         expect(output).toContain('[Wake Daemon Test Adapter] Delivered');
         expect(output).toContain('heartbeat pulses');
         expect(output).toContain('idle-out nudge — idle: no recent AGENT_MEMORY while the swarm is active');
-        expect(output).toContain('next: drain the lifecycle queue, then claim a non-colliding backlog lane');
+        expect(output).toContain('next: drain the lifecycle queue, then take the accepted plan\'s next unresolved step');
     });
 
     test('delivers heartbeat pulses through the existing SENT_TO_ME bridge-daemon route', async () => {

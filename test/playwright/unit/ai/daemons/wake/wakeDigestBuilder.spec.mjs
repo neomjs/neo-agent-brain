@@ -128,6 +128,11 @@ test.describe('ai/daemons/wake/wakeDigestBuilder', () => {
 
         const pureHeartbeat = buildWakeDigest('@alice', {heartbeats: [heartbeat(7)]});
 
-        expect(pureHeartbeat).toContain(WAKE_LANE_DIRECTIVE)
+        expect(pureHeartbeat).toContain(WAKE_LANE_DIRECTIVE);
+
+        // an idle-out nudge without its own next action falls back to the plan's next step
+        const nudge = buildWakeDigest('@alice', {heartbeats: [heartbeat(8, {source: 'idle-out-nudge', reason: 'idle'})]});
+
+        expect(nudge).toContain('idle-out nudge — idle; next: take the plan\'s next step')
     });
 });
