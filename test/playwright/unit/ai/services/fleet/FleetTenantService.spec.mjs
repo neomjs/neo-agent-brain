@@ -1090,9 +1090,9 @@ test.describe.serial('FleetControlBridge + wire — the remote-tenant surface', 
 })
 
 /**
- * A seat's own plane credential, one per (plane, seat). The tenant store keeps one bearer per plane,
- * which the seat probe admits for one identity only, so a plane served to several seats needs each
- * seat's own credential. Nothing persists before the probe proves the identity, and nothing returns it.
+ * One encrypted plane binding per seat. The default-plane Start may bind the seat PAT already held by
+ * the registry; each row still proves one identity and one served plane. Nothing persists before that
+ * proof, and the credential never returns from the service.
  * The plane that answered is stored with it, by the `plane.id` and `plane.dataRoot` it serves, and
  * every start must meet that plane again: an endpoint is only where a plane is reached.
  */
@@ -1148,6 +1148,86 @@ test.describe.serial('Neo.ai.services.fleet.FleetTenantService — seat plane cr
 
         expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-sophie'}).credential).toBe('sophie-plane-pat')
         expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId: 'neo-gpt-emmy'}).credential).toBe('emmy-plane-pat')
+    })
+
+    test('a create-only binding retains an explicit credential committed while its proof awaits', async () => {
+        const
+            agentId  = 'neo-gpt-sophie',
+            identity = '@neo-gpt-sophie',
+            explicit = 'explicit-plane-pat';
+        let explicitWritten = false;
+
+        FleetTenantService.probeFn = async args => {
+            if (!explicitWritten) {
+                explicitWritten = true;
+                await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId, identity, credential: explicit})
+            }
+
+            return AS_SEAT(args)
+        };
+
+        const result = await FleetTenantService.storeSeatPlaneCredential({
+            planeBase: PLANE, agentId, identity, credential: 'registry-plane-pat', ifAbsent: true
+        });
+
+        expect(result).toEqual({status: 'stored', endpoint: PLANE, agentId});
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId})).toEqual({credential: explicit, plane: SERVED});
+        expect(await FleetTenantService.probeSeatPlaneCredential({
+            planeBase: PLANE, credential: explicit, expectedIdentity: identity, expectedPlane: SERVED
+        })).toEqual({ok: true})
+
+        // The explicit setter omits ifAbsent and remains an intentional rebind.
+        expect(await FleetTenantService.storeSeatPlaneCredential({planeBase: PLANE, agentId, identity, credential: 'manual-rebind-pat'}))
+            .toEqual({status: 'stored', endpoint: PLANE, agentId});
+        expect(FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId}).credential).toBe('manual-rebind-pat')
+    })
+
+    test('create-only binding preserves corrupt ciphertext and a malformed selected row', async () => {
+        const
+            agentId  = 'neo-gpt-sophie',
+            identity = '@neo-gpt-sophie',
+            params   = {planeBase: PLANE, agentId, identity, credential: 'registry-plane-pat', ifAbsent: true};
+
+        FleetTenantService.probeFn = AS_SEAT;
+        fs.writeFileSync(STORE(), 'not ciphertext', {mode: 0o600});
+
+        const corrupt = fs.readFileSync(STORE());
+
+        expect(await FleetTenantService.storeSeatPlaneCredential(params)).toEqual({
+            status: 'rejected', reason: 'seat plane credential could not be persisted'
+        });
+        expect(fs.readFileSync(STORE())).toEqual(corrupt);
+
+        // A decryptable endpoint map can still have a malformed selected seat; create-only must not
+        // replace it with the registry PAT and conceal state that needs explicit repair.
+        for (const selected of [
+            {credential: '', plane: SERVED},
+            {credential: 'existing-pat', plane: {dataRoot: SERVED.dataRoot}},
+            {credential: 'existing-pat', plane: {id: SERVED.id}}
+        ]) {
+            const malformed = FleetTenantService.encrypt(JSON.stringify({[PLANE]: {[agentId]: selected}}));
+
+            fs.writeFileSync(STORE(), malformed, {mode: 0o600});
+
+            const before   = fs.readFileSync(STORE()),
+                  retained = await FleetTenantService.storeSeatPlaneCredential(params);
+            const resolved = FleetTenantService.resolveSeatPlaneCredential({planeBase: PLANE, agentId});
+
+            expect(retained).toEqual({status: 'rejected', reason: 'seat plane credential could not be persisted'});
+            expect(fs.readFileSync(STORE())).toEqual(before);
+
+            if (selected.credential && selected.plane?.id) {
+                expect(resolved).toEqual({credential: selected.credential, plane: selected.plane});
+                await expect(FleetTenantService.probeSeatPlaneCredential({
+                    planeBase: PLANE,
+                    credential: selected.credential,
+                    expectedIdentity: identity,
+                    expectedPlane: selected.plane
+                })).resolves.toMatchObject({ok: false})
+            } else {
+                expect(resolved).toBeNull()
+            }
+        }
     })
 
     test('another identity, a rejected bearer, an unreachable plane and a plane that does not name itself each persist nothing', async () => {
