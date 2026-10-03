@@ -1,5 +1,5 @@
-import {expect, test}                                       from '@playwright/test';
-import {SILENT_AFTER_MS, planOpenWorkWakes}                  from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
+import {expect, test}                                                     from '@playwright/test';
+import {SILENT_AFTER_MS, SWITCH_ON_BOUNDS, planOpenWorkWakes, wakeGateOf} from '../../../../../../ai/services/fleet/openWorkWakes.mjs';
 
 const
     author  = {kind: 'seat', seat: '@neo-opus-ada', login: 'neo-opus-ada'},
@@ -59,6 +59,17 @@ test.describe('openWorkWakes — a seat is woken once per episode of holding a P
 
         expect(first.wakes.map(wake => wake.to).sort()).toEqual(['@neo-gpt', '@neo-gpt-sophie']);
         expect(second.wakes.map(wake => wake.to)).toEqual(['@neo-gpt-emmy'])
+    });
+
+    test('a reviewer holds only while requested: removed, the episode closes; requested again, it is a new one', () => {
+        const
+            requested = plan(snapshot(row({ci: 'pending', requested: ['@neo-gpt']})), snapshot(row({requested: ['@neo-gpt']}))),
+            removed   = planOpenWorkWakes({snapshot: snapshot(row()), ledger: requested.ledger, now: 2000, seatsForRepo: seats}),
+            again     = planOpenWorkWakes({snapshot: snapshot(row({requested: ['@neo-gpt']})), ledger: removed.ledger, now: 3000, seatsForRepo: seats});
+
+        expect(requested.wakes.map(wake => wake.to)).toEqual(['@neo-gpt']);
+        expect([removed.wakes, removed.ledger.holding]).toEqual([[], {}]);
+        expect(again.wakes.map(wake => wake.to)).toEqual(['@neo-gpt'])
     });
 
     test('a reviewer named as a team or a bare login has no seat to wake', () => {
@@ -133,5 +144,50 @@ test.describe('openWorkWakes — a seat is woken once per episode of holding a P
         const result = plan(snapshot(row({ci: 'red'})), snapshot(row({ci: 'green'})));
 
         expect(result.ledger.holding).toEqual({})
+    });
+
+    test('a quiet round keeps the ledger current and sends nothing; the round after wakes only what changed', () => {
+        const
+            woken  = plan(snapshot(row({ci: 'pending'})), snapshot(row({ci: 'red'}))),
+            others = {key: 'neomjs/neo#2', number: 2},
+            quiet  = planOpenWorkWakes({snapshot: snapshot(row({ci: 'red'}), row({...others, ci: 'red'})), ledger: woken.ledger, now: 1000 + SILENT_AFTER_MS, seatsForRepo: seats, quiet: true}),
+            after  = planOpenWorkWakes({snapshot: snapshot(row({ci: 'red'}), row({...others, ci: 'red'}), row({key: 'neomjs/neo#3', number: 3, ci: 'red'})), ledger: quiet.ledger, now: 2000 + SILENT_AFTER_MS, seatsForRepo: seats});
+
+        expect(quiet.wakes).toEqual([]);
+        expect(quiet.escalations).toEqual([]);
+        // the woken holder keeps its send time across the quiet round
+        expect(quiet.ledger.holding['neomjs/neo#1:author:@neo-opus-ada'].sentAt).toBe(1000);
+        expect(after.wakes.map(wake => wake.pr)).toEqual(['neomjs/neo#3'])
+    });
+});
+
+test.describe('openWorkWakes — wakes switch on only inside the observed day\'s bounds', () => {
+    // a day of complete pulses, one a minute, each costing `cost` and counting `transitions`
+    const day = ({cost = 3, transitions = {}, length = SWITCH_ON_BOUNDS.pulses} = {}) => Array.from({length}, (_, index) => ({
+        at: new Date(Date.UTC(2026, 9, 2) + index * 60000).toISOString(), cost, coverage: 'complete', pages: 1, transitions
+    }));
+
+    test('a full, cheap, calm day holds', () => {
+        expect(wakeGateOf(day())).toEqual({holds: true, reason: null})
+    });
+
+    test('less than the retained day holds nothing open: a new install observes a day first', () => {
+        expect(wakeGateOf(day({length: SWITCH_ON_BOUNDS.pulses - 1}))).toEqual({holds: false, reason: `${SWITCH_ON_BOUNDS.pulses - 1} of the day's ${SWITCH_ON_BOUNDS.pulses} pulses observed`});
+        expect(wakeGateOf([]).holds).toBe(false)
+    });
+
+    test('a day whose complete pulses cost too much stays quiet; failed pulses are not judged on cost', () => {
+        const pulses = day({cost: SWITCH_ON_BOUNDS.costP95 + 1});
+
+        expect(wakeGateOf(pulses).reason).toBe(`a complete pulse cost ${SWITCH_ON_BOUNDS.costP95 + 1} points at the 95th percentile, above ${SWITCH_ON_BOUNDS.costP95}`);
+        expect(wakeGateOf(pulses.map(pulse => ({...pulse, coverage: 'stale', failed: true}))).reason).toBe('no complete pulse in the day')
+    });
+
+    test('a seat whose pull requests change faster than the hourly bound keeps every round quiet', () => {
+        // one transition a minute: sixty in each clock hour is the bound itself, a second one per minute breaks it
+        expect(wakeGateOf(day({transitions: {'@neo-opus-ada': 1}})).holds).toBe(true);
+        expect(wakeGateOf(day({transitions: {'@neo-opus-ada': 2}}))).toEqual({
+            holds: false, reason: `${SWITCH_ON_BOUNDS.seatHourly + 2} transitions for @neo-opus-ada in the hour from 2026-10-02T00:00Z, above ${SWITCH_ON_BOUNDS.seatHourly}`
+        })
     });
 });

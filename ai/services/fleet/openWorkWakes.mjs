@@ -14,7 +14,12 @@
  * turn.
  *
  * **No ledger means a baseline.** The first plan records who holds what and wakes no one, so turning
- * the path on never wakes every current holder at once.
+ * the path on never wakes every current holder at once. A quiet round does the same over an existing
+ * ledger: it keeps the ledger current and wakes no one, so the round after it wakes only what changed.
+ *
+ * **Wakes switch on only inside the observed day's bounds** ({@link wakeGateOf}): a full retained day
+ * of the producer's pulses, its complete pulses cheap, and no seat's pull requests changing faster
+ * than an hourly bound. Outside them every round is quiet.
  *
  * **What is not a wake.** The operator's merge-ready rows are the awaiting-merge list's, not a pager.
  * The rotation resolves through `seatsForRepo`, a seat whose route is `unreachable` is skipped and
@@ -22,7 +27,8 @@
  * `silentAfterMs` after its wake is escalated as silent. Escalations are records: no lead is declared
  * anywhere yet, so nothing is woken for them.
  */
-import {holderOf} from './openWorkHolder.mjs';
+import {holderOf}     from './openWorkHolder.mjs';
+import {PULSE_WINDOW} from './openWorkProducer.mjs';
 
 /**
  * @summary How long a woken holder may keep holding before it is escalated as silent: the four-hour
@@ -37,6 +43,14 @@ export const SILENT_AFTER_MS = 4 * 60 * 60 * 1000;
  * @type {Number}
  */
 export const RECORD_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * @summary The switch-on bounds, from the first observe-only day (16 h, 920 pulses): a complete pulse
+ * cost 2–3 points, and the busiest seat's pull requests changed 27 times in their busiest hour.
+ * `pulses` is the producer's retained day; `costP95` and `seatHourly` leave room above what was seen.
+ * @type {{pulses: Number, costP95: Number, seatHourly: Number}}
+ */
+export const SWITCH_ON_BOUNDS = Object.freeze({pulses: PULSE_WINDOW, costP95: 10, seatHourly: 60});
 
 /**
  * @summary The words a wake carries for each way of holding a PR.
@@ -89,6 +103,47 @@ function reasonOf(row, role) {
 }
 
 /**
+ * @summary Whether wakes may switch on, judged over the producer's retained pulses. Until the day is
+ * full there is nothing to judge, so a new install observes a day before it wakes anyone; a day with
+ * no complete pulse is not evidence either way, so it holds nothing open.
+ * @param {Object[]} pulses The producer's retained pulses (`{at, cost, coverage, transitions}`), oldest first.
+ * @param {{pulses: Number, costP95: Number, seatHourly: Number}} [bounds=SWITCH_ON_BOUNDS]
+ * @returns {{holds: Boolean, reason: String|null}}
+ */
+export function wakeGateOf(pulses = [], {pulses: day, costP95, seatHourly} = SWITCH_ON_BOUNDS) {
+    if (pulses.length < day) {
+        return {holds: false, reason: `${pulses.length} of the day's ${day} pulses observed`}
+    }
+
+    const
+        costs  = pulses.filter(pulse => pulse.coverage === 'complete').map(pulse => pulse.cost).sort((a, b) => a - b),
+        cost   = costs[Math.floor(0.95 * (costs.length - 1))],
+        hourly = {};
+
+    if (!costs.length) {
+        return {holds: false, reason: 'no complete pulse in the day'}
+    }
+
+    if (cost > costP95) {
+        return {holds: false, reason: `a complete pulse cost ${cost} points at the 95th percentile, above ${costP95}`}
+    }
+
+    for (const {at, transitions = {}} of pulses) {
+        for (const [seat, count] of Object.entries(transitions)) {
+            const key = `${seat} in the hour from ${at.slice(0, 13)}:00Z`;
+
+            hourly[key] = (hourly[key] ?? 0) + count;
+
+            if (hourly[key] > seatHourly) {
+                return {holds: false, reason: `${hourly[key]} transitions for ${key}, above ${seatHourly}`}
+            }
+        }
+    }
+
+    return {holds: true, reason: null}
+}
+
+/**
  * @summary Plans one round of wakes. Pure: the caller persists the returned ledger, then sends the
  * returned wakes.
  * @param {Object}   options
@@ -99,11 +154,12 @@ function reasonOf(row, role) {
  * @param {Function} options.seatsForRepo `(repo) => String[]`.
  * @param {Function} [options.routeOf] `(seat) => 'reachable'|'unreachable'|'unknown'`; only `unreachable` skips.
  * @param {Number}   [options.silentAfterMs=SILENT_AFTER_MS]
+ * @param {Boolean}  [options.quiet=false] Keep the ledger current and wake or escalate nothing.
  * @returns {{wakes: Object[], escalations: Object[], ledger: Object}}
  */
-export function planOpenWorkWakes({snapshot, transitions = [], ledger, now, seatsForRepo, routeOf = () => 'unknown', silentAfterMs = SILENT_AFTER_MS}) {
+export function planOpenWorkWakes({snapshot, transitions = [], ledger, now, seatsForRepo, routeOf = () => 'unknown', silentAfterMs = SILENT_AFTER_MS, quiet = false}) {
     const
-        baseline    = !ledger,
+        baseline    = !ledger || quiet,
         holding     = {...(ledger?.holding ?? {})},
         records     = Object.fromEntries(Object.entries(ledger?.records ?? {}).filter(([, record]) => now - record.at < RECORD_RETENTION_MS)),
         wakes       = [],
@@ -126,7 +182,7 @@ export function planOpenWorkWakes({snapshot, transitions = [], ledger, now, seat
             current.add(key);
 
             if (baseline) {
-                holding[key] = {head: row.head, sentAt: null, at: now};
+                holding[key] = entry ?? {head: row.head, sentAt: null, at: now};
                 continue
             }
 

@@ -79,6 +79,7 @@ import {wireFleetGoldenPathSource}                                       from '.
 import {wireFleetGraphSceneSource}                                       from './wireFleetGraphSceneSource.mjs';
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
 import {wireFleetOpenWorkSource}                                         from './wireFleetOpenWorkSource.mjs';
+import {wireFleetOpenWorkWakes}                                          from './wireFleetOpenWorkWakes.mjs';
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
 import {wireOperatorComposeWriter}                                       from './wireOperatorComposeWriter.mjs';
@@ -471,10 +472,21 @@ async function boot() {
         }
     };
 
-    // Each seat's open work, observe-only: the producer reads GitHub and wakes no one. Its token is a
-    // process secret no AiConfig leaf binds, so the entrypoint reads it. Without one the source still
-    // wires and each pulse answers why: an optional reader never refuses the boot.
-    const openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService});
+    // Each seat's open work: the producer reads GitHub. Its token is a process secret no AiConfig leaf
+    // binds, so the entrypoint reads it. Without one the source still wires and each pulse answers why:
+    // an optional reader never refuses the boot. Holder-change wakes ride its pulses only while the
+    // `fleet.openWorkWakes` leaf is on and the plane verified this viewer, because they are sent as it.
+    const
+        wakeRound = AiConfig.fleet.openWorkWakes && planeClient ? wireFleetOpenWorkWakes({
+            registry         : FleetRegistryService,
+            send             : args => planeClient.addMessage(args),
+            readUndeliverable: async () => (await planeClient.callTool('who_is_online', {verbose: false}))?.undeliverable ?? null
+        }) : null,
+        openWork  = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService, onPulse: wakeRound});
+
+    AiConfig.fleet.openWorkWakes && console.log(wakeRound
+        ? '[fleet] open-work wakes wired: each round stays quiet until the observed day passes the switch-on bounds'
+        : '[fleet] open-work wakes are on but unwired: they are sent as the plane-verified viewer, so they need fleet.planeBase');
 
         const server = await startFleetBridgeServer({
             port,
