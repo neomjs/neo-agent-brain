@@ -335,23 +335,32 @@ function composeCapability(capabilities, capturedAt) {
  * @summary A seat's lane outlives the page it was read from: each seat's newest claim or release
  * (`claim-corrected`), folded forward from every admitted first page for one viewer. A claim leaves
  * only when its seat sends a newer claim or a release, never because newer mail pushed it off the
- * page. With a `{load, save}` store it survives a restart; a different viewer starts a fresh record,
- * and an unreadable saved record stays out of this process and is never overwritten.
+ * page. With a `{load, save}` store it survives a restart, for the mailbox source and viewer it was
+ * read from: a record from another plane or another viewer is not shown, and the first change
+ * replaces it. A saved record this process cannot read (a throwing load, or a parsed value that is
+ * not `{source, viewerIdentity, seats}`) stays out of this process and is never overwritten.
  * @param {Object|null} store
+ * @param {String|null} source The admitted mailbox's identity, saved with the record.
  * @returns {{fold: Function, claimsFor: Function}}
  * @private
  */
-function createLaneRecord(store) {
+function createLaneRecord(store, source) {
     let viewer   = null,
         seats    = new Map(),
         writable = Boolean(store);
 
     try {
-        const saved = store?.load();
+        const saved = store?.load() ?? null;
 
-        if (typeof saved?.viewerIdentity === 'string' && Array.isArray(saved.seats)) {
-            viewer = saved.viewerIdentity;
-            seats  = new Map(saved.seats)
+        if (saved !== null) {
+            if (typeof saved.source !== 'string' || typeof saved.viewerIdentity !== 'string' || !Array.isArray(saved.seats)) {
+                throw new TypeError('not a {source, viewerIdentity, seats} record')
+            }
+
+            if (saved.source === source) {
+                viewer = saved.viewerIdentity;
+                seats  = new Map(saved.seats)
+            }
         }
     } catch (error) {
         writable = false;
@@ -390,7 +399,7 @@ function createLaneRecord(store) {
 
             if (changed && writable) {
                 try {
-                    store.save({viewerIdentity: viewer, seats: [...seats]})
+                    store.save({source, viewerIdentity: viewer, seats: [...seats]})
                 } catch (error) {
                     console.warn('[fleetActivityComposer] the lane record was not saved:', error?.message ?? error)
                 }
@@ -419,14 +428,20 @@ function createLaneRecord(store) {
  * @param {Number}   [options.limit=DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT] Default event bound.
  * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox viewer at each call; absent disables retention.
  * @param {Object}   [options.laneClaimStore] `{load, save}` for the per-seat lane record; absent keeps it in memory.
+ * @param {String}   [options.laneClaimSource] The admitted mailbox's identity, required with a store:
+ *   a saved record is only read back against the source it was read from.
  * @returns {{readActivitySnapshot: Function, readHeldA2ASnapshot: Function}} The activity read and its viewer-bound first-page observation.
  * @throws {TypeError} When a reader is missing — an unreadable half must be an explicit degraded
  *   capability from a real adapter, never a composer quietly composing one contributor and calling
- *   the result the fleet's activity.
+ *   the result the fleet's activity — or when a lane store arrives without its source.
  */
-export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity = () => null, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT, laneClaimStore = null} = {}) {
+export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity = () => null, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT, laneClaimStore = null, laneClaimSource = null} = {}) {
     if (typeof readA2ASnapshot !== 'function' || typeof readPrLaneSnapshot !== 'function') {
         throw new TypeError('[fleetActivityComposer] readA2ASnapshot and readPrLaneSnapshot must be injected')
+    }
+
+    if (laneClaimStore && (typeof laneClaimSource !== 'string' || !laneClaimSource)) {
+        throw new TypeError('[fleetActivityComposer] a laneClaimStore needs the laneClaimSource its record belongs to')
     }
 
     // The configured bound is validated where the readers are, and for the same reason: a wrong one is
@@ -443,7 +458,7 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
         {read: readPrLaneSnapshot, slot: FLEET_ACTIVITY_SLOTS.prLane}
     ];
 
-    const lanes = createLaneRecord(laneClaimStore);
+    const lanes = createLaneRecord(laneClaimStore, laneClaimSource);
 
     let heldA2A       = null,
         newestA2ARead = 0;

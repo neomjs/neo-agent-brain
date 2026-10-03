@@ -77,6 +77,7 @@ function makeReadA2ASnapshot(listMessages) {
  * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox scope, resolved per call.
  * @param {Number} [options.limit] Default event bound forwarded to the composer.
  * @param {Object} [options.laneClaimStore] `{load, save}` keeping the per-seat lane record across restarts.
+ * @param {String} [options.laneClaimSource] The admitted mailbox's identity the record is saved for; required with a store.
  * @param {Object} [options.bridge=FleetControlBridge] The control bridge to wire (a stub in specs).
  * @param {Function} [options.createSource=createFleetActivityReadSource] The composer factory (injected in specs).
  * @returns {Object|null} the wired read-source, or `null` when no slot is readable (left unwired).
@@ -92,6 +93,7 @@ export function wireFleetActivityReadSource({
     resolveViewerIdentity,
     limit,
     laneClaimStore,
+    laneClaimSource,
     bridge       = FleetControlBridge,
     createSource = createFleetActivityReadSource
 } = {}) {
@@ -122,7 +124,7 @@ export function wireFleetActivityReadSource({
         ? withProducerPrLane(readPrLaneBase, {producer: openWorkProducer})
         : readPrLaneBase ?? (() => { throw new Error('pr-lane activity source not wired — no contentRoot or issuesDir') });
 
-    bridge.activitySource = createSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity, limit, laneClaimStore});
+    bridge.activitySource = createSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity, limit, laneClaimStore, laneClaimSource});
 
     return bridge.activitySource
 }

@@ -313,8 +313,10 @@ async function boot() {
     // default); the wiring resolves the origins under it. The pulls reader fills the composer's last honest-empty slot so the PR/lane slot emits pr-activity
     // events (opens/reviews/merges) alongside issues + lane-claims + stall. Fail-soft: an unavailable
     // singleton leaves activitySource unwired.
-    // Each seat's lane outlives the held page and this process: its record lives beside the registry.
-    const laneClaimStore = fileStore(path.join(FleetRegistryService.getDataDir(), 'lane-claims.json'));
+    // Each seat's lane outlives the held page and this process: its record lives beside the registry,
+    // saved for the mailbox it was read from, so a restart against another plane never shows this one's.
+    const laneClaimStore  = fileStore(path.join(FleetRegistryService.getDataDir(), 'lane-claims.json')),
+          laneClaimSource = planeClient ? `plane:${planeBase.replace(/\/+$/, '')}` : 'host';
 
     if (planeClient) {
         // Plane mode: every seam rides the verified client — no in-process memory-core spin-up at
@@ -329,7 +331,8 @@ async function boot() {
             readPrLane           : createPlanePrLaneActivityReader(planeClient),
             openWorkProducer     : () => openWork?.producer ?? null,
             resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId(),
-            laneClaimStore
+            laneClaimStore,
+            laneClaimSource
         });
 
         wireOperatorComposeWriter({
@@ -346,7 +349,8 @@ async function boot() {
                 graphService         : GraphService,
                 openWorkProducer     : () => openWork?.producer ?? null,
                 resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId(),
-                laneClaimStore
+                laneClaimStore,
+                laneClaimSource
             });
 
             // The write-side sibling: the composeOperatorMessage verb's writer. Same lazy-singleton

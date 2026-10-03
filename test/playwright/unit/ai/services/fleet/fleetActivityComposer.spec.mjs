@@ -725,10 +725,11 @@ test.describe('fleetActivityComposer — the per-seat lane record', () => {
         expect(lanesOf(source)).toEqual({alice: '[lane-claim] A2'});
     });
 
-    test('after a restart the first page shows the saved claims, only to the viewer they were read for', async () => {
+    test('after a restart the first page shows the saved claims, only to the viewer and mailbox they were read from', async () => {
         const store = memory(),
-              start = (viewer, events) => createSource({
-                  resolveViewerIdentity: () => viewer, readA2ASnapshot: async () => page(events), readPrLaneSnapshot: prLane, laneClaimStore: store
+              start = (viewer, events, laneClaimSource = 'plane:https://plane-a.example') => createSource({
+                  resolveViewerIdentity: () => viewer, readA2ASnapshot: async () => page(events), readPrLaneSnapshot: prLane,
+                  laneClaimStore       : store, laneClaimSource
               });
 
         await start('@viewer', [event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')]).readActivitySnapshot();
@@ -743,17 +744,37 @@ test.describe('fleetActivityComposer — the per-seat lane record', () => {
         const other = start('@other', []);
         await other.readActivitySnapshot();
         expect(lanesOf(other)).toEqual({});
+
+        // the same viewer and data directory, restarted against another plane: that plane's claims only
+        await start('@viewer', [event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')]).readActivitySnapshot();
+        const otherPlane = start('@viewer', [], 'plane:https://plane-b.example');
+        await otherPlane.readActivitySnapshot();
+        expect(lanesOf(otherPlane)).toEqual({});
     });
 
-    test('an unreadable saved record is kept in memory only and never overwritten', async () => {
-        const store  = {saves: 0, load: () => { throw new SyntaxError('Unexpected end of JSON input') }, save() { this.saves++ }},
-              source = createSource({
-                  resolveViewerIdentity: () => '@viewer', readPrLaneSnapshot: prLane, laneClaimStore: store,
-                  readA2ASnapshot      : async () => page([event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')])
-              });
+    test('a saved record that cannot be read is kept in memory only and never overwritten', async () => {
+        for (const load of [
+            () => { throw new SyntaxError('Unexpected end of JSON input') },
+            () => ({viewerIdentity: '@viewer', seats: {}}),
+            () => ({source: 'plane:https://plane-a.example', viewerIdentity: '@viewer', seats: 'none'}),
+            () => [],
+            () => 'lanes'
+        ]) {
+            const store  = {saves: 0, load, save() { this.saves++ }},
+                  source = createSource({
+                      resolveViewerIdentity: () => '@viewer', readPrLaneSnapshot: prLane, laneClaimStore: store, laneClaimSource: 'plane:https://plane-a.example',
+                      readA2ASnapshot      : async () => page([event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')])
+                  });
 
-        await source.readActivitySnapshot();
-        expect(lanesOf(source)).toEqual({alice: '[lane-claim] A'});
-        expect(store.saves).toBe(0);
+            await source.readActivitySnapshot();
+            expect(lanesOf(source), String(load)).toEqual({alice: '[lane-claim] A'});
+            expect(store.saves, String(load)).toBe(0);
+        }
+    });
+
+    test('a lane store without the mailbox source it belongs to is refused at construction', () => {
+        expect(() => createSource({
+            readA2ASnapshot: async () => page([]), readPrLaneSnapshot: prLane, laneClaimStore: memory()
+        })).toThrow(TypeError);
     });
 });
