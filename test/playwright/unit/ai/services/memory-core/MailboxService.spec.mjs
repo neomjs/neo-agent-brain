@@ -4298,6 +4298,41 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         });
     });
 
+    test('#822 a summary carries the declared taggedConcepts, so a reader types a claim without parsing its subject', async () => {
+        let taggedId, plainId;
+
+        await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+            taggedId = (await MailboxService.addMessage({
+                to            : 'AGENT:*',
+                subject       : 'taking the foo leaf',
+                body          : 'declared, not parsed',
+                taggedConcepts: ['lane-claim', 'CONCEPT:fm-v1']
+            })).messageId;
+            plainId  = (await MailboxService.addMessage({to: 'AGENT:*', subject: 'nothing declared', body: 'plain'})).messageId;
+        });
+
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
+            const
+                {messages} = await MailboxService.listMessages({box: 'all'}),
+                tagged     = messages.find(message => message.messageId === taggedId),
+                plain      = messages.find(message => message.messageId === plainId);
+
+            expect(tagged.taggedConcepts).toEqual(['lane-claim', 'fm-v1']);
+            expect(collisionPreventionTag(tagged)).toBe('lane-claim');
+            expect(plain).toBeDefined();
+            expect(plain).not.toHaveProperty('taggedConcepts');
+        });
+
+        // a withdrawn claim must not keep typing as one: retraction keeps the stored concepts
+        await RequestContextService.run({agentIdentityNodeId: '@alice'}, () => MailboxService.deleteMessage({messageId: taggedId}));
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
+            const retracted = (await MailboxService.listMessages({box: 'all'})).messages.find(message => message.messageId === taggedId);
+
+            expect(retracted).toMatchObject({retracted: true, subject: '[retracted by sender]'});
+            expect(retracted).not.toHaveProperty('taggedConcepts');
+        });
+    });
+
     /**
      * @summary The broadcast-delivery series reads shipped graph state, it does not count.
      *

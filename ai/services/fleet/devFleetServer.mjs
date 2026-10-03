@@ -78,7 +78,7 @@ import {wireFleetTasksSource}                                            from '.
 import {wireFleetGoldenPathSource}                                       from './wireFleetGoldenPathSource.mjs';
 import {wireFleetGraphSceneSource}                                       from './wireFleetGraphSceneSource.mjs';
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
-import {wireFleetOpenWorkSource}                                         from './wireFleetOpenWorkSource.mjs';
+import {fileStore, wireFleetOpenWorkSource}                              from './wireFleetOpenWorkSource.mjs';
 import {wireFleetRecentTurnsSource}                                      from './wireFleetRecentTurnsSource.mjs';
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
@@ -313,6 +313,9 @@ async function boot() {
     // default); the wiring resolves the origins under it. The pulls reader fills the composer's last honest-empty slot so the PR/lane slot emits pr-activity
     // events (opens/reviews/merges) alongside issues + lane-claims + stall. Fail-soft: an unavailable
     // singleton leaves activitySource unwired.
+    // Each seat's lane outlives the held page and this process: its record lives beside the registry.
+    const laneClaimStore = fileStore(path.join(FleetRegistryService.getDataDir(), 'lane-claims.json'));
+
     if (planeClient) {
         // Plane mode: every seam rides the verified client — no in-process memory-core spin-up at
         // all (opening the host graph/mailbox is the split-brain read this mode exists to end). The
@@ -325,7 +328,8 @@ async function boot() {
             listMessages         : args => planeClient.listMessages(args),
             readPrLane           : createPlanePrLaneActivityReader(planeClient),
             openWorkProducer     : () => openWork?.producer ?? null,
-            resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
+            resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId(),
+            laneClaimStore
         });
 
         wireOperatorComposeWriter({
@@ -341,7 +345,8 @@ async function boot() {
                 listMessages         : MailboxService.listMessages.bind(MailboxService),
                 graphService         : GraphService,
                 openWorkProducer     : () => openWork?.producer ?? null,
-                resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
+                resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId(),
+                laneClaimStore
             });
 
             // The write-side sibling: the composeOperatorMessage verb's writer. Same lazy-singleton

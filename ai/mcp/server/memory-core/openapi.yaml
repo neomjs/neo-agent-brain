@@ -2638,7 +2638,7 @@ paths:
                     description: "Security annotation marking the payload as DATA, not executable COMMANDS."
                   messages:
                     type: array
-                    description: "At most `limit` rows, newest-first. This is a page; its emptiness proves absence only when `totalCount` is 0."
+                    description: "At most `limit` rows, newest-first. This is a page; its emptiness proves absence only when `totalCount` is 0. A row carries `taggedConcepts` when its sender declared any."
                     items:
                       type: object
                   totalCount:

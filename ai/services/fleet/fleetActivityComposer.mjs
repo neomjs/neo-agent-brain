@@ -332,6 +332,82 @@ function composeCapability(capabilities, capturedAt) {
 }
 
 /**
+ * @summary A seat's lane outlives the page it was read from: each seat's newest claim or release
+ * (`claim-corrected`), folded forward from every admitted first page for one viewer. A claim leaves
+ * only when its seat sends a newer claim or a release, never because newer mail pushed it off the
+ * page. With a `{load, save}` store it survives a restart; a different viewer starts a fresh record,
+ * and an unreadable saved record stays out of this process and is never overwritten.
+ * @param {Object|null} store
+ * @returns {{fold: Function, claimsFor: Function}}
+ * @private
+ */
+function createLaneRecord(store) {
+    let viewer   = null,
+        seats    = new Map(),
+        writable = Boolean(store);
+
+    try {
+        const saved = store?.load();
+
+        if (typeof saved?.viewerIdentity === 'string' && Array.isArray(saved.seats)) {
+            viewer = saved.viewerIdentity;
+            seats  = new Map(saved.seats)
+        }
+    } catch (error) {
+        writable = false;
+        console.warn('[fleetActivityComposer] the saved lane record is unreadable; lanes stay in memory:', error?.message ?? error)
+    }
+
+    return {
+        fold(viewerIdentity, {capability, events} = {}) {
+            if (capability?.state !== 'wired') return;
+
+            let changed = viewer !== viewerIdentity;
+
+            if (changed) {
+                viewer = viewerIdentity;
+                seats  = new Map()
+            }
+
+            for (const {agentId, occurredAt, payload} of (Array.isArray(events) ? events : []).filter(Boolean)) {
+                const collisionTag = payload?.collisionTag,
+                      at           = Date.parse(occurredAt),
+                      previous     = seats.get(agentId);
+
+                if ((collisionTag !== 'lane-claim' && collisionTag !== 'claim-corrected') ||
+                    typeof agentId !== 'string' || !agentId || !Number.isFinite(at)) {
+                    continue
+                }
+
+                // an older claim or release displaces nothing
+                if (previous && at <= Date.parse(previous.occurredAt)) {
+                    continue
+                }
+
+                seats.set(agentId, {collisionTag, occurredAt, messageId: payload.messageId ?? null, subject: payload.subject ?? null});
+                changed = true
+            }
+
+            if (changed && writable) {
+                try {
+                    store.save({viewerIdentity: viewer, seats: [...seats]})
+                } catch (error) {
+                    console.warn('[fleetActivityComposer] the lane record was not saved:', error?.message ?? error)
+                }
+            }
+        },
+
+        claimsFor(viewerIdentity) {
+            return viewerIdentity !== viewer ? [] : [...seats]
+                .filter(([, seat]) => seat?.collisionTag === 'lane-claim')
+                .map(([agentId, {messageId, occurredAt, subject}]) => ({
+                    type: 'lane-claim', source: FLEET_COCKPIT_SOURCES.a2a, agentId, occurredAt, payload: {messageId, subject}
+                }))
+        }
+    }
+}
+
+/**
  * @summary Builds the injectable activity read-source the bridge consumes.
  *
  * @param {Object}   options={}
@@ -342,12 +418,13 @@ function composeCapability(capabilities, capturedAt) {
  *   the caller owns the reading and this composer never reaches for GitHub or the graph directly.
  * @param {Number}   [options.limit=DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT] Default event bound.
  * @param {Function} [options.resolveViewerIdentity] Server-bound mailbox viewer at each call; absent disables retention.
+ * @param {Object}   [options.laneClaimStore] `{load, save}` for the per-seat lane record; absent keeps it in memory.
  * @returns {{readActivitySnapshot: Function, readHeldA2ASnapshot: Function}} The activity read and its viewer-bound first-page observation.
  * @throws {TypeError} When a reader is missing — an unreadable half must be an explicit degraded
  *   capability from a real adapter, never a composer quietly composing one contributor and calling
  *   the result the fleet's activity.
  */
-export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity = () => null, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT} = {}) {
+export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapshot, resolveViewerIdentity = () => null, limit = DEFAULT_FLEET_ACTIVITY_EVENT_LIMIT, laneClaimStore = null} = {}) {
     if (typeof readA2ASnapshot !== 'function' || typeof readPrLaneSnapshot !== 'function') {
         throw new TypeError('[fleetActivityComposer] readA2ASnapshot and readPrLaneSnapshot must be injected')
     }
@@ -366,19 +443,22 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
         {read: readPrLaneSnapshot, slot: FLEET_ACTIVITY_SLOTS.prLane}
     ];
 
+    const lanes = createLaneRecord(laneClaimStore);
+
     let heldA2A       = null,
         newestA2ARead = 0;
 
     return {
         /**
          * @summary Read the admitted first mailbox page without I/O, only within its bound viewer.
-         * @returns {Object|null} An independent snapshot, or null before a matching viewer's read.
+         * @returns {Object|null} An independent snapshot carrying the viewer's per-seat `laneClaims`,
+         * or null before a matching viewer's read.
          */
         readHeldA2ASnapshot() {
             const viewerIdentity = resolveViewerIdentity();
 
             return viewerIdentity && viewerIdentity === heldA2A?.viewerIdentity
-                ? structuredClone(heldA2A.snapshot)
+                ? {...structuredClone(heldA2A.snapshot), laneClaims: lanes.claimsFor(viewerIdentity)}
                 : null
         },
 
@@ -405,9 +485,10 @@ export function createFleetActivityReadSource({readA2ASnapshot, readPrLaneSnapsh
 
             // History and late completions cannot replace the newest admitted mailbox window.
             if (holdsA2A && generation === newestA2ARead) {
-                heldA2A = viewerIdentity
-                    ? {viewerIdentity, snapshot: structuredClone(contributions.find(({capability}) => capability.slot === FLEET_ACTIVITY_SLOTS.a2a))}
-                    : null
+                const a2a = contributions.find(({capability}) => capability.slot === FLEET_ACTIVITY_SLOTS.a2a);
+
+                heldA2A = viewerIdentity ? {viewerIdentity, snapshot: structuredClone(a2a)} : null;
+                viewerIdentity && lanes.fold(viewerIdentity, a2a)
             }
 
             return {
