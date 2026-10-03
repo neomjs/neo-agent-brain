@@ -61,12 +61,13 @@ function greenObservers({digest = 'd1', dimension = 1024} = {}) {
         runningPlane: async () => ({present: true, digest: null}),
         servedPlane : async target => ({id: target.planeId, dataRoot: target.dataRoot}),
         validation  : async () => ({provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension}}),
-        done        : async () => ({queryAnswered: true, persisted: true})
+        verification: async () => ({present: true, digest: null}),
+        done        : async () => ({queryAnswered: true, persisted: true, at: '2026-10-01T20:00:00.000Z'})
     };
 }
 
 const failingObservers = () => Object.fromEntries(
-    ['placement', 'envCarrier', 'secretFiles', 'runningPlane', 'servedPlane', 'validation', 'done']
+    ['placement', 'envCarrier', 'secretFiles', 'runningPlane', 'servedPlane', 'validation', 'verification', 'done']
         .map(name => [name, async () => { throw new Error(`${name} unreachable`) }])
 );
 
@@ -79,7 +80,8 @@ test.describe('firstRunRecipe', () => {
 
         for (const step of stale.steps.filter(row => row.kind !== STEP_KINDS.question)) {
             expect(step.status, step.id).toBe(STEP_STATUSES.unknown);
-            expect(step.reason, step.id).toMatch(/unreachable/);
+            // validation is never asked behind a served-plane row that is not ok: its reason names the gate, not its observer
+            expect(step.reason, step.id).toMatch(step.id === 'validation' ? /^not observed: served-plane is unknown$/ : /unreachable/);
         }
         // the questions read their consent: prior consent is the record's own authority (bootstrap-record decision§2.5)
         expect(byId(stale.steps).preset.status).toBe(STEP_STATUSES.ok);
@@ -157,9 +159,9 @@ test.describe('firstRunRecipe', () => {
         expect(retired.history).toHaveLength(1);
         expect(retired.history[0].reason).toBe(RETIRE_REASONS.versionChanged);
         expect(retired.history[0].consents).toHaveLength(2);
-        expect(retired.history[0].receipts).toHaveLength(3);
+        expect(retired.history[0].receipts).toHaveLength(4);
         expect(retired.history[0].recipeVersion).toBe(RECIPE_VERSION);
-        expect(recordA.receipts).toHaveLength(3); // the input is not mutated
+        expect(recordA.receipts).toHaveLength(4); // the input is not mutated
 
         const underNewVersion = await evaluateRecipe({target: targetA, record: retired, observers: greenObservers(), presets, now: () => NOW});
 
@@ -263,17 +265,53 @@ test.describe('firstRunRecipe', () => {
 
         for (const step of result.steps.filter(row => row.kind !== STEP_KINDS.question)) {
             expect(step.status, step.id).toBe(STEP_STATUSES.unknown);
-            expect(step.reason, step.id).toMatch(/^no '.+' observer$/);
+            expect(step.reason, step.id).toMatch(step.id === 'validation' ? /^not observed: served-plane is unknown$/ : /^no '.+' observer$/);
         }
         expect(result.steps.map(step => step.id)).toEqual(RECIPE_STEPS.map(step => step.id));
         // an effect row carries the effect it reads, so a renderer can settle the receipt it names
-        expect(result.steps.filter(row => row.kind === STEP_KINDS.effect).map(row => row.effectId)).toEqual(['write-env', 'write-secrets', 'compose-up']);
+        expect(result.steps.filter(row => row.kind === STEP_KINDS.effect).map(row => row.effectId)).toEqual(['write-env', 'write-secrets', 'compose-up', 'verify']);
         // both credential questions are answered by a file reference, admitted before it is recorded
         expect(RECIPE_STEPS.filter(step => step.answer === 'file').map(step => step.id)).toEqual(['plane-credential', 'provider-key']);
-        expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'provider-key', 'advanced', 'write-env', 'write-secrets', 'compose-up', 'served-plane', 'validation', 'done']);
+        expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'provider-key', 'advanced', 'write-env', 'write-secrets', 'compose-up', 'served-plane', 'validation', 'verify', 'done']);
         // the provider-key question is decided by the consented preset: pending until one is chosen, not needed for a local one
         expect(result.steps.find(step => step.id === 'provider-key')).toMatchObject({status: STEP_STATUSES.pending, reason: 'decided by the preset: none consented yet'});
         expect(result.recipeVersion).toBe(RECIPE_VERSION);
+    });
+
+    test('AC-4: done is the historical witness gated on a fresh served-plane and validation — a wrong plane or an unknown validation keeps it not ok with the witnessed timestamp in the reason; validation is never asked behind a served-plane that is not ok', async () => {
+        const
+            witnessed  = {queryAnswered: true, persisted: true, at: '2026-10-03T06:00:00.000Z'},
+            asked      = [],
+            evaluateAs = overrides => evaluateRecipe({target: targetA, record: null, presets, now: () => NOW, observers: {...greenObservers(), validation: async () => { asked.push('validation'); return {provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 1024}} }, done: async () => witnessed, ...overrides}}).then(result => byId(result.steps));
+
+        // every fresh step ok: the witness completes the run
+        const fresh = await evaluateAs({});
+
+        expect(fresh.done).toMatchObject({status: STEP_STATUSES.ok, witnessedAt: witnessed.at, reason: expect.stringContaining('witnessed at 2026-10-03T06:00:00.000Z')});
+
+        // the control: the record's witness is present, the served plane is another one — done is failed, the fact survives in the reason, validation was not even asked
+        asked.length = 0;
+
+        const wrong = await evaluateAs({servedPlane: async () => ({id: 'plane-b', dataRoot: '/srv/plane-b'})});
+
+        expect(wrong['served-plane'].status).toBe(STEP_STATUSES.failed);
+        expect(wrong.validation).toMatchObject({status: STEP_STATUSES.unknown, reason: 'not observed: served-plane is failed'});
+        expect(wrong.done).toMatchObject({status: STEP_STATUSES.failed, witnessedAt: witnessed.at, reason: 'witnessed at 2026-10-03T06:00:00.000Z; served-plane is failed'});
+        expect(asked).toEqual([]);
+
+        // validation unknown (its observer failed) mirrors as unknown on done: the run stays open, never green
+        const unknown = await evaluateAs({validation: async () => { throw new Error('provider unreachable') }});
+
+        expect(unknown.validation.status).toBe(STEP_STATUSES.unknown);
+        expect(unknown.done).toMatchObject({status: STEP_STATUSES.unknown, reason: 'witnessed at 2026-10-03T06:00:00.000Z; validation is unknown'});
+        expect(exitCodeFor({steps: Object.values(unknown), terminal: unknown.done})).toBe(2);
+
+        // no witness yet reads as the observer says: unknown without a section, failed with a recorded refusal
+        expect((await evaluateAs({done: async () => { throw new Error('no witness for this run yet') }})).done).toMatchObject({status: STEP_STATUSES.unknown, reason: 'no witness for this run yet'});
+        expect((await evaluateAs({done: async () => ({persisted: false, queryAnswered: false, reason: 'the plane refused the witness write at t: no grant'})})).done).toMatchObject({status: STEP_STATUSES.failed, reason: 'the plane refused the witness write at t: no grant'});
+        // an outstanding sub-step keeps the run OPEN (the verify row says what re-check repeats); only a recorded refusal fails it
+        expect((await evaluateAs({done: async () => ({persisted: true, queryAnswered: false, at: 't1'})})).done).toMatchObject({status: STEP_STATUSES.pending, reason: 'witnessed at t1; the witness was not recalled yet', witnessedAt: 't1'});
+        expect((await evaluateAs({done: async () => ({persisted: false, queryAnswered: false, at: null, reason: null})})).done).toMatchObject({status: STEP_STATUSES.pending, reason: 'nothing persisted yet'});
     });
 
     test('every observer is called with the target and, under a bound binding only, the record: no record, another target\'s record and another version\'s record hand over null', async () => {
@@ -295,7 +333,7 @@ test.describe('firstRunRecipe', () => {
         // bound: the record rides along to every observation and effect observer, with the target
         const bound = await seen(targetA, recordA);
 
-        expect(bound.map(call => call.name).sort()).toEqual(['done', 'envCarrier', 'placement', 'runningPlane', 'secretFiles', 'servedPlane', 'validation']);
+        expect(bound.map(call => call.name).sort()).toEqual(['done', 'envCarrier', 'placement', 'runningPlane', 'secretFiles', 'servedPlane', 'validation', 'verification']);
         for (const call of bound) {
             expect(call.target, call.name).toEqual(targetA);
             expect(call.context, call.name).toEqual({record: recordA});

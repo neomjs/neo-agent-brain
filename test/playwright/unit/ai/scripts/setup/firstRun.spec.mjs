@@ -43,7 +43,9 @@ function greenFake({patPath, planeId = 'plane-a', dataRoot = '/srv/plane-a', ser
         observers: {
             placement  : {host: {complete: true, availableBytes: 64 * 1073741824, pressure: 'ok'}, guest: null, observed: {}, runningPlane: null},
             servedPlane,
-            validation : {provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 1024}},
+            validation  : {provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 1024}},
+            // a fake host has no plane to witness through: the witness effect's observation and the terminal read are the fixture's
+            verification: {present: true, digest: null, problem: null},
             done
         },
         answers: answers ? {preset: 'local-small', 'plane-credential': patPath} : {}
@@ -78,7 +80,7 @@ test.describe('firstRun CLI', () => {
         expect(result.code, result.stderr).toBe(0);
         expect(output.runId).toBe(RUN_ID);
         expect(output.binding).toBe('bound');
-        expect(output.steps).toHaveLength(11);
+        expect(output.steps).toHaveLength(12);
 
         for (const step of output.steps) {
             expect(typeof step.status, step.id).toBe('string');
@@ -492,5 +494,54 @@ test.describe('firstRun CLI', () => {
 
         expect(thrown).toMatchObject({status: 'unknown', reason: expect.stringContaining('401')});
         expect(wrong).toMatchObject({status: 'failed', reason: expect.stringContaining("served plane id is 'neo-local-canonical', expected 'plane-b'")});
+    });
+
+    test('AC-1 / AC-4 (observers): validation runs the probe fresh with the consented preset and key file at every call and never reads a receipt; verification and done read this run\'s section — unknown without one, failed with a recorded refusal, ok only with the plane\'s answers', async () => {
+        const
+            {patPath, root} = await scratch(),
+            keyPath         = path.join(root, 'operator', 'provider-key'),
+            target          = {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'},
+            probes          = [],
+            validate        = async ({preset, providerKey}) => { probes.push({preset: preset.id, providerKey}); return {provider: {ok: true, model: preset.chatModel, reason: null}, embedding: {ok: true, dimension: preset.vectorDimension, reason: null}} },
+            host            = createHost({now: () => Date.UTC(2026, 9, 3)}),
+            observers       = productionObservers({layout: hostLayout({stateRoot: '/srv/state'}), host, healthcheck: async () => ({plane: {id: 'plane-a', dataRoot: '/srv/plane-a'}}), validate}),
+            base            = createSetupRecord({runId: RUN_ID, target, recipeVersion: RECIPE_VERSION, now: host.now});
+
+        await fs.writeFile(keyPath, 'AIzaSyFAKEKEY\n', {mode: 0o600});
+
+        // validation: the consented preset and the key FILE's content, fresh per call
+        const hosted = withConsent(withConsent(withConsent(base, {stepId: 'preset', answer: 'hosted', consentedAt: 't'}), {stepId: 'plane-credential', answer: patPath, consentedAt: 't'}), {stepId: 'provider-key', answer: keyPath, consentedAt: 't'});
+
+        await observers.validation(target, {record: hosted});
+        await observers.validation(target, {record: hosted});
+        expect(probes).toEqual([{preset: 'hosted', providerKey: 'AIzaSyFAKEKEY'}, {preset: 'hosted', providerKey: 'AIzaSyFAKEKEY'}]);
+        await expect(observers.validation(target, {record: null})).rejects.toThrow('no preset consented');
+
+        const local = withConsent(base, {stepId: 'preset', answer: 'local-small', consentedAt: 't'});
+
+        await observers.validation(target, {record: local});
+        expect(probes.at(-1)).toEqual({preset: 'local-small', providerKey: ''});
+
+        // a receipt-only record proves nothing to validation: with the probe refusing, the retained section changes no answer
+        const refusing = productionObservers({layout: hostLayout({stateRoot: '/srv/state'}), host, validate: async () => ({provider: {ok: false, model: 'm', reason: 'provider down'}, embedding: {ok: false, dimension: null, reason: 'provider down'}})});
+        const witnessed = {...hosted, verification: {runId: RUN_ID, planeId: 'plane-a', sessionId: 's', attempt: {marker: 'mk', dispatchedAt: 't0'}, memory: {id: 'mem-1', at: 't1'}, readback: {at: 't2'}, recall: {at: 't3', hit: true}, priorAttempts: []}};
+
+        expect((await refusing.validation(target, {record: witnessed})).provider).toMatchObject({ok: false, reason: 'provider down'});
+
+        // done + verification read the section, never a counter
+        await expect(observers.done(target, {record: hosted})).rejects.toThrow('no witness for this run yet');
+        expect(await observers.done(target, {record: witnessed})).toEqual({persisted: true, queryAnswered: true, at: 't1', reason: null});
+        expect(await observers.verification(target, {record: witnessed})).toEqual({present: true, digest: null, problem: null, reason: 'the witness has not been written and recalled yet'});
+        expect(await observers.verification(target, {record: hosted})).toEqual({present: false, digest: null, problem: null, reason: 'the verify effect has not run'});
+
+        const refused = {...witnessed, verification: {...witnessed.verification, memory: null, readback: null, recall: null, attempt: {marker: 'mk', dispatchedAt: 't0', refused: {at: 't1', reason: 'no grant'}}}};
+
+        expect(await observers.done(target, {record: refused})).toEqual({persisted: false, queryAnswered: false, at: null, reason: 'the plane refused the witness write at t1: no grant'});
+        expect(await observers.verification(target, {record: refused})).toEqual({present: true, digest: null, problem: 'the plane refused the witness write: no grant'});
+
+        // through the recipe: the witnessed record completes only with the fresh steps ok in the same evaluation
+        const step = (await evaluateRecipe({target, record: witnessed, observers: {servedPlane: observers.servedPlane, validation: observers.validation, verification: observers.verification, done: observers.done}, presets, now: host.now})).steps.find(row => row.id === 'done');
+
+        expect(step).toMatchObject({status: 'ok', witnessedAt: 't1'});
     });
 });

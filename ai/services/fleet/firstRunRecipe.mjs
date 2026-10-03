@@ -75,8 +75,9 @@ export const RECIPE_STEPS = Object.freeze([
     Object.freeze({id: 'write-secrets',    kind: STEP_KINDS.effect,      observer: 'secretFiles',  effectId: 'write-secrets', summary: 'the secret files exist, owner-only'}),
     Object.freeze({id: 'compose-up',       kind: STEP_KINDS.effect,      observer: 'runningPlane', effectId: 'compose-up',    summary: 'the compose project is running'}),
     Object.freeze({id: 'served-plane',     kind: STEP_KINDS.observation, observer: 'servedPlane',  summary: 'the served plane identity and data root match the target'}),
-    Object.freeze({id: 'validation',       kind: STEP_KINDS.observation, observer: 'validation',   summary: 'one provider call and one observed embedding at the preset dimension'}),
-    Object.freeze({id: 'done',             kind: STEP_KINDS.observation, observer: 'done',         terminal: true, summary: 'a query answered and the first persistence'})
+    Object.freeze({id: 'validation',       kind: STEP_KINDS.observation, observer: 'validation',   summary: 'one fresh provider call and one fresh embedding with the configuration the run supplied, at the preset dimension — never read from a receipt'}),
+    Object.freeze({id: 'verify',           kind: STEP_KINDS.effect,      observer: 'verification', effectId: 'verify',        summary: 'the first-run witness: one memory written through the served plane under this run, read back and recalled through its embedding lane'}),
+    Object.freeze({id: 'done',             kind: STEP_KINDS.observation, observer: 'done',         terminal: true, summary: 'this run\'s witness was persisted and recalled, and the served plane and validation are fresh and ok in the same evaluation'})
 ]);
 
 const GIB_TEXT = bytes => `${(bytes / GiB).toFixed(1)} GiB`;
@@ -188,9 +189,15 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
         read    = await observe(observers, step.observer, target, context),
         extra   = {effectId: step.effectId, receipt: receipt ? receipt.outcome : null, observedAt};
 
+    if (receipt?.outcome === RECEIPT_OUTCOMES.pending && receipt.resumable) {
+        // a multi-step effect that says what landed and what has not: pending, not interrupted — a re-check
+        // resumes its read-only remainder (the witness effect's receipts name the sub-step)
+        return status(step, STEP_STATUSES.pending, receipt.reason ?? 'performed in part; a re-check resumes it', {...extra, observed: read.ok ? read.value : null});
+    }
+
     if (receipt && [RECEIPT_OUTCOMES.pending, RECEIPT_OUTCOMES.reconcileRequired].includes(receipt.outcome)) {
         // the observed result rides along so a renderer can settle the receipt once the served plane matches
-        return status(step, STEP_STATUSES.reconcileRequired, 'the effect may have run before its receipt was written; a fresh matching observation settles it', {...extra, observed: read.ok ? read.value : null});
+        return status(step, STEP_STATUSES.reconcileRequired, receipt.reason && receipt.outcome === RECEIPT_OUTCOMES.reconcileRequired ? receipt.reason : 'the effect may have run before its receipt was written; a fresh matching observation settles it', {...extra, observed: read.ok ? read.value : null});
     }
 
     if (!read.ok) {
@@ -296,22 +303,58 @@ function evaluateValidation(step, read, {record, bound, presets, observedAt}) {
     return status(step, STEP_STATUSES.ok, `provider answered; embedding observed at ${preset.vectorDimension} dimensions`, {observedAt});
 }
 
-function evaluateDone(step, read, observedAt) {
+/**
+ * @summary The fresh steps a historical reading may stand on: `served-plane` (and `validation`, for the
+ * terminal step) must read `ok` in THIS evaluation. Names the first that does not, or `null`.
+ * @param {Object[]} steps The steps evaluated so far.
+ * @param {String[]} ids
+ * @returns {String|null} `'<id> is <status>'`
+ */
+function staleGate(steps, ids) {
+    for (const id of ids) {
+        const step = steps.find(row => row.id === id);
+
+        if (step?.status !== STEP_STATUSES.ok) {
+            return {status: step?.status ?? STEP_STATUSES.unknown, reason: `${id} is ${step?.status ?? 'not evaluated'}`};
+        }
+    }
+
+    return null;
+}
+
+function evaluateDone(step, read, {steps, observedAt}) {
     if (!read.ok) {
         return status(step, STEP_STATUSES.unknown, read.reason, {observedAt});
     }
 
-    const value = read.value ?? {};
+    const
+        value = read.value ?? {},
+        at    = value.at ? `witnessed at ${value.at}` : 'witnessed';
 
-    if (value.queryAnswered !== true) {
-        return status(step, STEP_STATUSES.failed, value.reason ?? 'no query was answered', {observedAt});
+    // a recorded refusal is a fresh negative; an outstanding sub-step (the write unacknowledged, the recall not
+    // landed) keeps the run open — the verify row says what re-check repeats
+    if (value.reason) {
+        return status(step, STEP_STATUSES.failed, value.reason, {observedAt});
     }
 
     if (value.persisted !== true) {
-        return status(step, STEP_STATUSES.failed, value.reason ?? 'nothing persisted yet', {observedAt});
+        return status(step, STEP_STATUSES.pending, 'nothing persisted yet', {observedAt});
     }
 
-    return status(step, STEP_STATUSES.ok, 'a query was answered and a first memory persisted', {observedAt});
+    if (value.queryAnswered !== true) {
+        return status(step, STEP_STATUSES.pending, `${at}; the witness was not recalled yet`, {observedAt, witnessedAt: value.at});
+    }
+
+    // the historical witness never completes a run on its own: completion is the witness AND the plane it
+    // was written through still answering as the target, validated, in this evaluation
+    const stale = staleGate(steps, ['served-plane', 'validation']);
+
+    if (stale) {
+        // the gate's own status is mirrored: a failed plane fails the run, an unanswered one keeps it open
+        return status(step, stale.status, `${at}; ${stale.reason}`, {observedAt, witnessedAt: value.at});
+    }
+
+    return status(step, STEP_STATUSES.ok, `${at}; recalled through the served plane; served plane and validation fresh and ok`, {observedAt, witnessedAt: value.at});
 }
 
 /**
@@ -351,6 +394,17 @@ export async function evaluateRecipe({target, record = null, observers = {}, pre
             continue;
         }
 
+        if (step.id === 'validation') {
+            // a fresh observation, and only of the plane the run targets: behind a served-plane row that is
+            // not ok in THIS evaluation nothing is asked — a wrong, stale or degraded plane is never validated
+            const gate = staleGate(steps, ['served-plane']);
+
+            if (gate) {
+                steps.push(status(step, STEP_STATUSES.unknown, `not observed: ${gate.reason}`, {observedAt}));
+                continue;
+            }
+        }
+
         const read = await observe(observers, step.observer, target, context);
 
         switch (step.id) {
@@ -364,7 +418,7 @@ export async function evaluateRecipe({target, record = null, observers = {}, pre
                 steps.push(evaluateValidation(step, read, {record, bound, presets, observedAt}));
                 break;
             default:
-                steps.push(evaluateDone(step, read, observedAt));
+                steps.push(evaluateDone(step, read, {steps, observedAt}));
         }
     }
 

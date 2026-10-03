@@ -20,6 +20,13 @@
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 /**
+ * The Memory Core's route below a plane endpoint — the one every plane client composes (`<base>/mc/mcp`; the
+ * ingress routes `/mc/*` to it and answers 404 elsewhere).
+ * @type {String}
+ */
+export const PLANE_MEMORY_CORE_PATH = '/mc/mcp';
+
+/**
  * @summary Canonical origin+path form (no trailing slash) so one endpoint maps to one identity.
  * @param {URL} url
  * @returns {String}

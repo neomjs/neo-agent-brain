@@ -13,18 +13,22 @@ import {
     persistSetupRecord,
     probePort,
     recordConsent,
+    recordVerification,
     renderEnvFile,
     settleReceipt
 } from '../../../../../../ai/services/fleet/hostEffects.mjs';
 import {RECIPE_VERSION, STEP_STATUSES, evaluateRecipe} from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
 import {
     RECEIPT_OUTCOMES,
+    RETIRE_REASONS,
     contentDigest,
     createSetupRecord,
     findReceipt,
     readSetupRecord,
+    retireCurrentProof,
     setupRecordPath,
-    withReceipt
+    withReceipt,
+    withVerification
 } from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
 
 // Real filesystem under a temp root (modes are the point of AC-4); the command runner and the clock are fakes.
@@ -284,5 +288,32 @@ test.describe('hostEffects', () => {
 
         expect(closed.open).toBe(false);
         expect(closed.reason).toMatch(/ECONNREFUSED|no answer/);
+    });
+
+    test('ADR 0041 §3: the record carries the run\'s verification section through the one writer, owner-only and in one write with its receipt; a rebinding retires it into history with the receipts; the pure helper refuses a non-object', async () => {
+        const
+            {recordPath, host, record} = await scratch(),
+            section = {runId: RUN_ID, planeId: 'plane-a', sessionId: null, attempt: {marker: 'mk-1', dispatchedAt: 't0'}, memory: null, readback: null, recall: null, priorAttempts: []},
+            receipt = {effectId: EFFECT_IDS.verify, outcome: RECEIPT_OUTCOMES.pending, resumable: true, inputDigest: contentDigest('mk-1'), startedAt: 't0', reason: 'dispatching'};
+
+        expect(record.verification).toBeNull();
+
+        const {record: written} = await recordVerification({record, recordPath, host, verification: section, receipt});
+
+        expect(written.verification).toEqual(section);
+        expect(findReceipt(written, EFFECT_IDS.verify)).toEqual(receipt);
+        expect(record.verification).toBeNull(); // the input is never mutated
+        expect(await modeOf(recordPath)).toBe(SECRET_FILE_MODE);
+        expect((await readSetupRecord(recordPath, {fsModule: fs})).record).toEqual(written);
+
+        // a rebinding to another target retires the section with the receipts — another run never reads this run's witness as its own
+        const retired = retireCurrentProof(written, {target: {...target, planeId: 'plane-b'}, recipeVersion: RECIPE_VERSION, reason: RETIRE_REASONS.targetChanged, now: () => NOW});
+
+        expect(retired.verification).toBeNull();
+        expect(retired.receipts).toEqual([]);
+        expect(retired.history[0]).toMatchObject({reason: RETIRE_REASONS.targetChanged, verification: section, receipts: [receipt]});
+
+        expect(withVerification(written, null).verification).toBeNull();
+        expect(() => withVerification(written, 'yes')).toThrow('withVerification: verification must be an object or null.');
     });
 });

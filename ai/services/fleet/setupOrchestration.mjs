@@ -2,10 +2,11 @@
  * @module ai/services/fleet/setupOrchestration
  * @summary The first-run recipe's effect orchestration, one implementation for every renderer with host
  * authority: the CLI (`ai/scripts/setup/firstRun.mjs`) and the vessel's setup broker. `performEffects`
- * turns the consented preset and the operator's credential files into the three effects' inputs and
- * applies them in their execution order; `settlePending` closes an interrupted effect from a fresh
- * matching observation. Both write only through `hostEffects`, so an effect accepted for the same input never
- * runs again, and an interrupted one is settled by observation, never replayed.
+ * turns the consented preset and the operator's credential files into the host effects' inputs and
+ * applies them in their execution order, then performs the `verify` witness through the served plane;
+ * `settlePending` closes an interrupted host effect from a fresh matching observation. Both write only
+ * through `hostEffects`, so an effect accepted for the same input never runs again, and an interrupted one
+ * is settled by observation, never replayed.
  *
  * **One writer is the caller's precondition.** Every write goes through `applyEffect` or `settleReceipt` on
  * the `recordPath` the caller names, and neither re-reads nor locks that file: the caller holds the current
@@ -20,13 +21,24 @@ import {composeCredentialEffects, presetEnvRefusals} from './credentialStep.mjs'
 import {STEP_KINDS, STEP_STATUSES}                   from './firstRunRecipe.mjs';
 import {EFFECT_IDS, applyEffect, settleReceipt}      from './hostEffects.mjs';
 import {presets}                                     from './placementPresets.mjs';
+import {createPlaneWitnessClient}                    from './planeWitnessClient.mjs';
 import {RECEIPT_OUTCOMES, findReceipt}               from './setupRunRecord.mjs';
+import {performVerify}                               from './verifyEffect.mjs';
 
 /**
  * The order the effects run in, whichever renderer runs them. The recipe lists them in another order.
+ * `verify` is last: it runs through the plane the others bring up, and only behind a fresh `served-plane`
+ * and `validation` (`VERIFY_GATES`).
  * @type {String[]}
  */
-export const EFFECT_ORDER = Object.freeze([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp]);
+export const EFFECT_ORDER = Object.freeze([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp, EFFECT_IDS.verify]);
+
+/**
+ * The recipe steps that must read `ok` in the evaluation a `verify` run reads — the witness is written only
+ * through the plane the run targets, validated with the configuration it supplied.
+ * @type {String[]}
+ */
+export const VERIFY_GATES = Object.freeze(['served-plane', 'validation']);
 
 /**
  * The effects whose result is a host file: they run before the plane exists, and bring it up.
@@ -47,19 +59,28 @@ const HOST_FILE_EFFECTS = Object.freeze(EFFECT_ORDER.slice(0, EFFECT_ORDER.index
  * `effectIds` lets a renderer run some effects only, without changing that order: an effect left out that is
  * not `ok` yet halts the run before anything after it, so a selected effect never runs past an unfinished
  * predecessor. An empty selection does nothing; an unknown id is refused through `report`.
+ *
+ * `verify` (`verifyEffect.mjs`) is the one effect performed through the served plane rather than on the
+ * host: it runs only when every {@link VERIFY_GATES} step reads `ok` in `evaluation` (else the run halts
+ * there and says so through `report`), with the consented plane credential, under the run's own record; a
+ * `pending` + `resumable` or `reconcile-required` receipt of it is RESUMED, not halted on — the effect
+ * re-runs only its read-only sub-steps and never writes the witness again (the `newAttempt` consent is the
+ * one exception, explicit by construction).
  * @param {Object}   options
  * @param {Object}   options.record The current record, held exclusively by the caller.
  * @param {String}   options.recordPath
  * @param {Object}   options.host From `createHost`.
  * @param {Object}   options.layout `{envFile, secretsDir, composeDir, composeFiles, composeProject}`.
- * @param {Object}   options.target `{planeId, dataRoot}`.
+ * @param {Object}   options.target `{planeId, dataRoot, endpoint}`.
  * @param {Object}   options.evaluation The settled evaluation this run reads, from `evaluateRecipe`.
  * @param {Function} options.report `(message) → void`, once per refusal (a refused run writes nothing) and once for a halt behind an unsettled effect.
  * @param {String}   options.configSourcePath The Brain's `ai/configBase.mjs`, which a preset's env set is checked against.
  * @param {String[]} [options.effectIds] The effects to run now; every effect when absent.
+ * @param {Boolean}  [options.newAttempt=false] The operator's explicit consent to write the witness again.
+ * @param {Function} [options.createPlaneClient=createPlaneWitnessClient] `({endpoint, credential}) → {addMemory, recentTurns, recall, close}`; a renderer without a plane (a fake host) passes `null` and `verify` is reported, not run.
  * @returns {Promise<Object>} The record after the run.
  */
-export async function performEffects({record, recordPath, host, layout, target, evaluation, report, configSourcePath, effectIds}) {
+export async function performEffects({record, recordPath, host, layout, target, evaluation, report, configSourcePath, effectIds, newAttempt = false, createPlaneClient = createPlaneWitnessClient}) {
     const selected = effectIds ? new Set(effectIds) : null;
 
     if (selected) {
@@ -122,8 +143,17 @@ export async function performEffects({record, recordPath, host, layout, target, 
     for (const effectId of EFFECT_ORDER) {
         const stepStatus = evaluation.steps.find(step => step.effectId === effectId)?.status;
 
-        if (stepStatus === STEP_STATUSES.ok) {
+        if (stepStatus === STEP_STATUSES.ok && !(effectId === EFFECT_IDS.verify && newAttempt)) {
             continue;
+        }
+
+        if (selected && !selected.has(effectId)) {
+            break;
+        }
+
+        if (effectId === EFFECT_IDS.verify) {
+            current = await runVerify({record: current, recordPath, host, target, evaluation, report, patPath, newAttempt, createPlaneClient});
+            break;
         }
 
         if (stepStatus === STEP_STATUSES.reconcileRequired) {
@@ -135,10 +165,6 @@ export async function performEffects({record, recordPath, host, layout, target, 
             });
 
             report(`'${effectId}' was interrupted and is not settled, so nothing runs past it: ${reason ?? 'a re-check settles it'}`);
-            break;
-        }
-
-        if (selected && !selected.has(effectId)) {
             break;
         }
 
@@ -179,6 +205,43 @@ function unsettledReason({effectId, observed, expectedDigest, planeMatches}) {
     }
 
     return expectedDigest && observed.digest !== expectedDigest ? 'the file on the host is not the content this run was writing' : null;
+}
+
+/**
+ * @summary The `verify` leg of {@link performEffects}: the gates, the plane client over the consented
+ * credential, the effect, the client's teardown — and a `report` for every reason it did not run to `ok`.
+ * @param {Object} options See {@link performEffects}; `patPath` is the consented plane credential file.
+ * @returns {Promise<Object>} The record after the leg.
+ * @private
+ */
+async function runVerify({record, recordPath, host, target, evaluation, report, patPath, newAttempt, createPlaneClient}) {
+    const stale = VERIFY_GATES.map(id => evaluation.steps.find(step => step.id === id)).find(step => step?.status !== STEP_STATUSES.ok);
+
+    if (stale) {
+        report(`'verify' waits: ${stale.id} is ${stale.status} (${stale.reason}); the witness is written only through the validated target plane`);
+
+        return record;
+    }
+
+    if (typeof createPlaneClient !== 'function') {
+        report('\'verify\' was not run: this renderer supplies no plane client');
+
+        return record;
+    }
+
+    const plane = createPlaneClient({endpoint: target.endpoint, credential: (await host.fsModule.readFile(patPath, 'utf8')).trim()});
+
+    try {
+        const result = await performVerify({record, recordPath, host, target, plane, newAttempt});
+
+        if (result.receipt && result.receipt.outcome !== RECEIPT_OUTCOMES.accepted) {
+            report(`'verify' is ${result.receipt.outcome}: ${result.receipt.reason}`);
+        }
+
+        return result.record;
+    } finally {
+        await plane.close?.();
+    }
 }
 
 /**
