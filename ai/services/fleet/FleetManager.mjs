@@ -684,14 +684,14 @@ class FleetManager extends Base {
     }
 
     /**
-     * @summary Store the seat's own credential for the plane this Fleet serves, where its Memory Core
-     * and Knowledge Base live ({@link Neo.ai.services.fleet.startAgentProvisioned}). The caller names
-     * only the seat and the credential: the plane is the one this Fleet serves, and the identity the
-     * credential must prove is the seat's row. Inbound once, never returned.
+     * @summary Explicitly set or rebind a seat credential for the plane this Fleet serves, where its
+     * Memory Core and Knowledge Base live ({@link Neo.ai.services.fleet.startAgentProvisioned}). The
+     * caller names only the seat and credential: the plane is the one this Fleet serves, and the
+     * identity the credential must prove is the seat's row. An ordinary default-plane Start binds the
+     * PAT already stored for that seat when no binding exists. Inbound once, never returned.
      * @param {Object} payload
      * @param {String} payload.id         Registry agent id.
-     * @param {String} payload.credential On a provider-PAT plane an identity-only PAT, never the seat's
-     *     checkout PAT.
+     * @param {String} payload.credential Credential the plane must prove belongs to the seat.
      * @returns {Promise<Object>} `{status: 'stored', endpoint, agentId}` or `{status: 'rejected', reason}`.
      */
     async setPlaneCredential({id, credential} = {}) {

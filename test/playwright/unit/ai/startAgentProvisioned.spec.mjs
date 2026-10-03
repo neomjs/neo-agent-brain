@@ -1084,9 +1084,10 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
         RESOURCES  = Object.freeze({'memory-core': {url: `${PLANE}/mc/mcp`}, 'knowledge-base': {url: `${PLANE}/kb/mcp`}}),
         CAPABILITY = Object.freeze({harnessType: 'codex', binaryPath: '/bin/harness', launchBinaryPath: '/bin/harness'});
 
-    /** The seat-plane half of the tenant service: the stored credential, and the start's proof of it. */
-    function makePlaneService({events, stored = {credential: 'seat-plane-pat', plane: SERVED}, readiness = {ok: true}} = {}) {
-        const calls = {resolve: [], probe: []};
+    /** The seat-plane half of the tenant service: existing-PAT binding and the start's proof of it. */
+    function makePlaneService({events, stored = {credential: 'seat-plane-pat', plane: SERVED}, readiness = {ok: true}, storeResult = {status: 'stored'}, storeReadback} = {}) {
+        const calls = {resolve: [], probe: [], store: []};
+        let currentStored = stored;
 
         return {
             calls,
@@ -1094,7 +1095,16 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
                 events?.push('plane-credential');
                 calls.resolve.push(args);
 
-                return stored
+                return currentStored
+            },
+            async storeSeatPlaneCredential(args) {
+                events?.push('store');
+                calls.store.push(args);
+
+                if (storeReadback !== undefined) currentStored = storeReadback;
+                else if (storeResult?.status === 'stored') currentStored = {credential: args.credential, plane: SERVED};
+
+                return storeResult
             },
             async probeSeatPlaneCredential(args) {
                 events?.push('probe');
@@ -1145,10 +1155,10 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
             expectedIdentity: '@a',
             expectedPlane   : SERVED
         }]);
+        expect(planeService.calls.store).toEqual([]);
         expect(prepareWorkspace.calls[0].mcpTarget).toEqual({kind: 'tenant', credentialEnvVar: 'NEO_MCP_REMOTE_TOKEN', resources: RESOURCES});
         expect(lifecycle.calls.inspection[0].mcpTarget).toEqual({kind: 'tenant', resources: RESOURCES});
-        // the checkout PAT stays the repository's; the plane gets only the seat's plane credential, and
-        // the seat is told which plane that credential was proven on
+        // An existing explicit plane binding remains separate and is only re-proven.
         expect(lifecycle.calls.start[0].opts).toEqual({
             cwd                   : '/managed/a/neomjs-neo',
             resolvedCredential    : 'ghp_seat_checkout',
@@ -1157,6 +1167,143 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
             resolvedMcpEndpoint   : PLANE,
             remoteMcpCapability   : CAPABILITY
         })
+    });
+
+    test('a missing default-plane binding uses the existing registry PAT once, then re-proves it before checkout', async () => {
+        const
+            events           = [],
+            lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: 'ghp_seat_checkout'}, events}),
+            planeService     = makePlaneService({events, stored: null}),
+            ensureRepo       = makeEnsureRepo('/managed/a/neomjs-neo', events),
+            prepareWorkspace = makePrepareWorkspace(events);
+
+        await start({lifecycle, planeService, ensureRepo, prepareWorkspace});
+
+        expect(events).toEqual(['credential', 'plane-credential', 'capability', 'store', 'plane-credential', 'probe', 'ensure', 'prepare', 'inspect', 'start']);
+        expect(planeService.calls.store).toEqual([{
+            planeBase : PLANE,
+            agentId   : 'a',
+            identity  : '@a',
+            credential: 'ghp_seat_checkout',
+            ifAbsent  : true
+        }]);
+        expect(planeService.calls.resolve).toEqual([
+            {planeBase: PLANE, agentId: 'a'},
+            {planeBase: PLANE, agentId: 'a'}
+        ]);
+        expect(planeService.calls.probe).toEqual([{
+            planeBase       : PLANE,
+            credential      : 'ghp_seat_checkout',
+            expectedIdentity: '@a',
+            expectedPlane   : SERVED
+        }]);
+        expect(lifecycle.calls.start[0].opts).toMatchObject({
+            resolvedCredential   : 'ghp_seat_checkout',
+            resolvedMcpCredential: 'ghp_seat_checkout',
+            resolvedMcpEndpoint  : PLANE
+        });
+
+        // Once written, a later start reuses and re-proves the binding rather than creating another.
+        await start({lifecycle, planeService});
+
+        expect(planeService.calls.store).toHaveLength(1);
+        expect(planeService.calls.probe).toHaveLength(2);
+        expect(lifecycle.calls.start).toHaveLength(2);
+        expect(lifecycle.calls.start.map(({opts}) => opts.resolvedMcpCredential)).toEqual([
+            'ghp_seat_checkout',
+            'ghp_seat_checkout'
+        ])
+    });
+
+    test('failed default-plane identity, reachability or persistence proof refuses before clone and spawn', async () => {
+        for (const reason of [
+            'the credential resolves to another identity',
+            'plane endpoint unreachable',
+            'seat plane credential could not be persisted'
+        ]) {
+            const
+                lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: 'ghp_seat_checkout'}}),
+                planeService     = makePlaneService({stored: null, storeResult: {status: 'rejected', reason}}),
+                ensureRepo       = makeEnsureRepo(),
+                prepareWorkspace = makePrepareWorkspace(),
+                failure          = await start({lifecycle, planeService, ensureRepo, prepareWorkspace}).then(() => null, error => error);
+
+            expect(failure?.message, reason).toContain(reason);
+            expect(failure?.message, reason).not.toContain('ghp_seat_checkout');
+            expect(planeService.calls.store[0].credential, reason).toBe('ghp_seat_checkout');
+            expect(ensureRepo.calls, reason).toEqual([]);
+            expect(prepareWorkspace.calls, reason).toEqual([]);
+            expect(lifecycle.calls.start, reason).toEqual([])
+        }
+    });
+
+    test('a successful create-only store that cannot be read back refuses before checkout and spawn', async () => {
+        const
+            lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: 'ghp_seat_checkout'}}),
+            planeService     = makePlaneService({stored: null, storeReadback: null}),
+            ensureRepo       = makeEnsureRepo(),
+            prepareWorkspace = makePrepareWorkspace(),
+            failure          = await start({lifecycle, planeService, ensureRepo, prepareWorkspace}).then(() => null, error => error);
+
+        expect(failure?.message).toContain('plane binding was not readable after storage');
+        expect(planeService.calls.store).toHaveLength(1);
+        expect(ensureRepo.calls).toEqual([]);
+        expect(prepareWorkspace.calls).toEqual([]);
+        expect(lifecycle.calls.start).toEqual([])
+    });
+
+    test('a binding already present at the store snapshot is re-read and re-proved instead of replaced', async () => {
+        const
+            registryPat      = 'ghp_seat_checkout',
+            explicitBinding  = 'explicit-plane-binding',
+            lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: registryPat}}),
+            planeService     = makePlaneService({stored: null, storeReadback: {credential: explicitBinding, plane: SERVED}}),
+            prepareWorkspace = makePrepareWorkspace();
+
+        await start({lifecycle, planeService, prepareWorkspace});
+
+        expect(planeService.calls.store).toEqual([{
+            planeBase : PLANE,
+            agentId   : 'a',
+            identity  : '@a',
+            credential: registryPat,
+            ifAbsent  : true
+        }]);
+        expect(planeService.calls.resolve).toHaveLength(2);
+        expect(planeService.calls.probe[0]).toEqual({
+            planeBase       : PLANE,
+            credential      : explicitBinding,
+            expectedIdentity: '@a',
+            expectedPlane   : SERVED
+        });
+        expect(lifecycle.calls.start[0].opts.resolvedCredential).toBe(registryPat);
+        expect(lifecycle.calls.start[0].opts.resolvedMcpCredential).toBe(explicitBinding)
+    });
+
+    test('a binding that appears during a failed registry-PAT proof is re-read and re-proved before checkout', async () => {
+        const
+            registryPat      = 'ghp_seat_checkout',
+            explicitBinding  = 'explicit-plane-binding',
+            lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: registryPat}}),
+            planeService     = makePlaneService({
+                stored      : null,
+                storeResult : {status: 'rejected', reason: 'plane rejected the credential'},
+                storeReadback: {credential: explicitBinding, plane: SERVED}
+            }),
+            ensureRepo       = makeEnsureRepo(),
+            prepareWorkspace = makePrepareWorkspace();
+
+        await start({lifecycle, planeService, ensureRepo, prepareWorkspace});
+
+        expect(planeService.calls.resolve).toHaveLength(2);
+        expect(planeService.calls.probe[0]).toMatchObject({
+            credential      : explicitBinding,
+            expectedIdentity: '@a',
+            expectedPlane   : SERVED
+        });
+        expect(ensureRepo.calls).toHaveLength(1);
+        expect(lifecycle.calls.start[0].opts.resolvedCredential).toBe(registryPat);
+        expect(lifecycle.calls.start[0].opts.resolvedMcpCredential).toBe(explicitBinding)
     });
 
     test('every launchable family either renders no local Memory Core or Knowledge Base on the plane, or refuses', async () => {
@@ -1198,10 +1345,6 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
 
     test('a seat that cannot get to the plane refuses before checkout, workspace and spawn, and names why', async () => {
         const scenarios = [{
-            name : 'no stored credential',
-            plane: {stored: null},
-            error: `agent 'a' has no plane credential stored for ${PLANE}; set the seat's own plane credential (setPlaneCredential) before starting it.`
-        }, {
             name : 'another identity',
             plane: {readiness: {ok: false, reason: 'the credential resolves to another identity'}},
             error: `agent 'a' cannot use its plane at ${PLANE}: the credential resolves to another identity.`

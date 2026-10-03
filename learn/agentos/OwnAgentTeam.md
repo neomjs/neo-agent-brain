@@ -268,17 +268,17 @@ refuses to start and says why (`ai/services/fleet/resolveSeatPlaneTarget.mjs`):
 - It needs a managed repo, because Fleet renders the remote servers into its prepared workspace.
 - Its harness must reach a remote Memory Core. Antigravity cannot yet, so it starts only on a
   Fleet that serves no plane.
-- It presents its own plane credential, never its checkout PAT, which carries repository scopes
-  no plane may hold. Under `github-pat` that is a second PAT of the seat's account, with no
-  repository access: it only has to name the login.
+- On the default connected plane, Start binds the PAT already stored for the seat after the plane
+  proves its identity and the matching Memory Core / Knowledge Base plane. The binding is encrypted
+  with the served `plane.id` and `plane.dataRoot`, then re-proven before each use; a second token is
+  not required. An explicit tenant target continues to use that tenant's credential.
 
-Set it once per seat with `setPlaneCredential` (`{id, credential}`). Fleet proves on the plane
-that the credential resolves to the seat's login, and records which plane answered: the
-`plane.id` and `plane.dataRoot` its `healthcheck` serves. Both are proven again before the
-credential is used: a fresh Start proves them before anything is checked out, and wake arming
-before it subscribes, including on a Start for a seat that is already running. A plane recreated
-behind the same URL therefore does not inherit a credential proven on the old one. Setting the
-credential again binds the seat to the plane serving now.
+`setPlaneCredential` (`{id, credential}`) remains an explicit set/rebind operation. Fleet proves that
+credential on the plane and records which plane answered: the `plane.id` and `plane.dataRoot` its
+`healthcheck` serves. A default-plane Start uses the existing registry PAT only when no binding is
+present; a failed proof or write stops before checkout. Existing bindings are never silently
+replaced. The identity and plane tuple are re-proven before each credential use, including wake
+arming, so a plane recreated behind the same URL does not inherit the old binding.
 
 A tenant row keeps its connected tenant. Only a Fleet that serves no plane (own mode) still runs
 per-seat Memory Core and Knowledge Base servers, until own mode serves an endpoint of its own.
@@ -418,10 +418,10 @@ The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that fami
    the Desktop profile itself carries no Fleet MCP rows. Opening the clone brings the copied
    memory and the intended MCP servers into the same session.
    During that first turn, re-check that the clone's MCP rows remain present: other running
-   Claude instances also write the shared config. For Memory Core and Knowledge Base, a seat on a
-   plane or a tenant receives only its plane credential, beside its separate checkout PAT, and
-   model-provider credentials stay on that plane. Per-seat servers,
-   on a Fleet that serves no plane, give the harness process the selected model-provider
+   Claude instances also write the shared config. For Memory Core and Knowledge Base, a default-plane
+   seat uses the same PAT already stored for its checkout, bound and re-proven by the Brain; an
+   explicit tenant keeps its tenant credential. Model-provider credentials stay on that plane.
+   Per-seat servers on a Fleet that serves no plane give the harness process the selected model-provider
    credential as an environment capability, so its shells can use it too.
 7. Rollback is the old launch. Nothing was moved, so nothing needs restoring.
 8. Retire the old directory only after weeks of clean sessions, by leaving a pointer file in

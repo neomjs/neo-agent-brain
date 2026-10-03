@@ -95,13 +95,14 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * the filesystem. Only that act, or a deliberate move, rewrites the record.
  *
  * **Memory Core and Knowledge Base live where the team reads them**
- * ({@link Neo.ai.services.fleet.resolveSeatPlaneTarget}). A tenant row reaches its tenant. On a Fleet
- * that serves a plane, every other seat reaches that plane with its own stored plane credential, never
- * its checkout PAT. The start proves again that the credential resolves to the seat, on the plane it
- * was stored against, before any checkout. A seat that cannot get there refuses to start and says why:
- * no managed repo to render the remote servers into, a harness with no remote Memory Core, no stored
- * credential, or a failed proof. A private per-seat store is no fallback. Only a Fleet that serves no
- * plane keeps the per-seat servers.
+ * ({@link Neo.ai.services.fleet.resolveSeatPlaneTarget}). A tenant row keeps its tenant and tenant
+ * credential. On the default plane, a start binds the seat PAT already held by the registry only when
+ * no plane binding exists; `FleetTenantService` proves the seat identity and served plane before it
+ * stores that PAT encrypted. A start that proceeds to provisioning re-reads and re-proves the binding
+ * before checkout; wake arming re-proves it before subscription. A seat that cannot get there refuses to
+ * start and says why: no managed repo to render the remote servers into, a harness with no remote Memory
+ * Core, a failed identity/plane proof, or failed persistence. A private per-seat store is no fallback.
+ * Only a Fleet that serves no plane keeps the per-seat servers.
  *
  * Pure composition over injectable seams: `ensureRepo` (default {@link Neo.ai.services.fleet.ensureAgentRepo}),
  * `prepareWorkspace` (default {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}), and
@@ -296,23 +297,43 @@ export async function startAgentProvisioned({
             throw new Error(`startAgentProvisioned: remote MCP credential readiness failed for agent '${agentId}'.`)
         }
     } else if (placement?.kind === 'plane') {
-        const stored = activeTenantService.resolveSeatPlaneCredential({planeBase: placement.endpoint, agentId});
+        const
+            expectedIdentity = expectedAgentIdentity(agent),
+            storedArgs       = {planeBase: placement.endpoint, agentId};
 
-        if (!stored) {
-            throw new Error(`startAgentProvisioned: agent '${agentId}' has no plane credential stored for ${placement.endpoint}; set the seat's own plane credential (setPlaneCredential) before starting it.`)
-        }
+        let stored = activeTenantService.resolveSeatPlaneCredential(storedArgs);
 
         remotePlan            = placement;
-        resolvedMcpCredential = stored.credential;
         remoteCapability      = await lifecycleService.assertRemoteMcpCapability(agent, {
             mainCheckout: agentosRuntimeRoot,
             nodePath
         });
 
+        if (!stored) {
+            const binding = await activeTenantService.storeSeatPlaneCredential({
+                ...storedArgs,
+                identity  : expectedIdentity,
+                credential: resolvedCredential,
+                ifAbsent  : true
+            });
+
+            stored = activeTenantService.resolveSeatPlaneCredential(storedArgs);
+
+            if (!stored) {
+                if (binding?.status !== 'stored') {
+                    throw new Error(`startAgentProvisioned: agent '${agentId}' could not bind its existing PAT to the Fleet plane at ${placement.endpoint}: ${binding?.reason ?? 'the credential was not accepted'}.`)
+                }
+
+                throw new Error(`startAgentProvisioned: agent '${agentId}' plane binding was not readable after storage.`)
+            }
+        }
+
+        resolvedMcpCredential = stored.credential;
+
         const readiness = await activeTenantService.probeSeatPlaneCredential({
             planeBase       : placement.endpoint,
             credential      : stored.credential,
-            expectedIdentity: expectedAgentIdentity(agent),
+            expectedIdentity,
             expectedPlane   : stored.plane
         });
 

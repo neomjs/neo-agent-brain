@@ -302,22 +302,26 @@ class FleetTenantService extends Base {
     }
 
     /**
-     * @summary Stores one seat's own credential for one plane, after proving that it resolves to that
-     * seat. A plane admits a seat only as itself, and a seat's checkout PAT is never plane authority
-     * (see {@link probeSeatCredential}), so every seat on a plane carries a credential of its own: on a
-     * provider-PAT plane, an identity-only PAT. Nothing persists before the probe proves the identity;
-     * the credential is kept encrypted beside the tenant bearers and never returned. The plane that
-     * answered the probe is stored with it, and each start must meet that plane again
-     * ({@link probeSeatPlaneCredential}). Storing again rebinds the seat to the plane serving now.
+     * @summary Stores one seat's accepted credential for one plane, after proving that it resolves to
+     * that seat. For the default plane, Start supplies the PAT already held by the registry; this
+     * binding records its plane purpose and proof, not a requirement for another token. Explicit tenant
+     * credentials remain in their tenant store and are never substituted with the registry PAT. Nothing
+     * persists before the probe proves the identity; the credential is kept encrypted beside the tenant
+     * bearers and never returned. The plane that answered the probe is stored with it, and each start
+     * must meet that plane again ({@link probeSeatPlaneCredential}). Storing again rebinds the seat to
+     * the plane serving now.
      * @param {Object} params
      * @param {String} params.planeBase The plane the credential is for.
      * @param {String} params.agentId Registry agent id.
      * @param {String} params.identity The seat's identity the credential must resolve to.
      * @param {String} params.credential Never returned.
+     * @param {Boolean} [params.ifAbsent=false] Retain a valid existing row at the mutation snapshot
+     *     instead of replacing it. Used by Start because another writer may finish while proof awaits.
+     *     Malformed selected state is refused; the caller must re-read and prove a retained row.
      * @returns {Promise<Object>} `{status: 'stored', endpoint, agentId}`, or `{status: 'rejected',
      *     reason}` with a reason from a closed vocabulary.
      */
-    async storeSeatPlaneCredential({planeBase, agentId, identity, credential} = {}) {
+    async storeSeatPlaneCredential({planeBase, agentId, identity, credential, ifAbsent=false} = {}) {
         const
             endpoint = this.normalizeEndpoint(planeBase),
             expected = normalizeAgentIdentity(identity);
@@ -347,9 +351,31 @@ class FleetTenantService extends Base {
         }
 
         try {
-            const record = this.readSeatPlaneCredentialsForMutation();
+            const
+                record   = this.readSeatPlaneCredentialsForMutation(),
+                existing = record[endpoint];
 
-            record[endpoint] = {...record[endpoint], [agentId]: {credential, plane: proof.plane}};
+            if (existing !== undefined && (!existing || typeof existing !== 'object' || Array.isArray(existing))) {
+                throw new TypeError('FleetTenantService: the selected plane credential record is malformed.')
+            }
+
+            // Start's first binding is create-only: a manual setter or another Start may have written
+            // this seat while the proof above was awaiting. Retain that row so the caller can re-read
+            // and prove it; explicit set/rebind calls keep the default replacement behavior.
+            if (ifAbsent === true && existing && Object.hasOwn(existing, agentId)) {
+                const selected = existing[agentId];
+
+                if (!selected || typeof selected !== 'object' || Array.isArray(selected) ||
+                    typeof selected.credential !== 'string' || !selected.credential.trim() ||
+                    typeof selected.plane?.id !== 'string' || !selected.plane.id.trim() ||
+                    typeof selected.plane.dataRoot !== 'string' || !selected.plane.dataRoot.trim()) {
+                    return {status: 'rejected', reason: 'seat plane credential could not be persisted'}
+                }
+
+                return {status: 'stored', endpoint, agentId}
+            }
+
+            record[endpoint] = {...existing, [agentId]: {credential, plane: proof.plane}};
             this.publishAtomically(path.join(this.getDataDir(), SEAT_PLANE_CREDENTIALS), this.encrypt(JSON.stringify(record)))
         } catch {
             return {status: 'rejected', reason: 'seat plane credential could not be persisted'}
