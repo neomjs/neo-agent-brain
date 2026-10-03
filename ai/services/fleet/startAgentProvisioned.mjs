@@ -4,6 +4,7 @@ import {launchRefusalOf}               from '../../../src/fleet/contract/launchA
 import {prepareManagedAgentWorkspace}  from './prepareManagedAgentWorkspace.mjs';
 import {redactReadFailure}             from './redactReadFailure.mjs';
 import {resolveSeatPlaneTarget}        from './resolveSeatPlaneTarget.mjs';
+import {importSeatMemory, MEMORY_IMPORT_NONE} from './seatMemoryImport.mjs';
 import path                            from 'node:path';
 import {fileURLToPath}                 from 'node:url';
 
@@ -123,6 +124,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                             for tests.
  * @param {Function} [options.prepareWorkspace] The post-provisioning workspace/home composer; defaults
  *                                              to {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}.
+ * @param {Function} [options.importMemory]     The adopted seat's memory convergence after preparation;
+ *                                              defaults to {@link module:ai/services/fleet/seatMemoryImport.importSeatMemory}.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
  * @param {String}   [options.instanceRoot]     Explicit harness-home root; omitted ⇒ the lifecycle
@@ -132,7 +135,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * @param {String}   [options.nodePath]         Node executable override for generated MCP definitions.
  * @returns {Promise<Object>} the agent's lifecycle status (see `FleetLifecycleService.status`). A prepared
  *   seat's status also carries `seatInstructions`, the preparer's decision about its instructions file,
- *   so whoever starts the seat sees why it got, kept or lost one. A seat with other repositories also
+ *   so whoever starts the seat sees why it got, kept or lost one, and an adopted seat `memoryImport`
+ *   (`{state: 'copied' | 'present', source, destination, files}`). A seat with other repositories also
  *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, where a failed entry's
  *   `reason` is the failure's credential-redacted, bounded diagnostic.
  * @throws {Error} when `lifecycleService` / `agentId` is missing, the agent is unknown or has no GitHub
@@ -141,8 +145,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   is absent for a repo-bearing agent, a repo-bearing raw launch override would bypass curated
  *   preparation, the managed root derives a seat home other than the recorded one or the row records
  *   none (`FLEET_SEAT_HOME_MISMATCH` / `FLEET_SEAT_HOME_UNBOUND`, refused before the PAT read),
- *   provisioning/preparation fails (re-thrown — no spawn), or the seat's launch authority was released
- *   while preparation ran ({@link spawnPermitted}).
+ *   provisioning/preparation fails (re-thrown — no spawn), a consented memory import left the seat's
+ *   memory empty (`FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED`, no spawn), or the seat's launch authority was
+ *   released while preparation ran ({@link spawnPermitted}).
  */
 export async function startAgentProvisioned({
     lifecycleService,
@@ -152,6 +157,7 @@ export async function startAgentProvisioned({
     cloneRepo,
     ensureRepo = ensureAgentRepo,
     prepareWorkspace = prepareManagedAgentWorkspace,
+    importMemory = importSeatMemory,
     tenantService = null,
     instanceRoot,
     agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT,
@@ -240,7 +246,14 @@ export async function startAgentProvisioned({
     }
 
     // No repo coordinates ⇒ nothing to provision; start in the inherited cwd (backward-compatible).
+    // A consented memory import converges into the managed workspace, so without one it cannot.
     if (!repo) {
+        if (agent.memoryImport && agent.memoryImport !== MEMORY_IMPORT_NONE) {
+            throw Object.assign(new Error(
+                `startAgentProvisioned: agent '${agentId}' consented to import its memory, which converges into its managed workspace; set its repository before starting it.`
+            ), {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: agent.memoryImport, destination: null, step: 'memory import'})
+        }
+
         return spawnPermitted({lifecycleService, registry, agentId, startOptions: {resolvedCredential}});
     }
 
@@ -344,10 +357,12 @@ export async function startAgentProvisioned({
     // Preparation is a mandatory gate for repo-bearing agents. The lifecycle owns the resolved
     // instance-root SSOT; the explicit option is only a test/per-tenant seam. A preparation throw
     // propagates, so `start` is never called over divergent or unsupported resident state.
+    const seatInstanceRoot = instanceRoot ?? lifecycleService.getInstanceRoot?.();
+
     const prepared = await prepareWorkspace({
         agent,
         targetRepoRoot,
-        instanceRoot       : instanceRoot ?? lifecycleService.getInstanceRoot?.(),
+        instanceRoot       : seatInstanceRoot,
         agentosRuntimeRoot,
         nodePath,
         residentMcpEnv     : resolvedResidentMcpEnv,
@@ -381,6 +396,10 @@ export async function startAgentProvisioned({
         })
     }
 
+    // an adopted seat starts with the memory it consented to import, never an empty folder that
+    // reads like a fresh seat's: converge the copy, then read the destination fresh
+    const memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
+
     const status = await spawnPermitted({
         lifecycleService,
         registry,
@@ -403,6 +422,7 @@ export async function startAgentProvisioned({
     return {
         ...status,
         ...(prepared.seatInstructions ? {seatInstructions: prepared.seatInstructions} : {}),
+        ...(memory.state !== 'none' ? {memoryImport: memory} : {}),
         ...(repos.length ? {repos} : {})
     }
 }
