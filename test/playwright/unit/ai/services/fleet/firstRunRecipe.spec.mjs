@@ -203,19 +203,22 @@ test.describe('firstRunRecipe', () => {
             ids       = rows => rows.map(row => row.id);
 
         expect(HEADROOM_BYTES).toBe(4 * GiB);
-        expect(ids(generous.recommended)).toEqual(['local-small']);
-        // `hosted` carries no recorded floor yet (the floor instrument leaf): a candidate on every host, shown as possible, never recommended by default
-        expect(ids(generous.possible)).toContain('hosted');
-        expect(generous.possible.find(row => row.id === 'hosted').reason).toMatch(/candidate, never recommended by default/);
+        // `hosted` carries its recorded floor (three met samples): supported, so a host that clears the headroom gets it recommended
+        expect(ids(generous.recommended)).toEqual(['hosted', 'local-small']);
+        expect(generous.recommended.find(row => row.id === 'hosted').reason).toMatch(/fits with .* host margin/);
         expect(ids(generous.recommended)).not.toContain('local-full');
+        // a preset without a recorded floor is still never recommended by default
+        expect(ids(candidate.recommended)).toEqual([]);
+        expect(candidate.possible[0].reason).toMatch(/candidate, never recommended by default/);
 
         // the 32 GiB tier's lesson: fits on arithmetic by less than the headroom → possible, not recommended
-        expect(ids(bare.recommended)).toEqual([]);
-        expect(ids(bare.possible)).toEqual(['hosted', 'local-small']);
-        expect(bare.possible[1].reason).toMatch(/fits by 1\.0 GiB on the host, under the 4\.0 GiB headroom: possible, not recommended/);
-        expect(bare.possible[1].margins.host).toBe(1 * GiB);
+        expect(ids(bare.recommended)).toEqual(['hosted']);
+        expect(ids(bare.possible)).toEqual(['local-small']);
+        expect(bare.possible[0].reason).toMatch(/fits by 1\.0 GiB on the host, under the 4\.0 GiB headroom: possible, not recommended/);
+        expect(bare.possible[0].margins.host).toBe(1 * GiB);
 
-        expect(ids(swapping.recommended)).toEqual([]);
+        // the probe refuses every LOCAL preset on a swapping host; hosted runs its inference elsewhere and stays the recommendation
+        expect(ids(swapping.recommended)).toEqual(['hosted']);
         expect(ids(swapping.refused)).toEqual(['local-small', 'local-full']);
         expect(swapping.refused.find(row => row.id === 'local-small').reason).toMatch(/swapping/);
 
@@ -231,13 +234,17 @@ test.describe('firstRunRecipe', () => {
     test('the placement step reports the recommendation; with nothing recommended it names each possible and refused preset with its reason; a host nothing fits reads failed', async () => {
         const
             fits     = await evaluateRecipe({target: targetA, record: null, observers: greenObservers(), presets, now: () => NOW}),
-            // the probe's own 32 GiB fixture (15.5 GiB host budget, a 16 GiB VM): hosted clears the headroom by 13 GiB and
-            // is possible only for lack of a floor; both local presets are refused — no row has a headroom shortfall
-            possible = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => probeOf({hostAvailable: 15.5 * GiB, guestAvailable: 13.5 * GiB, capBytes: 16 * GiB})}, presets, now: () => NOW}),
+            // the probe's own 32 GiB fixture (15.5 GiB host budget, a 16 GiB VM): hosted clears the headroom by 13 GiB; both local
+            // presets are refused — no row has a headroom shortfall. With its recorded floor, hosted is what such a host is told.
+            laptop   = {placement: async () => probeOf({hostAvailable: 15.5 * GiB, guestAvailable: 13.5 * GiB, capBytes: 16 * GiB})},
+            smallHost = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), ...laptop}, presets, now: () => NOW}),
+            // the same host under a table where hosted has no recorded floor: possible only for lack of one, nothing recommended
+            possible = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), ...laptop}, presets: presets.map(row => row.id === 'hosted' ? {...row, qualityFloor: null} : row), now: () => NOW}),
             nothing  = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => probeOf({hostAvailable: 1 * GiB})}, presets: presets.filter(row => row.id !== 'hosted'), now: () => NOW});
 
         expect(byId(fits.steps).placement.reason).toMatch(/^recommended: /);
         expect(byId(fits.steps).placement.placement.headroomBytes).toBe(HEADROOM_BYTES);
+        expect(byId(smallHost.steps).placement.reason).toBe('recommended: hosted');
         expect(byId(possible.steps).placement.status).toBe(STEP_STATUSES.ok);
         expect(byId(possible.steps).placement.reason).toBe('nothing recommended; possible: hosted (no recorded quality floor: a candidate, never recommended by default); refused: local-small (the host budget falls 2.2 GiB short), local-full (the host budget falls 5.9 GiB short)');
         expect(byId(possible.steps).placement.summary).toBe('the presets this host bears, each with its reason');
