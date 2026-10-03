@@ -2329,3 +2329,41 @@ test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-reposito
         expect(FleetLifecycleService.status('seat').repos).toBeNull()
     });
 });
+
+test.describe('FleetLifecycleService.status — where a running Claude Desktop seat\'s session opened', () => {
+    let root;
+
+    test.beforeEach(() => {
+        FleetLifecycleService.leasesAdopted = true;
+        FleetLifecycleService.processes.clear();
+        root = fs.mkdtempSync(path.join(os.tmpdir(), 'session-folder-status-'))
+    });
+
+    test.afterEach(() => {
+        FleetLifecycleService.processes.clear();
+        FleetLifecycleService.leasesAdopted = false;
+        fs.rmSync(root, {recursive: true, force: true})
+    });
+
+    test('only a running claude-desktop seat with a checkout, a profile and a start carries one', () => {
+        const
+            instanceHome = path.join(root, 'profile'),
+            clone        = path.join(root, 'agents', 'seat', 'neomjs', 'neo'),
+            store        = path.join(instanceHome, 'claude-code-sessions', 'account', 'org'),
+            launch       = {pid: 4202, startedAt: '2026-10-03T19:00:00.000Z', cwd: clone, instanceHome},
+            seat         = changes => FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'running', harnessType: 'claude-desktop', ...launch, ...changes});
+
+        fs.mkdirSync(store, {recursive: true});
+        fs.writeFileSync(path.join(store, 'local_s1.json'), JSON.stringify({originCwd: '/old/neomjs/neo', createdAt: Date.parse('2026-10-03T19:05:00.000Z')}));
+
+        seat({});
+        expect(FleetLifecycleService.status('seat').sessionFolder).toEqual({state: 'wrong', expected: clone, observed: '/old/neomjs/neo'});
+
+        for (const other of [{harnessType: 'codex-desktop'}, {state: 'stopped'}, {cwd: null}, {instanceHome: null}, {startedAt: null}]) {
+            seat(other);
+            expect(FleetLifecycleService.status('seat').sessionFolder, JSON.stringify(other)).toBeNull()
+        }
+
+        expect(FleetLifecycleService.status('nobody').sessionFolder).toBeNull()
+    });
+});

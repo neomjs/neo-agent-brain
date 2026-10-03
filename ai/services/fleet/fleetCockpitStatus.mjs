@@ -205,6 +205,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 repoStatus,
                 // the last start's per-repository outcome from the launch record; null before a start
                 repoOutcomes: runtime?.repos ?? null,
+                // where a running Claude Desktop seat's session opened, against its checkout; null
+                // for every other family and every seat not running
+                sessionFolder: runtime?.sessionFolder ?? null,
                 lifecycle   : supervised
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.runtime,

@@ -12,6 +12,7 @@ import {deriveAgentInstanceHome}                                    from './deri
 import {deriveHarnessLaunchSpec}                                    from './deriveHarnessLaunchSpec.mjs';
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                     from './deriveNodeRuntimeEnv.mjs';
 import FleetRegistryService                                         from './FleetRegistryService.mjs';
+import {readSeatSessionFolder}                                      from './seatSessionFolder.mjs';
 import memoryCoreConfig                                             from '../../mcp/server/memory-core/config.mjs';
 import knowledgeBaseConfig                                          from '../../mcp/server/knowledge-base/config.mjs';
 import neuralLinkConfig                                             from '../../mcp/server/neural-link/config.mjs';
@@ -956,7 +957,7 @@ class FleetLifecycleService extends Base {
      * @param {String} id
      * @returns {Object} `{id, state, running, adopted, pid, startedAt, uptimeMs, exitCode, exitedAt,
      *     stderrBytes, authRequired, instanceHome, authHome, launchCommand, authCommand,
-     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, repos}` — `authRequired`
+     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, repos, sessionFolder}` — `authRequired`
      *     is the LIVE per-home
      *     auth-marker heuristic for curated launches (`true` = the operator-owned per-home login has
      *     not happened yet; recomputed each read so a completed login flips it without a restart);
@@ -974,12 +975,13 @@ class FleetLifecycleService extends Base {
      *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
      *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`). `repos` is the
      *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is.
+     *     `sessionFolder` is where a running Claude Desktop seat's session opened ({@link sessionFolderFor}).
      */
     status(id) {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, sessionFolder: null};
 
         this.refreshAdoptedSeat(record);
 
@@ -1015,8 +1017,23 @@ class FleetLifecycleService extends Base {
                 instanceAddress: record.wakeRoute.instanceAddress ?? null,
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
             } : null,
-            repos            : record.repos ? record.repos.map(repo => ({...repo})) : null
+            repos            : record.repos ? record.repos.map(repo => ({...repo})) : null,
+            sessionFolder    : this.sessionFolderFor(record)
         };
+    }
+
+    /**
+     * @summary Where a running Claude Desktop seat's session opened, against the checkout it was
+     * launched in, read from the seat's own profile ({@link module:ai/services/fleet/seatSessionFolder}).
+     * Only that family carries one, because it is the family that cannot be launched into a folder.
+     * @param {Object} record A process record.
+     * @returns {Object|null} `null` for another family, a seat not running, or a launch without a
+     *     checkout, a profile or a start time.
+     */
+    sessionFolderFor(record) {
+        return record.harnessType === 'claude-desktop' && record.state === 'running' && record.instanceHome && record.cwd && record.startedAt
+            ? readSeatSessionFolder({instanceHome: record.instanceHome, expected: record.cwd, since: record.startedAt})
+            : null
     }
 
     /**
