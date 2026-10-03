@@ -142,7 +142,7 @@ const
         documents : GEMMA_FLOOR.documents,
         documentsDigest: GEMMA_FLOOR.documentsDigest,
         result    : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4-5', ungroundedNames: 0},
-        note      : 'three consecutive met samples over the shipped fixture set, ~21 s each: 2026-10-02 (5-7 grounded nodes per document) and two on 2026-10-03 (4-8, 4-5), each 0 dangling edges and 0 ungrounded names; the first sample, under the rule before canonical Neo paths were grounded by identity, read one invented name — the input that rule change answered; receipts in the readiness-probe ticket\'s AC-4 ledger'
+        note      : 'four samples over the shipped fixture set under the identity rule for canonical Neo paths, ~21 s each: the first (2026-10-02) read one genuine invention, `Focus Management Contract`, and failed the floor; the next three met it in a row — 2026-10-02 (5-7 grounded nodes per document) and two on 2026-10-03 (4-8, 4-5), each 0 dangling edges and 0 ungrounded names; a preset that invents in one run of four is recorded at its weakest met result and stays watched. Receipts: https://github.com/neomjs/neo-agent-brain/issues/746#issuecomment-5957946293 (sample 1), https://github.com/neomjs/neo-agent-brain/issues/746#issuecomment-5958574801 (sample 2), https://github.com/neomjs/neo-agent-brain/issues/746#issuecomment-5966875849 (samples 3 and 4, per-document detail)'
     });
 
 /**

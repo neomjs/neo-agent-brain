@@ -100,7 +100,10 @@ test.describe('placementPresets — three presets as env sets over declared leav
         expect(byId('local-full').qualityFloor).toMatchObject({instrument: 'tri-vector-three-documents', measuredAt: '2026-10-02', chatModel: 'google/gemma-4-26b-a4b', documents: ['19339-dock-reveal-overlay-focus.md', '19354-dock-workspace-header-actions-plugin.md', '19356-grid-body-scroll-edge.md'], documentsDigest: 'f3cd8b711bc5a8905cd7ec171577c423be34b23583adbaa6c9feeef82116844e', result: {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '3-4', ungroundedNames: 0}});
         // hosted: the same instrument and set, its own model, the WEAKEST met sample recorded (4-5, not 4-8), three samples named in the note
         expect(byId('hosted').qualityFloor).toMatchObject({instrument: 'tri-vector-three-documents', measuredAt: '2026-10-03', chatModel: 'gemini-3.8-flash', documents: byId('local-full').qualityFloor.documents, documentsDigest: byId('local-full').qualityFloor.documentsDigest, result: {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4-5', ungroundedNames: 0}});
-        expect(byId('hosted').qualityFloor.note).toMatch(/three consecutive met samples/);
+        // the note keeps the failed first sample AND links each receipt: a row is a provenance record, not a summary
+        expect(byId('hosted').qualityFloor.note).toMatch(/the next three met it in a row/);
+        expect(byId('hosted').qualityFloor.note).toMatch(/Focus Management Contract/);
+        expect(byId('hosted').qualityFloor.note.match(/https:\/\/github\.com\/neomjs\/neo-agent-brain\/issues\/746#issuecomment-\d+/g)).toHaveLength(3);
         expect(presetStatus({})).toBe('candidate')
     });
 

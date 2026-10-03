@@ -200,6 +200,8 @@ test.describe('firstRunRecipe', () => {
             swapping  = recommendPlacement({probe: probeOf({hostAvailable: small + 6 * GiB, guestAvailable: 29 * GiB, pressure: 'swapping'}), presets}),
             lowCap    = recommendPlacement({probe: probeOf({hostAvailable: small + 6 * GiB, guestAvailable: 5 * GiB, capBytes: 6 * GiB}), presets}),
             candidate = recommendPlacement({probe: probeOf({hostAvailable: 60 * GiB}), presets: [{...preset('local-small'), id: 'local-trial', qualityFloor: null}]}),
+            // a host with 1 GiB above the plane's own peak: hosted fits on arithmetic, under the headroom
+            tight     = recommendPlacement({probe: probeOf({hostAvailable: need('hosted') + 1 * GiB}), presets}),
             ids       = rows => rows.map(row => row.id);
 
         expect(HEADROOM_BYTES).toBe(4 * GiB);
@@ -207,6 +209,10 @@ test.describe('firstRunRecipe', () => {
         expect(ids(generous.recommended)).toEqual(['hosted', 'local-small']);
         expect(generous.recommended.find(row => row.id === 'hosted').reason).toMatch(/fits with .* host margin/);
         expect(ids(generous.recommended)).not.toContain('local-full');
+        // supported is not a free pass: below the headroom hosted is possible, not recommended — by headroom, never by status
+        expect(ids(tight.recommended)).toEqual([]);
+        expect(ids(tight.possible)).toEqual(['hosted']);
+        expect(tight.possible[0].reason).toMatch(/fits by 1\.0 GiB on the host, under the 4\.0 GiB headroom: possible, not recommended/);
         // a preset without a recorded floor is still never recommended by default
         expect(ids(candidate.recommended)).toEqual([]);
         expect(candidate.possible[0].reason).toMatch(/candidate, never recommended by default/);
