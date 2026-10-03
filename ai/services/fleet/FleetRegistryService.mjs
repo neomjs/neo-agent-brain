@@ -9,6 +9,7 @@ import {mcpCatalogFor, normalizeMcpOverrides, resolveMcpMatrix} from '../../../s
 import {REPO_FORGES}                             from './deriveAgentRepoPath.mjs';
 import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePlan.mjs';
 import {normalizeMcpTarget}                      from './mcpServers.mjs';
+import {normalizeMemoryImport}                   from './seatMemoryImport.mjs';
 
 const
     FORGE_HOSTNAME_RE       = /^(?:[a-z0-9._-]+|\[[0-9a-f:]+\])$/,
@@ -355,6 +356,10 @@ class FleetRegistryService extends Base {
      *     `external` for one that runs in its own harness. Passing either is an ownership act and records
      *     `launchOwnerSince` with the row; omitting it records no act, so the seat's process record stays
      *     its only start gate.
+     * @param {String} [opts.memoryImport] The seat adopts an existing agent: that agent's memory folder
+     *     ({@link module:ai/services/fleet/seatMemoryImport.normalizeMemoryImport}), or `'none'` to start
+     *     empty. Start copies it into the family's own memory folder and refuses while it reads empty.
+     *     Omitted, the seat is a fresh one.
      * @returns {Object} The public agent definition (no credential).
      */
     defineAgent(options={}) {
@@ -372,6 +377,7 @@ class FleetRegistryService extends Base {
             forgeHost,
             id,
             launchOwner='external',
+            memoryImport,
             metadata={},
             modelProvider,
             mcpServers,
@@ -379,6 +385,16 @@ class FleetRegistryService extends Base {
         } = options || {};
 
         if (!githubUsername) throw new Error("FleetRegistryService.defineAgent: 'githubUsername' is required.");
+
+        let consent = null;
+
+        if (memoryImport != null) {
+            try {
+                consent = normalizeMemoryImport(memoryImport)
+            } catch (error) {
+                throw new Error(`FleetRegistryService.defineAgent: ${error.message}`)
+            }
+        }
         if (!harnessType)    throw new Error("FleetRegistryService.defineAgent: 'harnessType' is required.");
 
         if (!LAUNCH_OWNERS.includes(launchOwner)) {
@@ -451,6 +467,8 @@ class FleetRegistryService extends Base {
                 // an explicit owner is an ownership act, the fact `launchRefusalOf` keys on; the omitted
                 // default records none, so the process record stays that seat's only start gate
                 ...((options || {}).launchOwner != null ? {launchOwnerSince: now} : {}),
+                // an adoption is recorded with the seat's birth; no consent means a fresh seat
+                ...(consent ? {memoryImport: consent} : {}),
                 createdAt: now,
                 updatedAt: now
             },

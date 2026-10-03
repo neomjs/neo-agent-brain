@@ -92,6 +92,24 @@ test.describe('onboardPeer — intent construction (pure half)', () => {
         expect(buildOnboardingIntent({...BASE_OPTIONS, repoSlug: 'x/y'}).valid).toBe(false);
     });
 
+    test('--memory-import carries an agent memory folder or none into the define request, and refuses anything else', () => {
+        const
+            source = path.join(os.homedir(), '.claude', 'projects', '-Users-Shared-fable-neomjs-neo', 'memory'),
+            parsed = parseOnboardArgs(['--resident-id', 'neo-fable', '--github-username', 'neo-fable', '--harness-type', 'claude-desktop', '--memory-import', source]),
+            intent = buildOnboardingIntent(parsed.options).intent;
+
+        expect(parsed.valid).toBe(true);
+        expect(intent.memoryImport).toBe(source);
+        expect(defineRequestOf(intent, {}).memoryImport).toBe(source);
+        expect(defineRequestOf(buildIntent(REPO_OPTIONS), {}), 'no flag: a fresh seat').not.toHaveProperty('memoryImport');
+        expect(buildOnboardingIntent({...BASE_OPTIONS, memoryImport: 'none'}).intent.memoryImport).toBe('none');
+
+        const refused = buildOnboardingIntent({...BASE_OPTIONS, memoryImport: '/etc'});
+
+        expect(refused.valid).toBe(false);
+        expect(refused.reason).toContain('--memory-import:')
+    });
+
     test('credential-bearing clone URLs and terminal-control payloads refuse before registry persistence or rendering', () => {
         expect(buildOnboardingIntent({...BASE_OPTIONS, ...REPO_OPTIONS, cloneUrl: 'https://ghp_SUPERSECRET@github.com/x/y.git'})).toMatchObject({valid: false});
         expect(buildOnboardingIntent({...BASE_OPTIONS, ...REPO_OPTIONS, cloneUrl: 'https://github.com/x/y.git?access_token=SUPERSECRET'})).toMatchObject({valid: false});

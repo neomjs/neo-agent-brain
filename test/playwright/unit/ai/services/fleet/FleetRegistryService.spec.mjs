@@ -733,3 +733,36 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
         expect(FleetRegistryService.getAgent('owned').launchOwner).toBe('fleet')
     });
 });
+
+// The memory-import consent rides a wire verb, so it names only an agent's memory folder: the copy at
+// Start reads agent memory and never an arbitrary host directory.
+test.describe('Neo.ai.services.fleet.FleetRegistryService — an adopted seat\'s memory-import consent', () => {
+    let tmpDir;
+
+    test.beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-fleet-reg-'));
+        FleetRegistryService.dataDir = tmpDir;
+    });
+
+    test.afterEach(() => {
+        FleetRegistryService.dataDir = null;
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+    });
+
+    test('defineAgent records a memory folder or none with the seat\'s birth, and refuses anything else without a write', () => {
+        const
+            source   = path.join(os.homedir(), '.claude', 'projects', '-Users-x-neo', 'memory'),
+            adopted  = FleetRegistryService.defineAgent({githubUsername: 'adopted',  harnessType: 'claude-desktop', credential: PAT, memoryImport: source}),
+            declined = FleetRegistryService.defineAgent({githubUsername: 'declined', harnessType: 'codex', credential: PAT, memoryImport: 'none'}),
+            fresh    = FleetRegistryService.defineAgent({githubUsername: 'fresh',    harnessType: 'codex', credential: PAT});
+
+        expect(adopted.memoryImport).toBe(source);
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.adopted.memoryImport).toBe(source);
+        expect(declined.memoryImport).toBe('none');
+        expect(fresh, 'no consent is a fresh seat').not.toHaveProperty('memoryImport');
+
+        expect(() => FleetRegistryService.defineAgent({githubUsername: 'leak', harnessType: 'codex', credential: PAT, memoryImport: path.join(os.homedir(), '.ssh')}))
+            .toThrow(/FleetRegistryService\.defineAgent: 'memoryImport' must be 'none' or an agent's memory folder/);
+        expect(FleetRegistryService.getAgent('leak')).toBeNull()
+    });
+});
