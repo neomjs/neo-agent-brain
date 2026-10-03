@@ -24,19 +24,22 @@ import {
     findReceipt,
     serializeSetupRecord,
     withConsent,
-    withReceipt
+    withReceipt,
+    withVerification
 } from './setupRunRecord.mjs';
 
 const execFileAsync = promisify(execFile);
 
 /**
- * The v1 effects, in recipe order.
+ * The v1 effects, in recipe order. `verify` has no handler here: it is performed through the served plane
+ * by `verifyEffect.mjs`, which persists its sub-step receipts through {@link recordVerification}.
  * @type {Object}
  */
 export const EFFECT_IDS = Object.freeze({
     writeEnv    : 'write-env',
     writeSecrets: 'write-secrets',
-    composeUp   : 'compose-up'
+    composeUp   : 'compose-up',
+    verify      : 'verify'
 });
 
 /**
@@ -97,13 +100,16 @@ async function writeOwnerOnly(filePath, content, host) {
 
 /**
  * The v1 handlers. Each is `{id, describe(input), handler(input, host) | null}`; a `null` handler is an
- * operator action by construction (`applyEffect` records the instruction and touches nothing).
+ * operator action by construction (`applyEffect` records the instruction and touches nothing). An effect
+ * whose result is one file its input fully determines also declares `expects(input)`: the digest of the
+ * content its handler writes, so an interrupted application can be matched against what the host shows.
  * @type {Object}
  */
 export const hostEffectHandlers = Object.freeze({
     [EFFECT_IDS.writeEnv]: Object.freeze({
         id      : EFFECT_IDS.writeEnv,
         describe: input => `write the plane's env carrier at ${input?.path}`,
+        expects : input => contentDigest(renderEnvFile(input?.entries)),
         /**
          * @param {Object} input `{path, entries}` — the carrier path and the preset's env set plus the plane's own bindings.
          * @param {Object} host
@@ -252,7 +258,7 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
         return {record: next, receipt, applied: false};
     }
 
-    let next = withReceipt(record, {effectId, outcome: RECEIPT_OUTCOMES.pending, inputDigest, startedAt: stamp()});
+    let next = withReceipt(record, {effectId, outcome: RECEIPT_OUTCOMES.pending, inputDigest, startedAt: stamp(), ...expectedContent(effect, input)});
 
     await persistSetupRecord(recordPath, next, host);
 
@@ -277,6 +283,22 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
     await persistSetupRecord(recordPath, next, host);
 
     return {record: next, receipt, applied: receipt.outcome === RECEIPT_OUTCOMES.accepted};
+}
+
+/**
+ * @summary What a `pending` receipt records beside its input: the digest of the content the handler is
+ * about to write, for an effect that declares it. An input the effect cannot render records nothing —
+ * the handler then fails on the same input and the receipt says why.
+ * @param {Object} effect
+ * @param {*}      input
+ * @returns {{expectedDigest: String}|{}}
+ */
+function expectedContent(effect, input) {
+    try {
+        return effect.expects ? {expectedDigest: effect.expects(input)} : {};
+    } catch {
+        return {};
+    }
 }
 
 /**
@@ -345,6 +367,27 @@ export async function settleReceipt({effectId, observation, record, recordPath, 
     await persistSetupRecord(recordPath, next, host);
 
     return {record: next, receipt, settled: true, reason: null};
+}
+
+/**
+ * @summary Writes the run's `verification` section and the `verify` receipt that summarizes it in ONE
+ * write — the witness effect's sub-step receipts land as each is accepted, so an interruption keeps what
+ * the plane already answered and a resume never writes the witness again (bootstrap-record decision §3).
+ * Same writer, same file, same owner-only atomic path as every other receipt.
+ * @param {Object} options
+ * @param {Object} options.record
+ * @param {String} options.recordPath
+ * @param {Object} options.host From {@link createHost}.
+ * @param {Object} options.verification The section as the effect holds it now.
+ * @param {Object} options.receipt The `verify` receipt (`{effectId: 'verify', outcome, …}`).
+ * @returns {Promise<{record: Object}>}
+ */
+export async function recordVerification({record, recordPath, host, verification, receipt}) {
+    const next = withReceipt(withVerification(record, verification), receipt);
+
+    await persistSetupRecord(recordPath, next, host);
+
+    return {record: next};
 }
 
 /**

@@ -4,11 +4,12 @@
  * run under the host's Agent OS state root, holding the run's target, the recipe version it was
  * evaluated under, the consents the operator gave and the receipts of the host effects performed.
  *
- * The record answers exactly two questions — *what did the operator consent to* and *which effects were
- * accepted* — and never a third: no step's status lives here. A receipt is provenance and a replay guard;
- * readiness is a fresh observation by the owner that already observes it (`firstRunRecipe`). This module
- * is pure: it creates, reads, binds and retires records. The one writer is the host-effect module
- * (`hostEffects.mjs`, bootstrap-record decision§2.2); the CLI and the vessel's main process reach the file through it.
+ * The record answers *what did the operator consent to*, *which effects were accepted* and *what did the
+ * plane answer when this run's witness was written* (`verification`) — and never a step's status: a receipt
+ * is provenance and a replay guard; readiness is a fresh observation by the owner that already observes it
+ * (`firstRunRecipe`), and completion is gated on that freshness. This module is pure: it creates, reads,
+ * binds and retires records. The one writer is the host-effect module (`hostEffects.mjs`, bootstrap-record
+ * decision§2.2); the CLI and the vessel's main process reach the file through it.
  *
  * Secret-free by construction: a receipt carries the digest of what was applied and the paths it was
  * applied to; a consent carries an answer or a reference (a secret file's path), never a value that is
@@ -139,6 +140,7 @@ export function createSetupRecord({runId, target, recipeVersion, now = Date.now}
         target       : normalizeTarget(target),
         consents     : [],
         receipts     : [],
+        verification : null,
         history      : []
     };
 }
@@ -196,7 +198,7 @@ export function describeRecordProblem(record) {
 
 /**
  * @summary Reads a record file. An absent file is a fresh run; an unreadable or malformed file is reported
- * by name so the run starts fresh *and says so* — never silently.
+ * by name, and its caller refuses to run over it — a receipt it cannot read may guard an effect that ran.
  * @param {String} filePath
  * @param {Object} [options]
  * @param {Object} [options.fsModule] `node:fs/promises`-shaped; injected by the host.
@@ -291,10 +293,11 @@ export function retireCurrentProof(record, {target, recipeVersion, reason, now =
     return {
         ...record,
         recipeVersion,
-        target  : normalizeTarget(target),
-        consents: [],
-        receipts: [],
-        history : [
+        target      : normalizeTarget(target),
+        consents    : [],
+        receipts    : [],
+        verification: null,
+        history     : [
             ...record.history,
             {
                 retiredAt,
@@ -302,10 +305,28 @@ export function retireCurrentProof(record, {target, recipeVersion, reason, now =
                 recipeVersion: record.recipeVersion,
                 target       : normalizeTarget(record.target),
                 consents     : record.consents,
-                receipts     : record.receipts
+                receipts     : record.receipts,
+                verification : record.verification ?? null
             }
         ]
     };
+}
+
+/**
+ * @summary A new record carrying the run's `verification` section — the first-run witness's receipts, every
+ * value one the plane returned (`attempt`, `memory`, `readback`, `recall`), historical by construction: no
+ * reader derives readiness or completion from it alone (bootstrap-record decision §3). A record from
+ * another run never carries this run's section: the binding retires it with the receipts.
+ * @param {Object} record
+ * @param {Object|null} verification `{planeId, sessionId, attempt, memory, readback, recall, failure}` or null to clear.
+ * @returns {Object}
+ */
+export function withVerification(record, verification) {
+    if (verification !== null && !isObject(verification)) {
+        throw new Error('withVerification: verification must be an object or null.');
+    }
+
+    return {...record, verification};
 }
 
 /**

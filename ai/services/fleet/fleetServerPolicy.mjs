@@ -140,7 +140,8 @@ export const FLEET_S1_READY_METHODS = Object.freeze(
  * @param {Object} request Versioned Fleet wire request (`{method, params, protocol}`).
  * @param {Object} [bridge] Injectable bridge used by the canonical dispatcher.
  * @param {Object|null} [requestContext] Frozen admission context (`createFleetRequestContext`
- *     shape); its `ownerPrincipal` is the derived subject the lifecycle-write class requires.
+ *     shape); its `ownerPrincipal` is the resolved subject the lifecycle-write class requires, and
+ *     its `ownerResolution` says why there is none.
  * @returns {Promise<Object>} Versioned finite-state response, refusal, or named-slice degradation.
  */
 export async function dispatchFleetS1Request(request={}, bridge, requestContext=null) {
@@ -164,8 +165,10 @@ export async function dispatchFleetS1Request(request={}, bridge, requestContext=
         }
 
         if (scopeClass === 'lifecycle-write' && !requestContext?.ownerPrincipal) {
+            const resolution = requestContext?.ownerResolution;
+
             return createFleetWireResponse(FLEET_WIRE_RESPONSE_STATES.refused, {
-                error   : `fleet: '${request.method}' is a lifecycle-write verb and requires a forge-resolved admission subject — possession admits the transport, identity owns the records`,
+                error   : `fleet: '${request.method}' is a lifecycle-write verb and requires a forge-resolved admission subject — ${resolution ? `the owner is ${resolution.state}: ${resolution.reason}` : 'possession admits the transport, identity owns the records'}`,
                 protocol: selection.protocol
             })
         }

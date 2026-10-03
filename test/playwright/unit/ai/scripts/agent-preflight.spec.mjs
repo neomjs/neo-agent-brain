@@ -87,6 +87,7 @@ test.describe('agent-preflight utility', () => {
             '--pr-body', 'body.md',
             '--pr-base', 'upstream/dev',
             '--pr-draft',
+            '--pr-repo', 'neomjs/neo-agent-institution',
             '--no-fix',
             'src/a.mjs'
         ])).toEqual({
@@ -98,6 +99,7 @@ test.describe('agent-preflight utility', () => {
             prBase       : 'upstream/dev',
             prBody       : 'body.md',
             prDraft      : true,
+            prRepo       : 'neomjs/neo-agent-institution',
             prTitle      : 'feat(build): add a guard (#16111)'
         });
     });
@@ -384,6 +386,117 @@ test.describe('agent-preflight utility', () => {
         expect(stdout).toContain('agent-preflight: 0 .mjs files in scope; skipped source gates.');
         expect(stdout).toContain('agent-preflight: PR body contains the required template anchors.');
         expect(stdout).toContain('agent-preflight: stacked PR tickets match 1 declared ticket(s) across 0 commit(s).')
+    });
+
+    test('--pr-repo reads another repository\'s PR body there: its #N owner and its close target', () => {
+        // The tool lives in the Brain, so an Institution PR body is linted from a Brain clone. Without
+        // the PR's repository, its `#N` owner and its close target were read as the Brain's.
+        const
+            reads = [],
+            body  = validBody.replace('Resolves #12345', 'Resolves #449').replace('## Post-Merge Validation\n- None.', '## Post-Merge Validation\n- [ ] the installed check\nResidual-Owner: #12');
+
+        const status = runAgentPreflight({
+            argv            : ['--pr-body', 'body.md', '--pr-repo', 'neomjs/neo-agent-institution'],
+            cwd             : '/repo',
+            execFileSyncImpl: (cmd, args) => {
+                if (cmd !== 'gh') return '';
+
+                reads.push(args[1]);
+
+                return args[1].endsWith('/issues/12') ? '{"state":"open","isPullRequest":false}' : '## Acceptance Criteria\n- [ ] AC-1: the one\n'
+            },
+            existsSyncImpl  : () => true,
+            readFileSyncImpl: () => body,
+            stderr          : {write: () => {}},
+            stdout          : {write: () => {}}
+        });
+
+        expect(status).toBe(0);
+        expect(reads).toContain('repos/neomjs/neo-agent-institution/issues/12');
+        expect(reads).toContain('repos/neomjs/neo-agent-institution/issues/449');
+        expect(reads.some(path => path.startsWith('repos/{owner}/{repo}/'))).toBe(false)
+    });
+
+    test('an owner spelling out this repository is its close target from any origin form, and from no origin at all', () => {
+        const body = validBody.replace('Resolves #12345', 'Resolves #100')
+            .replace('## Post-Merge Validation\n- None.', '## Post-Merge Validation\n- [ ] the installed check\nResidual-Owner: neomjs/neo-agent-brain#100');
+
+        for (const origin of ['ssh://git@ssh.github.com:443/neomjs/neo-agent-brain.git', 'git@github.com:neomjs/neo-agent-brain.git', null]) {
+            let stderr = '';
+
+            const status = runAgentPreflight({
+                argv            : ['--pr-body', 'body.md'],
+                cwd             : '/repo',
+                execFileSyncImpl: (cmd, args) => {
+                    if (cmd === 'git' && args[0] === 'remote') {
+                        if (origin === null) throw new Error('no origin');
+                        return `${origin}\n`
+                    }
+
+                    return cmd === 'gh' ? '{"state":"open","isPullRequest":false}' : ''
+                },
+                existsSyncImpl  : () => true,
+                readFileSyncImpl: () => body,
+                stderr          : {write: chunk => { stderr += chunk }},
+                stdout          : {write: () => {}}
+            });
+
+            expect(status, String(origin)).toBe(1);
+            expect(stderr, String(origin)).toContain(origin ? "is this PR's own close target" : "may be this PR's own close target")
+        }
+    });
+
+    test('an origin that only mentions github.com establishes no repository: a same-number owner elsewhere stays unproven', () => {
+        const body = validBody.replace('Resolves #12345', 'Resolves #100')
+            .replace('## Post-Merge Validation\n- None.', '## Post-Merge Validation\n- [ ] the installed check\nResidual-Owner: neomjs/neo-agent-institution#100');
+        const run = origin => {
+            let stderr = '';
+
+            const status = runAgentPreflight({
+                argv            : ['--pr-body', 'body.md'],
+                cwd             : '/repo',
+                execFileSyncImpl: (cmd, args) => cmd === 'git' && args[0] === 'remote'
+                    ? `${origin}\n`
+                    : cmd === 'gh' ? (args[1].endsWith('/issues/100') && args[1].includes('institution') ? '{"state":"open","isPullRequest":false}' : '## Acceptance Criteria\n- [ ] AC-1: the one\n') : '',
+                existsSyncImpl  : () => true,
+                readFileSyncImpl: () => body,
+                stderr          : {write: chunk => { stderr += chunk }},
+                stdout          : {write: () => {}}
+            });
+
+            return {status, stderr}
+        };
+
+        for (const origin of ['https://evil.github.com/neomjs/neo-agent-brain.git', 'https://example.org/github.com/neomjs/neo-agent-brain.git']) {
+            const {status, stderr} = run(origin);
+
+            expect(status, origin).toBe(1);
+            expect(stderr, origin).toContain("may be this PR's own close target")
+        }
+
+        // control: GitHub's own origin proves the owner foreign, and the gate passes
+        expect(run('https://github.com/neomjs/neo-agent-brain.git').status).toBe(0)
+    });
+
+    test('--pr-repo is one owner/repo: a query, a fragment, an extra segment or a dot segment is refused before any read', () => {
+        for (const prRepo of ['neomjs/neo-agent-institution/issues/12?ignored=', 'neomjs/neo-agent-institution#x', 'neomjs/..', '../repo', 'neomjs']) {
+            const reads = [];
+            let stderr = '';
+
+            const status = runAgentPreflight({
+                argv            : ['--pr-body', 'body.md', '--pr-repo', prRepo],
+                cwd             : '/repo',
+                execFileSyncImpl: (cmd, args) => (cmd === 'gh' && reads.push(args[1]), ''),
+                existsSyncImpl  : () => true,
+                readFileSyncImpl: () => validBody,
+                stderr          : {write: chunk => { stderr += chunk }},
+                stdout          : {write: () => {}}
+            });
+
+            expect(status, prRepo).toBe(1);
+            expect(stderr, prRepo).toContain(`--pr-repo \`${prRepo}\` is not one \`owner/repo\``);
+            expect(reads, prRepo).toEqual([])
+        }
     });
 
     test('fails before PR creation when a stacked commit ticket is undeclared', () => {

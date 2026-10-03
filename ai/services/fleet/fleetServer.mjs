@@ -23,12 +23,13 @@ import RequestContextService           from '../../mcp/server/shared/services/Re
 import TransportService                from '../../mcp/server/shared/services/TransportService.mjs';
 import FleetControlBridge              from './FleetControlBridge.mjs';
 import FleetManager                    from './FleetManager.mjs';
+import ForgeConnectionRegistryService  from './ForgeConnectionRegistryService.mjs';
 import {createFleetWakeFanout}         from './fleetWakeFanout.mjs';
 import {createFleetWakeReceiver}       from './fleetWakeReceiver.mjs';
 import {createPlaneMailboxClient}      from './planeMailboxClient.mjs';
 import {normalizeAgentIdentity}        from './mcpWireParsing.mjs';
 import {resolveFleetViewerClaim}       from './fleetLaunchContract.mjs';
-import {dispatchFleetS1Request}        from './fleetServerPolicy.mjs';
+import {dispatchFleetS1Request, FLEET_METHOD_SCOPE_CLASSES} from './fleetServerPolicy.mjs';
 import {wireDeploymentStateReadSource} from './wireDeploymentStateReadSource.mjs';
 import {
     createFleetWireResponse,
@@ -103,58 +104,16 @@ export function assertFleetPlaneReady({aiConfig=AiConfig, rootDir=REPO_ROOT}={})
 }
 
 /**
- * @summary Derives the stable admission subject — the opaque `ownerPrincipal` — from the frozen
- * request context's provider-validated facts, and nothing else.
- *
- * The subject is the immutable tuple `(authProvider, normalizedProviderBaseUrl, providerUserId)`:
- * the facts a forge cannot re-issue to someone else. The mutable login NEVER participates — a
- * rename must not move ownership, and a login recycled to a different account must not inherit it.
- * Fail-closed by construction: any absent tuple member (a possession-only admission mode, a
- * provider answer without a numeric id, an unparseable base URL) derives NO subject — the caller
- * renders the refusal; there is no login fallback and no partial principal.
- *
- * Base-URL normalization here is deliberately MINIMAL (URL-parse: lowercased scheme/host by the
- * parser, trailing slashes stripped) and is documented as owned by the durable ownership
- * normalization contract — that contract may reshape these internals; the call sites and the
- * derived-key shape stay.
- * @param {Object|null} requestContext Frozen context from {@link createFleetRequestContext}.
- * @returns {String|null} The opaque principal key
- *     `principal:<authProvider>:<encoded normalized base>:<providerUserId>`, or null.
- */
-export function deriveOwnerPrincipal(requestContext) {
-    const
-        authProvider    = requestContext?.authProvider,
-        providerBaseUrl = requestContext?.providerBaseUrl,
-        providerUserId  = requestContext?.providerUserId;
-
-    if (typeof authProvider !== 'string' || authProvider === '' ||
-        typeof providerBaseUrl !== 'string' || providerBaseUrl === '' ||
-        typeof providerUserId !== 'string' || providerUserId === '') {
-        return null
-    }
-
-    let normalizedProviderBaseUrl;
-
-    try {
-        const url = new URL(providerBaseUrl.trim());
-
-        normalizedProviderBaseUrl = `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`
-    } catch {
-        return null
-    }
-
-    return `principal:${authProvider}:${encodeURIComponent(normalizedProviderBaseUrl)}:${providerUserId}`
-}
-
-/**
  * @summary Copies the provider-validated identity facts AuthService emitted into an immutable
- * Fleet request context, then stamps the DERIVED admission subject. This is an explicit
- * allowlist: credential/authz fields (`token`, scopes, expiry, arbitrary SDK extras) and graph
- * subjects cannot cross the S1 boundary by object spread or SDK evolution — and `ownerPrincipal`
- * cannot arrive from the outside either: it exists on a context ONLY as this function's own
- * derivation over the allowlisted facts. A context without a derivable subject stays admitted
- * (possession-proven identity can still read); the verb-class policy decides what such a context
- * may do.
+ * Fleet request context, then stamps the admission subject the forge-connection registry resolves
+ * from them ({@link Neo.ai.services.fleet.ForgeConnectionRegistryService#resolveOwner}).
+ * This is an explicit allowlist: credential/authz fields (`token`, scopes, expiry, arbitrary SDK
+ * extras) and graph subjects cannot cross the S1 boundary by object spread or SDK evolution, and
+ * neither `ownerPrincipal` nor `ownerResolution` can arrive from the outside: both exist on a context
+ * ONLY as this function's own resolution. A forge-authenticated context whose owner does not resolve
+ * carries `ownerResolution` (`{state, reason}`) instead, so a refused lifecycle write can say why. A
+ * context without a subject stays admitted (possession-proven identity can still read); the
+ * verb-class policy decides what such a context may do.
  * @param {Object|undefined} authInfo AuthService-populated `req.auth`.
  * @returns {Readonly<Object>|null} Frozen safe projection, or null when admission proved no identity.
  */
@@ -173,10 +132,14 @@ export function createFleetRequestContext(authInfo) {
         }
     }
 
-    const ownerPrincipal = deriveOwnerPrincipal(context);
+    if (context.authProvider) {
+        const resolution = ForgeConnectionRegistryService.resolveOwner(context);
 
-    if (ownerPrincipal) {
-        context.ownerPrincipal = ownerPrincipal
+        if (resolution.state === 'admitted') {
+            context.ownerPrincipal = resolution.principal
+        } else {
+            context.ownerResolution = Object.freeze({state: resolution.state, reason: resolution.reason})
+        }
     }
 
     return Object.freeze(context)
@@ -591,6 +554,12 @@ export async function createFleetServerApp({
             envelope = createFleetWireResponse(FLEET_WIRE_RESPONSE_STATES.operationFailed, {
                 error: 'fleet: request failed'
             })
+        }
+
+        const resolution = req.fleetRequestContext?.ownerResolution;
+
+        if (resolution && envelope.state === FLEET_WIRE_RESPONSE_STATES.refused && FLEET_METHOD_SCOPE_CLASSES[req.body?.method] === 'lifecycle-write') {
+            logger.warn(`[FleetServer] '${req.body.method}' refused: the owner is ${resolution.state}: ${resolution.reason}`)
         }
 
         res.status(200).json(envelope)

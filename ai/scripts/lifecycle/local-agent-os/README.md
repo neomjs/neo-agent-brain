@@ -165,11 +165,23 @@ the same provider-PAT authority as KB/MC and verifies `/app/.neo-ai-data/fleet` 
 the service healthy. Ingress does not depend on Fleet, so omitting the profile leaves `/fleet` at an
 honest `404` while KB/MC remain available.
 
-Fleet admission adds a derived subject on top of that shared authority: every admitted request
-carries an opaque `ownerPrincipal` built from the provider-stable tuple (provider, normalized
-API base URL, provider user id) — never the mutable login — and the probe's `identity` echoes it
-back, which is the quickest way to verify a deployment resolves the subject it will key ownership
-and grants on. Wire verbs are class-split at admission: read-observe verbs serve any
+Fleet admission adds a resolved subject on top of that shared authority: a forge-authenticated
+request carries an opaque `ownerPrincipal`, `owner:<connectionId>:<providerUserId>` (never the
+mutable login), once the plane's forge-connection registry binds the forge's endpoint. Only the plane
+host writes that registry, every mutation a dry run until `--apply`:
+
+```sh
+docker compose --env-file .env -f deploy/cloud/docker-compose.yml \
+  -f deploy/cloud/docker-compose.local-agent-os.yml --profile fleet exec fleet-server \
+  node ai/scripts/fleet/forgeConnections.mjs init --apply
+# then: register --provider github --endpoint https://api.github.com --apply
+```
+
+`approve-alias` binds a moved endpoint to the same connection, `detach` retires one for good, and
+`list` prints the store. Until a request's endpoint is bound it carries `ownerResolution` (state and
+reason) instead. The probe's `identity` echoes either, which is the quickest way to verify a
+deployment resolves the subject it will key ownership and grants on. Wire verbs are class-split at
+admission: read-observe verbs serve any
 authenticated caller, lifecycle-write verbs refuse callers without a forge-resolved subject (the
 possession-only local bearer can observe, never mutate). The full contract:
 `learn/agentos/cloud-deployment/ClientAuthentication.md`.

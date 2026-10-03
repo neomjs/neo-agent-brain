@@ -7,6 +7,7 @@ import {createFleetRegistryBridge} from '../../services/fleet/createFleetRegistr
 
 import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from '../../services/fleet/deriveHarnessLaunchSpec.mjs';
 import {normalizeAgentIdentityNodeId}                 from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {normalizeMemoryImport}                        from '../../services/fleet/seatMemoryImport.mjs';
 
 /**
  * @module ai/scripts/fleet/onboardPeer
@@ -281,6 +282,8 @@ export function normalizeToken(value, label) {
  * @param {String} [options.repoSlug] Working-repo slug (e.g. 'neomjs/neo')
  * @param {String} [options.credentialEnv] NAME of the environment variable holding the agent's GitHub
  *     PAT. The intent carries the name only; a new agent cannot be defined without it.
+ * @param {String} [options.memoryImport] The adopted agent's memory folder, or `'none'`; the new seat's
+ *     consent, recorded by `defineAgent` and converged at Start.
  * @returns {{valid: Boolean, reason: String|null, intent: Object|null}}
  */
 export function buildOnboardingIntent(options = {}) {
@@ -303,6 +306,16 @@ export function buildOnboardingIntent(options = {}) {
 
     if (hasCloneUrl !== hasRepoSlug) {
         return {valid: false, reason: '--clone-url and --repo-slug come together or not at all (one without the other cannot provision a checkout)', intent: null};
+    }
+
+    let memoryImport = null;
+
+    if (options.memoryImport !== undefined) {
+        try {
+            memoryImport = normalizeMemoryImport(options.memoryImport)
+        } catch (error) {
+            return {valid: false, reason: `--memory-import: ${error.message}`, intent: null}
+        }
     }
 
     if (hasCloneUrl) {
@@ -339,6 +352,7 @@ export function buildOnboardingIntent(options = {}) {
             githubUsername: github.token,
             harnessType   : options.harnessType,
             credentialEnv : options.credentialEnv ?? null,
+            memoryImport,
             repo          : hasCloneUrl
                 ? Object.freeze({cloneUrl: options.cloneUrl.trim(), repoSlug: options.repoSlug.trim()})
                 : null
@@ -358,7 +372,8 @@ export function defineRequestOf(intent, env = process.env) {
         id            : intent.agentId,
         githubUsername: intent.githubUsername,
         harnessType   : intent.harnessType,
-        credential    : intent.credentialEnv ? env[intent.credentialEnv] : undefined
+        credential    : intent.credentialEnv ? env[intent.credentialEnv] : undefined,
+        ...(intent.memoryImport ? {memoryImport: intent.memoryImport} : {})
     }
 }
 
@@ -638,6 +653,7 @@ export function parseOnboardArgs(argv = []) {
         '--credential-env' : 'credentialEnv',
         '--github-username': 'githubUsername',
         '--harness-type'   : 'harnessType',
+        '--memory-import'  : 'memoryImport',
         '--repo-slug'      : 'repoSlug',
         '--resident-id'    : 'residentId'
     };
@@ -681,13 +697,17 @@ export function parseOnboardArgs(argv = []) {
  */
 function printUsage() {
     console.log('Usage: node ai/scripts/fleet/onboardPeer.mjs --resident-id <s> --github-username <s>');
-    console.log(`           --harness-type <${CURATED_HARNESS_TYPES.join('|')}> [--credential-env <NAME>] [--clone-url <s> --repo-slug <s>] [--commit]`);
+    console.log(`           --harness-type <${CURATED_HARNESS_TYPES.join('|')}> [--credential-env <NAME>] [--clone-url <s> --repo-slug <s>]`);
+    console.log('           [--memory-import <folder|none>] [--commit]');
     console.log('');
     console.log('  (no flags)        Dry-run — print the two-phase segment delta without touching anything.');
     console.log('  --commit          Execute the CURRENT phase\'s delta through the owning fleet services.');
     console.log('  --credential-env  NAME of the environment variable holding the agent\'s GitHub PAT; required');
     console.log('                    for a new resident. The token is read from the env, never from argv or printed.');
     console.log('  repo pair         Required for a new resident; omission reuses an existing metadata.repo only.');
+    console.log('  --memory-import   The adopted agent\'s memory folder (~/.claude/projects/<project>/memory,');
+    console.log('                    ~/.codex/memories, ~/.codex-instances/<name>/memories) or none. Start copies it');
+    console.log('                    into the seat and refuses while the seat\'s memory reads empty.');
     console.log('');
     console.log('  There is deliberately NO --model flag (engine truth is observation-owned) and NO');
     console.log('  name flag (Social Names are the post-boot peer ritual). Identity + wake substrate');

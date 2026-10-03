@@ -13,18 +13,22 @@ import {
     persistSetupRecord,
     probePort,
     recordConsent,
+    recordVerification,
     renderEnvFile,
     settleReceipt
 } from '../../../../../../ai/services/fleet/hostEffects.mjs';
 import {RECIPE_VERSION, STEP_STATUSES, evaluateRecipe} from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
 import {
     RECEIPT_OUTCOMES,
+    RETIRE_REASONS,
     contentDigest,
     createSetupRecord,
     findReceipt,
     readSetupRecord,
+    retireCurrentProof,
     setupRecordPath,
-    withReceipt
+    withReceipt,
+    withVerification
 } from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
 
 // Real filesystem under a temp root (modes are the point of AC-4); the command runner and the clock are fakes.
@@ -102,6 +106,37 @@ test.describe('hostEffects', () => {
 
         expect(settledEvaluation.steps.find(step => step.id === 'write-env').status).toBe(STEP_STATUSES.ok);
         await expect(settleReceipt({effectId: EFFECT_IDS.writeEnv, observation: {status: 'ok', matchesTarget: true}, record: settled.record, recordPath, host})).rejects.toThrow(/holds no pending or reconcile-required receipt/);
+    });
+
+    test('the pending receipt carries the digest of the content the handler is about to write where the effect declares one, and an interrupted receipt keeps it', async () => {
+        const
+            {recordPath, host, record} = await scratch(),
+            input   = {path: path.join(path.dirname(recordPath), 'plane.env'), entries: {NEO_PLANE_ID: 'plane-a'}},
+            seen    = [],
+            // each handler reads the receipt the pending write left on disk
+            reading = (effectId, digest) => ({...hostEffectHandlers[effectId], handler: async () => { seen.push(findReceipt((await readSetupRecord(recordPath, {fsModule: fs})).record, effectId)); return {digest, references: []} }}),
+            effects = {[EFFECT_IDS.writeEnv]: reading(EFFECT_IDS.writeEnv, 'x'), [EFFECT_IDS.writeSecrets]: reading(EFFECT_IDS.writeSecrets, 'y')};
+
+        await persistSetupRecord(recordPath, record, host);
+
+        const env = await applyEffect({effectId: EFFECT_IDS.writeEnv, input, record, recordPath, host, effects});
+
+        await applyEffect({effectId: EFFECT_IDS.writeSecrets, input: {files: [{path: path.join(path.dirname(recordPath), 'token'), content: 's'}]}, record: env.record, recordPath, host, effects});
+
+        expect(seen[0]).toEqual({effectId: 'write-env', outcome: RECEIPT_OUTCOMES.pending, inputDigest: effectInputDigest(input), startedAt: new Date(NOW).toISOString(), expectedDigest: contentDigest(renderEnvFile(input.entries))});
+        expect(seen[1], 'a secret\'s content is never an expectation').not.toHaveProperty('expectedDigest');
+        expect(env.receipt, 'the accepted receipt carries the handler\'s own digest').not.toHaveProperty('expectedDigest');
+
+        // an interrupted application keeps its expectation through the resume
+        const resumed = await applyEffect({effectId: EFFECT_IDS.writeEnv, input, record: withReceipt(record, seen[0]), recordPath, host, effects});
+
+        expect(resumed.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.reconcileRequired, expectedDigest: seen[0].expectedDigest});
+
+        // an input the carrier cannot render records no expectation; the handler fails on it and the receipt says why
+        const bad = await applyEffect({effectId: EFFECT_IDS.writeEnv, input: {path: input.path, entries: {'not an env name': 'x'}}, record, recordPath, host});
+
+        expect(bad.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.failed, reason: expect.stringMatching(/is not an env name/)});
+        expect(bad.receipt).not.toHaveProperty('expectedDigest')
     });
 
     test('settleReceipt owns the pending → reconcile-required transition: a non-matching observation persists it without running any handler, a matching one settles a pending receipt directly', async () => {
@@ -253,5 +288,32 @@ test.describe('hostEffects', () => {
 
         expect(closed.open).toBe(false);
         expect(closed.reason).toMatch(/ECONNREFUSED|no answer/);
+    });
+
+    test('ADR 0041 §3: the record carries the run\'s verification section through the one writer, owner-only and in one write with its receipt; a rebinding retires it into history with the receipts; the pure helper refuses a non-object', async () => {
+        const
+            {recordPath, host, record} = await scratch(),
+            section = {runId: RUN_ID, planeId: 'plane-a', sessionId: null, attempt: {marker: 'mk-1', dispatchedAt: 't0'}, memory: null, readback: null, recall: null, priorAttempts: []},
+            receipt = {effectId: EFFECT_IDS.verify, outcome: RECEIPT_OUTCOMES.pending, resumable: true, inputDigest: contentDigest('mk-1'), startedAt: 't0', reason: 'dispatching'};
+
+        expect(record.verification).toBeNull();
+
+        const {record: written} = await recordVerification({record, recordPath, host, verification: section, receipt});
+
+        expect(written.verification).toEqual(section);
+        expect(findReceipt(written, EFFECT_IDS.verify)).toEqual(receipt);
+        expect(record.verification).toBeNull(); // the input is never mutated
+        expect(await modeOf(recordPath)).toBe(SECRET_FILE_MODE);
+        expect((await readSetupRecord(recordPath, {fsModule: fs})).record).toEqual(written);
+
+        // a rebinding to another target retires the section with the receipts — another run never reads this run's witness as its own
+        const retired = retireCurrentProof(written, {target: {...target, planeId: 'plane-b'}, recipeVersion: RECIPE_VERSION, reason: RETIRE_REASONS.targetChanged, now: () => NOW});
+
+        expect(retired.verification).toBeNull();
+        expect(retired.receipts).toEqual([]);
+        expect(retired.history[0]).toMatchObject({reason: RETIRE_REASONS.targetChanged, verification: section, receipts: [receipt]});
+
+        expect(withVerification(written, null).verification).toBeNull();
+        expect(() => withVerification(written, 'yes')).toThrow('withVerification: verification must be an object or null.');
     });
 });

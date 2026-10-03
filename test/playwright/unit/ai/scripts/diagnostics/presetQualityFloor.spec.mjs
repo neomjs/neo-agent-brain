@@ -192,9 +192,12 @@ test.describe('presetQualityFloor', () => {
             runs      = [{document: 'a.md', measure: good}, {document: 'b.md', measure: {...good, groundedNodes: 4}}],
             met       = summarizeRuns(runs, {preset: 'local-small', chatModel: 'google/gemma-4-26b-a4b', measuredAt: '2026-10-02', documentsDigest: reference.documentsDigest});
 
-        // the reference is the table's recorded gemma run, read from the presets module, never a number in the instrument
+        // the reference is the table's recorded gemma run, read from the presets module, never a number in the instrument —
+        // and it stays the bar although the hosted preset now carries a recorded floor of its own (a receipt, not the bar)
         expect(reference).toMatchObject({instrument: INSTRUMENT, chatModel: 'google/gemma-4-26b-a4b', result: {schemaValid: true}});
         expect(reference).toBe(byId('local-small').qualityFloor);
+        expect(byId('hosted').qualityFloor).not.toBe(reference);
+        expect(meetsFloor(byId('hosted').qualityFloor.result, reference.result)).toBe(true);
 
         expect(met).toMatchObject({
             preset    : 'local-small',

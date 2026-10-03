@@ -1276,3 +1276,65 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
         expect(planeService.calls.resolve).toEqual([])
     });
 });
+
+test.describe('startAgentProvisioned — an adopted seat\'s memory import', () => {
+    const
+        SOURCE  = '/Users/x/.codex/memories',
+        adopted = (id = 'a') => {
+            const agents = repoAgent(id);
+
+            agents[id] = {...agents[id], memoryImport: SOURCE};
+
+            return agents
+        },
+        start = ({lifecycle, events, importMemory}) => startAgentProvisioned({
+            lifecycleService: lifecycle,
+            agentId         : 'a',
+            managedRoot     : '/managed',
+            ensureRepo      : makeEnsureRepo('/managed/a/neomjs-neo', events),
+            prepareWorkspace: makePrepareWorkspace(events),
+            nodePath        : '/usr/bin/node',
+            ...(importMemory ? {importMemory} : {})
+        });
+
+    test('the import runs after preparation and before the spawn, and its result rides the status', async () => {
+        const
+            events       = [],
+            calls        = [],
+            lifecycle    = makeLifecycle({agents: adopted(), events}),
+            importMemory = async args => {
+                events.push('import');
+                calls.push(args);
+
+                return {state: 'copied', source: SOURCE, destination: '/instances/a/harness/codex/memories', files: 33}
+            },
+            status = await start({lifecycle, events, importMemory});
+
+        expect(events).toEqual(['credential', 'ensure', 'prepare', 'import', 'start']);
+        expect(calls).toEqual([{agent: adopted().a, instanceRoot: '/instances'}]);
+        expect(status.memoryImport).toEqual({state: 'copied', source: SOURCE, destination: '/instances/a/harness/codex/memories', files: 33})
+    });
+
+    test('a refused import stops the start: nothing is spawned', async () => {
+        const
+            lifecycle = makeLifecycle({agents: adopted()}),
+            refusal   = Object.assign(new Error("startAgentProvisioned: agent 'a' consented to import its memory, but its seat holds none."), {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED'});
+
+        await expect(start({lifecycle, importMemory: async () => {throw refusal}})).rejects.toBe(refusal);
+        expect(lifecycle.calls.start).toHaveLength(0)
+    });
+
+    test('a fresh seat imports nothing and its status carries no import', async () => {
+        const status = await start({lifecycle: makeLifecycle({agents: repoAgent('a')})});
+
+        expect(status.state).toBe('running');
+        expect(status).not.toHaveProperty('memoryImport')
+    });
+
+    test('a seat without a managed repository cannot converge a consented import, so it is refused before the spawn', async () => {
+        const lifecycle = makeLifecycle({agents: {a: {id: 'a', metadata: {launch: {command: 'h'}}, memoryImport: SOURCE}}});
+
+        await expect(start({lifecycle})).rejects.toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: SOURCE, step: 'memory import'});
+        expect(lifecycle.calls.start).toHaveLength(0)
+    });
+});

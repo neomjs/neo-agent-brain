@@ -52,7 +52,7 @@ import RequestContextService                                           from '../
 import FleetControlBridge                                              from './FleetControlBridge.mjs';
 import FleetManager                                                    from './FleetManager.mjs';
 import FleetRegistryService                                            from './FleetRegistryService.mjs';
-import {resolveGithubToken}                                            from '../ingestion/githubActions.mjs';
+import {readGithubToken}                                               from '../ingestion/githubActions.mjs';
 import {describeOperatorSeatConflation, operatorSeatConflationWarning} from './operatorSeatConflation.mjs';
 import {startFleetBridgeServer}                                        from './fleetBridgeServer.mjs';
 import {probeExistingFleetServer, resolveFleetBearer, resolveFleetViewer,
@@ -481,8 +481,9 @@ async function boot() {
     };
 
     // Each seat's open work, observe-only: the producer reads GitHub and wakes no one. Its token is a
-    // process secret no AiConfig leaf binds, so the entrypoint resolves it.
-    const openWork = wireFleetOpenWorkSource({token: resolveGithubToken(), registry: FleetRegistryService});
+    // process secret no AiConfig leaf binds, so the entrypoint reads it. Without one the source still
+    // wires and each pulse answers why: an optional reader never refuses the boot.
+    const openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService});
 
         const server = await startFleetBridgeServer({
             port,

@@ -264,6 +264,19 @@ export function assertServedPlane(health, {expectedPlaneId = null, expectedPlane
 }
 
 /**
+ * @summary The served plane as the payload reports it, asserted against nothing: the reader that compares the
+ * identity itself (the first-run recipe's `served-plane` step) needs the observation, not a verdict — an
+ * expectation here would turn a wrong plane into a thrown `unknown` where that step reads a fresh `failed`.
+ * @param {Object} health The parsed healthcheck payload.
+ * @returns {Object|null} The observed `{id, dataRoot}`, or null when the payload reports no plane block.
+ */
+export function describeServedPlane(health) {
+    const plane = health?.plane;
+
+    return plane && typeof plane === 'object' && typeof plane.id === 'string' ? {id: plane.id, dataRoot: plane.dataRoot ?? null} : null;
+}
+
+/**
  * @summary Builds request headers for the StreamableHTTP transport.
  * @param {Object} options
  * @param {String|null} [options.identity]
@@ -342,6 +355,8 @@ export function parseExpectedStatuses(expectedStatus) {
  * @param {String} [options.expectedStatus='healthy'] Comma-separated set; see {@link parseExpectedStatuses}.
  * @param {String} [options.clientName='neo-container-healthcheck']
  * @param {String} [options.mcpPath='/mcp'] MCP endpoint path below `url`.
+ * @param {Boolean} [options.reportServedPlane=false] Report the served `plane` block as observed, asserting nothing —
+ *     for a caller that compares the identity itself (the first-run recipe); an absent block adds no key.
  * @param {Number} [options.timeoutMs=DEFAULT_TIMEOUT_MS]
  * @param {Function} [options.ClientClass=Client] Injectable SDK client constructor for tests.
  * @param {Function} [options.TransportClass=StreamableHTTPClientTransport] Injectable transport constructor for tests.
@@ -356,6 +371,7 @@ export async function runHealthcheck({
     expectedPlaneDataRoot = null,
     clientName            = 'neo-container-healthcheck',
     mcpPath               = '/mcp',
+    reportServedPlane     = false,
     timeoutMs             = DEFAULT_TIMEOUT_MS,
     ClientClass           = Client,
     TransportClass        = StreamableHTTPClientTransport,
@@ -423,7 +439,7 @@ export async function runHealthcheck({
             );
         }
 
-        const plane = assertServedPlane(health, {expectedPlaneId, expectedPlaneDataRoot});
+        const plane = assertServedPlane(health, {expectedPlaneId, expectedPlaneDataRoot}) ?? (reportServedPlane ? describeServedPlane(health) : null);
 
         return {
             status: health.status,

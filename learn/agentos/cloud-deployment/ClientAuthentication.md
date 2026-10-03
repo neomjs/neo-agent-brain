@@ -38,14 +38,17 @@ The composed Fleet service admits clients through the **same `AuthService` modes
 surfaces — no separate issuance machinery exists, deliberately. What Fleet adds sits *after*
 authentication, at its own boundary:
 
-- **The admission subject is derived, never claimed.** Every admitted request context carries an
-  opaque `ownerPrincipal` derived from the provider-stable tuple
-  `(authProvider, normalizedProviderBaseUrl, providerUserId)` — the facts a forge cannot re-issue
-  to someone else. The **mutable login never participates**: a rename does not move ownership,
-  and a recycled login cannot inherit it; the login is retained strictly as a display projection.
-  The subject cannot be injected from the outside — it exists on a context only as the Fleet
-  boundary's own derivation, and the caller's `/fleet/probe` launch receipt echoes it back for
-  verification.
+- **The admission subject is resolved, never claimed.** A forge-authenticated request context
+  carries an opaque `ownerPrincipal`, `owner:<connectionId>:<providerUserId>` (ADR 0038 §2.2): the
+  connection is the plane's own record of a trusted forge, bound to the endpoints its operator
+  approved, and the provider user id is the fact a forge cannot re-issue to someone else. The
+  **mutable login never participates**: a rename does not move ownership, and a recycled login
+  cannot inherit it; the login is retained strictly as a display projection. An approved endpoint
+  move keeps the principal; an endpoint no connection binds gets none. The registry is written only
+  on the plane host (`ai/scripts/fleet/forgeConnections.mjs`). Without a bound endpoint the context
+  carries `ownerResolution` (`uninitialized`, `unavailable`, `unregistered` or `refused`, with its
+  reason). Neither field can be injected from the outside; the caller's `/fleet/probe` launch receipt
+  echoes them back for verification.
 - **Verb classes are enforced at admission.** Every Fleet wire verb is classified `read-observe`
   or `lifecycle-write`. Read-observe verbs admit any authenticated context. Lifecycle-write verbs
   additionally require the forge-resolved subject — **possession admits the transport, identity

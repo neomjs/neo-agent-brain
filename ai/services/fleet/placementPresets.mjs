@@ -131,7 +131,19 @@ const
     // the one mounted key feeds both key-file leaves (the credential step). Gemini's documentation
     // lists the `reasoning_effort` value `none` for 2.5 models only, so the graph extractor is told `low`.
     GEMINI_OPENAI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/openai',
-    GEMINI_FLASH           = 'gemini-3.8-flash';
+    GEMINI_FLASH           = 'gemini-3.8-flash',
+    // the hosted preset's floor: three consecutive met samples under the identity rule for canonical Neo
+    // paths (the same instrument, the same fixture set, through Gemini's OpenAI-compatible endpoint); the
+    // recorded result is the WEAKEST of the three, never the best — a candidate meets this row, not a peak
+    HOSTED_FLOOR = Object.freeze({
+        instrument: 'tri-vector-three-documents',
+        measuredAt: '2026-10-03',
+        chatModel : GEMINI_FLASH,
+        documents : GEMMA_FLOOR.documents,
+        documentsDigest: GEMMA_FLOOR.documentsDigest,
+        result    : {schemaValid: true, danglingEdges: 0, groundedNodesPerDocument: '4-5', ungroundedNames: 0},
+        note      : 'four samples over the shipped fixture set under the identity rule for canonical Neo paths, ~21 s each: the first (2026-10-02) read one genuine invention, `Focus Management Contract`, and failed the floor; the next three met it in a row — 2026-10-02 (5-7 grounded nodes per document) and two on 2026-10-03 (4-8, 4-5), each 0 dangling edges and 0 ungrounded names; a preset that invents in one run of four is recorded at its weakest met result and stays watched. Receipts: https://github.com/neomjs/neo-agent-brain/issues/746#issuecomment-5957946293 (sample 1), https://github.com/neomjs/neo-agent-brain/issues/746#issuecomment-5958574801 (sample 2), https://github.com/neomjs/neo-agent-brain/issues/746#issuecomment-5966875849 (samples 3 and 4, per-document detail)'
+    });
 
 /**
  * @summary The supported presets. Fields: `id`, `label`, `inference` (`hosted` | `local`), `profile`,
@@ -169,7 +181,7 @@ export const presets = Object.freeze([
         chatModel       : GEMINI_FLASH,
         pendingBindings : [],
         workload        : Object.freeze({...FIXTURE_PLANE, modelsBytes: 0, vmCapRecommendedBytes: 6 * GiB}),
-        qualityFloor    : null
+        qualityFloor    : HOSTED_FLOOR
     }),
     Object.freeze({
         id              : 'local-small',

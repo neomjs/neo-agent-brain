@@ -1,5 +1,9 @@
-import {test, expect}                                  from '@playwright/test';
-import {createGithubActionsClient, resolveGithubToken} from '../../../../../../ai/services/ingestion/githubActions.mjs';
+import {test, expect} from '@playwright/test';
+import {
+    createGithubActionsClient,
+    readGithubToken,
+    resolveGithubToken
+} from '../../../../../../ai/services/ingestion/githubActions.mjs';
 
 // Pure over an injected fetch — no network, no shell.
 
@@ -19,6 +23,14 @@ test.describe('githubActions — the bounded Actions REST reads', () => {
         expect(() => resolveGithubToken({env: {}})).toThrow(/GH_TOKEN or GITHUB_TOKEN/);
         // Typed, so a caller can tell an unconfigured credential from a failing one
         expect(() => resolveGithubToken({env: {}})).toThrow(expect.objectContaining({code: 'github-token-unset'}));
+    });
+
+    test('the optional read answers null instead of refusing, in the same precedence', () => {
+        expect(readGithubToken({env: {}})).toBeNull();
+        expect(readGithubToken({override: '  ', env: {GH_TOKEN: ' '}})).toBeNull();
+        expect(readGithubToken({override: ' tok ', env: {GH_TOKEN: 'env'}})).toBe('tok');
+        expect(readGithubToken({env: {GH_TOKEN: 'gh', GITHUB_TOKEN: 'github'}})).toBe('gh');
+        expect(readGithubToken({override: '  ', env: {GITHUB_TOKEN: ' github '}})).toBe('github');
     });
 
     test('the client refuses a malformed repo slug or a missing token before any request', () => {

@@ -289,7 +289,7 @@ export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, 
         }
 
         const
-            authHome        = path.join(instanceHome, 'codex-home'),
+            authHome        = deriveCodexHome({harnessType, instanceHome}),
             electronProfile = guiProfileDir(harnessType, instanceHome);
 
         return {
@@ -385,6 +385,22 @@ export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, 
  */
 function guiProfileDir(harnessType, instanceHome) {
     return harnessType === 'codex-desktop' ? path.join(instanceHome, 'electron-profile') : instanceHome
+}
+
+/**
+ * @summary The `CODEX_HOME` a Fleet-launched Codex seat runs with: the instance home itself for
+ * `codex`, its `codex-home` child for `codex-desktop`, whose Electron profile sits beside it. The
+ * launch env and every reader of the seat's Codex state (its memories) take it from here.
+ * @param {Object} options
+ * @param {String} options.harnessType  The seat's harness family.
+ * @param {String} options.instanceHome The seat's absolute harness home.
+ * @returns {String|null} `null` for a family that is not Codex.
+ */
+export function deriveCodexHome({harnessType, instanceHome} = {}) {
+    if (harnessType === 'codex')         return instanceHome;
+    if (harnessType === 'codex-desktop') return path.join(instanceHome, 'codex-home');
+
+    return null
 }
 
 /**

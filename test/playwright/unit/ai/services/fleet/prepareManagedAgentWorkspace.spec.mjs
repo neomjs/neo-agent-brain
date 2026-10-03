@@ -21,6 +21,7 @@ import {
 import {mcpDeclarationRefusal}                          from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {isUnmodifiedGeneration, stampWakeEnvelopePlant} from '../../../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
 import {deriveNodeRuntimeEnv}                           from '../../../../../../ai/services/fleet/deriveNodeRuntimeEnv.mjs';
+import {importSeatMemory}                               from '../../../../../../ai/services/fleet/seatMemoryImport.mjs';
 import {startAgentProvisioned}                          from '../../../../../../ai/services/fleet/startAgentProvisioned.mjs';
 
 // Temp-filesystem contract tests: the real artifact writer runs, while checkout hydration is an
@@ -1245,6 +1246,24 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect((await fs.stat(path.join(a.instanceHome, 'memories'))).isDirectory()).toBe(true);
         expect((await fs.stat(path.join(b.instanceHome, 'memories'))).isDirectory()).toBe(true);
     });
+
+    for (const harness of ['codex', 'codex-desktop']) {
+        test(`${harness}: an import lands in the memories folder preparation made, and leaves it owner-only`, async () => {
+            const
+                agent    = makeAgent(harness),
+                prepared = await prepareManagedAgentWorkspace(options(agent)),
+                memories = prepared.artifacts.find(item => item.ownedKeys === 'directory' && path.basename(item.path) === 'memories').path,
+                home     = path.join(root, 'home'),
+                source   = path.join(home, '.codex', 'memories');
+
+            await fs.mkdir(source, {recursive: true});
+            await fs.writeFile(path.join(source, 'MEMORY.md'), 'codex index');
+
+            expect(await importSeatMemory({agent: {...agent, memoryImport: source}, instanceRoot, homeDir: home}))
+                .toEqual({state: 'copied', source, destination: memories, files: 1});
+            expect((await fs.stat(memories)).mode & 0o777).toBe(0o700);
+        });
+    }
 
     for (const harness of ['codex', 'codex-desktop']) {
         test(`${harness}: remote trust re-entry preserves native settings inside Fleet comments`, async () => {
