@@ -1,6 +1,5 @@
-import {recordTurnPresenceOverMcp}        from './recordTurnPresenceOverMcp.mjs';
-import {resolveTurnPresenceRuntimeConfig} from './TurnPresenceConfig.mjs';
-import {normalizeAgentIdentityNodeId}     from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
+import {recordTurnPresenceOverMcp}    from './recordTurnPresenceOverMcp.mjs';
+import {normalizeAgentIdentityNodeId} from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
 
 const WAKE_SUBMIT_NONCE_PATTERN = /NEO_WAKE_SUBMIT_NONCE:([0-9a-fA-F-]{36})/;
 
@@ -90,6 +89,8 @@ export function readHookPayload({stdin = process.stdin} = {}) {
  * @param {Object} options
  * @param {Object} options.plane Injected `{baseUrl, credential}` for the deployment's Memory Core. The
  * hook adapter is the entrypoint that resolves these; this module reads no config of its own.
+ * @param {Number} options.deadlineMs Injected the same way: the `turnPresence.hookWriteTimeoutMs` leaf,
+ * the one budget for the whole MCP exchange.
  * @param {'start'|'progress'|'terminal'} [options.action='start'] Event kind.
  * @param {Object} [options.env=process.env] Environment source.
  * @param {*} [options.hookPayload] Raw hook payload, used for optional wake nonce extraction.
@@ -105,6 +106,7 @@ export function readHookPayload({stdin = process.stdin} = {}) {
  */
 export async function recordTurnPresenceFromHook({
     plane,
+    deadlineMs,
     action = 'start',
     env = process.env,
     hookPayload,
@@ -140,8 +142,7 @@ export async function recordTurnPresenceFromHook({
         };
     }
 
-    const {hookWriteTimeoutMs: timeoutMs} = resolveTurnPresenceRuntimeConfig({env});
-    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {
         return {status: 'skipped', reason: 'turn-presence hook write timeout is not configured', action, agentIdentity};
     }
 
@@ -149,7 +150,7 @@ export async function recordTurnPresenceFromHook({
         baseUrl,
         identity  : agentIdentity,
         credential: plane?.credential ?? '',
-        deadlineMs: timeoutMs,
+        deadlineMs,
         action,
         note,
         source,

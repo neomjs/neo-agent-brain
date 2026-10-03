@@ -3,8 +3,8 @@ import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
-import {normalizeAgentIdentityNodeId} from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
-import {readPlaneConfig}              from '../seatConfig.mjs';
+import {normalizeAgentIdentityNodeId}                from '../../../../graph/normalizeAgentIdentityNodeId.mjs';
+import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
 
 const EVENT_MAP = Object.freeze({
     Interrupt: Object.freeze({
@@ -65,9 +65,11 @@ export function resolveKimiTurnPresenceEvent(hookPayload) {
  * @summary Records Kimi Code turn presence into the store the deployment serves.
  *
  * **This is the entrypoint, and the only place config is resolved.** It injects the seat's plane
- * (`seatConfig.readPlaneConfig`) into a writer that resolves nothing — replacing a path the writer used
- * to derive from its own module location, which sent every beacon to a private checkout no reader queries.
+ * (`seatConfig.readPlaneConfig`) and the writer's deadline (`seatConfig.readTurnPresenceDeadlineMs`) into
+ * a writer that resolves nothing — replacing a path the writer used to derive from its own module
+ * location, which sent every beacon to a private checkout no reader queries.
  * @param {Object} options
+ * @param {Number} [options.deadlineMs] Injected deadline; read from the `turnPresence` leaf when absent.
  * @param {Object} [options.env=process.env] Environment inherited by the hook command.
  * @param {*} [options.hookPayload] Parsed Kimi hook payload.
  * @param {String|Date|Number} [options.now] Clock override for tests.
@@ -76,6 +78,7 @@ export function resolveKimiTurnPresenceEvent(hookPayload) {
  * @returns {Promise<Object|undefined>}
  */
 export async function recordKimiTurnPresence({
+    deadlineMs,
     env = process.env,
     hookPayload,
     now,
@@ -111,11 +114,12 @@ export async function recordKimiTurnPresence({
 
     return recordTurnPresenceFromHook({
         action,
+        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(),
         env,
         hookPayload,
-        note : `kimi ${eventName}${toolSuffix}`,
+        note      : `kimi ${eventName}${toolSuffix}`,
         now,
-        plane: plane ?? await readPlaneConfig(),
+        plane     : plane ?? await readPlaneConfig(),
         source,
         terminalState,
         ...(record ? {record} : {})

@@ -1,20 +1,29 @@
 /**
  * @module ai/scripts/lifecycle/hooks/seatConfig
- * @summary The plane every seat hook reaches, read from the seat-side leaves (`AiConfig.seat`) the
- * seat's launcher injects with its own credential — never `fleet.*`, the Fleet transport's.
+ * @summary The config every seat hook reads: the plane it reaches, from the seat-side leaves
+ * (`AiConfig.seat`) the seat's launcher injects with its own credential — never `fleet.*`, the Fleet
+ * transport's — and the turn-presence writer's deadline.
  *
  * Not projected (only `hooks/<harness>/*.mjs` are): a projected hook reaches it through its rewritten
  * import. The config is imported lazily so the hook modules load without booting the Neo Provider.
  */
 
 /**
+ * @summary Boots the Neo namespace the configs need: `ai/config.mjs` throws `Neo is not defined` at
+ * module-load without it.
+ * @returns {Promise<void>}
+ */
+async function bootNeo() {
+    await import('neo.mjs/src/Neo.mjs');
+    await import('neo.mjs/src/core/_export.mjs')
+}
+
+/**
  * @summary The seat's plane, credential and identity.
  * @returns {Promise<Object>} `{planeBase, planeBearer, identity}`; `planeBase` carries no trailing slash
  */
 export async function readSeatConfig() {
-    // `ai/config.mjs` throws `Neo is not defined` at module-load without the namespace bootstrap
-    await import('neo.mjs/src/Neo.mjs');
-    await import('neo.mjs/src/core/_export.mjs');
+    await bootNeo();
 
     const {default: AiConfig} = await import('../../../config.mjs');
 
@@ -36,4 +45,18 @@ export async function readPlaneConfig() {
         baseUrl   : planeBase ? `${planeBase}/mc/mcp` : '',
         credential: planeBearer
     }
+}
+
+/**
+ * @summary The turn-presence writer's deadline: the `turnPresence.hookWriteTimeoutMs` leaf, one budget
+ * for the writer's whole MCP exchange. It stays below every synchronous registration that spends it, or
+ * the harness kills the hook before its named skip.
+ * @returns {Promise<Number>}
+ */
+export async function readTurnPresenceDeadlineMs() {
+    await bootNeo();
+
+    const {default: memoryCoreConfig} = await import('../../../mcp/server/memory-core/config.mjs');
+
+    return memoryCoreConfig.turnPresence.hookWriteTimeoutMs
 }

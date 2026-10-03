@@ -3,7 +3,7 @@ import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
-import {readPlaneConfig} from '../seatConfig.mjs';
+import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
 
 function parseHookPayload(raw) {
     if (!raw) return null;
@@ -48,13 +48,14 @@ function resolveNote({action, hookPayload} = {}) {
  * @summary Records Claude Code turn-presence into the store the deployment serves.
  *
  * **This is the entrypoint, and the only place config is resolved.** It reads the seat's plane
- * (`seatConfig.readPlaneConfig`) and injects it into a writer that resolves nothing — the same split
- * `wakeArmingHook` uses. The
+ * (`seatConfig.readPlaneConfig`) and the writer's deadline (`seatConfig.readTurnPresenceDeadlineMs`)
+ * and injects both into a writer that resolves nothing — the same split `wakeArmingHook` uses. The
  * previous shape let the writer derive a filesystem path from its own module location, which is how
  * every beacon ended up in a private checkout that no reader queries.
  *
  * @param {Object} options
  * @param {'start'|'progress'|'terminal'} [options.actionArg] Optional action override.
+ * @param {Number} [options.deadlineMs] Injected deadline; read from the `turnPresence` leaf when absent.
  * @param {Object} [options.env=process.env] Environment source.
  * @param {*} [options.hookPayload] Parsed Claude Code hook payload.
  * @param {String|Date|Number} [options.now] Clock override for tests.
@@ -64,6 +65,7 @@ function resolveNote({action, hookPayload} = {}) {
  */
 export async function recordClaudeTurnPresence({
     actionArg,
+    deadlineMs,
     env = process.env,
     hookPayload,
     now,
@@ -74,12 +76,13 @@ export async function recordClaudeTurnPresence({
 
     return recordTurnPresenceFromHook({
         action,
+        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(),
         env,
         hookPayload,
-        note  : resolveNote({action, hookPayload}),
+        note      : resolveNote({action, hookPayload}),
         now,
-        plane : plane ?? await readPlaneConfig(),
-        source: resolveSource({action, hookPayload}),
+        plane     : plane ?? await readPlaneConfig(),
+        source    : resolveSource({action, hookPayload}),
         ...(record ? {record} : {})
     });
 }

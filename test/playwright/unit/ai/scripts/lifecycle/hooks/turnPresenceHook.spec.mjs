@@ -16,11 +16,14 @@ setup({
 import {test, expect}                            from '@playwright/test';
 import Neo                                       from 'neo.mjs/src/Neo.mjs';
 import * as core                                 from 'neo.mjs/src/core/_export.mjs';
+import {spawn}                                   from 'node:child_process';
 import fs                                        from 'node:fs';
+import net                                       from 'node:net';
 import os                                        from 'node:os';
 import path                                      from 'node:path';
 import {pathToFileURL}                           from 'node:url';
 import {reconcileClaudeEvents, renderProjection} from '../../../../../../../ai/scripts/lifecycle/hooks/projectSeatHooks.mjs';
+import {generateKimiSeatConfig}                  from '../../../../../../../ai/services/fleet/generateKimiSeatConfig.mjs';
 
 const
     REPO_ROOT   = path.resolve(process.cwd()),
@@ -78,17 +81,19 @@ test.describe('turnPresenceHook — emission survives projection to an arbitrary
             calls  = [],
             hook   = await projectedAt('emits'),
             result = await hook.recordClaudeTurnPresence({
-                actionArg: 'start',
-                env      : ENV,
-                plane    : {baseUrl: 'https://plane.example/mc/mcp', credential: 'token'},
-                record   : async payload => {calls.push(payload); return {status: 'recorded'}}
+                actionArg : 'start',
+                deadlineMs: 1500,
+                env       : ENV,
+                plane     : {baseUrl: 'https://plane.example/mc/mcp', credential: 'token'},
+                record    : async payload => {calls.push(payload); return {status: 'recorded'}}
             });
 
         expect(result.status, `presence was not recorded: ${result.reason ?? ''}`).toBe('recorded');
         expect(calls).toHaveLength(1);
         expect(calls[0].baseUrl).toBe('https://plane.example/mc/mcp');
         expect(calls[0].identity).toBe('AGENT:neo-opus-grace');
-        expect(calls[0].action).toBe('start')
+        expect(calls[0].action).toBe('start');
+        expect(calls[0].deadlineMs, 'the entrypoint\'s deadline reaches the transport').toBe(1500)
     });
 
     test('two projections at different paths emit IDENTICAL records', async () => {
@@ -101,11 +106,12 @@ test.describe('turnPresenceHook — emission survives projection to an arbitrary
                 hook  = await projectedAt(label);
 
             await hook.recordClaudeTurnPresence({
-                actionArg: 'progress',
-                env      : ENV,
-                now      : '2026-08-31T00:00:00.000Z',
-                plane    : {baseUrl: 'https://plane.example/mc/mcp', credential: 'token'},
-                record   : async payload => {calls.push(payload); return {status: 'recorded'}}
+                actionArg : 'progress',
+                deadlineMs: 1500,
+                env       : ENV,
+                now       : '2026-08-31T00:00:00.000Z',
+                plane     : {baseUrl: 'https://plane.example/mc/mcp', credential: 'token'},
+                record    : async payload => {calls.push(payload); return {status: 'recorded'}}
             });
 
             return calls[0]
@@ -125,10 +131,11 @@ test.describe('turnPresenceHook — emission survives projection to an arbitrary
             calls  = [],
             hook   = await projectedAt('no-plane'),
             result = await hook.recordClaudeTurnPresence({
-                actionArg: 'start',
-                env      : ENV,
-                plane    : {baseUrl: '', credential: ''},
-                record   : async payload => {calls.push(payload); return {status: 'recorded'}}
+                actionArg : 'start',
+                deadlineMs: 1500,
+                env       : ENV,
+                plane     : {baseUrl: '', credential: ''},
+                record    : async payload => {calls.push(payload); return {status: 'recorded'}}
             });
 
         expect(result.status).toBe('skipped');
@@ -195,5 +202,80 @@ test.describe('turnPresenceHook — progress runs in the background, start befor
         expect('timeout' in byEvent.PostToolUse).toBe(false);
         expect(byEvent.UserPromptSubmit).toEqual({type: 'command', command: commandFor('start'), timeout: 2});
         expect(settings.hooks.PostToolUse.flatMap(bucket => bucket.hooks)).toContainEqual(operator)
+    })
+});
+
+/**
+ * A synchronous hook the harness kills at its registered timeout never reaches its own named skip: the
+ * kill is the silent failure. So every synchronous registration that runs a presence write must allow
+ * more than the writer's deadline, across every harness that writes presence. The numbers live in four
+ * places (the leaf and three harness configs), and two places holding related numbers drift silently.
+ */
+test.describe('turnPresenceHook — the writer\'s deadline fits inside every synchronous registration', () => {
+    test('Claude\'s start, Codex\'s prompt hook and every Kimi presence hook allow more time than the deadline', async () => {
+        const
+            memoryCoreConfig = (await import('../../../../../../../ai/mcp/server/memory-core/config.template.mjs')).default,
+            deadlineMs       = memoryCoreConfig.turnPresence.hookWriteTimeoutMs,
+            claudeStart      = MANIFEST.events.UserPromptSubmit.flatMap(bucket => bucket.hooks).find(entry => entry.command.includes(PRESENCE)),
+            codexConfig      = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/codex/hooks.json'), 'utf8')),
+            codexPrompt      = (codexConfig.hooks ?? codexConfig).UserPromptSubmit.flatMap(bucket => bucket.hooks ?? [bucket]).find(entry => entry.command.includes('codex-context.mjs')),
+            {files}          = generateKimiSeatConfig({
+                agentosRuntimeRoot: '/runtime', targetRepoRoot: '/repo', seatEnvFile: '/seat.env', kimiHome: '/kimi-home', memoryDir: '/memory', nodeBinary: '/node'
+            }),
+            kimiToml         = files.find(file => file.path.endsWith('config.toml')).content,
+            kimiTimeouts     = [...kimiToml.matchAll(/command = '[^']*turnPresenceHook\.mjs'\ntimeout = (\d+)/g)].map(match => Number(match[1]));
+
+        expect(claudeStart.async, 'Claude\'s start is synchronous').toBeUndefined();
+        expect(claudeStart.timeout * 1000).toBeGreaterThan(deadlineMs);
+        expect(codexPrompt.timeout * 1000).toBeGreaterThan(deadlineMs);
+        expect(kimiTimeouts, 'Kimi registers presence on five events, all synchronous').toHaveLength(5);
+        kimiTimeouts.forEach(timeout => expect(timeout * 1000).toBeGreaterThan(deadlineMs))
+    })
+});
+
+/**
+ * The deadline exists so a plane that does not answer costs a bounded wait and says so. Spent, it must
+ * surface as the hook's named warning on stderr, where the harness captures it, while the hook still
+ * exits 0: presence never fails a session, and it is never silent either.
+ */
+test.describe('turnPresenceHook — a spent deadline is a visible skip, never a silent one', () => {
+    test('a plane that accepts the connection and never answers ends in a named warning, and the hook exits 0', async () => {
+        const
+            silentPlane = net.createServer(() => {}),
+            dir         = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'presence-deadline-'))),
+            target      = path.join(dir, '.claude/hooks/turnPresenceHook.mjs');
+
+        scratchDirs.push(dir);
+        fs.mkdirSync(path.dirname(target), {recursive: true});
+        fs.writeFileSync(target, renderProjection(HOOK_SOURCE, REPO_ROOT).contents, 'utf8');
+
+        await new Promise(resolve => silentPlane.listen(0, '127.0.0.1', resolve));
+
+        try {
+            const {code, stderr} = await new Promise((resolve, reject) => {
+                const child = spawn(process.execPath, [target, 'start'], {
+                    cwd: REPO_ROOT,
+                    env: {
+                        PATH                                   : process.env.PATH,
+                        UNIT_TEST_MODE                         : 'true',
+                        NEO_AGENT_IDENTITY                     : 'AGENT:neo-opus-grace',
+                        NEO_MCP_REMOTE_TOKEN                   : 'seat-plane-pat',
+                        NEO_SEAT_PLANE_BASE                    : `http://127.0.0.1:${silentPlane.address().port}`,
+                        NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS: '200'
+                    }
+                });
+                let stderr = '';
+
+                child.stderr.on('data', chunk => {stderr += chunk});
+                child.on('error', reject);
+                child.on('close', code => resolve({code, stderr}));
+                child.stdin.end('{}')
+            });
+
+            expect(code).toBe(0);
+            expect(stderr).toMatch(/\[WARN\] \[turn-presence\] not recorded — turn-presence threw: turn-presence MCP connect timed out with \d+ms left of the 200ms deadline/)
+        } finally {
+            silentPlane.close()
+        }
     })
 });

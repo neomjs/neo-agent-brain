@@ -7,7 +7,7 @@ import {
     readHookPayload,
     recordTurnPresenceFromHook
 } from '../../../../mcp/server/memory-core/helpers/TurnPresenceHookWriter.mjs';
-import {readPlaneConfig} from '../seatConfig.mjs';
+import {readPlaneConfig, readTurnPresenceDeadlineMs} from '../seatConfig.mjs';
 
 const LOG_DIR_NAME              = 'codex-lane-state-hook',
       PROMPT_CONTEXT_FILE_NAME  = 'codex-prompt-context.json',
@@ -156,15 +156,16 @@ export function writePromptContextFromHookPayload({
  * @summary Emits a Codex turn-start beacon into the store the deployment serves.
  *
  * **This is the entrypoint, and the only place config is resolved.** It injects the seat's plane
- * (`seatConfig.readPlaneConfig`) into a writer that resolves nothing — replacing a path the writer
- * derived from its own module location, which sent every beacon to a private checkout that no reader
- * queries.
+ * (`seatConfig.readPlaneConfig`) and the writer's deadline (`seatConfig.readTurnPresenceDeadlineMs`)
+ * into a writer that resolves nothing — replacing a path the writer derived from its own module
+ * location, which sent every beacon to a private checkout that no reader queries.
  *
  * The wake-submit nonce matters more on this seat than on the others: the wake daemon's Codex
  * delivery proof correlates a submit to the interval it produced by matching that exact value, so it
  * travels with the event rather than being recomputed anywhere downstream.
  *
  * @param {Object} options
+ * @param {Number} [options.deadlineMs] Injected deadline; read from the `turnPresence` leaf when absent.
  * @param {Object} [options.env=process.env] Environment source.
  * @param {*} [options.hookPayload] Codex hook payload used to extract a wake-submit nonce.
  * @param {Object} [options.plane] Injected `{baseUrl, credential}`; read from the seat leaves when absent.
@@ -172,6 +173,7 @@ export function writePromptContextFromHookPayload({
  * @returns {Promise<Object>} `{status}` — `recorded`, or `skipped` with a reason.
  */
 export async function recordTurnStarted({
+    deadlineMs,
     env = process.env,
     hookPayload,
     plane,
@@ -184,11 +186,12 @@ export async function recordTurnStarted({
     }
 
     return recordTurnPresenceFromHook({
+        deadlineMs: deadlineMs ?? await readTurnPresenceDeadlineMs(),
         env,
         hookPayload,
-        note  : 'codex UserPromptSubmit',
-        plane : plane ?? await readPlaneConfig(),
-        source: 'codex-user-prompt-submit',
+        note      : 'codex UserPromptSubmit',
+        plane     : plane ?? await readPlaneConfig(),
+        source    : 'codex-user-prompt-submit',
         ...(record ? {record} : {})
     });
 }

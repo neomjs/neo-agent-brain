@@ -28,12 +28,13 @@ const
 /**
  * @summary Reads the seat config in a child process whose env is exactly `env`, plus PATH.
  * @param {Object} env
- * @returns {Object} `{seat, plane}`: what `readSeatConfig` and `readPlaneConfig` returned
+ * @returns {Object} `{seat, plane, deadlineMs}`: what `readSeatConfig`, `readPlaneConfig` and
+ * `readTurnPresenceDeadlineMs` returned
  */
 function readInChild(env) {
     const script = [
-        `const {readSeatConfig, readPlaneConfig} = await import(${JSON.stringify(pathToFileURL(SEAT_CONFIG).href)});`,
-        `process.stdout.write('\\nSEAT_CONFIG=' + JSON.stringify({seat: await readSeatConfig(), plane: await readPlaneConfig()}));`
+        `const {readSeatConfig, readPlaneConfig, readTurnPresenceDeadlineMs} = await import(${JSON.stringify(pathToFileURL(SEAT_CONFIG).href)});`,
+        `process.stdout.write('\\nSEAT_CONFIG=' + JSON.stringify({seat: await readSeatConfig(), plane: await readPlaneConfig(), deadlineMs: await readTurnPresenceDeadlineMs()}));`
     ].join('\n');
 
     const output = execFileSync(process.execPath, ['--input-type=module', '-e', script], {
@@ -66,6 +67,11 @@ test.describe('seatConfig — a seat hook reaches the plane as the seat', () => 
 
         expect(seat).toEqual({planeBase: '', planeBearer: '', identity: '@neo-seat'});
         expect(plane).toEqual({baseUrl: '', credential: ''})
+    });
+
+    test('the turn-presence deadline is the Memory Core leaf, with its env binding', () => {
+        expect(readInChild({}).deadlineMs, 'the leaf default').toBe(1500);
+        expect(readInChild({NEO_TURN_PRESENCE_HOOK_WRITE_TIMEOUT_MS: '900'}).deadlineMs, 'the leaf\'s env layer').toBe(900)
     });
 
     test('every plane-reaching hook reads through this module from the runtime, and names no transport leaf', () => {
