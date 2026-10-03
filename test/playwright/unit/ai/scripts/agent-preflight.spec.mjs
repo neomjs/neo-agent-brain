@@ -87,6 +87,7 @@ test.describe('agent-preflight utility', () => {
             '--pr-body', 'body.md',
             '--pr-base', 'upstream/dev',
             '--pr-draft',
+            '--pr-repo', 'neomjs/neo-agent-institution',
             '--no-fix',
             'src/a.mjs'
         ])).toEqual({
@@ -98,6 +99,7 @@ test.describe('agent-preflight utility', () => {
             prBase       : 'upstream/dev',
             prBody       : 'body.md',
             prDraft      : true,
+            prRepo       : 'neomjs/neo-agent-institution',
             prTitle      : 'feat(build): add a guard (#16111)'
         });
     });
@@ -384,6 +386,35 @@ test.describe('agent-preflight utility', () => {
         expect(stdout).toContain('agent-preflight: 0 .mjs files in scope; skipped source gates.');
         expect(stdout).toContain('agent-preflight: PR body contains the required template anchors.');
         expect(stdout).toContain('agent-preflight: stacked PR tickets match 1 declared ticket(s) across 0 commit(s).')
+    });
+
+    test('--pr-repo reads another repository\'s PR body there: its #N owner and its close target', () => {
+        // The tool lives in the Brain, so an Institution PR body is linted from a Brain clone. Without
+        // the PR's repository, its `#N` owner and its close target were read as the Brain's.
+        const
+            reads = [],
+            body  = validBody.replace('Resolves #12345', 'Resolves #449').replace('## Post-Merge Validation\n- None.', '## Post-Merge Validation\n- [ ] the installed check\nResidual-Owner: #12');
+
+        const status = runAgentPreflight({
+            argv            : ['--pr-body', 'body.md', '--pr-repo', 'neomjs/neo-agent-institution'],
+            cwd             : '/repo',
+            execFileSyncImpl: (cmd, args) => {
+                if (cmd !== 'gh') return '';
+
+                reads.push(args[1]);
+
+                return args[1].endsWith('/issues/12') ? '{"state":"open","isPullRequest":false}' : '## Acceptance Criteria\n- [ ] AC-1: the one\n'
+            },
+            existsSyncImpl  : () => true,
+            readFileSyncImpl: () => body,
+            stderr          : {write: () => {}},
+            stdout          : {write: () => {}}
+        });
+
+        expect(status).toBe(0);
+        expect(reads).toContain('repos/neomjs/neo-agent-institution/issues/12');
+        expect(reads).toContain('repos/neomjs/neo-agent-institution/issues/449');
+        expect(reads.some(path => path.startsWith('repos/{owner}/{repo}/'))).toBe(false)
     });
 
     test('fails before PR creation when a stacked commit ticket is undeclared', () => {
