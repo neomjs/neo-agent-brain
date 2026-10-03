@@ -512,13 +512,15 @@ test.describe('ai/scripts/diagnostics/mcpHealthcheck (#11725)', () => {
  */
 test.describe('served-plane verification — a healthy status is not an identity', () => {
     let assertServedPlane;
+    let describeServedPlane;
     let runHealthcheck;
 
     test.beforeAll(async () => {
         const mod = await import('../../../../../../ai/scripts/diagnostics/mcpHealthcheck.mjs');
 
-        assertServedPlane = mod.assertServedPlane;
-        runHealthcheck    = mod.runHealthcheck;
+        assertServedPlane   = mod.assertServedPlane;
+        describeServedPlane = mod.describeServedPlane;
+        runHealthcheck      = mod.runHealthcheck;
     });
 
     test('no expectation configured is a no-op, so existing callers keep their contract', () => {
@@ -595,6 +597,39 @@ test.describe('served-plane verification — a healthy status is not an identity
             plane  : {id: 'neo-local-parity', dataRoot: '/app/.neo-ai-data-parity'},
             timings: {startupMs: 120, timeoutMs: 8000}
         });
+    });
+
+    test('reportServedPlane hands the plane block over as observed, asserting nothing: a foreign plane is reported, an absent block adds no key, and the default keeps the result shape', async () => {
+        class FakeTransport {}
+
+        const clientFor = payload => class {
+            async connect() {}
+            async callTool() { return {structuredContent: payload} }
+            async close() {}
+        };
+
+        const
+            foreign  = {status: 'healthy', plane: {id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'}},
+            nameless = {status: 'healthy'},
+            probe    = (payload, options = {}) => runHealthcheck({url: 'http://127.0.0.1:3102', mcpPath: '/mc/mcp', ClientClass: clientFor(payload), TransportClass: FakeTransport, uptimeMs: () => 120, ...options});
+
+        // the reader that compares identity itself gets the observation, never a verdict
+        expect(await probe(foreign, {reportServedPlane: true})).toEqual({
+            status : 'healthy',
+            url    : 'http://127.0.0.1:3102/',
+            plane  : {id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'},
+            timings: {startupMs: 120, timeoutMs: 8000}
+        });
+        // a nameless responder is reported as nameless: no key, no throw — the reader decides what that means
+        expect(await probe(nameless, {reportServedPlane: true})).toEqual({status: 'healthy', url: 'http://127.0.0.1:3102/', timings: {startupMs: 120, timeoutMs: 8000}});
+        // off by default: the container probe's exact result shape is unchanged
+        expect(await probe(foreign)).toEqual({status: 'healthy', url: 'http://127.0.0.1:3102/', timings: {startupMs: 120, timeoutMs: 8000}});
+        // an expectation still outranks the report: the wrong plane throws, whatever the flag says
+        await expect(probe(foreign, {reportServedPlane: true, expectedPlaneId: 'neo-local-parity'})).rejects.toThrow('a different plane is answering');
+
+        expect(describeServedPlane(foreign)).toEqual({id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'});
+        expect(describeServedPlane(nameless)).toBeNull();
+        expect(describeServedPlane({status: 'healthy', plane: {dataRoot: '/x'}})).toBeNull();
     });
 });
 
