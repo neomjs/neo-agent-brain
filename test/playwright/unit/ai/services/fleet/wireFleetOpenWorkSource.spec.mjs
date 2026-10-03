@@ -59,6 +59,25 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
         expect(await answering({body: {data: {search: {nodes: []}}}})('{x}', {})).toEqual({search: {nodes: []}})
     });
 
+    test('a server without a GitHub token still wires, and its pulse answers why', async () => {
+        const
+            dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wire-')),
+            bridge  = {};
+
+        try {
+            const wired = wireFleetOpenWorkSource({token: null, registry: {listAgents: () => definitions, getDataDir: () => dataDir}, bridge, pulseMs: 3600000});
+
+            await wired.producer.pulse();
+            wired.stop();
+
+            expect(bridge.openWorkSource).toBeDefined();
+            expect(wired.producer.getState()).toMatchObject({coverage: 'unavailable', reason: 'the GitHub read failed'});
+            expect(wired.producer.getState().detail).toMatch(/no GitHub token/)
+        } finally {
+            fs.rmSync(dataDir, {recursive: true, force: true})
+        }
+    });
+
     test('the bridge reads the producer\'s projection, and the state file carries it across a restart', async () => {
         const
             dataDir  = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wire-')),
