@@ -1,5 +1,6 @@
 import fs                                                      from 'fs';
 import path                                                    from 'path';
+import {randomUUID}                                            from 'node:crypto';
 import { Memory_Config as aiConfig }                           from '../../services.mjs';
 import Base                                                    from 'neo.mjs/src/core/Base.mjs';
 import { Memory_StorageRouter as StorageRouter }               from '../../services.mjs';
@@ -604,8 +605,7 @@ class GoldenPathSynthesizer extends Base {
     }
 
     /**
-     * @summary Frontier-empty declared-intent fallback (ticket-ref-ok: #14659 owning-leaf anchor): when the
-     * semantic route is empty, gather actionable UNBLOCKED open `ISSUE` nodes, rank them by declared intent
+     * @summary Frontier-empty declared-intent fallback: when the semantic route is empty, gather actionable UNBLOCKED open `ISSUE` nodes, rank them by declared intent
      * (open-epic membership x parent activity, recency), and render the provenance-led section. Returns `''`
      * when nothing qualifies, so the caller renders the normal empty section. Read-only + additive — it
      * cannot zero or gate the base route; it only fires when the route already produced nothing.
@@ -738,10 +738,11 @@ class GoldenPathSynthesizer extends Base {
      * REMOVED rather than left behind. Absence of a route is safe — consumers fail open to zero
      * directives — whereas a surviving stale executable route is not.
      *
-     * @param {Date} now Pass capture time (injected).
+     * @param {Date}   now   Pass capture time (injected).
+     * @param {String} runId The failing pass's run id, so the degraded route names the pass it belongs to.
      * @returns {void}
      */
-    static publishUnavailableComputedRoute(now) {
+    static publishUnavailableComputedRoute(now, runId) {
         const routePath = path.join(path.dirname(aiConfig.handoffFilePath), 'computed-route.json');
 
         try {
@@ -750,6 +751,7 @@ class GoldenPathSynthesizer extends Base {
                 routedTopNodes  : [],
                 scoredSourceIds : [],
                 now,
+                runId,
                 ttlMs           : aiConfig.goldenPathRouteTtlMs,
                 routeVersion    : ROUTE_ALGORITHM_VERSION,
                 algorithmVersion: ROUTE_ALGORITHM_VERSION
@@ -980,6 +982,21 @@ class GoldenPathSynthesizer extends Base {
         return renderGraphConceptSliceHandoffSection(options)
     }
 
+    /**
+     * @summary Runs one Golden Path pass: ranks open work against the frontier, writes the handoff and
+     * publishes the typed `computed-route.v1` sidecar the handoff renders from.
+     *
+     * The pass mints its run id once, before any read, so its opening log line and the route's
+     * `provenance.runId` name the same pass, on the early-exit branches too.
+     *
+     * @param {Object}  [options={}]
+     * @param {Boolean} [options.repoEnrichmentEnabled=true] `false` skips the repository-backed handoff
+     * sections: current focus, stale assignments, silent threads, open-PR cycle state, stall findings and the backlog.
+     * @param {String}  [options.issuesDir] The issue corpus; the materialized projection when it is enabled.
+     * @param {Date}    [options.now=new Date()] Pass capture time (injected).
+     * @param {String}  [options.runId=randomUUID()] The pass's run id (injected).
+     * @returns {Promise<Object>} A `withheld` outcome, a failure outcome, or the completed pass with its `computedRoute`.
+     */
     async synthesizeGoldenPath({
         repoEnrichmentEnabled = true,
         issuesDir = path.resolve(
@@ -988,9 +1005,10 @@ class GoldenPathSynthesizer extends Base {
                 : path.resolve(aiConfig.projectRoot, 'resources/content'),
             'issues'
         ),
-        now = new Date()
+        now   = new Date(),
+        runId = randomUUID()
     } = {}) {
-        logger.info('[GoldenPathSynthesizer] Initializing Hybrid GraphRAG Strategic Traversal...');
+        logger.info(`[GoldenPathSynthesizer] Initializing Hybrid GraphRAG Strategic Traversal (run ${runId})...`);
 
         const projectionAdmission = await this.constructor.getCorpusProjectionAdmission();
 
@@ -1016,13 +1034,13 @@ class GoldenPathSynthesizer extends Base {
             summaryColl = await StorageRouter.getSummaryCollection();
         } catch (e) {
             logger.warn('[GoldenPathSynthesizer] StorageRouter unavailable. Skipping Golden Path extraction.');
-            this.constructor.publishUnavailableComputedRoute(now);
+            this.constructor.publishUnavailableComputedRoute(now, runId);
             return this.constructor.buildFailureOutcome('storage-router-unavailable', e);
         }
 
         if (!graphColl || !summaryColl) {
             logger.warn('[GoldenPathSynthesizer] Collections missing. Skipping Golden Path extraction.');
-            this.constructor.publishUnavailableComputedRoute(now);
+            this.constructor.publishUnavailableComputedRoute(now, runId);
             return this.constructor.buildFailureOutcome('collections-missing', 'graph or summary collection missing');
         }
 
@@ -1044,7 +1062,7 @@ class GoldenPathSynthesizer extends Base {
             frontierEmbedding = await TextEmbeddingService.embedText(frontierText, aiConfig.embeddingProvider);
         } catch (e) {
             logger.warn('[GoldenPathSynthesizer] Failed to generate Frontier Baseline Vector. Aborting Hybrid route.', e);
-            this.constructor.publishUnavailableComputedRoute(now);
+            this.constructor.publishUnavailableComputedRoute(now, runId);
             return this.constructor.buildFailureOutcome('frontier-embedding-failed', e);
         }
 
@@ -1066,7 +1084,7 @@ class GoldenPathSynthesizer extends Base {
             });
 
             logger.warn(message);
-            this.constructor.publishUnavailableComputedRoute(now);
+            this.constructor.publishUnavailableComputedRoute(now, runId);
             return this.constructor.buildFailureOutcome('embedding-dimension-mismatch', message);
         }
 
@@ -1424,6 +1442,7 @@ class GoldenPathSynthesizer extends Base {
                 })),
                 scoredSourceIds,
                 now             : handoffTimestamp,
+                runId,
                 ttlMs           : aiConfig.goldenPathRouteTtlMs,
                 routeVersion    : ROUTE_ALGORITHM_VERSION,
                 algorithmVersion: ROUTE_ALGORITHM_VERSION,
