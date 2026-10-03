@@ -806,9 +806,20 @@ test.describe('validatePrBody — a Residual-Owner in another repository', () =>
             expect(resolveCurrentRepo({execFileSyncImpl: remote(url)}), url).toBe('neomjs/neo-agent-brain')
         }
 
-        // another forge, or a host that only ends in the name, is not GitHub's
-        expect(resolveCurrentRepo({execFileSyncImpl: remote('git@gitlab.com:neomjs/neo-agent-brain.git')})).toBe(null);
-        expect(resolveCurrentRepo({execFileSyncImpl: remote('https://evilgithub.com/neomjs/neo-agent-brain.git')})).toBe(null);
+        // the authority decides: another forge, a look-alike host, a subdomain, github.com in a path, the
+        // SSH carrier over HTTPS, or a path past owner/repo is not this checkout's GitHub repository
+        for (const url of [
+            'git@gitlab.com:neomjs/neo-agent-brain.git',
+            'https://evilgithub.com/neomjs/neo-agent-brain.git',
+            'https://evil.github.com/neomjs/neo-agent-brain.git',
+            'git@evil.github.com:neomjs/neo-agent-brain.git',
+            'https://example.org/github.com/neomjs/neo-agent-brain.git',
+            'https://ssh.github.com/neomjs/neo-agent-brain.git',
+            'https://github.com/neomjs/neo-agent-brain/extra'
+        ]) {
+            expect(resolveCurrentRepo({execFileSyncImpl: remote(url)}), url).toBe(null)
+        }
+
         expect(resolveCurrentRepo({execFileSyncImpl: () => { throw new Error('no remote') }})).toBe(null);
     });
 });

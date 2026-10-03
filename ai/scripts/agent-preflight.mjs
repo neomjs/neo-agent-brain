@@ -1303,6 +1303,38 @@ function runTicketArchaeologyGate({cwd, files, findTicketRefsImpl, readFileSyncI
 }
 
 /**
+ * @summary The `owner/repo` a GitHub remote names, read from its authority and its whole path. The
+ * host is exactly `github.com`, or `ssh.github.com` over `ssh:` (SSH over the HTTPS port); a
+ * subdomain, a look-alike host or `github.com` in a path is another origin and names nothing.
+ * @param {String} url A remote URL, or an SCP-style `[user@]host:path`.
+ * @returns {String|null}
+ * @private
+ */
+function githubRepoOf(url) {
+    const coordinate = location => location.replace(/(?:\.git)?\/?$/, '').match(new RegExp(`^(${REPO_COORDINATE})$`))?.[1] ?? null;
+
+    if (url.includes('://')) {
+        let parsed;
+
+        try {
+            parsed = new URL(url)
+        } catch {
+            return null
+        }
+
+        const host = parsed.hostname.toLowerCase();
+
+        return host === 'github.com' || (host === 'ssh.github.com' && parsed.protocol === 'ssh:')
+            ? coordinate(parsed.pathname.slice(1))
+            : null
+    }
+
+    const scp = url.match(/^(?:[^@/:]+@)?([^:/]+):(.+)$/);
+
+    return scp?.[1].toLowerCase() === 'github.com' ? coordinate(scp[2]) : null
+}
+
+/**
  * @summary This checkout's `owner/repo`, read offline from the `origin` remote, so an owner that
  * spells out this repository is judged as this repository's. Every clone form GitHub documents is
  * read: HTTPS, SCP-style SSH, `ssh://`, and SSH over the HTTPS port (`ssh.github.com:443`). `null`
@@ -1314,9 +1346,7 @@ function runTicketArchaeologyGate({cwd, files, findTicketRefsImpl, readFileSyncI
  */
 export function resolveCurrentRepo({cwd = process.cwd(), execFileSyncImpl = execFileSync} = {}) {
     try {
-        const url = String(execFileSyncImpl('git', ['remote', 'get-url', 'origin'], {cwd, encoding: 'utf8', stdio: 'pipe'})).trim();
-
-        return url.replace(/(?:\.git)?\/?$/, '').match(new RegExp(String.raw`(?:^|[@/.])github\.com(?::\d+)?[:/](${REPO_COORDINATE})$`))?.[1] ?? null
+        return githubRepoOf(String(execFileSyncImpl('git', ['remote', 'get-url', 'origin'], {cwd, encoding: 'utf8', stdio: 'pipe'})).trim())
     } catch {
         return null
     }

@@ -446,6 +446,38 @@ test.describe('agent-preflight utility', () => {
         }
     });
 
+    test('an origin that only mentions github.com establishes no repository: a same-number owner elsewhere stays unproven', () => {
+        const body = validBody.replace('Resolves #12345', 'Resolves #100')
+            .replace('## Post-Merge Validation\n- None.', '## Post-Merge Validation\n- [ ] the installed check\nResidual-Owner: neomjs/neo-agent-institution#100');
+        const run = origin => {
+            let stderr = '';
+
+            const status = runAgentPreflight({
+                argv            : ['--pr-body', 'body.md'],
+                cwd             : '/repo',
+                execFileSyncImpl: (cmd, args) => cmd === 'git' && args[0] === 'remote'
+                    ? `${origin}\n`
+                    : cmd === 'gh' ? (args[1].endsWith('/issues/100') && args[1].includes('institution') ? '{"state":"open","isPullRequest":false}' : '## Acceptance Criteria\n- [ ] AC-1: the one\n') : '',
+                existsSyncImpl  : () => true,
+                readFileSyncImpl: () => body,
+                stderr          : {write: chunk => { stderr += chunk }},
+                stdout          : {write: () => {}}
+            });
+
+            return {status, stderr}
+        };
+
+        for (const origin of ['https://evil.github.com/neomjs/neo-agent-brain.git', 'https://example.org/github.com/neomjs/neo-agent-brain.git']) {
+            const {status, stderr} = run(origin);
+
+            expect(status, origin).toBe(1);
+            expect(stderr, origin).toContain("may be this PR's own close target")
+        }
+
+        // control: GitHub's own origin proves the owner foreign, and the gate passes
+        expect(run('https://github.com/neomjs/neo-agent-brain.git').status).toBe(0)
+    });
+
     test('--pr-repo is one owner/repo: a query, a fragment, an extra segment or a dot segment is refused before any read', () => {
         for (const prRepo of ['neomjs/neo-agent-institution/issues/12?ignored=', 'neomjs/neo-agent-institution#x', 'neomjs/..', '../repo', 'neomjs']) {
             const reads = [];
