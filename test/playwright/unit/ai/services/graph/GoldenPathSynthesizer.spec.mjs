@@ -584,10 +584,9 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         const infoLines                    = [];
         const runIds                       = [];
 
-        aiConfig.vectorDimension           = 2;
         StorageRouter.getGraphCollection   = async () => ({query: async () => ({ids: [[]], distances: [[]]})});
         StorageRouter.getSummaryCollection = async () => ({get: async () => ({documents: ['mock document']})});
-        TextEmbeddingService.embedText     = async () => [0.1, 0.2];
+        TextEmbeddingService.embedText     = async () => buildConfiguredEmbedding();
         logger.info                        = (...args) => infoLines.push(args.join(' '));
 
         try {
