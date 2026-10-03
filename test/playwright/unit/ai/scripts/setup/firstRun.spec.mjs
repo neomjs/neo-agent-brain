@@ -277,7 +277,8 @@ test.describe('firstRun CLI', () => {
         const file = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, servedPlane: {id: 'plane-b', dataRoot: '/srv/plane-b'}})});
 
         expect(file.code, 'the served plane still fails the run').toBe(1);
-        expect(JSON.parse(file.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt'});
+        // the parked receipt carried no input key, so the settled row says what it cannot prove
+        expect(JSON.parse(file.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt (input not recorded)'});
         expect(await receiptOf('write-env')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
         expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
     });

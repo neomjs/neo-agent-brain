@@ -476,7 +476,7 @@ test.describe('setupOrchestration', () => {
         expect(Object.fromEntries(receipts(record))).toMatchObject({'write-secrets': 'accepted', 'write-env': 'accepted', 'compose-up': 'accepted'});
     });
 
-    test('a receipt accepted before input keys existed carries none and is not compared: a consent change leaves its row as it read', async () => {
+    test('a receipt accepted before input keys existed carries none and is not compared: a consent change leaves its row ok, and the row says its input was not recorded', async () => {
         const run = await consentedRun();
 
         let {record} = await perform(run, {evaluation: await evaluateOnHost(run, run.record), createPlaneClient: null});
@@ -486,7 +486,13 @@ test.describe('setupOrchestration', () => {
         await persistSetupRecord(run.recordPath, record, run.host);
         record = await consent(run, record, 'preset', 'local-full');
 
-        expect(hostRows(await evaluateOnHost(run, record))).toEqual({'write-env': 'ok', 'write-secrets': 'ok', 'compose-up': 'ok'});
+        const keyless = await evaluateOnHost(run, record);
+
+        expect(hostRows(keyless)).toEqual({'write-env': 'ok', 'write-secrets': 'ok', 'compose-up': 'ok'});
+
+        for (const id of HOST_EFFECTS) {
+            expect(row(keyless, id).reason, id).toBe('observed; matches the accepted receipt (input not recorded)');
+        }
     });
 
     test('a consent change re-applies only the effects whose input it touches, and a re-composed plane earns one new witness attempt: the run reads done only after it', async () => {

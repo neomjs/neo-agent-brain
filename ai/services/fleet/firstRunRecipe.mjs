@@ -241,7 +241,10 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
         return status(step, STEP_STATUSES.failed, 'the host content changed after the effect was accepted', extra);
     }
 
-    return status(step, STEP_STATUSES.ok, receipt?.outcome === RECEIPT_OUTCOMES.accepted ? 'observed; matches the accepted receipt' : 'observed; not performed by this run', extra);
+    // a receipt from before input keys existed proves presence only: the row says so until a fresh run
+    const keyless = receipt?.outcome === RECEIPT_OUTCOMES.accepted && !receipt.inputKey && observed.inputKey;
+
+    return status(step, STEP_STATUSES.ok, receipt?.outcome === RECEIPT_OUTCOMES.accepted ? `observed; matches the accepted receipt${keyless ? ' (input not recorded)' : ''}` : 'observed; not performed by this run', extra);
 }
 
 function evaluatePlacement(step, read, presets, observedAt) {
