@@ -20,6 +20,7 @@ import RequestContextService           from '../../../../../../ai/mcp/server/sha
 import ConfigBase                      from '../../../../../../ai/configBase.mjs';
 import FleetControlBridge              from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
 import FleetManager                    from '../../../../../../ai/services/fleet/FleetManager.mjs';
+import ForgeConnectionRegistryService  from '../../../../../../ai/services/fleet/ForgeConnectionRegistryService.mjs';
 import {
     createDeploymentStateSnapshot,
     writeDeploymentStateSnapshot
@@ -28,7 +29,6 @@ import {
     assertFleetPlaneReady,
     createFleetRequestContext,
     createFleetServerApp,
-    deriveOwnerPrincipal,
     resolveFleetResourceUrl,
     startFleetServer
 }                                  from '../../../../../../ai/services/fleet/fleetServer.mjs';
@@ -48,6 +48,29 @@ import {
 const
     nativeFetch = globalThis.fetch,
     logger      = {info() {}, warn() {}, error() {}};
+
+/**
+ * @summary A temp forge-connection registry with the test forge registered, so admission resolves
+ * against it and never against the plane's own root.
+ * @returns {Promise<{connectionId: String, dir: String, restore: Function}>}
+ */
+async function useForgeConnections() {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'fleet-forge-'));
+
+    ForgeConnectionRegistryService.dataDir = dir;
+    ForgeConnectionRegistryService.initialize({actor: 'spec', apply: true});
+
+    const {connectionId} = ForgeConnectionRegistryService.register({actor: 'spec', apply: true, authProvider: 'github', endpoint: 'https://api.github.test'});
+
+    return {
+        connectionId,
+        dir,
+        async restore() {
+            ForgeConnectionRegistryService.dataDir = null;
+            await rm(dir, {recursive: true, force: true})
+        }
+    }
+}
 
 const wireBody = (method, params) => JSON.stringify(createFleetWireRequest(method, params));
 
@@ -154,7 +177,8 @@ test.describe('composed Fleet S1 server', () => {
             return nativeFetch(input, init)
         };
 
-        const server = await startApp();
+        const forge  = await useForgeConnections(),
+              server = await startApp();
 
         try {
             const response = await nativeFetch(`${server.baseUrl}/fleet/probe`, {
@@ -176,9 +200,9 @@ test.describe('composed Fleet S1 server', () => {
                         providerUserId     : '280105177',
                         providerUsername   : 'neo-gpt',
                         providerDisplayName: 'Euclid',
-                        // The launch receipt carries the caller's own DERIVED admission subject —
-                        // the immutable-tuple key, never the mutable login.
-                        ownerPrincipal     : 'principal:github:https%3A%2F%2Fapi.github.test:280105177'
+                        // The launch receipt carries the caller's own RESOLVED admission subject:
+                        // the registered connection and the provider user id, never the login.
+                        ownerPrincipal     : `owner:${forge.connectionId}:280105177`
                     },
                     fleetDataDir: '/app/.neo-ai-data/fleet',
                     pid         : expect.any(Number),
@@ -188,7 +212,8 @@ test.describe('composed Fleet S1 server', () => {
             expect(JSON.stringify(payload)).not.toContain(token);
             expect(JSON.stringify(payload)).not.toContain('scopes')
         } finally {
-            await server.close()
+            await server.close();
+            await forge.restore()
         }
     });
 
@@ -640,7 +665,8 @@ test.describe('composed Fleet S1 server', () => {
         }
     });
 
-    test('the request projection is immutable, copy-isolated, and excludes credential/future-subject fields', () => {
+    test('the request projection is immutable, copy-isolated, and excludes credential/future-subject fields', async () => {
+        const forge    = await useForgeConnections();
         const authInfo = {
             userId             : 'neo-gpt',
             username           : 'Euclid',
@@ -657,57 +683,112 @@ test.describe('composed Fleet S1 server', () => {
             expiresAt          : 123,
             extra              : {arbitrary: true},
             agentIdentityNodeId: 'AGENT_IDENTITY:@neo-gpt',
-            ownerPrincipal     : 'github:https://api.github.test:280105177'
+            ownerPrincipal     : 'github:https://api.github.test:280105177',
+            ownerResolution    : {state: 'admitted'}
         };
-        const context = createFleetRequestContext(authInfo);
 
-        authInfo.userId = 'mutated-after-copy';
+        try {
+            const context = createFleetRequestContext(authInfo);
 
-        expect(Object.isFrozen(context)).toBe(true);
-        expect(context.userId).toBe('neo-gpt');
-        expect(context).not.toHaveProperty('token');
-        expect(context).not.toHaveProperty('clientId');
-        expect(context).not.toHaveProperty('scopes');
-        expect(context).not.toHaveProperty('expiresAt');
-        expect(context).not.toHaveProperty('extra');
-        expect(context).not.toHaveProperty('agentIdentityNodeId');
+            authInfo.userId = 'mutated-after-copy';
 
-        // The subject cannot be INJECTED: the fixture's poisoned `ownerPrincipal` is discarded by
-        // the allowlist, and the context carries only this boundary's OWN derivation over the
-        // provider-validated facts.
-        expect(context.ownerPrincipal).toBe('principal:github:https%3A%2F%2Fapi.github.test:280105177');
-        expect(createFleetRequestContext({source: 'local-bearer'})).toBeNull()
+            expect(Object.isFrozen(context)).toBe(true);
+            expect(context.userId).toBe('neo-gpt');
+            expect(context).not.toHaveProperty('token');
+            expect(context).not.toHaveProperty('clientId');
+            expect(context).not.toHaveProperty('scopes');
+            expect(context).not.toHaveProperty('expiresAt');
+            expect(context).not.toHaveProperty('extra');
+            expect(context).not.toHaveProperty('agentIdentityNodeId');
+
+            // The subject cannot be INJECTED: the fixture's poisoned `ownerPrincipal` and
+            // `ownerResolution` are discarded by the allowlist, and the context carries only this
+            // boundary's OWN resolution over the provider-validated facts.
+            expect(context.ownerPrincipal).toBe(`owner:${forge.connectionId}:280105177`);
+            expect(context).not.toHaveProperty('ownerResolution');
+            expect(createFleetRequestContext({source: 'local-bearer'})).toBeNull()
+        } finally {
+            await forge.restore()
+        }
     });
 
-    test('deriveOwnerPrincipal: immutable facts only — login mutation cannot move the subject, absent members derive nothing', () => {
-        const facts = {
-            authProvider   : 'github',
-            providerBaseUrl: 'https://API.github.test/',
-            providerUserId : '280105177'
-        };
+    test('admission resolves the owner through the forge-connection registry, and says why when it cannot', async () => {
+        const
+            forge = await useForgeConnections(),
+            facts = {userId: 'neo-gpt', authProvider: 'github', providerBaseUrl: 'https://API.github.test/', providerUserId: '280105177'},
+            owner = facts => createFleetRequestContext(facts);
 
-        // Minimal normalization pinned: parser-lowercased scheme/host, trailing slashes stripped,
-        // the base encoded into the opaque key.
-        const principal = deriveOwnerPrincipal(facts);
+        try {
+            const principal = `owner:${forge.connectionId}:280105177`;
 
-        expect(principal).toBe('principal:github:https%3A%2F%2Fapi.github.test:280105177');
+            // the v1 endpoint floor: host case and the trailing slash are not identity, and the
+            // login never participates
+            expect(owner(facts).ownerPrincipal).toBe(principal);
+            expect(owner({...facts, providerUsername: 'renamed-login', username: 'New Display'}).ownerPrincipal).toBe(principal);
 
-        // The rename invariance the mutable login can never break: no login-bearing field
-        // participates in the derivation at all.
-        expect(deriveOwnerPrincipal({...facts, providerUsername: 'renamed-login', username: 'New Display'}))
-            .toBe(principal);
+            // an endpoint no connection binds, another forge at the bound endpoint, no provider user id
+            expect(owner({...facts, providerBaseUrl: 'https://git.example.org'}).ownerResolution.state).toBe('unregistered');
+            expect(owner({...facts, authProvider: 'gitlab'}).ownerResolution.state).toBe('unregistered');
+            expect(owner({...facts, providerUserId: undefined}).ownerResolution).toEqual({state: 'refused', reason: 'the forge answered no provider user id'});
+            expect(owner({...facts, providerBaseUrl: 'https://git.example.org'})).not.toHaveProperty('ownerPrincipal');
 
-        // Fail-closed: any absent tuple member derives NO subject — never a partial principal,
-        // never a login fallback.
-        expect(deriveOwnerPrincipal({...facts, providerUserId: undefined})).toBeNull();
-        expect(deriveOwnerPrincipal({...facts, providerBaseUrl: ''})).toBeNull();
-        expect(deriveOwnerPrincipal({...facts, authProvider: undefined})).toBeNull();
-        expect(deriveOwnerPrincipal({...facts, providerBaseUrl: 'not a url'})).toBeNull();
-        expect(deriveOwnerPrincipal(null)).toBeNull();
+            // a possession-only admission names no forge: no subject, and nothing to resolve
+            const possession = owner({userId: 'local', source: 'local-bearer'});
 
-        // The possession-only admission mode carries no provider tuple: transport admitted,
-        // subject absent — the verb-class policy owns what such a caller may do.
-        expect(deriveOwnerPrincipal({userId: 'local', source: 'local-bearer'})).toBeNull()
+            expect(possession).not.toHaveProperty('ownerPrincipal');
+            expect(possession).not.toHaveProperty('ownerResolution');
+
+            // a corrupt store is unavailable and stays as it is; an absent one is uninitialized
+            await writeFile(path.join(forge.dir, 'forge-connections.json'), '{"schema":1');
+            expect(owner(facts).ownerResolution.state).toBe('unavailable');
+
+            await rm(path.join(forge.dir, 'forge-connections.json'));
+            expect(owner(facts).ownerResolution.state).toBe('uninitialized')
+        } finally {
+            await forge.restore()
+        }
+    });
+
+    test('a lifecycle write whose owner does not resolve is refused with the reason, and the Fleet service logs it', async () => {
+        const
+            dir    = await mkdtemp(path.join(os.tmpdir(), 'fleet-forge-')),
+            warns  = [],
+            server = await startApp({
+                authMiddleware(req, res, next) {
+                    req.auth = {userId: 'neo-gpt', source: 'github-pat', authProvider: 'github', providerBaseUrl: 'https://api.github.test', providerUserId: '280105177'};
+                    next()
+                },
+                serverOptions: {
+                    // the real policy over a stand-in bridge: no registry of the plane's is touched
+                    dispatch: (request, context) => dispatchFleetS1Request(request, {listAgents: async () => []}, context),
+                    logger  : {info() {}, warn(message) { warns.push(message) }, error() {}}
+                }
+            });
+
+        // no store in this root: the owner is uninitialized
+        ForgeConnectionRegistryService.dataDir = dir;
+
+        try {
+            const post = method => nativeFetch(`${server.baseUrl}/fleet`, {
+                method : 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body   : wireBody(method, 'neo-gpt')
+            }).then(response => response.json());
+
+            const refused = await post('stopAgent');
+
+            expect(refused.state).toBe(FLEET_WIRE_RESPONSE_STATES.refused);
+            expect(refused.error).toContain('the owner is uninitialized: the forge-connection registry is not initialized');
+            expect(warns).toEqual([`[FleetServer] 'stopAgent' refused: the owner is uninitialized: ${ForgeConnectionRegistryService.resolveOwner({}).reason}`]);
+
+            // a read is still served to the same caller, and logs nothing
+            await post('listAgents');
+            expect(warns).toHaveLength(1)
+        } finally {
+            ForgeConnectionRegistryService.dataDir = null;
+            await server.close();
+            await rm(dir, {recursive: true, force: true})
+        }
     });
 
     test('identityless admitted middleware refuses with zero dispatch', async () => {
