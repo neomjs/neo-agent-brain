@@ -9,6 +9,7 @@ import {
     applyEffect,
     createHost,
     effectInputDigest,
+    effectInputKey,
     hostEffectHandlers,
     persistSetupRecord,
     probePort,
@@ -123,7 +124,12 @@ test.describe('hostEffects', () => {
 
         await applyEffect({effectId: EFFECT_IDS.writeSecrets, input: {files: [{path: path.join(path.dirname(recordPath), 'token'), content: 's'}]}, record: env.record, recordPath, host, effects});
 
-        expect(seen[0]).toEqual({effectId: 'write-env', outcome: RECEIPT_OUTCOMES.pending, inputDigest: effectInputDigest(input), startedAt: new Date(NOW).toISOString(), expectedDigest: contentDigest(renderEnvFile(input.entries))});
+        expect(seen[0]).toEqual({effectId: 'write-env', outcome: RECEIPT_OUTCOMES.pending, inputDigest: effectInputDigest(input), inputKey: effectInputDigest(input), startedAt: new Date(NOW).toISOString(), expectedDigest: contentDigest(renderEnvFile(input.entries))});
+        // the receipt records the key of its input: the whole input for the carrier, the set alone for the
+        // secrets — the same set with other contents is the same input
+        expect(seen[1].inputKey).toBe(effectInputKey(EFFECT_IDS.writeSecrets, {files: [{path: path.join(path.dirname(recordPath), 'token'), content: 'another value'}]}));
+        expect(seen[1].inputKey).not.toBe(seen[1].inputDigest);
+        expect(env.receipt.inputKey, 'and the accepted receipt keeps it').toBe(seen[0].inputKey);
         expect(seen[1], 'a secret\'s content is never an expectation').not.toHaveProperty('expectedDigest');
         expect(env.receipt, 'the accepted receipt carries the handler\'s own digest').not.toHaveProperty('expectedDigest');
 

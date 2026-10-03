@@ -8,6 +8,7 @@ import {RECIPE_VERSION, STEP_STATUSES, evaluateRecipe}                          
 import {presets}                                                                                       from '../../../../../../ai/services/fleet/placementPresets.mjs';
 import {EFFECT_ORDER, performEffects, settlePending}                                                   from '../../../../../../ai/services/fleet/setupOrchestration.mjs';
 import {RECEIPT_OUTCOMES, contentDigest, createSetupRecord, findReceipt, setupRecordPath, withReceipt} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {productionObservers}                                                                           from '../../../../../../ai/scripts/setup/firstRun.mjs';
 
 // The orchestration over a real temp layout and the checkout's own config and Compose files; the command
 // runner, the clock and every observation are scripted, and each run's file reads are recorded.
@@ -84,6 +85,48 @@ function evaluate(record, present = {}, servedPlane = {id: target.planeId, dataR
 }
 
 const COLD = new Error('connect ECONNREFUSED 127.0.0.1:3102');
+
+/**
+ * @summary The recipe's evaluation over the host itself: the production observers read the run's temp
+ * layout, its record and its command runner. Only the plane is scripted — once composed it answers as
+ * the target's, and the provider validates at the consented preset's dimension.
+ * @param {Object} run From {@link consentedRun}.
+ * @param {Object} record
+ * @returns {Promise<Object>}
+ */
+function evaluateOnHost(run, record) {
+    return evaluateRecipe({
+        target,
+        record,
+        presets,
+        now      : () => NOW,
+        observers: productionObservers({
+            layout     : run.layout,
+            host       : run.host,
+            probe      : async () => ({runningPlane: dockerCalls(run) > 0 ? {project: run.layout.composeProject} : null}),
+            healthcheck: async () => {
+                if (dockerCalls(run) === 0) throw COLD;
+
+                return {plane: {id: target.planeId, dataRoot: target.dataRoot}, status: 'healthy'};
+            },
+            validate   : async ({preset}) => ({provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: preset.vectorDimension}})
+        })
+    });
+}
+
+/**
+ * @summary Records one consent the way a renderer does.
+ * @returns {Promise<Object>} The record after it.
+ */
+async function consent(run, record, stepId, answer) {
+    return (await recordConsent({stepId, answer, record, recordPath: run.recordPath, host: run.host})).record;
+}
+
+const
+    HOST_EFFECTS = [EFFECT_IDS.writeEnv, EFFECT_IDS.writeSecrets, EFFECT_IDS.composeUp],
+    row          = (evaluation, id) => evaluation.steps.find(step => step.id === id),
+    hostRows     = evaluation => Object.fromEntries(HOST_EFFECTS.map(id => [id, row(evaluation, id).status])),
+    dockerCalls  = run => run.calls.filter(call => call.command === 'docker').length;
 
 /**
  * @summary Runs `performEffects` the way a renderer does, collecting what it reports.
@@ -395,5 +438,123 @@ test.describe('setupOrchestration', () => {
         expect(planes.filter(plane => plane.calls !== undefined)).toHaveLength(4);
         expect(findReceipt(resumed.record, EFFECT_IDS.verify)).toMatchObject({outcome: RECEIPT_OUTCOMES.pending, resumable: true});
         expect(resumed.record.verification.attempt.marker).toBe(partial.record.verification.attempt.marker);
+    });
+
+    test('a preset changed after its effects were accepted turns the carrier, the secret set and the composition pending for an earlier input, and the next run applies each as a new input', async () => {
+        const run = await consentedRun(), keyPath = path.join(run.root, 'operator', 'provider-key');
+
+        await fs.writeFile(keyPath, 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh\n', {mode: 0o600});
+
+        let {record} = await perform(run, {evaluation: await evaluateOnHost(run, run.record), createPlaneClient: null});
+
+        const carrier = await fs.readFile(run.layout.envFile, 'utf8');
+
+        expect(hostRows(await evaluateOnHost(run, record))).toEqual({'write-env': 'ok', 'write-secrets': 'ok', 'compose-up': 'ok'});
+
+        record = await consent(run, await consent(run, record, 'preset', 'hosted'), 'provider-key', keyPath);
+
+        const changed = await evaluateOnHost(run, record);
+
+        expect(hostRows(changed)).toEqual({'write-env': 'pending', 'write-secrets': 'pending', 'compose-up': 'pending'});
+
+        for (const id of HOST_EFFECTS) {
+            expect(row(changed, id).reason, id).toMatch(/^accepted for an earlier input/);
+        }
+
+        expect(row(changed, EFFECT_IDS.composeUp).reason).toContain('restarts the plane');
+        expect(await fs.readFile(run.layout.envFile, 'utf8'), 'an evaluation writes nothing').toBe(carrier);
+
+        ({record} = await perform(run, {record, evaluation: changed, createPlaneClient: null}));
+
+        const rendered = await fs.readFile(run.layout.envFile, 'utf8');
+
+        expect(rendered).not.toBe(carrier);
+        expect(rendered).toContain(`NEO_GEMINI_API_KEY_FILE=${path.join(run.layout.secretsDir, 'gemini-api-key')}`);
+        expect((await fs.readdir(run.layout.secretsDir)).sort()).toEqual(['fleet-plane-token', 'gemini-api-key', 'mcp-auth-token']);
+        expect(dockerCalls(run), 'the plane was composed again from the new carrier').toBe(2);
+        expect(hostRows(await evaluateOnHost(run, record))).toEqual({'write-env': 'ok', 'write-secrets': 'ok', 'compose-up': 'ok'});
+        expect(Object.fromEntries(receipts(record))).toMatchObject({'write-secrets': 'accepted', 'write-env': 'accepted', 'compose-up': 'accepted'});
+    });
+
+    test('a receipt accepted before input keys existed carries none and is not compared: a consent change leaves its row as it read', async () => {
+        const run = await consentedRun();
+
+        let {record} = await perform(run, {evaluation: await evaluateOnHost(run, run.record), createPlaneClient: null});
+
+        // the receipts as an earlier version recorded them
+        record = {...record, receipts: record.receipts.map(({inputKey, ...receipt}) => receipt)};
+        await persistSetupRecord(run.recordPath, record, run.host);
+        record = await consent(run, record, 'preset', 'local-full');
+
+        expect(hostRows(await evaluateOnHost(run, record))).toEqual({'write-env': 'ok', 'write-secrets': 'ok', 'compose-up': 'ok'});
+    });
+
+    test('a consent change re-applies only the effects whose input it touches, and a re-composed plane earns one new witness attempt: the run reads done only after it', async () => {
+        const
+            run    = await consentedRun(),
+            planes = [],
+            plane  = ({endpoint, credential}) => {
+                const client = {
+                    endpoint,
+                    credential,
+                    addMemory  : async function(content) { this.written = content.prompt; return {id: `mem-${planes.length}`, sessionId: 's', timestamp: 't'} },
+                    recentTurns: async function() { return {count: 1, turns: [{id: `mem-${planes.length}`, prompt: this.written}], nextCursor: null} },
+                    recall     : async function() { return {count: 1, results: [{id: `mem-${planes.length}`, prompt: this.written}]} },
+                    close      : async () => {}
+                };
+
+                planes.push(client);
+
+                return client;
+            },
+            pass   = async record => (await perform(run, {record, evaluation: await evaluateOnHost(run, record), createPlaneClient: plane})).record;
+
+        // the first pass brings the plane up, the second writes the witness through it
+        let record = await pass(await pass(run.record));
+
+        const first = record.verification.attempt.marker, witnessed = await evaluateOnHost(run, record);
+
+        expect(planes).toHaveLength(1);
+        expect([row(witnessed, 'verify').status, row(witnessed, 'done').status]).toEqual(['ok', 'ok']);
+
+        // a resume without a consent change writes nothing
+        expect(await pass(record)).toBe(record);
+        expect(planes).toHaveLength(1);
+
+        // local-full renders another carrier and needs the same secret set
+        record = await consent(run, record, 'preset', 'local-full');
+
+        const changed = await evaluateOnHost(run, record);
+
+        expect(hostRows(changed)).toEqual({'write-env': 'pending', 'write-secrets': 'ok', 'compose-up': 'pending'});
+        expect(row(changed, 'verify').status, 'the witness still follows the composition that runs').toBe('ok');
+        expect(row(changed, 'done')).toMatchObject({status: 'pending', reason: expect.stringContaining('write-env was accepted for an earlier input')});
+
+        const secretsBefore = await fs.readFile(path.join(run.layout.secretsDir, 'fleet-plane-token'), 'utf8');
+
+        record = await pass(record);
+
+        expect(await fs.readFile(path.join(run.layout.secretsDir, 'fleet-plane-token'), 'utf8'), 'the untouched secret set was not written again').toBe(secretsBefore);
+        expect(dockerCalls(run)).toBe(2);
+        expect(planes, 'no witness in the pass that re-composed the plane').toHaveLength(1);
+
+        const recomposed = await evaluateOnHost(run, record);
+
+        expect(hostRows(recomposed)).toEqual({'write-env': 'ok', 'write-secrets': 'ok', 'compose-up': 'ok'});
+        expect(row(recomposed, 'verify')).toMatchObject({status: 'pending', reason: expect.stringMatching(/^accepted for an earlier input/)});
+        expect(row(recomposed, 'done').status).toBe('pending');
+
+        record = await pass(record);
+
+        expect(planes, 'one new attempt, one write').toHaveLength(2);
+        expect(record.verification.attempt.marker).not.toBe(first);
+        expect(record.verification.priorAttempts.map(attempt => attempt.marker)).toEqual([first]);
+        expect(findReceipt(record, EFFECT_IDS.verify)).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, inputKey: findReceipt(record, EFFECT_IDS.composeUp).inputKey});
+
+        const settled = await evaluateOnHost(run, record);
+
+        expect([row(settled, 'verify').status, row(settled, 'done').status]).toEqual(['ok', 'ok']);
+        expect(await pass(record), 'and a resume after it writes nothing').toBe(record);
+        expect(planes).toHaveLength(2);
     });
 });

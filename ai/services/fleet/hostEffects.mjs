@@ -87,6 +87,20 @@ export function effectInputDigest(input) {
     return contentDigest(JSON.stringify(input ?? null));
 }
 
+/**
+ * @summary The key of an effect's input: what a receipt records as the input it speaks for, and what the
+ * run's current consents are compared against. An effect whose input holds a value that differs on every
+ * composition (a minted token) declares `key(input)` over what the consents decide; every other effect is
+ * keyed by its whole input.
+ * @param {String} effectId
+ * @param {*}      input
+ * @param {Object} [effects=hostEffectHandlers]
+ * @returns {String}
+ */
+export function effectInputKey(effectId, input, effects = hostEffectHandlers) {
+    return effects[effectId]?.key ? effects[effectId].key(input) : effectInputDigest(input);
+}
+
 async function writeOwnerOnly(filePath, content, host) {
     if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
         throw new Error(`hostEffects: '${filePath}' is not an absolute path.`);
@@ -124,6 +138,8 @@ export const hostEffectHandlers = Object.freeze({
     [EFFECT_IDS.writeSecrets]: Object.freeze({
         id      : EFFECT_IDS.writeSecrets,
         describe: input => `write ${Array.isArray(input?.files) ? input.files.length : 0} secret file(s), owner-only`,
+        // the set, not its contents: the plane bearer is minted per composition
+        key     : input => effectInputDigest((input?.files ?? []).map(file => file?.path).sort()),
         /**
          * @param {Object} input `{files: [{path, content}]}`
          * @param {Object} host
@@ -151,7 +167,7 @@ export const hostEffectHandlers = Object.freeze({
         id      : EFFECT_IDS.composeUp,
         describe: input => `docker compose -p ${input?.project} up -d --wait`,
         /**
-         * @param {Object} input `{project, cwd, envFile, composeFiles}` — the compose project, the checkout holding the compose files, the carrier, the files in order.
+         * @param {Object} input `{project, cwd, envFile, composeFiles, carrier}` — the compose project, the checkout holding the compose files, the carrier, the files in order, and the key of the carrier it is composed from (part of the input's identity only).
          * @param {Object} host
          * @returns {Promise<{digest: String, references: String[]}>}
          */
@@ -205,6 +221,10 @@ export async function persistSetupRecord(recordPath, record, host) {
  * - a `reconcile-required` receipt stays so, untouched;
  * - a `failed` receipt, or an `accepted` one for a different input, is a new application;
  * - an effect without a handler records an `operator-action` receipt with the instruction and touches nothing.
+ *
+ * Every receipt written here records `inputKey` ({@link effectInputKey}): the input it speaks for. The
+ * recipe holds an accepted receipt against the key the consents render now; a receipt from before the
+ * key existed carries none and is not compared.
  * @param {Object} options
  * @param {String} options.effectId
  * @param {*}      options.input
@@ -223,6 +243,7 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
 
     const
         inputDigest = effectInputDigest(input),
+        inputKey    = effectInputKey(effectId, input, effects),
         existing    = findReceipt(record, effectId),
         stamp       = () => new Date(host.now()).toISOString();
 
@@ -249,6 +270,7 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
             effectId,
             outcome    : RECEIPT_OUTCOMES.operatorAction,
             inputDigest,
+            inputKey,
             recordedAt : stamp(),
             instruction: effect.describe(input)
         }, next = withReceipt(record, receipt);
@@ -258,7 +280,7 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
         return {record: next, receipt, applied: false};
     }
 
-    let next = withReceipt(record, {effectId, outcome: RECEIPT_OUTCOMES.pending, inputDigest, startedAt: stamp(), ...expectedContent(effect, input)});
+    let next = withReceipt(record, {effectId, outcome: RECEIPT_OUTCOMES.pending, inputDigest, inputKey, startedAt: stamp(), ...expectedContent(effect, input)});
 
     await persistSetupRecord(recordPath, next, host);
 
@@ -271,12 +293,13 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
             effectId,
             outcome   : RECEIPT_OUTCOMES.accepted,
             inputDigest,
+            inputKey,
             acceptedAt: stamp(),
             digest    : result.digest,
             references: result.references
         };
     } catch (error) {
-        receipt = {effectId, outcome: RECEIPT_OUTCOMES.failed, inputDigest, failedAt: stamp(), reason: error?.message ?? String(error)};
+        receipt = {effectId, outcome: RECEIPT_OUTCOMES.failed, inputDigest, inputKey, failedAt: stamp(), reason: error?.message ?? String(error)};
     }
 
     next = withReceipt(next, receipt);
@@ -358,6 +381,7 @@ export async function settleReceipt({effectId, observation, record, recordPath, 
         effectId,
         outcome    : RECEIPT_OUTCOMES.accepted,
         inputDigest: existing.inputDigest,
+        ...(existing.inputKey ? {inputKey: existing.inputKey} : {}),
         acceptedAt : observation.observedAt ?? new Date(host.now()).toISOString(),
         settledBy  : 'observation',
         digest     : observation.digest ?? null,

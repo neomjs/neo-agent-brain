@@ -93,6 +93,31 @@ export function secretFileNames(preset) {
  * @param {Function} [options.random]        Injected for the mint.
  * @returns {{secretFiles: Object[], envEntries: Object, refusals: String[]}} `secretFiles` `[{path, content, role}]`; `envEntries` the `_FILE` values; `refusals` non-empty when an input is missing.
  */
+/**
+ * @summary The env entries a preset's secret files are read through: their paths under the secrets
+ * directory and the container mounts, never a value. The composer writes them beside the files, and the
+ * carrier a run's consents render can be named from them without reading a credential.
+ * @param {Object} options
+ * @param {Object|null} options.preset
+ * @param {String}      options.secretsDir
+ * @returns {Object}
+ */
+export function credentialEnvEntries({preset, secretsDir}) {
+    const entries = {
+        NEO_MCP_AUTH_TOKEN_FILE   : path.join(secretsDir, SECRET_FILES.admissionToken),
+        NEO_FLEET_PLANE_TOKEN_FILE: path.join(secretsDir, SECRET_FILES.fleetPlaneToken)
+    };
+
+    if (requiresProviderKey(preset)) {
+        entries.NEO_GEMINI_API_KEY_FILE            = path.join(secretsDir, SECRET_FILES.geminiApiKey);
+        entries.GEMINI_API_KEY_FILE                = SECRET_MOUNTS.geminiApiKey;
+        // the graph lane reads the same mount: Gemini's OpenAI-compatible endpoint takes the same key
+        entries.NEO_OPENAI_COMPATIBLE_API_KEY_FILE = SECRET_MOUNTS.geminiApiKey;
+    }
+
+    return entries;
+}
+
 export function composeCredentialEffects({preset, pat, providerKey = '', secretsDir, fleetPlaneToken = null, random = randomBytes}) {
     const refusals = [];
 
@@ -125,19 +150,10 @@ export function composeCredentialEffects({preset, pat, providerKey = '', secrets
             {path: admissionPath, content: text(pat), role: 'admissionToken'},
             {path: fleetTokenPath, content: text(fleetPlaneToken) || mintFleetPlaneToken(random), role: 'fleetPlaneToken'}
         ],
-        envEntries      = {
-            NEO_MCP_AUTH_TOKEN_FILE   : admissionPath,
-            NEO_FLEET_PLANE_TOKEN_FILE: fleetTokenPath
-        };
+        envEntries      = credentialEnvEntries({preset, secretsDir});
 
     if (needsProviderKey) {
-        const keyPath = path.join(secretsDir, SECRET_FILES.geminiApiKey);
-
-        secretFiles.push({path: keyPath, content: text(providerKey), role: 'geminiApiKey'});
-        envEntries.NEO_GEMINI_API_KEY_FILE            = keyPath;
-        envEntries.GEMINI_API_KEY_FILE                = SECRET_MOUNTS.geminiApiKey;
-        // the graph lane reads the same mount: Gemini's OpenAI-compatible endpoint takes the same key
-        envEntries.NEO_OPENAI_COMPATIBLE_API_KEY_FILE = SECRET_MOUNTS.geminiApiKey;
+        secretFiles.push({path: path.join(secretsDir, SECRET_FILES.geminiApiKey), content: text(providerKey), role: 'geminiApiKey'});
     }
 
     return {secretFiles, envEntries, refusals: []};

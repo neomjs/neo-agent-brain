@@ -16,14 +16,14 @@
  * preset is checked against arrives as `configSourcePath`, from the entrypoint.
  */
 
-import path                                          from 'node:path';
-import {composeCredentialEffects, presetEnvRefusals} from './credentialStep.mjs';
-import {STEP_KINDS, STEP_STATUSES}                   from './firstRunRecipe.mjs';
-import {EFFECT_IDS, applyEffect, settleReceipt}      from './hostEffects.mjs';
-import {presets}                                     from './placementPresets.mjs';
-import {createPlaneWitnessClient}                    from './planeWitnessClient.mjs';
-import {RECEIPT_OUTCOMES, findReceipt}               from './setupRunRecord.mjs';
-import {performVerify}                               from './verifyEffect.mjs';
+import path                                                                                 from 'node:path';
+import {composeCredentialEffects, credentialEnvEntries, presetEnvRefusals, secretFileNames} from './credentialStep.mjs';
+import {STEP_KINDS, STEP_STATUSES}                                                          from './firstRunRecipe.mjs';
+import {EFFECT_IDS, applyEffect, effectInputKey, settleReceipt}                             from './hostEffects.mjs';
+import {presets}                                                                            from './placementPresets.mjs';
+import {createPlaneWitnessClient}                                                           from './planeWitnessClient.mjs';
+import {RECEIPT_OUTCOMES, findConsent, findReceipt}                                         from './setupRunRecord.mjs';
+import {performVerify}                                                                      from './verifyEffect.mjs';
 
 /**
  * The order the effects run in, whichever renderer runs them. The recipe lists them in another order.
@@ -45,6 +45,53 @@ export const VERIFY_GATES = Object.freeze(['served-plane', 'validation']);
  * @type {String[]}
  */
 const HOST_FILE_EFFECTS = Object.freeze(EFFECT_ORDER.slice(0, EFFECT_ORDER.indexOf(EFFECT_IDS.composeUp)));
+
+/**
+ * @summary What the run's CURRENT consents decide for each host effect, read without a credential: the
+ * carrier and the composition as `performEffects` applies them, and the key of every host effect's input
+ * (`effectInputKey`). An accepted receipt proves the key it recorded; the recipe's observers report these,
+ * so a consent that renders another input turns its effect `pending` again (bootstrap-record decision
+ * §2.6). The composition's input holds the carrier's key: another carrier is another composition.
+ * @param {Object} options
+ * @param {Object|null} options.record
+ * @param {Object}      options.layout `{envFile, secretsDir, composeDir, composeFiles, composeProject}`.
+ * @param {Object}      options.target `{planeId, dataRoot}`.
+ * @returns {{carrier: Object, composition: Object, keys: Object}|null} `null` before a preset is consented.
+ */
+export function consentedInputs({record, layout, target}) {
+    const preset = presets.find(row => row.id === (record ? findConsent(record, 'preset')?.answer : null));
+
+    if (!preset) {
+        return null;
+    }
+
+    const
+        carrier     = {path: layout.envFile, entries: {...preset.env, ...credentialEnvEntries({preset, secretsDir: layout.secretsDir}), NEO_PLANE_ID: target.planeId, NEO_PLANE_DATA_ROOT: target.dataRoot}},
+        carrierKey  = effectInputKey(EFFECT_IDS.writeEnv, carrier),
+        composition = {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles, carrier: carrierKey};
+
+    return {
+        carrier,
+        composition,
+        keys: {
+            [EFFECT_IDS.writeEnv]    : carrierKey,
+            [EFFECT_IDS.writeSecrets]: effectInputKey(EFFECT_IDS.writeSecrets, {files: secretFileNames(preset).map(name => ({path: path.join(layout.secretsDir, name)}))}),
+            [EFFECT_IDS.composeUp]   : effectInputKey(EFFECT_IDS.composeUp, composition)
+        }
+    };
+}
+
+/**
+ * @summary The key of the composition a witness follows: the accepted `compose-up` receipt's, or `null`
+ * when this run composed nothing (an attached plane) or its receipt predates input keys.
+ * @param {Object|null} record
+ * @returns {String|null}
+ */
+export function compositionKey(record) {
+    const receipt = record ? findReceipt(record, EFFECT_IDS.composeUp) : null;
+
+    return receipt?.outcome === RECEIPT_OUTCOMES.accepted ? receipt.inputKey ?? null : null;
+}
 
 /**
  * @summary The credential step and the effects after it. The preset's env set is refused BEFORE any write
@@ -132,11 +179,13 @@ export async function performEffects({record, recordPath, host, layout, target, 
         return record;
     }
 
-    const inputs = {
-        [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
-        [EFFECT_IDS.writeEnv]    : {path: layout.envFile, entries: {...preset.env, ...credentials.envEntries, NEO_PLANE_ID: target.planeId, NEO_PLANE_DATA_ROOT: target.dataRoot}},
-        [EFFECT_IDS.composeUp]   : {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles}
-    };
+    const
+        consented = consentedInputs({record, layout, target}),
+        inputs    = {
+            [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
+            [EFFECT_IDS.writeEnv]    : consented.carrier,
+            [EFFECT_IDS.composeUp]   : consented.composition
+        };
 
     let current = record;
 
@@ -232,7 +281,7 @@ async function runVerify({record, recordPath, host, target, evaluation, report, 
     const plane = createPlaneClient({endpoint: target.endpoint, credential: (await host.fsModule.readFile(patPath, 'utf8')).trim()});
 
     try {
-        const result = await performVerify({record, recordPath, host, target, plane, newAttempt});
+        const result = await performVerify({record, recordPath, host, target, plane, newAttempt, composition: compositionKey(record)});
 
         if (result.receipt && result.receipt.outcome !== RECEIPT_OUTCOMES.accepted) {
             report(`'verify' is ${result.receipt.outcome}: ${result.receipt.reason}`);
