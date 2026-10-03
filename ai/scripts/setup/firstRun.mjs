@@ -337,7 +337,10 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     let record = read.record;
 
     if (read.problem) {
-        stderr.write(`record ${recordPath} is ${read.problem}; starting fresh\n`);
+        // a receipt in a record that cannot be read may guard an effect that already ran: nothing runs over it
+        stderr.write(`record ${recordPath} is ${read.problem}: refusing to run over it — move the file away, or name another --run-id\n`);
+
+        return 1;
     }
 
     if (!record) {

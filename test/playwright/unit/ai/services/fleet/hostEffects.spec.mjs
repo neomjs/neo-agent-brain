@@ -104,6 +104,37 @@ test.describe('hostEffects', () => {
         await expect(settleReceipt({effectId: EFFECT_IDS.writeEnv, observation: {status: 'ok', matchesTarget: true}, record: settled.record, recordPath, host})).rejects.toThrow(/holds no pending or reconcile-required receipt/);
     });
 
+    test('the pending receipt carries the digest of the content the handler is about to write where the effect declares one, and an interrupted receipt keeps it', async () => {
+        const
+            {recordPath, host, record} = await scratch(),
+            input   = {path: path.join(path.dirname(recordPath), 'plane.env'), entries: {NEO_PLANE_ID: 'plane-a'}},
+            seen    = [],
+            // each handler reads the receipt the pending write left on disk
+            reading = (effectId, digest) => ({...hostEffectHandlers[effectId], handler: async () => { seen.push(findReceipt((await readSetupRecord(recordPath, {fsModule: fs})).record, effectId)); return {digest, references: []} }}),
+            effects = {[EFFECT_IDS.writeEnv]: reading(EFFECT_IDS.writeEnv, 'x'), [EFFECT_IDS.writeSecrets]: reading(EFFECT_IDS.writeSecrets, 'y')};
+
+        await persistSetupRecord(recordPath, record, host);
+
+        const env = await applyEffect({effectId: EFFECT_IDS.writeEnv, input, record, recordPath, host, effects});
+
+        await applyEffect({effectId: EFFECT_IDS.writeSecrets, input: {files: [{path: path.join(path.dirname(recordPath), 'token'), content: 's'}]}, record: env.record, recordPath, host, effects});
+
+        expect(seen[0]).toEqual({effectId: 'write-env', outcome: RECEIPT_OUTCOMES.pending, inputDigest: effectInputDigest(input), startedAt: new Date(NOW).toISOString(), expectedDigest: contentDigest(renderEnvFile(input.entries))});
+        expect(seen[1], 'a secret\'s content is never an expectation').not.toHaveProperty('expectedDigest');
+        expect(env.receipt, 'the accepted receipt carries the handler\'s own digest').not.toHaveProperty('expectedDigest');
+
+        // an interrupted application keeps its expectation through the resume
+        const resumed = await applyEffect({effectId: EFFECT_IDS.writeEnv, input, record: withReceipt(record, seen[0]), recordPath, host, effects});
+
+        expect(resumed.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.reconcileRequired, expectedDigest: seen[0].expectedDigest});
+
+        // an input the carrier cannot render records no expectation; the handler fails on it and the receipt says why
+        const bad = await applyEffect({effectId: EFFECT_IDS.writeEnv, input: {path: input.path, entries: {'not an env name': 'x'}}, record, recordPath, host});
+
+        expect(bad.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.failed, reason: expect.stringMatching(/is not an env name/)});
+        expect(bad.receipt).not.toHaveProperty('expectedDigest')
+    });
+
     test('settleReceipt owns the pending → reconcile-required transition: a non-matching observation persists it without running any handler, a matching one settles a pending receipt directly', async () => {
         const
             {recordPath, host, record} = await scratch(),

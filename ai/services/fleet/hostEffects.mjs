@@ -97,13 +97,16 @@ async function writeOwnerOnly(filePath, content, host) {
 
 /**
  * The v1 handlers. Each is `{id, describe(input), handler(input, host) | null}`; a `null` handler is an
- * operator action by construction (`applyEffect` records the instruction and touches nothing).
+ * operator action by construction (`applyEffect` records the instruction and touches nothing). An effect
+ * whose result is one file its input fully determines also declares `expects(input)`: the digest of the
+ * content its handler writes, so an interrupted application can be matched against what the host shows.
  * @type {Object}
  */
 export const hostEffectHandlers = Object.freeze({
     [EFFECT_IDS.writeEnv]: Object.freeze({
         id      : EFFECT_IDS.writeEnv,
         describe: input => `write the plane's env carrier at ${input?.path}`,
+        expects : input => contentDigest(renderEnvFile(input?.entries)),
         /**
          * @param {Object} input `{path, entries}` — the carrier path and the preset's env set plus the plane's own bindings.
          * @param {Object} host
@@ -252,7 +255,7 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
         return {record: next, receipt, applied: false};
     }
 
-    let next = withReceipt(record, {effectId, outcome: RECEIPT_OUTCOMES.pending, inputDigest, startedAt: stamp()});
+    let next = withReceipt(record, {effectId, outcome: RECEIPT_OUTCOMES.pending, inputDigest, startedAt: stamp(), ...expectedContent(effect, input)});
 
     await persistSetupRecord(recordPath, next, host);
 
@@ -277,6 +280,22 @@ export async function applyEffect({effectId, input, record, recordPath, host, ef
     await persistSetupRecord(recordPath, next, host);
 
     return {record: next, receipt, applied: receipt.outcome === RECEIPT_OUTCOMES.accepted};
+}
+
+/**
+ * @summary What a `pending` receipt records beside its input: the digest of the content the handler is
+ * about to write, for an effect that declares it. An input the effect cannot render records nothing —
+ * the handler then fails on the same input and the receipt says why.
+ * @param {Object} effect
+ * @param {*}      input
+ * @returns {{expectedDigest: String}|{}}
+ */
+function expectedContent(effect, input) {
+    try {
+        return effect.expects ? {expectedDigest: effect.expects(input)} : {};
+    } catch {
+        return {};
+    }
 }
 
 /**
