@@ -111,6 +111,21 @@ test.describe('openWorkReducer — transitions, never a holder-only diff (#760)'
         expect(normalizePullRequest(ghost, identities)).toMatchObject({reviews: [], requestsComplete: true, partial: true})
     });
 
+    test('a head with a check suite awaiting a maintainer\'s approval is awaiting approval; any other conclusion is not', () => {
+        const withSuites = conclusions => {
+            const item = node({rollup: null});
+
+            item.commits.nodes[0].commit.checkSuites = {nodes: conclusions.map(conclusion => ({conclusion}))};
+
+            return normalizePullRequest(item, identities).awaitingApproval
+        };
+
+        expect(withSuites(['ACTION_REQUIRED'])).toBe(true);
+        expect(withSuites(['SUCCESS', 'ACTION_REQUIRED'])).toBe(true);
+        expect(withSuites(['SUCCESS', null])).toBe(false);
+        expect(normalizePullRequest(node(), identities).awaitingApproval).toBe(false)
+    });
+
     test('a PR opened after the baseline is an opened transition with the reviews already requested on it, and every observed row carries its pulse', () => {
         const {transitions, states} = run([[node()], [node(), node({number: 8})]]);
 

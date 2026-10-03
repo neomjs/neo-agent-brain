@@ -450,6 +450,15 @@ class ConfigBase extends ConfigProvider {
                  */
                 bearerHandshake: leaf(false, 'NEO_FLEET_BEARER_HANDSHAKE', 'boolean'),
                 /**
+                 * Sends the open-work producer's holder-change wakes: after each pulse, a seat that
+                 * newly holds a pull request's next action gets one task-bearing message from the
+                 * viewer the plane verified at boot. Default OFF, and plane mode only. Switched on,
+                 * a round still stays quiet (it records who holds what and wakes no one) until the
+                 * producer's retained day passes the switch-on bounds.
+                 * @type {boolean}
+                 */
+                openWorkWakes  : leaf(false, 'NEO_FLEET_OPEN_WORK_WAKES', 'boolean'),
+                /**
                  * Exact origins the Fleet Manager cockpit may call browser-facing Agent OS HTTP
                  * transports from. The legacy local Fleet bridge and the composed KB/MC/Fleet CORS
                  * boundary consume the same resolved array. CSV-typed: the env form is a
