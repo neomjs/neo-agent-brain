@@ -24,19 +24,22 @@ import {
     findReceipt,
     serializeSetupRecord,
     withConsent,
-    withReceipt
+    withReceipt,
+    withVerification
 } from './setupRunRecord.mjs';
 
 const execFileAsync = promisify(execFile);
 
 /**
- * The v1 effects, in recipe order.
+ * The v1 effects, in recipe order. `verify` has no handler here: it is performed through the served plane
+ * by `verifyEffect.mjs`, which persists its sub-step receipts through {@link recordVerification}.
  * @type {Object}
  */
 export const EFFECT_IDS = Object.freeze({
     writeEnv    : 'write-env',
     writeSecrets: 'write-secrets',
-    composeUp   : 'compose-up'
+    composeUp   : 'compose-up',
+    verify      : 'verify'
 });
 
 /**
@@ -364,6 +367,27 @@ export async function settleReceipt({effectId, observation, record, recordPath, 
     await persistSetupRecord(recordPath, next, host);
 
     return {record: next, receipt, settled: true, reason: null};
+}
+
+/**
+ * @summary Writes the run's `verification` section and the `verify` receipt that summarizes it in ONE
+ * write — the witness effect's sub-step receipts land as each is accepted, so an interruption keeps what
+ * the plane already answered and a resume never writes the witness again (bootstrap-record decision §3).
+ * Same writer, same file, same owner-only atomic path as every other receipt.
+ * @param {Object} options
+ * @param {Object} options.record
+ * @param {String} options.recordPath
+ * @param {Object} options.host From {@link createHost}.
+ * @param {Object} options.verification The section as the effect holds it now.
+ * @param {Object} options.receipt The `verify` receipt (`{effectId: 'verify', outcome, …}`).
+ * @returns {Promise<{record: Object}>}
+ */
+export async function recordVerification({record, recordPath, host, verification, receipt}) {
+    const next = withReceipt(withVerification(record, verification), receipt);
+
+    await persistSetupRecord(recordPath, next, host);
+
+    return {record: next};
 }
 
 /**

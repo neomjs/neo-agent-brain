@@ -26,8 +26,10 @@ import {fileURLToPath} from 'node:url';
 import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../services/fleet/firstRunRecipe.mjs';
 import {secretFileNames}                                                                      from '../../services/fleet/credentialStep.mjs';
 import {admitCredentialReference, createHost, persistSetupRecord, recordConsent}              from '../../services/fleet/hostEffects.mjs';
+import {PLANE_MEMORY_CORE_PATH}                                                               from '../../services/fleet/mcpWireParsing.mjs';
 import {presets}                                                                              from '../../services/fleet/placementPresets.mjs';
 import {createDefaultReaders, probePlacement}                                                 from '../../services/fleet/probePlacement.mjs';
+import {probeValidation}                                                                      from '../../services/fleet/providerValidation.mjs';
 import {
     RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, findConsent, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath
 } from '../../services/fleet/setupRunRecord.mjs';
@@ -39,9 +41,10 @@ const
     COMPOSE_PROJECT = 'neo-local-agent-os',
     COMPOSE_FILES   = ['docker-compose.yml', 'docker-compose.local-agent-os.yml'],
     USAGE           = `usage: node ai/scripts/setup/firstRun.mjs [--json] [--setup-root <dir>] [--state-root <dir>] [--run-id <uuid>]
-       [--plane-id <id>] [--data-root <path>] [--endpoint <url>] [--fake-host <file>] [--help]
+       [--plane-id <id>] [--data-root <path>] [--endpoint <url>] [--fake-host <file>] [--new-attempt] [--help]
 
   Evaluates the first-run recipe live, asks the pending questions, performs the effects, re-evaluates.
+  --new-attempt consents to writing the first-run witness again (a duplicate row on the plane is possible).
   Exit code: 0 when the terminal step reads ok · 1 when a step failed or needs reconciling · 2 while pending.
 `;
 
@@ -60,10 +63,11 @@ export function parseArgs(argv, env = process.env) {
             stateRoot,
             setupRoot: env.NEO_HOST_SETUP_RECORD_ROOT || path.join(stateRoot, 'setup'),
             runId    : null,
-            planeId  : null,
-            dataRoot : null,
-            endpoint : 'http://127.0.0.1:3102',
-            fakeHost : null
+            planeId   : null,
+            dataRoot  : null,
+            endpoint  : 'http://127.0.0.1:3102',
+            fakeHost  : null,
+            newAttempt: false
         },
         valued    = {'--setup-root': 'setupRoot', '--state-root': 'stateRoot', '--run-id': 'runId', '--plane-id': 'planeId', '--data-root': 'dataRoot', '--endpoint': 'endpoint', '--fake-host': 'fakeHost'};
 
@@ -74,6 +78,8 @@ export function parseArgs(argv, env = process.env) {
             options.json = true;
         } else if (flag === '--help' || flag === '-h') {
             options.help = true;
+        } else if (flag === '--new-attempt') {
+            options.newAttempt = true;
         } else if (valued[flag]) {
             const value = argv[++index];
 
@@ -116,32 +122,37 @@ async function digestOfFile(fsModule, filePath) {
     }
 }
 
-/**
- * The Memory Core's route below a plane endpoint — the one every plane client composes (the ingress
- * routes `/mc/*` to it and answers 404 elsewhere).
- * @type {String}
- */
-export const PLANE_MEMORY_CORE_PATH = '/mc/mcp';
+export {PLANE_MEMORY_CORE_PATH};
 
 /**
  * @summary The production observers over the host layout: the placement probe, the carrier by digest, the
  * secret files as the consented preset's whole set and by mode, the compose project, the served plane's
- * identity through the MCP healthcheck.
- * `validation` and `done` are not observed yet — the recipe reports them `unknown`, never green.
+ * identity through the MCP healthcheck, the provider round trip, and the run's own witness.
  *
  * `servedPlane` asks the plane the way its clients do: the Memory Core route below the endpoint, the
  * consented plane credential as the bearer (read from the file the record references at call time — the
  * token lives in the request only, never in a log or the record), and the plane block as observed, asserted
  * against nothing: the recipe compares identity and root itself, so a wrong plane reads `failed` there. Before
  * the credential consent no bearer is sent; the plane's refusal is then the observer's reason (`unknown`).
+ *
+ * `validation` is a FRESH observation at every evaluation (`providerValidation.mjs`): one chat completion
+ * and one embedding with the consented preset's env and the operator's key file; it reads no receipt. Its
+ * bound: the supplied configuration answers from this host — the plane's own route is proven by `verify`,
+ * through the plane. The recipe asks it only behind a served-plane row that is `ok` in the same evaluation.
+ *
+ * `verification` and `done` read the record's `verification` section — the plane's answers to THIS run's
+ * witness, historical by construction: `done` turns `ok` only when the recipe finds `served-plane` and
+ * `validation` fresh and `ok` beside it (bootstrap-record decision §3); without a section for this run it is
+ * `unknown`, with a recorded refusal `failed`.
  * @param {Object} options
  * @param {Object} options.layout
  * @param {Object} options.host
  * @param {Function} [options.probe=probePlacement]
  * @param {Function} [options.healthcheck=runHealthcheck]
+ * @param {Function} [options.validate=probeValidation] `({preset, providerKey}) → {provider, embedding}`.
  * @returns {Object}
  */
-export function productionObservers({layout, host, probe = probePlacement, healthcheck = runHealthcheck}) {
+export function productionObservers({layout, host, probe = probePlacement, healthcheck = runHealthcheck, validate = probeValidation}) {
     let probed = null;
 
     const placement = async () => {
@@ -150,11 +161,27 @@ export function productionObservers({layout, host, probe = probePlacement, healt
         return probed;
     };
 
-    const consentedCredential = async record => {
-        const credentialPath = record ? findConsent(record, 'plane-credential')?.answer : null;
+    const consentedFile = async (record, stepId) => {
+        const filePath = record ? findConsent(record, stepId)?.answer : null;
 
-        return typeof credentialPath === 'string' ? (await host.fsModule.readFile(credentialPath, 'utf8')).trim() || null : null;
+        return typeof filePath === 'string' ? (await host.fsModule.readFile(filePath, 'utf8')).trim() || null : null;
     };
+
+    const witnessOf = record => {
+        const section = record?.verification;
+
+        if (!section) {
+            throw new Error('no witness for this run yet: the verify effect has not run');
+        }
+
+        return section;
+    };
+
+    // the plane's own reason for a witness that cannot proceed: a refused write settles the attempt, a refused
+    // read-only sub-step (readback, recall) is recorded on the section until a resume lands it
+    const witnessRefusal = section => section?.attempt?.refused
+        ? `the plane refused the witness write at ${section.attempt.refused.at}: ${section.attempt.refused.reason}`
+        : section?.failure ? `the plane refused the ${section.failure.step} at ${section.failure.at}: ${section.failure.reason}` : null;
 
     return {
         placement,
@@ -194,12 +221,47 @@ export function productionObservers({layout, host, probe = probePlacement, healt
             const health = await healthcheck({
                 url              : target.endpoint,
                 mcpPath          : PLANE_MEMORY_CORE_PATH,
-                bearerToken      : await consentedCredential(record),
+                bearerToken      : await consentedFile(record, 'plane-credential'),
                 expectedStatus   : 'healthy,degraded',
                 reportServedPlane: true
             });
 
-            return health?.plane ?? null;
+            // identity AND the plane's own health word: a matching plane while `degraded` is identified, not ready
+            // (bootstrap-record decision §2.5) — the recipe gates validation and completion on the status
+            return health?.plane ? {...health.plane, status: health.status} : null;
+        },
+        validation : async (target, {record = null} = {}) => {
+            const preset = presets.find(row => row.id === (record ? findConsent(record, 'preset')?.answer : null));
+
+            if (!preset) {
+                throw new Error('no preset consented: nothing to validate with');
+            }
+
+            return validate({preset, providerKey: (await consentedFile(record, 'provider-key')) ?? ''});
+        },
+        verification: async (target, {record = null} = {}) => {
+            const section = record?.verification;
+
+            // the effect step's observation beside its receipt: a refused attempt, or a refused read-only sub-step
+            // the section recorded, is a present, failed result with the plane's reason (the card's next action
+            // is re-check or an explicit new attempt); an incomplete one is not performed yet
+            const refusal = witnessRefusal(section);
+
+            if (refusal) {
+                return {present: true, digest: null, problem: refusal};
+            }
+
+            return {present: Boolean(section?.memory && section.recall?.hit), digest: null, problem: null, reason: section ? 'the witness has not been written and recalled yet' : 'the verify effect has not run'};
+        },
+        done        : async (target, {record = null} = {}) => {
+            const section = witnessOf(record);
+
+            return {
+                persisted    : Boolean(section.memory?.id),
+                queryAnswered: section.recall?.hit === true,
+                at           : section.memory?.at ?? null,
+                reason       : witnessRefusal(section)
+            };
         }
     };
 }
@@ -405,7 +467,14 @@ export async function main(argv = process.argv.slice(2), io = {}) {
     record     = await settlePending({record, recordPath, host, evaluation});
     // performing reads the settled state: a settled effect is skipped as ok, an unsettled one halts the run
     evaluation = await evaluate();
-    record     = await performEffects({record, recordPath, host, layout, target, evaluation, report: line => stderr.write(`${line}\n`), configSourcePath: path.join(brainRoot, 'ai/configBase.mjs')});
+    record     = await performEffects({
+        record, recordPath, host, layout, target, evaluation,
+        report          : line => stderr.write(`${line}\n`),
+        configSourcePath: path.join(brainRoot, 'ai/configBase.mjs'),
+        newAttempt      : options.newAttempt,
+        // a fake host has no plane to witness through: the fixture's `done` observer stands in for the terminal read
+        ...(options.fakeHost ? {createPlaneClient: null} : {})
+    });
     evaluation = await evaluate();
 
     stdout.write(options.json || !interactive ? `${JSON.stringify({runId, recordPath, ...evaluation}, null, 2)}\n` : renderText(evaluation));

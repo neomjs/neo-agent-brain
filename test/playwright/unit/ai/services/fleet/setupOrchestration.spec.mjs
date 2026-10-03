@@ -116,7 +116,7 @@ test.describe('setupOrchestration', () => {
             run      = await consentedRun(),
             {record} = await perform(run, {evaluation: await evaluate(run.record)});
 
-        expect(EFFECT_ORDER).toEqual([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp]);
+        expect(EFFECT_ORDER).toEqual([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp, EFFECT_IDS.verify]);
         expect(receipts(record)).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted']]);
         expect(run.calls.map(call => [call.command, call.args[0], call.cwd])).toEqual([['docker', 'compose', run.layout.composeDir]]);
         expect(await fs.readFile(run.layout.envFile, 'utf8')).toContain('NEO_PLANE_ID=plane-a\n')
@@ -162,7 +162,7 @@ test.describe('setupOrchestration', () => {
         expect(empty.record).toBe(run.record);
         expect(empty.reports).toEqual([]);
         expect(unknown.record).toBe(run.record);
-        expect(unknown.reports).toEqual(["unknown effect 'deploy': the effects are write-secrets, write-env, compose-up"]);
+        expect(unknown.reports).toEqual(["unknown effect 'deploy': the effects are write-secrets, write-env, compose-up, verify"]);
         expect(run.reads).toEqual([]);
         expect(run.calls).toEqual([])
     });
@@ -312,5 +312,88 @@ test.describe('setupOrchestration', () => {
         const source = await fs.readFile(MODULE_SOURCE, 'utf8');
 
         expect(source).not.toMatch(/AiConfig|config\.mjs'|process\.env|import\.meta\.url/)
-    })
+    });
+
+    test('verify runs last, only behind a fresh served-plane AND validation, through a plane client built from the target endpoint and the consented credential; it is resumed, never halted on, and every reason it did not reach ok is reported', async () => {
+        const
+            run       = await consentedRun(),
+            observed  = {[EFFECT_IDS.writeSecrets]: true, [EFFECT_IDS.writeEnv]: true, [EFFECT_IDS.composeUp]: true},
+            planes    = [],
+            witness   = scripted => ({endpoint, credential}) => {
+                const plane = {endpoint, credential, calls: [], closed: 0, ...scripted};
+
+                planes.push(plane);
+
+                return plane;
+            },
+            // the plane echoes what was written: the rows it answers carry the attempt's own marker
+            green     = witness({
+                addMemory  : async function(content) { this.written = content.prompt; return {id: 'mem-1', sessionId: 's', timestamp: 't'} },
+                recentTurns: async function() { return {count: 1, turns: [{id: 'mem-1', prompt: this.written}], nextCursor: null} },
+                recall     : async function() { return {count: 1, results: [{id: 'mem-1', prompt: this.written}]} },
+                close      : async function() { this.closed++ }
+            }),
+            evaluateWith = (record, validation) => evaluateRecipe({target, record, presets, now: () => NOW, observers: {
+                secretFiles : async () => ({present: true, digest: null}),
+                envCarrier  : async () => ({present: true, digest: null}),
+                runningPlane: async () => ({present: true, digest: null}),
+                servedPlane : async () => ({id: target.planeId, dataRoot: target.dataRoot}),
+                // the production observer's read of the record's section, through the recipe's `{record}` argument
+                verification: async (_, {record: bound}) => ({present: bound?.verification?.recall?.hit === true, digest: null, problem: null, reason: 'not yet'}),
+                ...(validation ? {validation: async () => ({provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 1024}})} : {})
+            }});
+
+        // the gate: with validation unknown the witness is not written, and the run says why
+        const gated = await perform(run, {evaluation: await evaluateWith(run.record, false), createPlaneClient: green});
+
+        expect(gated.record).toBe(run.record);
+        expect(gated.reports).toEqual(["'verify' waits: validation is unknown (no 'validation' observer); the witness is written only through the validated target plane"]);
+        expect(planes).toEqual([]);
+
+        // a renderer without a plane (the fake host) is told, not failed
+        const noPlane = await perform(run, {evaluation: await evaluateWith(run.record, true), createPlaneClient: null});
+
+        expect(noPlane.record).toBe(run.record);
+        expect(noPlane.reports).toEqual(["'verify' was not run: this renderer supplies no plane client"]);
+
+        // gates open: the client is built from the target endpoint and the consented credential file's content, the witness lands, the client is closed
+        const done = await perform(run, {evaluation: await evaluateWith(run.record, true), createPlaneClient: green});
+
+        expect(planes).toHaveLength(1);
+        expect(planes[0]).toMatchObject({endpoint: target.endpoint, credential: PAT, closed: 1});
+        expect(findReceipt(done.record, EFFECT_IDS.verify)).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted});
+        expect(done.record.verification).toMatchObject({planeId: 'plane-a', memory: {id: 'mem-1'}, recall: {hit: true}});
+        expect(done.reports).toEqual([]);
+        expect(run.calls).toEqual([]);
+
+        // an accepted witness is skipped as ok; the explicit new-attempt consent runs it again
+        const again = await perform(run, {record: done.record, evaluation: await evaluateWith(done.record, true), createPlaneClient: green});
+
+        expect(again.record).toBe(done.record);
+        expect(planes).toHaveLength(1);
+
+        const consented = await perform(run, {record: done.record, evaluation: await evaluateWith(done.record, true), createPlaneClient: green, newAttempt: true});
+
+        expect(planes).toHaveLength(2);
+        expect(consented.record.verification.priorAttempts).toHaveLength(1);
+
+        // a pending resumable witness is RESUMED through performEffects (read-only), not halted on; its reason is reported
+        const slow = witness({
+            addMemory  : async function(content) { this.written = content.prompt; return {id: 'mem-2', sessionId: 's', timestamp: 't'} },
+            recentTurns: async function() { return {count: 1, turns: [{id: 'mem-2', prompt: this.written}], nextCursor: null} },
+            recall     : async () => ({count: 0, results: []}),
+            close      : async function() { this.closed++ }
+        });
+        const fresh   = await consentedRun();
+        const partial = await perform(fresh, {evaluation: await evaluateWith(fresh.record, true), createPlaneClient: slow});
+
+        expect(findReceipt(partial.record, EFFECT_IDS.verify)).toMatchObject({outcome: RECEIPT_OUTCOMES.pending, resumable: true});
+        expect(partial.reports).toEqual([`'verify' is pending: ${findReceipt(partial.record, EFFECT_IDS.verify).reason}`]);
+
+        const resumed = await perform(fresh, {record: partial.record, evaluation: await evaluateWith(partial.record, true), createPlaneClient: slow});
+
+        expect(planes.filter(plane => plane.calls !== undefined)).toHaveLength(4);
+        expect(findReceipt(resumed.record, EFFECT_IDS.verify)).toMatchObject({outcome: RECEIPT_OUTCOMES.pending, resumable: true});
+        expect(resumed.record.verification.attempt.marker).toBe(partial.record.verification.attempt.marker);
+    });
 });
