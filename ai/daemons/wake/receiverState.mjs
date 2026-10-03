@@ -14,7 +14,14 @@ import path   from 'node:path';
 
 const RECORD_FILE_SUFFIX = '.json';
 const REPLAYABLE_STATE   = 'pending';
-const TERMINAL_STATES    = new Set(['delivered', 'skipped', 'failed', 'unknown']);
+
+/**
+ * @summary The states a record never leaves. `transition()` refuses a terminal expected state, so a
+ * terminal record's file is final, and the Memory Core's wake delivery reader holds it by file name
+ * instead of re-reading it on every call.
+ * @type {Set<String>}
+ */
+export const TERMINAL_STATES = new Set(['delivered', 'skipped', 'failed', 'unknown']);
 
 /**
  * @summary Builds a filesystem-safe stable key from the subscription plus canonical source ids.
@@ -167,6 +174,10 @@ export class WakeReceiverState {
     async transition(recordKey, expectedState, nextState, details = {}) {
         if (!['dispatching', REPLAYABLE_STATE].includes(nextState) && !TERMINAL_STATES.has(nextState)) {
             throw new Error(`Unsupported receiver state transition target '${nextState}'`);
+        }
+
+        if (TERMINAL_STATES.has(expectedState)) {
+            throw new Error(`A '${expectedState}' record is final and cannot transition`);
         }
 
         const current = await this.read(recordKey);

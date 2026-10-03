@@ -85,6 +85,17 @@ test.describe('ai/daemons/wake/receiverState', () => {
         expect((await state.read(accepted.record.recordKey)).state).toBe('delivered');
     });
 
+    test('a terminal record is final: no transition starts from a terminal state', async () => {
+        // The Memory Core's wake delivery reader holds terminal records by file name and never
+        // re-reads them, so a rewrite of one would go unseen. The refusal keeps that hold honest.
+        const accepted = await accept();
+        await state.transition(accepted.record.recordKey, 'pending', 'dispatching');
+        await state.transition(accepted.record.recordKey, 'dispatching', 'failed');
+
+        await expect(state.transition(accepted.record.recordKey, 'failed', 'pending')).rejects.toThrow("A 'failed' record is final");
+        expect((await state.read(accepted.record.recordKey)).state).toBe('failed');
+    });
+
     test('dispatching returns to pending on a context-gate deferral (#16682), keeping the wake replayable', async () => {
         const accepted = await accept();
         await state.transition(accepted.record.recordKey, 'pending', 'dispatching');
