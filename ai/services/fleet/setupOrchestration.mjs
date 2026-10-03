@@ -42,7 +42,7 @@ const HOST_FILE_EFFECTS = Object.freeze(EFFECT_ORDER.slice(0, EFFECT_ORDER.index
  * the carrier and the record carry paths, never a value. The effects then run in
  * {@link EFFECT_ORDER}: one observed `ok` is skipped, and one `reconcile-required` or not accepted halts the
  * run — an unsettled effect is never replayed, nothing is performed on top of it, and the halt is reported
- * with what settles it.
+ * with the reason it is unsettled.
  *
  * `effectIds` lets a renderer run some effects only, without changing that order: an effect left out that is
  * not `ok` yet halts the run before anything after it, so a selected effect never runs past an unfinished
@@ -127,7 +127,14 @@ export async function performEffects({record, recordPath, host, layout, target, 
         }
 
         if (stepStatus === STEP_STATUSES.reconcileRequired) {
-            report(`'${effectId}' was interrupted and is not settled, so nothing runs past it: a re-check settles it once ${HOST_FILE_EFFECTS.includes(effectId) ? 'the host shows the result it was writing' : 'the served plane is the target\'s'}`);
+            const reason = unsettledReason({
+                effectId,
+                observed      : evaluation.steps.find(step => step.effectId === effectId)?.observed,
+                expectedDigest: findReceipt(current, effectId)?.expectedDigest,
+                planeMatches  : evaluation.steps.find(step => step.id === 'served-plane')?.status === STEP_STATUSES.ok
+            });
+
+            report(`'${effectId}' was interrupted and is not settled, so nothing runs past it: ${reason ?? 'a re-check settles it'}`);
             break;
         }
 
@@ -167,7 +174,8 @@ function unsettledReason({effectId, observed, expectedDigest, planeMatches}) {
     }
 
     if (!shown) {
-        return 'the result is not observable on the host';
+        // the observation's own words: which file is missing, or what is wrong with the one that is there
+        return observed?.problem ?? observed?.reason ?? 'the result is not observable on the host';
     }
 
     return expectedDigest && observed.digest !== expectedDigest ? 'the file on the host is not the content this run was writing' : null;

@@ -222,6 +222,20 @@ test.describe('setupOrchestration', () => {
         expect(run.calls).toEqual([])
     });
 
+    test('a host-file effect whose result the host shows only in part stays unsettled, and the halt repeats the observation\'s own reason', async () => {
+        const
+            run       = await consentedRun(),
+            partial   = {[EFFECT_IDS.writeSecrets]: {present: false, reason: 'missing under /srv/state/secrets: fleet-plane-token'}},
+            parked    = await interrupted(run, EFFECT_IDS.writeSecrets),
+            unsettled = await settlePending({record: parked, recordPath: run.recordPath, host: run.host, evaluation: await evaluate(parked, partial, COLD)}),
+            halted    = await perform(run, {record: unsettled, evaluation: await evaluate(unsettled, partial, COLD)});
+
+        expect(findReceipt(unsettled, EFFECT_IDS.writeSecrets).outcome).toBe(RECEIPT_OUTCOMES.reconcileRequired);
+        expect(halted.reports).toEqual(['\'write-secrets\' was interrupted and is not settled, so nothing runs past it: missing under /srv/state/secrets: fleet-plane-token']);
+        expect(await exists(run.layout.secretsDir), 'nothing was written').toBe(false);
+        expect(run.calls).toEqual([])
+    });
+
     test('an interrupted carrier write settles only on the content the run was writing; a receipt without that expectation settles on presence', async () => {
         const
             run      = await consentedRun(),
@@ -243,7 +257,7 @@ test.describe('setupOrchestration', () => {
         const halted = await perform(run, {record: other, evaluation: await evaluate(other, carrier(contentDigest('NEO_PLANE_ID=plane-b\n')), COLD), effectIds: [EFFECT_IDS.writeEnv]});
 
         expect(await exists(run.layout.envFile)).toBe(false);
-        expect(halted.reports).toEqual(['\'write-env\' was interrupted and is not settled, so nothing runs past it: a re-check settles it once the host shows the result it was writing']);
+        expect(halted.reports).toEqual(['\'write-env\' was interrupted and is not settled, so nothing runs past it: the file on the host is not the content this run was writing']);
 
         expect(findReceipt(await settle(other, expected), EFFECT_IDS.writeEnv)).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, settledBy: 'observation', digest: expected});
         expect(findReceipt(await settle(await park({}), contentDigest('anything\n')), EFFECT_IDS.writeEnv)).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, settledBy: 'observation'});
@@ -258,7 +272,7 @@ test.describe('setupOrchestration', () => {
             parked    = await interrupted(run, EFFECT_IDS.composeUp),
             unsettled = await settlePending({record: parked, recordPath: run.recordPath, host: run.host, evaluation: await evaluate(parked, shown, stale)}),
             evaluated = await evaluate(unsettled, shown, stale),
-            line      = '\'compose-up\' was interrupted and is not settled, so nothing runs past it: a re-check settles it once the served plane is the target\'s';
+            line      = '\'compose-up\' was interrupted and is not settled, so nothing runs past it: the served plane does not match the target yet, or the result is not observable';
 
         expect((await perform(run, {record: unsettled, evaluation: evaluated})).reports).toEqual([line]);
         expect((await perform(run, {record: unsettled, evaluation: evaluated, effectIds: [EFFECT_IDS.composeUp]})).reports).toEqual([line]);

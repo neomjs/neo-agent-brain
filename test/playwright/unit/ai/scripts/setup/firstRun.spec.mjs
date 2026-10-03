@@ -250,7 +250,7 @@ test.describe('firstRun CLI', () => {
         expect(wrong.code).toBe(1);
         expect(JSON.parse(wrong.stdout).steps.find(step => step.id === 'compose-up')).toMatchObject({status: 'reconcile-required', effectId: 'compose-up', receipt: 'reconcile-required'});
         expect(await receiptOf('compose-up')).toMatchObject({outcome: 'reconcile-required', reason: expect.stringMatching(/may have run before its receipt was written/)});
-        expect(wrong.stderr).toContain('\'compose-up\' was interrupted and is not settled, so nothing runs past it: a re-check settles it once the served plane is the target\'s');
+        expect(wrong.stderr).toContain('\'compose-up\' was interrupted and is not settled, so nothing runs past it: the served plane does not match the target yet, or the result is not observable');
         expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
 
         const settled = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
@@ -278,6 +278,75 @@ test.describe('firstRun CLI', () => {
         expect(JSON.parse(file.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt'});
         expect(await receiptOf('write-env')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
         expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
+    });
+
+    test('an interrupted hosted secret write that left one of its three files stays unsettled and names the missing files; the complete set settles it', async () => {
+        const
+            {root, setupRoot, stateRoot, patPath} = await scratch(),
+            keyPath                               = path.join(root, 'operator', 'gemini-key'),
+            recordPath                            = path.join(setupRoot, `${RUN_ID}.json`),
+            layout                                = hostLayout({stateRoot}),
+            fake                                  = greenFake({patPath}),
+            hosted                                = servedPlane => ({...fake, observers: {...fake.observers, servedPlane, validation: {provider: {ok: true, model: 'gemini-3.8-flash'}, embedding: {ok: true, dimension: 3072}}}, answers: {preset: 'hosted', 'plane-credential': patPath, 'provider-key': keyPath}}),
+            cold                                  = {throw: 'connect ECONNREFUSED 127.0.0.1:3102'},
+            secrets                               = async () => (await fs.readdir(layout.secretsDir)).sort(),
+            stepOf                                = run => JSON.parse(run.stdout).steps.find(step => step.id === 'write-secrets');
+
+        await fs.writeFile(keyPath, 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh\n', {mode: 0o600});
+
+        expect((await runCli({setupRoot, stateRoot, fake: hosted(fake.observers.servedPlane)})).code).toBe(0);
+        expect(await secrets()).toEqual(['fleet-plane-token', 'gemini-api-key', 'mcp-auth-token']);
+
+        // what an interruption after the first of three atomic file writes leaves: one file, the receipt still pending
+        const
+            record = JSON.parse(await fs.readFile(recordPath, 'utf8')),
+            held   = await Promise.all(['fleet-plane-token', 'gemini-api-key'].map(async name => [name, await fs.readFile(path.join(layout.secretsDir, name), 'utf8')]));
+
+        record.receipts = record.receipts.map(receipt => receipt.effectId === 'write-secrets' ? {effectId: 'write-secrets', outcome: 'pending', inputDigest: receipt.inputDigest, startedAt: receipt.acceptedAt} : receipt);
+        await fs.writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+        await Promise.all(held.map(([name]) => fs.rm(path.join(layout.secretsDir, name))));
+
+        const partial = await runCli({setupRoot, stateRoot, fake: hosted(cold)});
+
+        expect(partial.code).toBe(1);
+        expect(stepOf(partial)).toMatchObject({status: 'reconcile-required', receipt: 'reconcile-required'});
+        expect(partial.stderr).toContain(`'write-secrets' was interrupted and is not settled, so nothing runs past it: missing under ${layout.secretsDir}: fleet-plane-token, gemini-api-key`);
+        expect(await secrets(), 'nothing ran over the partial set').toEqual(['mcp-auth-token']);
+
+        // the complete set is the positive control: the same receipt settles by observation
+        await Promise.all(held.map(([name, content]) => fs.writeFile(path.join(layout.secretsDir, name), content, {mode: 0o600})));
+
+        const complete = await runCli({setupRoot, stateRoot, fake: hosted(cold)});
+
+        expect(stepOf(complete)).toMatchObject({status: 'ok'});
+        expect(JSON.parse(await fs.readFile(recordPath, 'utf8')).receipts.find(receipt => receipt.effectId === 'write-secrets')).toMatchObject({outcome: 'accepted', settledBy: 'observation'})
+    });
+
+    test('the secret-file observer reads the consented preset\'s whole set: a partial set is not present and names what is missing, a file readable beyond its owner is a problem', async () => {
+        const
+            {stateRoot} = await scratch(),
+            layout      = hostLayout({stateRoot}),
+            observe     = preset => productionObservers({layout, host: createHost()}).secretFiles({}, {record: preset ? {consents: [{stepId: 'preset', answer: preset}]} : null}),
+            write       = async (name, mode = 0o600) => { await fs.writeFile(path.join(layout.secretsDir, name), 'x'); await fs.chmod(path.join(layout.secretsDir, name), mode) };
+
+        expect(await observe('hosted')).toEqual({present: false, reason: `no secret files under ${layout.secretsDir}`});
+
+        await fs.mkdir(layout.secretsDir, {recursive: true});
+        await write('mcp-auth-token');
+
+        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token, gemini-api-key`});
+        expect(await observe('local-small')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token`});
+
+        await write('fleet-plane-token');
+
+        // a local preset's set is complete; the hosted one still lacks its provider key; without a consent the base set is read
+        expect(await observe('local-small')).toEqual({present: true, digest: null, problem: null});
+        expect(await observe(null)).toEqual({present: true, digest: null, problem: null});
+        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: gemini-api-key`});
+
+        await write('gemini-api-key', 0o644);
+
+        expect(await observe('hosted')).toEqual({present: true, digest: null, problem: 'gemini-api-key is readable beyond its owner'})
     });
 
     test('a record the CLI cannot read is refused by name and left as it is; nothing runs over it', async () => {

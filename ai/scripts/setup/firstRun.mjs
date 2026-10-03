@@ -24,6 +24,7 @@ import readline        from 'node:readline/promises';
 import {fileURLToPath} from 'node:url';
 
 import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../services/fleet/firstRunRecipe.mjs';
+import {secretFileNames}                                                                      from '../../services/fleet/credentialStep.mjs';
 import {admitCredentialReference, createHost, persistSetupRecord, recordConsent}              from '../../services/fleet/hostEffects.mjs';
 import {presets}                                                                              from '../../services/fleet/placementPresets.mjs';
 import {createDefaultReaders, probePlacement}                                                 from '../../services/fleet/probePlacement.mjs';
@@ -123,8 +124,9 @@ async function digestOfFile(fsModule, filePath) {
 export const PLANE_MEMORY_CORE_PATH = '/mc/mcp';
 
 /**
- * @summary The production observers over the host layout: the placement probe, the carrier and secret
- * files by digest and mode, the compose project, the served plane's identity through the MCP healthcheck.
+ * @summary The production observers over the host layout: the placement probe, the carrier by digest, the
+ * secret files as the consented preset's whole set and by mode, the compose project, the served plane's
+ * identity through the MCP healthcheck.
  * `validation` and `done` are not observed yet — the recipe reports them `unknown`, never green.
  *
  * `servedPlane` asks the plane the way its clients do: the Memory Core route below the endpoint, the
@@ -157,11 +159,20 @@ export function productionObservers({layout, host, probe = probePlacement, healt
     return {
         placement,
         envCarrier : () => digestOfFile(host.fsModule, layout.envFile),
-        secretFiles: async () => {
-            const files = await host.fsModule.readdir(layout.secretsDir).catch(error => error?.code === 'ENOENT' ? [] : Promise.reject(error));
+        // present means the WHOLE set the consented preset needs: the files are written one at a time,
+        // so an interrupted write leaves some of them, and "any file" would read that as done
+        secretFiles: async (target, {record = null} = {}) => {
+            const
+                files   = await host.fsModule.readdir(layout.secretsDir).catch(error => error?.code === 'ENOENT' ? [] : Promise.reject(error)),
+                consent = record ? findConsent(record, 'preset')?.answer : null,
+                missing = secretFileNames(presets.find(preset => preset.id === consent) ?? null).filter(name => !files.includes(name));
 
             if (files.length === 0) {
                 return {present: false, reason: `no secret files under ${layout.secretsDir}`};
+            }
+
+            if (missing.length > 0) {
+                return {present: false, reason: `missing under ${layout.secretsDir}: ${missing.join(', ')}`};
             }
 
             for (const file of files) {
