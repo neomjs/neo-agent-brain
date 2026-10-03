@@ -6,7 +6,7 @@ const
     OBSERVED = '2026-10-02T10:00:00.000Z',
     review   = {reviewer: '@neo-gpt', state: 'CHANGES_REQUESTED', onHead: true},
     row      = (number=7, observedAt=OBSERVED) => ({
-        key  : `acme/app#${number}`, repo: 'acme/app', number, head: 'a1', ci: 'red', verdict: 'CHANGES_REQUESTED', mergeable: 'MERGEABLE', draft: false,
+        key  : `acme/app#${number}`, repo: 'acme/app', number, title: 'fix: the head goes green', head: 'a1', ci: 'red', verdict: 'CHANGES_REQUESTED', mergeable: 'MERGEABLE', draft: false,
         owner: {kind: 'seat', seat: '@neo-opus-ada'}, requested: ['@neo-gpt', 'login:outsider', 'team:acme/core'], reviews: [review], observedAt
     }),
     state    = (overrides={}, rows=[row()]) => ({snapshot: {rows: Object.fromEntries(rows.map(item => [item.key, item]))}, observedAt: OBSERVED, coverage: 'complete', reason: null, ...overrides}),
@@ -15,10 +15,10 @@ const
 
 test.describe('fleetOpenWorkSource — each seat\'s open work under the producer\'s own freshness (#760)', () => {
     test('a fresh pulse answers the owner\'s PR and the requested reviewer\'s review; a login or team is no seat', () => {
-        const
-            {state: freshness, seats, unobserved, awaitingMerge} = source(state()).readOpenWork(),
-            summary = {repo: 'acme/app', number: 7, head: 'a1', ci: 'red', verdict: 'CHANGES_REQUESTED', mergeable: 'MERGEABLE', draft: false, reviews: [review], observedAt: OBSERVED, stale: false,
-                holder: {role: 'author', ids: ['@neo-opus-ada']}};
+        const {state: freshness, seats, unobserved, awaitingMerge} = source(state()).readOpenWork();
+
+        const summary = {repo: 'acme/app', number: 7, title: 'fix: the head goes green', head: 'a1', ci: 'red', verdict: 'CHANGES_REQUESTED', mergeable: 'MERGEABLE', draft: false, reviews: [review], observedAt: OBSERVED, stale: false,
+            holder: {role: 'author', ids: ['@neo-opus-ada']}};
 
         expect(freshness).toBe('ok');
         expect(unobserved).toBe(0);
@@ -27,6 +27,12 @@ test.describe('fleetOpenWorkSource — each seat\'s open work under the producer
             '@neo-gpt'     : {authored: [], reviewing: [summary]}
         });
         expect(awaitingMerge).toEqual([])
+    });
+
+    test('a row stored before the snapshot carried titles answers with a null title', () => {
+        const {title, ...untitled} = row();
+
+        expect(source(state({}, [untitled])).readOpenWork().seats['@neo-opus-ada'].authored[0].title).toBeNull()
     });
 
     test('awaitingMerge lists every row the operator holds, whoever owns it; a PR no seat owns is in no seat\'s lists (#779)', () => {

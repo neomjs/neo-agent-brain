@@ -16,9 +16,10 @@ const identities = {
  * @returns {Object}
  */
 function node({number=7, head='a1', rollup='SUCCESS', verdict='REVIEW_REQUIRED', reviewers=['neo-gpt'], partial=false, requests=true, reviews=[],
-               body='Authored by Ada (Claude Opus 5, Claude Code).', login='neo-opus-ada'}={}) {
+               body='Authored by Ada (Claude Opus 5, Claude Code).', login='neo-opus-ada', title}={}) {
     return {
         number,
+        ...(title === undefined ? {} : {title}),
         headRefOid    : head,
         reviewDecision: verdict,
         mergeable     : 'MERGEABLE',
@@ -56,6 +57,16 @@ function run(pulses) {
 
     return {transitions: states.map(state => state.transitions), states}
 }
+
+test.describe('openWorkReducer — a row names its pull request by title', () => {
+    test('the title is carried with its whitespace collapsed, a missing or blank one is null, and a retitled PR is no transition', () => {
+        expect(normalizePullRequest(node({title: '  fix:\n the  head\tgoes green  '}), identities).title).toBe('fix: the head goes green');
+        expect(normalizePullRequest(node(), identities).title).toBeNull();
+        expect(normalizePullRequest(node({title: ' \n '}), identities).title).toBeNull();
+
+        expect(run([[node({title: 'first words'})], [node({title: 'second words'})]]).transitions[1]).toEqual([])
+    })
+});
 
 test.describe('openWorkReducer — transitions, never a holder-only diff (#760)', () => {
     test('the first pulse is the baseline, and an identical poll observes nothing', () => {

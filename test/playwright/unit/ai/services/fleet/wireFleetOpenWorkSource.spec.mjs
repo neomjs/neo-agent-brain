@@ -103,6 +103,40 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
         }
     });
 
+    test('the served read names each pull request by the title the snapshot query returns', async () => {
+        const
+            dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-title-')),
+            pr      = {
+                number                  : 12,
+                title                   : 'feat: the pane reads open work',
+                isDraft                 : false,
+                headRefOid              : 'c3',
+                reviewDecision          : 'REVIEW_REQUIRED',
+                mergeable               : 'MERGEABLE',
+                body                    : 'Authored by Ada.',
+                author                  : {login: 'neo-opus-ada'},
+                repository              : {nameWithOwner: 'acme/app'},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestReviews           : {pageInfo: {hasNextPage: false}, nodes: []},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: false}, nodes: []},
+                commits                 : {nodes: [{commit: {oid: 'c3', statusCheckRollup: {state: 'FAILURE'}}}]}
+            },
+            query   = async (text, {query: search}) => ({rateLimit: {cost: 1}, search: {pageInfo: {hasNextPage: false}, nodes: search.includes('is:open') ? [pr] : []}}),
+            bridge  = {};
+
+        try {
+            const wired = wireFleetOpenWorkSource({registry: {listAgents: () => definitions, getDataDir: () => dataDir}, bridge, query, pulseMs: 3600000});
+
+            await wired.producer.pulse();
+            wired.stop();
+
+            expect(bridge.openWorkSource.readOpenWork().seats['@neo-opus-ada'].authored.map(({number, title}) => ({number, title})))
+                .toEqual([{number: 12, title: 'feat: the pane reads open work'}])
+        } finally {
+            fs.rmSync(dataDir, {recursive: true, force: true})
+        }
+    });
+
     test('only an absent state file is a first pulse; one that cannot be read or parsed throws', () => {
         const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-store-'));
 

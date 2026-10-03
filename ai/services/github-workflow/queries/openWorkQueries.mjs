@@ -12,7 +12,7 @@
  */
 
 /**
- * The open half: per PR, what a holder change is computed from.
+ * The open half: per PR, what a holder change is computed from, and the title the cockpit names it by.
  * @type {String}
  */
 export const OPEN_WORK_SNAPSHOT = `
@@ -28,6 +28,7 @@ export const OPEN_WORK_SNAPSHOT = `
       nodes {
         ... on PullRequest {
           number
+          title
           isDraft
           headRefOid
           reviewDecision
