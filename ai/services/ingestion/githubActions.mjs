@@ -18,17 +18,27 @@ const API_VERSION = '2022-11-28';
 const USER_AGENT  = 'neo-agent-brain ci-failure-ingestor';
 
 /**
- * @summary Resolves the GitHub credential: explicit override → `GH_TOKEN` → `GITHUB_TOKEN`.
- * The token is never logged; the failure names the knobs to set.
+ * @summary Reads the GitHub credential: explicit override → `GH_TOKEN` → `GITHUB_TOKEN`, `null` when
+ * none is set. For a caller whose GitHub use is optional; {@link resolveGithubToken} is the refusing form.
  * @param {Object} [options]
  * @param {String} [options.override]
  * @param {Object} [options.env=process.env]
+ * @returns {String|null}
+ */
+export function readGithubToken({override = null, env = process.env} = {}) {
+    return (override && String(override).trim()) || env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim() || null
+}
+
+/**
+ * @summary Resolves the GitHub credential ({@link readGithubToken}) and refuses without one.
+ * The token is never logged; the failure names the knobs to set.
+ * @param {Object} [options] As {@link readGithubToken}.
  * @returns {String}
  * @throws {Error} `code: 'github-token-unset'` when no credential is available, so a caller can tell an
  *     unconfigured credential from a failing one.
  */
-export function resolveGithubToken({override = null, env = process.env} = {}) {
-    const token = (override && String(override).trim()) || env.GH_TOKEN?.trim() || env.GITHUB_TOKEN?.trim();
+export function resolveGithubToken(options) {
+    const token = readGithubToken(options);
 
     if (token) return token;
 
