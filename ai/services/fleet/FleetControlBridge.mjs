@@ -212,6 +212,15 @@ class FleetControlBridge extends Base {
      */
     memoriesSource = null
     /**
+     * Viewer-bound recent-turns source — an injected collaborator exposing `readRecentTurns(params)`:
+     * one page of an explicit target seat's newest public turn summaries through the single
+     * registered `query_recent_turns` operation, with the plane's own sharing verdict. Same DI
+     * contract as {@link #memoriesSource}: this bridge carries no viewer field and never simulates
+     * sharing policy.
+     * @member {Object|null} recentTurnsSource=null
+     */
+    recentTurnsSource = null
+    /**
      * Viewer-bound wake-routes source — an injected collaborator exposing `readWakeRoutes(params)`:
      * the DECOMPOSED per-seat wake-path envelope (subscription, arming, delivery lane, last
      * terminal failure, presence), every axis answering as itself under the fail-honest contract.
@@ -731,6 +740,28 @@ class FleetControlBridge extends Base {
                 turns     : [],
                 count     : 0,
                 total     : null
+            };
+    }
+
+    /**
+     * @summary READ-OBSERVE: read one page of a seat's newest public turn summaries for the
+     * authenticated viewer — the thought stream. The source envelope passes through untouched; an
+     * unwired source is named as unavailable rather than fabricated as a silent seat.
+     * @param {Object} [params]
+     * @returns {Promise<Object>|Object}
+     */
+    fleetRecentTurns(params = {}) {
+        return typeof this.recentTurnsSource?.readRecentTurns === 'function'
+            ? this.recentTurnsSource.readRecentTurns(params)
+            : {
+                capability   : {state: 'unavailable', reason: 'fleet recent-turns source not wired'},
+                viewer       : null,
+                target       : params.agentIdentity || null,
+                page         : {limit: null, before: null},
+                turns        : [],
+                count        : 0,
+                nextCursor   : null,
+                memorySharing: null
             };
     }
 
