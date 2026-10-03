@@ -62,7 +62,12 @@ function storeProblem(data) {
     for (const table of ['bindings', 'tombstones']) {
         for (const [endpoint, id] of Object.entries(data[table])) {
             if (normalizeEndpoint(endpoint) !== endpoint) return `a ${table} key is not a normalized endpoint`;
-            if (!Object.hasOwn(data.connections, id))     return `a ${table} entry names an unknown connection`
+
+            // a string before any key lookup: Object.hasOwn would coerce ['id'] to 'id', and throw on an
+            // object that cannot become a primitive
+            if (typeof id !== 'string' || id === '' || !Object.hasOwn(data.connections, id)) {
+                return `a ${table} entry names an unknown connection`
+            }
         }
     }
 
@@ -255,7 +260,13 @@ class ForgeConnectionRegistryService extends Base {
                 : {state: 'corrupt', store: null, reason: error instanceof SyntaxError ? 'it is not valid JSON' : `it cannot be read (${error.code ?? error.message})`}
         }
 
-        const problem = storeProblem(data);
+        let problem;
+
+        try {
+            problem = storeProblem(data)
+        } catch {
+            problem = 'its structure cannot be read'
+        }
 
         return problem ? {state: 'corrupt', store: null, reason: problem} : {state: 'ok', store: data, reason: null}
     }

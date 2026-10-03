@@ -156,6 +156,10 @@ test.describe('ForgeConnectionRegistryService — the plane-governed owner princ
 
         for (const broken of [
             {...store, bindings: {'https://github.com': 'no-such-connection'}},
+            // a reference is a string before any key lookup: an array coerces to a key, an object may throw
+            {...store, bindings: {'https://github.com': [id]}},
+            {...store, bindings: {'https://github.com': {toString: null}}},
+            {...store, bindings: {}, tombstones: {'https://github.com': 42}},
             {...store, version: store.version + 1},
             {...store, tombstones: {'https://github.com': id}},
             {...store, bindings: {'HTTPS://GitHub.com/': id}},
