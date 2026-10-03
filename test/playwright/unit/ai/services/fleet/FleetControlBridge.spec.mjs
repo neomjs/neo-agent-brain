@@ -583,6 +583,15 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(calls).toEqual([['fleetRepoStatus']]);
     });
 
+    test('fleetSeatGitIdentity delegates the single payload to the manager\'s identity read', async () => {
+        const answer = {state: 'derived', source: 'public', name: 'Alice', email: 'alice@example.test'};
+
+        managerStub.fleetSeatGitIdentity = async params => { calls.push(['fleetSeatGitIdentity', params]); return answer };
+
+        expect(await FleetControlBridge.fleetSeatGitIdentity({id: 'alice'})).toEqual(answer);
+        expect(calls).toEqual([['fleetSeatGitIdentity', {id: 'alice'}]]);
+    });
+
     test('fleetRuntimeStatus delegates to the manager runtime aggregator', () => {
         managerStub.fleetRuntimeStatus = () => { calls.push(['fleetRuntimeStatus']); return [{agentId: 'alice', state: 'running', running: true, confidence: 'observed', source: 'fleet:runtimeStatus'}]; };
         expect(FleetControlBridge.fleetRuntimeStatus()).toEqual([{agentId: 'alice', state: 'running', running: true, confidence: 'observed', source: 'fleet:runtimeStatus'}]);

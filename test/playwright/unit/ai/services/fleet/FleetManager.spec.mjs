@@ -361,6 +361,27 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(Object.hasOwn(bob, 'sessionFolder')).toBe(false)
     });
 
+    test('the Git identity a seat\'s last start resolved rides its runtime row, a refused start\'s included', () => {
+        const
+            registryStub = {listAgents: () => [{id: 'alice'}, {id: 'bob'}, {id: 'carol'}]},
+            derived      = {state: 'derived', source: 'verified-primary', name: 'Alice', email: 'alice@example.test'};
+
+        FleetManager.lifecycleService = {
+            getRegistry: () => registryStub,
+            status     : id => ({
+                alice: {id, state: 'running', running: true, pid: 4242, startedAt: '2026-10-03T20:00:00Z', exitCode: null, gitIdentity: derived},
+                bob  : {id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null, gitIdentity: {state: 'missing', name: 'Bob'}},
+                carol: {id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null, gitIdentity: null}
+            })[id]
+        };
+
+        const [alice, bob, carol] = FleetManager.fleetRuntimeStatus();
+
+        expect(alice.gitIdentity).toEqual(derived);
+        expect(bob.gitIdentity).toEqual({state: 'missing', name: 'Bob'});
+        expect(Object.hasOwn(carol, 'gitIdentity')).toBe(false)
+    });
+
     test('an agent the fleet never launched reports unmanaged, NOT stopped — never-launched is not stopped (#17305)', () => {
         // The incident: nine external-harness seats rendered `benched / offline` because `status()`
         // answers `stopped` for an agent it holds no record of — a sound lifecycle default, an
@@ -665,5 +686,56 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetThrottleStatus (roste
             source    : 'fleet:throttleState',
             reason    : 'no throttle truth source exists yet: watchdog-signals producer not landed'
         }]);
+    });
+});
+
+test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatGitIdentity (the identity Add reads after a define)', () => {
+    const
+        SEAT     = {id: 'alice', githubUsername: 'alice', harnessType: 'codex'},
+        registry = ({agents = {alice: SEAT}, credentials = {alice: 'ghp_alice'}} = {}) => ({
+            getDefinition    : id => agents[id] ?? null,
+            getAgent         : id => agents[id] ?? null,
+            resolveCredential: id => credentials[id] ?? null
+        });
+
+    test.afterEach(() => {
+        FleetManager.lifecycleService = null;
+        FleetManager.gitIdentityFn    = null;
+    });
+
+    test('answers the derivation Start runs, from the seat\'s definition and its stored PAT', async () => {
+        const
+            calls   = [],
+            derived = {state: 'derived', source: 'verified-primary', name: 'Alice', email: 'alice@example.test'};
+
+        FleetManager.lifecycleService = {getRegistry: () => registry()};
+        FleetManager.gitIdentityFn    = async args => { calls.push(args); return derived };
+
+        expect(await FleetManager.fleetSeatGitIdentity({id: 'alice'})).toEqual(derived);
+        expect(calls).toEqual([{agent: SEAT, credential: 'ghp_alice'}]);
+    });
+
+    test('a read that fails answers unknown with its reason, never derived, and never throws', async () => {
+        FleetManager.lifecycleService = {getRegistry: () => registry()};
+        FleetManager.gitIdentityFn    = async () => { throw new Error('socket hang up') };
+
+        expect(await FleetManager.fleetSeatGitIdentity({id: 'alice'})).toEqual({state: 'unknown', reason: 'the identity read failed: socket hang up'});
+    });
+
+    test('an unknown seat, or one without a PAT, answers unknown and reads no forge', async () => {
+        const calls = [];
+
+        FleetManager.lifecycleService = {getRegistry: () => registry({credentials: {}})};
+        FleetManager.gitIdentityFn    = async args => { calls.push(args); return {state: 'derived'} };
+
+        expect(await FleetManager.fleetSeatGitIdentity({id: 'nobody'})).toEqual({state: 'unknown', reason: "no agent 'nobody' is registered"});
+        expect(await FleetManager.fleetSeatGitIdentity({id: 'alice'})).toEqual({state: 'unknown', reason: 'no PAT is stored for it'});
+        expect(calls).toEqual([]);
+    });
+
+    test('a declared identity answers as declared, without a PAT or a forge read', async () => {
+        FleetManager.lifecycleService = {getRegistry: () => registry({agents: {alice: {...SEAT, gitName: 'Alice', gitEmail: 'alice@example.test'}}, credentials: {}})};
+
+        expect(await FleetManager.fleetSeatGitIdentity({id: 'alice'})).toEqual({state: 'declared', source: 'declared', name: 'Alice', email: 'alice@example.test'});
     });
 });

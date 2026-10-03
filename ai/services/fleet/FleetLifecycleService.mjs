@@ -21,6 +21,7 @@ import gitlabWorkflowConfig                                         from '../../
 import {MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS}                   from './managedAgentWorkspacePlan.mjs';
 import {isOnInstance}                                               from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities} from './manageCodexDesktopRuntime.mjs';
+import {GIT_IDENTITY_ENV, gitIdentityEnv}                           from './seatGitIdentity.mjs';
 
 // Reserve the Neural Link policy slot against credential collisions and launch-metadata overrides.
 // Fleet does not impose a projection; explicitly restricted NL servers own their own ceiling.
@@ -287,7 +288,8 @@ function runsSeatLaunch(command, {launchCommand, launchInterpreter, profileArg})
  * process-runtime vars — never a full parent-env copy, so ambient operator secrets cannot leak into
  * a peer — plus the launch spec's own env (its isolation home var), plus the reserved injections.
  * A `launch.env` key naming a reserved slot (`credentialEnvVar`, `NEO_MCP_REMOTE_TOKEN`, `NEO_SEAT_PLANE_BASE`,
- * `bridgeTokenEnvVar`, `NEO_NL_TOOL_PROJECTION_MODE`, `NEO_AGENT_IDENTITY`) or a prototype-mutating key
+ * `bridgeTokenEnvVar`, `NEO_NL_TOOL_PROJECTION_MODE`, `NEO_AGENT_IDENTITY`, the GitLab seat slots, the four
+ * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identity slots) or a prototype-mutating key
  * (`__proto__` / `constructor` / `prototype`) is rejected fail-fast, naming the offending key.
  *
  * **Credential security boundary** (inherited from the registry's two-hemisphere rule): the GitHub
@@ -476,6 +478,14 @@ class FleetLifecycleService extends Base {
      */
     processes = new Map()
 
+    /**
+     * The Git identity each seat's last provisioned start resolved, keyed by agent id: what its commits carry, or why
+     * the start refused. Kept apart from {@link processes} because a refused start leaves no launch record.
+     * @member {Map<String,Object>} gitIdentities
+     * @private
+     */
+    gitIdentities = new Map()
+
     // ---- public API ---------------------------------------------------------
 
     /**
@@ -495,6 +505,8 @@ class FleetLifecycleService extends Base {
      * @param {Object} [opts.remoteMcpCapability] Exact capability proof returned by
      *     {@link assertRemoteMcpCapability}; binds the curated launch to the same resolved binary
      *     snapshot instead of re-reading a mutable AiConfig path after preparation.
+     * @param {Object} [opts.gitIdentity] `{name, email}` the seat commits as, injected as author and committer
+     *     under the four reserved `GIT_AUTHOR_*` / `GIT_COMMITTER_*` slots.
      * @returns {Object} status (see {@link status}).
      */
     start(id, opts = {}) {
@@ -546,10 +558,11 @@ class FleetLifecycleService extends Base {
             this.bridgeTokenEnvVar,
             TOOL_PROJECTION_MODE_ENV_VAR,
             AGENT_IDENTITY_ENV_VAR,
-            ...GITLAB_SEAT_ENV
+            ...GITLAB_SEAT_ENV,
+            ...GIT_IDENTITY_ENV
         ];
         if (envKeys.some(key => !key) || new Set(envKeys).size !== envKeys.length) {
-            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential and seat plane-base slots, bridgeTokenEnvVar, the NL-policy var, the agent-identity var, and the GitLab seat slots must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
+            throw new Error(`FleetLifecycleService.start: env-key contract violated — credentialEnvVar, the fixed remote-MCP credential and seat plane-base slots, bridgeTokenEnvVar, the NL-policy var, the agent-identity var, the GitLab seat slots and the Git identity slots must be non-empty and pairwise distinct (got ${JSON.stringify(envKeys)}).`);
         }
 
         // The launch env may not name a reserved slot: allowing it would either let registry-authored
@@ -683,6 +696,10 @@ class FleetLifecycleService extends Base {
         // key and cannot impersonate a distinct provider identity. It is a reserved slot: launch.env
         // can never pre-load it (guard above).
         env[AGENT_IDENTITY_ENV_VAR] = agentIdentity;
+
+        // The seat's Git identity, resolved and verified by the provisioned start: its commits name the seat
+        // as author and committer, whatever Git config the host holds.
+        if (opts.gitIdentity) Object.assign(env, gitIdentityEnv(opts.gitIdentity));
 
         // The child's working directory: the agent's provisioned repo checkout when the caller supplies
         // it (the Fleet Manager turnkey path via startAgentProvisioned). Omitted ⇒ inherit this process's
@@ -976,12 +993,14 @@ class FleetLifecycleService extends Base {
      *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`). `repos` is the
      *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is.
      *     `sessionFolder` is where a running Claude Desktop seat's session opened ({@link sessionFolderFor}).
+     *     `gitIdentity` is the identity the seat's last provisioned start resolved ({@link setGitIdentity}), also
+     *     after a start it refused; `null` before the first.
      */
     status(id) {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, sessionFolder: null};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, sessionFolder: null, gitIdentity: this.gitIdentityOf(id)};
 
         this.refreshAdoptedSeat(record);
 
@@ -1018,7 +1037,8 @@ class FleetLifecycleService extends Base {
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
             } : null,
             repos            : record.repos ? record.repos.map(repo => ({...repo})) : null,
-            sessionFolder    : this.sessionFolderFor(record)
+            sessionFolder    : this.sessionFolderFor(record),
+            gitIdentity      : this.gitIdentityOf(id)
         };
     }
 
@@ -1034,6 +1054,18 @@ class FleetLifecycleService extends Base {
         return record.harnessType === 'claude-desktop' && record.state === 'running' && record.instanceHome && record.cwd && record.startedAt
             ? readSeatSessionFolder({instanceHome: record.instanceHome, expected: record.cwd, since: record.startedAt})
             : null
+    }
+
+    /**
+     * @summary The status projection of a seat's recorded Git identity: its state, source, name and email.
+     * @param {String} id
+     * @returns {Object|null} `{state, source?, name?, email?}`, or `null` before the seat's first provisioned start.
+     * @private
+     */
+    gitIdentityOf(id) {
+        const recorded = this.gitIdentities.get(id);
+
+        return recorded ? {...recorded} : null
     }
 
     /**
@@ -1054,6 +1086,19 @@ class FleetLifecycleService extends Base {
 
         record.repos = repos.map(({reason, repoSlug, state}) => ({repoSlug, state, ...(reason != null ? {reason} : {})}));
         return true
+    }
+
+    /**
+     * @summary Records the Git identity a seat's provisioned start resolved, so {@link status} reports what its
+     * commits carry, or why the start refused (`missing`, `unknown`, `mismatch`). Bound to the seat rather than a
+     * launch: a refused start spawns nothing, and its seat's row still has to say why. Each start replaces it.
+     * @param {String} id
+     * @param {Object} gitIdentity `{state, source?, name?, email?}`; other fields are not recorded.
+     */
+    setGitIdentity(id, gitIdentity) {
+        const fields = ['state', 'source', 'name', 'email'].filter(key => gitIdentity?.[key] != null);
+
+        this.gitIdentities.set(id, Object.fromEntries(fields.map(key => [key, gitIdentity[key]])))
     }
 
     /**

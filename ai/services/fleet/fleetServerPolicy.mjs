@@ -52,7 +52,8 @@ export const FLEET_S1_METHOD_POLICY = Object.freeze({
     fleetTasks            : 'awaiting-s3',
     fleetGoldenPath       : 'awaiting-s3',
     fleetGraphScene       : 'awaiting-s3',
-    fleetOpenWork         : 'awaiting-s3'
+    fleetOpenWork         : 'awaiting-s3',
+    fleetSeatGitIdentity  : 'awaiting-s3'
 });
 
 /**
@@ -106,7 +107,8 @@ export const FLEET_METHOD_SCOPE_CLASSES = Object.freeze({
     fleetTasks            : 'read-observe',
     fleetGoldenPath       : 'read-observe',
     fleetGraphScene       : 'read-observe',
-    fleetOpenWork         : 'read-observe'
+    fleetOpenWork         : 'read-observe',
+    fleetSeatGitIdentity  : 'read-observe'
 });
 
 const SLICE_LABELS = Object.freeze({

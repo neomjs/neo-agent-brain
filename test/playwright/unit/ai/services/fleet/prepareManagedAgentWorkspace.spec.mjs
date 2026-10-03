@@ -2689,6 +2689,9 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
                 managedRoot     : root,
                 ensureRepo      : async () => ({repoPath: repoRoot}),
                 prepareWorkspace: args => prepareManagedAgentWorkspace({...args, hydrateWorkspace: makeHydrate()}),
+                // the seat's Git identity is its own spec's concern: here it resolves, and the checkout already has it
+                resolveGitIdentity : async () => ({state: 'declared', source: 'declared', name: 'Composed Seat', email: 'composed@example.test'}),
+                convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
                 agentosRuntimeRoot,
                 nodePath        : NODE_PATH
             }),

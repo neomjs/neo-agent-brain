@@ -5,6 +5,7 @@ import {prepareManagedAgentWorkspace}  from './prepareManagedAgentWorkspace.mjs'
 import {redactReadFailure}             from './redactReadFailure.mjs';
 import {resolveSeatPlaneTarget}        from './resolveSeatPlaneTarget.mjs';
 import {importSeatMemory, MEMORY_IMPORT_NONE} from './seatMemoryImport.mjs';
+import {convergeSeatGitIdentity, resolveSeatGitIdentity} from './seatGitIdentity.mjs';
 import path                            from 'node:path';
 import {fileURLToPath}                 from 'node:url';
 
@@ -104,10 +105,20 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * Core, a failed identity/plane proof, or failed persistence. A private per-seat store is no fallback.
  * Only a Fleet that serves no plane keeps the per-seat servers.
  *
+ * **The seat commits as itself.** Before anything is cloned or bound, a repo-bearing start resolves the identity the
+ * seat's commits carry ({@link module:ai/services/fleet/seatGitIdentity.resolveSeatGitIdentity}): its declaration,
+ * else its forge account read with its PAT. Without one it refuses (`FLEET_SEAT_GIT_IDENTITY_MISSING`, or
+ * `FLEET_SEAT_GIT_IDENTITY_UNKNOWN` when the account could not be read). Every managed checkout then gets that identity
+ * in its own config scope and must read it back, with the launch env and without it
+ * ({@link module:ai/services/fleet/seatGitIdentity.convergeSeatGitIdentity}); a checkout holding another identity
+ * refuses the start (`FLEET_SEAT_GIT_IDENTITY_MISMATCH`) and keeps it. The spawn carries the identity as author and
+ * committer, and the lifecycle records the outcome for the seat's status, refusals included.
+ *
  * Pure composition over injectable seams: `ensureRepo` (default {@link Neo.ai.services.fleet.ensureAgentRepo}),
- * `prepareWorkspace` (default {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}), and
- * `cloneRepo` (forwarded to provisioning) make the order/failure contract unit-testable without a git
- * binary or filesystem, mirroring the `spawnFn` / `cloneRepo` idioms across the Fleet services.
+ * `prepareWorkspace` (default {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}), the Git identity pair
+ * (`resolveGitIdentity`, `convergeGitIdentity`), and `cloneRepo` (forwarded to provisioning) make the order/failure
+ * contract unit-testable without a git binary or filesystem, mirroring the `spawnFn` / `cloneRepo` idioms across the
+ * Fleet services.
  *
  * @param {Object}    options
  * @param {Object}    options.lifecycleService The `FleetLifecycleService` (or a stub) that supervises
@@ -127,6 +138,10 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                              to {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}.
  * @param {Function} [options.importMemory]     The adopted seat's memory convergence after preparation;
  *                                              defaults to {@link module:ai/services/fleet/seatMemoryImport.importSeatMemory}.
+ * @param {Function} [options.resolveGitIdentity]  `({agent, credential}) => Promise<Object>`, the identity the seat's
+ *                                                 commits carry; defaults to `resolveSeatGitIdentity`.
+ * @param {Function} [options.convergeGitIdentity] `({repoPath, identity}) => Promise<Object>`, one checkout brought to
+ *                                                 that identity; defaults to `convergeSeatGitIdentity`.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
  * @param {String}   [options.instanceRoot]     Explicit harness-home root; omitted ⇒ the lifecycle
@@ -147,8 +162,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   preparation, the managed root derives a seat home other than the recorded one or the row records
  *   none (`FLEET_SEAT_HOME_MISMATCH` / `FLEET_SEAT_HOME_UNBOUND`, refused before the PAT read),
  *   provisioning/preparation fails (re-thrown — no spawn), a consented memory import left the seat's
- *   memory empty (`FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED`, no spawn), or the seat's launch authority was
- *   released while preparation ran ({@link spawnPermitted}).
+ *   memory empty (`FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED`, no spawn), the seat has no Git identity to commit under
+ *   or a checkout holds another (`FLEET_SEAT_GIT_IDENTITY_MISSING` / `_UNKNOWN` / `_MISMATCH`, no spawn), or the
+ *   seat's launch authority was released while preparation ran ({@link spawnPermitted}).
  */
 export async function startAgentProvisioned({
     lifecycleService,
@@ -159,6 +175,8 @@ export async function startAgentProvisioned({
     ensureRepo = ensureAgentRepo,
     prepareWorkspace = prepareManagedAgentWorkspace,
     importMemory = importSeatMemory,
+    resolveGitIdentity = resolveSeatGitIdentity,
+    convergeGitIdentity = convergeSeatGitIdentity,
     tenantService = null,
     instanceRoot,
     agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT,
@@ -257,6 +275,21 @@ export async function startAgentProvisioned({
 
         return spawnPermitted({lifecycleService, registry, agentId, startOptions: {resolvedCredential}});
     }
+
+    // The identity the seat's commits carry, resolved before anything is cloned or bound: without one, every commit
+    // would name whoever the host's Git config names.
+    const gitIdentity = await resolveGitIdentity({agent, credential: resolvedCredential});
+
+    if (gitIdentity.state === 'missing' || gitIdentity.state === 'unknown') {
+        lifecycleService.setGitIdentity?.(agentId, gitIdentity);
+
+        throw Object.assign(new Error(gitIdentity.state === 'missing'
+            ? `startAgentProvisioned: agent '${agentId}' has no Git identity to commit under: ${gitIdentity.reason}. Nothing was changed. Declare the name and email its commits carry (gitName and gitEmail), then start it again.`
+            : `startAgentProvisioned: agent '${agentId}' cannot start until its Git identity is known: ${gitIdentity.reason}. Nothing was changed. Check its PAT and its forge, or declare the name and email its commits carry (gitName and gitEmail), then start it again.`
+        ), {code: `FLEET_SEAT_GIT_IDENTITY_${gitIdentity.state.toUpperCase()}`, gitIdentity})
+    }
+
+    const commitIdentity = {name: gitIdentity.name, email: gitIdentity.email};
 
     let
         remotePlan                   = null,
@@ -364,16 +397,36 @@ export async function startAgentProvisioned({
     // reported on the status and the launch goes on: the working checkout is the seat's cwd and its gate,
     // while the others are only places it reaches into. A failure here is response data, out of the
     // dispatcher's sanitizer's reach, and a clone error can echo the PAT.
-    const repos = [];
+    const
+        repos     = [],
+        checkouts = [targetRepoRoot];
 
     for (const {repoSlug, cloneUrl} of agent.metadata?.repos ?? []) {
         try {
-            await ensureRepo({managedRoot, agentId, repoSlug, cloneUrl, credential: resolvedCredential, credentialOrigin, cloneRepo});
+            const {repoPath} = await ensureRepo({managedRoot, agentId, repoSlug, cloneUrl, credential: resolvedCredential, credentialOrigin, cloneRepo});
+
+            checkouts.push(repoPath);
             repos.push({repoSlug, state: 'prepared'})
         } catch (error) {
             repos.push({repoSlug, state: 'failed', reason: redactReadFailure(error) ?? 'no legible error'})
         }
     }
+
+    // Every checkout the seat commits in carries its identity before anything runs there. One that holds another
+    // identity keeps it, and the start stops: a disagreement is never masked by the launch env.
+    for (const checkout of checkouts) {
+        const outcome = await convergeGitIdentity({repoPath: checkout, identity: commitIdentity});
+
+        if (outcome.state !== 'converged') {
+            lifecycleService.setGitIdentity?.(agentId, {...gitIdentity, state: 'mismatch'});
+
+            throw Object.assign(new Error(
+                `startAgentProvisioned: agent '${agentId}' commits as '${commitIdentity.name} <${commitIdentity.email}>', but its checkout '${checkout}' ${outcome.reason}. The harness is not spawned, and no identity the Fleet did not write was changed. Declare the identity the seat commits as, or remove the other one from that checkout's Git config, then start it again.`
+            ), {code: 'FLEET_SEAT_GIT_IDENTITY_MISMATCH', repoPath: checkout, found: outcome.found, gitIdentity})
+        }
+    }
+
+    lifecycleService.setGitIdentity?.(agentId, gitIdentity);
 
     // Preparation is a mandatory gate for repo-bearing agents. The lifecycle owns the resolved
     // instance-root SSOT; the explicit option is only a test/per-tenant seam. A preparation throw
@@ -429,6 +482,7 @@ export async function startAgentProvisioned({
             cwd: prepared.targetRepoRoot,
             resolvedCredential,
             resolvedResidentMcpEnv,
+            gitIdentity: commitIdentity,
             ...(remote
                 ? {resolvedMcpCredential, resolvedMcpEndpoint: remotePlan.endpoint, remoteMcpCapability: remoteCapability}
                 : {})
