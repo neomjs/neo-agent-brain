@@ -7047,6 +7047,33 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         expect((await openTasks('@operator')).totalCount).toBe(0);
     });
 
+    test('#859 AC-4: the count and the page are read in one transaction, so one snapshot', async () => {
+        await seedHumanRecipients();
+        await ask('@operator');
+
+        const
+            sqlite  = GraphService.db.storage.db,
+            prepare = sqlite.prepare,
+            reads   = [];
+
+        // whether each of the view's two reads runs inside a transaction. A write committed between
+        // two separate reads would count a row the page no longer serves, and the continuation
+        // advertised would never advance. Proving the interleave takes a second connection to a
+        // file database, which this in-memory graph cannot open.
+        sqlite.prepare = function (source) {
+            /FROM tasks/.test(source) && reads.push(sqlite.inTransaction);
+            return prepare.call(this, source)
+        };
+
+        try {
+            expect((await openTasks('@operator', {limit: 1})).totalCount).toBe(1);
+        } finally {
+            sqlite.prepare = prepare
+        }
+
+        expect(reads).toEqual([true, true]);
+    });
+
     test('#859 AC-4: priority-age orders high, normal (an absent priority included), low, then oldest first, across a page boundary', async () => {
         await seedHumanRecipients();
 

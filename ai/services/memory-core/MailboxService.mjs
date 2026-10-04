@@ -3685,7 +3685,9 @@ class MailboxService extends Base {
         });
 
         // A Task view narrows that same set before the page, and each row's Task is read in the query
-        // that matched it, never from a cached node that can lag the stored state
+        // that matched it, never from a cached node that can lag the stored state. The count and the
+        // page read one snapshot: a write landing between them would otherwise count a row the page
+        // no longer serves, and hand back a continuation that never advances.
         const
             taskView      = taskStates !== undefined,
             viewSql       = taskView ? `${matchesSql}, tasks AS (
@@ -3697,10 +3699,13 @@ class MailboxService extends Base {
             view          = taskView ? 'tasks' : 'matches',
             viewParams    = taskView ? {...params, taskStates: JSON.stringify(taskStates)} : params,
             orderBy       = taskOrder === 'priority-age' ? 'priorityRank, sentAt, messageId' : 'sentAt DESC, messageId DESC',
-            totalCount    = sqlite.prepare(`${viewSql} SELECT COUNT(*) AS count FROM ${view}`).get(viewParams).count,
-            pageRows      = sqlite
-                .prepare(`${viewSql} SELECT messageId${taskView ? ', task' : ''} FROM ${view} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`)
-                .all({...viewParams, limit: numericLimit, offset: numericOffset}),
+            readSnapshot  = sqlite.transaction(() => ({
+                totalCount: sqlite.prepare(`${viewSql} SELECT COUNT(*) AS count FROM ${view}`).get(viewParams).count,
+                pageRows  : sqlite
+                    .prepare(`${viewSql} SELECT messageId${taskView ? ', task' : ''} FROM ${view} ORDER BY ${orderBy} LIMIT @limit OFFSET @offset`)
+                    .all({...viewParams, limit: numericLimit, offset: numericOffset})
+            })),
+            {totalCount, pageRows} = readSnapshot(),
             messages      = [],
             appliedOffset = numericOffset,
             appliedLimit  = numericLimit;
