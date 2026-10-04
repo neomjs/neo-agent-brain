@@ -221,6 +221,14 @@ class FleetControlBridge extends Base {
      */
     recentTurnsSource = null
     /**
+     * Host-local memory-candidates source — an injected collaborator exposing
+     * `readMemoryCandidates()`: the existing agents' memory folders an added seat could import, read
+     * where the seats live. Only an entrypoint on that host wires it; a service elsewhere stays
+     * unwired and says so.
+     * @member {Object|null} memoryCandidatesSource=null
+     */
+    memoryCandidatesSource = null
+    /**
      * Viewer-bound wake-routes source — an injected collaborator exposing `readWakeRoutes(params)`:
      * the DECOMPOSED per-seat wake-path envelope (subscription, arming, delivery lane, last
      * terminal failure, presence), every axis answering as itself under the fail-honest contract.
@@ -762,6 +770,23 @@ class FleetControlBridge extends Base {
                 count        : 0,
                 nextCursor   : null,
                 memorySharing: null
+            };
+    }
+
+    /**
+     * @summary READ-OBSERVE: the existing agents' memory an added seat could import — per candidate
+     * its family, the `source` a `memoryImport` consent names, its name, note count and newest change,
+     * never a file's contents. An empty list means the host holds none; an unwired source is named as
+     * unavailable, never reported as an empty host.
+     * @returns {Promise<Object>|Object}
+     */
+    fleetMemoryCandidates() {
+        return typeof this.memoryCandidatesSource?.readMemoryCandidates === 'function'
+            ? this.memoryCandidatesSource.readMemoryCandidates()
+            : {
+                capability: {state: 'unavailable', reason: 'memory candidates are read on the host that holds the seats'},
+                candidates: [],
+                count     : 0
             };
     }
 

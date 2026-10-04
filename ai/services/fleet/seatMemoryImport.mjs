@@ -181,34 +181,68 @@ function compareFiles(files, source, destination, fileSystem) {
 }
 
 /**
+ * @summary The name a memory candidate is offered by: derived from its folder, never its path. A Codex
+ * instance is its folder's name, and the Codex home is `codex`. A Claude project folder is a slug, the
+ * project's absolute path with every character outside `[A-Za-z0-9]` written as `-`; its name is the
+ * slug without the home directory's own encoding when the project lies inside it (`~` for the home
+ * itself), and otherwise without its leading dash.
+ * @param {String} source A candidate {@link isMemoryFolder} accepts.
+ * @param {String} homeDir
+ * @returns {String}
+ */
+function candidateName(source, homeDir) {
+    const
+        [first, second, slug] = path.relative(homeDir, source).split(path.sep),
+        home                  = homeDir.replace(/[^A-Za-z0-9]/g, '-');
+
+    if (first === '.codex')           return 'codex';
+    if (first === '.codex-instances') return second;
+    if (slug === home)                return '~';
+
+    return (slug.startsWith(`${home}-`) ? slug.slice(home.length + 1) : slug.replace(/^-+/, '')) || slug
+}
+
+/**
  * @summary Existing markdown memory an adopted seat could import, read-only: every folder
- * {@link normalizeMemoryImport} accepts that holds files and lies under real folders only, with its
- * file count, most files first.
+ * {@link normalizeMemoryImport} accepts that holds files and lies under real folders only, most notes
+ * first. Each candidate carries what the operator chooses by — its name ({@link candidateName}), its
+ * note count and its newest change — and the `source` a `memoryImport` consent names. No file's
+ * contents are read.
  * @param {Object} [options]
  * @param {String} [options.homeDir=os.homedir()]
  * @param {Object} [options.fileSystem=fs]
- * @returns {Promise<Array<{family: String, path: String, files: Number}>>}
+ * @returns {Promise<Array<{family: String, source: String, name: String, notes: Number, lastChanged: String}>>}
  */
 export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem = fs} = {}) {
     const
         projects  = path.join(homeDir, '.claude', 'projects'),
         instances = path.join(homeDir, '.codex-instances'),
         folders   = [
-            ...(await childDirectories(projects, fileSystem)).map(name => ({family: 'claude', path: path.join(projects, name, 'memory')})),
-            {family: 'codex', path: path.join(homeDir, '.codex', 'memories')},
-            ...(await childDirectories(instances, fileSystem)).map(name => ({family: 'codex', path: path.join(instances, name, 'memories')}))
+            ...(await childDirectories(projects, fileSystem)).map(name => ({family: 'claude', source: path.join(projects, name, 'memory')})),
+            {family: 'codex', source: path.join(homeDir, '.codex', 'memories')},
+            ...(await childDirectories(instances, fileSystem)).map(name => ({family: 'codex', source: path.join(instances, name, 'memories')}))
         ],
         candidates = [];
 
-    for (const folder of folders.filter(({path: dir}) => isMemoryFolder(dir, homeDir))) {
-        if (await firstNonFolder(homeDir, folder.path, fileSystem)) continue;
+    for (const {family, source} of folders.filter(folder => isMemoryFolder(folder.source, homeDir))) {
+        if (await firstNonFolder(homeDir, source, fileSystem)) continue;
 
-        const files = await regularFiles(folder.path, fileSystem);
+        const files = await regularFiles(source, fileSystem);
 
-        files?.length && candidates.push({...folder, files: files.length})
+        if (!files?.length) continue;
+
+        const changed = await Promise.all(files.map(async file => (await fileSystem.lstat(path.join(source, file))).mtimeMs));
+
+        candidates.push({
+            family,
+            source,
+            name       : candidateName(source, homeDir),
+            notes      : files.length,
+            lastChanged: new Date(Math.max(...changed)).toISOString()
+        })
     }
 
-    return candidates.sort((a, b) => b.files - a.files)
+    return candidates.sort((a, b) => b.notes - a.notes)
 }
 
 /**

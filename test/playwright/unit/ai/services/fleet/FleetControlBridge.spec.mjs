@@ -80,6 +80,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         FleetControlBridge.activitySource     = null;
         FleetControlBridge.historySource      = null;
         FleetControlBridge.mailboxMirrorSource = null;
+        FleetControlBridge.memoryCandidatesSource = null;
         FleetControlBridge.identityResolver   = null;
         FleetControlBridge.tenantService      = null;
     });
@@ -256,6 +257,31 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         FleetControlBridge.bootIdentitySource = null;
 
         expect(FleetControlBridge.getBootIdentity()).toEqual({fact: null, classification: 'unknown', advisory: true, reason: 'no-boot-identity-source'});
+    });
+
+    // ---- read-observe: the memory an added seat could import (host-local; names, never contents) ----
+
+    test('fleetMemoryCandidates serves the host source over the wire, and an unwired service says where they are read', async () => {
+        const envelope = {
+            capability: {state: 'wired'},
+            candidates: [{family: 'codex', source: '/h/.codex-instances/emmy/memories', name: 'emmy', notes: 2, lastChanged: '2026-10-03T12:00:00.000Z'}],
+            count     : 1
+        };
+
+        FleetControlBridge.memoryCandidatesSource = {readMemoryCandidates: async (...args) => { calls.push(['readMemoryCandidates', ...args]); return envelope; }};
+
+        const wire = await dispatchFleetRequest(createFleetWireRequest('fleetMemoryCandidates', {}), FleetControlBridge);
+
+        expect(wire).toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok, result: envelope});
+        expect(calls, 'no params reach the host read').toEqual([['readMemoryCandidates']]);
+
+        FleetControlBridge.memoryCandidatesSource = null;
+
+        expect(FleetControlBridge.fleetMemoryCandidates(), 'unwired is not an empty host').toEqual({
+            capability: {state: 'unavailable', reason: 'memory candidates are read on the host that holds the seats'},
+            candidates: [],
+            count     : 0
+        })
     });
 
     // ---- read-observe: the deployment-state projection (advisory read verb; observe-only) ----

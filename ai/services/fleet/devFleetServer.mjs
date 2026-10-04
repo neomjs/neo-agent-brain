@@ -52,6 +52,7 @@ import RequestContextService                                           from '../
 import FleetControlBridge                                              from './FleetControlBridge.mjs';
 import FleetManager                                                    from './FleetManager.mjs';
 import FleetRegistryService                                            from './FleetRegistryService.mjs';
+import {detectMemoryCandidates}                                        from './seatMemoryImport.mjs';
 import {readGithubToken}                                               from '../ingestion/githubActions.mjs';
 import {describeOperatorSeatConflation, operatorSeatConflationWarning} from './operatorSeatConflation.mjs';
 import {startFleetBridgeServer}                                        from './fleetBridgeServer.mjs';
@@ -463,6 +464,16 @@ async function boot() {
         queryRecentTurns     : args => callHistoryOperation('query_recent_turns', args),
         resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
     });
+
+    // Memory candidates are read where the seats live, and this relay is the process that launches
+    // them; the composed plane service holds no seats and leaves the source unwired.
+    FleetControlBridge.memoryCandidatesSource = {
+        async readMemoryCandidates() {
+            const candidates = await detectMemoryCandidates();
+
+            return {capability: {state: 'wired'}, candidates, count: candidates.length}
+        }
+    };
 
     FleetControlBridge.mailboxMirrorSource = {
         async readMailboxMirror(params = {}) {
