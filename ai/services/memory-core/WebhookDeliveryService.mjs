@@ -190,7 +190,9 @@ class WebhookDeliveryService extends Base {
                     return 'skipped';
                 }
 
-                // 5xx: network error / server error, retry
+                // 5xx: network error / server error, retry. The receiver looks the route up before
+                // anything that can 5xx, so this answer still proves it knows the route.
+                this._keepRefusal(subscription.id, null);
                 logger.warn(`WebhookDeliveryService: Server error ${response.status} delivering to ${subscription.id}. Attempt ${attempt + 1}/${maxRetries + 1}`);
             } catch (error) {
                 // Network error, retry
@@ -205,7 +207,6 @@ class WebhookDeliveryService extends Base {
         }
 
         // Exhausted retries
-        this._keepRefusal(subscription.id, null);
         await this._recordConsecutiveFailure(subscription.id);
         return 'failed';
     }
@@ -292,8 +293,9 @@ class WebhookDeliveryService extends Base {
 
     /**
      * @summary Keeps the receiver's last refusal on the route's node: set by a `404 unknown-subscription`,
-     * cleared by any other answer. `who_is_online` and `healthcheck` read it to tell a route the receiver
-     * never loaded, which its owner re-arms, from one that failed to land, which its owner resumes.
+     * cleared by any other answer the receiver gives. A delivery nobody answered keeps it. `who_is_online`
+     * and `healthcheck` read it to tell a route the receiver never loaded, which its owner re-arms, from
+     * one that failed to land, which its owner resumes.
      *
      * Reads the node rather than the passed subscription, which the flush builds from the route's
      * coordinates alone, and writes only on a change. Same context-free read as {@link _markDegraded}.

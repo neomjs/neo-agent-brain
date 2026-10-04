@@ -489,6 +489,37 @@ test.describe('WebhookDeliveryService — a reload-lag 404 must not be terminal 
         expect(subscriptionNode.properties.lastRefusal).toBeNull();
     });
 
+    test('a delivery nobody answered keeps the refusal; a 5xx, answered only for a known route, clears it (#837)', async () => {
+        const
+            subscriptionNode = makeSubscriptionNode(),
+            fake             = makeFakeDb(subscriptionNode),
+            delivered        = () => ({id: subscriptionNode.id, properties: {harnessTargetMetadata: subscriptionNode.properties.harnessTargetMetadata}});
+        let assigned = originalDb;
+
+        // GraphService's own init can land inside the retry backoff and swap the graph out, and the arm
+        // then passes against the wrong one. Pinned for the whole arm; a late assignment survives it.
+        Object.defineProperty(GraphService, 'db', {configurable: true, get: () => fake, set: value => {assigned = value}});
+
+        try {
+            await WebhookDeliveryService.deliver(delivered(), {eventId: '01HXXX-0'});
+            expect(subscriptionNode.properties.lastRefusal).toBe('not-in-receiver-manifest');
+
+            nextResponse = () => {throw new TypeError('fetch failed')};
+            expect(await WebhookDeliveryService.deliver(delivered(), {eventId: '01HXXX-1'})).toBe('failed');
+            expect(subscriptionNode.properties.lastRefusal, 'no attempt was answered').toBe('not-in-receiver-manifest');
+
+            // the second attempt reads the node before it answers, so the clear is the 503's, not the 202's
+            let beforeTheDelivery;
+            const answers = [() => makeResponse(503), () => {beforeTheDelivery = subscriptionNode.properties.lastRefusal; return makeResponse(202)}];
+
+            nextResponse = () => answers.shift()();
+            expect(await WebhookDeliveryService.deliver(delivered(), {eventId: '01HXXX-2'})).toBe('delivered');
+            expect(beforeTheDelivery, 'the 503 cleared it').toBeNull();
+        } finally {
+            Object.defineProperty(GraphService, 'db', {configurable: true, enumerable: true, writable: true, value: assigned});
+        }
+    });
+
     test('every other client error still degrades immediately — the boundary, not just the new branch', async () => {
         // A 404 at a wrong path or method is `not-found`, and a wrong URL is a persistent configuration
         // error, not a timing gap. Asserting the boundary is what stops the new tolerance from widening
