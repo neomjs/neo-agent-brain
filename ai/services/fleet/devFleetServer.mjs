@@ -500,9 +500,10 @@ async function boot() {
         }
     };
 
-    // Each seat's open work, observe-only: the producer reads GitHub and wakes no one. Its token is a
-    // process secret no AiConfig leaf binds, so the entrypoint reads it. Without one the source still
-    // wires and each pulse answers why: an optional reader never refuses the boot.
+    // Each seat's open work, observe-only: the producer reads GitHub and wakes no one. Each seat reads
+    // with its own PAT from the registry's credential store. A token in this process's environment is
+    // the explicit headless/dev override, a process secret no AiConfig leaf binds, so the entrypoint
+    // reads it. A seat without a readable PAT is named by each pulse: an optional reader never refuses the boot.
     const openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService});
 
         const server = await startFleetBridgeServer({

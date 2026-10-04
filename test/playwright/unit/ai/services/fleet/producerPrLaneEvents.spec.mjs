@@ -294,7 +294,11 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
                 let open = [];
 
                 const producer = createOpenWorkProducer({
-                    query: async (text, {query}) => ({rateLimit: {cost: 1}, search: {nodes: query.includes('is:open') ? open : [], pageInfo: {hasNextPage: false, endCursor: null}}}),
+                    // one seat, Vega, reading her own authored work
+                    readers: async () => [{seat: '@neo-opus-vega', login: 'neo-opus-vega', query: async (text, {query}) => ({
+                        rateLimit: {cost: 1},
+                        search   : {nodes: query.includes('is:open') && query.includes('author:') ? open : [], pageInfo: {hasNextPage: false, endCursor: null}}
+                    })}],
                     repos: async () => ['neomjs/neo'],
                     identities,
                     now  : clock(),
