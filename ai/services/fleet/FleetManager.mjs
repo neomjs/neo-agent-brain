@@ -9,6 +9,7 @@ import {readFleetPresenceSnapshot}      from './fleetPresenceStateAdapter.mjs';
 import {readFleetThrottleStateSnapshot} from './fleetThrottleStateAdapter.mjs';
 import {readFleetWakeStateSnapshot}     from './fleetWakeStateAdapter.mjs';
 import {redactReadFailure}              from './redactReadFailure.mjs';
+import {resolveSeatGitIdentity}         from './seatGitIdentity.mjs';
 import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
 
 /**
@@ -225,6 +226,12 @@ class FleetManager extends Base {
      * @member {Object|null} tenantService=null
      */
     tenantService = null
+    /**
+     * Git identity derivation seam for {@link fleetSeatGitIdentity}. Defaults (via {@link getGitIdentityFn}) to
+     * `resolveSeatGitIdentity`, the derivation Start runs; inject a recording stub for tests. Plain field.
+     * @member {Function|null} gitIdentityFn=null
+     */
+    gitIdentityFn = null
 
     /**
      * @summary Returns the composing entrypoint's resolved fleet-managed checkout root.
@@ -255,6 +262,47 @@ class FleetManager extends Base {
      */
     getProvisionAndStartFn() {
         return this.provisionAndStartFn || startAgentProvisioned;
+    }
+
+    /**
+     * @returns {Function} the Git identity derivation (injected stub or `resolveSeatGitIdentity`).
+     * @protected
+     */
+    getGitIdentityFn() {
+        return this.gitIdentityFn || resolveSeatGitIdentity;
+    }
+
+    /**
+     * @summary Turnkey identity read: the Git identity a seat's commits would carry, from the derivation its Start
+     * runs, its declaration, else its forge account read with its stored PAT. Add asks right after the define, so a
+     * seat whose account offers no usable email gets its declaration before the first Start, which still verifies.
+     *
+     * Never a refusal and never a write: an unknown seat, a seat without a PAT, or a read that fails answers
+     * `unknown` with the reason, never `derived`, and a PAT that belongs to another account answers `mismatch`.
+     * @param {Object} [params]
+     * @param {String} params.id Registry agent id.
+     * @returns {Promise<Object>} `{state: 'declared'|'derived'|'missing'|'mismatch'|'unknown', source?, name?, email?, found?, reason?}`.
+     */
+    async fleetSeatGitIdentity({id} = {}) {
+        const
+            registry = this.getLifecycleService().getRegistry(),
+            agent    = typeof id === 'string' && id ? registry.getDefinition?.(id) ?? registry.getAgent(id) : null;
+
+        if (!agent) return {state: 'unknown', reason: `no agent '${id}' is registered`};
+
+        const
+            declared   = Boolean(agent.gitName && agent.gitEmail),
+            credential = declared ? null : registry.resolveCredential(id);
+
+        if (!declared && (typeof credential !== 'string' || !credential.trim())) {
+            return {state: 'unknown', reason: 'no PAT is stored for it'}
+        }
+
+        try {
+            return await this.getGitIdentityFn()({agent, credential})
+        } catch (error) {
+            return {state: 'unknown', reason: redactReadFailure(`the identity read failed: ${error?.message ?? error}`)}
+        }
     }
 
     /**
@@ -396,8 +444,9 @@ class FleetManager extends Base {
      * means it would behave identically either way. Widen it when a consumer actually needs to
      * distinguish "not running" from "we do not know" — and delete this paragraph when you do.
      * @returns {Object[]} one `{agentId, state, running, confidence, source}` entry per registered agent;
-     *     rows without a process record additionally carry `reason`, and a running Claude Desktop
-     *     seat carries `sessionFolder`, where its session opened against its checkout.
+     *     rows without a process record additionally carry `reason`, a running Claude Desktop seat
+     *     carries `sessionFolder`, where its session opened against its checkout, and a seat with a
+     *     provisioned start carries the `gitIdentity` that start resolved, a refused start's included.
      */
     fleetRuntimeStatus() {
         const lifecycle = this.getLifecycleService();
@@ -426,6 +475,7 @@ class FleetManager extends Base {
             if (status.failureReason != null) row.failureReason = status.failureReason;
             if (status.repos != null)         row.repos         = status.repos;
             if (status.sessionFolder != null) row.sessionFolder = status.sessionFolder;
+            if (status.gitIdentity != null)   row.gitIdentity   = status.gitIdentity;
 
             return row;
         });

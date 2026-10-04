@@ -164,6 +164,20 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows.map(row => row.sessionFolder)).toEqual([sessionFolder, null])
     })
 
+    test('carries the Git identity the last start resolved from the runtime row — null before a start', () => {
+        const
+            derived  = {state: 'derived', source: 'commit-email', name: 'Alice', email: 'alice@example.test'},
+            snapshot = createFleetCockpitStatus({
+                agents       : [{id: 'alice'}, {id: 'bob'}, {id: 'carol'}],
+                runtimeStatus: [
+                    {agentId: 'alice', state: 'running', running: true, confidence: 'observed', gitIdentity: derived},
+                    {agentId: 'bob',   state: 'stopped', running: false, confidence: 'observed', gitIdentity: {state: 'mismatch', source: 'public', name: 'Bob', email: 'bob@example.test'}}
+                ]
+            })
+
+        expect(snapshot.rows.map(row => row.gitIdentity)).toEqual([derived, {state: 'mismatch', source: 'public', name: 'Bob', email: 'bob@example.test'}, null])
+    })
+
     test('an unmanaged runtime row is NOT wired — row-existence is a roster fact, not a supervision fact (#17305)', () => {
         const snapshot = createFleetCockpitStatus({
             agents       : [{id: 'grace'}],

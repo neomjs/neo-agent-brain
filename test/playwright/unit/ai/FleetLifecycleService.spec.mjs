@@ -1088,6 +1088,24 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + 
         expect(spawn.calls[0].opts.env.NEO_AGENT_IDENTITY).toBe('neo-gpt');
     });
 
+    test('a start given the seat\'s Git identity names it as author and committer in the child env', () => {
+        const spawn = install({agents: {a: agentDef('a')}, creds: {}});
+
+        FleetLifecycleService.start('a', {gitIdentity: {name: 'Seat Agent', email: 'seat@example.test'}});
+
+        expect(spawn.calls[0].opts.env).toMatchObject({
+            GIT_AUTHOR_NAME    : 'Seat Agent',
+            GIT_AUTHOR_EMAIL   : 'seat@example.test',
+            GIT_COMMITTER_NAME : 'Seat Agent',
+            GIT_COMMITTER_EMAIL: 'seat@example.test'
+        });
+    });
+
+    test('SECURITY: a launch env naming a Git identity slot is rejected fail-fast', () => {
+        install({agents: {a: agentDef('a', {metadata: {launch: {command: 'x', args: [], env: {GIT_AUTHOR_EMAIL: 'spoofed@example.test'}}}})}, creds: {}});
+        expect(() => FleetLifecycleService.start('a')).toThrow(/collides with a reserved env slot/);
+    });
+
     test('the stdio topology holds stdin open as a pipe — the liveness contract for CLI harnesses', () => {
         const spawn = install({agents: {a: agentDef('a')}, creds: {}});
         FleetLifecycleService.start('a');
@@ -2365,5 +2383,24 @@ test.describe('FleetLifecycleService.status — where a running Claude Desktop s
         }
 
         expect(FleetLifecycleService.status('nobody').sessionFolder).toBeNull()
+    });
+});
+
+test.describe('FleetLifecycleService.setGitIdentity — the Git identity a seat\'s last start resolved', () => {
+    test.beforeEach(() => { FleetLifecycleService.leasesAdopted = true; FleetLifecycleService.processes.clear(); FleetLifecycleService.gitIdentities.clear(); });
+    test.afterEach(() => { FleetLifecycleService.processes.clear(); FleetLifecycleService.gitIdentities.clear(); FleetLifecycleService.leasesAdopted = false; });
+
+    test('status carries it with or without a launch record, and only its own fields', () => {
+        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'running', pid: 4202, startedAt: '2026-10-03T20:00:00.000Z'});
+
+        expect(FleetLifecycleService.status('seat').gitIdentity).toBeNull();
+
+        FleetLifecycleService.setGitIdentity('seat', {state: 'derived', source: 'verified-primary', name: 'Seat Agent', email: 'seat@example.test', reason: 'not a status field'});
+        // a refused start leaves no launch record, and the seat's row still shows why
+        FleetLifecycleService.setGitIdentity('refused', {state: 'missing', name: 'Refused Seat'});
+
+        expect(FleetLifecycleService.status('seat').gitIdentity).toEqual({state: 'derived', source: 'verified-primary', name: 'Seat Agent', email: 'seat@example.test'});
+        expect(FleetLifecycleService.status('refused').gitIdentity).toEqual({state: 'missing', name: 'Refused Seat'});
+        expect(FleetLifecycleService.status('nobody').gitIdentity).toBeNull();
     });
 });

@@ -10,6 +10,7 @@ import {REPO_FORGES}                             from './deriveAgentRepoPath.mjs
 import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePlan.mjs';
 import {normalizeMcpTarget}                      from './mcpServers.mjs';
 import {normalizeMemoryImport}                   from './seatMemoryImport.mjs';
+import {normalizeGitIdentityDeclaration}         from './seatGitIdentity.mjs';
 
 const
     FORGE_HOSTNAME_RE       = /^(?:[a-z0-9._-]+|\[[0-9a-f:]+\])$/,
@@ -206,6 +207,22 @@ function forgeAccount(forge, forgeHost) {
 }
 
 /**
+ * @summary The commit identity a definition declares, validated for the verb that writes it
+ * ({@link module:ai/services/fleet/seatGitIdentity.normalizeGitIdentityDeclaration}).
+ * @param {String} method The writing verb, which prefixes a refusal.
+ * @param {Object} fields `{gitName, gitEmail}`.
+ * @returns {{gitName: String, gitEmail: String}|null} `null` when neither field is given.
+ * @throws {TypeError} On half a pair or a malformed field.
+ */
+function gitIdentityDeclaration(method, fields) {
+    try {
+        return normalizeGitIdentityDeclaration(fields)
+    } catch (error) {
+        throw new TypeError(`FleetRegistryService.${method}: ${error.message}`)
+    }
+}
+
+/**
  * @class Neo.ai.services.fleet.FleetRegistryService
  * @extends Neo.core.Base
  * @singleton
@@ -216,8 +233,8 @@ function forgeAccount(forge, forgeHost) {
  * *define agents → start/stop → repos managed under the hood*.
  *
  * An **agent definition** is `{id, githubUsername, harnessType, modelProvider, mcpServers,
- * mcpTarget, launchOwner, metadata, createdAt, updatedAt}`, plus `forge` and `forgeHost` for a GitLab seat —
- * never a secret. `modelProvider` (the agent's model-provider login) resolves via the AiConfig
+ * mcpTarget, launchOwner, metadata, createdAt, updatedAt}`, plus `forge` and `forgeHost` for a GitLab seat and
+ * `gitName` and `gitEmail` for a seat whose commit identity is declared — never a secret. `modelProvider` (the agent's model-provider login) resolves via the AiConfig
  * `modelProvider` SSOT leaf when not supplied — read-only, no service-local default shadow. The associated **credential** (the seat's
  * forge PAT: GitHub's, or a GitLab instance's) is stored separately, encrypted at
  * rest, and is the load-bearing security boundary of this service:
@@ -360,6 +377,9 @@ class FleetRegistryService extends Base {
      *     ({@link module:ai/services/fleet/seatMemoryImport.normalizeMemoryImport}), or `'none'` to start
      *     empty. Start copies it into the family's own memory folder and refuses while it reads empty.
      *     Omitted, the seat is a fresh one.
+     * @param {String} [opts.gitName]  The name the seat's commits carry, declared with `gitEmail`. Omitted, Start
+     *     derives the identity from the seat's forge account ({@link module:ai/services/fleet/seatGitIdentity.resolveSeatGitIdentity}).
+     * @param {String} [opts.gitEmail] The email the seat's commits carry, declared with `gitName`.
      * @returns {Object} The public agent definition (no credential).
      */
     defineAgent(options={}) {
@@ -375,6 +395,8 @@ class FleetRegistryService extends Base {
             credential,
             forge,
             forgeHost,
+            gitEmail,
+            gitName,
             id,
             launchOwner='external',
             memoryImport,
@@ -405,7 +427,9 @@ class FleetRegistryService extends Base {
             throw new Error(`FleetRegistryService.defineAgent: invalid harnessType '${harnessType}'. Must be one of: ${this.harnessTypes.join(', ')}.`);
         }
 
-        const account = forgeAccount(forge ?? 'github', forgeHost);
+        const
+            account     = forgeAccount(forge ?? 'github', forgeHost),
+            declaration = gitIdentityDeclaration('defineAgent', {gitName, gitEmail});
 
         // SECURITY STOP-LINE (mechanical): `metadata.launch` is executed with Brain credentials by
         // the lifecycle service, and `defineAgent` is a wire-allowlisted verb — accepting a launch
@@ -469,6 +493,7 @@ class FleetRegistryService extends Base {
                 ...((options || {}).launchOwner != null ? {launchOwnerSince: now} : {}),
                 // an adoption is recorded with the seat's birth; no consent means a fresh seat
                 ...(consent ? {memoryImport: consent} : {}),
+                ...declaration,
                 createdAt: now,
                 updatedAt: now
             },
@@ -539,9 +564,10 @@ class FleetRegistryService extends Base {
 
     /**
      * Configure an existing agent through the ONE wire-serializable curated intent. Only `id`,
-     * `harnessType`, sparse `mcpServers` overrides, and the narrow `mcpTarget` intent are accepted;
-     * credentials, URLs, headers, launch fields, wake, hooks, identity, and generic config bags are
-     * mechanically rejected. Unspecified fields are preserved. The returned public definition is canonical persisted readback, never request
+     * `harnessType`, sparse `mcpServers` overrides, the narrow `mcpTarget` intent and the declared commit
+     * identity (`gitName` with `gitEmail`, or both `null` to return to derivation) are accepted; credentials,
+     * URLs, headers, launch fields, wake, hooks, the provider identity (`githubUsername`), and generic config
+     * bags are mechanically rejected. Unspecified fields are preserved. The returned public definition is canonical persisted readback, never request
      * echo. Controlled validation failures use the method prefix so FleetControlBridge can expose a
      * safe rejected-domain reason while unexpected storage failures remain transport-sanitized. A
      * declaration the seat's harness cannot carry is one of them, with the reason Start would give
@@ -551,6 +577,9 @@ class FleetRegistryService extends Base {
      * @param {String} [intent.harnessType] Registered durable harness key.
      * @param {Object|null} [intent.mcpServers] Complete sparse MCP override set; null follows defaults.
      * @param {Object|null} [intent.mcpTarget] `null`/resident or `{kind:'tenant', tenantId}`.
+     * @param {String|null} [intent.gitName]  The name the seat's commits carry, given with `gitEmail`; `null` with
+     *     `gitEmail: null` removes the declaration.
+     * @param {String|null} [intent.gitEmail] The email the seat's commits carry, given with `gitName`.
      * @returns {Object|null} Updated public definition, or `null` when the id is not registered.
      */
     configureAgent(intent={}) {
@@ -563,9 +592,10 @@ class FleetRegistryService extends Base {
         }
 
         const
-            allowed                                  = new Set(['id', 'harnessType', 'mcpServers', 'mcpTarget']),
+            allowed                                  = new Set(['id', 'harnessType', 'mcpServers', 'mcpTarget', 'gitName', 'gitEmail']),
             unknown                                  = Object.keys(intent).find(key => !allowed.has(key)),
-            {id, harnessType, mcpServers, mcpTarget} = intent;
+            {id, harnessType, mcpServers, mcpTarget} = intent,
+            declaring                                = Object.hasOwn(intent, 'gitName') || Object.hasOwn(intent, 'gitEmail');
 
         if (unknown) {
             reject(`unsupported field '${unknown}'.`)
@@ -575,9 +605,12 @@ class FleetRegistryService extends Base {
         }
         if (!Object.hasOwn(intent, 'harnessType') &&
             !Object.hasOwn(intent, 'mcpServers') &&
-            !Object.hasOwn(intent, 'mcpTarget')) {
+            !Object.hasOwn(intent, 'mcpTarget') &&
+            !declaring) {
             reject('at least one configuration field is required.')
         }
+
+        const declaration = declaring ? gitIdentityDeclaration('configureAgent', intent) : null;
 
         this.ensureLoaded();
 
@@ -629,8 +662,15 @@ class FleetRegistryService extends Base {
             harnessType: nextHarnessType,
             mcpServers : matrix,
             mcpTarget  : target,
+            ...declaration,
             updatedAt  : new Date().toISOString()
         };
+
+        // both fields `null`: the declaration is withdrawn and Start derives the identity again
+        if (declaring && !declaration) {
+            delete def.gitName;
+            delete def.gitEmail
+        }
 
         const nextAgents = new Map(this.agents);
         nextAgents.set(id, def);

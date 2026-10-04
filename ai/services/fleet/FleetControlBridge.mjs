@@ -371,6 +371,8 @@ class FleetControlBridge extends Base {
      * @param {String} [definition.modelProvider]    The agent's model-provider login; resolves via the AiConfig SSOT leaf when omitted.
      * @param {Object|null} [definition.mcpServers]   Complete sparse MCP overrides; omitted/null follows live defaults, exactly like configureAgent.
      * @param {Object|null} [definition.mcpTarget] Resident services or one connected tenant id.
+     * @param {String} [definition.gitName]  The name the seat's commits carry, declared with `gitEmail`.
+     * @param {String} [definition.gitEmail] The email the seat's commits carry, declared with `gitName`.
      * @returns {Object} The public agent definition (no credential), or a controlled
      *     `{status:'rejected', reason}` outcome for FleetRegistryService validation failures.
      */
@@ -429,7 +431,7 @@ class FleetControlBridge extends Base {
      * @summary Configure an existing agent through one serializable curated intent. Validation
      * failures become an explicit domain outcome the Accounts card may render; unexpected service
      * failures still throw and are sanitized by dispatchFleetRequest.
-     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?}`
+     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?}`
      * @returns {{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}}
      */
     configureAgent(intent) {
@@ -636,6 +638,17 @@ class FleetControlBridge extends Base {
      */
     fleetRuntimeStatus() {
         return this.getManager().fleetRuntimeStatus();
+    }
+
+    /**
+     * @summary READ-OBSERVE: the Git identity a seat's commits would carry, from the same derivation its Start runs.
+     * Add reads it right after a define, so a seat whose forge account offers no usable email is asked for a
+     * declaration before its first Start. Never a refusal: a read that fails answers `unknown`.
+     * @param {Object} params `{id}`
+     * @returns {Promise<Object>} `{state: 'declared'|'derived'|'missing'|'unknown', source?, name?, email?, reason?}`.
+     */
+    fleetSeatGitIdentity(params) {
+        return this.getManager().fleetSeatGitIdentity(params);
     }
 
     /**

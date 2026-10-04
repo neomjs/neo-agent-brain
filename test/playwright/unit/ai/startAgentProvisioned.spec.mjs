@@ -2,8 +2,24 @@ import {test, expect}                    from '@playwright/test';
 import {CREDENTIAL_FAMILIES}             from '../../../../ai/services/fleet/redactCredentials.mjs';
 import {LAUNCHABLE_HARNESS_TYPES}        from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
-import {startAgentProvisioned}           from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {startAgentProvisioned as startProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {resolveSeatGitIdentity}          from '../../../../ai/services/fleet/seatGitIdentity.mjs';
 import {supportsTenantMcpTarget}         from '../../../../src/fleet/contract/harnessTypes.mjs';
+
+/** The Git identity a fixture seat resolves to unless a case says otherwise. */
+const SEAT_GIT_IDENTITY = {state: 'derived', source: 'verified-primary', name: 'Seat Agent', email: 'seat@example.test'};
+
+/**
+ * Every repo-bearing start resolves and converges the seat's Git identity. Cases about anything else get a resolved
+ * identity and converged checkouts, so no case reads a forge or runs git.
+ */
+function startAgentProvisioned(options) {
+    return startProvisioned({
+        resolveGitIdentity : async () => SEAT_GIT_IDENTITY,
+        convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
+        ...options
+    })
+}
 
 // Pure composer — imported directly with injected stubs (no fs / git / Neo runtime), so the suite has
 // no host-runtime side effects and each case is fully isolated. Mirrors deriveAgentRepoPath.spec /
@@ -23,7 +39,7 @@ function makeLifecycle({
     capabilityError = null,
     inspectionError = null
 } = {}) {
-    const calls = {capability: [], credential: [], inspection: [], repoOutcomes: [], start: [], status: []};
+    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], repoOutcomes: [], start: [], status: []};
     return {
         calls,
         credentialEnvVar: 'GH_TOKEN',
@@ -63,6 +79,7 @@ function makeLifecycle({
         },
         resolveResidentMcpEnvironment: () => ({}),
         setRepoOutcomes              : (id, repos, launch) => { calls.repoOutcomes.push({id, repos, launch}); return true },
+        setGitIdentity               : (id, gitIdentity) => { calls.gitIdentity.push({id, gitIdentity}); return true },
         start                        : (id, opts) => { events?.push('start'); calls.start.push({id, opts}); return {id, running: true, state: 'running', cwd: opts?.cwd, pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}; }
     };
 }
@@ -234,7 +251,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(events).toEqual(['credential', 'ensure', 'prepare', 'start']);
         // Runtime authority stays AgentOS-owned; the harness cwd stays the provisioned target root.
         expect(lifecycle.calls.start).toHaveLength(1);
-        expect(lifecycle.calls.start[0]).toEqual({id: 'a', opts: {cwd: '/managed/a/neomjs-neo', resolvedCredential: FIXTURE_PAT, resolvedResidentMcpEnv: {}}});
+        expect(lifecycle.calls.start[0]).toEqual({id: 'a', opts: {cwd: '/managed/a/neomjs-neo', resolvedCredential: FIXTURE_PAT, resolvedResidentMcpEnv: {}, gitIdentity: {name: 'Seat Agent', email: 'seat@example.test'}}});
         expect(status.state).toBe('running');
         expect(status.cwd).toBe('/managed/a/neomjs-neo');
         expect(status).not.toHaveProperty('repos');
@@ -510,6 +527,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                 cwd                   : '/managed/a/neomjs-neo',
                 resolvedCredential    : repositoryPat,
                 resolvedResidentMcpEnv: {},
+                gitIdentity           : {name: 'Seat Agent', email: 'seat@example.test'},
                 resolvedMcpCredential : planePat,
                 resolvedMcpEndpoint   : 'https://tenant.example.com',
                 remoteMcpCapability   : {
@@ -572,6 +590,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                 cwd                   : '/managed/a/neomjs-neo',
                 resolvedCredential    : 'ghp_seat_only',
                 resolvedResidentMcpEnv: {},
+                gitIdentity           : {name: 'Seat Agent', email: 'seat@example.test'},
                 resolvedMcpCredential : 'glpat_plane_only',
                 resolvedMcpEndpoint   : 'https://tenant.example.com',
                 remoteMcpCapability   : {
@@ -1163,6 +1182,7 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
             cwd                   : '/managed/a/neomjs-neo',
             resolvedCredential    : 'ghp_seat_checkout',
             resolvedResidentMcpEnv: {},
+            gitIdentity           : {name: 'Seat Agent', email: 'seat@example.test'},
             resolvedMcpCredential : 'seat-plane-pat',
             resolvedMcpEndpoint   : PLANE,
             remoteMcpCapability   : CAPABILITY
@@ -1479,5 +1499,147 @@ test.describe('startAgentProvisioned — an adopted seat\'s memory import', () =
 
         await expect(start({lifecycle})).rejects.toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: SOURCE, step: 'memory import'});
         expect(lifecycle.calls.start).toHaveLength(0)
+    });
+});
+
+test.describe('startAgentProvisioned — the seat commits as itself', () => {
+    const
+        BRAIN      = {repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git'},
+        MISSING    = {state: 'missing', name: 'Seat Agent', reason: 'its forge account offers no email this PAT can read'},
+        CONVERGED  = {state: 'converged', scope: 'local', action: 'written'},
+        withRepos  = (...repos) => ({a: {...repoAgent('a').a, metadata: {repo: REPO, repos}}}),
+        // each repository lands in its own checkout; a slug listed in `failing` cannot be cloned
+        ensureRepo = (events, failing = []) => async ({repoSlug}) => {
+            events.push('ensure');
+
+            if (failing.includes(repoSlug)) throw new Error(`clone of ${repoSlug} failed`);
+
+            return {repoPath: `/managed/a/${repoSlug.replace('/', '-')}`}
+        },
+        recorder   = (events, name, answer) => {
+            const fn = async args => { events.push(name); fn.calls.push(args); return answer };
+
+            fn.calls = [];
+            return fn
+        },
+        start      = ({lifecycle, events, resolveGitIdentity, convergeGitIdentity, failing}) => startProvisioned({
+            lifecycleService: lifecycle,
+            agentId         : 'a',
+            managedRoot     : '/managed',
+            ensureRepo      : ensureRepo(events, failing),
+            prepareWorkspace: makePrepareWorkspace(events),
+            nodePath        : '/usr/bin/node',
+            resolveGitIdentity,
+            convergeGitIdentity
+        });
+
+    test('the identity is resolved with the seat\'s PAT before anything is cloned, and every checkout converges before preparation', async () => {
+        const
+            events    = [],
+            lifecycle = makeLifecycle({agents: withRepos(BRAIN), events}),
+            resolve   = recorder(events, 'resolve', SEAT_GIT_IDENTITY),
+            converge  = recorder(events, 'converge', CONVERGED);
+
+        await start({lifecycle, events, resolveGitIdentity: resolve, convergeGitIdentity: converge});
+
+        expect(events).toEqual(['credential', 'resolve', 'ensure', 'ensure', 'converge', 'converge', 'prepare', 'start']);
+        expect(resolve.calls).toEqual([{agent: withRepos(BRAIN).a, credential: FIXTURE_PAT}]);
+        expect(converge.calls).toEqual([
+            {repoPath: '/managed/a/neomjs-neo',             identity: {name: 'Seat Agent', email: 'seat@example.test'}},
+            {repoPath: '/managed/a/neomjs-neo-agent-brain', identity: {name: 'Seat Agent', email: 'seat@example.test'}}
+        ]);
+        expect(lifecycle.calls.start[0].opts.gitIdentity).toEqual({name: 'Seat Agent', email: 'seat@example.test'});
+        expect(lifecycle.calls.gitIdentity).toEqual([{id: 'a', gitIdentity: SEAT_GIT_IDENTITY}]);
+    });
+
+    test('with no identity to commit under, Start refuses before anything is cloned, names the next step and records it', async () => {
+        const
+            events    = [],
+            lifecycle = makeLifecycle({agents: repoAgent('a'), events}),
+            converge  = recorder(events, 'converge', CONVERGED);
+
+        await expect(start({lifecycle, events, resolveGitIdentity: async () => MISSING, convergeGitIdentity: converge})).rejects.toMatchObject({
+            code   : 'FLEET_SEAT_GIT_IDENTITY_MISSING',
+            message: "startAgentProvisioned: agent 'a' has no Git identity to commit under: its forge account offers no email this PAT can read. Nothing was changed. Declare the name and email its commits carry (gitName and gitEmail), then start it again."
+        });
+        expect(events).toEqual(['credential']);
+        expect(lifecycle.calls.start).toHaveLength(0);
+        expect(lifecycle.calls.gitIdentity).toEqual([{id: 'a', gitIdentity: MISSING}]);
+    });
+
+    test('an account that could not be read stops the start the same way, as unknown rather than missing', async () => {
+        const
+            events    = [],
+            lifecycle = makeLifecycle({agents: repoAgent('a'), events}),
+            unknown   = {state: 'unknown', reason: 'its forge account could not be read (HTTP 401)'};
+
+        await expect(start({lifecycle, events, resolveGitIdentity: async () => unknown, convergeGitIdentity: recorder(events, 'converge', CONVERGED)})).rejects.toMatchObject({
+            code   : 'FLEET_SEAT_GIT_IDENTITY_UNKNOWN',
+            message: "startAgentProvisioned: agent 'a' cannot start until its Git identity is known: its forge account could not be read (HTTP 401). Nothing was changed. Check its PAT and its forge, or declare the name and email its commits carry (gitName and gitEmail), then start it again."
+        });
+        expect(events).toEqual(['credential']);
+        expect(lifecycle.calls.gitIdentity).toEqual([{id: 'a', gitIdentity: unknown}]);
+    });
+
+    test('a PAT that answers for another account stops the start before anything is cloned: the real derivation over a fixture forge', async () => {
+        const
+            events    = [],
+            lifecycle = makeLifecycle({agents: repoAgent('a'), events}),
+            converge  = recorder(events, 'converge', CONVERGED),
+            // the stored PAT reads an account that is not the seat's `a`
+            fetchFn   = async url => ({ok: true, status: 200, json: async () => url === 'https://api.github.com/user'
+                ? {login: 'different-account', name: 'Different Account', email: 'different@example.test'}
+                : [{email: 'different@example.test', primary: true, verified: true, visibility: 'public'}]}),
+            resolve   = args => resolveSeatGitIdentity({...args, fetchFn});
+
+        await expect(start({lifecycle, events, resolveGitIdentity: resolve, convergeGitIdentity: converge})).rejects.toMatchObject({
+            code   : 'FLEET_SEAT_GIT_IDENTITY_MISMATCH',
+            message: "startAgentProvisioned: agent 'a' would commit as another account: its PAT belongs to the forge account 'different-account', not to the seat's 'a'. Nothing was changed. Store the seat's own PAT, or declare the name and email its commits carry (gitName and gitEmail), then start it again."
+        });
+        expect(events).toEqual(['credential']);
+        expect(converge.calls).toEqual([]);
+        expect(lifecycle.calls.start).toHaveLength(0);
+        expect(lifecycle.calls.gitIdentity).toEqual([{id: 'a', gitIdentity: expect.objectContaining({state: 'mismatch', found: 'different-account'})}]);
+    });
+
+    test('a checkout holding another identity stops the start before preparation, left as it is, and records the mismatch', async () => {
+        const
+            events    = [],
+            lifecycle = makeLifecycle({agents: repoAgent('a'), events}),
+            found     = 'Operator <operator@example.test>',
+            converge  = recorder(events, 'converge', {state: 'mismatch', scope: 'local', found, reason: `holds '${found}' in its local config, which the Fleet did not write`});
+
+        await expect(start({lifecycle, events, resolveGitIdentity: async () => SEAT_GIT_IDENTITY, convergeGitIdentity: converge})).rejects.toMatchObject({
+            code    : 'FLEET_SEAT_GIT_IDENTITY_MISMATCH',
+            repoPath: '/managed/a/neomjs-neo',
+            found,
+            message : "startAgentProvisioned: agent 'a' commits as 'Seat Agent <seat@example.test>', but its checkout '/managed/a/neomjs-neo' holds 'Operator <operator@example.test>' in its local config, which the Fleet did not write. The harness is not spawned, and no identity the Fleet did not write was changed. Declare the identity the seat commits as, or remove the other one from that checkout's Git config, then start it again."
+        });
+        expect(events).toEqual(['credential', 'ensure', 'converge']);
+        expect(lifecycle.calls.start).toHaveLength(0);
+        expect(lifecycle.calls.gitIdentity).toEqual([{id: 'a', gitIdentity: {...SEAT_GIT_IDENTITY, state: 'mismatch'}}]);
+    });
+
+    test('a repository that could not be cloned is reported and not converged; the others are', async () => {
+        const
+            events    = [],
+            lifecycle = makeLifecycle({agents: withRepos(BRAIN, {repoSlug: 'neomjs/missing', cloneUrl: 'https://github.com/neomjs/missing.git'}), events}),
+            converge  = recorder(events, 'converge', CONVERGED),
+            status    = await start({lifecycle, events, resolveGitIdentity: async () => SEAT_GIT_IDENTITY, convergeGitIdentity: converge, failing: ['neomjs/missing']});
+
+        expect(converge.calls.map(call => call.repoPath)).toEqual(['/managed/a/neomjs-neo', '/managed/a/neomjs-neo-agent-brain']);
+        expect(status.repos.map(repo => repo.state)).toEqual(['prepared', 'failed']);
+    });
+
+    test('a seat without a managed repository resolves no identity', async () => {
+        const
+            events    = [],
+            lifecycle = makeLifecycle({agents: {a: {id: 'a', githubUsername: 'a', harnessType: 'codex', metadata: {launch: {command: 'h'}}}}, events}),
+            resolve   = recorder(events, 'resolve', SEAT_GIT_IDENTITY);
+
+        await start({lifecycle, events, resolveGitIdentity: resolve, convergeGitIdentity: recorder(events, 'converge', CONVERGED)});
+
+        expect(resolve.calls).toHaveLength(0);
+        expect(lifecycle.calls.start[0].opts).not.toHaveProperty('gitIdentity');
     });
 });

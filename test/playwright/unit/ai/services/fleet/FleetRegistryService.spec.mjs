@@ -766,3 +766,52 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — an adopted seat\'s
         expect(FleetRegistryService.getAgent('leak')).toBeNull()
     });
 });
+
+// The identity a seat's commits carry is declared on its definition, beside the provider login it never replaces.
+test.describe('Neo.ai.services.fleet.FleetRegistryService — the commit identity a seat declares', () => {
+    let tmpDir;
+
+    test.beforeEach(() => {
+        tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-fleet-reg-'));
+        FleetRegistryService.dataDir = tmpDir;
+    });
+
+    test.afterEach(() => {
+        FleetRegistryService.dataDir = null;
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+    });
+
+    test('defineAgent records a declared name and email together, and a seat without one records neither', () => {
+        expect(FleetRegistryService.defineAgent({
+            githubUsername: 'declared', harnessType: 'codex', credential: PAT,
+            gitName       : 'Seat Agent', gitEmail: '12345+seat@users.noreply.github.com'
+        })).toMatchObject({gitName: 'Seat Agent', gitEmail: '12345+seat@users.noreply.github.com'});
+
+        const plain = FleetRegistryService.defineAgent({githubUsername: 'plain', harnessType: 'codex', credential: PAT});
+
+        expect(Object.hasOwn(plain, 'gitName') || Object.hasOwn(plain, 'gitEmail')).toBe(false);
+    });
+
+    test('defineAgent refuses half a declaration or a malformed one, and writes nothing', () => {
+        expect(() => FleetRegistryService.defineAgent({githubUsername: 'half', harnessType: 'codex', credential: PAT, gitName: 'Seat Agent'}))
+            .toThrow(/FleetRegistryService\.defineAgent: 'gitName' and 'gitEmail' are declared together/);
+        expect(() => FleetRegistryService.defineAgent({githubUsername: 'bad', harnessType: 'codex', credential: PAT, gitName: 'Seat Agent', gitEmail: 'seat'}))
+            .toThrow(/FleetRegistryService\.defineAgent: 'gitEmail' must be one address/);
+        expect(FleetRegistryService.getAgent('half')).toBeNull();
+        expect(FleetRegistryService.getAgent('bad')).toBeNull();
+    });
+
+    test('configureAgent sets the declaration, clears it with nulls, and refuses half of one', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'seat', harnessType: 'codex', credential: PAT});
+
+        expect(FleetRegistryService.configureAgent({id: 'seat', gitName: 'Seat Agent', gitEmail: 'seat@example.test'}))
+            .toMatchObject({gitName: 'Seat Agent', gitEmail: 'seat@example.test', harnessType: 'codex'});
+        expect(() => FleetRegistryService.configureAgent({id: 'seat', gitEmail: 'other@example.test'}))
+            .toThrow(/FleetRegistryService\.configureAgent: 'gitName' and 'gitEmail' are declared together/);
+        expect(FleetRegistryService.getAgent('seat').gitEmail).toBe('seat@example.test');
+
+        const cleared = FleetRegistryService.configureAgent({id: 'seat', gitName: null, gitEmail: null});
+
+        expect(Object.hasOwn(cleared, 'gitName') || Object.hasOwn(cleared, 'gitEmail')).toBe(false);
+    });
+});
