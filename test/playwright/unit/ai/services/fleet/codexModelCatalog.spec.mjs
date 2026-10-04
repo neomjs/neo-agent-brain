@@ -10,6 +10,9 @@ import {readCodexModelCatalog} from '../../../../../../ai/services/fleet/codexMo
 const FAKE_SERVER = `
 const scenario = process.argv[2], model = (id, extra = {}) => ({id, supportedReasoningEfforts: [{reasoningEffort: 'low'}, {reasoningEffort: 'max'}], defaultReasoningEffort: 'low', hidden: false, isDefault: false, ...extra});
 let buffer = '', pages = 0;
+// told to stop, it takes its time, or does not listen at all
+if (scenario === 'slow-exit') process.on('SIGTERM', () => setTimeout(() => process.exit(0), 400));
+if (scenario === 'deaf') process.on('SIGTERM', () => {});
 const reply = message => process.stdout.write(JSON.stringify(message) + '\\n');
 process.stdin.on('data', chunk => {
     buffer += chunk;
@@ -25,6 +28,10 @@ process.stdin.on('data', chunk => {
         if (scenario === 'refuse') reply({id: message.id, error: {message: 'not signed in'}});
         else if (scenario === 'second-page-fails' && pages === 2) reply({id: message.id, error: {message: 'rate limited'}});
         else if (scenario === 'endless') reply({id: message.id, result: {data: [model('m' + pages)], nextCursor: 'c' + pages}});
+        else if (scenario === 'no-data') reply({id: message.id, result: {}});
+        else if (scenario === 'data-not-a-list') reply({id: message.id, result: {data: {}}});
+        else if (scenario === 'empty') reply({id: message.id, result: {data: [], nextCursor: null}});
+        else if (scenario === 'bad-row' && pages === 2) reply({id: message.id, result: {data: [model('gpt-ok'), {model: 'no-id'}], nextCursor: null}});
         else if (message.params.cursor === null) reply({id: message.id, result: {data: [model('home:' + process.env.CODEX_HOME, {isDefault: true})], nextCursor: 'c1'}});
         else reply({id: message.id, result: {data: [model('gpt-hidden', {hidden: true, defaultReasoningEffort: 'max'})], nextCursor: null}});
     }
@@ -73,5 +80,63 @@ test.describe('codexModelCatalog — a Codex seat\'s catalog through its own app
         expect(catalog.models.map(model => model.id)).toEqual(['home:/agents/sophie/codex-home']);
         expect(catalog.reason).toBe("the app-server refused 'model/list': rate limited");
         expect((await read('endless')).reason, 'a cursor that never ends cannot hold Start').toBe('the catalog did not end within 20 pages');
+    });
+
+    test('a model list this reader cannot read is never a complete catalog, and never escapes the read', async () => {
+        const unreadable = {state: 'unavailable', models: [], reason: 'the app-server answered a model list this Fleet cannot read'};
+
+        expect(await read('no-data')).toEqual(unreadable);
+        expect(await read('data-not-a-list')).toEqual(unreadable);
+
+        // an unreadable row keeps the pages before it, as a partial catalog
+        const partial = await read('bad-row');
+
+        expect([partial.state, partial.models.map(model => model.id), partial.reason]).toEqual(['partial', ['home:/agents/sophie/codex-home'], unreadable.reason]);
+
+        // an explicit empty list is a complete answer: the harness offers nothing
+        expect(await read('empty')).toEqual({state: 'complete', models: [], reason: null});
+    });
+
+    test('the read is over only when its app-server is: the answer waits for the exit, and a deaf one is killed', async () => {
+        const watch = scenario => {
+            const seen = {};
+
+            return {
+                seen,
+                read: read(scenario, {
+                    graceMs: 1000,
+                    spawnFn: (binary, args, options) => {
+                        const child = spawn(process.execPath, [fakePath, scenario], options);
+
+                        child.once('exit', (code, signal) => Object.assign(seen, {exitedAt: performance.now(), signal}));
+                        return child
+                    }
+                }).then(answer => ({...answer, answeredAt: performance.now()}))
+            }
+        };
+
+        const slow = watch('slow-exit'), slowAnswer = await slow.read;
+
+        expect(slowAnswer.state).toBe('complete');
+        expect(slow.seen.exitedAt, 'answered after the app-server exited, not when it was told to').toBeLessThanOrEqual(slowAnswer.answeredAt);
+
+        const deaf = watch('deaf'), deafAnswer = await deaf.read;
+
+        expect([deafAnswer.state, deaf.seen.signal]).toEqual(['complete', 'SIGKILL']);
+        expect(deaf.seen.exitedAt).toBeLessThanOrEqual(deafAnswer.answeredAt);
+    });
+
+    test('an app-server that outlives both signals hands back no catalog: the home is still in use', async () => {
+        const
+            {EventEmitter} = await import('node:events'),
+            child          = Object.assign(new EventEmitter(), {pid: 4711, signals: [], stdin: new EventEmitter(), stdout: new EventEmitter()});
+
+        child.kill        = signal => child.signals.push(signal);
+        child.stdin.write = () => queueMicrotask(() => child.stdout.emit('data', '{"id":1,"result":{}}\n{"id":2,"result":{"data":[],"nextCursor":null}}\n'));
+
+        const answer = await readCodexModelCatalog({binaryPath: '/opt/codex', codexHome: '/agents/sophie/codex-home', graceMs: 50, spawnFn: () => child});
+
+        expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
+        expect(answer).toEqual({state: 'unavailable', models: [], reason: 'the app-server did not exit when told to, so the seat\'s home is still in use', stillRunning: true});
     });
 });
