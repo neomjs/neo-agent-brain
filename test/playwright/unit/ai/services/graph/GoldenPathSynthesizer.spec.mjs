@@ -553,6 +553,65 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         expect(republished.route.items).toEqual([]);
     });
 
+    test('an early exit records the pass run id in the route it republishes, and the opening log line names it (#819)', async () => {
+        const routePath                  = path.join(path.dirname(tmpHandoffFile), 'computed-route.json');
+        const originalGetGraphCollection = StorageRouter.getGraphCollection;
+        const originalInfo               = logger.info;
+        const infoLines                  = [];
+
+        StorageRouter.getGraphCollection = async () => {
+            throw new Error('storage router unavailable')
+        };
+        logger.info = (...args) => infoLines.push(args.join(' '));
+
+        try {
+            await GoldenPathSynthesizer.synthesizeGoldenPath({runId: 'run-819-early-exit'});
+        } finally {
+            StorageRouter.getGraphCollection = originalGetGraphCollection;
+            logger.info                      = originalInfo;
+        }
+
+        expect(JSON.parse(fs.readFileSync(routePath, 'utf-8')).provenance.runId).toBe('run-819-early-exit');
+        expect(infoLines.some(line => line.includes('run-819-early-exit'))).toBe(true);
+    });
+
+    test('a completed pass mints one run id: the route carries the id its log line names, and the next pass mints another (#819)', async () => {
+        const routePath                    = path.join(path.dirname(tmpHandoffFile), 'computed-route.json');
+        const originalGetGraphCollection   = StorageRouter.getGraphCollection;
+        const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
+        const originalEmbedText            = TextEmbeddingService.embedText;
+        const originalInfo                 = logger.info;
+        const infoLines                    = [];
+        const runIds                       = [];
+
+        StorageRouter.getGraphCollection   = async () => ({query: async () => ({ids: [[]], distances: [[]]})});
+        StorageRouter.getSummaryCollection = async () => ({get: async () => ({documents: ['mock document']})});
+        TextEmbeddingService.embedText     = async () => buildConfiguredEmbedding();
+        logger.info                        = (...args) => infoLines.push(args.join(' '));
+
+        try {
+            for (let pass = 0; pass < 2; pass++) {
+                const outcome = await GoldenPathSynthesizer.synthesizeGoldenPath({repoEnrichmentEnabled: false});
+                const runId   = JSON.parse(fs.readFileSync(routePath, 'utf-8')).provenance.runId;
+
+                expect(outcome.status).toBe('completed');
+                expect(outcome.computedRoute.provenance.runId).toBe(runId);
+                runIds.push(runId)
+            }
+        } finally {
+            StorageRouter.getGraphCollection   = originalGetGraphCollection;
+            StorageRouter.getSummaryCollection = originalGetSummaryCollection;
+            TextEmbeddingService.embedText     = originalEmbedText;
+            logger.info                        = originalInfo;
+        }
+
+        runIds.forEach(runId => {
+            expect(runId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+            expect(infoLines.some(line => line.includes(runId))).toBe(true);
+        });
+        expect(runIds[0]).not.toBe(runIds[1]);
+    });
+
     test('synthesizeGoldenPath overwrites stale author sections when semantic candidates are empty', async () => {
         const originalGetGraphCollection   = StorageRouter.getGraphCollection;
         const originalGetSummaryCollection = StorageRouter.getSummaryCollection;
