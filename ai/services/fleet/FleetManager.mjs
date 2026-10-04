@@ -278,10 +278,10 @@ class FleetManager extends Base {
      * seat whose account offers no usable email gets its declaration before the first Start, which still verifies.
      *
      * Never a refusal and never a write: an unknown seat, a seat without a PAT, or a read that fails answers
-     * `unknown` with the reason, never `derived`.
+     * `unknown` with the reason, never `derived`, and a PAT that belongs to another account answers `mismatch`.
      * @param {Object} [params]
      * @param {String} params.id Registry agent id.
-     * @returns {Promise<Object>} `{state: 'declared'|'derived'|'missing'|'unknown', source?, name?, email?, reason?}`.
+     * @returns {Promise<Object>} `{state: 'declared'|'derived'|'missing'|'mismatch'|'unknown', source?, name?, email?, found?, reason?}`.
      */
     async fleetSeatGitIdentity({id} = {}) {
         const

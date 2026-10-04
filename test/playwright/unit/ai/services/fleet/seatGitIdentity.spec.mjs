@@ -233,13 +233,13 @@ test.describe('resolveSeatGitIdentity', () => {
             }}
         });
 
-        expect((await resolveSeatGitIdentity({agent: {forge: 'gitlab', forgeHost: 'https://gitlab.example.test'}, credential: 'glpat_seat', fetchFn})).email)
+        expect((await resolveSeatGitIdentity({agent: {githubUsername: 'seat-agent', forge: 'gitlab', forgeHost: 'https://gitlab.example.test'}, credential: 'glpat_seat', fetchFn})).email)
             .toBe('4242-seat-agent@users.noreply.gitlab.example.test');
     });
 
     test('GitLab: without a chosen commit address, the public email; the primary is never used', async () => {
         const
-            agent = {forge: 'gitlab', forgeHost: 'https://gitlab.example.test'},
+            agent = {githubUsername: 'seat-agent', forge: 'gitlab', forgeHost: 'https://gitlab.example.test'},
             user  = {username: 'seat-agent', name: 'Seat Agent', email: 'primary@example.test', confirmed_at: '2026-01-01T00:00:00Z', commit_email: null};
 
         let {fetchFn} = forge({'https://gitlab.example.test/api/v4/user': {body: {...user, public_email: 'public@example.test'}}});
@@ -250,6 +250,37 @@ test.describe('resolveSeatGitIdentity', () => {
         ({fetchFn} = forge({'https://gitlab.example.test/api/v4/user': {body: {...user, public_email: ''}}}));
 
         expect((await resolveSeatGitIdentity({agent, credential: 'glpat_seat', fetchFn})).state).toBe('missing');
+    });
+
+    test('a PAT that answers for another account is a mismatch naming that account, never derived', async () => {
+        const {fetchFn} = forge({
+            [GITHUB_USER]  : {body: {login: 'different-account', name: 'Different Account', email: 'different@example.test'}},
+            [GITHUB_EMAILS]: {body: [{email: 'different@example.test', primary: true, verified: true, visibility: 'public'}]}
+        });
+
+        expect(await resolveSeatGitIdentity({agent: GITHUB_SEAT, credential: 'ghp_other', fetchFn})).toEqual({
+            state : 'mismatch',
+            found : 'different-account',
+            reason: "its PAT belongs to the forge account 'different-account', not to the seat's 'seat-agent'"
+        });
+    });
+
+    test('the seat\'s own account matches as the forge compares logins: without case, and without a leading @', async () => {
+        const {fetchFn} = forge({
+            [GITHUB_USER]  : {body: {login: 'Seat-Agent', name: 'Seat Agent', email: 'public@example.test'}},
+            [GITHUB_EMAILS]: {body: []}
+        });
+
+        expect(await resolveSeatGitIdentity({agent: {...GITHUB_SEAT, githubUsername: '@seat-agent'}, credential: 'ghp_seat', fetchFn}))
+            .toEqual({state: 'derived', source: 'public', name: 'Seat Agent', email: 'public@example.test'});
+    });
+
+    test('GitLab: a PAT for another account at the seat\'s instance is a mismatch too', async () => {
+        const
+            agent     = {id: 'seat', githubUsername: 'seat-agent', forge: 'gitlab', forgeHost: 'https://gitlab.example.test'},
+            {fetchFn} = forge({'https://gitlab.example.test/api/v4/user': {body: {username: 'other-agent', name: 'Other Agent', commit_email: 'other@example.test'}}});
+
+        expect(await resolveSeatGitIdentity({agent, credential: 'glpat_other', fetchFn})).toMatchObject({state: 'mismatch', found: 'other-agent'});
     });
 });
 
@@ -341,6 +372,29 @@ test.describe('convergeSeatGitIdentity (real git)', () => {
         expect(outcome.state).toBe('mismatch');
         expect(outcome.reason).toBe("holds 'Seat Agent <edited@example.test>', changed after the Fleet wrote 'Seat Agent <seat@example.test>'");
         expect(configOf(repo, env, 'local', 'user.email')).toBe('edited@example.test');
+    });
+
+    test('a name unset after the Fleet\'s write is an edit, not a write cut short: mismatch, and it stays unset', async () => {
+        const {env, repo} = fx;
+
+        await convergeSeatGitIdentity({repoPath: repo, identity: SEAT, env});
+        git(repo, env, 'config', '--local', '--unset', 'user.name');
+
+        expect(await convergeSeatGitIdentity({repoPath: repo, identity: SEAT, env}))
+            .toMatchObject({state: 'mismatch', reason: "has no user.name since the Fleet wrote 'Seat Agent <seat@example.test>'"});
+        expect(configOf(repo, env, 'local', 'user.name')).toBeNull();
+        expect(configOf(repo, env, 'local', 'user.email')).toBe(SEAT.email);
+    });
+
+    test('an email unset after the Fleet\'s write stays unset the same way', async () => {
+        const {env, repo} = fx;
+
+        await convergeSeatGitIdentity({repoPath: repo, identity: SEAT, env});
+        git(repo, env, 'config', '--local', '--unset', 'user.email');
+
+        expect(await convergeSeatGitIdentity({repoPath: repo, identity: SEAT, env}))
+            .toMatchObject({state: 'mismatch', reason: "has no user.email since the Fleet wrote 'Seat Agent <seat@example.test>'"});
+        expect(configOf(repo, env, 'local', 'user.email')).toBeNull();
     });
 
     test('a linked worktree gets the identity in its own scope; the repository config it shares stays as it was', async () => {

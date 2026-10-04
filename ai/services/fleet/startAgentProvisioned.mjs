@@ -108,7 +108,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  * **The seat commits as itself.** Before anything is cloned or bound, a repo-bearing start resolves the identity the
  * seat's commits carry ({@link module:ai/services/fleet/seatGitIdentity.resolveSeatGitIdentity}): its declaration,
  * else its forge account read with its PAT. Without one it refuses (`FLEET_SEAT_GIT_IDENTITY_MISSING`, or
- * `FLEET_SEAT_GIT_IDENTITY_UNKNOWN` when the account could not be read). Every managed checkout then gets that identity
+ * `FLEET_SEAT_GIT_IDENTITY_UNKNOWN` when the account could not be read), and a PAT that answers for another account
+ * than the seat's refuses as `FLEET_SEAT_GIT_IDENTITY_MISMATCH`, before anything is touched. Every managed checkout then gets that identity
  * in its own config scope and must read it back, with the launch env and without it
  * ({@link module:ai/services/fleet/seatGitIdentity.convergeSeatGitIdentity}); a checkout holding another identity
  * refuses the start (`FLEET_SEAT_GIT_IDENTITY_MISMATCH`) and keeps it. The spawn carries the identity as author and
@@ -280,13 +281,14 @@ export async function startAgentProvisioned({
     // would name whoever the host's Git config names.
     const gitIdentity = await resolveGitIdentity({agent, credential: resolvedCredential});
 
-    if (gitIdentity.state === 'missing' || gitIdentity.state === 'unknown') {
+    if (gitIdentity.state === 'missing' || gitIdentity.state === 'unknown' || gitIdentity.state === 'mismatch') {
         lifecycleService.setGitIdentity?.(agentId, gitIdentity);
 
-        throw Object.assign(new Error(gitIdentity.state === 'missing'
-            ? `startAgentProvisioned: agent '${agentId}' has no Git identity to commit under: ${gitIdentity.reason}. Nothing was changed. Declare the name and email its commits carry (gitName and gitEmail), then start it again.`
-            : `startAgentProvisioned: agent '${agentId}' cannot start until its Git identity is known: ${gitIdentity.reason}. Nothing was changed. Check its PAT and its forge, or declare the name and email its commits carry (gitName and gitEmail), then start it again.`
-        ), {code: `FLEET_SEAT_GIT_IDENTITY_${gitIdentity.state.toUpperCase()}`, gitIdentity})
+        throw Object.assign(new Error({
+            missing : `startAgentProvisioned: agent '${agentId}' has no Git identity to commit under: ${gitIdentity.reason}. Nothing was changed. Declare the name and email its commits carry (gitName and gitEmail), then start it again.`,
+            unknown : `startAgentProvisioned: agent '${agentId}' cannot start until its Git identity is known: ${gitIdentity.reason}. Nothing was changed. Check its PAT and its forge, or declare the name and email its commits carry (gitName and gitEmail), then start it again.`,
+            mismatch: `startAgentProvisioned: agent '${agentId}' would commit as another account: ${gitIdentity.reason}. Nothing was changed. Store the seat's own PAT, or declare the name and email its commits carry (gitName and gitEmail), then start it again.`
+        }[gitIdentity.state]), {code: `FLEET_SEAT_GIT_IDENTITY_${gitIdentity.state.toUpperCase()}`, gitIdentity})
     }
 
     const commitIdentity = {name: gitIdentity.name, email: gitIdentity.email};

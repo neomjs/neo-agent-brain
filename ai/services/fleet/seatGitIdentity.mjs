@@ -185,19 +185,23 @@ async function readGitlabAccount({forgeHost, credential, fetchFn, timeoutMs}) {
  *
  * A declaration on the definition wins and needs no forge read. Otherwise the seat's own forge account is read with
  * the PAT the seat already holds, at the origin that PAT belongs to (GitHub's API, or a GitLab seat's `forgeHost`).
+ * The account must be the seat's own: a PAT that answers for another login (`githubUsername`, compared as the forge
+ * does, without case) resolves as `mismatch`, because a successful read proves only who holds the PAT.
  * The name is the account's name, else its login, as git records it. The email is the first address the account has
  * published or chosen for commits that a commit can carry. An address is never made up: an account that offers none
  * resolves as `missing`, and one that cannot be read as `unknown`, each with the reason.
  *
  * @param {Object}   options
- * @param {Object}   options.agent                        The seat's definition: `gitName` and `gitEmail` when declared,
- *                                                        `forge`, and `forgeHost` for a GitLab seat.
+ * @param {Object}   options.agent                        The seat's definition: `githubUsername` (the seat's forge
+ *                                                        login), `gitName` and `gitEmail` when declared, `forge`, and
+ *                                                        `forgeHost` for a GitLab seat.
  * @param {String}   options.credential                   The seat's PAT.
  * @param {Function} [options.fetchFn=globalThis.fetch]
  * @param {Number}   [options.timeoutMs=10000]            Per request.
  * @returns {Promise<Object>} `{state: 'declared', source: 'declared', name, email}`,
  *     `{state: 'derived', source: 'verified-primary' | 'commit-email' | 'public', name, email}`,
- *     `{state: 'missing', reason, name?}`, or `{state: 'unknown', reason}`.
+ *     `{state: 'missing', reason, name?}`, `{state: 'mismatch', found, reason}` for another account's PAT, or
+ *     `{state: 'unknown', reason}`.
  */
 export async function resolveSeatGitIdentity({agent, credential, fetchFn = globalThis.fetch, timeoutMs = 10000}) {
     if (agent?.gitName && agent?.gitEmail) {
@@ -212,6 +216,18 @@ export async function resolveSeatGitIdentity({agent, credential, fetchFn = globa
             : await readGithubAccount({credential, fetchFn, timeoutMs})
     } catch (error) {
         return {state: 'unknown', reason: `its forge account could not be read (${error.message})`}
+    }
+
+    const
+        seatLogin = typeof agent?.githubUsername === 'string' ? agent.githubUsername.trim().replace(/^@/, '') : '',
+        readLogin = typeof account.login === 'string' ? account.login : '';
+
+    if (!seatLogin || readLogin.toLowerCase() !== seatLogin.toLowerCase()) {
+        return {
+            state : 'mismatch',
+            found : readLogin || null,
+            reason: `its PAT belongs to the forge account '${readLogin || '(unnamed)'}', not to the seat's '${seatLogin || '(none)'}'`
+        }
     }
 
     const
@@ -289,17 +305,21 @@ export async function convergeSeatGitIdentity({repoPath, identity, env = process
         expected = `${identity.name} <${identity.email}>`,
         held     = `${current.name ?? '(no name)'} <${current.email ?? '(no email)'}>`,
         empty    = current.name === null && current.email === null,
-        fleets   = record.name !== null && record.email !== null &&
-            (current.name === null || current.name === record.name) &&
-            (current.email === null || current.email === record.email);
+        written  = record.name !== null && record.email !== null,
+        // the Fleet's own only while BOTH values still equal its record: a key unset since is an edit, not a write
+        // that was cut short, and an edit is never undone
+        fleets   = written && current.name === record.name && current.email === record.email;
 
     let action = 'kept';
 
     if (current.name !== identity.name || current.email !== identity.email) {
         if (!empty && !fleets) {
-            const reason = current.name === null || current.email === null
-                ? `sets only ${current.name === null ? 'user.email' : 'user.name'} in its ${scope} config`
-                : record.name !== null && record.email !== null
+            const unset  = current.name === null ? 'user.name' : 'user.email',
+                  reason = current.name === null || current.email === null
+                ? written
+                    ? `has no ${unset} since the Fleet wrote '${record.name} <${record.email}>'`
+                    : `sets only ${current.name === null ? 'user.email' : 'user.name'} in its ${scope} config`
+                : written
                     ? `holds '${held}', changed after the Fleet wrote '${record.name} <${record.email}>'`
                     : `holds '${held}' in its ${scope} config, which the Fleet did not write`;
 

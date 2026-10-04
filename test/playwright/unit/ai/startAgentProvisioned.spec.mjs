@@ -3,6 +3,7 @@ import {CREDENTIAL_FAMILIES}             from '../../../../ai/services/fleet/red
 import {LAUNCHABLE_HARNESS_TYPES}        from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {startAgentProvisioned as startProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {resolveSeatGitIdentity}          from '../../../../ai/services/fleet/seatGitIdentity.mjs';
 import {supportsTenantMcpTarget}         from '../../../../src/fleet/contract/harnessTypes.mjs';
 
 /** The Git identity a fixture seat resolves to unless a case says otherwise. */
@@ -1578,6 +1579,27 @@ test.describe('startAgentProvisioned — the seat commits as itself', () => {
         });
         expect(events).toEqual(['credential']);
         expect(lifecycle.calls.gitIdentity).toEqual([{id: 'a', gitIdentity: unknown}]);
+    });
+
+    test('a PAT that answers for another account stops the start before anything is cloned: the real derivation over a fixture forge', async () => {
+        const
+            events    = [],
+            lifecycle = makeLifecycle({agents: repoAgent('a'), events}),
+            converge  = recorder(events, 'converge', CONVERGED),
+            // the stored PAT reads an account that is not the seat's `a`
+            fetchFn   = async url => ({ok: true, status: 200, json: async () => url === 'https://api.github.com/user'
+                ? {login: 'different-account', name: 'Different Account', email: 'different@example.test'}
+                : [{email: 'different@example.test', primary: true, verified: true, visibility: 'public'}]}),
+            resolve   = args => resolveSeatGitIdentity({...args, fetchFn});
+
+        await expect(start({lifecycle, events, resolveGitIdentity: resolve, convergeGitIdentity: converge})).rejects.toMatchObject({
+            code   : 'FLEET_SEAT_GIT_IDENTITY_MISMATCH',
+            message: "startAgentProvisioned: agent 'a' would commit as another account: its PAT belongs to the forge account 'different-account', not to the seat's 'a'. Nothing was changed. Store the seat's own PAT, or declare the name and email its commits carry (gitName and gitEmail), then start it again."
+        });
+        expect(events).toEqual(['credential']);
+        expect(converge.calls).toEqual([]);
+        expect(lifecycle.calls.start).toHaveLength(0);
+        expect(lifecycle.calls.gitIdentity).toEqual([{id: 'a', gitIdentity: expect.objectContaining({state: 'mismatch', found: 'different-account'})}]);
     });
 
     test('a checkout holding another identity stops the start before preparation, left as it is, and records the mismatch', async () => {
