@@ -1492,6 +1492,33 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         }
     });
 
+    test('SECURITY: a reserved name inside a quoted .env value sets nothing and the seat starts; a linked .env refuses before any spawn', async () => {
+        const root     = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-seat-env-')),
+              seatHome = path.join(root, 'seat'),
+              envFile  = path.join(seatHome, '.env'),
+              outside  = path.join(root, 'outside.env');
+
+        try {
+            fs.mkdirSync(seatHome);
+            fs.writeFileSync(envFile, 'SECOND_FORGE_NOTE="first\nGH_TOKEN=ordinary text\nlast"\n');
+
+            let spawnStub = install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+
+            await FleetLifecycleService.start('a');
+            expect(spawnStub.calls).toHaveLength(1);
+
+            fs.rmSync(envFile);
+            fs.writeFileSync(outside, 'SECOND_FORGE_TOKEN=x\n');
+            fs.symlinkSync(outside, envFile);
+            spawnStub = install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+
+            expect(() => FleetLifecycleService.start('a')).toThrow("FleetLifecycleService.start: agent 'a' cannot start: the seat's .env is a link");
+            expect(spawnStub.calls).toHaveLength(0)
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
     test('SECURITY: a launch env cannot pre-load a GitLab seat slot', () => {
         for (const key of ['NEO_GITLAB_PAT', 'NEO_GITLAB_HOST', 'NEO_GITLAB_PROJECT']) {
             install({agents: {a: agentDef('a', {metadata: {launch: {command: 'x', args: [], env: {[key]: 'spoofed'}}}})}, creds: {}});

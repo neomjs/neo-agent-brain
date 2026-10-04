@@ -1,6 +1,8 @@
-import fs                 from 'fs';
-import fsPromises         from 'fs/promises';
-import path               from 'path';
+import fs                from 'fs';
+import fsPromises        from 'fs/promises';
+import path              from 'path';
+import {parseEnv}        from 'util';
+import {writeFileAtomic} from '../shared/atomicFileWrite.mjs';
 
 /**
  * @module ai/services/fleet/seatEnvFile
@@ -14,6 +16,9 @@ import path               from 'path';
  * token reach a seat through the child env only, and Start refuses a file whose operator part sets one
  * of those slots (`FleetLifecycleService#start`). A server that needs the operator's keys loads the file
  * with Node's `--env-file`, which never overwrites a var already set, so the child env keeps precedence.
+ *
+ * The Fleet reads, writes and re-modes only a regular file at that path. A link or any other entry there
+ * is refused before it is followed, so nothing outside the seat folder is touched through it.
  */
 
 /**
@@ -30,7 +35,7 @@ export const FLEET_BLOCK_END = '# <<< end of the Fleet block';
 
 const
     ENV_KEY        = /^[A-Za-z_][A-Za-z0-9_]*$/,
-    ENV_ASSIGNMENT = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
+    READ_NO_FOLLOW = fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW;
 
 /**
  * @summary The seat's `.env`: `<seatHome>/.env`.
@@ -39,6 +44,25 @@ const
  */
 export function seatEnvFilePath(seatHome) {
     return path.join(seatHome, '.env')
+}
+
+/**
+ * The code of the refusal for an entry at the seat's `.env` path that is not a regular file.
+ * @type {String}
+ */
+export const SEAT_ENV_NOT_REGULAR = 'FLEET_SEAT_ENV_NOT_REGULAR';
+
+/**
+ * @summary The refusal for an entry at the seat's `.env` path that is not a regular file. Its message
+ * names no path, so a caller may pass it on.
+ * @returns {TypeError}
+ * @private
+ */
+function notRegular() {
+    return Object.assign(
+        new TypeError("the seat's .env is a link or another entry, not a regular file; the Fleet does not follow it. Replace it with a regular file."),
+        {code: SEAT_ENV_NOT_REGULAR}
+    )
 }
 
 /**
@@ -57,72 +81,108 @@ function operatorPart(content) {
 }
 
 /**
- * @summary The keys an env text sets (`KEY=` or `export KEY=`); comments and blank lines set none.
+ * @summary The keys an env text sets, read by the parser `--env-file` uses: a line inside a quoted value
+ * belongs to that value and sets nothing.
  * @param {String} text
  * @returns {String[]}
  */
 export function seatEnvKeys(text) {
-    return text.split('\n').map(line => ENV_ASSIGNMENT.exec(line)?.[1]).filter(Boolean)
+    return Object.keys(parseEnv(text))
 }
 
 /**
- * @summary The keys the operator's part of a seat's `.env` sets, read fresh; none while the file is
- * absent.
+ * @summary The keys the operator's part of a seat's `.env` sets, read fresh without following a link;
+ * none while the file is absent.
  * @param {String} seatHome
  * @returns {String[]}
+ * @throws {TypeError} When the path holds a link or another entry that is not a regular file.
  */
 export function readSeatEnvOperatorKeys(seatHome) {
-    let content;
+    const file = seatEnvFilePath(seatHome);
+
+    let fd;
 
     try {
-        content = fs.readFileSync(seatEnvFilePath(seatHome), 'utf8')
+        if (!fs.lstatSync(file).isFile()) throw notRegular();
+
+        fd = fs.openSync(file, READ_NO_FOLLOW)
     } catch (error) {
         if (error.code === 'ENOENT') return [];
+        if (error.code === 'ELOOP')  throw notRegular();
+
         throw error
     }
 
-    return seatEnvKeys(operatorPart(content))
+    try {
+        return seatEnvKeys(operatorPart(fs.readFileSync(fd, 'utf8')))
+    } finally {
+        fs.closeSync(fd)
+    }
+}
+
+/**
+ * @summary Opens the seat's `.env` for reading if it is a regular file, without following a link.
+ * @param {String} file
+ * @param {Object} fileSystem The `fs/promises` surface.
+ * @returns {Promise<Object|null>} A file handle, or `null` while the file is absent.
+ * @private
+ */
+async function openRegular(file, fileSystem) {
+    try {
+        if (!(await fileSystem.lstat(file)).isFile()) throw notRegular();
+
+        return await fileSystem.open(file, READ_NO_FOLLOW)
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        if (error.code === 'ELOOP')  throw notRegular();
+
+        throw error
+    }
 }
 
 /**
  * @summary Ensures a seat's `.env` exists, owner-only, with the Fleet's block holding exactly
- * `fleetKeys`; the operator's part stays byte-identical. Writes only when the file changes, atomically.
+ * `fleetKeys`; the operator's part stays byte-identical. A changed file is published through the
+ * shared atomic write; an unchanged one is only re-moded, through its open handle.
  * @param {Object} options
  * @param {String} options.seatHome            Absolute seat folder.
  * @param {Object} [options.fleetKeys={}]      Non-secret keys a harness cannot take from the child env.
  * @param {Object} [options.fileSystem]        The `fs/promises` surface.
  * @returns {Promise<String>} The file's path.
+ * @throws {TypeError} When a Fleet key is not a one-line key and value, or the path holds a link or
+ *     another entry that is not a regular file.
  */
 export async function ensureSeatEnvFile({seatHome, fleetKeys = {}, fileSystem = fsPromises}) {
-    const file = seatEnvFilePath(seatHome);
+    const
+        file  = seatEnvFilePath(seatHome),
+        lines = Object.entries(fleetKeys).map(([key, value]) => {
+            if (!ENV_KEY.test(key) || typeof value !== 'string' || /[\n\r]/.test(value)) {
+                throw new TypeError(`ensureSeatEnvFile: '${key}' is not a one-line env key and value.`)
+            }
 
-    let current = '';
+            return `${key}=${value}`
+        });
+
+    await fileSystem.mkdir(seatHome, {recursive: true, mode: 0o700});
+
+    const handle = await openRegular(file, fileSystem);
+
+    let next;
 
     try {
-        current = await fileSystem.readFile(file, 'utf8')
-    } catch (error) {
-        if (error.code !== 'ENOENT') throw error
-    }
+        const current = handle ? await handle.readFile('utf8') : '';
 
-    const lines = Object.entries(fleetKeys).map(([key, value]) => {
-        if (!ENV_KEY.test(key) || typeof value !== 'string' || /[\n\r]/.test(value)) {
-            throw new TypeError(`ensureSeatEnvFile: '${key}' is not a one-line env key and value.`)
+        next = [FLEET_BLOCK_START, ...lines, FLEET_BLOCK_END, ''].join('\n') + operatorPart(current);
+
+        if (handle && next === current) {
+            await handle.chmod(0o600);
+            return file
         }
-
-        return `${key}=${value}`
-    });
-
-    const next = [FLEET_BLOCK_START, ...lines, FLEET_BLOCK_END, ''].join('\n') + operatorPart(current);
-
-    if (next !== current) {
-        const scratch = `${file}.${process.pid}.tmp`;
-
-        await fileSystem.mkdir(seatHome, {recursive: true, mode: 0o700});
-        await fileSystem.writeFile(scratch, next, {mode: 0o600});
-        await fileSystem.rename(scratch, file)
+    } finally {
+        await handle?.close()
     }
 
-    await fileSystem.chmod(file, 0o600);
+    await writeFileAtomic(file, next, {mode: 0o600, fsModule: fileSystem});
 
     return file
 }

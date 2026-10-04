@@ -12,7 +12,7 @@ import {deriveAgentInstanceHome}                                    from './deri
 import {deriveHarnessLaunchSpec}                                    from './deriveHarnessLaunchSpec.mjs';
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                     from './deriveNodeRuntimeEnv.mjs';
 import FleetRegistryService                                         from './FleetRegistryService.mjs';
-import {readSeatEnvOperatorKeys}                                    from './seatEnvFile.mjs';
+import {readSeatEnvOperatorKeys, SEAT_ENV_NOT_REGULAR}              from './seatEnvFile.mjs';
 import {readSeatSessionFolder}                                      from './seatSessionFolder.mjs';
 import memoryCoreConfig                                             from '../../mcp/server/memory-core/config.mjs';
 import knowledgeBaseConfig                                          from '../../mcp/server/knowledge-base/config.mjs';
@@ -578,7 +578,17 @@ class FleetLifecycleService extends Base {
 
         // The seat's own .env may add keys for its servers, never a reserved slot: `--env-file` never
         // overwrites, so such a line would only make the file disagree with what the seat runs on.
-        const shadowed = agent.seatHome ? readSeatEnvOperatorKeys(agent.seatHome).find(key => envKeys.includes(key) || key === 'GITHUB_TOKEN') : undefined;
+        let operatorKeys = [];
+
+        try {
+            operatorKeys = agent.seatHome ? readSeatEnvOperatorKeys(agent.seatHome) : []
+        } catch (error) {
+            if (error.code !== SEAT_ENV_NOT_REGULAR) throw error;
+
+            throw new Error(`FleetLifecycleService.start: agent '${id}' cannot start: ${error.message}`)
+        }
+
+        const shadowed = operatorKeys.find(key => envKeys.includes(key) || key === 'GITHUB_TOKEN');
 
         if (shadowed) {
             throw new Error(`FleetLifecycleService.start: the seat's .env sets '${shadowed}', a slot the Fleet fills itself; remove it from the file before starting agent '${id}'.`);

@@ -46,9 +46,11 @@ const BOUNDED_APPLY_EFFECTS = new Set([
     'hydrateWorkspace',
     'lstat',
     'mkdir',
+    'open',
     'readFile',
     'realpath',
     'rename',
+    'rm',
     'stat',
     'unlink',
     'writeFile'
@@ -1203,6 +1205,25 @@ test.describe('prepareManagedAgentWorkspace', () => {
         await prepareManagedAgentWorkspace(options(makeAgent('codex')));
 
         expect(await read(envFile), 'a re-entry rewrites nothing of the operator\'s').toBe(operatorBytes)
+    });
+
+    test('a linked .env in the seat folder refuses preparation, and is neither followed nor replaced', async () => {
+        const
+            envFile = path.join(instanceRoot, 'agent-a', '.env'),
+            outside = path.join(instanceRoot, 'outside.env');
+
+        await fs.mkdir(path.dirname(envFile), {recursive: true});
+        await fs.writeFile(outside, 'SENTINEL=1\n', {mode: 0o644});
+        await fs.symlink(outside, envFile);
+
+        await expect(prepareManagedAgentWorkspace(options(makeAgent('codex')))).rejects.toMatchObject({
+            name : 'ManagedWorkspacePreparationError',
+            code : 'FLEET_WORKSPACE_PREPARATION_FAILED',
+            cause: expect.objectContaining({code: 'FLEET_SEAT_ENV_NOT_REGULAR'})
+        });
+        expect(await read(outside)).toBe('SENTINEL=1\n');
+        expect((await fs.stat(outside)).mode & 0o777).toBe(0o644);
+        expect((await fs.lstat(envFile)).isSymbolicLink()).toBe(true)
     });
 
     test('re-entry reports MATCH and ignores unrelated operator-owned TOML tables/keys', async () => {
