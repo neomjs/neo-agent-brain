@@ -33,10 +33,11 @@ function githubAvatarUrl(githubUsername) {
  * @param {Object[]} options.fleetStatus   Repo-status entries from `registryBridge.fleetStatus()`.
  * @param {Object[]} options.runtimeStatus Optional per-agent process entries from
  *     `registryBridge.fleetRuntimeStatus()` — rows carry an observed `lifecycle` when present.
- * @param {Object}   [options.laneStatus] Held A2A contribution `{capability, events, scanned}` from the
- *     activity read admitted for this viewer. Sender logins are already normalized by the A2A
- *     producer and join only to `githubUsername`, never the registry key. Capture time and scanned
- *     mailbox rows bound the observation window.
+ * @param {Object}   [options.laneStatus] Held A2A contribution `{capability, events, scanned, laneClaims}`
+ *     from the activity read admitted for this viewer. `laneClaims`, the composer's per-seat record,
+ *     is each seat's lane when present; a bare page folds its `events`. Sender logins are already
+ *     normalized by the A2A producer and join only to `githubUsername`, never the registry key.
+ *     Capture time and scanned mailbox rows bound the observation window.
  * @param {Object[]} options.events        Optional already-normalized cockpit events.
  * @param {Object}   options.capabilities  Optional source-capability overrides from wired adapters.
  * @returns {Object} serializable cockpit DTO `{sources, capabilities, rows, events}`.
@@ -78,10 +79,12 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
               },
           laneByLogin  = new Map();
 
-    // Fold the admitted mailbox page once, before joining rows. A degraded page cannot lend its
-    // retained claims to a current observation; malformed claims cannot displace a valid one.
+    // Fold the admitted claims once, before joining rows. A degraded page cannot lend its retained
+    // claims to a current observation; malformed claims cannot displace a valid one.
     if (laneCapability.state === 'wired') {
-        for (const event of Array.isArray(laneStatus.events) ? laneStatus.events : []) {
+        const claims = Array.isArray(laneStatus.laneClaims) ? laneStatus.laneClaims : laneStatus.events;
+
+        for (const event of Array.isArray(claims) ? claims : []) {
             const {agentId, occurredAt, payload, source, type} = event || {},
                   claimedAt                                    = typeof occurredAt === 'string' ? Date.parse(occurredAt) : NaN;
 

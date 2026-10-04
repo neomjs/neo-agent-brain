@@ -3785,6 +3785,12 @@ class MailboxService extends Base {
         if (archivedAt) summary.archivedAt = archivedAt;
         if (messageNode.properties.retracted) summary.retracted = true;
 
+        // The sender's declared concepts, so a reader types a message (a lane claim, a release) from
+        // data rather than its subject. A retraction keeps them stored, so a retracted row drops them.
+        const {taggedConcepts} = messageNode.properties;
+
+        if (!summary.retracted && Array.isArray(taggedConcepts) && taggedConcepts.length > 0) summary.taggedConcepts = [...taggedConcepts];
+
         return summary
     }
 

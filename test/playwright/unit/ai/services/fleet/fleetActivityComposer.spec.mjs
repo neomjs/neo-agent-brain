@@ -676,3 +676,105 @@ test.describe('fleetActivityComposer — held mailbox admission', () => {
         expect(source.readHeldA2ASnapshot()).toBeNull();
     });
 });
+
+// A lane lives for days, a held page for hours, a Fleet process until its next restart.
+test.describe('fleetActivityComposer — the per-seat lane record', () => {
+    const
+        event   = (agentId, occurredAt, subject, collisionTag = 'lane-claim') => ({
+            eventId: `${agentId}@${occurredAt}`, type: collisionTag === 'lane-claim' ? 'lane-claim' : 'a2a-activity',
+            source : 'memory-core:mailbox', agentId, occurredAt, payload: {subject, collisionTag}
+        }),
+        page    = (events, state = 'wired') => ({
+            capability: {source: 'memory-core:mailbox', state, confidence: state === 'wired' ? 'observed' : 'none', capturedAt: '2026-10-03T18:00:00.000Z'},
+            scanned   : events.length,
+            events    : state === 'wired' ? events : []
+        }),
+        prLane  = async () => ({capability: {state: 'wired'}, events: []}),
+        lanesOf = source => Object.fromEntries(source.readHeldA2ASnapshot().laneClaims.map(claim => [claim.agentId, claim.payload.subject])),
+        memory  = () => {
+            const store = {state: null, saves: 0};
+            return Object.assign(store, {load: () => structuredClone(store.state), save: state => { store.saves++; store.state = structuredClone(state) }})
+        };
+    let createSource;
+    test.beforeAll(async () => {
+        createSource = (await import('../../../../../../ai/services/fleet/fleetActivityComposer.mjs')).createFleetActivityReadSource
+    });
+
+    test('a claim pushed off the page stays with its seat until the seat replaces or releases it', async () => {
+        const pages  = [
+                  page([event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A'), event('bob', '2026-10-03T12:01:00.000Z', '[lane-claim] B')]),
+                  page([event('carol', '2026-10-03T13:00:00.000Z', 'chatter', null)]),
+                  page([], 'degraded'),
+                  page([event('bob', '2026-10-03T14:00:00.000Z', '[claim-corrected] B is free', 'claim-corrected'),
+                        event('alice', '2026-10-03T11:00:00.000Z', '[lane-claim] older than A')]),
+                  page([event('alice', '2026-10-03T15:00:00.000Z', '[lane-claim] A2')])
+              ],
+              source = createSource({resolveViewerIdentity: () => '@viewer', readA2ASnapshot: async () => pages.shift(), readPrLaneSnapshot: prLane});
+
+        await source.readActivitySnapshot();
+        await source.readActivitySnapshot();
+        expect(lanesOf(source)).toEqual({alice: '[lane-claim] A', bob: '[lane-claim] B'});
+
+        await source.readActivitySnapshot();
+        expect(lanesOf(source), 'a degraded page changes no seat').toEqual({alice: '[lane-claim] A', bob: '[lane-claim] B'});
+
+        await source.readActivitySnapshot();
+        expect(lanesOf(source), 'a release clears; an older claim displaces nothing').toEqual({alice: '[lane-claim] A'});
+
+        await source.readActivitySnapshot();
+        expect(lanesOf(source)).toEqual({alice: '[lane-claim] A2'});
+    });
+
+    test('after a restart the first page shows the saved claims, only to the viewer and mailbox they were read from', async () => {
+        const store = memory(),
+              start = (viewer, events, laneClaimSource = 'plane:https://plane-a.example') => createSource({
+                  resolveViewerIdentity: () => viewer, readA2ASnapshot: async () => page(events), readPrLaneSnapshot: prLane,
+                  laneClaimStore       : store, laneClaimSource
+              });
+
+        await start('@viewer', [event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')]).readActivitySnapshot();
+        expect(store.saves).toBe(1);
+
+        const restarted = start('@viewer', [event('carol', '2026-10-03T19:00:00.000Z', 'chatter', null)]);
+        expect(restarted.readHeldA2ASnapshot(), 'nothing is held before the first page').toBeNull();
+        await restarted.readActivitySnapshot();
+        expect(lanesOf(restarted)).toEqual({alice: '[lane-claim] A'});
+        expect(store.saves, 'a page that changes no seat writes nothing').toBe(1);
+
+        const other = start('@other', []);
+        await other.readActivitySnapshot();
+        expect(lanesOf(other)).toEqual({});
+
+        // the same viewer and data directory, restarted against another plane: that plane's claims only
+        await start('@viewer', [event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')]).readActivitySnapshot();
+        const otherPlane = start('@viewer', [], 'plane:https://plane-b.example');
+        await otherPlane.readActivitySnapshot();
+        expect(lanesOf(otherPlane)).toEqual({});
+    });
+
+    test('a saved record that cannot be read is kept in memory only and never overwritten', async () => {
+        for (const load of [
+            () => { throw new SyntaxError('Unexpected end of JSON input') },
+            () => ({viewerIdentity: '@viewer', seats: {}}),
+            () => ({source: 'plane:https://plane-a.example', viewerIdentity: '@viewer', seats: 'none'}),
+            () => [],
+            () => 'lanes'
+        ]) {
+            const store  = {saves: 0, load, save() { this.saves++ }},
+                  source = createSource({
+                      resolveViewerIdentity: () => '@viewer', readPrLaneSnapshot: prLane, laneClaimStore: store, laneClaimSource: 'plane:https://plane-a.example',
+                      readA2ASnapshot      : async () => page([event('alice', '2026-10-03T12:00:00.000Z', '[lane-claim] A')])
+                  });
+
+            await source.readActivitySnapshot();
+            expect(lanesOf(source), String(load)).toEqual({alice: '[lane-claim] A'});
+            expect(store.saves, String(load)).toBe(0);
+        }
+    });
+
+    test('a lane store without the mailbox source it belongs to is refused at construction', () => {
+        expect(() => createSource({
+            readA2ASnapshot: async () => page([]), readPrLaneSnapshot: prLane, laneClaimStore: memory()
+        })).toThrow(TypeError);
+    });
+});

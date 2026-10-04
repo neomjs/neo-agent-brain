@@ -231,13 +231,15 @@ export function createA2AMessageActivityEvents(messages = [], {capturedAt = new 
         .filter(message => isWithinBounds(message.occurredAt, sinceTime, untilTime))
         .map(message => createFleetCockpitEvent({
             eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.a2a, message.messageId),
-            type      : message.isLaneClaim ? 'lane-claim' : 'a2a-activity',
+            type      : message.collisionTag === 'lane-claim' ? 'lane-claim' : 'a2a-activity',
             source    : FLEET_COCKPIT_SOURCES.a2a,
             agentId   : message.from,
             confidence: 'observed',
             occurredAt: message.occurredAt,
             payload   : {
-                kind               : message.isLaneClaim ? 'a2a-lane-claim' : 'a2a-message',
+                kind               : message.collisionTag === 'lane-claim' ? 'a2a-lane-claim' : 'a2a-message',
+                // the message's collision tag or null; the lane record folds claims and releases (`claim-corrected`)
+                collisionTag       : message.collisionTag,
                 messageId          : message.messageId,
                 subject            : message.subject,
                 from               : message.from,
@@ -274,7 +276,7 @@ function normalizeA2AMessage(message, capturedAt) {
         // Classify the RAW subject: the display form above is whitespace-collapsed and truncated,
         // and the reader's grammar is segments and length — normalizing the evidence first can
         // erase a claim that opens a later line or lands past the display boundary.
-        isLaneClaim        : collisionPreventionTag({subject: message.subject, taggedConcepts: message.taggedConcepts}) === 'lane-claim'
+        collisionTag       : collisionPreventionTag({subject: message.subject, taggedConcepts: message.taggedConcepts})
     }
 }
 

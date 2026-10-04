@@ -33,12 +33,16 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
         let   captured = null;
         const created  = {readActivitySnapshot() {}};
 
+        const laneClaimStore = {load: () => null, save() {}};
+
         const result = wireFleetActivityReadSource({
             issuesDir            : '/synced/issues',
             listMessages         : () => [],
             resolveViewerIdentity: () => '@viewer',
             graphService         : {},
             limit                : 25,
+            laneClaimStore,
+            laneClaimSource      : 'plane:https://plane-a.example',
             bridge,
             createSource         : opts => { captured = opts; return created }
         });
@@ -49,6 +53,9 @@ test.describe('Neo.ai.services.fleet.wireFleetActivityReadSource', () => {
         expect(typeof captured.readPrLaneSnapshot).toBe('function');
         expect(captured.limit).toBe(25);
         expect(captured.resolveViewerIdentity()).toBe('@viewer');
+        // the per-seat lane record's store, and the mailbox it is saved for, reach the composer
+        expect(captured.laneClaimStore).toBe(laneClaimStore);
+        expect(captured.laneClaimSource).toBe('plane:https://plane-a.example');
     });
 
     test('an injected readPrLane IS the PR/lane slot — plane mode reads the plane, and the content root is never read', () => {
