@@ -1186,6 +1186,25 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect((await fs.stat(homeConfigPath)).mode & 0o777).toBe(0o600);
     });
 
+    test('a prepared seat holds its own .env in the seat folder, owner-only and outside the clone, and re-entry keeps the operator\'s lines', async () => {
+        const
+            opts    = options(makeAgent('codex')),
+            envFile = path.join(instanceRoot, 'agent-a', '.env');
+
+        await prepareManagedAgentWorkspace(opts);
+
+        expect((await fs.stat(envFile)).mode & 0o777).toBe(0o600);
+        expect(envFile.startsWith(opts.targetRepoRoot + path.sep), 'never inside the clone').toBe(false);
+
+        await fs.appendFile(envFile, 'SECOND_FORGE_HOST=gitlab.example.com\n');
+
+        const operatorBytes = await read(envFile);
+
+        await prepareManagedAgentWorkspace(options(makeAgent('codex')));
+
+        expect(await read(envFile), 'a re-entry rewrites nothing of the operator\'s').toBe(operatorBytes)
+    });
+
     test('re-entry reports MATCH and ignores unrelated operator-owned TOML tables/keys', async () => {
         const opts        = options(makeAgent('codex'));
         const first       = await prepareManagedAgentWorkspace(opts);

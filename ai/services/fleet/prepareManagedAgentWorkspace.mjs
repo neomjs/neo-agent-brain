@@ -20,6 +20,7 @@ import {
 } from './managedAgentWorkspacePlan.mjs';
 import {OPENCODE_SEAT_SERVERS, WAKE_ENVELOPE_PLANT_FILE_NAME, generateOpenCodeSeatConfig, isUnmodifiedGeneration} from './generateOpenCodeSeatConfig.mjs';
 import {SEAT_INSTRUCTION_STATES, projectSeatInstructions}                                                         from './projectSeatInstructions.mjs';
+import {ensureSeatEnvFile}                                                                                         from './seatEnvFile.mjs';
 
 export {createManagedAgentWorkspacePlan} from './managedAgentWorkspacePlan.mjs';
 
@@ -370,6 +371,9 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         claudeConfigRoot,
         fileSystem
     });
+
+    // the seat's own .env, in its seat folder beside the clones, where the operator adds keys
+    await ensureSeatEnvFile({seatHome: path.join(canonicalInstanceRoot, agent.id), fileSystem});
 
     artifacts.push(...await convergeSeatMemory({
         agent,

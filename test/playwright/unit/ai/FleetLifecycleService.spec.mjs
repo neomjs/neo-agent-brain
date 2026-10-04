@@ -1459,6 +1459,39 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
         });
     });
 
+    test('SECURITY: a seat\'s .env cannot set a slot the Fleet fills itself, the configured PAT slot included; its own keys start normally', async () => {
+        const seatHome = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-seat-env-')),
+              envFile  = path.join(seatHome, '.env'),
+              original = FleetLifecycleService.credentialEnvVar;
+
+        try {
+            for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY', 'NEO_FLEET_BRIDGE_TOKEN', 'NEO_GITLAB_PAT']) {
+                fs.writeFileSync(envFile, `# a second forge\nSECOND_FORGE_TOKEN=x\nexport ${key}=spoofed\n`);
+
+                const spawnStub = install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+
+                expect(() => FleetLifecycleService.start('a'), key).toThrow(`the seat's .env sets '${key}'`);
+                expect(spawnStub.calls, key).toHaveLength(0)
+            }
+
+            // the reserved set is the lifecycle's own: a renamed PAT slot is reserved under its new name
+            fs.writeFileSync(envFile, 'NEO_SEAT_PAT=spoofed\n');
+            install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+            FleetLifecycleService.credentialEnvVar = 'NEO_SEAT_PAT'; // after install(), which resets it
+            expect(() => FleetLifecycleService.start('a')).toThrow("the seat's .env sets 'NEO_SEAT_PAT'");
+
+            fs.writeFileSync(envFile, '# a second forge\nSECOND_FORGE_TOKEN=x\n');
+
+            const spawnStub = install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+
+            await FleetLifecycleService.start('a');
+            expect(spawnStub.calls).toHaveLength(1)
+        } finally {
+            FleetLifecycleService.credentialEnvVar = original;
+            fs.rmSync(seatHome, {recursive: true, force: true})
+        }
+    });
+
     test('SECURITY: a launch env cannot pre-load a GitLab seat slot', () => {
         for (const key of ['NEO_GITLAB_PAT', 'NEO_GITLAB_HOST', 'NEO_GITLAB_PROJECT']) {
             install({agents: {a: agentDef('a', {metadata: {launch: {command: 'x', args: [], env: {[key]: 'spoofed'}}}})}, creds: {}});
