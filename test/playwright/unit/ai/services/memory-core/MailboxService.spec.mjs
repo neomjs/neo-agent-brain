@@ -15,9 +15,11 @@ setup({
 
 import {test, expect}           from '@playwright/test';
 import {AjvJsonSchemaValidator} from '@modelcontextprotocol/sdk/validation/ajv-provider.js';
+import Database                 from 'better-sqlite3';
 import * as yaml                from 'js-yaml';
 import fs                       from 'fs-extra';
 import fsPromises               from 'fs/promises';
+import os                       from 'os';
 import path                     from 'path';
 import Neo                      from 'neo.mjs/src/Neo.mjs';
 import * as core                from 'neo.mjs/src/core/_export.mjs';
@@ -7047,31 +7049,50 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         expect((await openTasks('@operator')).totalCount).toBe(0);
     });
 
-    test('#859 AC-4: the count and the page are read in one transaction, so one snapshot', async () => {
+    test('#859 AC-4: the count and the page read one snapshot: an answer another connection commits between them leaves a coherent page', async () => {
         await seedHumanRecipients();
-        await ask('@operator');
 
         const
-            sqlite  = GraphService.db.storage.db,
-            prepare = sqlite.prepare,
-            reads   = [];
+            taskId = await ask('@operator'),
+            memory = GraphService.db.storage.db,
+            file   = path.join(os.tmpdir(), `mailbox-snapshot-${process.pid}-${Date.now()}.sqlite`);
 
-        // whether each of the view's two reads runs inside a transaction. A write committed between
-        // two separate reads would count a row the page no longer serves, and the continuation
-        // advertised would never advance. Proving the interleave takes a second connection to a
-        // file database, which this in-memory graph cannot open.
-        sqlite.prepare = function (source) {
-            /FROM tasks/.test(source) && reads.push(sqlite.inTransaction);
+        // the graph as a file, so a second connection can write to it the way another process would
+        fs.writeFileSync(file, memory.serialize());
+
+        const reader = new Database(file);
+
+        reader.pragma('journal_mode = WAL');
+
+        const
+            writer  = new Database(file),
+            prepare = reader.prepare;
+
+        GraphService.db.storage.db = reader;
+
+        // the answer commits after the count has been read and before the page is
+        reader.prepare = function (source) {
+            /SELECT messageId, task FROM tasks/.test(source) &&
+                writer.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.task.state', 'Completed') WHERE id = ?`).run(taskId);
             return prepare.call(this, source)
         };
 
         try {
-            expect((await openTasks('@operator', {limit: 1})).totalCount).toBe(1);
-        } finally {
-            sqlite.prepare = prepare
-        }
+            const open = await openTasks('@operator', {limit: 1});
 
-        expect(reads).toEqual([true, true]);
+            expect(open).toMatchObject({totalCount: 1, truncated: false, nextOffset: null});
+            expect(open.messages.map(row => row.messageId)).toEqual([taskId]);
+
+            reader.prepare = prepare;
+
+            // the next read is a fresh snapshot, and sees the answer
+            expect((await openTasks('@operator')).totalCount).toBe(0);
+        } finally {
+            GraphService.db.storage.db = memory;
+            reader.close();
+            writer.close();
+            for (const suffix of ['', '-wal', '-shm']) fs.removeSync(file + suffix)
+        }
     });
 
     test('#859 AC-4: priority-age orders high, normal (an absent priority included), low, then oldest first, across a page boundary', async () => {
