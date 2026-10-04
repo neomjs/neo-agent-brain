@@ -82,12 +82,34 @@ test.describe('seatSessionFolder — the folder a desktop seat\'s session opened
         record('broken', '{not json');
         record('shapeless', {title: 'no folder, no times'});
 
-        expect(read()).toEqual({state: 'unknown', expected, reason: '2 of the seat\'s session records since the launch could not be read'});
+        expect(read()).toEqual({state: 'unknown', expected, reason: '2 of the seat\'s session records could not be read'});
 
         record('good', {originCwd: expected, createdAt: after(5)});
 
         expect(read(), 'a readable record answers beside the unreadable ones').toEqual({state: 'ok', expected})
     });
+
+    // the store churns under the reader: a record listed a moment ago is gone, or its metadata refuses
+    for (const code of ['ENOENT', 'EACCES']) {
+        test(`a record whose metadata read fails with ${code} after the listing is unreadable, never a throw`, () => {
+            fs.mkdirSync(store, {recursive: true});
+
+            const
+                churned    = record('churned', {originCwd: expected, createdAt: after(5)}),
+                fileSystem = {...fs, statSync: (file, ...rest) => {
+                    if (file === churned) throw Object.assign(new Error(`${code}: ${file}`), {code});
+
+                    return fs.statSync(file, ...rest)
+                }},
+                readWith   = () => readSeatSessionFolder({instanceHome, expected, since, fileSystem});
+
+            expect(readWith()).toEqual({state: 'unknown', expected, reason: '1 of the seat\'s session records could not be read'});
+
+            record('good', {originCwd: expected, createdAt: after(6)});
+
+            expect(readWith(), 'the readable record still answers').toEqual({state: 'ok', expected})
+        })
+    }
 
     test('a linked folder in the store is not followed', () => {
         const outside = path.join(root, 'outside', 'org');

@@ -63,12 +63,14 @@ export function readSeatSessionFolder({instanceHome, expected, since, fileSystem
         unreadable = 0;
 
     for (const file of files) {
-        // a record untouched since the launch was not active since it
-        if (fileSystem.statSync(file).mtimeMs < launchedAt) continue;
-
         let record;
 
+        // a record that vanished after the listing, or refuses its metadata or its bytes, is
+        // unreadable: a throw here would reject every seat's status, not just this one's
         try {
+            // a record untouched since the launch was not active since it
+            if (fileSystem.statSync(file).mtimeMs < launchedAt) continue;
+
             record = JSON.parse(fileSystem.readFileSync(file, 'utf8'))
         } catch {
             unreadable++;
@@ -91,7 +93,7 @@ export function readSeatSessionFolder({instanceHome, expected, since, fileSystem
 
     if (!current) {
         return unreadable
-            ? unknown(`${unreadable} of the seat's session records since the launch could not be read`)
+            ? unknown(`${unreadable} of the seat's session records could not be read`)
             : {state: 'pending', expected}
     }
 
