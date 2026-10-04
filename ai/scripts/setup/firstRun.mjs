@@ -25,7 +25,7 @@ import {fileURLToPath} from 'node:url';
 
 import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../services/fleet/firstRunRecipe.mjs';
 import {secretFileNames}                                                                      from '../../services/fleet/credentialStep.mjs';
-import {admitCredentialReference, createHost, persistSetupRecord, recordConsent}              from '../../services/fleet/hostEffects.mjs';
+import {EFFECT_IDS, admitCredentialReference, createHost, persistSetupRecord, recordConsent}  from '../../services/fleet/hostEffects.mjs';
 import {PLANE_MEMORY_CORE_PATH}                                                               from '../../services/fleet/mcpWireParsing.mjs';
 import {presets}                                                                              from '../../services/fleet/placementPresets.mjs';
 import {createDefaultReaders, probePlacement}                                                 from '../../services/fleet/probePlacement.mjs';
@@ -33,8 +33,8 @@ import {probeValidation}                                                        
 import {
     RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, findConsent, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath
 } from '../../services/fleet/setupRunRecord.mjs';
-import {performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
-import {runHealthcheck}                from '../diagnostics/mcpHealthcheck.mjs';
+import {compositionKey, consentedInputs, performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
+import {runHealthcheck}                                                 from '../diagnostics/mcpHealthcheck.mjs';
 
 const
     brainRoot       = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
@@ -129,6 +129,10 @@ export {PLANE_MEMORY_CORE_PATH};
  * secret files as the consented preset's whole set and by mode, the compose project, the served plane's
  * identity through the MCP healthcheck, the provider round trip, and the run's own witness.
  *
+ * Each effect's observer also reports `inputKey`: the key of the input the run's CURRENT consents render for
+ * it (`consentedInputs`), and for the witness the composition this run accepted (`compositionKey`). The recipe
+ * holds an accepted receipt against it, so a consent changed after the effect reads as an earlier input.
+ *
  * `servedPlane` asks the plane the way its clients do: the Memory Core route below the endpoint, the
  * consented plane credential as the bearer (read from the file the record references at call time — the
  * token lives in the request only, never in a log or the record), and the plane block as observed, asserted
@@ -183,39 +187,50 @@ export function productionObservers({layout, host, probe = probePlacement, healt
         ? `the plane refused the witness write at ${section.attempt.refused.at}: ${section.attempt.refused.reason}`
         : section?.failure ? `the plane refused the ${section.failure.step} at ${section.failure.at}: ${section.failure.reason}` : null;
 
+    // the key of the input the run's consents render NOW for a host effect: the recipe holds an accepted
+    // receipt against it, so a changed consent reads as an earlier input instead of a finished effect
+    const inputKey = (effectId, target, record) => consentedInputs({record, layout, target})?.keys[effectId] ?? null;
+
+    // present means the WHOLE set the consented preset needs: the files are written one at a time,
+    // so an interrupted write leaves some of them, and "any file" would read that as done
+    const secretSet = async record => {
+        const
+            files   = await host.fsModule.readdir(layout.secretsDir).catch(error => error?.code === 'ENOENT' ? [] : Promise.reject(error)),
+            consent = record ? findConsent(record, 'preset')?.answer : null,
+            missing = secretFileNames(presets.find(preset => preset.id === consent) ?? null).filter(name => !files.includes(name));
+
+        if (files.length === 0) {
+            return {present: false, reason: `no secret files under ${layout.secretsDir}`};
+        }
+
+        if (missing.length > 0) {
+            return {present: false, reason: `missing under ${layout.secretsDir}: ${missing.join(', ')}`};
+        }
+
+        for (const file of files) {
+            const stat = await host.fsModule.stat(path.join(layout.secretsDir, file));
+
+            if ((stat.mode & 0o077) !== 0) {
+                return {present: true, digest: null, problem: `${file} is readable beyond its owner`};
+            }
+        }
+
+        return {present: true, digest: null, problem: null};
+    };
+
     return {
         placement,
-        envCarrier : () => digestOfFile(host.fsModule, layout.envFile),
-        // present means the WHOLE set the consented preset needs: the files are written one at a time,
-        // so an interrupted write leaves some of them, and "any file" would read that as done
-        secretFiles: async (target, {record = null} = {}) => {
-            const
-                files   = await host.fsModule.readdir(layout.secretsDir).catch(error => error?.code === 'ENOENT' ? [] : Promise.reject(error)),
-                consent = record ? findConsent(record, 'preset')?.answer : null,
-                missing = secretFileNames(presets.find(preset => preset.id === consent) ?? null).filter(name => !files.includes(name));
-
-            if (files.length === 0) {
-                return {present: false, reason: `no secret files under ${layout.secretsDir}`};
-            }
-
-            if (missing.length > 0) {
-                return {present: false, reason: `missing under ${layout.secretsDir}: ${missing.join(', ')}`};
-            }
-
-            for (const file of files) {
-                const stat = await host.fsModule.stat(path.join(layout.secretsDir, file));
-
-                if ((stat.mode & 0o077) !== 0) {
-                    return {present: true, digest: null, problem: `${file} is readable beyond its owner`};
-                }
-            }
-
-            return {present: true, digest: null, problem: null};
-        },
-        runningPlane: async () => {
+        envCarrier  : async (target, {record = null} = {}) => ({...await digestOfFile(host.fsModule, layout.envFile), inputKey: inputKey(EFFECT_IDS.writeEnv, target, record)}),
+        secretFiles : async (target, {record = null} = {}) => ({...await secretSet(record), inputKey: inputKey(EFFECT_IDS.writeSecrets, target, record)}),
+        runningPlane: async (target, {record = null} = {}) => {
             const result = probed ?? await placement();
 
-            return {present: result.runningPlane?.project === layout.composeProject, digest: null, reason: 'the compose project is not running'};
+            return {
+                present : result.runningPlane?.project === layout.composeProject,
+                digest  : null,
+                reason  : 'the compose project is not running',
+                inputKey: inputKey(EFFECT_IDS.composeUp, target, record)
+            };
         },
         servedPlane : async (target, {record = null} = {}) => {
             const health = await healthcheck({
@@ -248,10 +263,10 @@ export function productionObservers({layout, host, probe = probePlacement, healt
             const refusal = witnessRefusal(section);
 
             if (refusal) {
-                return {present: true, digest: null, problem: refusal};
+                return {present: true, digest: null, problem: refusal, inputKey: compositionKey(record)};
             }
 
-            return {present: Boolean(section?.memory && section.recall?.hit), digest: null, problem: null, reason: section ? 'the witness has not been written and recalled yet' : 'the verify effect has not run'};
+            return {present: Boolean(section?.memory && section.recall?.hit), digest: null, problem: null, inputKey: compositionKey(record), reason: section ? 'the witness has not been written and recalled yet' : 'the verify effect has not run'};
         },
         done        : async (target, {record = null} = {}) => {
             const section = witnessOf(record);

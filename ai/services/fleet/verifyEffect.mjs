@@ -73,12 +73,12 @@ export function rowCarriesMarker(row, marker) {
  * @param {String} options.dispatchedAt
  * @returns {Object}
  */
-export function newAttemptSection(previous, {runId, planeId, marker, dispatchedAt}) {
+export function newAttemptSection(previous, {runId, planeId, marker, dispatchedAt, composition = null}) {
     return {
         runId,
         planeId,
         sessionId    : null,
-        attempt      : {marker, dispatchedAt},
+        attempt      : {marker, dispatchedAt, ...(composition ? {composition} : {})},
         memory       : null,
         readback     : null,
         recall       : null,
@@ -90,7 +90,7 @@ const
     stampOf     = host => new Date(host.now()).toISOString(),
     isRefusal   = error => error?.refused === true,
     reasonOf    = error => error?.message ?? String(error),
-    baseReceipt = section => ({effectId: EFFECT_IDS.verify, inputDigest: contentDigest(section.attempt.marker)});
+    baseReceipt = section => ({effectId: EFFECT_IDS.verify, inputDigest: contentDigest(section.attempt.marker), ...(section.attempt.composition ? {inputKey: section.attempt.composition} : {})});
 
 function pendingReceipt(section, host, reason) {
     return {...baseReceipt(section), outcome: RECEIPT_OUTCOMES.pending, resumable: true, startedAt: section.attempt.dispatchedAt, updatedAt: stampOf(host), reason};
@@ -113,7 +113,7 @@ function acceptedReceipt(section, host) {
  * sub-steps that landed, the `verify` receipt it now holds, and what happened (`written`, `adopted`,
  * `resumed`, `refused`, `reconcile-required`, `unchanged`).
  *
- * - no section, or `newAttempt`: a durable attempt first, then ONE write; an answered write records `memory`
+ * - no section, `newAttempt`, or a section that followed another `composition`: a durable attempt first, then ONE write; an answered write records `memory`
  *   and `sessionId`, an explicit refusal settles the attempt, an ambiguous failure leaves the receipt
  *   `reconcile-required` and the attempt unacknowledged;
  * - an unacknowledged attempt: a read of the recent turns; a row carrying the marker is adopted as `memory`
@@ -130,13 +130,19 @@ function acceptedReceipt(section, host) {
  * @param {Object}   options.plane `{addMemory(content), recentTurns({limit}), recall({query, limit})}` over the served plane; a
  *     refusal the plane answered carries `error.refused === true`, anything else is ambiguous.
  * @param {Boolean}  [options.newAttempt=false] The operator's explicit consent to write the witness again (a duplicate row is possible).
+ * @param {String|null} [options.composition=null] The key of the composition the witness follows (`compositionKey`); the attempt
+ *     records it, and an attempt that recorded another one is superseded by a new attempt — a new input, not a second write for the same one.
  * @param {Function} [options.mintMarker=randomUUID]
  * @returns {Promise<{record: Object, receipt: Object, performed: String}>}
  */
-export async function performVerify({record, recordPath, host, target, plane, newAttempt = false, mintMarker = randomUUID}) {
+export async function performVerify({record, recordPath, host, target, plane, newAttempt = false, composition = null, mintMarker = randomUUID}) {
     const existing = findReceipt(record, EFFECT_IDS.verify);
 
     let section = record.verification ?? null, current = record;
+
+    // a witness speaks for the composition it followed: a re-composed plane is a new input, so its attempt
+    // is a new one without the operator's second-write consent
+    const fresh = newAttempt || Boolean(section) && (section.attempt?.composition ?? null) !== composition;
 
     const persist = async receipt => {
         current = (await recordVerification({record: current, recordPath, host, verification: section, receipt})).record;
@@ -148,19 +154,19 @@ export async function performVerify({record, recordPath, host, target, plane, ne
     // `receipt:` expression, which would hand the caller the record from before the write
     const settle = async (receipt, performed) => ({receipt: await persist(receipt), record: current, performed});
 
-    if (existing?.outcome === RECEIPT_OUTCOMES.accepted && section?.recall?.hit === true && !newAttempt) {
+    if (existing?.outcome === RECEIPT_OUTCOMES.accepted && section?.recall?.hit === true && !fresh) {
         return {record, receipt: existing, performed: 'unchanged'};
     }
 
-    if (section?.attempt?.refused && !newAttempt) {
+    if (section?.attempt?.refused && !fresh) {
         return {record, receipt: existing, performed: 'unchanged'};
     }
 
     let performed;
 
-    if (!section || newAttempt) {
+    if (!section || fresh) {
         // the attempt is durable BEFORE the write leaves: a crash between the two leaves a reconcilable trace, never a replay
-        section = newAttemptSection(section, {runId: record.runId, planeId: target.planeId, marker: mintMarker(), dispatchedAt: stampOf(host)});
+        section = newAttemptSection(section, {runId: record.runId, planeId: target.planeId, marker: mintMarker(), dispatchedAt: stampOf(host), composition});
         await persist(pendingReceipt(section, host, 'the witness write is being dispatched'));
 
         let answer;

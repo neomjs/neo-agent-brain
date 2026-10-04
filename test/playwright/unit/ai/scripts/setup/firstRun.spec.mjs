@@ -277,7 +277,8 @@ test.describe('firstRun CLI', () => {
         const file = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, servedPlane: {id: 'plane-b', dataRoot: '/srv/plane-b'}})});
 
         expect(file.code, 'the served plane still fails the run').toBe(1);
-        expect(JSON.parse(file.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt'});
+        // the parked receipt carried no input key, so the settled row says what it cannot prove
+        expect(JSON.parse(file.stdout).steps.find(step => step.id === 'write-env')).toMatchObject({status: 'ok', reason: 'observed; matches the accepted receipt (input not recorded)'});
         expect(await receiptOf('write-env')).toMatchObject({outcome: 'accepted', settledBy: 'observation'});
         expect(JSON.parse(await fs.readFile(callsPath, 'utf8'))).toHaveLength(1);
     });
@@ -329,26 +330,32 @@ test.describe('firstRun CLI', () => {
             {stateRoot} = await scratch(),
             layout      = hostLayout({stateRoot}),
             observe     = preset => productionObservers({layout, host: createHost()}).secretFiles({}, {record: preset ? {consents: [{stepId: 'preset', answer: preset}]} : null}),
-            write       = async (name, mode = 0o600) => { await fs.writeFile(path.join(layout.secretsDir, name), 'x'); await fs.chmod(path.join(layout.secretsDir, name), mode) };
+            write       = async (name, mode = 0o600) => { await fs.writeFile(path.join(layout.secretsDir, name), 'x'); await fs.chmod(path.join(layout.secretsDir, name), mode) },
+            hosted      = (await observe('hosted')).inputKey,
+            local       = (await observe('local-small')).inputKey;
 
-        expect(await observe('hosted')).toEqual({present: false, reason: `no secret files under ${layout.secretsDir}`});
+        // every observation names the key of the set the consent needs: one per set, none without a consent
+        expect([hosted, local].every(key => /^[0-9a-f]{64}$/.test(key)) && hosted !== local).toBe(true);
+        expect((await observe('local-full')).inputKey, 'two presets that need one set share its key').toBe(local);
+
+        expect(await observe('hosted')).toEqual({present: false, reason: `no secret files under ${layout.secretsDir}`, inputKey: hosted});
 
         await fs.mkdir(layout.secretsDir, {recursive: true});
         await write('mcp-auth-token');
 
-        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token, gemini-api-key`});
-        expect(await observe('local-small')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token`});
+        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token, gemini-api-key`, inputKey: hosted});
+        expect(await observe('local-small')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: fleet-plane-token`, inputKey: local});
 
         await write('fleet-plane-token');
 
         // a local preset's set is complete; the hosted one still lacks its provider key; without a consent the base set is read
-        expect(await observe('local-small')).toEqual({present: true, digest: null, problem: null});
-        expect(await observe(null)).toEqual({present: true, digest: null, problem: null});
-        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: gemini-api-key`});
+        expect(await observe('local-small')).toEqual({present: true, digest: null, problem: null, inputKey: local});
+        expect(await observe(null)).toEqual({present: true, digest: null, problem: null, inputKey: null});
+        expect(await observe('hosted')).toEqual({present: false, reason: `missing under ${layout.secretsDir}: gemini-api-key`, inputKey: hosted});
 
         await write('gemini-api-key', 0o644);
 
-        expect(await observe('hosted')).toEqual({present: true, digest: null, problem: 'gemini-api-key is readable beyond its owner'})
+        expect(await observe('hosted')).toEqual({present: true, digest: null, problem: 'gemini-api-key is readable beyond its owner', inputKey: hosted})
     });
 
     test('a record the CLI cannot read is refused by name and left as it is; nothing runs over it', async () => {
@@ -531,13 +538,19 @@ test.describe('firstRun CLI', () => {
         // done + verification read the section, never a counter
         await expect(observers.done(target, {record: hosted})).rejects.toThrow('no witness for this run yet');
         expect(await observers.done(target, {record: witnessed})).toEqual({persisted: true, queryAnswered: true, at: 't1', reason: null});
-        expect(await observers.verification(target, {record: witnessed})).toEqual({present: true, digest: null, problem: null, reason: 'the witness has not been written and recalled yet'});
-        expect(await observers.verification(target, {record: hosted})).toEqual({present: false, digest: null, problem: null, reason: 'the verify effect has not run'});
+        expect(await observers.verification(target, {record: witnessed})).toEqual({present: true, digest: null, problem: null, inputKey: null, reason: 'the witness has not been written and recalled yet'});
+        expect(await observers.verification(target, {record: hosted})).toEqual({present: false, digest: null, problem: null, inputKey: null, reason: 'the verify effect has not run'});
+
+        // the witness's input is the composition this run accepted: an unaccepted or keyless composition names none
+        const composed = outcome => ({...witnessed, receipts: [{effectId: 'compose-up', outcome, inputKey: 'composition-key'}]});
+
+        expect((await observers.verification(target, {record: composed('accepted')})).inputKey).toBe('composition-key');
+        expect((await observers.verification(target, {record: composed('pending')})).inputKey).toBe(null);
 
         const refused = {...witnessed, verification: {...witnessed.verification, memory: null, readback: null, recall: null, attempt: {marker: 'mk', dispatchedAt: 't0', refused: {at: 't1', reason: 'no grant'}}}};
 
         expect(await observers.done(target, {record: refused})).toEqual({persisted: false, queryAnswered: false, at: null, reason: 'the plane refused the witness write at t1: no grant'});
-        expect(await observers.verification(target, {record: refused})).toEqual({present: true, digest: null, problem: 'the plane refused the witness write at t1: no grant'});
+        expect(await observers.verification(target, {record: refused})).toEqual({present: true, digest: null, problem: 'the plane refused the witness write at t1: no grant', inputKey: null});
 
         // through the recipe: the witnessed record completes only with the fresh steps ok in the same evaluation
         const step = (await evaluateRecipe({target, record: witnessed, observers: {servedPlane: observers.servedPlane, validation: observers.validation, verification: observers.verification, done: observers.done}, presets, now: host.now})).steps.find(row => row.id === 'done');
@@ -559,7 +572,7 @@ test.describe('firstRun CLI', () => {
         // a refused read-only sub-step the section recorded projects as failed with the plane's reason, on the effect row and on done
         const readbackRefused = {...witnessed, verification: {...witnessed.verification, readback: null, recall: null, failure: {step: 'readback', at: 't2', reason: 'viewer lacks READ'}}};
 
-        expect(await observers.verification(target, {record: readbackRefused})).toEqual({present: true, digest: null, problem: 'the plane refused the readback at t2: viewer lacks READ'});
+        expect(await observers.verification(target, {record: readbackRefused})).toEqual({present: true, digest: null, problem: 'the plane refused the readback at t2: viewer lacks READ', inputKey: null});
         expect(await observers.done(target, {record: readbackRefused})).toEqual({persisted: true, queryAnswered: false, at: 't1', reason: 'the plane refused the readback at t2: viewer lacks READ'});
 
         const projected = byId((await evaluateRecipe({target, record: {...readbackRefused, receipts: [{effectId: 'verify', outcome: 'failed', inputDigest: 'x', startedAt: 't0', failedAt: 't2', reason: 'the plane refused the readback: viewer lacks READ'}]}, observers: {servedPlane: observers.servedPlane, validation: observers.validation, verification: observers.verification, done: observers.done}, presets, now: host.now})).steps);

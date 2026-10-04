@@ -183,6 +183,18 @@ function evaluateQuestion(step, {record, bound, bindingReason, presets}) {
     return status(step, STEP_STATUSES.pending, bound ? 'unanswered' : `unanswered (${bindingReason})`, {answer: null});
 }
 
+/**
+ * Why an accepted effect reads `pending` again: its receipt recorded another input than the consents
+ * render now. Every reason opens with the same words; the composition's names its consequence.
+ * @type {Object}
+ */
+const EARLIER_INPUT_REASONS = Object.freeze({
+    'write-env'    : 'accepted for an earlier input: the consents now render another carrier',
+    'write-secrets': 'accepted for an earlier input: the consented preset now needs another secret set',
+    'compose-up'   : 'accepted for an earlier input: the carrier changed since the plane was composed — running it again restarts the plane',
+    'verify'       : 'accepted for an earlier input: the witness followed an earlier composition; a new attempt follows this one'
+});
+
 async function evaluateEffect(step, {record, bound, observers, target, context, observedAt}) {
     const
         receipt = bound ? findReceipt(record, step.effectId) : null,
@@ -206,6 +218,13 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
 
     const observed = read.value ?? {};
 
+    // a receipt proves the input it recorded (bootstrap-record decision §2.6): when the consents render
+    // another one the effect is to be applied again, as a new input — judged before the host's content is
+    // held against a receipt that no longer speaks for it
+    if (receipt?.outcome === RECEIPT_OUTCOMES.accepted && receipt.inputKey && observed.inputKey && receipt.inputKey !== observed.inputKey) {
+        return status(step, STEP_STATUSES.pending, EARLIER_INPUT_REASONS[step.effectId], {...extra, earlierInput: true});
+    }
+
     if (observed.present !== true) {
         if (receipt?.outcome === RECEIPT_OUTCOMES.accepted) {
             return status(step, STEP_STATUSES.failed, 'the accepted effect\'s result is gone from the host', extra);
@@ -222,7 +241,10 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
         return status(step, STEP_STATUSES.failed, 'the host content changed after the effect was accepted', extra);
     }
 
-    return status(step, STEP_STATUSES.ok, receipt?.outcome === RECEIPT_OUTCOMES.accepted ? 'observed; matches the accepted receipt' : 'observed; not performed by this run', extra);
+    // a receipt from before input keys existed proves presence only: the row says so until a fresh run
+    const keyless = receipt?.outcome === RECEIPT_OUTCOMES.accepted && !receipt.inputKey && observed.inputKey;
+
+    return status(step, STEP_STATUSES.ok, receipt?.outcome === RECEIPT_OUTCOMES.accepted ? `observed; matches the accepted receipt${keyless ? ' (input not recorded)' : ''}` : 'observed; not performed by this run', extra);
 }
 
 function evaluatePlacement(step, read, presets, observedAt) {
@@ -349,6 +371,14 @@ function evaluateDone(step, read, {steps, observedAt}) {
 
     if (value.queryAnswered !== true) {
         return status(step, STEP_STATUSES.pending, `${at}; the witness was not recalled yet`, {observedAt, witnessedAt: value.at});
+    }
+
+    // nor does it complete a run whose consents moved on: an effect accepted for an earlier input is not
+    // what the operator asked for now, whatever the plane answers
+    const earlier = steps.find(row => row.earlierInput);
+
+    if (earlier) {
+        return status(step, STEP_STATUSES.pending, `${at}; ${earlier.id} was accepted for an earlier input`, {observedAt, witnessedAt: value.at});
     }
 
     // the historical witness never completes a run on its own: completion is the witness AND the plane it
