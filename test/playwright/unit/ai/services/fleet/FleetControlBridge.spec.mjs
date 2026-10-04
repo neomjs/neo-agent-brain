@@ -15,6 +15,8 @@ setup({
 
 import {test, expect}         from '@playwright/test';
 import fs                     from 'fs';
+import os                     from 'os';
+import path                   from 'path';
 import Neo                    from 'neo.mjs/src/Neo.mjs';
 import * as core              from 'neo.mjs/src/core/_export.mjs';
 import FleetControlBridge     from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
@@ -127,6 +129,24 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             status: 'rejected',
             reason: "retired target-as-transport input is not accepted; use 'mcpTarget'."
         })
+    });
+
+    test('defineAgent over a credential store the registry cannot read answers a rejection that names the remedy and no path', () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-fleet-bridge-'));
+
+        try {
+            FleetRegistryService.dataDir = tmpDir;
+            FleetControlBridge.registry  = FleetRegistryService;
+            fs.writeFileSync(path.join(tmpDir, 'credentials.enc'), 'not-a-ciphertext');
+
+            const result = FleetControlBridge.defineAgent({githubUsername: 'bob', harnessType: 'codex', credential: 'ghp_bob'});
+
+            expect(result).toEqual({status: 'rejected', reason: expect.stringMatching(/^the credential store cannot be read, so no seat was added and no stored PAT was touched\. .*NEO_FLEET_SECRET_KEY/)});
+            expect(result.reason).not.toContain(tmpDir)
+        } finally {
+            FleetRegistryService.dataDir = null;
+            fs.rmSync(tmpDir, {recursive: true, force: true})
+        }
     });
 
     test('defineAgent rejects a new unavailable tenant target before registry persistence', () => {
