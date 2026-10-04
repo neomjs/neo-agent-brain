@@ -396,7 +396,8 @@ class FleetManager extends Base {
      * means it would behave identically either way. Widen it when a consumer actually needs to
      * distinguish "not running" from "we do not know" — and delete this paragraph when you do.
      * @returns {Object[]} one `{agentId, state, running, confidence, source}` entry per registered agent;
-     *     rows without a process record additionally carry `reason`.
+     *     rows without a process record additionally carry `reason`, and a running Claude Desktop
+     *     seat carries `sessionFolder`, where its session opened against its checkout.
      */
     fleetRuntimeStatus() {
         const lifecycle = this.getLifecycleService();
@@ -424,6 +425,7 @@ class FleetManager extends Base {
 
             if (status.failureReason != null) row.failureReason = status.failureReason;
             if (status.repos != null)         row.repos         = status.repos;
+            if (status.sessionFolder != null) row.sessionFolder = status.sessionFolder;
 
             return row;
         });
