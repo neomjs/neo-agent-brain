@@ -239,6 +239,12 @@ class FleetManager extends Base {
      * @member {Function|null} modelCatalogFn=null
      */
     modelCatalogFn = null
+    /**
+     * The last operation holding each seat's home, keyed by agent id ({@link withSeatHome}).
+     * @member {Map<String,Promise>} seatHomeHolds
+     * @private
+     */
+    seatHomeHolds = new Map()
 
     /**
      * @summary Returns the composing entrypoint's resolved fleet-managed checkout root.
@@ -324,7 +330,8 @@ class FleetManager extends Base {
      * @summary Turnkey catalog read: the models and reasoning efforts a seat's harness offers to declare, asked of the
      * harness ({@link module:ai/services/fleet/seatModelCatalog.readSeatModelCatalog}). Configuration offers exactly
      * these. A running seat answers the catalog its last start read, with when, because a second app-server never
-     * starts beside a running seat's own; before any start it says so.
+     * starts beside a running seat's own; a seat running since before this Fleet started says so. A stopped seat's
+     * read holds the seat's home ({@link withSeatHome}), so it never overlaps another read or a start.
      *
      * Never a refusal and never a write to the seat's record: an unknown seat, or a read that fails, answers its
      * state and reason.
@@ -340,14 +347,39 @@ class FleetManager extends Base {
 
         if (!agent) return {state: 'unavailable', models: [], reason: `no agent '${id}' is registered`};
 
-        if (lifecycle.isRunning(id)) {
-            return lifecycle.seatCatalogOf(id) ?? {state: 'unavailable', models: [], reason: 'the seat is running and no start has read its catalog yet'}
-        }
+        return this.withSeatHome(id, async () => {
+            if (lifecycle.isRunning(id)) {
+                return lifecycle.seatCatalogOf(id) ?? {state: 'unavailable', models: [], reason: 'the seat has run since before this Fleet started, so its catalog is read at its next start'}
+            }
+
+            try {
+                return await this.getModelCatalogFn()({agent, instanceRoot: lifecycle.getInstanceRoot(), lifecycleService: lifecycle})
+            } catch (error) {
+                return {state: 'unavailable', models: [], reason: redactReadFailure(`the catalog read failed: ${error?.message ?? error}`)}
+            }
+        })
+    }
+
+    /**
+     * @summary Runs one operation on a seat's home once every earlier one on it settled, and holds the home until it
+     * settles. A catalog read starts the harness's app-server there, and a start launches the harness there, so the
+     * two never overlap on one seat, and neither do two of either. An operation that throws releases the home all the
+     * same.
+     * @param {String}   id
+     * @param {Function} operation `() => Promise<*>`
+     * @returns {Promise<*>} The operation's own answer
+     */
+    async withSeatHome(id, operation) {
+        const
+            run  = (this.seatHomeHolds.get(id) ?? Promise.resolve()).then(operation),
+            hold = run.catch(() => {});
+
+        this.seatHomeHolds.set(id, hold);
 
         try {
-            return await this.getModelCatalogFn()({agent, instanceRoot: lifecycle.getInstanceRoot(), lifecycleService: lifecycle})
-        } catch (error) {
-            return {state: 'unavailable', models: [], reason: redactReadFailure(`the catalog read failed: ${error?.message ?? error}`)}
+            return await run
+        } finally {
+            this.seatHomeHolds.get(id) === hold && this.seatHomeHolds.delete(id)
         }
     }
 
@@ -363,19 +395,20 @@ class FleetManager extends Base {
      * @summary Turnkey provision-then-start: ensure the agent's repo (at the resolved managed root)
      * exists, then start its harness inside it. Delegates to `startAgentProvisioned` — fail-closed on a
      * provisioning failure (the harness is not spawned). A seat released to its own harness is refused
-     * before anything runs ({@link launchRefusalOf}).
+     * before anything runs ({@link launchRefusalOf}). The start holds the seat's home until its harness
+     * is launched or refused ({@link withSeatHome}).
      * @param {String} agentId Registry agent id.
      * @returns {Promise<Object>} the agent's lifecycle status.
      */
     async startAgent(agentId) {
         this.assertStartPermitted('startAgent', agentId);
 
-        const status = await this.getProvisionAndStartFn()({
+        const status = await this.withSeatHome(agentId, () => this.getProvisionAndStartFn()({
             lifecycleService: this.getLifecycleService(),
             managedRoot     : this.getManagedRoot(),
             planeBase       : this.planeBase,
             agentId
-        });
+        }));
 
         return this.armSeatWake(agentId, status)
     }

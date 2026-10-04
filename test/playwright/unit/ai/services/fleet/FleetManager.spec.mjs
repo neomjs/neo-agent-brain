@@ -719,8 +719,11 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatModelCatalog (wha
     const SEAT = {id: 'sophie', githubUsername: 'sophie', harnessType: 'codex-desktop'};
 
     test.afterEach(() => {
-        FleetManager.lifecycleService = null;
-        FleetManager.modelCatalogFn   = null;
+        FleetManager.lifecycleService    = null;
+        FleetManager.managedRoot         = null;
+        FleetManager.modelCatalogFn      = null;
+        FleetManager.provisionAndStartFn = null;
+        FleetManager.wakeArmFn           = null;
     });
 
     const lifecycle = ({running = false, kept = null} = {}) => ({
@@ -749,7 +752,54 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatModelCatalog (wha
         expect(await FleetManager.fleetSeatModelCatalog({id: 'sophie'})).toEqual(kept);
 
         FleetManager.lifecycleService = lifecycle({running: true});
-        expect((await FleetManager.fleetSeatModelCatalog({id: 'sophie'})).reason).toBe('the seat is running and no start has read its catalog yet');
+        expect((await FleetManager.fleetSeatModelCatalog({id: 'sophie'})).reason).toBe('the seat has run since before this Fleet started, so its catalog is read at its next start');
+    });
+
+    test('reads and a start take one seat\'s home one at a time: a running check never admits a second app-server', async () => {
+        const
+            seat    = {running: false},
+            entered = [],
+            gates   = [],
+            gate    = () => new Promise(release => gates.push(release)),
+            open    = async (count) => {
+                await expect.poll(() => entered.length).toBe(count);
+                gates.shift()()
+            };
+
+        FleetManager.lifecycleService    = {...lifecycle({kept: {state: 'complete', models: [], reason: null, observedAt: 'at the start'}}), isRunning: () => seat.running};
+        FleetManager.managedRoot         = '/managed';
+        FleetManager.wakeArmFn           = async () => null;
+        FleetManager.modelCatalogFn      = async () => { entered.push('read'); await gate(); return {state: 'complete', models: [], reason: null} };
+        FleetManager.provisionAndStartFn = async () => { entered.push('start'); await gate(); seat.running = true; return {state: 'running'} };
+
+        const
+            first  = FleetManager.fleetSeatModelCatalog({id: 'sophie'}),
+            second = FleetManager.fleetSeatModelCatalog({id: 'sophie'}),
+            start  = FleetManager.startAgent('sophie'),
+            third  = FleetManager.fleetSeatModelCatalog({id: 'sophie'});
+
+        await open(1);
+        await first;
+        expect(entered, 'the second read waited for the first').toEqual(['read', 'read']);
+        await open(2);
+        await second;
+        await open(3);
+        await start;
+
+        // the read queued behind the start finds the seat running, and answers what its start kept
+        expect(await third).toMatchObject({observedAt: 'at the start'});
+        expect(entered).toEqual(['read', 'read', 'start']);
+    });
+
+    test('an operation that fails releases the seat\'s home', async () => {
+        FleetManager.lifecycleService = lifecycle();
+        FleetManager.managedRoot      = '/managed';
+        FleetManager.provisionAndStartFn = async () => { throw new Error('startAgentProvisioned: refused') };
+        FleetManager.modelCatalogFn   = async () => ({state: 'complete', models: [], reason: null});
+
+        await expect(FleetManager.startAgent('sophie')).rejects.toThrow('refused');
+        expect((await FleetManager.fleetSeatModelCatalog({id: 'sophie'})).state).toBe('complete');
+        expect(FleetManager.seatHomeHolds.size).toBe(0);
     });
 
     test('an unknown seat, or a read that throws, answers its state and reason — never a refusal', async () => {
