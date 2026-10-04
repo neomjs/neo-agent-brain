@@ -162,7 +162,7 @@ export const hostEffectHandlers = Object.freeze({
                 throw new Error('compose-up: input needs project, cwd, envFile and composeFiles.');
             }
 
-            const args = ['compose', '-p', project, '--env-file', envFile, ...composeFiles.flatMap(file => ['-f', file]), 'up', '-d', '--wait'];
+            const args = ['compose', '-p', project, '--env-file', envFile, ...composeFiles.flatMap(file => ['-f', file]), ...(input.profiles ?? []).flatMap(profile => ['--profile', profile]), 'up', '-d', '--wait'];
 
             await host.run('docker', args, {cwd});
 

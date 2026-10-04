@@ -31,20 +31,28 @@ import {presets}                                                                
 import {createDefaultReaders, probePlacement}                                                 from '../../services/fleet/probePlacement.mjs';
 import {probeValidation}                                                                      from '../../services/fleet/providerValidation.mjs';
 import {
-    RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, findConsent, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath
+    RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, findConsent, readSetupRecord, retireCurrentProof, runTarget, setupRecordPath
 } from '../../services/fleet/setupRunRecord.mjs';
-import {performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
-import {VERIFY_EXITS}                  from '../../services/fleet/verifyEffect.mjs';
-import {runHealthcheck}                from '../diagnostics/mcpHealthcheck.mjs';
+import {performEffects, settlePending}            from '../../services/fleet/setupOrchestration.mjs';
+import {VERIFY_EXITS}                             from '../../services/fleet/verifyEffect.mjs';
+import {CANONICAL_PLANE_ID, resolvePlaneDataRoot} from '../../planeConfig.mjs';
+import {runHealthcheck}                           from '../diagnostics/mcpHealthcheck.mjs';
 
 const
     brainRoot       = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
     COMPOSE_PROJECT = 'neo-local-agent-os',
     COMPOSE_FILES   = ['docker-compose.yml', 'docker-compose.local-agent-os.yml'],
+    // the whole plane, not its storage half: without them compose starts no orchestrator, no Fleet service and no ingress
+    COMPOSE_PROFILES = Object.freeze(['cloud', 'fleet', 'ingress']),
+    // the plane this profile's compose files bring up: the canonical local plane, rooted where its image holds the
+    // Brain (/app), behind the ingress the profile publishes on the loopback
+    PROFILE_TARGET  = Object.freeze({planeId: CANONICAL_PLANE_ID, dataRoot: resolvePlaneDataRoot({rootDir: '/app'}), endpoint: 'http://127.0.0.1:3102'}),
     USAGE           = `usage: node ai/scripts/setup/firstRun.mjs [--json] [--setup-root <dir>] [--state-root <dir>] [--run-id <uuid>]
        [--plane-id <id>] [--data-root <path>] [--endpoint <url>] [--fake-host <file>] [--new-attempt] [--help]
 
   Evaluates the first-run recipe live, asks the pending questions, performs the effects, re-evaluates.
+  A run that names no plane binds the one this profile declares: ${PROFILE_TARGET.planeId} at ${PROFILE_TARGET.dataRoot},
+  served on ${PROFILE_TARGET.endpoint}. --plane-id, --data-root and --endpoint override it.
   --new-attempt consents to writing the first-run witness again (a duplicate row on the plane is possible);
   an accepted witness is never written again.
   Exit code: 0 when the terminal step reads ok · 1 when a step failed or needs reconciling · 2 while pending.
@@ -67,7 +75,7 @@ export function parseArgs(argv, env = process.env) {
             runId     : null,
             planeId   : null,
             dataRoot  : null,
-            endpoint  : 'http://127.0.0.1:3102',
+            endpoint  : PROFILE_TARGET.endpoint,
             fakeHost  : null,
             newAttempt: false
         },
@@ -102,17 +110,21 @@ export function parseArgs(argv, env = process.env) {
 }
 
 /**
- * @summary The host layout every production observer and effect shares.
+ * @summary The host layout every production observer and effect shares, and the one statement of the
+ * profile it provisions: its compose project and files, and `target`, the plane those files bring up. A
+ * run that names no plane binds that target (`setupRunRecord.runTarget`), whichever renderer starts it.
  * @param {Object} options
  * @returns {Object}
  */
 export function hostLayout({stateRoot}) {
     return {
-        envFile       : path.join(stateRoot, 'config', 'local-agent-os.env'),
-        secretsDir    : path.join(stateRoot, 'secrets'),
-        composeDir    : path.join(brainRoot, 'deploy', 'cloud'),
-        composeFiles  : COMPOSE_FILES,
-        composeProject: COMPOSE_PROJECT
+        envFile        : path.join(stateRoot, 'config', 'local-agent-os.env'),
+        secretsDir     : path.join(stateRoot, 'secrets'),
+        composeDir     : path.join(brainRoot, 'deploy', 'cloud'),
+        composeFiles   : COMPOSE_FILES,
+        composeProject : COMPOSE_PROJECT,
+        composeProfiles: COMPOSE_PROFILES,
+        target         : PROFILE_TARGET
     };
 }
 
@@ -434,7 +446,9 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         interactive = !options.json && (io.isTTY ?? Boolean(stdin.isTTY)) && !options.fakeHost,
         layout      = hostLayout(options);
 
-    let target = {planeId: options.planeId, dataRoot: options.dataRoot, endpoint: options.endpoint}, host = createHost(), observers, answers = {};
+    const named = {planeId: options.planeId, dataRoot: options.dataRoot, endpoint: options.endpoint};
+
+    let target, host = createHost(), observers, answers = {};
 
     if (options.fakeHost) {
         // the fake host: a recording runner (its compose-up counts as the plane running), the real file
@@ -479,14 +493,13 @@ export async function main(argv = process.argv.slice(2), io = {}) {
         return 1;
     }
 
+    // what the invocation names, else what the record is bound to, else the plane the profile declares
+    target = runTarget({record, named, profile: layout.target});
+
     if (!record) {
         record = createSetupRecord({runId, target, recipeVersion: RECIPE_VERSION, now: host.now});
         await persistSetupRecord(recordPath, record, host);
     } else {
-        // a resume names what it names; the record's bound target fills the rest, so a root the record
-        // holds stays the expectation when the invocation omits it
-        target = resumeTarget(record, target);
-
         const binding = describeBinding(record, {target, recipeVersion: RECIPE_VERSION});
 
         if (binding !== 'bound') {

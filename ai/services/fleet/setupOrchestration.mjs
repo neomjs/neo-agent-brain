@@ -151,7 +151,7 @@ export async function performEffects({record, recordPath, host, layout, target, 
     const inputs = {
         [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
         [EFFECT_IDS.writeEnv]    : {path: layout.envFile, entries: {...preset.env, ...credentials.envEntries, NEO_PLANE_ID: target.planeId, NEO_PLANE_DATA_ROOT: target.dataRoot}},
-        [EFFECT_IDS.composeUp]   : {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles}
+        [EFFECT_IDS.composeUp]   : {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles, profiles: layout.composeProfiles ?? []}
     };
 
     let current = record;
