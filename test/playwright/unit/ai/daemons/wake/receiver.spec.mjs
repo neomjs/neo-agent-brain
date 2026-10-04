@@ -30,12 +30,13 @@ test.describe('ai/daemons/wake/receiver', () => {
         }
     };
 
-    let baseUrl, dispatchCalls, dispatchResult, receiver, server, state, stateDir;
+    let accepts, baseUrl, dispatchCalls, dispatchResult, receiver, server, state, stateDir;
 
     test.beforeEach(async () => {
         stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-wake-receiver-'));
         state    = new WakeReceiverState({stateDir});
         await state.init();
+        accepts        = 0;
         dispatchCalls  = [];
         // Adapters may end with a bare outcome string or `{outcome, outcomeReason}`; tests select
         // the shape under test rather than each building a receiver of their own.
@@ -47,7 +48,8 @@ test.describe('ai/daemons/wake/receiver', () => {
                 dispatchCalls.push(record);
                 return dispatchResult;
             },
-            logger: {error() {}, warn() {}, log() {}}
+            logger    : {error() {}, warn() {}, log() {}},
+            onAccepted: () => accepts++
         });
         server = receiver.server;
         await new Promise((resolve, reject) => {
@@ -113,6 +115,15 @@ test.describe('ai/daemons/wake/receiver', () => {
         expect(verifyWakeSignature(body, signingKey, signature)).toBe(true);
         expect(verifyWakeSignature(Buffer.from('{"eventId":"two"}'), signingKey, signature)).toBe(false);
         expect(verifyWakeSignature(body, signingKey, 'not-hex')).toBe(false);
+    });
+
+    test('a completed accept is reported to the liveness hook, and a refused request is not (#841)', async () => {
+        expect((await postWake({signature: '0'.repeat(64)})).status).toBe(401);
+        expect(accepts, 'a refused request stamps nothing').toBe(0);
+
+        expect((await postWake()).status).toBe(202);
+        expect(accepts).toBe(1);
+        await waitForState('delivered');
     });
 
     test('invalid signatures return non-success and create no state or dispatch', async () => {
@@ -332,7 +343,8 @@ test.describe('ai/daemons/wake/receiver — manifest reload', () => {
     });
 
     test.afterEach(async () => {
-        receiver.stopWatchingManifest?.();
+        // the pass in flight stamps the liveness file; let it land before the directory goes
+        await receiver.stopWatchingManifest?.();
         await new Promise(resolve => receiver.server.close(resolve));
         await fs.rm(dir, {recursive: true, force: true});
     });
@@ -370,6 +382,45 @@ test.describe('ai/daemons/wake/receiver — manifest reload', () => {
             body: '{}'
         }
     )).status;
+
+    test('the receiver keeps its own liveness beside its records: each start, each sweep pass, and a stuck exit across a restart (#841)', async () => {
+        const
+            recordsDir = path.join(dir, 'state', 'records'),
+            liveness   = async () => {
+                try {
+                    return JSON.parse(await fs.readFile(path.join(recordsDir, 'receiver.liveness'), 'utf8'))
+                } catch {
+                    return null
+                }
+            };
+
+        expect((await liveness())?.starts).toHaveLength(1);
+        expect(await waitFor(async () => Boolean((await liveness())?.lastSweepAt)), 'a sweep pass stamps it').toBe(true);
+
+        // stop the first process, then leave the exit record its watchdog would have written
+        await receiver.stopWatchingManifest();
+        await new Promise(resolve => receiver.server.close(resolve));
+
+        const previous = await liveness();
+
+        await fs.writeFile(path.join(recordsDir, 'receiver.liveness'), JSON.stringify({...previous, stuckExits: [{step: 'accept', at: new Date().toISOString()}]}));
+
+        receiver = await startWakeReceiver({
+            manifestPath,
+            stateDir           : path.join(dir, 'state'),
+            host               : '127.0.0.1',
+            port               : await freePort(),
+            logger             : {error() {}, warn() {}, log() {}},
+            reconcileIntervalMs: 40
+        });
+
+        const restarted = await liveness();
+
+        expect(restarted.starts).toHaveLength(2);
+        expect(restarted.stuckExits).toEqual([expect.objectContaining({step: 'accept'})]);
+        // and it is no record: the receiver's own reader skips it
+        expect(await new WakeReceiverState({stateDir: path.join(dir, 'state')}).list()).toEqual([]);
+    });
 
     test('a route published while the process is running serves without a restart', async () => {
         expect(await probe(mine)).toBe(401);
@@ -477,7 +528,7 @@ test.describe('ai/daemons/wake/receiver — manifest reload', () => {
 
             expect(await waitFor(async () => await hit(peer) === 401)).toBe(true);
         } finally {
-            startupReceiver.stopWatchingManifest();
+            await startupReceiver.stopWatchingManifest();
             await new Promise(resolve => startupReceiver.server.close(resolve));
         }
     });

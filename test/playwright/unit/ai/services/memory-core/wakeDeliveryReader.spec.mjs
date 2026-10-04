@@ -205,7 +205,7 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
         // unreadable: a file where the directory was
         await fs.rm(records, {recursive: true});
         await fs.writeFile(records, 'not a directory');
-        expect(await readWakeDelivery({recordsDir: records})).toEqual({deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}});
+        expect(await readWakeDelivery({recordsDir: records})).toEqual({deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}, receiver: {state: 'unknown'}});
 
         // the directory returns with a different terminal record under the same name
         await fs.rm(records);
@@ -222,7 +222,48 @@ test.describe('readWakeDelivery — the I/O half of the delivery projection', ()
     test('an undeclared records directory reads unconfigured, distinct from a declared empty one', async () => {
         const result = await readWakeDelivery({recordsDir: ''});
 
-        expect(result).toEqual({deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}})
+        expect(result).toEqual({deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}, receiver: {state: 'unknown'}})
+    });
+
+    test('reads the receiver\'s own liveness beside its records, as the receiver and never as a record (#841)', async () => {
+        const
+            root    = await tmpRoot(),
+            records = path.join(root, 'records'),
+            HOUR    = 60 * 60 * 1000,
+            ago     = ms => new Date(Date.now() - ms).toISOString();
+
+        await writeRecord(records, {
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:ok', state: 'delivered',
+            acceptedAt: ago(13 * HOUR), dispatchFinishedAt: ago(13 * HOUR)
+        });
+        await fs.writeFile(path.join(records, 'receiver.liveness'), JSON.stringify({
+            starts: [ago(13 * HOUR)], lastAcceptAt: ago(12 * HOUR), lastSweepAt: ago(12 * HOUR), stuckExits: []
+        }));
+
+        const {subscriptions, receiver} = await readWakeDelivery({recordsDir: records});
+
+        expect(Object.keys(subscriptions)).toEqual(['WAKE_SUB:ok']);
+        // a receiver that has accepted nothing for 12 h reads 12 h old, not fresh
+        expect(receiver.state).toBe('observed');
+        expect(receiver.lastAcceptAgeMs).toBeGreaterThanOrEqual(12 * HOUR);
+        expect(receiver.lastSweepAgeMs).toBeGreaterThanOrEqual(12 * HOUR);
+        expect(receiver).toMatchObject({startsLastHour: 0, stuckExitsLastHour: 0});
+
+        await fs.rm(root, {recursive: true, force: true});
+    });
+
+    test('records with no liveness file read the receiver unknown, never fresh (#841)', async () => {
+        const root    = await tmpRoot(),
+              records = path.join(root, 'records');
+
+        await writeRecord(records, {
+            recordKey : 'k1', subscriptionId: 'WAKE_SUB:ok', state: 'delivered',
+            acceptedAt: '2026-10-04T00:00:00.000Z', dispatchFinishedAt: '2026-10-04T00:00:01.000Z'
+        });
+
+        expect((await readWakeDelivery({recordsDir: records})).receiver).toEqual({state: 'unknown'});
+
+        await fs.rm(root, {recursive: true, force: true});
     });
 
     test('with no declaration the reader reads the config leaf, never a guessed home path', async () => {

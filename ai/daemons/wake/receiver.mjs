@@ -17,6 +17,7 @@ import {watch}         from 'node:fs';
 import {pathToFileURL} from 'node:url';
 
 import {WakeReceiverState}                      from './receiverState.mjs';
+import {createReceiverLiveness}                 from './receiverLiveness.mjs';
 import {evaluateContextGate}                    from './contextGatePolicy.mjs';
 import {dispatchLocalWake, probeSessionContext} from './localWakeAdapters.mjs';
 
@@ -207,6 +208,7 @@ export function verifyWakeSignature(rawBody, signingKey, signature) {
  *   `(record) => {contextTokens, lastActivityAt, sessionId}|null` for the delivery-time context gate.
  * @param {Object} [options.logger=console]
  * @param {Number} [options.maxBodyBytes=DEFAULT_MAX_BODY_BYTES]
+ * @param {Function} [options.onAccepted] Called after each accept that completes, so the receiver's liveness can stamp it.
  * @param {Function} [options.onStuck] `({step, subscriptionId, ageMs}) => void`, called once when a step outlives its bound;
  *   `subscriptionId` names the route a stuck dispatch serves.
  * @param {Object} [options.stepBoundsMs=STEP_BOUNDS_MS] Bound per step: `accept`, `reload`, `drain`, and `dispatch` as
@@ -221,6 +223,7 @@ export function createWakeReceiver({
     contextProbe       = probeSessionContext,
     logger             = console,
     maxBodyBytes       = DEFAULT_MAX_BODY_BYTES,
+    onAccepted         = null,
     onStuck            = null,
     stepBoundsMs       = STEP_BOUNDS_MS,
     watchdogIntervalMs = STEP_WATCHDOG_INTERVAL_MS
@@ -274,7 +277,7 @@ export function createWakeReceiver({
 
     // Every state call below runs under the watchdog.
     const watched = {
-        accept    : options   => track('accept', state.accept(options)),
+        accept    : options   => track('accept', state.accept(options)).then(accepted => (onAccepted?.(), accepted)),
         list      : filter    => track('drain', state.list(filter)),
         transition: (...args) => track('drain', state.transition(...args))
     };
@@ -558,7 +561,21 @@ export async function startWakeReceiver({
         logger.warn?.(`[Wake Receiver] terminalized ${unknownCount} interrupted dispatch(es) as unknown; mailbox remains authoritative.`);
     }
 
-    const {server, drain, setManifest, track} = createWakeReceiver({manifest, state, logger, onStuck});
+    const liveness = createReceiverLiveness({recordsDir: state.recordsDir, logger});
+
+    await liveness.start();
+
+    const {server, drain, setManifest, track} = createWakeReceiver({
+        manifest,
+        state,
+        logger,
+        onAccepted: () => liveness.accepted(),
+        // the stuck exit is recorded before the exit, so the restart can read why it happened
+        onStuck   : stuck => {
+            liveness.stuck(stuck);
+            onStuck(stuck)
+        }
+    });
     await new Promise((resolve, reject) => {
         server.once('error', reject);
         server.listen(port, host, resolve);
@@ -588,7 +605,9 @@ export async function startWakeReceiver({
      * @returns {Promise<Number|null>}
      */
     const serialize = step => {
-        const watchedStep = () => track('reload', step());
+        // A pass that settles stamps the sweep, so a chain that stopped advancing reads as stopped. The
+        // stamp is inside the tracked pass: a write that hangs is a stuck pass, not a silent one.
+        const watchedStep = () => track('reload', step().then(async result => (await liveness.swept(), result)));
 
         reloadChain = reloadChain.then(watchedStep, watchedStep);
 
@@ -691,12 +710,14 @@ export async function startWakeReceiver({
      * @summary Releases the watcher, the sweep, and the gate's drain retry timer. Callers that own
      * the process lifetime (tests, a supervisor) need a way to stop them; the daemon itself never
      * calls this.
-     * @returns {void}
+     * @returns {Promise} Settles when the pass already in flight, and its liveness stamp, have finished.
      */
     const stopWatchingManifest = () => {
         stopManifestWatcher();
         clearInterval(reconcileTimer);
         clearInterval(drainTimer);
+
+        return reloadChain
     };
 
     // SIGHUP stays. It is the documented escape hatch and the delivered contract of the predecessor

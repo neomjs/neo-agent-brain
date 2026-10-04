@@ -148,6 +148,8 @@ For a single-call observability check, the Memory Core healthcheck surfaces the 
 
 The `daemonRunning` heuristic reads the dedicated liveness file `.neo-ai-data/wake-daemon/heartbeat.alive` — touched by `SwarmHeartbeatService.touchLivenessFile()` at the top of every `pulse()` (the producer is the Orchestrator's swarm-heartbeat lane since #11766), NOT the producer-side concurrency lock above. `gateState` is read via `wakeSafetyGate.readGateState`. Field semantics + defensive defaults are documented inline at `HealthService.buildWakeFeaturesBlock`.
 
+**Is the host receiver accepting anything?** `features.wake.delivery.receiver` carries the receiver's own liveness, which it keeps beside its records (`receiver.liveness`): `lastAcceptAgeMs`, `lastSweepAgeMs`, `startsLastHour`, `stuckExitsLastHour` and `lastStuckExit`. The manifest sweep completes a pass every 30 s with or without traffic, so a sweep age past a few minutes means the receiver is stuck or down even when no wake is due. An old accept with a fresh sweep only means nothing was sent. `state: 'unknown'` means the account could not be read, never that the receiver is fine.
+
 #### `subscription` — is this seat armed to receive a wake?
 
 The other fields describe the substrate; this one describes **you**. It is RLS-scoped, so it answers only about the calling identity's own subscription rows.
