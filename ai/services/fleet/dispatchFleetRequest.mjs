@@ -7,6 +7,13 @@ import {
 } from '../../../src/fleet/contract/wire.mjs';
 
 /**
+ * The verbs that create a seat, and so record its operator: the only verbs the dispatcher hands the
+ * request's admission to.
+ * @type {String[]}
+ */
+export const SEAT_CREATING_METHODS = Object.freeze(['defineAgent']);
+
+/**
  * @summary Negotiate one transport-delivered Fleet request, then route it through the
  * {@link FleetControlBridge} allowlist. This is the single choke-point shared by the HTTP transport
  * and Electron injection: protocol selection happens before method lookup, unknown methods fail as
@@ -22,9 +29,12 @@ import {
  *                                   object for `defineAgent`, an id string for the lifecycle ops,
  *                                   omitted for `listAgents` / `fleetStatus`.
  * @param {Object} [bridge=FleetControlBridge] The control surface; inject a stub in tests.
+ * @param {Object|null} [admission=null] `{ownerPrincipal}` from the admitted request context. Only a
+ *     {@link SEAT_CREATING_METHODS} verb receives it, as its second argument, so a new seat records its
+ *     operator from admission, never from `params`.
  * @returns {Promise<Object>} Versioned finite-state response envelope.
  */
-export async function dispatchFleetRequest(request = {}, bridge = FleetControlBridge) {
+export async function dispatchFleetRequest(request = {}, bridge = FleetControlBridge, admission = null) {
     const
         {method, params} = request || {},
         selection        = selectFleetWireContract(request?.protocol);
@@ -41,7 +51,7 @@ export async function dispatchFleetRequest(request = {}, bridge = FleetControlBr
     }
 
     try {
-        const result = await bridge[method](params);
+        const result = SEAT_CREATING_METHODS.includes(method) ? await bridge[method](params, admission) : await bridge[method](params);
 
         return createFleetWireResponse(FLEET_WIRE_RESPONSE_STATES.ok, {
             protocol: selection.protocol,

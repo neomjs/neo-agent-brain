@@ -373,10 +373,12 @@ class FleetControlBridge extends Base {
      * @param {Object|null} [definition.mcpTarget] Resident services or one connected tenant id.
      * @param {String} [definition.gitName]  The name the seat's commits carry, declared with `gitEmail`.
      * @param {String} [definition.gitEmail] The email the seat's commits carry, declared with `gitName`.
+     * @param {Object|null} [admission=null] The dispatcher's admission, `{ownerPrincipal}`, from the request
+     *     context and never from `definition`: the new seat's operator.
      * @returns {Object} The public agent definition (no credential), or a controlled
      *     `{status:'rejected', reason}` outcome for FleetRegistryService validation failures.
      */
-    defineAgent(definition) {
+    defineAgent(definition, admission=null) {
         try {
             const
                 registry        = this.getRegistry(),
@@ -391,7 +393,7 @@ class FleetControlBridge extends Base {
 
             if (rejected) return rejected;
 
-            return registry.defineAgent(definition)
+            return registry.defineAgent(definition, admission ?? {})
         } catch (error) {
             const prefix = 'FleetRegistryService.defineAgent:';
 

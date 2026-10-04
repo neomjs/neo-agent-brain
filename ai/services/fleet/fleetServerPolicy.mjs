@@ -186,5 +186,7 @@ export async function dispatchFleetS1Request(request={}, bridge, requestContext=
         })
     }
 
-    return dispatchFleetRequest(request, bridge)
+    // the admitted subject travels as the dispatcher's admission, so a seat-creating verb records its
+    // operator from the context, never from params
+    return dispatchFleetRequest(request, bridge, requestContext?.ownerPrincipal ? Object.freeze({ownerPrincipal: requestContext.ownerPrincipal}) : null)
 }

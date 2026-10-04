@@ -11,10 +11,12 @@ import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePl
 import {normalizeMcpTarget}                      from './mcpServers.mjs';
 import {normalizeMemoryImport}                   from './seatMemoryImport.mjs';
 import {normalizeGitIdentityDeclaration}         from './seatGitIdentity.mjs';
+import SeatOperatorRegistryService               from './SeatOperatorRegistryService.mjs';
 
 const
     FORGE_HOSTNAME_RE       = /^(?:[a-z0-9._-]+|\[[0-9a-f:]+\])$/,
     LAUNCH_OWNERS           = Object.freeze(['external', 'fleet']),
+    OPERATOR_FIELDS         = Object.freeze(['operatedBy', 'ownerPrincipal']),
     RETIRED_TARGET_FIELD    = ['mcp', 'Transport'].join(''),
     PUBLIC_SENSITIVE_KEY_RE = /^(?:credentials?|secrets?|tokens?|(?:github)?pats?|passwords?|authorization|(?:api|client|private)(?:key|token|secret|credential|password)s?|personalaccess(?:key|token|secret|credential|password)s?|(?:access|auth|bearer|github|id|oauth|refresh|session)(?:key|token|secret|credential|password)s?|launch|command|args|argv|env|environment)$/;
 
@@ -347,6 +349,14 @@ class FleetRegistryService extends Base {
      */
     loadedDir = null
 
+    /**
+     * Why the last registry read failed, or null after a clean (or absent) read: an unreadable registry
+     * loads empty, and this keeps that emptiness from passing for "no such seat".
+     * @member {String|null} registryUnreadable=null
+     * @private
+     */
+    registryUnreadable = null
+
     // ---- public API ---------------------------------------------------------
 
     /**
@@ -380,13 +390,21 @@ class FleetRegistryService extends Base {
      * @param {String} [opts.gitName]  The name the seat's commits carry, declared with `gitEmail`. Omitted, Start
      *     derives the identity from the seat's forge account ({@link module:ai/services/fleet/seatGitIdentity.resolveSeatGitIdentity}).
      * @param {String} [opts.gitEmail] The email the seat's commits carry, declared with `gitName`.
+     * @param {Object} [admission={}]   The wire's admission for this create, never the caller's input.
+     * @param {String} [admission.ownerPrincipal] The forge-resolved principal the new seat records as its
+     *     operator ({@link Neo.ai.services.fleet.SeatOperatorRegistryService#stamp}). Without one the seat is
+     *     unowned until the plane host assigns it.
      * @returns {Object} The public agent definition (no credential).
      */
-    defineAgent(options={}) {
+    defineAgent(options={}, admission={}) {
         if (Object.hasOwn(options || {}, RETIRED_TARGET_FIELD)) {
             throw new TypeError(
                 "FleetRegistryService.defineAgent: retired target-as-transport input is not accepted; use 'mcpTarget'."
             )
+        }
+
+        if (OPERATOR_FIELDS.some(field => Object.hasOwn(options || {}, field))) {
+            throw new Error("FleetRegistryService.defineAgent: a seat's operator is never named by the caller; it is the admitted principal.")
         }
 
         const {
@@ -518,6 +536,15 @@ class FleetRegistryService extends Base {
         }
 
         this.agents = nextAgents;
+
+        if (admission?.ownerPrincipal) {
+            // the seat exists either way; a stamp the operator store refuses leaves it unowned, which the
+            // plane host can assign, rather than failing an Add the registry already accepted
+            const stamped = SeatOperatorRegistryService.stamp({principal: admission.ownerPrincipal, seatId: agentId});
+
+            stamped.ok || console.warn(`[FleetRegistryService] seat '${agentId}' was defined without its operator: ${stamped.reason}`)
+        }
+
         return this.toPublic(def);
     }
 
@@ -825,6 +852,47 @@ class FleetRegistryService extends Base {
     }
 
     /**
+     * @summary Does this principal operate this seat? The one server-owned lookup the operator relation
+     * answers: the seat must be defined here, and the operator store, read fresh, must name this principal
+     * for it. A store that cannot be read answers `unavailable`, never `unknown-seat` or `unowned`.
+     * @param {String|null} principal An admitted owner principal.
+     * @param {String}      seatId
+     * @returns {{operates: true}|{operates: false, reason: 'no-principal'|'unavailable'|'unknown-seat'|'unowned'|'other-operator'}}
+     */
+    operatesSeat(principal, seatId) {
+        if (!principal) return {operates: false, reason: 'no-principal'};
+
+        this.ensureLoaded();
+
+        if (this.registryUnreadable)  return {operates: false, reason: 'unavailable'};
+        if (!this.agents.has(seatId)) return {operates: false, reason: 'unknown-seat'};
+
+        const operator = SeatOperatorRegistryService.operatorOf(seatId);
+
+        if (operator.state === 'unavailable') return {operates: false, reason: 'unavailable'};
+        if (!operator.principal)              return {operates: false, reason: 'unowned'};
+
+        return operator.principal === principal ? {operates: true} : {operates: false, reason: 'other-operator'}
+    }
+
+    /**
+     * @summary The defined seats one principal operates, read fresh: the inverse of {@link operatesSeat}.
+     * @param {String} principal An admitted owner principal.
+     * @returns {{state: 'ok', seats: String[]}|{state: 'unavailable', reason: String}}
+     */
+    seatsOperatedBy(principal) {
+        this.ensureLoaded();
+
+        if (this.registryUnreadable) return {reason: this.registryUnreadable, state: 'unavailable'};
+
+        const operated = SeatOperatorRegistryService.seatsOf(principal);
+
+        if (operated.state === 'unavailable') return operated;
+
+        return {seats: operated.seats.filter(seatId => this.agents.has(seatId)), state: 'ok'}
+    }
+
+    /**
      * Remove an agent definition and its stored credential.
      * @param {String} id
      * @returns {Object} `{success, id}`
@@ -946,10 +1014,15 @@ class FleetRegistryService extends Base {
 
     /**
      * @returns {Map<String,Object>} Agent definitions read from `registry.json` (empty on miss/corrupt).
+     *     A corrupt read is remembered in {@link registryUnreadable}, so a lookup can say the seats are
+     *     unknowable rather than absent.
      * @private
      */
     readRegistry() {
         const file = this.registryPath();
+
+        this.registryUnreadable = null;
+
         if (!fs.existsSync(file)) return new Map();
 
         let data;
@@ -958,6 +1031,7 @@ class FleetRegistryService extends Base {
             data = JSON.parse(fs.readFileSync(file, 'utf8'))
         } catch (error) {
             console.warn(`[FleetRegistryService] Unreadable registry at ${file}; starting empty.`, error.message);
+            this.registryUnreadable = `the seat registry cannot be read (${error.message})`;
             return new Map();
         }
 
