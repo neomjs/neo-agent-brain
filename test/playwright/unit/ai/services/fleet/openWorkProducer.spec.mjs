@@ -430,8 +430,8 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
         expect(state.readers['neo-opus-ada'].watermark).toBe('2026-10-02T09:52:00.000Z')
     });
 
-    // Sophie's #835 control: on the first upgrade pulse a seat that cannot read must keep the saved boundary,
-    // or the seat that can read advances the aggregate past a merge the other has not yet read
+    // on the first upgrade pulse a seat that cannot read must keep the saved boundary, or the seat that can read
+    // advances the aggregate past a merge the other has not yet read
     for (const cause of ['has no readable PAT', 'fails its read']) {
         test(`an upgrade keeps the saved boundary for a seat that ${cause} on its first pulse, so its later read finds the merge`, async () => {
             let phase = 'baseline';
