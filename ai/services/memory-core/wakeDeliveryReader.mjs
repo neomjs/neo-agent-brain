@@ -26,6 +26,16 @@ import path                  from 'path';
 import aiConfig              from '../../mcp/server/memory-core/config.mjs';
 import {TERMINAL_STATES}     from '../../daemons/wake/receiverState.mjs';
 import {projectWakeDelivery} from './wakeDeliveryProjection.mjs';
+import {
+    projectReceiverLiveness,
+    readReceiverLiveness
+} from '../../daemons/wake/receiverLiveness.mjs';
+
+/**
+ * What every answer that could not read the directory says about the receiver: unknown, never fresh.
+ * @type {Object}
+ */
+const RECEIVER_UNKNOWN = Object.freeze({state: 'unknown'});
 
 /**
  * @summary Per records directory: the terminal records already read, by file name, and the read in
@@ -55,16 +65,20 @@ const directories = new Map();
  * A malformed record is skipped rather than guessed at, matching the receiver's own reader: a
  * record that will not parse is not evidence in either direction.
  *
+ * `receiver` is the receiver's own liveness account (`receiverLiveness`), which it keeps in the same
+ * directory: when it last accepted a wake and completed a sweep pass, and how often it started or
+ * exited stuck in the last hour. It is read on every call and is `unknown` whenever it cannot be read.
+ *
  * @param {Object} [options]
  * @param {String} [options.recordsDir] Records directory; tests isolate through it. Defaults to the
  * `fleet.wakeReceiverRecordsDir` leaf.
- * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object}>}
+ * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object, receiver: Object}>}
  */
 export async function readWakeDelivery({recordsDir} = {}) {
     const directory = recordsDir ?? aiConfig.fleet.wakeReceiverRecordsDir;
 
     if (!directory) {
-        return {deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}};
+        return {deliveryReadable: false, deliveryReadReason: 'unconfigured', subscriptions: {}, receiver: RECEIVER_UNKNOWN};
     }
 
     let state = directories.get(directory);
@@ -100,8 +114,8 @@ async function readDirectory(directory, held) {
         // ENOENT is a measured absence: nothing has ever been dispatched from here. Anything else
         // is an unanswerable question, and the two must not read the same way.
         return error?.code === 'ENOENT'
-            ? {deliveryReadable: true, deliveryReadReason: 'no-records', subscriptions: {}}
-            : {deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}};
+            ? {deliveryReadable: true, deliveryReadReason: 'no-records', subscriptions: {}, receiver: RECEIVER_UNKNOWN}
+            : {deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}, receiver: RECEIVER_UNKNOWN};
     }
 
     const
@@ -137,6 +151,7 @@ async function readDirectory(directory, held) {
     return {
         deliveryReadable  : true,
         deliveryReadReason: records.length > 0 ? 'observed' : 'no-records',
-        subscriptions     : projectWakeDelivery(records)
+        subscriptions     : projectWakeDelivery(records),
+        receiver          : projectReceiverLiveness(await readReceiverLiveness(directory), Date.now())
     };
 }
