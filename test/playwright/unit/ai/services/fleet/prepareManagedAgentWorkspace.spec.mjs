@@ -1303,6 +1303,25 @@ test.describe('prepareManagedAgentWorkspace', () => {
     }
 
     for (const harness of ['codex', 'codex-desktop']) {
+        test(`${harness}: a home config a declaration cannot be written into is refused as it stands, and Start says why`, async () => {
+            const opts = options(makeAgent(harness));
+            opts.mcpTarget = tenantTarget();
+
+            const
+                first    = await prepareManagedAgentWorkspace(opts),
+                homePath = path.join(harness === 'codex' ? first.instanceHome : path.join(first.instanceHome, 'codex-home'), 'config.toml'),
+                tabled   = (await read(homePath)).replace('mcp_oauth_credentials_store = "file"\n', 'mcp_oauth_credentials_store = "file"\nmodel.provider = "x"\n');
+
+            await fs.writeFile(homePath, tabled);
+            opts.agent = {...opts.agent, model: 'gpt-6-astra'};
+
+            await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({
+                code    : 'FLEET_WORKSPACE_DIVERGENT',
+                artifact: {path: homePath, ownedKeys: 'model,model_reasoning_effort'}
+            });
+            expect(await read(homePath), 'nothing written').toBe(tabled);
+        });
+
         test(`${harness}: a declared model and effort replace the app's own pick at Start, and a withdrawal leaves the file`, async () => {
             const opts = options(makeAgent(harness));
             opts.mcpTarget = tenantTarget();

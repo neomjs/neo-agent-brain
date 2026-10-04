@@ -1035,9 +1035,9 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
 }
 
 /**
- * @summary Writes the seat's declared model and reasoning effort into its Codex home config, replacing the
- * app's own pick, so the next thread starts on them. Every other key and comment stays as it is
- * ({@link module:ai/services/fleet/codexConfigToml.applyCodexSeatSettings}).
+ * @summary Writes the seat's declared model and reasoning effort into its Codex home config, replacing whatever
+ * value it held, so the next thread starts on them. Every other key and comment stays as it is, and a file that
+ * cannot be written that way is refused unchanged ({@link module:ai/services/fleet/codexConfigToml.applyCodexSeatSettings}).
  * @param {Object} options
  * @param {String} options.filePath    The Codex home `config.toml`, converged just before.
  * @param {Object} options.agent       The seat's record, read for `model` and `reasoningEffort`.
@@ -1051,9 +1051,16 @@ async function convergeCodexSeatSettings({filePath, agent, trustedRoot, fileSyst
 
     await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: 'model,model_reasoning_effort'});
 
-    const
-        source = await fileSystem.readFile(filePath, 'utf8'),
-        next   = applyCodexSeatSettings(source, agent);
+    const source = await fileSystem.readFile(filePath, 'utf8');
+
+    let next;
+
+    try {
+        next = applyCodexSeatSettings(source, agent)
+    } catch (error) {
+        // a file Fleet cannot write without changing anything else is refused as it stands, and Start says why
+        throw divergentArtifact(filePath, 'model,model_reasoning_effort', error.message)
+    }
 
     if (next === source) return false;
 

@@ -1,4 +1,5 @@
-import {test, expect} from '@playwright/test';
+import {test, expect}       from '@playwright/test';
+import {parse as parseToml} from 'smol-toml';
 import {applyCodexSeatSettings, parseTomlTableHeader, readCodexSeatSettings} from '../../../../../../ai/services/fleet/codexConfigToml.mjs';
 
 // The layout a Fleet-provisioned Codex Desktop home carries: Fleet's policy keys, the app's own top-level
@@ -35,13 +36,42 @@ test.describe('codexConfigToml — a Codex config\'s seat settings, as text', ()
         expect(readCodexSeatSettings('')).toEqual({model: null, reasoningEffort: null});
     });
 
-    test('a declaration replaces the app\'s pick where the app put it, and leaves every other line as it was', () => {
+    test('a declaration replaces the configured value where it stands, and only the value: every other byte stays', () => {
         const next = applyCodexSeatSettings(SEAT_CONFIG, {model: 'gpt-6-sol', reasoningEffort: 'max'});
 
         expect(readCodexSeatSettings(next)).toEqual({model: 'gpt-6-sol', reasoningEffort: 'max'});
-        expect(next.split('\n').filter((line, index) => line !== SEAT_CONFIG.split('\n')[index]), 'two lines changed, in place')
-            .toEqual(['model = "gpt-6-sol"', 'model_reasoning_effort = "max"']);
+        expect(next.split('\n').filter((line, index) => line !== SEAT_CONFIG.split('\n')[index]), 'two values changed, a comment kept')
+            .toEqual(['model = "gpt-6-sol"', 'model_reasoning_effort = "max" # picked in the app']);
         expect(next).toContain('[profiles.fast]\nmodel = "gpt-6-mini"');
+    });
+
+    test('a quoted root key is the same key: its value is replaced, never a second key beside it', () => {
+        const
+            source = 'cli_auth_credentials_store = "file"\nmcp_oauth_credentials_store = "file"\n"model" = "old"\n\n[features]\nmemories = true\n',
+            next   = applyCodexSeatSettings(source, {model: 'new'});
+
+        expect(readCodexSeatSettings(source).model).toBe('old');
+        expect(next).toBe(source.replace('"model" = "old"', '"model" = "new"'));
+        expect(parseToml(next)).toEqual({...parseToml(source), model: 'new'});
+    });
+
+    test('text inside a multiline string is never an assignment: the instructions stay, the root model changes', () => {
+        const
+            source = 'mcp_oauth_credentials_store = "file"\ndeveloper_instructions = """\nmodel = "example"\n"""\nmodel = "old"\n\n[features]\nmemories = true\n',
+            next   = applyCodexSeatSettings(source, {model: 'new'});
+
+        expect(readCodexSeatSettings(source).model, 'the root key, not the instruction text').toBe('old');
+        expect(next).toBe(source.replace('model = "old"', 'model = "new"'));
+        expect(parseToml(next).developer_instructions).toBe('model = "example"\n');
+        expect(applyCodexSeatSettings("x = '''\nmodel = \"a\"\n'''\n", {model: 'new'}), 'a literal multiline string, the key inserted at the top')
+            .toBe("model = \"new\"\nx = '''\nmodel = \"a\"\n'''\n");
+    });
+
+    test('a source that is not TOML, or a root the declaration cannot own, is never written: the call refuses', () => {
+        expect(() => readCodexSeatSettings('model = "unterminated\n')).toThrow();
+        expect(() => applyCodexSeatSettings('model = "unterminated\n', {model: 'new'})).toThrow();
+        // `model.x` makes `model` a table: a string beside it would redefine it, and the parse of the result says so
+        expect(() => applyCodexSeatSettings('model.x = 1\n', {model: 'new'})).toThrow();
     });
 
     test('a key nothing sets goes in after Fleet\'s policy keys, outside the trust block', () => {
