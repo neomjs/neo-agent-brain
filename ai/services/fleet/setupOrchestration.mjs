@@ -18,27 +18,29 @@
 
 import path                                          from 'node:path';
 import {composeCredentialEffects, presetEnvRefusals} from './credentialStep.mjs';
-import {STEP_KINDS, STEP_STATUSES}                   from './firstRunRecipe.mjs';
+import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}     from './firstRunRecipe.mjs';
 import {EFFECT_IDS, applyEffect, settleReceipt}      from './hostEffects.mjs';
 import {presets}                                     from './placementPresets.mjs';
 import {createPlaneWitnessClient}                    from './planeWitnessClient.mjs';
 import {RECEIPT_OUTCOMES, findReceipt}               from './setupRunRecord.mjs';
-import {performVerify}                               from './verifyEffect.mjs';
+import {performVerify, verifyExits}                  from './verifyEffect.mjs';
 
 /**
- * The order the effects run in, whichever renderer runs them. The recipe lists them in another order.
- * `verify` is last: it runs through the plane the others bring up, and only behind a fresh `served-plane`
- * and `validation` (`VERIFY_GATES`).
+ * The order the effects run in, whichever renderer runs them: the recipe's effect steps as it lists them,
+ * read from the recipe and stated nowhere else (bootstrap-record decision §2.10). `verify` is last: it runs
+ * through the plane the others bring up, and only behind a fresh `served-plane` and `validation`
+ * (`VERIFY_GATES`).
  * @type {String[]}
  */
-export const EFFECT_ORDER = Object.freeze([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp, EFFECT_IDS.verify]);
+export const EFFECT_ORDER = Object.freeze(RECIPE_STEPS.filter(step => step.kind === STEP_KINDS.effect).map(step => step.effectId));
 
 /**
  * The recipe steps that must read `ok` in the evaluation a `verify` run reads — the witness is written only
- * through the plane the run targets, validated with the configuration it supplied.
+ * through the plane the run targets, validated with the configuration it supplied. The recipe's `verify`
+ * step declares them.
  * @type {String[]}
  */
-export const VERIFY_GATES = Object.freeze(['served-plane', 'validation']);
+export const VERIFY_GATES = RECIPE_STEPS.find(step => step.effectId === EFFECT_IDS.verify).gates;
 
 /**
  * The effects whose result is a host file: they run before the plane exists, and bring it up.
@@ -58,14 +60,16 @@ const HOST_FILE_EFFECTS = Object.freeze(EFFECT_ORDER.slice(0, EFFECT_ORDER.index
  *
  * `effectIds` lets a renderer run some effects only, without changing that order: an effect left out that is
  * not `ok` yet halts the run before anything after it, so a selected effect never runs past an unfinished
- * predecessor. An empty selection does nothing; an unknown id is refused through `report`.
+ * predecessor — and the halt says which step the selected effect waits for, the same step its evaluated row
+ * names in `waitsFor`. An effect behind an unanswered question says so too. An empty selection does nothing;
+ * an unknown id is refused through `report`.
  *
  * `verify` (`verifyEffect.mjs`) is the one effect performed through the served plane rather than on the
  * host: it runs only when every {@link VERIFY_GATES} step reads `ok` in `evaluation` (else the run halts
  * there and says so through `report`), with the consented plane credential, under the run's own record; a
  * `pending` + `resumable` or `reconcile-required` receipt of it is RESUMED, not halted on — the effect
  * re-runs only its read-only sub-steps and never writes the witness again (the `newAttempt` consent is the
- * one exception, explicit by construction).
+ * one exception, explicit by construction — and refused, with a report, once the witness is accepted).
  * @param {Object}   options
  * @param {Object}   options.record The current record, held exclusively by the caller.
  * @param {String}   options.recordPath
@@ -73,7 +77,7 @@ const HOST_FILE_EFFECTS = Object.freeze(EFFECT_ORDER.slice(0, EFFECT_ORDER.index
  * @param {Object}   options.layout `{envFile, secretsDir, composeDir, composeFiles, composeProject}`.
  * @param {Object}   options.target `{planeId, dataRoot, endpoint}`.
  * @param {Object}   options.evaluation The settled evaluation this run reads, from `evaluateRecipe`.
- * @param {Function} options.report `(message) → void`, once per refusal (a refused run writes nothing) and once for a halt behind an unsettled effect.
+ * @param {Function} options.report `(message) → void`, once per refusal (a refused run writes nothing) and once for a halt: behind an unsettled effect, behind an effect the selection left out, or behind an unanswered question.
  * @param {String}   options.configSourcePath The Brain's `ai/configBase.mjs`, which a preset's env set is checked against.
  * @param {String[]} [options.effectIds] The effects to run now; every effect when absent.
  * @param {Boolean}  [options.newAttempt=false] The operator's explicit consent to write the witness again.
@@ -99,11 +103,23 @@ export async function performEffects({record, recordPath, host, layout, target, 
 
     const
         consent = stepId => record.consents.find(row => row.stepId === stepId)?.answer ?? null,
-        preset  = presets.find(row => row.id === consent('preset')),
+        stepOf  = id => evaluation.steps.find(step => step.id === id),
+        // due: an effect this call would run — its row is not ok, or it is `verify` under the consent to write it again
+        due     = effectId => (!selected || selected.has(effectId)) && (stepOf(effectId)?.status !== STEP_STATUSES.ok || (effectId === EFFECT_IDS.verify && newAttempt)),
+        chosen  = consent('preset'),
+        preset  = presets.find(row => row.id === chosen),
         patPath = consent('plane-credential'),
         keyPath = consent('provider-key');
 
     if (!preset || !patPath) {
+        const waiting = EFFECT_ORDER.find(due), missing = chosen ? 'plane-credential' : 'preset';
+
+        if (waiting) {
+            report(chosen && !preset
+                ? `the consented preset '${chosen}' is not in the preset table: no effect runs`
+                : waitReport(waiting, {id: missing, status: stepOf(missing)?.status ?? STEP_STATUSES.pending, reason: stepOf(missing)?.reason ?? 'unanswered'}));
+        }
+
         return record;
     }
 
@@ -141,13 +157,20 @@ export async function performEffects({record, recordPath, host, layout, target, 
     let current = record;
 
     for (const effectId of EFFECT_ORDER) {
-        const stepStatus = evaluation.steps.find(step => step.effectId === effectId)?.status;
+        const step = stepOf(effectId), stepStatus = step?.status;
 
         if (stepStatus === STEP_STATUSES.ok && !(effectId === EFFECT_IDS.verify && newAttempt)) {
             continue;
         }
 
         if (selected && !selected.has(effectId)) {
+            // consent to one effect is never consent to run another: the first selected effect behind this one says what it waits for
+            const waiting = EFFECT_ORDER.slice(EFFECT_ORDER.indexOf(effectId) + 1).find(due);
+
+            if (waiting) {
+                report(waitReport(waiting, {id: effectId, status: stepStatus ?? STEP_STATUSES.unknown, reason: step?.reason ?? 'not evaluated'}));
+            }
+
             break;
         }
 
@@ -159,9 +182,9 @@ export async function performEffects({record, recordPath, host, layout, target, 
         if (stepStatus === STEP_STATUSES.reconcileRequired) {
             const reason = unsettledReason({
                 effectId,
-                observed      : evaluation.steps.find(step => step.effectId === effectId)?.observed,
+                observed      : step.observed,
                 expectedDigest: findReceipt(current, effectId)?.expectedDigest,
-                planeMatches  : evaluation.steps.find(step => step.id === 'served-plane')?.status === STEP_STATUSES.ok
+                planeMatches  : stepOf('served-plane')?.status === STEP_STATUSES.ok
             });
 
             report(`'${effectId}' was interrupted and is not settled, so nothing runs past it: ${reason ?? 'a re-check settles it'}`);
@@ -178,6 +201,17 @@ export async function performEffects({record, recordPath, host, layout, target, 
     }
 
     return current;
+}
+
+/**
+ * @summary The one sentence for an effect that cannot run yet: the step it waits for, with that step's own
+ * status and reason. The report twin of the evaluated row's `waitsFor` (bootstrap-record decision §2.10).
+ * @param {String} effectId
+ * @param {{id: String, status: String, reason: String}} blocker The step in its way, as evaluated.
+ * @returns {String}
+ */
+function waitReport(effectId, blocker) {
+    return `'${effectId}' waits for '${blocker.id}': it is ${blocker.status} (${blocker.reason})`;
 }
 
 /**
@@ -215,10 +249,16 @@ function unsettledReason({effectId, observed, expectedDigest, planeMatches}) {
  * @private
  */
 async function runVerify({record, recordPath, host, target, evaluation, report, patPath, newAttempt, createPlaneClient}) {
+    if (newAttempt && verifyExits({receipt: findReceipt(record, EFFECT_IDS.verify), section: record.verification}).exits.length === 0) {
+        report('\'verify\' is accepted: no new attempt is made, the witness is complete; a new run witnesses a plane again');
+
+        return record;
+    }
+
     const stale = VERIFY_GATES.map(id => evaluation.steps.find(step => step.id === id)).find(step => step?.status !== STEP_STATUSES.ok);
 
     if (stale) {
-        report(`'verify' waits: ${stale.id} is ${stale.status} (${stale.reason}); the witness is written only through the validated target plane`);
+        report(`${waitReport(EFFECT_IDS.verify, stale)}; the witness is written only through the validated target plane`);
 
         return record;
     }

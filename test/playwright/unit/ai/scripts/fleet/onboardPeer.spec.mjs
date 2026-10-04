@@ -572,7 +572,9 @@ test.describe('onboardPeer — long-lived Fleet owner transport', () => {
                   registryAgentsRoot   : FleetRegistryService.agentsRoot
               };
 
-        fs.mkdirSync(path.join(repoPath, '.git'), {recursive: true});
+        // a real repository: the provisioned start asks git where the checkout's git directory is
+        fs.mkdirSync(repoPath, {recursive: true});
+        spawnSync('git', ['init', '-q', repoPath]);
 
         FleetRegistryService.dataDir    = path.join(root, 'registry');
         // the row's seat home is recorded at birth under the root the manager will derive from
@@ -613,10 +615,11 @@ test.describe('onboardPeer — long-lived Fleet owner transport', () => {
               moduleUrl = new URL('../../../../../../ai/scripts/fleet/onboardPeer.mjs', import.meta.url).href;
 
         try {
+            // the declared commit identity resolves without reading the forge, so no start reaches GitHub
             const firstCode = `
                 const {createOnboardingFleetBridge} = await import(${JSON.stringify(moduleUrl)});
                 const bridge = createOnboardingFleetBridge({url: ${JSON.stringify(url)}});
-                await bridge.defineAgent({id:'neo-gpt-2', githubUsername:'neo-gpt-2', harnessType:'codex', credential:'ghp_fixture_only'});
+                await bridge.defineAgent({id:'neo-gpt-2', githubUsername:'neo-gpt-2', harnessType:'codex', credential:'ghp_fixture_only', gitName:'Neo GPT 2', gitEmail:'neo-gpt-2@example.com'});
                 await bridge.setRepo({id:'neo-gpt-2', cloneUrl:'https://github.com/x/y.git', repoSlug:'x/y'});
                 console.log(JSON.stringify(await bridge.startAgent('neo-gpt-2')));
             `;

@@ -154,8 +154,10 @@ The other fields describe the substrate; this one describes **you**. It is RLS-s
 
 | `armed` | `reason` | meaning |
 |---|---|---|
-| `true`  | `deliverable` | every active `a2a-webhook` row carries a server-issued key; the manifest build would accept them |
-| `false` | `no-active-subscription` | no row resolves to `active` — nothing is ever attempted, so nothing fails or logs. A **legacy row whose `status` is absent** no longer lands here: absence resolves to `active` for every reader (see the note below) |
+| `true`  | `deliverable` | every active `a2a-webhook` row carries a server-issued key, the manifest build would accept them, and the receiver has not refused every one |
+| `false` | `no-active-subscription` | no row resolves to `active` and none was withdrawn — nothing is ever attempted, so nothing fails or logs. A **legacy row whose `status` is absent** no longer lands here: absence resolves to `active` for every reader (see the note below) |
+| `false` | `withdrawn` | every row is one the sender withdrew after repeated failed deliveries (`status: 'degraded'`). Nothing is attempted until you resume one with `manage_wake_subscription` `action: 'resume'` |
+| `false` | `not-in-receiver-manifest` | the receiver answered `404 unknown-subscription` to the last delivery of every route the build would publish (or of every withdrawn row): it has not loaded them, so a resume alone re-sends into the same refusal. Re-arm: publish the routes into the receiver's manifest again (a Fleet seat's Start does it through `armFleetSeatWake`; a hand-armed seat runs the host builder, `npm run ai:wake-manifest`). The build publishes only `active` rows, so resume a withdrawn route first and re-arm before its next three wakes withdraw it again. The refusal stays until a delivery is answered, so a message to yourself confirms the repair |
 | `false` | `unmigrated-target` | active rows exist, but none targets `a2a-webhook`; only that target reaches a container wake |
 | `false` | `missing-signing-key` | an active `a2a-webhook` row has no server-issued key. Repair with `manage_wake_subscription` `action: 'rotate-key'` — do **not** unsubscribe and re-subscribe, which mints a new id and orphans the published route |
 | `null`  | `unbound-identity` | no request identity is bound (a container healthcheck carries none) — the question could not be asked |

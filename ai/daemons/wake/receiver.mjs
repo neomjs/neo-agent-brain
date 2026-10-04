@@ -69,6 +69,15 @@ const PRODUCTION_ADAPTERS     = new Set([
     'kimi-server',
     'kimi-pull-bridge'
 ]);
+/**
+ * How long one receiver step may stay unsettled before the process counts as stuck. A promise that
+ * never settles throws nothing, so its age is the only signal it leaves. A dispatch is bounded by its
+ * route's own `attemptTimeoutMs`, which the adapter already races, so `dispatch` here is only the
+ * settlement headroom on top of it.
+ * @type {Object<String, Number>}
+ */
+const STEP_BOUNDS_MS            = {accept: 15 * 1000, reload: 15 * 1000, drain: 60 * 1000, dispatch: 30 * 1000};
+const STEP_WATCHDOG_INTERVAL_MS = 5 * 1000;
 
 /**
  * @summary Loads a 0600 route manifest without leaking signing keys into logs or state records.
@@ -198,15 +207,23 @@ export function verifyWakeSignature(rawBody, signingKey, signature) {
  *   `(record) => {contextTokens, lastActivityAt, sessionId}|null` for the delivery-time context gate.
  * @param {Object} [options.logger=console]
  * @param {Number} [options.maxBodyBytes=DEFAULT_MAX_BODY_BYTES]
- * @returns {{server:http.Server,drain:Function}}
+ * @param {Function} [options.onStuck] `({step, subscriptionId, ageMs}) => void`, called once when a step outlives its bound;
+ *   `subscriptionId` names the route a stuck dispatch serves.
+ * @param {Object} [options.stepBoundsMs=STEP_BOUNDS_MS] Bound per step: `accept`, `reload`, `drain`, and `dispatch` as
+ *   headroom over the route's `attemptTimeoutMs`.
+ * @param {Number} [options.watchdogIntervalMs=STEP_WATCHDOG_INTERVAL_MS]
+ * @returns {{server:http.Server,drain:Function,setManifest:Function,track:Function}}
  */
 export function createWakeReceiver({
     manifest,
     state,
-    dispatch     = dispatchLocalWake,
-    contextProbe = probeSessionContext,
-    logger       = console,
-    maxBodyBytes = DEFAULT_MAX_BODY_BYTES
+    dispatch           = dispatchLocalWake,
+    contextProbe       = probeSessionContext,
+    logger             = console,
+    maxBodyBytes       = DEFAULT_MAX_BODY_BYTES,
+    onStuck            = null,
+    stepBoundsMs       = STEP_BOUNDS_MS,
+    watchdogIntervalMs = STEP_WATCHDOG_INTERVAL_MS
 } = {}) {
     if (!manifest?.routes || !(state instanceof WakeReceiverState)) {
         throw new Error('createWakeReceiver requires a loaded manifest and WakeReceiverState');
@@ -219,6 +236,48 @@ export function createWakeReceiver({
     // first wake, and the only remedy was the restart an incident is most likely to forbid.
     let activeManifest = manifest;
     let drainPromise   = Promise.resolve();
+
+    const inFlight = new Set();
+
+    /**
+     * @summary Holds a step under the watchdog until it settles.
+     * @param {String} step A {@link STEP_BOUNDS_MS} key.
+     * @param {Promise} promise
+     * @param {Number} [boundMs=stepBoundsMs[step]]
+     * @param {String} [subscriptionId] The route a dispatch serves, named if it sticks.
+     * @returns {Promise} The same outcome.
+     */
+    const track = (step, promise, boundMs = stepBoundsMs[step], subscriptionId) => {
+        const entry = {step, boundMs, subscriptionId, startedAt: Date.now()};
+
+        inFlight.add(entry);
+
+        return Promise.resolve(promise).finally(() => inFlight.delete(entry))
+    };
+
+    // Reports the first step that outlives its bound, once. A stuck step leaves nothing to catch, and
+    // its owner is the supervisor: the production `onStuck` exits so the LaunchAgent restarts a fresh process.
+    const watchdog = setInterval(() => {
+        const now = Date.now();
+
+        for (const {step, boundMs, subscriptionId, startedAt} of inFlight) {
+            if (now - startedAt > boundMs) {
+                clearInterval(watchdog);
+                logger.error?.(`[Wake Receiver] STUCK: ${step}${subscriptionId ? ` for ${subscriptionId}` : ''} unsettled for ${now - startedAt} ms (bound ${boundMs} ms)`);
+                onStuck?.({step, subscriptionId, ageMs: now - startedAt});
+                return
+            }
+        }
+    }, watchdogIntervalMs);
+
+    watchdog.unref?.();
+
+    // Every state call below runs under the watchdog.
+    const watched = {
+        accept    : options   => track('accept', state.accept(options)),
+        list      : filter    => track('drain', state.list(filter)),
+        transition: (...args) => track('drain', state.transition(...args))
+    };
 
     /**
      * @summary Swaps in an already-validated manifest. Callers load and validate first, so a manifest
@@ -239,10 +298,10 @@ export function createWakeReceiver({
 
     const drain = () => {
         drainPromise = drainPromise.then(async () => {
-            const pending = await state.list('pending');
+            const pending = await watched.list('pending');
 
             for (const record of pending) {
-                const dispatching = await state.transition(record.recordKey, 'pending', 'dispatching', {
+                const dispatching = await watched.transition(record.recordKey, 'pending', 'dispatching', {
                     dispatchStartedAt: new Date().toISOString()
                 });
                 if (!dispatching) continue;
@@ -253,7 +312,7 @@ export function createWakeReceiver({
                 const gateConfig = dispatching.route?.adapterConfig?.contextGate;
 
                 if (gateConfig && contextProbe) {
-                    const probe = await contextProbe(dispatching).catch(() => null);
+                    const probe = await track('drain', contextProbe(dispatching)).catch(() => null);
                     const gate  = evaluateContextGate({
                         probe,
                         maxContextTokens : gateConfig.maxContextTokens,
@@ -263,7 +322,7 @@ export function createWakeReceiver({
                     if (gate.action === 'defer') {
                         const deferCount = (dispatching.deferCount || 0) + 1;
 
-                        await state.transition(record.recordKey, 'dispatching', 'pending', {
+                        await watched.transition(record.recordKey, 'dispatching', 'pending', {
                             deferCount,
                             deferredAt         : new Date().toISOString(),
                             deferReason        : `context-gate:${gate.contextTokens}>${gateConfig.maxContextTokens}`,
@@ -317,7 +376,8 @@ export function createWakeReceiver({
                     // The reason channel lets a terminal failure name its cause without throwing —
                     // throwing would change the retry semantics, and the cause belongs on the record
                     // regardless of how the adapter chose to end.
-                    const result = await dispatch(dispatching);
+                    const result = await track('dispatch', dispatch(dispatching),
+                        (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch, record.subscriptionId);
 
                     outcome = typeof result === 'string' ? result : result?.outcome;
 
@@ -343,7 +403,7 @@ export function createWakeReceiver({
                         if (deferCount > DIALOG_DEFER_BOUND) {
                             const exhausted = `dialog-defer-bound-exhausted:${outcomeReason || 'unknown'}`;
 
-                            await state.transition(record.recordKey, 'dispatching', 'failed', {
+                            await watched.transition(record.recordKey, 'dispatching', 'failed', {
                                 outcomeReason     : exhausted,
                                 deferCount,
                                 dispatchFinishedAt: new Date().toISOString()
@@ -356,7 +416,7 @@ export function createWakeReceiver({
                             continue;
                         }
 
-                        await state.transition(record.recordKey, 'dispatching', 'pending', {
+                        await watched.transition(record.recordKey, 'dispatching', 'pending', {
                             deferCount,
                             deferredAt : new Date().toISOString(),
                             deferReason: outcomeReason || 'interactive-dialog-pending'
@@ -374,7 +434,7 @@ export function createWakeReceiver({
                     logger.error?.(`[Wake Receiver] adapter failed for ${record.subscriptionId}: ${outcomeReason}`);
                 }
 
-                await state.transition(record.recordKey, 'dispatching', outcome, {
+                await watched.transition(record.recordKey, 'dispatching', outcome, {
                     ...(outcomeReason ? {outcomeReason} : {}),
                     dispatchFinishedAt: new Date().toISOString()
                 });
@@ -430,7 +490,7 @@ export function createWakeReceiver({
                 harnessTargetMetadata: route.harnessTargetMetadata,
                 adapterConfig        : route.adapterConfig
             };
-            const accepted = await state.accept({
+            const accepted = await watched.accept({
                 subscriptionId,
                 eventId,
                 sourceEventIds,
@@ -450,7 +510,9 @@ export function createWakeReceiver({
         }
     });
 
-    return {server, drain, setManifest};
+    server.on('close', () => clearInterval(watchdog));
+
+    return {server, drain, setManifest, track};
 }
 
 /**
@@ -463,6 +525,7 @@ export function createWakeReceiver({
  * @param {Object} [options.logger=console]
  * @param {Number} [options.reconcileIntervalMs]
  * @param {Number} [options.drainIntervalMs=DRAIN_RETRY_INTERVAL_MS]
+ * @param {Function} [options.onStuck] A stuck step exits non-zero, so the LaunchAgent restarts a fresh process.
  * @returns {Promise<{server:http.Server,state:WakeReceiverState,drain:Function}>}
  */
 export async function startWakeReceiver({
@@ -472,7 +535,8 @@ export async function startWakeReceiver({
     port,
     logger = console,
     reconcileIntervalMs = MANIFEST_RECONCILE_INTERVAL_MS,
-    drainIntervalMs     = DRAIN_RETRY_INTERVAL_MS
+    drainIntervalMs     = DRAIN_RETRY_INTERVAL_MS,
+    onStuck             = () => process.exit(1)
 } = {}) {
     if (net.isIP(host) === 0) {
         throw new Error('Wake receiver requires an explicit IP-literal --host');
@@ -494,7 +558,7 @@ export async function startWakeReceiver({
         logger.warn?.(`[Wake Receiver] terminalized ${unknownCount} interrupted dispatch(es) as unknown; mailbox remains authoritative.`);
     }
 
-    const {server, drain, setManifest} = createWakeReceiver({manifest, state, logger});
+    const {server, drain, setManifest, track} = createWakeReceiver({manifest, state, logger, onStuck});
     await new Promise((resolve, reject) => {
         server.once('error', reject);
         server.listen(port, host, resolve);
@@ -524,7 +588,9 @@ export async function startWakeReceiver({
      * @returns {Promise<Number|null>}
      */
     const serialize = step => {
-        reloadChain = reloadChain.then(step, step);
+        const watchedStep = () => track('reload', step());
+
+        reloadChain = reloadChain.then(watchedStep, watchedStep);
 
         return reloadChain
     };

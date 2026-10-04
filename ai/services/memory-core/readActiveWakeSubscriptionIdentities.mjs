@@ -32,8 +32,16 @@
 
 import {
     activeWakeSubscriptionStatusSql,
-    isActiveWakeSubscriptionStatus
+    isActiveWakeSubscriptionStatus,
+    resolvedWakeSubscriptionStatusSql,
+    WAKE_SUBSCRIPTION_DEFAULT_STATUS
 } from './wakeSubscriptionStatusPolicy.mjs';
+
+/**
+ * The status the sender writes when it withdraws a route (`WebhookDeliveryService#_markDegraded`).
+ * @type {String}
+ */
+const WITHDRAWN_STATUS = 'degraded'
 
 /**
  * The durable fleet-wide ACTIVE-subscription query. Mirrors the established WAKE_SUBSCRIPTION
@@ -55,15 +63,19 @@ const ACTIVE_OBSERVATIONS_SQL = `
 `
 
 /**
- * The durable fleet-wide ACTIVE-subscription ids, one row per subscription and nothing aggregated:
- * the join key between an identity and the wake receiver's per-subscription dispatch records. Same
- * status predicate as {@link ACTIVE_OBSERVATIONS_SQL}.
+ * The durable fleet-wide wake routes, one row per subscription and nothing aggregated: the join key
+ * between an identity and the wake receiver's per-subscription dispatch records. A route is an
+ * active subscription or one the sender withdrew, which its owner can resume; a retired row is no
+ * route. `refusal` is the receiver's last refusal of the route, as the sender recorded it.
  */
-const ACTIVE_IDS_SQL = `
-    SELECT id, json_extract(data, '$.properties.agentIdentity') AS agentIdentity
+const ROUTES_SQL = `
+    SELECT id,
+           json_extract(data, '$.properties.agentIdentity') AS agentIdentity,
+           ${resolvedWakeSubscriptionStatusSql()} = '${WITHDRAWN_STATUS}' AS withdrawn,
+           json_extract(data, '$.properties.lastRefusal') AS refusal
     FROM Nodes
     WHERE json_extract(data, '$.label') = 'WAKE_SUBSCRIPTION'
-      AND ${activeWakeSubscriptionStatusSql()}
+      AND ${resolvedWakeSubscriptionStatusSql()} IN ('${WAKE_SUBSCRIPTION_DEFAULT_STATUS}', '${WITHDRAWN_STATUS}')
 `
 
 /**
@@ -139,28 +151,29 @@ export async function readActiveWakeSubscriptionObservations({graphService = nul
 }
 
 /**
- * @summary The ACTIVE wake subscriptions of every holder identity, by id: what joins a roster row to
- * the wake receiver's per-subscription dispatch records. Same predicate and the same durable-first
- * rule as {@link readActiveWakeSubscriptionObservations}. The ids serve the projection that reads
- * them in-process; they are not part of the redacted observation the fleet serves.
+ * @summary The wake routes of every holder identity: what joins a roster row to the wake receiver's
+ * per-subscription dispatch records, and what tells a seat whose every route was withdrawn from one
+ * that never subscribed. Same durable-first rule as {@link readActiveWakeSubscriptionObservations}.
+ * The routes serve the projection that reads them in-process; they are not part of the redacted
+ * observation the fleet serves.
  * @param {Object} [options]
  * @param {Object} [options.graphService] Injectable service exposing `ready()` + `db`; defaults to
  *     the memory-core `GraphService` singleton, imported lazily.
- * @returns {Promise<Map<String, String[]>>} identity → its active subscription ids.
+ * @returns {Promise<Map<String, Object[]>>} identity → its routes, `{id, withdrawn, refusal}`.
  * @throws {Error} When no read surface is reachable.
  */
-export async function readActiveWakeSubscriptionIdsByIdentity({graphService = null} = {}) {
+export async function readWakeRoutesByIdentity({graphService = null} = {}) {
     const
         {sqlite, items} = await graphReadSurfaces(graphService),
         byIdentity      = new Map(),
-        add             = (identity, id) => {
+        add             = (identity, id, withdrawn, refusal) => {
             if (typeof identity === 'string' && identity !== '' && typeof id === 'string' && id !== '') {
-                byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), id])
+                byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), {id, withdrawn: Boolean(withdrawn), refusal: refusal || null}])
             }
         }
 
     if (sqlite) {
-        for (const row of sqlite.prepare(ACTIVE_IDS_SQL).all()) add(row.agentIdentity, row.id)
+        for (const row of sqlite.prepare(ROUTES_SQL).all()) add(row.agentIdentity, row.id, row.withdrawn, row.refusal)
 
         return byIdentity
     }
@@ -171,8 +184,10 @@ export async function readActiveWakeSubscriptionIdsByIdentity({graphService = nu
     }
 
     for (const node of items) {
-        if (node.label === 'WAKE_SUBSCRIPTION' && isActiveWakeSubscriptionStatus(node.properties?.status)) {
-            add(node.properties?.agentIdentity, node.id)
+        const status = node.properties?.status
+
+        if (node.label === 'WAKE_SUBSCRIPTION' && (isActiveWakeSubscriptionStatus(status) || status === WITHDRAWN_STATUS)) {
+            add(node.properties?.agentIdentity, node.id, status === WITHDRAWN_STATUS, node.properties?.lastRefusal)
         }
     }
 
