@@ -57,6 +57,9 @@ function makeLifecycle({
             }
         }),
         getInstanceRoot          : () => '/instances',
+        // the default catalog read answers without a harness: no seat home here has a Codex login, and no CLI is there
+        authRequiredForHome      : () => true,
+        getHarnessBinaryPath     : harnessType => `/nonexistent/${harnessType}`,
         assertRemoteMcpCapability: async (agent, options) => {
             events?.push('capability');
             calls.capability.push({agent, options});
@@ -707,7 +710,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         Object.assign(agents.a, {model: 'gpt-6-astra', reasoningEffort: 'ultra'});
 
         await expect(startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed', ensureRepo: ensure, readModelCatalog: catalog('complete')}))
-            .rejects.toMatchObject({code: 'FLEET_SEAT_MODEL_UNAVAILABLE', message: expect.stringContaining('cannot start: model gpt-6-astra is not available. Nothing was changed.')});
+            .rejects.toMatchObject({code: 'FLEET_SEAT_MODEL_UNAVAILABLE', message: expect.stringContaining('cannot start: model gpt-6-astra is not available. Nothing was cloned or configured and the harness did not start.')});
         expect([ensure.calls.length, lifecycle.calls.start.length], 'nothing cloned, nothing spawned').toEqual([0, 0]);
         expect(seatModel.get('a')).toEqual({state: 'refused', model: 'gpt-6-astra', reasoningEffort: 'ultra', reason: 'model gpt-6-astra is not available'});
 
@@ -738,30 +741,77 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         await expect(start()).rejects.toMatchObject({code: 'FLEET_SEAT_MODEL_UNAVAILABLE'});
 
-        // the declaration withdrawn: the start reads nothing, runs, and no refusal outlives it
+        // the declaration withdrawn: the start runs, and no refusal outlives it
         agents.a.model = null;
         await start({prepareWorkspace: makePrepareWorkspace(), agentosRuntimeRoot: '/installed/neo'});
         expect([lifecycle.calls.start.length, seatModel.has('a')]).toEqual([1, false]);
     });
 
-    test('a seat with nothing declared, or a family Fleet does not configure this way, reads no catalog', async () => {
-        const reads = [];
+    test('a default start reads and keeps the catalog for the running seat\'s first Change; a family Fleet does not configure this way keeps none', async () => {
+        const kept = new Map();
 
         for (const harnessType of ['codex', 'claude-desktop']) {
-            const agents = repoAgent('a');
+            const
+                agents    = repoAgent(harnessType),
+                lifecycle = makeLifecycle({agents}),
+                reads     = [];
 
-            Object.assign(agents.a, {harnessType}, harnessType === 'codex' ? {} : {model: 'claude-opus-5-5'});
+            lifecycle.setSeatCatalog = (id, catalog) => kept.set(id, catalog);
+            lifecycle.setSeatModel   = (id, outcome) => { if (outcome) throw new Error('nothing was declared') };
+            Object.assign(agents[harnessType], {harnessType});
+
             await startAgentProvisioned({
-                lifecycleService  : makeLifecycle({agents}),
-                agentId           : 'a',
+                lifecycleService  : lifecycle,
+                agentId           : harnessType,
                 managedRoot       : '/managed',
-                ensureRepo        : makeEnsureRepo('/managed/a/neomjs-neo'),
+                ensureRepo        : makeEnsureRepo(`/managed/${harnessType}/neomjs-neo`),
                 prepareWorkspace  : makePrepareWorkspace(),
-                agentosRuntimeRoot: '/installed/neo'
-            }).catch(error => reads.push(error.message));
+                agentosRuntimeRoot: '/installed/neo',
+                readModelCatalog  : async args => {
+                    reads.push(args.agent.id);
+                    return harnessType === 'codex' ? {state: 'complete', models: [{id: 'gpt-6-luna', slug: 'gpt-6-luna', efforts: ['high']}], reason: null} : {state: 'unsupported', models: [], reason: 'set per session in the app'}
+                }
+            });
+
+            expect([reads, lifecycle.calls.start.length], harnessType).toEqual([[harnessType], 1])
         }
 
-        expect(reads.filter(message => /catalog|model/.test(message)), 'the default reader answered null before spawning anything').toEqual([]);
+        expect([...kept.keys()]).toEqual(['codex']);
+        expect(kept.get('codex').models.map(model => model.id)).toEqual(['gpt-6-luna']);
+    });
+
+    test('a catalog read whose app-server outlived its signals refuses the start: the home is not free', async () => {
+        const
+            lifecycle = makeLifecycle({agents: repoAgent('a')}),
+            ensure    = makeEnsureRepo('/managed/a/neomjs-neo');
+
+        await expect(startAgentProvisioned({
+            lifecycleService: lifecycle,
+            agentId         : 'a',
+            managedRoot     : '/managed',
+            ensureRepo      : ensure,
+            readModelCatalog: async () => ({state: 'unavailable', models: [], reason: 'the app-server did not exit when told to, so the seat\'s home is still in use', stillRunning: true})
+        })).rejects.toMatchObject({code: 'FLEET_SEAT_HOME_IN_USE', message: expect.stringContaining('cannot start: the app-server did not exit when told to')});
+
+        expect([ensure.calls.length, lifecycle.calls.start.length], 'nothing cloned, nothing spawned').toEqual([0, 0]);
+    });
+
+    test('a seat without a repository reads its catalog too, and refuses a declared model its harness lacks', async () => {
+        const
+            agents    = {a: {id: 'a', githubUsername: 'a', harnessType: 'codex', metadata: {}, seatHome: '/managed/a', model: 'gpt-6-astra'}},
+            lifecycle = makeLifecycle({agents}),
+            kept      = [];
+
+        lifecycle.setSeatCatalog = id => kept.push(id);
+
+        await expect(startAgentProvisioned({
+            lifecycleService: lifecycle,
+            agentId         : 'a',
+            managedRoot     : '/managed',
+            readModelCatalog: async () => ({state: 'complete', models: [{id: 'gpt-6-luna', slug: 'gpt-6-luna', efforts: []}], reason: null})
+        })).rejects.toMatchObject({code: 'FLEET_SEAT_MODEL_UNAVAILABLE'});
+
+        expect([kept, lifecycle.calls.start.length]).toEqual([['a'], 0]);
     });
 
     test('a provisioning failure propagates and the harness is NEVER spawned (fail-closed)', async () => {
