@@ -207,7 +207,8 @@ export function verifyWakeSignature(rawBody, signingKey, signature) {
  *   `(record) => {contextTokens, lastActivityAt, sessionId}|null` for the delivery-time context gate.
  * @param {Object} [options.logger=console]
  * @param {Number} [options.maxBodyBytes=DEFAULT_MAX_BODY_BYTES]
- * @param {Function} [options.onStuck] `({step, ageMs}) => void`, called once when a step outlives its bound.
+ * @param {Function} [options.onStuck] `({step, subscriptionId, ageMs}) => void`, called once when a step outlives its bound;
+ *   `subscriptionId` names the route a stuck dispatch serves.
  * @param {Object} [options.stepBoundsMs=STEP_BOUNDS_MS] Bound per step: `accept`, `reload`, `drain`, and `dispatch` as
  *   headroom over the route's `attemptTimeoutMs`.
  * @param {Number} [options.watchdogIntervalMs=STEP_WATCHDOG_INTERVAL_MS]
@@ -243,10 +244,11 @@ export function createWakeReceiver({
      * @param {String} step A {@link STEP_BOUNDS_MS} key.
      * @param {Promise} promise
      * @param {Number} [boundMs=stepBoundsMs[step]]
+     * @param {String} [subscriptionId] The route a dispatch serves, named if it sticks.
      * @returns {Promise} The same outcome.
      */
-    const track = (step, promise, boundMs = stepBoundsMs[step]) => {
-        const entry = {step, boundMs, startedAt: Date.now()};
+    const track = (step, promise, boundMs = stepBoundsMs[step], subscriptionId) => {
+        const entry = {step, boundMs, subscriptionId, startedAt: Date.now()};
 
         inFlight.add(entry);
 
@@ -258,11 +260,11 @@ export function createWakeReceiver({
     const watchdog = setInterval(() => {
         const now = Date.now();
 
-        for (const {step, boundMs, startedAt} of inFlight) {
+        for (const {step, boundMs, subscriptionId, startedAt} of inFlight) {
             if (now - startedAt > boundMs) {
                 clearInterval(watchdog);
-                logger.error?.(`[Wake Receiver] STUCK: ${step} unsettled for ${now - startedAt} ms (bound ${boundMs} ms)`);
-                onStuck?.({step, ageMs: now - startedAt});
+                logger.error?.(`[Wake Receiver] STUCK: ${step}${subscriptionId ? ` for ${subscriptionId}` : ''} unsettled for ${now - startedAt} ms (bound ${boundMs} ms)`);
+                onStuck?.({step, subscriptionId, ageMs: now - startedAt});
                 return
             }
         }
@@ -375,7 +377,7 @@ export function createWakeReceiver({
                     // throwing would change the retry semantics, and the cause belongs on the record
                     // regardless of how the adapter chose to end.
                     const result = await track('dispatch', dispatch(dispatching),
-                        (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch);
+                        (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch, record.subscriptionId);
 
                     outcome = typeof result === 'string' ? result : result?.outcome;
 

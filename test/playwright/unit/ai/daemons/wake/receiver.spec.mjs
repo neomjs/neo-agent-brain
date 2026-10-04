@@ -884,11 +884,12 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
         await request;
     });
 
-    test('a dispatch that never settles is named stuck after its wake was accepted', async () => {
+    test('a dispatch that never settles is named stuck, with its route, after its wake was accepted', async () => {
         const {stuck, url} = await start({dispatch: never});
 
         expect((await post(url)).status).toBe(202);
         await expect.poll(() => stuck.map(entry => entry.step)).toEqual(['dispatch']);
+        expect(stuck[0].subscriptionId).toBe(subscriptionId);
     });
 
     test('a dispatch inside its route\'s own attempt budget is not stuck, however far that budget exceeds the headroom', async () => {
