@@ -95,6 +95,20 @@ test.describe('fleetA2AActivityAdapter - Memory Core A2A activity mapping', () =
         })
     })
 
+    // The per-seat lane record needs releases as well as claims, so every event names the
+    // collision tag it carries; a summary's declared concepts type it without a bracket in sight.
+    test('every event names its collision tag: a declared claim, a release, and none', () => {
+        const [claim, release, plain] = createA2AMessageActivityEvents([
+            {messageId: 'MESSAGE:declared', subject: 'taking the foo leaf', taggedConcepts: ['lane-claim'], from: '@neo-opus-ada', to: 'AGENT:*', sentAt: '2026-10-03T12:49:00Z'},
+            {messageId: 'MESSAGE:release',  subject: '⚖️ [claim-corrected] Brain #811 is free again',       from: '@neo-opus-ada', to: 'AGENT:*', sentAt: '2026-10-03T12:48:00Z'},
+            {messageId: 'MESSAGE:plain',    subject: 'Re: [lane-claim] Brain #811',                          from: '@neo-opus-ada', to: 'AGENT:*', sentAt: '2026-10-03T12:47:00Z'}
+        ]);
+
+        expect(claim).toMatchObject({type: 'lane-claim', payload: {kind: 'a2a-lane-claim', collisionTag: 'lane-claim'}});
+        expect(release).toMatchObject({type: 'a2a-activity', payload: {kind: 'a2a-message', collisionTag: 'claim-corrected'}});
+        expect(plain).toMatchObject({type: 'a2a-activity', payload: {collisionTag: null}})
+    })
+
     test('counts lane-claims in NON-leading tag position — the real-corpus bypass class (#15925)', () => {
         // The fleet writes compound claims — `[ticket-created][lane-claim][#N] …` — and the
         // ^-anchored regex read all eight of these as plain activity. Fixtures: three verbatim

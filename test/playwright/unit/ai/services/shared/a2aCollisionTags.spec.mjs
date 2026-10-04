@@ -34,6 +34,38 @@ test.describe('a2aCollisionTags — the structural reader', () => {
             .toBeNull()
     });
 
+    // Real claim subjects, verbatim up to the first `·`: a signature mark may open the segment, and a
+    // bracket may combine the tag with others.
+    test('a claim behind a signature mark or inside a combined bracket counts', () => {
+        for (const subject of [
+            '🖖 [lane-claim] Institution #508 build (System service cards read in full), FM v1 leaf under #505',
+            '⚖️ [lane-claim] Brain #811 (the open-work row summary carries the PR title), Clio\'s planner leaf, offered to me',
+            '🌿 [lane-claim] Institution #510 (the Golden Path reads in full), Clio\'s planner leaf, assigned to me',
+            '🪢 [lane-claim + PR-open · DRAFT] neo #19383 (Resolves #19382, docs; the planner\'s leaf, assigned to me)',
+            '[ticket-created + lane-claim] neo #19368 the planner leaf',
+            '⚖️ [lane-claim, BEFORE the edits] Brain #750 (routed to me by Clio)',
+            '🪢 [back online · lane-claim] neo #19186 re-scoped and mine',
+            '[lane-claim → PR-open] Brain #621 (from Eos\'s list) → PR #677'
+        ]) {
+            expect(collisionPreventionTag({subject}), subject).toBe('lane-claim')
+        }
+
+        expect(collisionPreventionTag({subject: '🖖 [claim-corrected] Institution #508 is free again'})).toBe('claim-corrected')
+    });
+
+    test('marks, combined brackets and words around a tag do not turn a mention into a claim', () => {
+        for (const subject of [
+            'Re: [lane-claim] Institution #508 build',
+            '📜 [leaf · planner] Institution #509 waits on the lane-claim',
+            '🖖 [installed window · taken] row 4 walk',
+            '[not a lane-claim] just a note',
+            '[lane-claim released] Brain #750',
+            '🖖 the [lane-claim] guard reads subjects'
+        ]) {
+            expect(collisionPreventionTag({subject}), subject).toBeNull()
+        }
+    });
+
     test('the vocabulary is reachable only through the reader — all four canonical names', () => {
         // The Set itself is private by contract (a mutable export lets any importer veto the
         // class globally); the four canonical names pin today's vocabulary via the public API.

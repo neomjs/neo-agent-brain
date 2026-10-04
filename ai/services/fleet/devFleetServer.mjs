@@ -52,6 +52,7 @@ import RequestContextService                                           from '../
 import FleetControlBridge                                              from './FleetControlBridge.mjs';
 import FleetManager                                                    from './FleetManager.mjs';
 import FleetRegistryService                                            from './FleetRegistryService.mjs';
+import {detectMemoryCandidates}                                        from './seatMemoryImport.mjs';
 import {readGithubToken}                                               from '../ingestion/githubActions.mjs';
 import {describeOperatorSeatConflation, operatorSeatConflationWarning} from './operatorSeatConflation.mjs';
 import {startFleetBridgeServer}                                        from './fleetBridgeServer.mjs';
@@ -78,7 +79,7 @@ import {wireFleetTasksSource}                                            from '.
 import {wireFleetGoldenPathSource}                                       from './wireFleetGoldenPathSource.mjs';
 import {wireFleetGraphSceneSource}                                       from './wireFleetGraphSceneSource.mjs';
 import {wireFleetMemoriesSource}                                         from './wireFleetMemoriesSource.mjs';
-import {wireFleetOpenWorkSource}                                         from './wireFleetOpenWorkSource.mjs';
+import {fileStore, wireFleetOpenWorkSource}                              from './wireFleetOpenWorkSource.mjs';
 import {wireFleetRecentTurnsSource}                                      from './wireFleetRecentTurnsSource.mjs';
 import {wireFleetSessionMemoriesSource}                                  from './wireFleetSessionMemoriesSource.mjs';
 import {wireFleetWakeRoutesSource}                                       from './wireFleetWakeRoutesSource.mjs';
@@ -313,6 +314,11 @@ async function boot() {
     // default); the wiring resolves the origins under it. The pulls reader fills the composer's last honest-empty slot so the PR/lane slot emits pr-activity
     // events (opens/reviews/merges) alongside issues + lane-claims + stall. Fail-soft: an unavailable
     // singleton leaves activitySource unwired.
+    // Each seat's lane outlives the held page and this process: its record lives beside the registry,
+    // saved for the mailbox it was read from, so a restart against another plane never shows this one's.
+    const laneClaimStore  = fileStore(path.join(FleetRegistryService.getDataDir(), 'lane-claims.json')),
+          laneClaimSource = planeClient ? `plane:${planeBase.replace(/\/+$/, '')}` : 'host';
+
     if (planeClient) {
         // Plane mode: every seam rides the verified client — no in-process memory-core spin-up at
         // all (opening the host graph/mailbox is the split-brain read this mode exists to end). The
@@ -325,7 +331,9 @@ async function boot() {
             listMessages         : args => planeClient.listMessages(args),
             readPrLane           : createPlanePrLaneActivityReader(planeClient),
             openWorkProducer     : () => openWork?.producer ?? null,
-            resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
+            resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId(),
+            laneClaimStore,
+            laneClaimSource
         });
 
         wireOperatorComposeWriter({
@@ -341,7 +349,9 @@ async function boot() {
                 listMessages         : MailboxService.listMessages.bind(MailboxService),
                 graphService         : GraphService,
                 openWorkProducer     : () => openWork?.producer ?? null,
-                resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
+                resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId(),
+                laneClaimStore,
+                laneClaimSource
             });
 
             // The write-side sibling: the composeOperatorMessage verb's writer. Same lazy-singleton
@@ -454,6 +464,16 @@ async function boot() {
         queryRecentTurns     : args => callHistoryOperation('query_recent_turns', args),
         resolveViewerIdentity: () => RequestContextService.getAgentIdentityNodeId()
     });
+
+    // Memory candidates are read where the seats live, and this relay is the process that launches
+    // them; the composed plane service holds no seats and leaves the source unwired.
+    FleetControlBridge.memoryCandidatesSource = {
+        async readMemoryCandidates() {
+            const candidates = await detectMemoryCandidates();
+
+            return {capability: {state: 'wired'}, candidates, count: candidates.length}
+        }
+    };
 
     FleetControlBridge.mailboxMirrorSource = {
         async readMailboxMirror(params = {}) {

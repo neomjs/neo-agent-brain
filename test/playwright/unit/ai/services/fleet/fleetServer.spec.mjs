@@ -1023,6 +1023,7 @@ test.describe('Fleet S1 wire policy', () => {
             fleetMemories         : 'awaiting-s5',
             fleetSessionMemories  : 'awaiting-s5',
             fleetRecentTurns      : 'awaiting-s5',
+            fleetMemoryCandidates : 'awaiting-s5',
             fleetMailboxMirror    : 'awaiting-s5',
             connectTenant         : 'awaiting-c1',
             setPlaneCredential    : 'awaiting-c1'

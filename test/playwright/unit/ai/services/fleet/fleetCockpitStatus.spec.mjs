@@ -675,5 +675,49 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
                 sources : {lane: {state: 'degraded', confidence: 'none', reason: 'held A2A activity page has no valid capability'}}
             });
         });
+
+        // The composer's per-seat record, not the page, is the seat's lane
+        test('the per-seat record reaches the row when the page no longer holds the claim; a degraded page still withholds it', () => {
+            const kept  = claim('neo-gpt', '2026-10-02T08:00:00.000Z', '[lane-claim] kept off the page'),
+                  agents = [{id: 'seat', githubUsername: 'neo-gpt'}],
+                  rowOf  = laneStatus => createFleetCockpitStatus({agents, laneStatus}).rows[0];
+
+            expect(rowOf({capability, scanned: 70, events: [], laneClaims: [kept]}))
+                .toMatchObject({laneLine: '[lane-claim] kept off the page', laneClaimedAt: kept.occurredAt});
+            expect(rowOf({capability, scanned: 70, events: [kept], laneClaims: []}), 'a released claim stays off although the page holds it')
+                .toMatchObject({laneLine: null, laneClaimedAt: null});
+            expect(rowOf({capability: {...capability, state: 'degraded', confidence: 'none', reason: 'mailbox unavailable'}, scanned: 0, events: [], laneClaims: [kept]}))
+                .toMatchObject({laneLine: null, laneClaimedAt: null});
+        });
+
+        test('mailbox summaries reach the card through the adapter and the composer: kept past the page, cleared by a release', async () => {
+            const [{createFleetA2AActivitySnapshot}, {createFleetActivityReadSource}] = await Promise.all([
+                      import('../../../../../../ai/services/fleet/fleetA2AActivityAdapter.mjs'),
+                      import('../../../../../../ai/services/fleet/fleetActivityComposer.mjs')
+                  ]),
+                  summary = (from, sentAt, subject, taggedConcepts) => ({messageId: `${from}@${sentAt}`, from, to: 'AGENT:*', sentAt, subject, ...(taggedConcepts && {taggedConcepts})}),
+                  pages   = [
+                      [summary('@neo-opus-grace', '2026-10-03T16:57:26.460Z', '🖖 [lane-claim] Institution #508 build', ['lane-claim', 'fm-v1']),
+                       summary('@neo-opus-ada',   '2026-10-03T12:49:28.018Z', '⚖️ [lane-claim] Brain #811 (the open-work row summary carries the PR title)')],
+                      [summary('@neo-gpt',        '2026-10-03T18:25:05.804Z', 'Row state: substrate · Euclid · blocked')],
+                      [summary('@neo-opus-ada',   '2026-10-03T18:40:00.000Z', '⚖️ [claim-corrected] Brain #811 merged, the lane is free')]
+                  ].map(messages => createFleetA2AActivitySnapshot({capturedAt: '2026-10-03T18:45:00.000Z', messages})),
+                  source  = createFleetActivityReadSource({
+                      resolveViewerIdentity: () => '@tobiu',
+                      readA2ASnapshot      : async () => pages.shift(),
+                      readPrLaneSnapshot   : async () => ({capability: {state: 'wired'}, events: []})
+                  }),
+                  lanes   = () => createFleetCockpitStatus({
+                      agents    : [{id: 'ada', githubUsername: 'neo-opus-ada'}, {id: 'grace', githubUsername: 'neo-opus-grace'}],
+                      laneStatus: source.readHeldA2ASnapshot()
+                  }).rows.map(row => row.laneLine);
+
+            await source.readActivitySnapshot();
+            await source.readActivitySnapshot();
+            expect(lanes()).toEqual(['⚖️ [lane-claim] Brain #811 (the open-work row summary carries the PR title)', '🖖 [lane-claim] Institution #508 build']);
+
+            await source.readActivitySnapshot();
+            expect(lanes()).toEqual([null, '🖖 [lane-claim] Institution #508 build']);
+        });
     });
 })

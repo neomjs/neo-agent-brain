@@ -59,19 +59,56 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
         expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType: 'opencode'})).toBeNull()
     });
 
-    test('detection lists the memory folders that hold files, most first, and reads nothing else', async () => {
-        write(claudeSource(), {'MEMORY.md': 'index', 'a.md': 'a', 'b.md': 'b'});
+    test('detection lists the memory folders that hold files, most first, by name, notes and newest change, and reads nothing else', async () => {
+        const
+            homeSlug = home.replace(/[^A-Za-z0-9]/g, '-'),
+            inHome   = path.join(home, '.claude', 'projects', `${homeSlug}-code-neo`, 'memory'),
+            at       = (dir, file, iso) => fs.utimesSync(path.join(dir, file), new Date(iso), new Date(iso));
+
+        write(claudeSource(), {'MEMORY.md': 'CONTENT-1', 'a.md': 'CONTENT-2', 'b.md': 'CONTENT-3', 'c.md': 'CONTENT-4'});
+        write(inHome, {'MEMORY.md': 'CONTENT-5', 'a.md': 'CONTENT-6', 'b.md': 'CONTENT-7'});
         write(path.join(home, '.claude', 'projects', '-Users-x-empty', 'memory'), {});
-        write(path.join(home, '.codex', 'memories'), {'MEMORY.md': 'codex'});
-        write(path.join(home, '.codex-instances', 'emmy', 'memories'), {'MEMORY.md': 'e', 'x.md': 'x'});
+        write(path.join(home, '.codex', 'memories'), {'MEMORY.md': 'CONTENT-8'});
+        write(path.join(home, '.codex-instances', 'emmy', 'memories'), {'MEMORY.md': 'CONTENT-9', 'x.md': 'CONTENT-10'});
         write(path.join(home, '.ssh'), {'id_rsa': 'never'});
 
-        expect(await detectMemoryCandidates({homeDir: home})).toEqual([
-            {family: 'claude', path: claudeSource(), files: 3},
-            {family: 'codex',  path: path.join(home, '.codex-instances', 'emmy', 'memories'), files: 2},
-            {family: 'codex',  path: path.join(home, '.codex', 'memories'), files: 1}
+        at(claudeSource(), 'MEMORY.md', '2026-10-01T09:00:00.000Z');
+        at(claudeSource(), 'a.md',      '2026-10-02T18:30:00.000Z');
+        at(claudeSource(), 'b.md',      '2026-09-30T07:00:00.000Z');
+        at(claudeSource(), 'c.md',      '2026-09-29T07:00:00.000Z');
+        ['MEMORY.md', 'a.md', 'b.md'].forEach(file => at(inHome, file, '2026-10-03T08:00:00.000Z'));
+        at(path.join(home, '.codex', 'memories'), 'MEMORY.md', '2026-08-01T00:00:00.000Z');
+        at(path.join(home, '.codex-instances', 'emmy', 'memories'), 'MEMORY.md', '2026-10-03T11:15:00.000Z');
+        at(path.join(home, '.codex-instances', 'emmy', 'memories'), 'x.md',      '2026-10-03T10:00:00.000Z');
+
+        const candidates = await detectMemoryCandidates({homeDir: home});
+
+        expect(candidates).toEqual([
+            {family: 'claude', source: claudeSource(), name: 'Users-x-neo', notes: 4, lastChanged: '2026-10-02T18:30:00.000Z'},
+            {family: 'claude', source: inHome,         name: 'code-neo',    notes: 3, lastChanged: '2026-10-03T08:00:00.000Z'},
+            {family: 'codex',  source: path.join(home, '.codex-instances', 'emmy', 'memories'), name: 'emmy', notes: 2, lastChanged: '2026-10-03T11:15:00.000Z'},
+            {family: 'codex',  source: path.join(home, '.codex', 'memories'), name: 'codex', notes: 1, lastChanged: '2026-08-01T00:00:00.000Z'}
         ]);
+        expect(JSON.stringify(candidates), 'names, counts and dates, never a file\'s contents').not.toMatch(/CONTENT-|never/);
         expect(await detectMemoryCandidates({homeDir: path.join(root, 'nobody')}), 'a home without agents').toEqual([])
+    });
+
+    test('a candidate\'s source is the consent defineAgent accepts, and its name is never its path', async () => {
+        const homeSlug = home.replace(/[^A-Za-z0-9]/g, '-');
+
+        write(claudeSource(), {'MEMORY.md': 'index'});
+        write(path.join(home, '.claude', 'projects', homeSlug, 'memory'), {'MEMORY.md': 'a project at home'});
+        write(path.join(home, '.codex-instances', 'neo-gpt-emmy', 'memories'), {'MEMORY.md': 'e'});
+
+        const candidates = await detectMemoryCandidates({homeDir: home});
+
+        expect(candidates.map(({name}) => name).sort()).toEqual(['Users-x-neo', 'neo-gpt-emmy', '~']);
+
+        for (const {name, source} of candidates) {
+            expect(normalizeMemoryImport(source, {homeDir: home}), name).toBe(source);
+            expect(name, source).not.toContain(path.sep);
+            expect(source, name).not.toBe(name)
+        }
     });
 
     test('a fresh seat, or one that declined, imports nothing and is never checked', async () => {
@@ -166,7 +203,7 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
 
         expect(await importFor(seat(claudeSource()))).toEqual({state: 'copied', source: claudeSource(), destination, files: 1});
         expect(fs.readdirSync(destination)).toEqual(['MEMORY.md']);
-        expect(await detectMemoryCandidates({homeDir: home})).toEqual([{family: 'claude', path: claudeSource(), files: 1}])
+        expect(await detectMemoryCandidates({homeDir: home})).toMatchObject([{family: 'claude', source: claudeSource(), notes: 1}])
     });
 
     test('a first import the seat contradicts is refused and changes nothing, until it is reconciled', async () => {
