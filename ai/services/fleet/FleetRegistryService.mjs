@@ -11,7 +11,7 @@ import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePl
 import {normalizeMcpTarget}                      from './mcpServers.mjs';
 import {normalizeMemoryImport}                   from './seatMemoryImport.mjs';
 import {normalizeGitIdentityDeclaration}         from './seatGitIdentity.mjs';
-import SeatOperatorRegistryService               from './SeatOperatorRegistryService.mjs';
+import SeatOperatorRegistryService, {isOwnerPrincipal} from './SeatOperatorRegistryService.mjs';
 
 const
     FORGE_HOSTNAME_RE       = /^(?:[a-z0-9._-]+|\[[0-9a-f:]+\])$/,
@@ -855,12 +855,13 @@ class FleetRegistryService extends Base {
      * @summary Does this principal operate this seat? The one server-owned lookup the operator relation
      * answers: the seat must be defined here, and the operator store, read fresh, must name this principal
      * for it. A store that cannot be read answers `unavailable`, never `unknown-seat` or `unowned`.
-     * @param {String|null} principal An admitted owner principal.
+     * @param {String|null} principal An admitted owner principal. Anything else, such as a login, an
+     *     `@identity` or a path, is no principal.
      * @param {String}      seatId
      * @returns {{operates: true}|{operates: false, reason: 'no-principal'|'unavailable'|'unknown-seat'|'unowned'|'other-operator'}}
      */
     operatesSeat(principal, seatId) {
-        if (!principal) return {operates: false, reason: 'no-principal'};
+        if (!isOwnerPrincipal(principal)) return {operates: false, reason: 'no-principal'};
 
         this.ensureLoaded();
 

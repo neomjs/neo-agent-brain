@@ -61,6 +61,26 @@ test.describe('the seat operator relation — one principal per seat, written by
         expect(registry.operatesSeat(A, 'legacy')).toEqual({operates: false, reason: 'unowned'})
     });
 
+    test('adopting a seat leaves its operator untouched: adoptAgent receives no admission, and its launch-owner write moves no relation', async () => {
+        define('ada', {ownerPrincipal: A});
+        define('legacy');
+
+        const
+            before = fs.readFileSync(storeOf(), 'utf8'),
+            calls  = [];
+
+        await dispatchFleetRequest(createFleetWireRequest('adoptAgent', {id: 'legacy'}), {adoptAgent: (...args) => {calls.push(args); return null}}, {ownerPrincipal: B});
+        expect(calls, 'the admission never reaches adopt').toEqual([[{id: 'legacy'}]]);
+
+        // the one write FleetManager#adoptAgent makes
+        registry.setLaunchOwner('ada', 'fleet');
+        registry.setLaunchOwner('legacy', 'fleet');
+
+        expect(fs.readFileSync(storeOf(), 'utf8')).toBe(before);
+        expect(registry.operatesSeat(A, 'ada')).toEqual({operates: true});
+        expect(registry.operatesSeat(B, 'legacy')).toEqual({operates: false, reason: 'unowned'})
+    });
+
     test('the lookup answers every state, and an unreadable store is unavailable, never an unknown or unowned seat', () => {
         define('ada', {ownerPrincipal: A});
         define('legacy');
@@ -151,6 +171,36 @@ test.describe('the seat operator relation — one principal per seat, written by
         define('vega', {ownerPrincipal: A});
         expect(exists('vega'), 'a refused stamp still leaves the defined seat').toBe(true);
         expect(registry.operatesSeat(A, 'vega')).toEqual({operates: false, reason: 'unavailable'})
+    });
+
+    test('no relation path keys on a login, an AgentIdentity id or a checkout path', () => {
+        const shapes = ['neo-opus-ada', '@neo-opus-ada', '/home/operator/github/neomjs/neo'];
+
+        define('ada', {ownerPrincipal: A});
+        define('legacy');
+
+        const before = fs.readFileSync(storeOf(), 'utf8');
+
+        shapes.forEach((shape, index) => {
+            expect(registry.operatesSeat(shape, 'ada'), shape).toEqual({operates: false, reason: 'no-principal'});
+            expect(registry.seatsOperatedBy(shape), shape).toEqual({seats: [], state: 'ok'});
+            expect(operators.stamp({principal: shape, seatId: 'legacy'}), shape).toMatchObject({ok: false, refused: 'no-principal'});
+            expect(operators.assign({...HOST, principal: shape, seatExists: exists, seats: ['legacy']}), shape).toMatchObject({ok: false, refused: 'no-principal'});
+            expect(operators.transfer({...HOST, from: A, seat: 'ada', to: shape}), shape).toMatchObject({ok: false, refused: 'no-principal'});
+
+            // an admission of that shape still defines the seat, unowned
+            define(`seat${index}`, {ownerPrincipal: shape});
+            expect(registry.operatesSeat(A, `seat${index}`), shape).toEqual({operates: false, reason: 'unowned'})
+        });
+
+        expect(fs.readFileSync(storeOf(), 'utf8'), 'no refused shape wrote anything').toBe(before);
+
+        // a store whose record names one is untrusted, never read as that operator
+        const store = JSON.parse(before);
+
+        store.operators.ada.principal = '@neo-opus-ada';
+        fs.writeFileSync(storeOf(), JSON.stringify(store));
+        expect(registry.operatesSeat(A, 'ada')).toEqual({operates: false, reason: 'unavailable'})
     });
 
     test('no wire verb reaches the host path, and the admission reaches only a seat-creating verb', async () => {
