@@ -129,7 +129,7 @@ test.describe('firstRun CLI', () => {
         // the compose invocation went through the recording runner, in the checkout's deploy folder
         const calls = JSON.parse(await fs.readFile(path.join(setupRoot, 'fake-run.json'), 'utf8'));
 
-        expect(calls).toEqual([{command: 'docker', args: ['compose', '-p', 'neo-local-agent-os', '--env-file', layout.envFile, '-f', 'docker-compose.yml', '-f', 'docker-compose.local-agent-os.yml', 'up', '-d', '--wait'], cwd: path.join(brainRoot, 'deploy', 'cloud')}]);
+        expect(calls).toEqual([{command: 'docker', args: ['compose', '-p', 'neo-local-agent-os', '--env-file', layout.envFile, '-f', 'docker-compose.yml', '-f', 'docker-compose.local-agent-os.yml', '--profile', 'cloud', '--profile', 'fleet', '--profile', 'ingress', 'up', '-d', '--wait'], cwd: path.join(brainRoot, 'deploy', 'cloud')}]);
 
         // a resumed run performs nothing again and exits 0
         const resumed = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
@@ -608,6 +608,14 @@ test.describe('firstRun CLI', () => {
         expect(compose.split(pinned).length - 1, 'both served services pin the declared identity').toBe(2);
         expect(compose).toContain(`- "127.0.0.1:${new URL(target.endpoint).port}:8080"`);
         expect(parseArgs([], {}).endpoint).toBe(target.endpoint);
+
+        // the compose profiles the layout declares are the base file's own; local-model (a container Ollama no preset uses) is not one
+        const
+            base   = await fs.readFile(path.join(brainRoot, 'deploy/cloud/docker-compose.yml'), 'utf8'),
+            inFile = [...base.matchAll(/^    profiles:\n      - ([a-z-]+)$/gm)].map(match => match[1]).sort();
+
+        expect(hostLayout({stateRoot: '/srv/state'}).composeProfiles).toEqual(['cloud', 'fleet', 'ingress']);
+        expect(inFile).toEqual(['cloud', 'fleet', 'ingress', 'local-model']);
     });
 
     test('runTarget: what the invocation names, else what the record is bound to, else the profile\'s plane — whose root comes only with its id', () => {
@@ -642,6 +650,8 @@ test.describe('firstRun CLI', () => {
         expect(output.steps.find(step => step.id === 'served-plane')).toMatchObject({status: 'ok'});
         expect(env).toContain(`NEO_PLANE_ID=${profile.planeId}\n`);
         expect(env).toContain(`NEO_PLANE_DATA_ROOT=${profile.dataRoot}\n`);
+        // the whole plane is asked for: the orchestrator, the Fleet service and the ingress, by their profiles
+        expect(JSON.parse(await fs.readFile(path.join(setupRoot, 'fake-run.json'), 'utf8'))[0].args.join(' ')).toContain('--profile cloud --profile fleet --profile ingress up -d --wait');
 
         // the same host with the flags: the named plane, nothing of the profile's
         const other = await scratch();

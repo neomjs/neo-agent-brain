@@ -42,6 +42,8 @@ const
     brainRoot       = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
     COMPOSE_PROJECT = 'neo-local-agent-os',
     COMPOSE_FILES   = ['docker-compose.yml', 'docker-compose.local-agent-os.yml'],
+    // the whole plane, not its storage half: without them compose starts no orchestrator, no Fleet service and no ingress
+    COMPOSE_PROFILES = Object.freeze(['cloud', 'fleet', 'ingress']),
     // the plane this profile's compose files bring up: the canonical local plane, rooted where its image holds the
     // Brain (/app), behind the ingress the profile publishes on the loopback
     PROFILE_TARGET  = Object.freeze({planeId: CANONICAL_PLANE_ID, dataRoot: resolvePlaneDataRoot({rootDir: '/app'}), endpoint: 'http://127.0.0.1:3102'}),
@@ -116,12 +118,13 @@ export function parseArgs(argv, env = process.env) {
  */
 export function hostLayout({stateRoot}) {
     return {
-        envFile       : path.join(stateRoot, 'config', 'local-agent-os.env'),
-        secretsDir    : path.join(stateRoot, 'secrets'),
-        composeDir    : path.join(brainRoot, 'deploy', 'cloud'),
-        composeFiles  : COMPOSE_FILES,
-        composeProject: COMPOSE_PROJECT,
-        target        : PROFILE_TARGET
+        envFile        : path.join(stateRoot, 'config', 'local-agent-os.env'),
+        secretsDir     : path.join(stateRoot, 'secrets'),
+        composeDir     : path.join(brainRoot, 'deploy', 'cloud'),
+        composeFiles   : COMPOSE_FILES,
+        composeProject : COMPOSE_PROJECT,
+        composeProfiles: COMPOSE_PROFILES,
+        target         : PROFILE_TARGET
     };
 }
 
