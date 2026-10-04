@@ -6888,7 +6888,7 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
     });
 
     /**
-     * Human recipients (#859): an operator, a second human outside any roster, a system identity
+     * Human recipients: an operator, a second human outside any roster, a system identity
      * and an identity with no class, each letting @alice address them; @charlie may read the
      * operator's inbox and nothing more.
      */
