@@ -17,8 +17,8 @@ import {resolveResidentFamilyById}                                              
 import {PRESENCE_STATES}                                                                        from '../fleet/fleetPresenceStateAdapter.mjs';
 import {deriveReviewLoad, REVIEW_LOAD_TRAIL_HORIZON_MS}                                         from './helpers/reviewLoadProjection.mjs';
 import {
-    readActiveWakeSubscriptionIdsByIdentity,
-    readActiveWakeSubscriptionObservations
+    readActiveWakeSubscriptionObservations,
+    readWakeRoutesByIdentity
 } from './readActiveWakeSubscriptionIdentities.mjs';
 import {projectIdentityWakeReachability} from './wakeDeliveryProjection.mjs';
 import {readWakeDelivery}                from './wakeDeliveryReader.mjs';
@@ -903,22 +903,21 @@ class WakeSubscriptionService extends Base {
                 )
             } : {}),
             // Sparse like reviewLoad: a rostered seat no wake reaches, with the receiver's own last
-            // reason. Omitted whole when the records are unreadable, so absence never reads reachable.
-            ...(wake.available ? {
-                undeliverable: Object.fromEntries(
-                    projected
-                        .map(row => [row.identity, wake.byIdentity.get(row.identity)])
-                        .filter(([, seat]) => seat?.state === 'undeliverable')
-                        .map(([identity, seat]) => [identity, seat.reason])
-                )
-            } : {}),
+            // reason, and one whose every route the sender withdrew, with the refusal they share.
+            // Omitted whole when the records are unreadable, so absence never reads reachable.
+            ...(wake.available ? Object.fromEntries(['undeliverable', 'withdrawn'].map(state => [state, Object.fromEntries(
+                projected
+                    .map(row => [row.identity, wake.byIdentity.get(row.identity)])
+                    .filter(([, seat]) => seat?.state === state)
+                    .map(([identity, seat]) => [identity, seat.reason ?? null])
+            )])) : {}),
             ...buckets
         };
     }
 
     /**
      * @summary Whether a wake can reach each subscribed identity: the wake receiver's own dispatch
-     * records (the reader `healthcheck` uses) joined to the identities' active subscriptions. An
+     * records (the reader `healthcheck` uses) joined to the identities' wake routes. An
      * unreadable record set, or an unreadable subscription scan, is `available: false` with its
      * reason, and the wake axis then reads degraded, never healthy.
      * @returns {Promise<Object>} `{available: true, byIdentity: Map<identity, reachability>}` or
@@ -931,10 +930,10 @@ class WakeSubscriptionService extends Base {
         try {
             [delivery, routes] = await Promise.all([
                 (this.wakeDeliveryReadFn || readWakeDelivery)(),
-                readActiveWakeSubscriptionIdsByIdentity({graphService: GraphService})
+                readWakeRoutesByIdentity({graphService: GraphService})
             ])
         } catch {
-            return {available: false, reason: 'the active wake subscriptions could not be read'}
+            return {available: false, reason: 'the wake subscriptions could not be read'}
         }
 
         if (!delivery.deliveryReadable) {
@@ -945,7 +944,7 @@ class WakeSubscriptionService extends Base {
 
         return {
             available : true,
-            byIdentity: new Map([...routes].map(([identity, ids]) => [identity, projectIdentityWakeReachability(ids, delivery.subscriptions)]))
+            byIdentity: new Map([...routes].map(([identity, own]) => [identity, projectIdentityWakeReachability(own, delivery.subscriptions)]))
         }
     }
 

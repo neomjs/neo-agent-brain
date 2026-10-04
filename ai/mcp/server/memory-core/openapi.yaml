@@ -648,10 +648,12 @@ paths:
 
 
         Wake axis: whether a wake can reach each seat, from the wake receiver's own dispatch records
-        (host truth, the reader healthcheck uses) joined to each identity's active subscriptions —
+        (host truth, the reader healthcheck uses) joined to each identity's wake routes —
         one route that lands makes a seat reachable, and undeliverable needs every active route
-        concluded failing (a route the receiver never concluded keeps the seat unknown). Terse
-        carries the sparse undeliverable map (identity → the receiver's last outcome reason);
+        concluded failing (a route the receiver never concluded keeps the seat unknown). A seat whose
+        every route the sender withdrew reads withdrawn until its owner resumes one; a route the
+        receiver refused as unknown carries not-in-receiver-manifest, which its owner re-arms. Terse
+        carries the sparse undeliverable and withdrawn maps (identity → reason);
         verbose rows carry {state, reason?, consecutiveFailures?}. Unreadable records degrade the
         wake envelope and omit the map, so they never read as reachable.
 
@@ -691,8 +693,8 @@ paths:
               schema:
                 type: object
                 description: >
-                  Terse default: {generatedAt, axes, summary, windows, reviewLoad, undeliverable, online[],
-                  idle[], dark[], neverConnected[], benched[]}. With verbose:true: {generatedAt, axes,
+                  Terse default: {generatedAt, axes, summary, windows, reviewLoad, undeliverable, withdrawn,
+                  online[], idle[], dark[], neverConnected[], benched[]}. With verbose:true: {generatedAt, axes,
                   signalStatus, agents[]}.
                 properties:
                   generatedAt:
@@ -723,10 +725,19 @@ paths:
                     additionalProperties: {type: string, nullable: true}
                     description: >
                       Terse default — the sparse wake map: identity → the wake receiver's last
-                      outcome reason, only rostered seats whose every active wake route has concluded
-                      failing. An absent seat is reachable, unsubscribed, or has a route the receiver
-                      never concluded — never known failing. Omitted whole when the receiver's
-                      records are unreadable; the wake envelope says why.
+                      outcome reason, or not-in-receiver-manifest when it refused the route as
+                      unknown, only rostered seats whose every active wake route has concluded
+                      failing. An absent seat is reachable, withdrawn, unsubscribed, or has a route
+                      the receiver never concluded — never known failing. Omitted whole when the
+                      receiver's records are unreadable; the wake envelope says why.
+                  withdrawn:
+                    type: object
+                    additionalProperties: {type: string, nullable: true}
+                    description: >
+                      Terse default — the sparse map of rostered seats whose every wake route the
+                      sender withdrew after failed deliveries: identity → not-in-receiver-manifest
+                      when the receiver refused every one as unknown (re-arm, then resume), else
+                      null (resume). Omitted with undeliverable.
                   summary:
                     type: string
                     description: >
@@ -813,9 +824,11 @@ paths:
                             delivers; undeliverable, with the newest failing route's reason and
                             streak, only when every active route has concluded failing; unknown
                             when any active route has not concluded or the records are unreadable;
-                            unsubscribed with no active route.
+                            withdrawn when the sender withdrew every route, with
+                            not-in-receiver-manifest when the receiver refused them all; unsubscribed
+                            with no route.
                           properties:
-                            state: {type: string, enum: [reachable, undeliverable, unknown, unsubscribed]}
+                            state: {type: string, enum: [reachable, undeliverable, unknown, withdrawn, unsubscribed]}
                             reason: {type: string, nullable: true}
                             consecutiveFailures: {type: integer}
         '500':

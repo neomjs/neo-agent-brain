@@ -177,19 +177,24 @@ test.describe('projectWakeDelivery — per-subscription delivery outcome', () =>
 });
 
 test.describe('projectIdentityWakeReachability — one seat across its routes', () => {
-    const verdicts = {
-        ok   : {state: 'reachable',   consecutiveFailures: 0, lastOutcomeReason: null,         lastAttemptedAt: '2026-10-01T10:00:00.000Z'},
-        older: {state: 'unreachable', consecutiveFailures: 4, lastOutcomeReason: 'old reason', lastAttemptedAt: '2026-10-01T09:00:00.000Z'},
-        newer: {state: 'unreachable', consecutiveFailures: 2, lastOutcomeReason: 'new reason', lastAttemptedAt: '2026-10-01T11:00:00.000Z'},
-        quiet: {state: 'unknown',     consecutiveFailures: 0, lastOutcomeReason: null,         lastAttemptedAt: null}
-    };
+    const
+        verdicts = {
+            ok   : {state: 'reachable',   consecutiveFailures: 0, lastOutcomeReason: null,         lastAttemptedAt: '2026-10-01T10:00:00.000Z'},
+            older: {state: 'unreachable', consecutiveFailures: 4, lastOutcomeReason: 'old reason', lastAttemptedAt: '2026-10-01T09:00:00.000Z'},
+            newer: {state: 'unreachable', consecutiveFailures: 2, lastOutcomeReason: 'new reason', lastAttemptedAt: '2026-10-01T11:00:00.000Z'},
+            quiet: {state: 'unknown',     consecutiveFailures: 0, lastOutcomeReason: null,         lastAttemptedAt: null}
+        },
+        active    = (...ids) => ids.map(id => ({id})),
+        withdrawn = (id, refusal) => ({id, withdrawn: true, ...(refusal ? {refusal} : {})});
 
     test('one route that lands makes the seat reachable, whatever its other routes do', () => {
-        expect(projectIdentityWakeReachability(['older', 'ok', 'newer'], verdicts)).toEqual({state: 'reachable'});
+        expect(projectIdentityWakeReachability(active('older', 'ok', 'newer'), verdicts)).toEqual({state: 'reachable'});
+        expect(projectIdentityWakeReachability([...active('ok'), withdrawn('older', 'not-in-receiver-manifest')], verdicts))
+            .toEqual({state: 'reachable'});
     });
 
     test('with every active route concluded failing the seat is undeliverable, with the newest failing route\'s reason and streak', () => {
-        expect(projectIdentityWakeReachability(['older', 'newer'], verdicts))
+        expect(projectIdentityWakeReachability(active('older', 'newer'), verdicts))
             .toEqual({state: 'undeliverable', reason: 'new reason', consecutiveFailures: 2});
     });
 
@@ -197,13 +202,29 @@ test.describe('projectIdentityWakeReachability — one seat across its routes', 
         // The mixed cases: a failed route with an unknown sibling, and with a sibling that has no
         // records at all. Before this arm both read undeliverable, and the pure spec pinned that.
         for (const ids of [['older', 'newer', 'quiet'], ['newer', 'absent'], ['quiet', 'older']]) {
-            expect(projectIdentityWakeReachability(ids, verdicts), JSON.stringify(ids)).toEqual({state: 'unknown'});
+            expect(projectIdentityWakeReachability(active(...ids), verdicts), JSON.stringify(ids)).toEqual({state: 'unknown'});
         }
     });
 
     test('a route never concluded, a route with no records and no route at all read unknown, never reachable', () => {
         for (const ids of [['quiet'], ['absent'], []]) {
-            expect(projectIdentityWakeReachability(ids, verdicts), JSON.stringify(ids)).toEqual({state: 'unknown'});
+            expect(projectIdentityWakeReachability(active(...ids), verdicts), JSON.stringify(ids)).toEqual({state: 'unknown'});
         }
+    });
+
+    test('a refusal concludes its route, over the receiver\'s older records for it (#837)', () => {
+        // the receiver writes no record for a route it refuses, so a delivered record is older than the refusal
+        expect(projectIdentityWakeReachability([{id: 'ok', refusal: 'not-in-receiver-manifest'}], verdicts))
+            .toEqual({state: 'undeliverable', reason: 'not-in-receiver-manifest'});
+    });
+
+    test('a seat whose every route was withdrawn reads withdrawn, and names the refusal only when every route carries it (#837)', () => {
+        expect(projectIdentityWakeReachability([withdrawn('older'), withdrawn('newer')], verdicts)).toEqual({state: 'withdrawn'});
+        expect(projectIdentityWakeReachability([withdrawn('older', 'not-in-receiver-manifest'), withdrawn('newer')], verdicts))
+            .toEqual({state: 'withdrawn'});
+        expect(projectIdentityWakeReachability([withdrawn('older', 'not-in-receiver-manifest')], verdicts))
+            .toEqual({state: 'withdrawn', reason: 'not-in-receiver-manifest'});
+        // an active route the receiver never concluded might still deliver, so it outranks a withdrawn sibling
+        expect(projectIdentityWakeReachability([...active('quiet'), withdrawn('older')], verdicts)).toEqual({state: 'unknown'});
     });
 });
