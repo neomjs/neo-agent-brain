@@ -10,8 +10,16 @@
  *
  * It lives in the records directory, because that is the directory a plane mounts, under a name the
  * record readers skip: both read only `.json`. The receiver is its only writer. It holds the account
- * in memory and replaces the file whole and atomically on each event. A start reads the previous file
- * first, so the stuck exit that caused a restart survives the restart.
+ * in memory and replaces the file whole and atomically on each event.
+ *
+ * **It is an observation, never a precondition.** The receiver starts without waiting for it. A
+ * start reads the previous account within a bound, so the stuck exit that caused a restart survives
+ * the restart; an account that cannot be read in time, or is not a valid account, is replaced by a
+ * fresh one. A failed write is logged and never thrown.
+ *
+ * The account's shape: `{starts: String[], lastAcceptAt: String|null, lastSweepAt: String|null,
+ * stuckExits: {step: String, subscriptionId?: String, at: String}[]}`, every timestamp ISO-8601, at
+ * least one start, and both lists bounded at {@link KEPT_EVENTS}.
  */
 import fs                                     from 'node:fs/promises';
 import path                                   from 'node:path';
@@ -30,12 +38,52 @@ export const RECEIVER_LIVENESS_FILE = 'receiver.liveness';
 const KEPT_EVENTS = 20;
 
 /**
+ * How long a start waits for the previous account before it starts a fresh one.
+ * @type {Number}
+ */
+const READ_TIMEOUT_MS = 2000;
+
+/**
  * @type {Number}
  */
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
- * @summary Reads the liveness account, or `null` when it is absent or will not parse.
+ * @summary Whether a value is an ISO timestamp a reader can age.
+ * @param {*} value
+ * @returns {Boolean}
+ */
+const isStamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value));
+
+/**
+ * @summary Validates a parsed account against the shape above, or answers `null`. Lists must be lists
+ * and hold at least one start; an entry that is not a valid start or stuck exit is dropped, and a
+ * timestamp that is not one reads `null`.
+ * @param {*} raw
+ * @returns {Object|null}
+ */
+export function normalizeReceiverLiveness(raw) {
+    if (!raw || typeof raw !== 'object' || !Array.isArray(raw.starts) || !Array.isArray(raw.stuckExits)) {
+        return null
+    }
+
+    const starts = raw.starts.filter(isStamp);
+
+    if (starts.length === 0) return null;
+
+    return {
+        starts,
+        lastAcceptAt: isStamp(raw.lastAcceptAt) ? raw.lastAcceptAt : null,
+        lastSweepAt : isStamp(raw.lastSweepAt)  ? raw.lastSweepAt  : null,
+        stuckExits  : raw.stuckExits
+            .filter(exit => exit && typeof exit.step === 'string' && isStamp(exit.at))
+            .map(({step, subscriptionId, at}) => ({step, ...(typeof subscriptionId === 'string' ? {subscriptionId} : {}), at}))
+    }
+}
+
+/**
+ * @summary Reads the liveness account, or `null` when it is absent, will not parse, or is not a valid
+ * account.
  * @param {String} recordsDir
  * @param {Object} [options]
  * @param {Object} [options.fsModule=fs]
@@ -43,17 +91,15 @@ const HOUR_MS = 60 * 60 * 1000;
  */
 export async function readReceiverLiveness(recordsDir, {fsModule = fs} = {}) {
     try {
-        const account = JSON.parse(await fsModule.readFile(path.join(recordsDir, RECEIVER_LIVENESS_FILE), 'utf8'));
-
-        return account && typeof account === 'object' ? account : null
+        return normalizeReceiverLiveness(JSON.parse(await fsModule.readFile(path.join(recordsDir, RECEIVER_LIVENESS_FILE), 'utf8')))
     } catch {
         return null
     }
 }
 
 /**
- * @summary Projects an account into what a reader acts on: ages, and the last hour's starts and stuck
- * exits. An absent account is `unknown`, never fresh, and a missing timestamp has no age.
+ * @summary Projects a valid account into what a reader acts on: ages, and the last hour's starts and
+ * stuck exits. No account is `unknown`, never fresh.
  * @param {Object|null} account {@link readReceiverLiveness}'s result.
  * @param {Number} nowMs
  * @returns {Object} `{state: 'unknown'}`, or `{state: 'observed', startedAt, lastAcceptAt,
@@ -63,50 +109,41 @@ export function projectReceiverLiveness(account, nowMs) {
     if (!account) return {state: 'unknown'};
 
     const
-        ageOf      = at => {
-            const ms = Date.parse(at);
-
-            return Number.isFinite(ms) ? nowMs - ms : null
-        },
-        inLastHour = at => {
-            const age = ageOf(at);
-
-            return age !== null && age <= HOUR_MS
-        },
-        starts     = Array.isArray(account.starts)     ? account.starts     : [],
-        stuckExits = Array.isArray(account.stuckExits) ? account.stuckExits : [];
+        ageOf      = at => at === null ? null : nowMs - Date.parse(at),
+        inLastHour = at => nowMs - Date.parse(at) <= HOUR_MS;
 
     return {
         state             : 'observed',
-        startedAt         : starts.at(-1) ?? null,
-        lastAcceptAt      : account.lastAcceptAt ?? null,
+        startedAt         : account.starts.at(-1),
+        lastAcceptAt      : account.lastAcceptAt,
         lastAcceptAgeMs   : ageOf(account.lastAcceptAt),
-        lastSweepAt       : account.lastSweepAt ?? null,
+        lastSweepAt       : account.lastSweepAt,
         lastSweepAgeMs    : ageOf(account.lastSweepAt),
-        startsLastHour    : starts.filter(inLastHour).length,
-        stuckExitsLastHour: stuckExits.filter(exit => inLastHour(exit?.at)).length,
-        lastStuckExit     : stuckExits.at(-1) ?? null
+        startsLastHour    : account.starts.filter(inLastHour).length,
+        stuckExitsLastHour: account.stuckExits.filter(exit => inLastHour(exit.at)).length,
+        lastStuckExit     : account.stuckExits.at(-1) ?? null
     }
 }
 
 /**
- * @summary The receiver's writer for its liveness account. A failed write is logged and never thrown,
- * because liveness is an observation and never a precondition for accepting a wake.
+ * @summary The receiver's writer for its liveness account. Its start is stamped at creation; nothing
+ * here throws, and nothing here may hold up the receiver.
  * @param {Object} options
  * @param {String} options.recordsDir
  * @param {Function} [options.now] Clock seam.
  * @param {Object} [options.logger=console]
  * @param {Object} [options.fsModule=fs]
+ * @param {Number} [options.readTimeoutMs=READ_TIMEOUT_MS] How long a start waits for the previous account.
  * @returns {{start: Function, accepted: Function, swept: Function, stuck: Function}}
  */
-export function createReceiverLiveness({recordsDir, now = () => new Date(), logger = console, fsModule = fs} = {}) {
+export function createReceiverLiveness({recordsDir, now = () => new Date(), logger = console, fsModule = fs, readTimeoutMs = READ_TIMEOUT_MS} = {}) {
     const
         file  = path.join(recordsDir, RECEIVER_LIVENESS_FILE),
         stamp = () => now().toISOString(),
         keep  = list => list.slice(-KEPT_EVENTS);
 
     let
-        account = {starts: [], lastAcceptAt: null, lastSweepAt: null, stuckExits: []},
+        account = {starts: [stamp()], lastAcceptAt: null, lastSweepAt: null, stuckExits: []},
         writes  = Promise.resolve();
 
     // Chained, and each write serializes the account as it is when the write runs, so the last write
@@ -121,18 +158,26 @@ export function createReceiverLiveness({recordsDir, now = () => new Date(), logg
 
     return {
         /**
-         * @summary Records this process's start, carrying the previous account forward.
+         * @summary Carries the previous account forward under this process's own stamps, then writes.
+         * Every later write waits for it, so none can replace the previous account before it is read.
          * @returns {Promise<void>}
          */
-        async start() {
-            const previous = await readReceiverLiveness(recordsDir, {fsModule});
+        start() {
+            const previous = new Promise(resolve => {
+                setTimeout(() => resolve(null), readTimeoutMs).unref?.();
+                readReceiverLiveness(recordsDir, {fsModule}).then(resolve)
+            });
 
-            account = {
-                starts      : keep([...(previous?.starts ?? []), stamp()]),
-                lastAcceptAt: previous?.lastAcceptAt ?? null,
-                lastSweepAt : previous?.lastSweepAt ?? null,
-                stuckExits  : keep(previous?.stuckExits ?? [])
-            };
+            writes = writes.then(() => previous).then(prior => {
+                if (!prior) return;
+
+                account = {
+                    starts      : keep([...prior.starts, ...account.starts]),
+                    lastAcceptAt: account.lastAcceptAt ?? prior.lastAcceptAt,
+                    lastSweepAt : account.lastSweepAt  ?? prior.lastSweepAt,
+                    stuckExits  : keep([...prior.stuckExits, ...account.stuckExits])
+                }
+            });
 
             return persist()
         },

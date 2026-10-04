@@ -102,6 +102,40 @@ test.describe('ai/daemons/wake/receiverLiveness', () => {
         });
     });
 
+    test('a parseable account of the wrong shape reads unknown, and a start over it begins fresh', async () => {
+        const wrongShapes = [
+            {starts: {}, lastAcceptAt: null, lastSweepAt: null, stuckExits: []},
+            {starts: [iso(T0)], lastAcceptAt: null, lastSweepAt: null, stuckExits: {}},
+            {starts: [42], lastAcceptAt: null, lastSweepAt: null, stuckExits: []},
+            ['not', 'an', 'account']
+        ];
+
+        for (const wrong of wrongShapes) {
+            await fs.writeFile(path.join(dir, RECEIVER_LIVENESS_FILE), JSON.stringify(wrong));
+
+            expect(await readReceiverLiveness(dir), JSON.stringify(wrong)).toBeNull();
+
+            await createReceiverLiveness({recordsDir: dir, now: () => new Date(T0), logger: quiet}).start();
+
+            expect(await readReceiverLiveness(dir), JSON.stringify(wrong)).toEqual({
+                starts: [iso(T0)], lastAcceptAt: null, lastSweepAt: null, stuckExits: []
+            });
+        }
+    });
+
+    test('a start whose read never settles fails open: the account is written fresh, and later stamps land', async () => {
+        const
+            hung     = {...fs, readFile: () => new Promise(() => {})},
+            liveness = createReceiverLiveness({recordsDir: dir, now: () => new Date(T0), logger: quiet, fsModule: hung, readTimeoutMs: 20});
+
+        await liveness.start();
+        await liveness.accepted();
+
+        expect(await readReceiverLiveness(dir)).toEqual({
+            starts: [iso(T0)], lastAcceptAt: iso(T0), lastSweepAt: null, stuckExits: []
+        });
+    });
+
     test('a crash loop keeps the last twenty starts, not every one', async () => {
         let clock = T0;
 

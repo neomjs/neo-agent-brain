@@ -529,6 +529,7 @@ export function createWakeReceiver({
  * @param {Number} [options.reconcileIntervalMs]
  * @param {Number} [options.drainIntervalMs=DRAIN_RETRY_INTERVAL_MS]
  * @param {Function} [options.onStuck] A stuck step exits non-zero, so the LaunchAgent restarts a fresh process.
+ * @param {Object} [options.livenessOptions] Passed to `createReceiverLiveness` (`fsModule`, `readTimeoutMs`); a test seam.
  * @returns {Promise<{server:http.Server,state:WakeReceiverState,drain:Function}>}
  */
 export async function startWakeReceiver({
@@ -539,7 +540,8 @@ export async function startWakeReceiver({
     logger = console,
     reconcileIntervalMs = MANIFEST_RECONCILE_INTERVAL_MS,
     drainIntervalMs     = DRAIN_RETRY_INTERVAL_MS,
-    onStuck             = () => process.exit(1)
+    onStuck             = () => process.exit(1),
+    livenessOptions     = {}
 } = {}) {
     if (net.isIP(host) === 0) {
         throw new Error('Wake receiver requires an explicit IP-literal --host');
@@ -561,9 +563,11 @@ export async function startWakeReceiver({
         logger.warn?.(`[Wake Receiver] terminalized ${unknownCount} interrupted dispatch(es) as unknown; mailbox remains authoritative.`);
     }
 
-    const liveness = createReceiverLiveness({recordsDir: state.recordsDir, logger});
+    const liveness = createReceiverLiveness({recordsDir: state.recordsDir, logger, ...livenessOptions});
 
-    await liveness.start();
+    // Not awaited: an observation never gates the process it observes. Its read is bounded, and later
+    // stamps queue behind it.
+    void liveness.start();
 
     const {server, drain, setManifest, track} = createWakeReceiver({
         manifest,

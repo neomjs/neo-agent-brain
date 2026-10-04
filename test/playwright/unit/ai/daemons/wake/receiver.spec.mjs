@@ -383,6 +383,36 @@ test.describe('ai/daemons/wake/receiver — manifest reload', () => {
         }
     )).status;
 
+    test('a liveness read that never settles leaves the receiver listening: observation never gates startup (#841)', async () => {
+        const
+            hung    = {...fs, readFile: () => new Promise(() => {})},
+            started = startWakeReceiver({
+                manifestPath,
+                stateDir           : path.join(dir, 'state-hung'),
+                host               : '127.0.0.1',
+                port               : await freePort(),
+                logger             : {error() {}, warn() {}, log() {}},
+                reconcileIntervalMs: 40,
+                onStuck            : () => {},
+                livenessOptions    : {fsModule: hung, readTimeoutMs: 20_000}
+            }),
+            gated   = new Promise((resolve, reject) => setTimeout(() => reject(new Error('startup waited on the liveness read')), 2000)),
+            hungReceiver = await Promise.race([started, gated]);
+
+        try {
+            const status = (await fetch(`http://127.0.0.1:${hungReceiver.server.address().port}/wake`, {
+                method : 'POST',
+                headers: {'content-type': 'application/json', 'x-neo-wake-subscription-id': mine, 'x-neo-wake-schema-version': '1.0', 'x-neo-wake-signature': 'deadbeef'},
+                body   : '{}'
+            })).status;
+
+            expect(status, 'it serves its routes').toBe(401);
+        } finally {
+            await Promise.race([hungReceiver.stopWatchingManifest(), new Promise(resolve => setTimeout(resolve, 100))]);
+            await new Promise(resolve => hungReceiver.server.close(resolve));
+        }
+    });
+
     test('the receiver keeps its own liveness beside its records: each start, each sweep pass, and a stuck exit across a restart (#841)', async () => {
         const
             recordsDir = path.join(dir, 'state', 'records'),
@@ -394,7 +424,8 @@ test.describe('ai/daemons/wake/receiver — manifest reload', () => {
                 }
             };
 
-        expect((await liveness())?.starts).toHaveLength(1);
+        // startup does not wait for the account, so its first write lands just after
+        expect(await waitFor(async () => (await liveness())?.starts?.length === 1), 'the start is stamped').toBe(true);
         expect(await waitFor(async () => Boolean((await liveness())?.lastSweepAt)), 'a sweep pass stamps it').toBe(true);
 
         // stop the first process, then leave the exit record its watchdog would have written
@@ -414,10 +445,8 @@ test.describe('ai/daemons/wake/receiver — manifest reload', () => {
             reconcileIntervalMs: 40
         });
 
-        const restarted = await liveness();
-
-        expect(restarted.starts).toHaveLength(2);
-        expect(restarted.stuckExits).toEqual([expect.objectContaining({step: 'accept'})]);
+        expect(await waitFor(async () => (await liveness())?.starts?.length === 2), 'the restart is stamped beside the first start').toBe(true);
+        expect((await liveness()).stuckExits).toEqual([expect.objectContaining({step: 'accept'})]);
         // and it is no record: the receiver's own reader skips it
         expect(await new WakeReceiverState({stateDir: path.join(dir, 'state')}).list()).toEqual([]);
     });
