@@ -162,7 +162,44 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
         const refusal = await importFor(seat(claudeSource())).catch(error => error);
 
         expect(refusal.code).toBe('FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED');
-        expect(refusal.message).toMatch(/^startAgentProvisioned: agent 'neo-fable' consented to import its memory from '.+', but '.+' holds none \(it was imported once and is empty now\)/)
+        expect(refusal.message).toBe("startAgentProvisioned: the memory import did not converge: the seat's memory folder holds none (it was imported once and is empty now). The seat does not start.")
+    });
+
+    test('every refusal leads with the step and its reason, and names neither the seat nor a host path', async () => {
+        const
+            reasons = [],
+            refuse  = async (agent, fileSystem) => {
+                const error = await importSeatMemory({agent, instanceRoot: agents, homeDir: home, ...(fileSystem ? {fileSystem} : {}), now: () => '2026-10-03T11:00:00.000Z'}).catch(error => error);
+
+                expect(error, agent.memoryImport).toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: agent.memoryImport, step: 'memory import'});
+                reasons.push(error.message)
+            };
+
+        // a family that keeps no markdown memory, then a consent that names no memory folder
+        await refuse(seat(claudeSource(), 'opencode'));
+        write(path.join(home, '.ssh'), {'id_rsa': 'never'});
+        await refuse(seat(path.join(home, '.ssh')));
+
+        // a source that holds nothing, then a seat that already holds a different copy
+        await refuse(seat(claudeSource()));
+        write(claudeSource(), {'MEMORY.md': 'index'});
+        write(path.join(agents, 'neo-fable', 'memory'), {'MEMORY.md': 'the seat wrote this'});
+        await refuse(seat(claudeSource()));
+        fs.rmSync(path.join(agents, 'neo-fable'), {recursive: true});
+
+        // a copy that does not arrive identical
+        await refuse(seat(claudeSource()), {...fs.promises, cp: async (from, to, options) => {
+            await fs.promises.cp(from, to, options);
+            fs.writeFileSync(path.join(to, 'MEMORY.md'), 'tampered')
+        }});
+
+        expect(reasons).toHaveLength(5);
+
+        for (const reason of reasons) {
+            expect(reason).toMatch(/^startAgentProvisioned: the memory import did not converge: .+\. The seat does not start\.$/);
+            expect(reason, 'the card is the seat').not.toContain('neo-fable');
+            expect(reason, 'source and destination travel as fields').not.toContain(root)
+        }
     });
 
     test('a consent that names no memory folder, or a link in its place, imports nothing', async () => {
@@ -188,7 +225,8 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
         const refusal = await importFor(seat(claudeSource())).catch(error => error);
 
         expect(refusal).toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: claudeSource(), step: 'memory import'});
-        expect(refusal.message).toContain(`'${linked}' is a link or a file, not a real folder`);
+        expect(refusal.message).toContain('a part of the source path is a link or a file, not a real folder');
+        expect(refusal.message, 'the link travels in no reason').not.toContain(linked);
         expect(fs.existsSync(path.join(agents, 'neo-fable')), 'nothing read, nothing written').toBe(false);
         expect(await detectMemoryCandidates({homeDir: home})).toEqual([])
     });

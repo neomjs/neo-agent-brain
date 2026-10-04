@@ -268,17 +268,17 @@ export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedi
 
     const destination = memoryDestination({instanceRoot, agentId: agent.id, harnessType: agent.harnessType});
 
-    if (!destination) throw unconverged(agent, source, null, `the '${agent.harnessType}' family keeps no markdown memory`);
+    if (!destination) throw unconverged(source, null, `the '${agent.harnessType}' family keeps no markdown memory`);
 
     try {
         normalizeMemoryImport(source, {homeDir})
     } catch {
-        throw unconverged(agent, source, destination, 'the consent names no agent memory folder')
+        throw unconverged(source, destination, 'the consent names no agent memory folder')
     }
 
-    const link = await firstNonFolder(homeDir, source, fileSystem);
-
-    if (link) throw unconverged(agent, source, destination, `'${link}' is a link or a file, not a real folder`);
+    if (await firstNonFolder(homeDir, source, fileSystem)) {
+        throw unconverged(source, destination, 'a part of the source path is a link or a file, not a real folder')
+    }
 
     const
         instanceHome = deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}),
@@ -293,13 +293,13 @@ export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedi
     if (!receipt && path.resolve(source) !== destination) {
         const sourceFiles = await regularFiles(source, fileSystem);
 
-        if (!sourceFiles?.length) throw unconverged(agent, source, destination, 'the source holds no memory to copy');
+        if (!sourceFiles?.length) throw unconverged(source, destination, 'the source holds no memory to copy');
 
         const held      = await compareFiles(sourceFiles, source, destination, fileSystem),
               conflicts = sourceFiles.filter((file, index) => held[index] === 'different');
 
         if (conflicts.length) {
-            throw unconverged(agent, source, destination, `the seat already holds a different ${conflicts.join(', ')}; reconcile the seat's copy with the source, then start again`)
+            throw unconverged(source, destination, `the seat already holds a different ${conflicts.join(', ')}; reconcile the seat's copy with the source, then start again`)
         }
 
         await fileSystem.mkdir(destination, {recursive: true, mode: 0o700});
@@ -316,7 +316,7 @@ export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedi
         const arrived    = await compareFiles(sourceFiles, source, destination, fileSystem),
               unverified = sourceFiles.filter((file, index) => arrived[index] !== 'same');
 
-        if (unverified.length) throw unconverged(agent, source, destination, `the copy did not arrive identical: ${unverified.join(', ')}`);
+        if (unverified.length) throw unconverged(source, destination, `the copy did not arrive identical: ${unverified.join(', ')}`);
 
         await fileSystem.mkdir(instanceHome, {recursive: true});
         await writeFileAtomic(receiptPath, `${JSON.stringify({source, destination, files: sourceFiles.length, copiedAt: now()}, null, 2)}\n`, {mode: 0o600});
@@ -326,23 +326,22 @@ export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedi
     const present = await regularFiles(destination, fileSystem);
 
     if (!present?.length) {
-        throw unconverged(agent, source, destination, receipt ? `'${destination}' holds none (it was imported once and is empty now)` : `'${destination}' holds none`)
+        throw unconverged(source, destination, receipt ? "the seat's memory folder holds none (it was imported once and is empty now)" : "the seat's memory folder holds none")
     }
 
     return {state: copied ? 'copied' : 'present', source, destination, files: present.length}
 }
 
 /**
- * @summary The Start refusal for a consented import that did not converge.
- * @param {Object}      agent
+ * @summary The Start refusal for a consented import that did not converge. Its reason leads with the step
+ * and why it stopped, and names neither the seat (the card is the seat) nor a host path: the source and
+ * the destination travel as the error's fields, which the start rejection carries beside the reason.
  * @param {String}      source
  * @param {String|null} destination
  * @param {String}      why         What stands in the way, in words the operator can act on.
  * @returns {Error}
  */
-function unconverged(agent, source, destination, why) {
-    return Object.assign(new Error(
-        `startAgentProvisioned: agent '${agent.id}' consented to import its memory from '${source}', but ${why}. ` +
-        'The memory-import step did not converge, so the seat does not start.'
-    ), {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source, destination, step: 'memory import'})
+function unconverged(source, destination, why) {
+    return Object.assign(new Error(`startAgentProvisioned: the memory import did not converge: ${why}. The seat does not start.`),
+        {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source, destination, step: 'memory import'})
 }

@@ -535,6 +535,26 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
                     .toEqual({status: 'rejected', reason: `the seat's workspace could not be prepared (${code}); the Fleet log names the artifact.`})
             }
 
+            // a memory-import refusal carries its named fields beside the reason, each only when known, and
+            // nothing else of the error; a refusal without them answers exactly as before
+            const startResult = async thrown => {
+                refusal = thrown;
+                return (await dispatchFleetRequest(createFleetWireRequest('startAgent', 'alice'), FleetControlBridge)).result
+            };
+
+            expect(await startResult(Object.assign(new Error('startAgentProvisioned: the memory import did not converge: the source holds no memory to copy. The seat does not start.'),
+                {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', step: 'memory import', source: '/home/x/.claude/projects/-x/memory', destination: '/agents/alice/memory', canary: 'never'}))).toEqual({
+                status: 'rejected', reason: 'the memory import did not converge: the source holds no memory to copy. The seat does not start.',
+                code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', step: 'memory import', source: '/home/x/.claude/projects/-x/memory', destination: '/agents/alice/memory'
+            });
+            expect(await startResult(Object.assign(new Error("startAgentProvisioned: the memory import needs the seat's repository: set it before starting it."),
+                {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', step: 'memory import', source: '/home/x/.claude/projects/-x/memory', destination: null}))).toEqual({
+                status: 'rejected', reason: "the memory import needs the seat's repository: set it before starting it.",
+                code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', step: 'memory import', source: '/home/x/.claude/projects/-x/memory'
+            });
+            expect(await startResult(new Error("startAgentProvisioned: agent 'alice' has no GitHub PAT stored; store one before starting it.")))
+                .toEqual({status: 'rejected', reason: "agent 'alice' has no GitHub PAT stored; store one before starting it."});
+
             // anything unnamed stays the dispatcher's generic failure, its message never on the wire, and
             // so does a preparation code its producer never raises
             for (const unnamed of [
