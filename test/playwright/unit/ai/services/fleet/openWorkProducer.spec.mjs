@@ -415,4 +415,53 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
         expect(stub.calls.find(call => call.kind === 'terminal').search).toBe('is:pr is:closed closed:2026-10-02T09:50:00Z..2026-10-02T10:02:00Z author:neo-opus-ada repo:acme/app');
         expect(state.readers['neo-opus-ada'].watermark).toBe('2026-10-02T09:52:00.000Z')
     });
+
+    // Sophie's #835 control: on the first upgrade pulse a seat that cannot read must keep the saved boundary,
+    // or the seat that can read advances the aggregate past a merge the other has not yet read
+    for (const cause of ['has no readable PAT', 'fails its read']) {
+        test(`an upgrade keeps the saved boundary for a seat that ${cause} on its first pulse, so its later read finds the merge`, async () => {
+            let phase = 'baseline';
+
+            const
+                store  = memoryStore(),
+                merged = {...closed(9, '2026-10-02T09:15:00Z', 'MERGED'), author: {login: 'neo-gpt'}, body: 'Authored by Euclid (GPT).'},
+                euclid = async (text, {query: search}) => {
+                    if (phase === 'outage') throw new Error('Bad credentials');
+
+                    const
+                        kind  = kindOf(search),
+                        range = search.match(/closed:(\S+)\.\.(\S+)/),
+                        nodes = kind === 'open' ? (phase === 'baseline' ? [pr({number: 9, author: 'neo-gpt', name: 'Euclid'})] : [])
+                            : kind === 'terminal' ? [merged].filter(node => node.closedAt >= range[1] && node.closedAt <= range[2]) : [];
+
+                    return {rateLimit: {cost: 1}, search: {nodes, pageInfo: {hasNextPage: false}}}
+                },
+                seatsFor = () => [
+                    {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: asSeat({}).query},
+                    {seat: '@neo-gpt', login: 'neo-gpt', query: phase === 'outage' && cause === 'has no readable PAT' ? null : euclid}
+                ],
+                start    = time => createOpenWorkProducer({readers: async () => seatsFor(), repos: async () => ['acme/app'], identities, now: clock(time), store});
+
+            // a saved state from before per-seat reads: Euclid's PR open, one single watermark
+            await start('2026-10-02T08:59:00Z').pulse();
+            store.saved = {...store.saved, readers: undefined, watermark: '2026-10-02T09:00:00.000Z'};
+
+            const producer = start('2026-10-02T09:59:00Z');
+
+            phase = 'outage';
+
+            const first = await producer.pulse();
+
+            expect(first.readers['neo-gpt'].watermark, 'the unread seat keeps the saved boundary').toBe('2026-10-02T09:00:00.000Z');
+            expect(first.watermark, 'and the aggregate cannot pass it').toBe('2026-10-02T09:00:00.000Z');
+
+            phase = 'recovered';
+
+            const second = await producer.pulse();
+
+            expect(second.coverage).toBe('complete');
+            expect(second.pulses.at(-1).vanished, 'the merge is read, not vanished').toEqual([]);
+            expect(Object.keys(second.snapshot.rows)).toEqual([])
+        })
+    }
 });

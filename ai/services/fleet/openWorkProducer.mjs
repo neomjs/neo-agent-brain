@@ -237,8 +237,12 @@ export function createOpenWorkProducer({
             rows     = byKey(answered.flatMap(read => read.nodes).map(node => normalizePullRequest(node, identities))),
             terminal = {rows: byKey(answered.flatMap(read => read.ended.nodes).map(node => normalizeTerminal(node, identities))), complete: !failed.length && answered.every(read => read.ended.complete)},
             complete = !unread.length && !failed.length && answered.every(read => read.complete),
-            // a seat unread this pulse keeps its mark for when it reads again; a seat no longer registered drops out
-            marks    = Object.fromEntries(seats.map(({login}) => [login, state.readers?.[login]]).filter(([, mark]) => mark));
+            // a seat unread or failed this pulse keeps its mark for when it reads again, and one with no mark yet holds
+            // the boundary it would inherit now, so a seat that did read cannot carry the aggregate past a close the
+            // other has not read; a seat no longer registered drops out
+            marks    = Object.fromEntries(seats
+                .map(({login}) => [login, state.readers?.[login] ?? (state.watermark ? {watermark: state.watermark, window: null} : null)])
+                .filter(([login, mark]) => login && mark));
 
         for (const {login, mark, window, ended} of answered) {
             const reached = window && shift(window.until, -overlapMs);
