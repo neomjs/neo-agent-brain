@@ -178,7 +178,8 @@ function evaluateQuestion(step, {record, bound, bindingReason, presets}) {
             preset = chosen ? presets.find(row => row.id === chosen.answer) : null;
 
         if (!preset) {
-            return status(step, STEP_STATUSES.pending, 'decided by the preset: none consented yet', {answer: null});
+            // pending, and not yet a question to answer: the row waits for the preset, as data
+            return status(step, STEP_STATUSES.pending, 'decided by the preset: none consented yet', {answer: null, waitsFor: 'preset'});
         }
 
         if (!(preset.requires ?? []).includes(step.requiredBy)) {

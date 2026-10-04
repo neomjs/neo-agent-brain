@@ -274,8 +274,14 @@ test.describe('firstRunRecipe', () => {
         expect(RECIPE_STEPS.filter(step => step.answer === 'file').map(step => step.id)).toEqual(['plane-credential', 'provider-key']);
         expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'provider-key', 'advanced', 'write-secrets', 'write-env', 'compose-up', 'served-plane', 'validation', 'verify', 'done']);
         // the provider-key question is decided by the consented preset: pending until one is chosen, not needed for a local one
-        expect(result.steps.find(step => step.id === 'provider-key')).toMatchObject({status: STEP_STATUSES.pending, reason: 'decided by the preset: none consented yet'});
+        expect(result.steps.find(step => step.id === 'provider-key')).toMatchObject({status: STEP_STATUSES.pending, reason: 'decided by the preset: none consented yet', waitsFor: 'preset'});
         expect(result.recipeVersion).toBe(RECIPE_VERSION);
+
+        // …and once a preset that requires the key is consented, the same pending row is a question to answer: it waits for nothing
+        const hosted = await evaluateRecipe({target: targetA, record: withConsent(createSetupRecord({runId: RUN_ID, target: targetA, recipeVersion: RECIPE_VERSION, now: () => NOW}), {stepId: 'preset', answer: 'hosted', consentedAt: 't'}), observers: {}, presets, now: () => NOW});
+
+        expect(hosted.steps.find(step => step.id === 'provider-key')).toMatchObject({status: STEP_STATUSES.pending, reason: 'unanswered'});
+        expect(hosted.steps.find(step => step.id === 'provider-key').waitsFor).toBeUndefined();
     });
 
     test('an effect row that is not ok names the step it waits for: the first earlier question, effect or declared gate that is not ok', async () => {
