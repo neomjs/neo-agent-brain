@@ -2613,6 +2613,23 @@ paths:
             type: array
             items:
               type: string
+        - name: taskStates
+          in: query
+          required: false
+          description: "Keep only A2A Tasks in these states. Filters before the page, so `totalCount` counts them; each row's `task` comes from the same read. Does not mark rows read."
+          schema:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              enum: [Submitted, Working, InputRequired, Completed, Canceled, Failed, Rejected, AuthRequired, Unknown, Expired, Blocked]
+        - name: taskOrder
+          in: query
+          required: false
+          description: "With `taskStates` only: `priority-age` orders high, normal, low, then oldest first."
+          schema:
+            type: string
+            enum: [priority-age]
         - name: limit
           in: query
           required: false
@@ -2844,7 +2861,7 @@ paths:
       operationId: transition_task
       x-neo-tool-tier: extended
       x-pass-as-object: true
-      description: Transitions a Task with optimistic state locking; broadcast claims are send-time-recipient-only, and later transitions require the persisted server-owned assignee.
+      description: Transitions a Task with optimistic state locking; broadcast claims are send-time-recipient-only, and later transitions require the persisted server-owned assignee. A human direct recipient may also move its own InputRequired Task to Working or Completed.
       tags: [Mailbox]
       requestBody:
         required: true
