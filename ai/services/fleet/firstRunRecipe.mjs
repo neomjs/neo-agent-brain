@@ -218,6 +218,11 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
             return status(step, STEP_STATUSES.failed, 'the accepted effect\'s result is gone from the host', extra);
         }
 
+        if (receipt?.outcome === RECEIPT_OUTCOMES.failed) {
+            // the last attempt failed and left no result: the row says why, and a run tries it again
+            return status(step, STEP_STATUSES.failed, receipt.reason ?? 'the last attempt failed', extra);
+        }
+
         return status(step, STEP_STATUSES.pending, observed.reason ?? 'not performed', extra);
     }
 

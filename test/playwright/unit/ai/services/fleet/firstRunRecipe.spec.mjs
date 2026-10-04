@@ -126,6 +126,24 @@ test.describe('firstRunRecipe', () => {
         expect(exitCodeFor(parked)).toBe(1);
     });
 
+    test('a host effect whose last attempt failed reads failed with the receipt\'s reason, never pending with the observer\'s sentence; once its result is there the row is the observation again', async () => {
+        const
+            reason  = 'renderEnvFile: the value of \'NEO_PLANE_DATA_ROOT\' must be a single-line string.',
+            record  = withReceipt(fullRecord(targetA), {effectId: 'write-env', outcome: RECEIPT_OUTCOMES.failed, inputDigest: 'i', failedAt: 't', reason}),
+            absent  = async () => ({present: false, reason: '/state/config/local-agent-os.env does not exist'}),
+            failed  = byId((await evaluateRecipe({target: targetA, record, observers: {...greenObservers(), envCarrier: absent, runningPlane: async () => ({present: false})}, presets, now: () => NOW})).steps),
+            written = byId((await evaluateRecipe({target: targetA, record, observers: greenObservers(), presets, now: () => NOW})).steps),
+            untried = byId((await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), envCarrier: absent}, presets, now: () => NOW})).steps);
+
+        expect(failed['write-env']).toMatchObject({status: STEP_STATUSES.failed, reason, receipt: RECEIPT_OUTCOMES.failed});
+        // a failed row is a wait for the rows behind it, and the run's exit says a step failed
+        expect(failed['compose-up'].waitsFor).toBe('write-env');
+        // nothing turns green from a receipt, and nothing stays red against a fresh positive read
+        expect(written['write-env']).toMatchObject({status: STEP_STATUSES.ok, reason: 'observed; not performed by this run'});
+        // without a receipt the absent result is simply not performed, in the observer's words
+        expect(untried['write-env']).toMatchObject({status: STEP_STATUSES.pending, reason: '/state/config/local-agent-os.env does not exist'});
+    });
+
     test('AC-3: a record bound to target A turns no step green for target B; a recipe-version change retires the proof into readable history', async () => {
         const
             recordA = fullRecord(targetA),
