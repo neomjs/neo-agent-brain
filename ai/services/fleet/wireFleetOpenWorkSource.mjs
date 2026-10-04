@@ -79,7 +79,8 @@ export function seatReaders({listDefinitions, resolveCredential, override = null
 
 /**
  * @summary One GitHub GraphQL call. A missing token, an HTTP failure or a GraphQL error throws, and
- * the producer records it as a failed read.
+ * the producer records it as a failed read. An HTTP failure carries its `status`, so a refused PAT
+ * (401) is told apart from a read that may pass on the next pulse.
  * @param {Object}   options
  * @param {String|null} options.token
  * @param {Function} [options.fetchImpl]
@@ -101,7 +102,7 @@ export function createGithubGraphqlQuery({token, fetchImpl = globalThis.fetch, a
             payload  = await response.json().catch(() => null);
 
         if (!response.ok || payload?.errors?.length || !payload?.data) {
-            throw new Error(`GitHub GraphQL answered ${response.status}: ${payload?.errors?.[0]?.message ?? 'no data'}`)
+            throw Object.assign(new Error(`GitHub GraphQL answered ${response.status}: ${payload?.errors?.[0]?.message ?? 'no data'}`), {status: response.status})
         }
 
         return payload.data

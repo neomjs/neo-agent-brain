@@ -55,6 +55,8 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
         const answering = payload => createGithubGraphqlQuery({token: 't', fetchImpl: async () => ({ok: payload.ok ?? true, status: payload.status ?? 200, json: async () => payload.body})});
 
         await expect(answering({ok: false, status: 502, body: null})('{x}', {})).rejects.toThrow(/answered 502/);
+        await expect(answering({ok: false, status: 401, body: {message: 'Bad credentials'}})('{x}', {}), 'a refused PAT carries its status for the producer')
+            .rejects.toMatchObject({status: 401});
         await expect(answering({body: {errors: [{message: 'rate limited'}]}})('{x}', {})).rejects.toThrow(/rate limited/);
         expect(await answering({body: {data: {search: {nodes: []}}}})('{x}', {})).toEqual({search: {nodes: []}})
     });

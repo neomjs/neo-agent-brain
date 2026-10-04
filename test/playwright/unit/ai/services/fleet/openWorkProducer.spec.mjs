@@ -182,7 +182,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         script = {broken: true};
 
-        expect(await producer.pulse()).toMatchObject({coverage: 'stale', reason: 'the GitHub read failed', watermark: baseline.watermark});
+        expect(await producer.pulse()).toMatchObject({coverage: 'stale', reason: 'the GitHub read failed for @neo-opus-ada: the next pulse reads again', watermark: baseline.watermark});
         expect(Object.keys(producer.getState().snapshot.rows)).toEqual(['acme/app#7'])
     });
 
@@ -246,7 +246,7 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
         expect(producer.getState().pulses.at(-1)).toMatchObject({failed: true, cost: 2, pages: 2, costUnknown: true})
     });
 
-    test('a failed read is stale over a snapshot and unavailable without one, under a constant reason and a redacted detail', async () => {
+    test('a failed read is stale over a snapshot and unavailable without one, its reason naming the seat and the next step, its detail redacted', async () => {
         let fail = true;
 
         const
@@ -255,9 +255,8 @@ test.describe('openWorkProducer — one producer observes, records, and wakes no
 
         const first = await producer.pulse();
 
-        expect(first).toMatchObject({coverage: 'unavailable', reason: 'the GitHub read failed'});
+        expect(first).toMatchObject({coverage: 'unavailable', reason: 'the GitHub read failed for @neo-opus-ada: the next pulse reads again'});
         expect(first.detail).toContain('Bad credentials');
-        expect(first.detail).toContain('@neo-opus-ada');
         expect(JSON.stringify(first)).not.toContain('privateCanary');
 
         fail = false;
@@ -393,10 +392,25 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
 
         const state = await producer.pulse();
 
-        expect(state).toMatchObject({coverage: 'partial', reason: 'the GitHub read failed for @neo-gpt'});
+        expect(state).toMatchObject({coverage: 'partial', reason: 'the GitHub read failed for @neo-gpt: the next pulse reads again'});
         expect(state.detail).toContain('Bad credentials');
         expect(Object.keys(state.snapshot.rows).sort()).toEqual(['acme/app#7', 'acme/app#9']);
         expect(state.pulses.at(-1).vanished).toEqual([])
+    });
+
+    test('only a PAT GitHub refused (401) asks for a new token; any other failed read names the next pulse', async () => {
+        const
+            refused  = async () => { throw Object.assign(new Error('GitHub GraphQL answered 401: Bad credentials'), {status: 401}) },
+            flaky    = async () => { throw Object.assign(new Error('GitHub GraphQL answered 502: no data'), {status: 502}) },
+            pulse    = readers => createOpenWorkProducer({readers: async () => readers, repos: async () => ['acme/app'], identities, now: clock('2026-10-02T10:00:00Z')}).pulse(),
+            adaSeat  = {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: asSeat({authored: [pr()]}).query};
+
+        expect(await pulse([adaSeat, {seat: '@neo-gpt', login: 'neo-gpt', query: refused}]))
+            .toMatchObject({coverage: 'partial', reason: 'GitHub refused the PAT of @neo-gpt: connect again with a current token for it'});
+        expect(await pulse([adaSeat, {seat: '@neo-gpt', login: 'neo-gpt', query: flaky}]))
+            .toMatchObject({coverage: 'partial', reason: 'the GitHub read failed for @neo-gpt: the next pulse reads again'});
+        expect(await pulse([{seat: '@neo-gpt', login: 'neo-gpt', query: refused}]), 'the only seat, refused: unavailable with the same step')
+            .toMatchObject({coverage: 'unavailable', reason: 'GitHub refused the PAT of @neo-gpt: connect again with a current token for it', detail: 'GitHub GraphQL answered 401: Bad credentials'})
     });
 
     test('a saved single watermark seeds every seat\'s window, so an upgrade keeps its catch-up', async () => {

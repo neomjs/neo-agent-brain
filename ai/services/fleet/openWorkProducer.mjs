@@ -110,17 +110,24 @@ function countBySeat(transitions) {
 }
 
 /**
- * @summary The coverage reason for the seats a pulse could not read, each with its next step.
+ * @summary The coverage reason for the seats a pulse could not read, each with its next step. Only a
+ * refused PAT (HTTP 401) asks for a new token; any other failure may pass on its own, so its next step
+ * is the next pulse.
  * @param {String[]} unread Seats without a readable PAT.
- * @param {String[]} failed Seats whose read failed.
+ * @param {Object[]} [failed] `{seat, refused}` per seat whose read failed.
  * @returns {String|null}
  * @private
  */
-function unreadReason(unread, failed) {
-    const parts = [];
+function unreadReason(unread, failed = []) {
+    const
+        parts   = [],
+        each    = list => list.length > 1 ? 'each' : 'it',
+        refused = failed.filter(read => read.refused).map(read => read.seat),
+        retried = failed.filter(read => !read.refused).map(read => read.seat);
 
-    unread.length && parts.push(`${unread.join(', ')} ${unread.length > 1 ? 'have' : 'has'} no readable PAT: connect again with a current token for ${unread.length > 1 ? 'each' : 'it'}`);
-    failed.length && parts.push(`the GitHub read failed for ${failed.join(', ')}`);
+    unread.length  && parts.push(`${unread.join(', ')} ${unread.length > 1 ? 'have' : 'has'} no readable PAT: connect again with a current token for ${each(unread)}`);
+    refused.length && parts.push(`GitHub refused the PAT of ${refused.join(', ')}: connect again with a current token for ${each(refused)}`);
+    retried.length && parts.push(`the GitHub read failed for ${retried.join(', ')}: the next pulse reads again`);
 
     return parts.length ? parts.join('; ') : null
 }
@@ -216,7 +223,8 @@ export function createOpenWorkProducer({
 
                 reads.push({seat, login, mark, window, nodes: [...authored.nodes, ...held.nodes], complete: authored.complete && held.complete, ended})
             } catch (error) {
-                reads.push({seat, failure: redactReadFailure(error)})
+                // a message-less error still failed: without the fallback it would count as answered
+                reads.push({seat, failure: redactReadFailure(error) ?? 'the read failed without a message', refused: error?.status === 401})
             }
         }
 
@@ -227,8 +235,8 @@ export function createOpenWorkProducer({
         if (!answered.length) {
             return commit({
                 coverage: state.snapshot ? 'stale' : 'unavailable',
-                reason  : failed.length ? 'the GitHub read failed' : unreadReason(unread, []) ?? 'no seat has a GitHub login',
-                detail  : failed.length ? unreadReason(unread, failed.map(read => read.seat)) + `: ${failed[0].failure}` : null
+                reason  : unreadReason(unread, failed) ?? 'no seat has a GitHub login',
+                detail  : failed[0]?.failure ?? null
             }, {at, failed: true, ...tally, ...(failed.length ? {costUnknown: true} : {})})
         }
 
@@ -267,7 +275,7 @@ export function createOpenWorkProducer({
             readers    : marks,
             watermark,
             window     : null,
-            reason     : unreadReason(unread, failed.map(read => read.seat)),
+            reason     : unreadReason(unread, failed),
             detail     : failed[0]?.failure ?? null,
             transitions: [...state.transitions, ...next.transitions].slice(-transitionWindow)
         }, {at, ...tally, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
