@@ -11,15 +11,19 @@
  * production observers; a spec supplies stubs and proves AC-1 (stubbed observers fail → nothing is green
  * whatever the record holds) and AC-3 (another target's record turns no step green).
  *
+ * An effect row is also the renderer's instruction (decision §2.10): `waitsFor`, and on the witness row
+ * `exits` and `duplicatePossible`. A renderer chooses from these fields; a `reason` is for the operator.
+ *
  * The placement step adds the one judgement the probe and the preset table do not make — a named
  * headroom: a preset is recommended only when the host margin clears `HEADROOM_BYTES` and the guest
  * margin is non-negative; a bare fit is *possible, not recommended*; a `candidate` preset (no recorded
  * floor) is never recommended by default.
  */
 
-import {GiB, fitsPreset}                           from './probePlacement.mjs';
-import {presetStatus}                              from './placementPresets.mjs';
+import {GiB, fitsPreset}                                             from './probePlacement.mjs';
+import {presetStatus}                                                from './placementPresets.mjs';
 import {RECEIPT_OUTCOMES, describeBinding, findConsent, findReceipt} from './setupRunRecord.mjs';
+import {verifyExits}                                                 from './verifyEffect.mjs';
 
 /**
  * The recipe version a record is evaluated under; a record from another version is shown as a mismatch
@@ -63,6 +67,8 @@ export const STEP_STATUSES = Object.freeze({
  * The v1 steps in order. `observer` names the injected reader a step consults; `effectId` the host effect
  * whose receipt and result an effect step reads; `answer: 'file'` marks a question answered by a file
  * reference, admitted as one before it is recorded; `terminal` marks the step whose `ok` ends the run.
+ * The effect steps run in the order listed here and nowhere else (decision §2.10); `gates` names the
+ * observations an effect waits for beside the questions and effects before it.
  * @type {Object[]}
  */
 export const RECIPE_STEPS = Object.freeze([
@@ -71,12 +77,12 @@ export const RECIPE_STEPS = Object.freeze([
     Object.freeze({id: 'plane-credential', kind: STEP_KINDS.question,    answer: 'file',           summary: 'the plane credential, kept as a secret file (the record holds its path)'}),
     Object.freeze({id: 'provider-key',     kind: STEP_KINDS.question,    answer: 'file', requiredBy: 'providerKey', summary: 'the provider key file, when the consented preset requires one (the record holds its path)'}),
     Object.freeze({id: 'advanced',         kind: STEP_KINDS.question,    optional: true,           summary: 'advanced bindings, folded by default'}),
-    Object.freeze({id: 'write-env',        kind: STEP_KINDS.effect,      observer: 'envCarrier',   effectId: 'write-env',     summary: 'the plane env carrier holds the preset and the plane bindings'}),
     Object.freeze({id: 'write-secrets',    kind: STEP_KINDS.effect,      observer: 'secretFiles',  effectId: 'write-secrets', summary: 'the secret files exist, owner-only'}),
+    Object.freeze({id: 'write-env',        kind: STEP_KINDS.effect,      observer: 'envCarrier',   effectId: 'write-env',     summary: 'the plane env carrier holds the preset and the plane bindings'}),
     Object.freeze({id: 'compose-up',       kind: STEP_KINDS.effect,      observer: 'runningPlane', effectId: 'compose-up',    summary: 'the compose project is running'}),
     Object.freeze({id: 'served-plane',     kind: STEP_KINDS.observation, observer: 'servedPlane',  summary: 'the served plane identity and data root match the target'}),
     Object.freeze({id: 'validation',       kind: STEP_KINDS.observation, observer: 'validation',   summary: 'one fresh provider call and one fresh embedding with the configuration the run supplied, at the preset dimension — never read from a receipt'}),
-    Object.freeze({id: 'verify',           kind: STEP_KINDS.effect,      observer: 'verification', effectId: 'verify',        summary: 'the first-run witness: one memory written through the served plane under this run, read back and recalled through its embedding lane'}),
+    Object.freeze({id: 'verify',           kind: STEP_KINDS.effect,      observer: 'verification', effectId: 'verify',        gates: Object.freeze(['served-plane', 'validation']), summary: 'the first-run witness: one memory written through the served plane under this run, read back and recalled through its embedding lane'}),
     Object.freeze({id: 'done',             kind: STEP_KINDS.observation, observer: 'done',         terminal: true, summary: 'this run\'s witness was persisted and recalled, and the served plane and validation are fresh and ok in the same evaluation'})
 ]);
 
@@ -96,8 +102,8 @@ export function recommendPlacement({probe, presets, headroomBytes = HEADROOM_BYT
 
     for (const preset of presets) {
         const
-            fit  = fitsPreset(probe, preset.workload),
-            row  = {id: preset.id, margins: fit?.margins ?? {host: null, guest: null}, reason: null};
+            fit = fitsPreset(probe, preset.workload),
+            row = {id: preset.id, margins: fit?.margins ?? {host: null, guest: null}, reason: null};
 
         if (!fit?.fits) {
             row.reason = (fit?.reasons ?? ['no workload declared']).join('; ');
@@ -223,6 +229,17 @@ async function evaluateEffect(step, {record, bound, observers, target, context, 
     }
 
     return status(step, STEP_STATUSES.ok, receipt?.outcome === RECEIPT_OUTCOMES.accepted ? 'observed; matches the accepted receipt' : 'observed; not performed by this run', extra);
+}
+
+/**
+ * @summary The step an effect row waits for: the first one before it that is not `ok` and stands in its
+ * way — a question, an effect, or an observation the step declares as a gate. `null` when it can run.
+ * @param {Object}   step
+ * @param {Object[]} steps The steps evaluated so far.
+ * @returns {String|null}
+ */
+function waitOf(step, steps) {
+    return steps.find(row => row.status !== STEP_STATUSES.ok && (row.kind !== STEP_KINDS.observation || step.gates?.includes(row.id)))?.id ?? null;
 }
 
 function evaluatePlacement(step, read, presets, observedAt) {
@@ -396,7 +413,13 @@ export async function evaluateRecipe({target, record = null, observers = {}, pre
         }
 
         if (step.kind === STEP_KINDS.effect) {
-            steps.push(await evaluateEffect(step, {record, bound, observers, target, context, observedAt}));
+            const row = await evaluateEffect(step, {record, bound, observers, target, context, observedAt});
+
+            steps.push({
+                ...row,
+                waitsFor: row.status === STEP_STATUSES.ok ? null : waitOf(step, steps),
+                ...(step.id === 'verify' ? verifyExits({receipt: bound ? findReceipt(record, step.effectId) : null, section: bound ? record.verification : null}) : {})
+            });
             continue;
         }
 

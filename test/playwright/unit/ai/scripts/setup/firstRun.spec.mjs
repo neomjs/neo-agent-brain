@@ -1,15 +1,15 @@
-import {expect, test} from '@playwright/test';
-import {execFile}     from 'node:child_process';
-import fs             from 'node:fs/promises';
-import os             from 'node:os';
-import path           from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {promisify}    from 'node:util';
-import {PLANE_MEMORY_CORE_PATH, fakeHostObservers, hostLayout, parseArgs, productionObservers} from '../../../../../../ai/scripts/setup/firstRun.mjs';
-import {RECIPE_VERSION, evaluateRecipe}                  from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
-import {createHost}                                      from '../../../../../../ai/services/fleet/hostEffects.mjs';
-import {presets}                                         from '../../../../../../ai/services/fleet/placementPresets.mjs';
-import {createSetupRecord, withConsent}                  from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {expect, test}                                                                                      from '@playwright/test';
+import {execFile}                                                                                          from 'node:child_process';
+import fs                                                                                                  from 'node:fs/promises';
+import os                                                                                                  from 'node:os';
+import path                                                                                                from 'node:path';
+import {fileURLToPath}                                                                                     from 'node:url';
+import {promisify}                                                                                         from 'node:util';
+import {PLANE_MEMORY_CORE_PATH, fakeHostObservers, hostLayout, parseArgs, productionObservers, renderText} from '../../../../../../ai/scripts/setup/firstRun.mjs';
+import {RECIPE_VERSION, evaluateRecipe}                                                                    from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
+import {createHost}                                                                                        from '../../../../../../ai/services/fleet/hostEffects.mjs';
+import {presets}                                                                                           from '../../../../../../ai/services/fleet/placementPresets.mjs';
+import {createSetupRecord, withConsent}                                                                    from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
 
 // The CLI on a fake host: a child process per arm, stdin closed (never a TTY), the record under a temp setup root.
 
@@ -41,9 +41,9 @@ async function scratch() {
 function greenFake({patPath, planeId = 'plane-a', dataRoot = '/srv/plane-a', servedPlane = {id: planeId, dataRoot}, done = {queryAnswered: true, persisted: true}, answers = true}) {
     return {
         observers: {
-            placement  : {host: {complete: true, availableBytes: 64 * 1073741824, pressure: 'ok'}, guest: null, observed: {}, runningPlane: null},
+            placement : {host: {complete: true, availableBytes: 64 * 1073741824, pressure: 'ok'}, guest: null, observed: {}, runningPlane: null},
             servedPlane,
-            validation  : {provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 1024}},
+            validation: {provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 1024}},
             // a fake host has no plane to witness through: the witness effect's observation and the terminal read are the fixture's
             verification: {present: true, digest: null, problem: null},
             done
@@ -74,8 +74,8 @@ test.describe('firstRun CLI', () => {
     test('AC-5: a cold run on a fake host answers the questions, performs the effects, lists every step with status and reason, and exits 0 on a green terminal step', async () => {
         const
             {setupRoot, stateRoot, patPath} = await scratch(),
-            result = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
-            output = JSON.parse(result.stdout);
+            result                          = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
+            output                          = JSON.parse(result.stdout);
 
         expect(result.code, result.stderr).toBe(0);
         expect(output.runId).toBe(RUN_ID);
@@ -137,7 +137,7 @@ test.describe('firstRun CLI', () => {
     test('the exit code reflects the terminal step: a failed terminal observation exits 1; unanswered questions without a TTY exit 2 and never prompt', async () => {
         const
             {setupRoot, stateRoot, patPath} = await scratch(),
-            failed = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, done: {queryAnswered: true, persisted: false, reason: 'nothing persisted yet'}})});
+            failed                          = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, done: {queryAnswered: true, persisted: false, reason: 'nothing persisted yet'}})});
 
         expect(failed.code).toBe(1);
         expect(JSON.parse(failed.stdout).steps.find(step => step.id === 'done')).toMatchObject({status: 'failed', reason: 'nothing persisted yet'});
@@ -159,9 +159,9 @@ test.describe('firstRun CLI', () => {
     test('a wrong plane answering fails the served-plane step and exits 1; a record bound to another target is retired into history', async () => {
         const
             {setupRoot, stateRoot, patPath} = await scratch(),
-            first = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
-            wrong = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, planeId: 'plane-b'})}),
-            output = JSON.parse(wrong.stdout);
+            first                           = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
+            wrong                           = await runCli({setupRoot, stateRoot, fake: greenFake({patPath, planeId: 'plane-b'})}),
+            output                          = JSON.parse(wrong.stdout);
 
         expect(first.code).toBe(0);
         expect(wrong.code).toBe(1);
@@ -181,7 +181,7 @@ test.describe('firstRun CLI', () => {
     test('a resume that names only the identity keeps the record\'s bound root: a different served root still fails, a matching one resumes, and the explicit mismatch control stands', async () => {
         const
             {setupRoot, stateRoot, patPath} = await scratch(),
-            first    = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
+            first                           = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
             // the same run without --data-root while the plane answers with the identity over another root
             idOnly   = await runCli({setupRoot, stateRoot, dataRoot: null, fake: greenFake({patPath, servedPlane: {id: 'plane-a', dataRoot: '/srv/plane-b'}})}),
             idOnlyOk = await runCli({setupRoot, stateRoot, dataRoot: null, fake: greenFake({patPath})}),
@@ -202,10 +202,10 @@ test.describe('firstRun CLI', () => {
     test('a pasted token given as the credential answer is refused before the consent write and never appears in the record, stdout or stderr; a directory, a relative or a missing path are refused by their own rule; the real file is admitted', async () => {
         const
             {root, setupRoot, stateRoot, patPath} = await scratch(),
-            PASTED     = 'FAKE_PASTED_PAT_DO_NOT_STORE_20261002',
-            fake       = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
-            pasted     = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {preset: 'local-small', 'plane-credential': PASTED}}}),
-            recordText = await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8');
+            PASTED                                = 'FAKE_PASTED_PAT_DO_NOT_STORE_20261002',
+            fake                                  = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
+            pasted                                = await runCli({setupRoot, stateRoot, fake: {...fake, answers: {preset: 'local-small', 'plane-credential': PASTED}}}),
+            recordText                            = await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8');
 
         expect(pasted.code).toBe(2);
         expect(pasted.stderr).toContain('plane-credential: not the absolute path of a file; the value was not recorded');
@@ -232,10 +232,10 @@ test.describe('firstRun CLI', () => {
     test('a pending receipt left on disk resumes through the CLI as reconcile-required with JSON output and no replay: the plane\'s own effect stays so under a wrong plane and the halt is reported, a matching observation settles it; a host-file effect settles by its own observation with no plane answering (ADR 0041 §3, the renderer\'s half)', async () => {
         const
             {setupRoot, stateRoot, patPath} = await scratch(),
-            recordPath = path.join(setupRoot, `${RUN_ID}.json`),
-            callsPath  = path.join(setupRoot, 'fake-run.json'),
-            first      = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
-            receiptOf  = async effectId => JSON.parse(await fs.readFile(recordPath, 'utf8')).receipts.find(receipt => receipt.effectId === effectId),
+            recordPath                      = path.join(setupRoot, `${RUN_ID}.json`),
+            callsPath                       = path.join(setupRoot, 'fake-run.json'),
+            first                           = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})}),
+            receiptOf                       = async effectId => JSON.parse(await fs.readFile(recordPath, 'utf8')).receipts.find(receipt => receipt.effectId === effectId),
             // what a crash between the handler and its receipt leaves on disk: the effect's receipt still pending
             park       = async effectId => {
                 const record = JSON.parse(await fs.readFile(recordPath, 'utf8'));
@@ -354,7 +354,7 @@ test.describe('firstRun CLI', () => {
     test('a record the CLI cannot read is refused by name and left as it is; nothing runs over it', async () => {
         const
             {setupRoot, stateRoot, patPath} = await scratch(),
-            recordPath = path.join(setupRoot, `${RUN_ID}.json`);
+            recordPath                      = path.join(setupRoot, `${RUN_ID}.json`);
 
         await fs.mkdir(setupRoot, {recursive: true});
         await fs.writeFile(recordPath, '{not json');
@@ -373,8 +373,8 @@ test.describe('firstRun CLI', () => {
     test('AC-2 end to end: a hosted preset writes the provider key as an owner-only secret and points the leaf at the mount; the key is in no record, carrier or log', async () => {
         const
             {root, setupRoot, stateRoot, patPath} = await scratch(),
-            KEY     = 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh',
-            keyPath = path.join(root, 'operator', 'gemini-key');
+            KEY                                   = 'AIzaSENTINELPROVIDERKEY0123456789abcdefgh',
+            keyPath                               = path.join(root, 'operator', 'gemini-key');
 
         await fs.writeFile(keyPath, `${KEY}\n`, {mode: 0o600});
 
@@ -411,9 +411,9 @@ test.describe('firstRun CLI', () => {
         // refuses, no secret and no carrier appear, the run stays pending
         const
             {setupRoot, stateRoot, patPath} = await scratch(),
-            fake   = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
-            result = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {throw: 'no plane to ask'}}, answers: {preset: 'hosted', 'plane-credential': patPath}}}),
-            layout = hostLayout({stateRoot});
+            fake                            = greenFake({patPath, servedPlane: {throw: 'connection refused'}, done: {throw: 'no plane to ask'}}),
+            result                          = await runCli({setupRoot, stateRoot, fake: {...fake, observers: {...fake.observers, validation: {throw: 'no plane to ask'}}, answers: {preset: 'hosted', 'plane-credential': patPath}}}),
+            layout                          = hostLayout({stateRoot});
 
         expect(result.code).toBe(2);
         expect(result.stderr).toMatch(/credentials refused before any write:\n\s+the 'hosted' preset requires a provider key and none was given/);
@@ -425,7 +425,7 @@ test.describe('firstRun CLI', () => {
     test('a fake host\'s provider-key answer for a local preset is never recorded: the question is decided after the preset consent (review round 1, RA-2)', async () => {
         const
             {root, setupRoot, stateRoot, patPath} = await scratch(),
-            keyPath = path.join(root, 'operator', 'gemini-key');
+            keyPath                               = path.join(root, 'operator', 'gemini-key');
 
         await fs.writeFile(keyPath, 'AIzaFAKEKEY\n', {mode: 0o600});
 
@@ -459,10 +459,10 @@ test.describe('firstRun CLI', () => {
 
     test('the production served-plane observer asks the plane the way its clients do: the Memory Core route, the consented credential as the bearer, the block as observed; no consent sends no bearer, and the recipe keeps the verdict', async () => {
         const
-            {patPath}  = await scratch(),
-            target     = {planeId: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data', endpoint: 'http://127.0.0.1:3102'},
-            served     = {id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'},
-            calls      = [],
+            {patPath}   = await scratch(),
+            target      = {planeId: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data', endpoint: 'http://127.0.0.1:3102'},
+            served      = {id: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data'},
+            calls       = [],
             healthcheck = async options => {
                 calls.push(options);
 
@@ -523,7 +523,7 @@ test.describe('firstRun CLI', () => {
         expect(probes.at(-1)).toEqual({preset: 'local-small', providerKey: ''});
 
         // a receipt-only record proves nothing to validation: with the probe refusing, the retained section changes no answer
-        const refusing = productionObservers({layout: hostLayout({stateRoot: '/srv/state'}), host, validate: async () => ({provider: {ok: false, model: 'm', reason: 'provider down'}, embedding: {ok: false, dimension: null, reason: 'provider down'}})});
+        const refusing  = productionObservers({layout: hostLayout({stateRoot: '/srv/state'}), host, validate: async () => ({provider: {ok: false, model: 'm', reason: 'provider down'}, embedding: {ok: false, dimension: null, reason: 'provider down'}})});
         const witnessed = {...hosted, verification: {runId: RUN_ID, planeId: 'plane-a', sessionId: 's', attempt: {marker: 'mk', dispatchedAt: 't0'}, memory: {id: 'mem-1', at: 't1'}, readback: {at: 't2'}, recall: {at: 't3', hit: true}, priorAttempts: []}};
 
         expect((await refusing.validation(target, {record: witnessed})).provider).toMatchObject({ok: false, reason: 'provider down'});
@@ -566,5 +566,29 @@ test.describe('firstRun CLI', () => {
 
         expect(projected.verify).toMatchObject({status: 'failed', reason: 'the plane refused the readback at t2: viewer lacks READ'});
         expect(projected.done).toMatchObject({status: 'failed', reason: 'the plane refused the readback at t2: viewer lacks READ'});
+    });
+
+    test('the text output reads what comes next from the row\'s data, never from its reason: a wait, the witness row\'s exits, and whether a second row is possible', () => {
+        const
+            row   = (id, status, extra) => ({id, status, reason: 'the same sentence', ...extra}),
+            nexts = renderText({recipeVersion: RECIPE_VERSION, target: {planeId: 'plane-a'}, binding: 'bound', steps: [
+                row('write-secrets', 'pending',            {waitsFor: null}),
+                row('write-env',     'pending',            {waitsFor: 'write-secrets'}),
+                row('verify',        'pending',            {waitsFor: 'validation', exits: ['run'], duplicatePossible: false}),
+                row('verify',        'pending',            {waitsFor: null, exits: ['run'], duplicatePossible: false}),
+                row('verify',        'failed',             {waitsFor: null, exits: ['new-attempt'], duplicatePossible: false}),
+                row('verify',        'reconcile-required', {waitsFor: null, exits: ['resume', 'new-attempt'], duplicatePossible: true}),
+                row('verify',        'ok',                 {waitsFor: null, exits: [], duplicatePossible: false})
+            ]}).split('\n').slice(1, -1).map(line => line.split('the same sentence')[1]);
+
+        expect(nexts).toEqual([
+            '',
+            ' · waits for write-secrets',
+            ' · waits for validation',
+            ' · next: a run performs it',
+            ' · next: --new-attempt writes the witness again (no duplicate is possible)',
+            ' · next: a re-run resumes it and writes nothing, or --new-attempt writes the witness again (a second row on the plane is possible)',
+            ''
+        ]);
     });
 });

@@ -34,6 +34,7 @@ import {
     RETIRE_REASONS, contentDigest, createSetupRecord, describeBinding, findConsent, readSetupRecord, resumeTarget, retireCurrentProof, setupRecordPath
 } from '../../services/fleet/setupRunRecord.mjs';
 import {performEffects, settlePending} from '../../services/fleet/setupOrchestration.mjs';
+import {VERIFY_EXITS}                  from '../../services/fleet/verifyEffect.mjs';
 import {runHealthcheck}                from '../diagnostics/mcpHealthcheck.mjs';
 
 const
@@ -58,11 +59,11 @@ export function parseArgs(argv, env = process.env) {
     const
         stateRoot = env.NEO_HOST_STATE_ROOT || path.join(os.homedir(), '.neo-ai'),
         options   = {
-            json     : false,
-            help     : false,
+            json      : false,
+            help      : false,
             stateRoot,
-            setupRoot: env.NEO_HOST_SETUP_RECORD_ROOT || path.join(stateRoot, 'setup'),
-            runId    : null,
+            setupRoot : env.NEO_HOST_SETUP_RECORD_ROOT || path.join(stateRoot, 'setup'),
+            runId     : null,
             planeId   : null,
             dataRoot  : null,
             endpoint  : 'http://127.0.0.1:3102',
@@ -287,11 +288,47 @@ export function fakeHostObservers(fake) {
     return {observers, answers: fake.answers ?? {}};
 }
 
-function renderText(evaluation) {
+/**
+ * What the operator does for each of a witness row's exits (`verifyEffect.VERIFY_EXITS`).
+ * @type {Object}
+ */
+const EXIT_TEXT = Object.freeze({
+    [VERIFY_EXITS.run]       : 'a run performs it',
+    [VERIFY_EXITS.resume]    : 'a re-run resumes it and writes nothing',
+    [VERIFY_EXITS.newAttempt]: '--new-attempt writes the witness again'
+});
+
+/**
+ * @summary What a row's own data says comes next: the step it waits for, or the witness row's exits with
+ * whether a second row is possible. Read from the row's fields, never from its reason.
+ * @param {Object} step An evaluated step.
+ * @returns {String} A suffix for the row, or the empty string.
+ */
+function nextOf(step) {
+    if (step.waitsFor) {
+        return ` · waits for ${step.waitsFor}`;
+    }
+
+    if (!step.exits?.length) {
+        return '';
+    }
+
+    const duplicate = !step.exits.includes(VERIFY_EXITS.newAttempt) ? '' : step.duplicatePossible ? ' (a second row on the plane is possible)' : ' (no duplicate is possible)';
+
+    return ` · next: ${step.exits.map(exit => EXIT_TEXT[exit] ?? exit).join(', or ')}${duplicate}`;
+}
+
+/**
+ * @summary The evaluation as the operator's text: one row per step — status, id, reason — and what the
+ * row's data says comes next.
+ * @param {Object} evaluation From `evaluateRecipe`.
+ * @returns {String}
+ */
+export function renderText(evaluation) {
     const lines = [`first-run recipe v${evaluation.recipeVersion} · target ${evaluation.target.planeId ?? '(undeclared)'} · record ${evaluation.binding}`];
 
     for (const step of evaluation.steps) {
-        lines.push(`  ${step.status.padEnd(18)} ${step.id.padEnd(17)} ${step.reason}`);
+        lines.push(`  ${step.status.padEnd(18)} ${step.id.padEnd(17)} ${step.reason}${nextOf(step)}`);
     }
 
     return `${lines.join('\n')}\n`;

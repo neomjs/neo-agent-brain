@@ -4,7 +4,7 @@ import os                                                                       
 import path                                                                                            from 'node:path';
 import {fileURLToPath}                                                                                 from 'node:url';
 import {EFFECT_IDS, createHost, persistSetupRecord, recordConsent}                                     from '../../../../../../ai/services/fleet/hostEffects.mjs';
-import {RECIPE_VERSION, STEP_STATUSES, evaluateRecipe}                                                 from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
+import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe}                       from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
 import {presets}                                                                                       from '../../../../../../ai/services/fleet/placementPresets.mjs';
 import {EFFECT_ORDER, performEffects, settlePending}                                                   from '../../../../../../ai/services/fleet/setupOrchestration.mjs';
 import {RECEIPT_OUTCOMES, contentDigest, createSetupRecord, findReceipt, setupRecordPath, withReceipt} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
@@ -116,6 +116,8 @@ test.describe('setupOrchestration', () => {
             run      = await consentedRun(),
             {record} = await perform(run, {evaluation: await evaluate(run.record)});
 
+        // one list: the order that runs is the recipe's effect steps as listed, the secret files before the carrier that points at them
+        expect(EFFECT_ORDER).toEqual(RECIPE_STEPS.filter(step => step.kind === STEP_KINDS.effect).map(step => step.effectId));
         expect(EFFECT_ORDER).toEqual([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp, EFFECT_IDS.verify]);
         expect(receipts(record)).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted']]);
         expect(run.calls.map(call => [call.command, call.args[0], call.cwd])).toEqual([['docker', 'compose', run.layout.composeDir]]);
@@ -133,24 +135,62 @@ test.describe('setupOrchestration', () => {
         expect(run.calls).toEqual([])
     });
 
-    test('a selected effect never runs past an unfinished predecessor it was not given', async () => {
+    test('a selected effect never runs past an unfinished predecessor it was not given, and says which one it waits for', async () => {
         const
-            run      = await consentedRun(),
-            {record} = await perform(run, {evaluation: await evaluate(run.record), effectIds: [EFFECT_IDS.writeEnv]});
+            run               = await consentedRun(),
+            evaluation        = await evaluate(run.record),
+            {record, reports} = await perform(run, {evaluation, effectIds: [EFFECT_IDS.writeEnv]});
 
         expect(record).toBe(run.record);
+        expect(reports).toEqual(["'write-env' waits for 'write-secrets': it is pending (not performed)"]);
+        // the report and the row's own data name the same step
+        expect(evaluation.steps.find(step => step.id === EFFECT_IDS.writeEnv).waitsFor).toBe(EFFECT_IDS.writeSecrets);
         expect(await exists(run.layout.envFile)).toBe(false);
+        expect(run.calls).toEqual([]);
+
+        // decision §3's witness: the last host effect, selected alone on a cold run, waits for the first — no receipt, no file, no command
+        const last = await perform(run, {evaluation, effectIds: [EFFECT_IDS.composeUp]});
+
+        expect(last.record).toBe(run.record);
+        expect(last.reports).toEqual(["'compose-up' waits for 'write-secrets': it is pending (not performed)"]);
+        expect(await exists(run.layout.secretsDir)).toBe(false);
+        expect(run.calls).toEqual([]);
+
+        // a selection whose effect is already ok has nothing to wait for and nothing to say
+        const settled = await perform(run, {evaluation: await evaluate(run.record, {[EFFECT_IDS.writeSecrets]: true, [EFFECT_IDS.writeEnv]: true}), effectIds: [EFFECT_IDS.writeEnv]});
+
+        expect(settled.record).toBe(run.record);
+        expect(settled.reports).toEqual([])
+    });
+
+    test('an unsettled predecessor halts the run although it was not selected, and the selected effect names it', async () => {
+        const
+            run               = await consentedRun(),
+            parked            = await interrupted(run, EFFECT_IDS.writeSecrets),
+            {record, reports} = await perform(run, {record: parked, evaluation: await evaluate(parked, {[EFFECT_IDS.writeEnv]: true}), effectIds: [EFFECT_IDS.composeUp]});
+
+        expect(receipts(record)).toEqual([['write-secrets', 'pending']]);
+        expect(reports).toEqual(["'compose-up' waits for 'write-secrets': it is reconcile-required (the effect may have run before its receipt was written; a fresh matching observation settles it)"]);
         expect(run.calls).toEqual([])
     });
 
-    test('an unsettled predecessor halts the run although it was not selected', async () => {
+    test('an effect that waits for a question says so and reads nothing: no consent yet, then a consented preset the table does not hold', async () => {
         const
             run      = await consentedRun(),
-            parked   = await interrupted(run, EFFECT_IDS.writeSecrets),
-            {record} = await perform(run, {record: parked, evaluation: await evaluate(parked, {[EFFECT_IDS.writeEnv]: true}), effectIds: [EFFECT_IDS.composeUp]});
+            bare     = createSetupRecord({runId: RUN_ID, target, recipeVersion: RECIPE_VERSION, now: () => NOW}),
+            unasked  = await perform(run, {record: bare, evaluation: await evaluate(bare)}),
+            selected = await perform(run, {record: bare, evaluation: await evaluate(bare), effectIds: [EFFECT_IDS.composeUp]}),
+            foreign  = (await recordConsent({stepId: 'preset', answer: 'retired-preset', record: run.record, recordPath: run.recordPath, host: run.host})).record,
+            unknown  = await perform(run, {record: foreign, evaluation: await evaluate(foreign)});
 
-        expect(receipts(record)).toEqual([['write-secrets', 'pending']]);
-        expect(run.calls).toEqual([])
+        expect(unasked.record).toBe(bare);
+        expect(unasked.reports).toEqual(["'write-secrets' waits for 'preset': it is pending (unanswered)"]);
+        expect(selected.reports).toEqual(["'compose-up' waits for 'preset': it is pending (unanswered)"]);
+        expect(unknown.record).toBe(foreign);
+        expect(unknown.reports).toEqual(["the consented preset 'retired-preset' is not in the preset table: no effect runs"]);
+        expect(run.reads).toEqual([]);
+        expect(run.calls).toEqual([]);
+        expect(await exists(run.layout.secretsDir)).toBe(false)
     });
 
     test('an empty selection does nothing; an unknown effect is refused through report, reading and writing nothing', async () => {
@@ -316,10 +356,10 @@ test.describe('setupOrchestration', () => {
 
     test('verify runs last, only behind a fresh served-plane AND validation, through a plane client built from the target endpoint and the consented credential; it is resumed, never halted on, and every reason it did not reach ok is reported', async () => {
         const
-            run       = await consentedRun(),
-            observed  = {[EFFECT_IDS.writeSecrets]: true, [EFFECT_IDS.writeEnv]: true, [EFFECT_IDS.composeUp]: true},
-            planes    = [],
-            witness   = scripted => ({endpoint, credential}) => {
+            run      = await consentedRun(),
+            observed = {[EFFECT_IDS.writeSecrets]: true, [EFFECT_IDS.writeEnv]: true, [EFFECT_IDS.composeUp]: true},
+            planes   = [],
+            witness  = scripted => ({endpoint, credential}) => {
                 const plane = {endpoint, credential, calls: [], closed: 0, ...scripted};
 
                 planes.push(plane);
@@ -347,7 +387,7 @@ test.describe('setupOrchestration', () => {
         const gated = await perform(run, {evaluation: await evaluateWith(run.record, false), createPlaneClient: green});
 
         expect(gated.record).toBe(run.record);
-        expect(gated.reports).toEqual(["'verify' waits: validation is unknown (no 'validation' observer); the witness is written only through the validated target plane"]);
+        expect(gated.reports).toEqual(["'verify' waits for 'validation': it is unknown (no 'validation' observer); the witness is written only through the validated target plane"]);
         expect(planes).toEqual([]);
 
         // a renderer without a plane (the fake host) is told, not failed

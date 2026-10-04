@@ -1,12 +1,12 @@
-import {expect, test} from '@playwright/test';
-import fs             from 'node:fs/promises';
-import os             from 'node:os';
-import path           from 'node:path';
-import {RECIPE_VERSION, STEP_STATUSES, evaluateRecipe}                      from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
-import {EFFECT_IDS, createHost, persistSetupRecord}                          from '../../../../../../ai/services/fleet/hostEffects.mjs';
-import {presets}                                                             from '../../../../../../ai/services/fleet/placementPresets.mjs';
-import {RECEIPT_OUTCOMES, createSetupRecord, findReceipt, readSetupRecord, setupRecordPath, withConsent} from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
-import {WITNESS_READ_LIMIT, newAttemptSection, performVerify, rowCarriesMarker, witnessContent} from '../../../../../../ai/services/fleet/verifyEffect.mjs';
+import {expect, test}                                                                                        from '@playwright/test';
+import fs                                                                                                    from 'node:fs/promises';
+import os                                                                                                    from 'node:os';
+import path                                                                                                  from 'node:path';
+import {RECIPE_VERSION, STEP_STATUSES, evaluateRecipe}                                                       from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
+import {EFFECT_IDS, createHost, persistSetupRecord}                                                          from '../../../../../../ai/services/fleet/hostEffects.mjs';
+import {presets}                                                                                             from '../../../../../../ai/services/fleet/placementPresets.mjs';
+import {RECEIPT_OUTCOMES, createSetupRecord, findReceipt, readSetupRecord, setupRecordPath, withConsent}     from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {WITNESS_READ_LIMIT, newAttemptSection, performVerify, rowCarriesMarker, verifyExits, witnessContent} from '../../../../../../ai/services/fleet/verifyEffect.mjs';
 
 // The witness effect over a scripted plane and a real temp record: at most one dispatched write per attempt,
 // receipts as each sub-step lands, adoption only from a positive read, a second write only by explicit consent.
@@ -257,5 +257,91 @@ test.describe('verifyEffect', () => {
         expect(rowCarriesMarker(null, 'abc')).toBe(false);
         expect(witnessContent({runId: RUN_ID, planeId: 'p', marker: 'abc'}).prompt).toBe(`first-run witness · run ${RUN_ID} · plane p · marker abc`);
         expect(newAttemptSection(null, {runId: RUN_ID, planeId: 'p', marker: 'abc', dispatchedAt: 't'})).toEqual({runId: RUN_ID, planeId: 'p', sessionId: null, attempt: {marker: 'abc', dispatchedAt: 't'}, memory: null, readback: null, recall: null, priorAttempts: []});
+    });
+});
+
+// The row contract (bootstrap-record decision §2.10): each state is produced by the effect itself, read back
+// through the recipe's evaluation, and then moved by the exit the row named.
+test.describe('verifyEffect: the row names its exits as data', () => {
+    const rowOf = async record => (await evaluateRecipe({target, record, presets, now: () => NOW, observers: {
+        verification: async (_, {record: bound}) => ({present: bound?.verification?.recall?.hit === true, digest: null, problem: null, reason: 'not yet'})
+    }})).steps.find(step => step.id === 'verify');
+
+    test('not attempted: a run performs it', async () => {
+        const run = await scratch();
+
+        expect(await rowOf(run.record)).toMatchObject({exits: ['run'], duplicatePossible: false});
+        expect(verifyExits()).toEqual({exits: ['run'], duplicatePossible: false});
+    });
+
+    test('a read outstanding, not landed or refused by the plane: resume, and resuming writes nothing', async () => {
+        const
+            slow    = await scratch(),
+            waiting = scriptedPlane({addMemory: [answered], recentTurns: [turns(rowFor('mk-1'))], recall: [nothing]}),
+            written = await performVerify({...slow, target, plane: waiting, mintMarker: () => 'mk-1'});
+
+        expect(await rowOf(written.record)).toMatchObject({status: STEP_STATUSES.pending, exits: ['resume'], duplicatePossible: false});
+        await performVerify({...slow, record: written.record, target, plane: waiting});
+        expect(waiting.calls.addMemory).toHaveLength(1);
+
+        const
+            denied   = await scratch(),
+            refusing = scriptedPlane({addMemory: [answered], recentTurns: [refused('viewer lacks READ'), turns(rowFor('mk-2'))], recall: [args => recalled(args.query)]}),
+            failed   = await performVerify({...denied, target, plane: refusing, mintMarker: () => 'mk-2'});
+
+        expect(failed.receipt.outcome).toBe(RECEIPT_OUTCOMES.failed);
+        expect(await rowOf(failed.record)).toMatchObject({exits: ['resume'], duplicatePossible: false});
+        expect((await performVerify({...denied, record: failed.record, target, plane: refusing})).receipt.outcome).toBe(RECEIPT_OUTCOMES.accepted);
+        expect(refusing.calls.addMemory).toHaveLength(1);
+    });
+
+    test('the write refused: only a new attempt moves it, and no duplicate is possible', async () => {
+        const
+            run   = await scratch(),
+            plane = scriptedPlane({addMemory: [refused('agent is not registered'), answered], recentTurns: [turns(rowFor('mk-2'))], recall: [args => recalled(args.query)]}),
+            first = await performVerify({...run, target, plane, mintMarker: () => 'mk-1'});
+
+        expect(await rowOf(first.record)).toMatchObject({exits: ['new-attempt'], duplicatePossible: false});
+
+        // the plain run the row does not name leaves it as it is
+        expect((await performVerify({...run, record: first.record, target, plane})).performed).toBe('unchanged');
+        expect(plane.calls.addMemory).toHaveLength(1);
+
+        const second = await performVerify({...run, record: first.record, target, plane, newAttempt: true, mintMarker: () => 'mk-2'});
+
+        expect(second.receipt.outcome).toBe(RECEIPT_OUTCOMES.accepted);
+        expect(plane.calls.addMemory).toHaveLength(2);
+    });
+
+    test('the acknowledgement lost: resume until a reconciliation read answered without the marker, then a new attempt is named beside it, with a possible duplicate', async () => {
+        const
+            run   = await scratch(),
+            plane = scriptedPlane({addMemory: [ambiguous('socket hang up')], recentTurns: [ambiguous('ECONNRESET'), turns()], recall: [nothing]}),
+            lost  = await performVerify({...run, target, plane, mintMarker: () => 'mk-1'});
+
+        expect(await rowOf(lost.record)).toMatchObject({status: STEP_STATUSES.reconcileRequired, exits: ['resume'], duplicatePossible: false});
+
+        // a reconciliation read that fails has searched nothing
+        const unread = await performVerify({...run, record: lost.record, target, plane});
+
+        expect(unread.record.verification.attempt.searchedAt).toBeUndefined();
+        expect(await rowOf(unread.record)).toMatchObject({exits: ['resume'], duplicatePossible: false});
+
+        // one that answers without the marker has: the stamp is on the attempt, and the row names both ways on
+        const searched = await performVerify({...run, record: unread.record, target, plane});
+
+        expect(searched.record.verification.attempt).toEqual({marker: 'mk-1', dispatchedAt: new Date(NOW).toISOString(), searchedAt: new Date(NOW).toISOString()});
+        expect(await rowOf(searched.record)).toMatchObject({status: STEP_STATUSES.reconcileRequired, exits: ['resume', 'new-attempt'], duplicatePossible: true});
+        expect((await onDisk(run)).verification.attempt.searchedAt).toBe(new Date(NOW).toISOString());
+        expect(plane.calls.addMemory).toHaveLength(1);
+    });
+
+    test('accepted: the row names no exit', async () => {
+        const
+            run   = await scratch(),
+            plane = scriptedPlane({addMemory: [answered], recentTurns: [turns(rowFor('mk-1'))], recall: [args => recalled(args.query)]}),
+            done  = await performVerify({...run, target, plane, mintMarker: () => 'mk-1'});
+
+        expect(await rowOf(done.record)).toMatchObject({status: STEP_STATUSES.ok, waitsFor: null, exits: [], duplicatePossible: false});
     });
 });

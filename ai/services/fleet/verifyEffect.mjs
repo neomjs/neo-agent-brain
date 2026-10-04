@@ -24,8 +24,8 @@
  * Pure over the injected plane client (`{addMemory, recentTurns, recall}`) and the host; reads no config.
  */
 
-import {randomUUID}                                 from 'node:crypto';
-import {EFFECT_IDS, recordVerification}             from './hostEffects.mjs';
+import {randomUUID}                                   from 'node:crypto';
+import {EFFECT_IDS, recordVerification}               from './hostEffects.mjs';
 import {RECEIPT_OUTCOMES, contentDigest, findReceipt} from './setupRunRecord.mjs';
 
 /**
@@ -86,6 +86,45 @@ export function newAttemptSection(previous, {runId, planeId, marker, dispatchedA
     };
 }
 
+/**
+ * The ways on from a witness row, in a renderer's words (bootstrap-record decision §2.10).
+ * @type {Object}
+ */
+export const VERIFY_EXITS = Object.freeze({run: 'run', resume: 'resume', newAttempt: 'new-attempt'});
+
+/**
+ * @summary What moves the witness on from the state the record holds, as data: the branches of
+ * {@link performVerify}, read without running them. `exits` is in the order a renderer offers them.
+ * No attempt: `run`. A write the plane refused: `new-attempt` only — no row was minted, none can double.
+ * An unacknowledged write a read has searched for without a find (`attempt.searchedAt`): `resume` and
+ * `new-attempt`, the first row may still exist. Accepted: none. Everything else: `resume`.
+ * @param {Object}      [state]
+ * @param {Object|null} [state.receipt=null] The `verify` receipt.
+ * @param {Object|null} [state.section=null] The record's `verification` section.
+ * @returns {{exits: String[], duplicatePossible: Boolean}}
+ */
+export function verifyExits({receipt = null, section = null} = {}) {
+    const {run, resume, newAttempt} = VERIFY_EXITS;
+
+    if (receipt?.outcome === RECEIPT_OUTCOMES.accepted && section?.recall?.hit === true) {
+        return {exits: [], duplicatePossible: false};
+    }
+
+    if (section?.attempt?.refused) {
+        return {exits: [newAttempt], duplicatePossible: false};
+    }
+
+    if (!section) {
+        return {exits: [run], duplicatePossible: false};
+    }
+
+    if (!section.memory && section.attempt?.searchedAt) {
+        return {exits: [resume, newAttempt], duplicatePossible: true};
+    }
+
+    return {exits: [resume], duplicatePossible: false};
+}
+
 const
     stampOf     = host => new Date(host.now()).toISOString(),
     isRefusal   = error => error?.refused === true,
@@ -118,7 +157,7 @@ function acceptedReceipt(section, host) {
  *   `reconcile-required` and the attempt unacknowledged;
  * - an unacknowledged attempt: a read of the recent turns; a row carrying the marker is adopted as `memory`
  *   (visible adoption, `readback` landed); anything else keeps `reconcile-required` with that reason — empty,
- *   failed, limited or paged reads alike;
+ *   failed, limited or paged reads alike — and stamps `attempt.searchedAt` when the read answered;
  * - an acknowledged attempt: the missing read-only sub-steps (`readback`, then `recall`) run until they land;
  *   the receipt is `accepted` only when `recall.hit` is true;
  * - a refused attempt without `newAttempt`, or an accepted receipt: unchanged.
@@ -192,6 +231,9 @@ export async function performVerify({record, recordPath, host, target, plane, ne
 
         if (!row) {
             const paged = read.value?.nextCursor ? 'the read was paged, the row may lie beyond it' : `the read answered ${read.value?.count ?? 0} rows without the marker — also what an unavailable store answers`;
+
+            // the search is on record: from here the row names a new attempt beside the re-check ({@link verifyExits})
+            section = {...section, attempt: {...section.attempt, searchedAt: stampOf(host)}};
 
             return settle(reconcileReceipt(section, host, `the witness write is unacknowledged and ${paged}; nothing is written again — consent to a new attempt writes a second row`), 'reconcile-required');
         }

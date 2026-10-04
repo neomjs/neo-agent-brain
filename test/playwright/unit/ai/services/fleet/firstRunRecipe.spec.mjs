@@ -25,14 +25,14 @@ import {
 // Pure module over injected observers: no host, no config, no record file is touched by any arm.
 
 const
-    RUN_ID   = '0f1e2d3c-4b5a-4968-8777-6655443322aa',
-    NOW      = Date.UTC(2026, 9, 1, 20, 0, 0),
-    targetA  = {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'},
-    targetB  = {planeId: 'plane-b', dataRoot: '/srv/plane-b', endpoint: 'http://127.0.0.1:3202'},
-    byId     = steps => Object.fromEntries(steps.map(step => [step.id, step])),
-    preset   = id => presets.find(row => row.id === id),
-    need     = id => preset(id).workload.modelsBytes + preset(id).workload.planePeakBytes,
-    probeOf  = ({hostAvailable, guestAvailable = null, capBytes = 32 * GiB, pressure = 'ok'}) => ({
+    RUN_ID  = '0f1e2d3c-4b5a-4968-8777-6655443322aa',
+    NOW     = Date.UTC(2026, 9, 1, 20, 0, 0),
+    targetA = {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'},
+    targetB = {planeId: 'plane-b', dataRoot: '/srv/plane-b', endpoint: 'http://127.0.0.1:3202'},
+    byId    = steps => Object.fromEntries(steps.map(step => [step.id, step])),
+    preset  = id => presets.find(row => row.id === id),
+    need    = id => preset(id).workload.modelsBytes + preset(id).workload.planePeakBytes,
+    probeOf = ({hostAvailable, guestAvailable = null, capBytes = 32 * GiB, pressure = 'ok'}) => ({
         host    : {complete: true, availableBytes: hostAvailable, pressure},
         guest   : guestAvailable === null ? null : {complete: true, availableBytes: guestAvailable, capBytes},
         observed: {}
@@ -128,10 +128,10 @@ test.describe('firstRunRecipe', () => {
 
     test('AC-3: a record bound to target A turns no step green for target B; a recipe-version change retires the proof into readable history', async () => {
         const
-            recordA   = fullRecord(targetA),
-            absent    = {...greenObservers(), envCarrier: async () => ({present: false}), secretFiles: async () => ({present: false}), runningPlane: async () => ({present: false})},
-            forB      = await evaluateRecipe({target: targetB, record: recordA, observers: absent, presets, now: () => NOW}),
-            stepsB    = byId(forB.steps);
+            recordA = fullRecord(targetA),
+            absent  = {...greenObservers(), envCarrier: async () => ({present: false}), secretFiles: async () => ({present: false}), runningPlane: async () => ({present: false})},
+            forB    = await evaluateRecipe({target: targetB, record: recordA, observers: absent, presets, now: () => NOW}),
+            stepsB  = byId(forB.steps);
 
         expect(forB.binding).toBe('target-mismatch');
         expect(stepsB.preset.status).toBe(STEP_STATUSES.pending);
@@ -183,10 +183,10 @@ test.describe('firstRunRecipe', () => {
 
     test('validation compares the observed embedding with the consented preset\'s dimension', async () => {
         const
-            record   = fullRecord(targetA), // consented preset: local-small (1024)
-            right    = await evaluateRecipe({target: targetA, record, observers: greenObservers({dimension: 1024}), presets, now: () => NOW}),
-            wrong    = await evaluateRecipe({target: targetA, record, observers: greenObservers({dimension: 4096}), presets, now: () => NOW}),
-            noEmbed  = await evaluateRecipe({target: targetA, record, observers: {...greenObservers(), validation: async () => ({provider: {ok: true}, embedding: {ok: false, reason: 'embedding timed out'}})}, presets, now: () => NOW});
+            record  = fullRecord(targetA), // consented preset: local-small (1024)
+            right   = await evaluateRecipe({target: targetA, record, observers: greenObservers({dimension: 1024}), presets, now: () => NOW}),
+            wrong   = await evaluateRecipe({target: targetA, record, observers: greenObservers({dimension: 4096}), presets, now: () => NOW}),
+            noEmbed = await evaluateRecipe({target: targetA, record, observers: {...greenObservers(), validation: async () => ({provider: {ok: true}, embedding: {ok: false, reason: 'embedding timed out'}})}, presets, now: () => NOW});
 
         expect(byId(right.steps).validation.status).toBe(STEP_STATUSES.ok);
         expect(byId(wrong.steps).validation.status).toBe(STEP_STATUSES.failed);
@@ -269,13 +269,40 @@ test.describe('firstRunRecipe', () => {
         }
         expect(result.steps.map(step => step.id)).toEqual(RECIPE_STEPS.map(step => step.id));
         // an effect row carries the effect it reads, so a renderer can settle the receipt it names
-        expect(result.steps.filter(row => row.kind === STEP_KINDS.effect).map(row => row.effectId)).toEqual(['write-env', 'write-secrets', 'compose-up', 'verify']);
+        expect(result.steps.filter(row => row.kind === STEP_KINDS.effect).map(row => row.effectId)).toEqual(['write-secrets', 'write-env', 'compose-up', 'verify']);
         // both credential questions are answered by a file reference, admitted before it is recorded
         expect(RECIPE_STEPS.filter(step => step.answer === 'file').map(step => step.id)).toEqual(['plane-credential', 'provider-key']);
-        expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'provider-key', 'advanced', 'write-env', 'write-secrets', 'compose-up', 'served-plane', 'validation', 'verify', 'done']);
+        expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'provider-key', 'advanced', 'write-secrets', 'write-env', 'compose-up', 'served-plane', 'validation', 'verify', 'done']);
         // the provider-key question is decided by the consented preset: pending until one is chosen, not needed for a local one
         expect(result.steps.find(step => step.id === 'provider-key')).toMatchObject({status: STEP_STATUSES.pending, reason: 'decided by the preset: none consented yet'});
         expect(result.recipeVersion).toBe(RECIPE_VERSION);
+    });
+
+    test('an effect row that is not ok names the step it waits for: the first earlier question, effect or declared gate that is not ok', async () => {
+        const
+            absent  = async () => ({present: false, reason: 'not performed'}),
+            unbuilt = {envCarrier: absent, secretFiles: absent, runningPlane: absent, verification: absent},
+            waits   = async (record, observers) => Object.fromEntries((await evaluateRecipe({target: targetA, record, observers: {...greenObservers(), ...observers}, presets, now: () => NOW})).steps
+                .filter(row => row.kind === STEP_KINDS.effect).map(row => [row.id, row.waitsFor])),
+            consented = withConsent(withConsent(createSetupRecord({runId: RUN_ID, target: targetA, recipeVersion: RECIPE_VERSION, now: () => NOW}),
+                {stepId: 'preset', answer: 'local-small', consentedAt: 't'}), {stepId: 'plane-credential', answer: '/op/plane-pat', consentedAt: 't'});
+
+        // nothing consented: every effect waits for the first unanswered question; a placement that failed is no gate
+        expect(await waits(null, {...unbuilt, placement: async () => { throw new Error('probe failed') }}))
+            .toEqual({'write-secrets': 'preset', 'write-env': 'preset', 'compose-up': 'preset', verify: 'preset'});
+
+        // consented, nothing performed: the first effect can run, each later one waits for the first unsettled effect
+        expect(await waits(consented, unbuilt)).toEqual({'write-secrets': null, 'write-env': 'write-secrets', 'compose-up': 'write-secrets', verify: 'write-secrets'});
+        expect(await waits(consented, {...unbuilt, secretFiles: greenObservers().secretFiles})).toEqual({'write-secrets': null, 'write-env': null, 'compose-up': 'write-env', verify: 'write-env'});
+
+        // the host effects observed: verify waits for its declared gates in their order, then for nothing
+        expect(RECIPE_STEPS.find(step => step.id === 'verify').gates).toEqual(['served-plane', 'validation']);
+        expect((await waits(consented, {verification: absent, servedPlane: async () => ({id: 'plane-x', dataRoot: targetA.dataRoot})})).verify).toBe('served-plane');
+        expect((await waits(consented, {verification: absent, validation: async () => ({provider: {ok: false, reason: 'no key'}})})).verify).toBe('validation');
+        expect(await waits(consented, {verification: absent})).toEqual({'write-secrets': null, 'write-env': null, 'compose-up': null, verify: null});
+
+        // an ok row waits for nothing, whatever stands before it
+        expect((await waits(null, {})).verify).toBeNull();
     });
 
     test('AC-4: done is the historical witness gated on a fresh served-plane and validation — a wrong plane or an unknown validation keeps it not ok with the witnessed timestamp in the reason; validation is never asked behind a served-plane that is not ok', async () => {
