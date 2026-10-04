@@ -431,7 +431,7 @@ class FleetControlBridge extends Base {
      * @summary Configure an existing agent through one serializable curated intent. Validation
      * failures become an explicit domain outcome the Accounts card may render; unexpected service
      * failures still throw and are sanitized by dispatchFleetRequest.
-     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?}`
+     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?, model?, reasoningEffort?}`
      * @returns {{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}}
      */
     configureAgent(intent) {

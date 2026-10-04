@@ -1660,11 +1660,13 @@ class FleetLifecycleService extends Base {
             const instanceHome = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType: agent.harnessType});
             return {
                 ...deriveHarnessLaunchSpec({
-                    harnessType   : agent.harnessType,
+                    harnessType    : agent.harnessType,
                     instanceHome,
                     binaryPath,
-                    cwd           : opts.cwd,
-                    serverPassword: opts.serverPassword
+                    cwd            : opts.cwd,
+                    model          : agent.model,
+                    reasoningEffort: agent.reasoningEffort,
+                    serverPassword : opts.serverPassword
                 }),
                 // carried for observability: `status` computes the live per-home authRequired from it
                 instanceHome

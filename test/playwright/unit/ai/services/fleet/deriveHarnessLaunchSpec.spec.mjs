@@ -1,6 +1,6 @@
 import {test, expect}                                                          from '@playwright/test';
 import {HARNESS_TYPES}                                                         from '../../../../../../src/fleet/contract/harnessTypes.mjs';
-import {LAUNCHABLE_HARNESS_TYPES, deriveHarnessLaunchSpec, getHarnessAuthMode} from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
+import {LAUNCHABLE_HARNESS_TYPES, deriveHarnessLaunchSpec, getHarnessAuthMode, getHarnessSeatSettings} from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 
 // Pure function — imported directly (no fs / spawn / env / Neo runtime), so the suite has no
 // host-runtime side effects and each case is fully isolated. Mirrors deriveAgentRepoPath.spec.
@@ -61,6 +61,30 @@ test.describe('deriveHarnessLaunchSpec (per-family harness launch templates)', (
             env             : {CLAUDE_CONFIG_DIR: '/srv/instances/a/claude'},
             versionProbeArgs: ['--version']
         });
+    });
+
+    test('claude-code starts on the seat\'s declared model and effort; every other family reads its own, or takes none', () => {
+        const
+            declared = {model: 'claude-opus-5-5', reasoningEffort: 'max'},
+            args     = harnessType => deriveHarnessLaunchSpec({harnessType, instanceHome: '/srv/instances/a/x', binaryPath: '/opt/x', cwd: '/srv/checkouts/a', ...declared}).args;
+
+        expect(args('claude-code')).toEqual([
+            '--mcp-config', '/srv/instances/a/x/mcp-config.json',
+            '--strict-mcp-config',
+            '--model', 'claude-opus-5-5',
+            '--effort', 'max',
+            '--input-format', 'stream-json',
+            '--output-format', 'stream-json',
+            '--print',
+            '--verbose'
+        ]);
+        expect(deriveHarnessLaunchSpec({harnessType: 'claude-code', instanceHome: '/srv/i', binaryPath: '/opt/claude', reasoningEffort: 'high'}).args, 'one field alone')
+            .toEqual(['--mcp-config', '/srv/i/mcp-config.json', '--strict-mcp-config', '--effort', 'high', '--input-format', 'stream-json', '--output-format', 'stream-json', '--print', '--verbose']);
+        // Codex reads its own from config.toml; the app families take no flag Fleet could set
+        expect(args('codex')).toEqual(['app-server']);
+        expect(args('claude-desktop').some(arg => arg.startsWith('--model') || arg.startsWith('--effort'))).toBe(false);
+        expect(['claude-code', 'claude-desktop', 'codex', 'codex-desktop', 'opencode'].map(getHarnessSeatSettings))
+            .toEqual(['args', null, 'codex-config', 'codex-config', null]);
     });
 
     test('claude-desktop: argv isolation + exact contained CLAUDE_USER_DATA_DIR authority', () => {

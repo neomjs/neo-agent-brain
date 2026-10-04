@@ -414,6 +414,18 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
 test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + security matrix', () => {
     const curatedAgent = (id, harnessType = 'codex') => ({id, githubUsername: id, harnessType, metadata: {}});
 
+    test('a curated launch carries the seat\'s declared model and effort to the harness that reads them on its command line', () => {
+        install();
+        FleetLifecycleService.instanceRoot       = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-seat-model-'));
+        FleetLifecycleService.harnessBinaryPaths = {'claude-code': process.execPath};
+
+        const declared = {...curatedAgent('cli-seat', 'claude-code'), model: 'claude-opus-5-5', reasoningEffort: 'max'};
+
+        expect(FleetLifecycleService.resolveLaunch(declared).args.join(' ')).toContain('--model claude-opus-5-5 --effort max');
+        expect(FleetLifecycleService.resolveLaunch(curatedAgent('cli-seat', 'claude-code')).args, 'undeclared: the harness default')
+            .not.toContain('--model')
+    });
+
     test('without an injected root, harness homes derive under the AiConfig agents root', () => {
         install();
 
