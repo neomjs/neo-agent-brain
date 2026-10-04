@@ -799,17 +799,17 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
     const subscriptionId = 'WAKE_SUB:stuck';
     const signingKey     = 'b'.repeat(64);
     const agentIdentity  = '@neo-gpt';
-    const manifest       = {
+    const manifestFor    = attemptTimeoutMs => ({
         schemaVersion: 1,
         routes       : {
             [subscriptionId]: {
                 signingKey,
                 agentIdentity,
                 harnessTargetMetadata: {adapter: 'tmux', tmuxSession: 'test'},
-                adapterConfig        : {attemptTimeoutMs: 100}
+                adapterConfig        : {attemptTimeoutMs}
             }
         }
-    };
+    });
     const bounds = {accept: 250, reload: 250, drain: 250, dispatch: 250};
     const never  = () => new Promise(() => {});
 
@@ -821,7 +821,7 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
         await fs.rm(stateDir, {recursive: true, force: true});
     });
 
-    async function start({accept, dispatch = async () => 'delivered'} = {}) {
+    async function start({accept, attemptTimeoutMs = 100, dispatch = async () => 'delivered'} = {}) {
         const stuck = [];
 
         stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-wake-stuck-'));
@@ -832,7 +832,7 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
         if (accept) state.accept = accept;
 
         ({server} = createWakeReceiver({
-            manifest,
+            manifest          : manifestFor(attemptTimeoutMs),
             state,
             dispatch,
             logger            : {error() {}, warn() {}, log() {}},
@@ -888,6 +888,26 @@ test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
         const {stuck, url} = await start({dispatch: never});
 
         expect((await post(url)).status).toBe(202);
+        await expect.poll(() => stuck.map(entry => entry.step)).toEqual(['dispatch']);
+    });
+
+    test('a dispatch inside its route\'s own attempt budget is not stuck, however far that budget exceeds the headroom', async () => {
+        const {stuck, url} = await start({
+            attemptTimeoutMs: 1500,
+            dispatch        : () => new Promise(resolve => setTimeout(() => resolve('delivered'), 1000))
+        });
+
+        expect((await post(url)).status).toBe(202);
+        await new Promise(resolve => setTimeout(resolve, 1300));
+        expect(stuck).toEqual([]);
+    });
+
+    test('a dispatch that outlives its route\'s attempt budget plus the headroom is named stuck, and not before', async () => {
+        const {stuck, url} = await start({attemptTimeoutMs: 1500, dispatch: never});
+
+        expect((await post(url)).status).toBe(202);
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        expect(stuck, 'still inside the route budget').toEqual([]);
         await expect.poll(() => stuck.map(entry => entry.step)).toEqual(['dispatch']);
     });
 

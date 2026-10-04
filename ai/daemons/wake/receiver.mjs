@@ -71,11 +71,12 @@ const PRODUCTION_ADAPTERS     = new Set([
 ]);
 /**
  * How long one receiver step may stay unsettled before the process counts as stuck. A promise that
- * never settles throws nothing, so its age is the only signal it leaves; a dispatch waits on a GUI and
- * gets the most room.
+ * never settles throws nothing, so its age is the only signal it leaves. A dispatch is bounded by its
+ * route's own `attemptTimeoutMs`, which the adapter already races, so `dispatch` here is only the
+ * settlement headroom on top of it.
  * @type {Object<String, Number>}
  */
-const STEP_BOUNDS_MS            = {accept: 15 * 1000, reload: 15 * 1000, drain: 60 * 1000, dispatch: 3 * 60 * 1000};
+const STEP_BOUNDS_MS            = {accept: 15 * 1000, reload: 15 * 1000, drain: 60 * 1000, dispatch: 30 * 1000};
 const STEP_WATCHDOG_INTERVAL_MS = 5 * 1000;
 
 /**
@@ -207,7 +208,8 @@ export function verifyWakeSignature(rawBody, signingKey, signature) {
  * @param {Object} [options.logger=console]
  * @param {Number} [options.maxBodyBytes=DEFAULT_MAX_BODY_BYTES]
  * @param {Function} [options.onStuck] `({step, ageMs}) => void`, called once when a step outlives its bound.
- * @param {Object} [options.stepBoundsMs=STEP_BOUNDS_MS] Bound per step: `accept`, `reload`, `drain`, `dispatch`.
+ * @param {Object} [options.stepBoundsMs=STEP_BOUNDS_MS] Bound per step: `accept`, `reload`, `drain`, and `dispatch` as
+ *   headroom over the route's `attemptTimeoutMs`.
  * @param {Number} [options.watchdogIntervalMs=STEP_WATCHDOG_INTERVAL_MS]
  * @returns {{server:http.Server,drain:Function,setManifest:Function,track:Function}}
  */
@@ -240,10 +242,11 @@ export function createWakeReceiver({
      * @summary Holds a step under the watchdog until it settles.
      * @param {String} step A {@link STEP_BOUNDS_MS} key.
      * @param {Promise} promise
+     * @param {Number} [boundMs=stepBoundsMs[step]]
      * @returns {Promise} The same outcome.
      */
-    const track = (step, promise) => {
-        const entry = {step, startedAt: Date.now()};
+    const track = (step, promise, boundMs = stepBoundsMs[step]) => {
+        const entry = {step, boundMs, startedAt: Date.now()};
 
         inFlight.add(entry);
 
@@ -255,10 +258,10 @@ export function createWakeReceiver({
     const watchdog = setInterval(() => {
         const now = Date.now();
 
-        for (const {step, startedAt} of inFlight) {
-            if (now - startedAt > stepBoundsMs[step]) {
+        for (const {step, boundMs, startedAt} of inFlight) {
+            if (now - startedAt > boundMs) {
                 clearInterval(watchdog);
-                logger.error?.(`[Wake Receiver] STUCK: ${step} unsettled for ${now - startedAt} ms (bound ${stepBoundsMs[step]} ms)`);
+                logger.error?.(`[Wake Receiver] STUCK: ${step} unsettled for ${now - startedAt} ms (bound ${boundMs} ms)`);
                 onStuck?.({step, ageMs: now - startedAt});
                 return
             }
@@ -371,7 +374,8 @@ export function createWakeReceiver({
                     // The reason channel lets a terminal failure name its cause without throwing —
                     // throwing would change the retry semantics, and the cause belongs on the record
                     // regardless of how the adapter chose to end.
-                    const result = await track('dispatch', dispatch(dispatching));
+                    const result = await track('dispatch', dispatch(dispatching),
+                        (dispatching.route?.adapterConfig?.attemptTimeoutMs || 0) + stepBoundsMs.dispatch);
 
                     outcome = typeof result === 'string' ? result : result?.outcome;
 
