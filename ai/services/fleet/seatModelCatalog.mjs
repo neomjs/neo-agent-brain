@@ -2,7 +2,8 @@ import {execFile}                              from 'node:child_process';
 import {promisify}                             from 'node:util';
 import {readCodexModelCatalog}                 from './codexModelCatalog.mjs';
 import {deriveAgentInstanceHome}               from './deriveAgentInstanceHome.mjs';
-import {deriveCodexHome, getHarnessSeatSettings} from './deriveHarnessLaunchSpec.mjs';
+import {deriveCodexHome}                       from './deriveHarnessLaunchSpec.mjs';
+import {resolveHarnessSeatSettings}            from '../../../src/fleet/contract/harnessTypes.mjs';
 
 /**
  * @module ai/services/fleet/seatModelCatalog
@@ -76,7 +77,7 @@ export function unofferedDeclaration(catalog, {model, reasoningEffort} = {}) {
  * @returns {Promise<Object>} `{state: 'complete'|'partial'|'unavailable'|'unsupported', models, efforts?, reason}`
  */
 export async function readSeatModelCatalog({agent, instanceRoot, lifecycleService, readCodex = readCodexModelCatalog, runHelp}) {
-    const via = getHarnessSeatSettings(agent?.harnessType);
+    const via = resolveHarnessSeatSettings(agent?.harnessType);
 
     if (via === 'args') {
         return readClaudeCodeCatalog(lifecycleService.getHarnessBinaryPath('claude-code'), runHelp)

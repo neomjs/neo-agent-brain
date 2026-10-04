@@ -6,10 +6,10 @@ import AiConfig                                                     from '../../
 import {generateLocalBearerToken}                                   from '../../mcp/server/shared/helpers/localBearer.mjs';
 import Base                                                         from 'neo.mjs/src/core/Base.mjs';
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}               from '../../../src/fleet/contract/mcpServers.mjs';
-import {listHarnessTypes}                                           from '../../../src/fleet/contract/harnessTypes.mjs';
+import {listHarnessTypes, resolveHarnessSeatSettings}               from '../../../src/fleet/contract/harnessTypes.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}     from './mcpServers.mjs';
 import {deriveAgentInstanceHome}                                    from './deriveAgentInstanceHome.mjs';
-import {deriveCodexHome, deriveHarnessLaunchSpec, getHarnessSeatSettings} from './deriveHarnessLaunchSpec.mjs';
+import {deriveCodexHome, deriveHarnessLaunchSpec}                   from './deriveHarnessLaunchSpec.mjs';
 import {readCodexSeatSettings}                                      from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                     from './deriveNodeRuntimeEnv.mjs';
 import FleetRegistryService                                         from './FleetRegistryService.mjs';
@@ -1230,7 +1230,7 @@ class FleetLifecycleService extends Base {
      * configure through a config file, a raw launch, and a home with no readable config yet.
      */
     harnessSettingsFor(agent) {
-        if (getHarnessSeatSettings(agent?.harnessType) !== 'codex-config' || agent.metadata?.launch) return null;
+        if (resolveHarnessSeatSettings(agent?.harnessType) !== 'codex-config' || agent.metadata?.launch) return null;
 
         const instanceHome = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType: agent.harnessType});
 

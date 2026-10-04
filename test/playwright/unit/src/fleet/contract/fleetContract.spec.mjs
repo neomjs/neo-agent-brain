@@ -99,6 +99,19 @@ test.describe('installed Fleet client contract', () => {
         expect(contract.resolveHarnessType('codex').tenantMcpTarget).toBe(true);
     });
 
+    test('where each harness reads a declared model and effort is one public fact, null where Fleet cannot set them', () => {
+        const declared = {'claude-code': 'args', codex: 'codex-config', 'codex-desktop': 'codex-config'};
+
+        for (const entry of contract.listHarnessTypes()) {
+            expect(entry.seatSettings, entry.type).toBe(declared[entry.type] ?? null);
+            expect(contract.resolveHarnessSeatSettings(entry.type)).toBe(entry.seatSettings);
+        }
+
+        // the Claude app passes its own flags on every session, which outrank anything Fleet could write
+        expect(contract.resolveHarnessSeatSettings('claude-desktop')).toBeNull();
+        expect(contract.resolveHarnessSeatSettings('unknown')).toBeNull();
+    });
+
     test('public harness families stay explicit, caller-owned and unknown for any-provider harnesses', () => {
         expect(contract.listHarnessTypes().map(({type, modelFamily}) => [type, modelFamily])).toEqual([
             ['codex', 'gpt'], ['codex-desktop', 'gpt'],
