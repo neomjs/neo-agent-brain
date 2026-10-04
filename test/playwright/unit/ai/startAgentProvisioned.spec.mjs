@@ -695,6 +695,48 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         }
     });
 
+    test('a declared model the harness\'s complete catalog lacks refuses before anything changes, and the seat says why', async () => {
+        const
+            agents    = repoAgent('a'),
+            lifecycle = makeLifecycle({agents}),
+            ensure    = makeEnsureRepo('/managed/a/neomjs-neo'),
+            seatModel = [],
+            catalog   = state => async ({agent}) => ({state, models: [{id: 'gpt-6-luna', slug: 'gpt-6-luna', efforts: ['low', 'max']}], reason: state === 'complete' ? null : 'rate limited', agent});
+
+        lifecycle.setSeatModel = (id, outcome) => seatModel.push({id, outcome});
+        Object.assign(agents.a, {model: 'gpt-6-astra', reasoningEffort: 'ultra'});
+
+        await expect(startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed', ensureRepo: ensure, readModelCatalog: catalog('complete')}))
+            .rejects.toMatchObject({code: 'FLEET_SEAT_MODEL_UNAVAILABLE', message: expect.stringContaining('cannot start: model gpt-6-astra is not available. Nothing was changed.')});
+        expect([ensure.calls.length, lifecycle.calls.start.length], 'nothing cloned, nothing spawned').toEqual([0, 0]);
+        expect(seatModel).toEqual([{id: 'a', outcome: {state: 'refused', model: 'gpt-6-astra', reasoningEffort: 'ultra', reason: 'model gpt-6-astra is not available'}}]);
+
+        // a read that could not say refuses nothing: the start goes on, and the seat records the read's state
+        await startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed', ensureRepo: ensure, prepareWorkspace: makePrepareWorkspace(), readModelCatalog: catalog('partial'), agentosRuntimeRoot: '/installed/neo'});
+        expect(lifecycle.calls.start).toHaveLength(1);
+        expect(seatModel[1].outcome).toMatchObject({state: 'partial', reason: 'rate limited'});
+    });
+
+    test('a seat with nothing declared, or a family Fleet does not configure this way, reads no catalog', async () => {
+        const reads = [];
+
+        for (const harnessType of ['codex', 'claude-desktop']) {
+            const agents = repoAgent('a');
+
+            Object.assign(agents.a, {harnessType}, harnessType === 'codex' ? {} : {model: 'claude-opus-5-5'});
+            await startAgentProvisioned({
+                lifecycleService  : makeLifecycle({agents}),
+                agentId           : 'a',
+                managedRoot       : '/managed',
+                ensureRepo        : makeEnsureRepo('/managed/a/neomjs-neo'),
+                prepareWorkspace  : makePrepareWorkspace(),
+                agentosRuntimeRoot: '/installed/neo'
+            }).catch(error => reads.push(error.message));
+        }
+
+        expect(reads.filter(message => /catalog|model/.test(message)), 'the default reader answered null before spawning anything').toEqual([]);
+    });
+
     test('a provisioning failure propagates and the harness is NEVER spawned (fail-closed)', async () => {
         const lifecycle = makeLifecycle({agents: repoAgent('a')}),
               boom      = async () => { throw new Error('conflict: foreign occupant'); };

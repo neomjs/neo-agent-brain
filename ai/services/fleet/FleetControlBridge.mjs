@@ -664,6 +664,18 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @summary LIFECYCLE-WRITE: the models and reasoning efforts a seat's harness offers to declare, which
+     * Configuration offers. Classed with the writes because, for a stopped Codex seat, the read starts the harness's
+     * app-server in the seat's home, which writes its own state there. Never a refusal: a read that fails answers its
+     * state and reason.
+     * @param {Object} params `{id}`
+     * @returns {Promise<Object>} `{state, models, efforts?, reason, observedAt?}`.
+     */
+    fleetSeatModelCatalog(params) {
+        return this.getManager().fleetSeatModelCatalog(params);
+    }
+
+    /**
      * @summary READ-OBSERVE: the advisory boot-identity fact of this Agent-OS process. Rides the authenticated
      * `registryBridge` as a **read** verb — it carries NO lifecycle-write / restart authority (the R3
      * read-observe ÷ lifecycle-write seam). An unwired {@link #bootIdentitySource} yields an advisory-`unknown`

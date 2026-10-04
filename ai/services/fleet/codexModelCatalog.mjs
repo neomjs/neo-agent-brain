@@ -27,17 +27,19 @@ const MAX_PAGES = 20;
 /**
  * @summary One model as Configuration offers it.
  * @param {Object} model One `model/list` entry
- * @returns {{id: String, efforts: String[], defaultEffort: String|null, hidden: Boolean, isDefault: Boolean}}
+ * @returns {{id: String, slug: String, efforts: String[], defaultEffort: String|null, hidden: Boolean, isDefault: Boolean}}
  */
 function offeredModel(model) {
     return {
         id           : model.id,
+        slug         : model.model ?? model.id,
         efforts      : (model.supportedReasoningEfforts ?? []).map(option => option.reasoningEffort),
         defaultEffort: model.defaultReasoningEffort ?? null,
         hidden       : model.hidden === true,
         isDefault    : model.isDefault === true
     }
 }
+
 
 /**
  * @summary Reads a Codex harness's model catalog in one home.

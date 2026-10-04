@@ -1006,6 +1006,7 @@ test.describe('Fleet S1 wire policy', () => {
             fleetGraphScene       : 'awaiting-s3',
             fleetOpenWork         : 'awaiting-s3',
             fleetSeatGitIdentity  : 'awaiting-s3',
+            fleetSeatModelCatalog : 'awaiting-s4',
             defineAgent           : 'awaiting-s4',
             configureAgent        : 'awaiting-s4',
             adoptAgent            : 'awaiting-s4',

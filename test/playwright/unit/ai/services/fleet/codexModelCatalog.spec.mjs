@@ -54,8 +54,8 @@ test.describe('codexModelCatalog — a Codex seat\'s catalog through its own app
 
         expect(catalog.state).toBe('complete');
         expect(catalog.models).toEqual([
-            {id: 'home:/agents/sophie/codex-home', efforts: ['low', 'max'], defaultEffort: 'low', hidden: false, isDefault: true},
-            {id: 'gpt-hidden',                     efforts: ['low', 'max'], defaultEffort: 'max', hidden: true,  isDefault: false}
+            {id: 'home:/agents/sophie/codex-home', slug: 'home:/agents/sophie/codex-home', efforts: ['low', 'max'], defaultEffort: 'low', hidden: false, isDefault: true},
+            {id: 'gpt-hidden',                     slug: 'gpt-hidden',                     efforts: ['low', 'max'], defaultEffort: 'max', hidden: true,  isDefault: false}
         ]);
     });
 

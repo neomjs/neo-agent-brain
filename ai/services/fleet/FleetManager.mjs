@@ -10,6 +10,7 @@ import {readFleetThrottleStateSnapshot} from './fleetThrottleStateAdapter.mjs';
 import {readFleetWakeStateSnapshot}     from './fleetWakeStateAdapter.mjs';
 import {redactReadFailure}              from './redactReadFailure.mjs';
 import {resolveSeatGitIdentity}         from './seatGitIdentity.mjs';
+import {readSeatModelCatalog}           from './seatModelCatalog.mjs';
 import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
 
 /**
@@ -232,6 +233,12 @@ class FleetManager extends Base {
      * @member {Function|null} gitIdentityFn=null
      */
     gitIdentityFn = null
+    /**
+     * Catalog read seam for {@link fleetSeatModelCatalog}. Defaults (via {@link getModelCatalogFn}) to
+     * `readSeatModelCatalog`, the read Start runs; inject a recording stub for tests. Plain field.
+     * @member {Function|null} modelCatalogFn=null
+     */
+    modelCatalogFn = null
 
     /**
      * @summary Returns the composing entrypoint's resolved fleet-managed checkout root.
@@ -273,6 +280,14 @@ class FleetManager extends Base {
     }
 
     /**
+     * @returns {Function} the catalog read (injected stub or `readSeatModelCatalog`).
+     * @protected
+     */
+    getModelCatalogFn() {
+        return this.modelCatalogFn || readSeatModelCatalog;
+    }
+
+    /**
      * @summary Turnkey identity read: the Git identity a seat's commits would carry, from the derivation its Start
      * runs, its declaration, else its forge account read with its stored PAT. Add asks right after the define, so a
      * seat whose account offers no usable email gets its declaration before the first Start, which still verifies.
@@ -302,6 +317,37 @@ class FleetManager extends Base {
             return await this.getGitIdentityFn()({agent, credential})
         } catch (error) {
             return {state: 'unknown', reason: redactReadFailure(`the identity read failed: ${error?.message ?? error}`)}
+        }
+    }
+
+    /**
+     * @summary Turnkey catalog read: the models and reasoning efforts a seat's harness offers to declare, asked of the
+     * harness ({@link module:ai/services/fleet/seatModelCatalog.readSeatModelCatalog}). Configuration offers exactly
+     * these. A running seat answers the catalog its last start read, with when, because a second app-server never
+     * starts beside a running seat's own; before any start it says so.
+     *
+     * Never a refusal and never a write to the seat's record: an unknown seat, or a read that fails, answers its
+     * state and reason.
+     * @param {Object} [params]
+     * @param {String} params.id Registry agent id.
+     * @returns {Promise<Object>} `{state: 'complete'|'partial'|'unavailable'|'unsupported', models, efforts?, reason, observedAt?}`.
+     */
+    async fleetSeatModelCatalog({id} = {}) {
+        const
+            lifecycle = this.getLifecycleService(),
+            registry  = lifecycle.getRegistry(),
+            agent     = typeof id === 'string' && id ? registry.getDefinition?.(id) ?? registry.getAgent(id) : null;
+
+        if (!agent) return {state: 'unavailable', models: [], reason: `no agent '${id}' is registered`};
+
+        if (lifecycle.isRunning(id)) {
+            return lifecycle.seatCatalogOf(id) ?? {state: 'unavailable', models: [], reason: 'the seat is running and no start has read its catalog yet'}
+        }
+
+        try {
+            return await this.getModelCatalogFn()({agent, instanceRoot: lifecycle.getInstanceRoot(), lifecycleService: lifecycle})
+        } catch (error) {
+            return {state: 'unavailable', models: [], reason: redactReadFailure(`the catalog read failed: ${error?.message ?? error}`)}
         }
     }
 
@@ -446,8 +492,9 @@ class FleetManager extends Base {
      * @returns {Object[]} one `{agentId, state, running, confidence, source}` entry per registered agent;
      *     rows without a process record additionally carry `reason`, a running Claude Desktop seat
      *     carries `sessionFolder`, where its session opened against its checkout, a seat with a
-     *     provisioned start carries the `gitIdentity` that start resolved, a refused start's included, and a
-     *     Codex seat carries the `harnessSettings` its config is set to now ({@link FleetLifecycleService#harnessSettingsFor}).
+     *     provisioned start carries the `gitIdentity` that start resolved, a refused start's included, and the
+     *     `seatModel` it found of the declared model in the harness's catalog, and a Codex seat carries the
+     *     `harnessSettings` its config is set to now ({@link FleetLifecycleService#harnessSettingsFor}).
      */
     fleetRuntimeStatus() {
         const lifecycle = this.getLifecycleService();
@@ -479,6 +526,7 @@ class FleetManager extends Base {
             if (status.repos != null)         row.repos           = status.repos;
             if (status.sessionFolder != null) row.sessionFolder   = status.sessionFolder;
             if (status.gitIdentity != null)   row.gitIdentity     = status.gitIdentity;
+            if (status.seatModel != null)     row.seatModel       = status.seatModel;
             if (harnessSettings != null)      row.harnessSettings = harnessSettings;
 
             return row;

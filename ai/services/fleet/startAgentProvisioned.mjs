@@ -6,6 +6,7 @@ import {redactReadFailure}             from './redactReadFailure.mjs';
 import {resolveSeatPlaneTarget}        from './resolveSeatPlaneTarget.mjs';
 import {importSeatMemory, MEMORY_IMPORT_NONE} from './seatMemoryImport.mjs';
 import {convergeSeatGitIdentity, resolveSeatGitIdentity} from './seatGitIdentity.mjs';
+import {readSeatModelCatalog, unofferedDeclaration} from './seatModelCatalog.mjs';
 import path                            from 'node:path';
 import {fileURLToPath}                 from 'node:url';
 
@@ -143,6 +144,10 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                                 commits carry; defaults to `resolveSeatGitIdentity`.
  * @param {Function} [options.convergeGitIdentity] `({repoPath, identity}) => Promise<Object>`, one checkout brought to
  *                                                 that identity; defaults to `convergeSeatGitIdentity`.
+ * @param {Function} [options.readModelCatalog]    `({agent, instanceRoot, lifecycleService}) => Promise<Object|null>`, the
+ *                                                 catalog the seat's harness offers, to check its declared model
+ *                                                 against; defaults to
+ *                                                 {@link module:ai/services/fleet/seatModelCatalog.readSeatModelCatalog}.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
  * @param {String}   [options.instanceRoot]     Explicit harness-home root; omitted ⇒ the lifecycle
@@ -178,6 +183,7 @@ export async function startAgentProvisioned({
     importMemory = importSeatMemory,
     resolveGitIdentity = resolveSeatGitIdentity,
     convergeGitIdentity = convergeSeatGitIdentity,
+    readModelCatalog = readSeatModelCatalog,
     tenantService = null,
     instanceRoot,
     agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT,
@@ -289,6 +295,22 @@ export async function startAgentProvisioned({
             unknown : `startAgentProvisioned: agent '${agentId}' cannot start until its Git identity is known: ${gitIdentity.reason}. Nothing was changed. Check its PAT and its forge, or declare the name and email its commits carry (gitName and gitEmail), then start it again.`,
             mismatch: `startAgentProvisioned: agent '${agentId}' would commit as another account: ${gitIdentity.reason}. Nothing was changed. Store the seat's own PAT, or declare the name and email its commits carry (gitName and gitEmail), then start it again.`
         }[gitIdentity.state]), {code: `FLEET_SEAT_GIT_IDENTITY_${gitIdentity.state.toUpperCase()}`, gitIdentity})
+    }
+
+    // A declared model the seat's harness does not offer refuses before anything changes. Only a complete catalog,
+    // read before the harness starts in the seat's own home, proves the absence.
+    const
+        declared    = Boolean(agent.model || agent.reasoningEffort),
+        catalog     = declared ? await readModelCatalog({agent, instanceRoot: instanceRoot ?? lifecycleService.getInstanceRoot?.(), lifecycleService}) : null,
+        unavailable = unofferedDeclaration(catalog, agent);
+
+    if (catalog && catalog.state !== 'unsupported') {
+        lifecycleService.setSeatCatalog?.(agentId, catalog);
+        lifecycleService.setSeatModel?.(agentId, {state: unavailable ? 'refused' : catalog.state, model: agent.model ?? null, reasoningEffort: agent.reasoningEffort ?? null, reason: unavailable ?? catalog.reason})
+    }
+
+    if (unavailable) {
+        throw Object.assign(new Error(`startAgentProvisioned: agent '${agentId}' cannot start: ${unavailable}. Nothing was changed. Change it in Detail › Configuration, then start it again.`), {code: 'FLEET_SEAT_MODEL_UNAVAILABLE'})
     }
 
     const commitIdentity = {name: gitIdentity.name, email: gitIdentity.email};

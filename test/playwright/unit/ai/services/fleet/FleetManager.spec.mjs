@@ -715,6 +715,52 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetThrottleStatus (roste
     });
 });
 
+test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatModelCatalog (what Configuration offers to declare)', () => {
+    const SEAT = {id: 'sophie', githubUsername: 'sophie', harnessType: 'codex-desktop'};
+
+    test.afterEach(() => {
+        FleetManager.lifecycleService = null;
+        FleetManager.modelCatalogFn   = null;
+    });
+
+    const lifecycle = ({running = false, kept = null} = {}) => ({
+        getRegistry    : () => ({getDefinition: id => (id === 'sophie' ? SEAT : null), getAgent: () => null}),
+        getInstanceRoot: () => '/agents',
+        isRunning      : () => running,
+        seatCatalogOf  : () => kept
+    });
+
+    test('a stopped seat is read fresh, through the read Start runs', async () => {
+        const calls = [], answer = {state: 'complete', models: [{id: 'gpt-6-astra'}], reason: null};
+
+        FleetManager.lifecycleService = lifecycle();
+        FleetManager.modelCatalogFn   = async args => { calls.push(args); return answer };
+
+        expect(await FleetManager.fleetSeatModelCatalog({id: 'sophie'})).toEqual(answer);
+        expect(calls.map(({agent, instanceRoot}) => [agent.id, instanceRoot])).toEqual([['sophie', '/agents']]);
+    });
+
+    test('a running seat answers what its last start read, never a second app-server beside its own', async () => {
+        const kept = {state: 'complete', models: [], reason: null, observedAt: '2026-10-04T20:00:00.000Z'};
+
+        FleetManager.lifecycleService = lifecycle({running: true, kept});
+        FleetManager.modelCatalogFn   = async () => { throw new Error('must not read') };
+
+        expect(await FleetManager.fleetSeatModelCatalog({id: 'sophie'})).toEqual(kept);
+
+        FleetManager.lifecycleService = lifecycle({running: true});
+        expect((await FleetManager.fleetSeatModelCatalog({id: 'sophie'})).reason).toBe('the seat is running and no start has read its catalog yet');
+    });
+
+    test('an unknown seat, or a read that throws, answers its state and reason — never a refusal', async () => {
+        FleetManager.lifecycleService = lifecycle();
+        expect(await FleetManager.fleetSeatModelCatalog({id: 'nobody'})).toEqual({state: 'unavailable', models: [], reason: "no agent 'nobody' is registered"});
+
+        FleetManager.modelCatalogFn = async () => { throw new Error('spawn EACCES') };
+        expect(await FleetManager.fleetSeatModelCatalog({id: 'sophie'})).toMatchObject({state: 'unavailable', models: [], reason: expect.stringContaining('the catalog read failed')});
+    });
+});
+
 test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatGitIdentity (the identity Add reads after a define)', () => {
     const
         SEAT     = {id: 'alice', githubUsername: 'alice', harnessType: 'codex'},
