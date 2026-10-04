@@ -2498,3 +2498,17 @@ test.describe('FleetLifecycleService.setGitIdentity — the Git identity a seat\
         expect(FleetLifecycleService.status('nobody').gitIdentity).toBeNull();
     });
 });
+
+test.describe('FleetLifecycleService.setSeatModel — what a seat\'s last start found of its declared model', () => {
+    test.afterEach(() => { FleetLifecycleService.seatModels.clear(); });
+
+    test('status carries it without a launch record, only its own fields, until a start clears it', () => {
+        FleetLifecycleService.setSeatModel('refused', {state: 'refused', model: 'gpt-6-astra', reason: 'model gpt-6-astra is not available', models: ['not a status field']});
+
+        expect(FleetLifecycleService.status('refused').seatModel).toEqual({state: 'refused', model: 'gpt-6-astra', reasoningEffort: null, reason: 'model gpt-6-astra is not available'});
+
+        FleetLifecycleService.setSeatModel('refused', null);
+
+        expect(FleetLifecycleService.status('refused').seatModel).toBeNull();
+    });
+});

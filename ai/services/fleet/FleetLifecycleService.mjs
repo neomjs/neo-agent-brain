@@ -1153,11 +1153,18 @@ class FleetLifecycleService extends Base {
     /**
      * @summary Records what a seat's provisioned start found of its declared model in its harness's catalog, so
      * {@link status} says why a start refused (`refused`, with the reason) or that the read could not say
-     * (`partial`, `unavailable`). Each start that reads a catalog replaces it.
-     * @param {String} id
-     * @param {Object} seatModel `{state, model, reasoningEffort, reason}`
+     * (`partial`, `unavailable`). Each provisioned start clears it first, so it never outlives the start it describes.
+     * @param {String}      id
+     * @param {Object|null} seatModel `{state, model, reasoningEffort, reason}`; `null` clears it
      */
-    setSeatModel(id, {state, model = null, reasoningEffort = null, reason = null}) {
+    setSeatModel(id, seatModel) {
+        if (!seatModel) {
+            this.seatModels.delete(id);
+            return
+        }
+
+        const {state, model = null, reasoningEffort = null, reason = null} = seatModel;
+
         this.seatModels.set(id, {state, model, reasoningEffort, reason})
     }
 

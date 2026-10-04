@@ -700,21 +700,48 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             agents    = repoAgent('a'),
             lifecycle = makeLifecycle({agents}),
             ensure    = makeEnsureRepo('/managed/a/neomjs-neo'),
-            seatModel = [],
+            seatModel = new Map(),
             catalog   = state => async ({agent}) => ({state, models: [{id: 'gpt-6-luna', slug: 'gpt-6-luna', efforts: ['low', 'max']}], reason: state === 'complete' ? null : 'rate limited', agent});
 
-        lifecycle.setSeatModel = (id, outcome) => seatModel.push({id, outcome});
+        lifecycle.setSeatModel = (id, outcome) => outcome ? seatModel.set(id, outcome) : seatModel.delete(id);
         Object.assign(agents.a, {model: 'gpt-6-astra', reasoningEffort: 'ultra'});
 
         await expect(startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed', ensureRepo: ensure, readModelCatalog: catalog('complete')}))
             .rejects.toMatchObject({code: 'FLEET_SEAT_MODEL_UNAVAILABLE', message: expect.stringContaining('cannot start: model gpt-6-astra is not available. Nothing was changed.')});
         expect([ensure.calls.length, lifecycle.calls.start.length], 'nothing cloned, nothing spawned').toEqual([0, 0]);
-        expect(seatModel).toEqual([{id: 'a', outcome: {state: 'refused', model: 'gpt-6-astra', reasoningEffort: 'ultra', reason: 'model gpt-6-astra is not available'}}]);
+        expect(seatModel.get('a')).toEqual({state: 'refused', model: 'gpt-6-astra', reasoningEffort: 'ultra', reason: 'model gpt-6-astra is not available'});
 
         // a read that could not say refuses nothing: the start goes on, and the seat records the read's state
         await startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed', ensureRepo: ensure, prepareWorkspace: makePrepareWorkspace(), readModelCatalog: catalog('partial'), agentosRuntimeRoot: '/installed/neo'});
         expect(lifecycle.calls.start).toHaveLength(1);
-        expect(seatModel[1].outcome).toMatchObject({state: 'partial', reason: 'rate limited'});
+        expect(seatModel.get('a')).toMatchObject({state: 'partial', reason: 'rate limited'});
+    });
+
+    test('a seat\'s model refusal belongs to its latest start: a later start never inherits it', async () => {
+        const
+            agents    = repoAgent('a'),
+            lifecycle = makeLifecycle({agents}),
+            seatModel = new Map(),
+            refusing  = async () => ({state: 'complete', models: [{id: 'gpt-6-luna', slug: 'gpt-6-luna', efforts: ['low']}], reason: null}),
+            start     = options => startAgentProvisioned({lifecycleService: lifecycle, agentId: 'a', managedRoot: '/managed', ensureRepo: makeEnsureRepo('/managed/a/neomjs-neo'), readModelCatalog: refusing, ...options});
+
+        lifecycle.setSeatModel = (id, outcome) => outcome ? seatModel.set(id, outcome) : seatModel.delete(id);
+        Object.assign(agents.a, {model: 'gpt-6-astra'});
+
+        await expect(start()).rejects.toMatchObject({code: 'FLEET_SEAT_MODEL_UNAVAILABLE'});
+        expect(seatModel.get('a')?.state).toBe('refused');
+
+        // refused before the model is read: the seat says nothing about its model, never the earlier refusal
+        await expect(start({resolveGitIdentity: async () => ({state: 'missing', reason: 'no commit identity declared'})}))
+            .rejects.toMatchObject({code: 'FLEET_SEAT_GIT_IDENTITY_MISSING'});
+        expect(seatModel.has('a'), 'cleared by the start that never read a catalog').toBe(false);
+
+        await expect(start()).rejects.toMatchObject({code: 'FLEET_SEAT_MODEL_UNAVAILABLE'});
+
+        // the declaration withdrawn: the start reads nothing, runs, and no refusal outlives it
+        agents.a.model = null;
+        await start({prepareWorkspace: makePrepareWorkspace(), agentosRuntimeRoot: '/installed/neo'});
+        expect([lifecycle.calls.start.length, seatModel.has('a')]).toEqual([1, false]);
     });
 
     test('a seat with nothing declared, or a family Fleet does not configure this way, reads no catalog', async () => {

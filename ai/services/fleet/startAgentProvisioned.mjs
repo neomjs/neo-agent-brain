@@ -201,6 +201,10 @@ export async function startAgentProvisioned({
           agent    = registry.getDefinition?.(agentId) ?? registry.getAgent(agentId);
     if (!agent) throw new Error(`startAgentProvisioned: unknown agent '${agentId}'.`);
 
+    // What the seat says about its model belongs to this start: one refused before the model check, or with
+    // nothing declared, must not leave an earlier refusal standing as its cause.
+    lifecycleService.setSeatModel?.(agentId, null);
+
     // A raw launch override renders no MCP config, so it has no placement.
     const
         repo      = agent.metadata?.repo,
