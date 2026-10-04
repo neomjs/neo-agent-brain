@@ -794,3 +794,108 @@ test.describe('ai/daemons/wake/receiver — context gate (#16682)', () => {
         await expect(load('not-an-object')).rejects.toThrow('contextGate');
     });
 });
+
+test.describe('ai/daemons/wake/receiver — a step that never settles', () => {
+    const subscriptionId = 'WAKE_SUB:stuck';
+    const signingKey     = 'b'.repeat(64);
+    const agentIdentity  = '@neo-gpt';
+    const manifest       = {
+        schemaVersion: 1,
+        routes       : {
+            [subscriptionId]: {
+                signingKey,
+                agentIdentity,
+                harnessTargetMetadata: {adapter: 'tmux', tmuxSession: 'test'},
+                adapterConfig        : {attemptTimeoutMs: 100}
+            }
+        }
+    };
+    const bounds = {accept: 250, reload: 250, drain: 250, dispatch: 250};
+    const never  = () => new Promise(() => {});
+
+    let server, stateDir;
+
+    test.afterEach(async () => {
+        server.closeAllConnections();
+        await new Promise(resolve => server.close(resolve));
+        await fs.rm(stateDir, {recursive: true, force: true});
+    });
+
+    async function start({accept, dispatch = async () => 'delivered'} = {}) {
+        const stuck = [];
+
+        stateDir = await fs.mkdtemp(path.join(os.tmpdir(), 'neo-wake-stuck-'));
+
+        const state = new WakeReceiverState({stateDir});
+
+        await state.init();
+        if (accept) state.accept = accept;
+
+        ({server} = createWakeReceiver({
+            manifest,
+            state,
+            dispatch,
+            logger            : {error() {}, warn() {}, log() {}},
+            onStuck           : entry => stuck.push(entry),
+            stepBoundsMs      : bounds,
+            watchdogIntervalMs: 10
+        }));
+        await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(0, '127.0.0.1', resolve);
+        });
+
+        return {stuck, url: `http://127.0.0.1:${server.address().port}/wake`};
+    }
+
+    function post(url, signal) {
+        const envelope = {
+            schemaVersion: '1.0',
+            eventType    : 'wake/digest',
+            eventId      : 'wake-digest:stuck-1',
+            subscriptionId,
+            agentIdentity,
+            payload      : {totalEvents: 1, sourceEventIds: ['MESSAGE:stuck-1']},
+            emittedAt    : new Date().toISOString()
+        };
+        const body = JSON.stringify(envelope);
+
+        return fetch(url, {
+            method : 'POST',
+            signal,
+            headers: {
+                'content-type'              : 'application/json',
+                'x-neo-wake-event-id'       : envelope.eventId,
+                'x-neo-wake-subscription-id': subscriptionId,
+                'x-neo-wake-schema-version' : '1.0',
+                'x-neo-wake-signature'      : crypto.createHmac('sha256', signingKey).update(body).digest('hex')
+            },
+            body
+        });
+    }
+
+    test('an accept that never settles is named stuck within its bound', async () => {
+        const {stuck, url} = await start({accept: never}),
+              abort        = new AbortController(),
+              request      = post(url, abort.signal).catch(() => null);
+
+        await expect.poll(() => stuck.map(entry => entry.step)).toEqual(['accept']);
+        abort.abort();
+        await request;
+    });
+
+    test('a dispatch that never settles is named stuck after its wake was accepted', async () => {
+        const {stuck, url} = await start({dispatch: never});
+
+        expect((await post(url)).status).toBe(202);
+        await expect.poll(() => stuck.map(entry => entry.step)).toEqual(['dispatch']);
+    });
+
+    test('steps that settle inside their bounds never trip the watchdog', async () => {
+        const {stuck, url} = await start();
+
+        expect((await post(url)).status).toBe(202);
+        await new Promise(resolve => setTimeout(resolve, 4 * bounds.accept));
+        expect(stuck).toEqual([]);
+    });
+});
