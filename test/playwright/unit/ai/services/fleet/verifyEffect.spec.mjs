@@ -150,7 +150,7 @@ test.describe('verifyEffect', () => {
 
         expect(consented.receipt.outcome).toBe(RECEIPT_OUTCOMES.accepted);
         expect(consented.record.verification.attempt.marker).toBe('m2');
-        expect(consented.record.verification.priorAttempts).toEqual([{marker: 'm1', dispatchedAt: new Date(NOW).toISOString(), refused: {at: new Date(NOW).toISOString(), reason: 'tenant has no write grant'}, memory: null}]);
+        expect(consented.record.verification.priorAttempts).toEqual([{marker: 'm1', dispatchedAt: new Date(NOW).toISOString(), offered: ['run'], refused: {at: new Date(NOW).toISOString(), reason: 'tenant has no write grant'}, memory: null}]);
         expect(plane.calls.addMemory).toHaveLength(2);
     });
 
@@ -311,6 +311,9 @@ test.describe('verifyEffect: the row names its exits as data', () => {
 
         expect(second.receipt.outcome).toBe(RECEIPT_OUTCOMES.accepted);
         expect(plane.calls.addMemory).toHaveLength(2);
+        // each attempt keeps the exits the row named when it was made: the first a run, the second the new attempt it was offered
+        expect(first.record.verification.attempt.offered).toEqual(['run']);
+        expect(second.record.verification.attempt.offered).toEqual(['new-attempt']);
     });
 
     test('the acknowledgement lost: resume until a reconciliation read answered without the marker, then a new attempt is named beside it, with a possible duplicate', async () => {
@@ -330,18 +333,24 @@ test.describe('verifyEffect: the row names its exits as data', () => {
         // one that answers without the marker has: the stamp is on the attempt, and the row names both ways on
         const searched = await performVerify({...run, record: unread.record, target, plane});
 
-        expect(searched.record.verification.attempt).toEqual({marker: 'mk-1', dispatchedAt: new Date(NOW).toISOString(), searchedAt: new Date(NOW).toISOString()});
+        expect(searched.record.verification.attempt).toEqual({marker: 'mk-1', dispatchedAt: new Date(NOW).toISOString(), offered: ['run'], searchedAt: new Date(NOW).toISOString()});
         expect(await rowOf(searched.record)).toMatchObject({status: STEP_STATUSES.reconcileRequired, exits: ['resume', 'new-attempt'], duplicatePossible: true});
         expect((await onDisk(run)).verification.attempt.searchedAt).toBe(new Date(NOW).toISOString());
         expect(plane.calls.addMemory).toHaveLength(1);
     });
 
-    test('accepted: the row names no exit', async () => {
+    test('accepted: the row names no exit, and the consent to a new attempt writes nothing', async () => {
         const
             run   = await scratch(),
             plane = scriptedPlane({addMemory: [answered], recentTurns: [turns(rowFor('mk-1'))], recall: [args => recalled(args.query)]}),
             done  = await performVerify({...run, target, plane, mintMarker: () => 'mk-1'});
 
         expect(await rowOf(done.record)).toMatchObject({status: STEP_STATUSES.ok, waitsFor: null, exits: [], duplicatePossible: false});
+
+        const again = await performVerify({...run, record: done.record, target, plane, newAttempt: true});
+
+        expect(again).toMatchObject({performed: 'unchanged', record: done.record});
+        expect(plane.calls.addMemory).toHaveLength(1);
+        expect(await onDisk(run)).toEqual(done.record);
     });
 });

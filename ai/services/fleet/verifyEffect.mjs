@@ -71,14 +71,15 @@ export function rowCarriesMarker(row, marker) {
  * @param {String} options.planeId
  * @param {String} options.marker
  * @param {String} options.dispatchedAt
+ * @param {String[]} [options.offered] The exits the row named when this attempt was consented: one it does not hold was made outside them.
  * @returns {Object}
  */
-export function newAttemptSection(previous, {runId, planeId, marker, dispatchedAt}) {
+export function newAttemptSection(previous, {runId, planeId, marker, dispatchedAt, offered}) {
     return {
         runId,
         planeId,
         sessionId    : null,
-        attempt      : {marker, dispatchedAt},
+        attempt      : {marker, dispatchedAt, offered},
         memory       : null,
         readback     : null,
         recall       : null,
@@ -160,7 +161,7 @@ function acceptedReceipt(section, host) {
  *   failed, limited or paged reads alike — and stamps `attempt.searchedAt` when the read answered;
  * - an acknowledged attempt: the missing read-only sub-steps (`readback`, then `recall`) run until they land;
  *   the receipt is `accepted` only when `recall.hit` is true;
- * - a refused attempt without `newAttempt`, or an accepted receipt: unchanged.
+ * - a refused attempt without `newAttempt`: unchanged; an accepted witness: unchanged, with or without it.
  * @param {Object} options
  * @param {Object}   options.record The current record, held exclusively by the caller.
  * @param {String}   options.recordPath
@@ -168,7 +169,7 @@ function acceptedReceipt(section, host) {
  * @param {Object}   options.target `{planeId}`.
  * @param {Object}   options.plane `{addMemory(content), recentTurns({limit}), recall({query, limit})}` over the served plane; a
  *     refusal the plane answered carries `error.refused === true`, anything else is ambiguous.
- * @param {Boolean}  [options.newAttempt=false] The operator's explicit consent to write the witness again (a duplicate row is possible).
+ * @param {Boolean}  [options.newAttempt=false] The operator's explicit consent to write the witness again (a duplicate row is possible); refused once the witness is accepted.
  * @param {Function} [options.mintMarker=randomUUID]
  * @returns {Promise<{record: Object, receipt: Object, performed: String}>}
  */
@@ -187,7 +188,10 @@ export async function performVerify({record, recordPath, host, target, plane, ne
     // `receipt:` expression, which would hand the caller the record from before the write
     const settle = async (receipt, performed) => ({receipt: await persist(receipt), record: current, performed});
 
-    if (existing?.outcome === RECEIPT_OUTCOMES.accepted && section?.recall?.hit === true && !newAttempt) {
+    const offered = verifyExits({receipt: existing, section}).exits;
+
+    // an accepted witness is complete: nothing is left for a new attempt to prove, so none is made
+    if (offered.length === 0) {
         return {record, receipt: existing, performed: 'unchanged'};
     }
 
@@ -199,7 +203,7 @@ export async function performVerify({record, recordPath, host, target, plane, ne
 
     if (!section || newAttempt) {
         // the attempt is durable BEFORE the write leaves: a crash between the two leaves a reconcilable trace, never a replay
-        section = newAttemptSection(section, {runId: record.runId, planeId: target.planeId, marker: mintMarker(), dispatchedAt: stampOf(host)});
+        section = newAttemptSection(section, {runId: record.runId, planeId: target.planeId, marker: mintMarker(), dispatchedAt: stampOf(host), offered});
         await persist(pendingReceipt(section, host, 'the witness write is being dispatched'));
 
         let answer;

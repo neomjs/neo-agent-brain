@@ -45,7 +45,8 @@ const
        [--plane-id <id>] [--data-root <path>] [--endpoint <url>] [--fake-host <file>] [--new-attempt] [--help]
 
   Evaluates the first-run recipe live, asks the pending questions, performs the effects, re-evaluates.
-  --new-attempt consents to writing the first-run witness again (a duplicate row on the plane is possible).
+  --new-attempt consents to writing the first-run witness again (a duplicate row on the plane is possible);
+  an accepted witness is never written again.
   Exit code: 0 when the terminal step reads ok · 1 when a step failed or needs reconciling · 2 while pending.
 `;
 

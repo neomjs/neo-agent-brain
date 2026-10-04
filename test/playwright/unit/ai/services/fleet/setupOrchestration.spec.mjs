@@ -406,7 +406,7 @@ test.describe('setupOrchestration', () => {
         expect(done.reports).toEqual([]);
         expect(run.calls).toEqual([]);
 
-        // an accepted witness is skipped as ok; the explicit new-attempt consent runs it again
+        // an accepted witness is skipped as ok; the consent to a new attempt changes nothing on it — refused before a client is built, and said
         const again = await perform(run, {record: done.record, evaluation: await evaluateWith(done.record, true), createPlaneClient: green});
 
         expect(again.record).toBe(done.record);
@@ -414,8 +414,9 @@ test.describe('setupOrchestration', () => {
 
         const consented = await perform(run, {record: done.record, evaluation: await evaluateWith(done.record, true), createPlaneClient: green, newAttempt: true});
 
-        expect(planes).toHaveLength(2);
-        expect(consented.record.verification.priorAttempts).toHaveLength(1);
+        expect(consented.record).toBe(done.record);
+        expect(consented.reports).toEqual(["'verify' is accepted: no new attempt is made, the witness is complete; a new run witnesses a plane again"]);
+        expect(planes).toHaveLength(1);
 
         // a pending resumable witness is RESUMED through performEffects (read-only), not halted on; its reason is reported
         const slow = witness({
@@ -432,8 +433,15 @@ test.describe('setupOrchestration', () => {
 
         const resumed = await perform(fresh, {record: partial.record, evaluation: await evaluateWith(partial.record, true), createPlaneClient: slow});
 
-        expect(planes.filter(plane => plane.calls !== undefined)).toHaveLength(4);
+        expect(planes.filter(plane => plane.calls !== undefined)).toHaveLength(3);
         expect(findReceipt(resumed.record, EFFECT_IDS.verify)).toMatchObject({outcome: RECEIPT_OUTCOMES.pending, resumable: true});
         expect(resumed.record.verification.attempt.marker).toBe(partial.record.verification.attempt.marker);
+
+        // a new attempt the row did not offer stays the operator's consent at the host: it is made, and the attempt keeps the exits it was offered
+        const outside = await perform(fresh, {record: resumed.record, evaluation: await evaluateWith(resumed.record, true), createPlaneClient: slow, newAttempt: true});
+
+        expect(outside.record.verification.attempt.offered).toEqual(['resume']);
+        expect(outside.record.verification.attempt.marker).not.toBe(partial.record.verification.attempt.marker);
+        expect(outside.record.verification.priorAttempts).toHaveLength(1);
     });
 });

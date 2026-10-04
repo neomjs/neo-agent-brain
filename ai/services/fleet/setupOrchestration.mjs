@@ -23,7 +23,7 @@ import {EFFECT_IDS, applyEffect, settleReceipt}      from './hostEffects.mjs';
 import {presets}                                     from './placementPresets.mjs';
 import {createPlaneWitnessClient}                    from './planeWitnessClient.mjs';
 import {RECEIPT_OUTCOMES, findReceipt}               from './setupRunRecord.mjs';
-import {performVerify}                               from './verifyEffect.mjs';
+import {performVerify, verifyExits}                  from './verifyEffect.mjs';
 
 /**
  * The order the effects run in, whichever renderer runs them: the recipe's effect steps as it lists them,
@@ -69,7 +69,7 @@ const HOST_FILE_EFFECTS = Object.freeze(EFFECT_ORDER.slice(0, EFFECT_ORDER.index
  * there and says so through `report`), with the consented plane credential, under the run's own record; a
  * `pending` + `resumable` or `reconcile-required` receipt of it is RESUMED, not halted on — the effect
  * re-runs only its read-only sub-steps and never writes the witness again (the `newAttempt` consent is the
- * one exception, explicit by construction).
+ * one exception, explicit by construction — and refused, with a report, once the witness is accepted).
  * @param {Object}   options
  * @param {Object}   options.record The current record, held exclusively by the caller.
  * @param {String}   options.recordPath
@@ -249,6 +249,12 @@ function unsettledReason({effectId, observed, expectedDigest, planeMatches}) {
  * @private
  */
 async function runVerify({record, recordPath, host, target, evaluation, report, patPath, newAttempt, createPlaneClient}) {
+    if (newAttempt && verifyExits({receipt: findReceipt(record, EFFECT_IDS.verify), section: record.verification}).exits.length === 0) {
+        report('\'verify\' is accepted: no new attempt is made, the witness is complete; a new run witnesses a plane again');
+
+        return record;
+    }
+
     const stale = VERIFY_GATES.map(id => evaluation.steps.find(step => step.id === id)).find(step => step?.status !== STEP_STATUSES.ok);
 
     if (stale) {
