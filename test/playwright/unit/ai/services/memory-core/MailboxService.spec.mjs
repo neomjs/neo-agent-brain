@@ -7021,20 +7021,30 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         expect(done.messages.find(row => row.messageId === older).task.state).toBe('Completed');
     });
 
-    test('#859 AC-4: each row\'s Task is the stored one its filter matched, never a cached copy that lags it', async () => {
+    test('#859 AC-4: each row carries the Task its filter matched, even when an answer lands between the match and the row', async () => {
         await seedHumanRecipients();
 
-        const taskId = await ask('@operator');
+        const
+            taskId  = await ask('@operator'),
+            project = MailboxService._projectMailboxRow;
 
-        // cached as InputRequired, then answered by a write this process's cache never saw
-        await openTasks('@operator');
-        GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.task.state', 'Working') WHERE id = ?`).run(taskId);
-        expect(GraphService.db.nodes.get(taskId).properties.task.state).toBe('InputRequired');
+        // a concurrent answer lands after the page was read and before its row is projected
+        MailboxService._projectMailboxRow = function (...args) {
+            GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.task.state', 'Completed') WHERE id = ?`).run(taskId);
+            return project.apply(this, args)
+        };
 
-        const working = await actAs('@operator', () => MailboxService.listMessages({taskStates: ['Working']}));
+        try {
+            const open = await openTasks('@operator');
 
-        expect(working.totalCount).toBe(1);
-        expect(working.messages[0].task.state).toBe('Working');
+            expect(open.totalCount).toBe(1);
+            expect(open.messages[0].task.state).toBe('InputRequired');
+        } finally {
+            MailboxService._projectMailboxRow = project
+        }
+
+        // the next read is fresh and sees the answer
+        expect((await openTasks('@operator')).totalCount).toBe(0);
     });
 
     test('#859 AC-4: priority-age orders high, normal (an absent priority included), low, then oldest first, across a page boundary', async () => {
