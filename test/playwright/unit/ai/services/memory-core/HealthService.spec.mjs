@@ -2711,14 +2711,35 @@ test.describe('HealthService #16310 — wake subscription arming verdict', () =>
         expect(await arming()).toEqual({armed: false, reason: 'no-active-subscription'});
     });
 
-    test('a degraded row does not count as active — delivery skips it without an attempt', async () => {
+    test('a degraded row does not count as active, and reads withdrawn — its owner can resume it (#837)', async () => {
         // REGRESSION GUARD. Filtering only `status !== 'retired'` left degraded rows in the active
         // set, so a route that delivery short-circuits and the manifest withdraws reported `armed`.
+        // It then read `no-active-subscription`, as if the seat had never subscribed.
         WakeSubscriptionService.list = async () => ({
             subscriptions: [deliverableRecord({status: 'degraded'})]
         });
 
-        expect(await arming()).toEqual({armed: false, reason: 'no-active-subscription'});
+        expect(await arming()).toEqual({armed: false, reason: 'withdrawn'});
+    });
+
+    test('routes the receiver refused as unknown read not-in-receiver-manifest, withdrawn or not (#837)', async () => {
+        const refused = {lastRefusal: 'not-in-receiver-manifest'};
+
+        for (const status of ['active', 'degraded']) {
+            WakeSubscriptionService.list = async () => ({subscriptions: [deliverableRecord({status, ...refused})]});
+
+            expect(await arming(), status).toEqual({armed: false, reason: 'not-in-receiver-manifest'});
+        }
+
+        // the control: one route the receiver has not refused still arms the seat
+        WakeSubscriptionService.list = async () => ({
+            subscriptions: [
+                deliverableRecord({id: 'WAKE_SUB:refused', ...refused}),
+                deliverableRecord({id: 'WAKE_SUB:known'})
+            ]
+        });
+
+        expect(await arming()).toEqual({armed: true, reason: 'deliverable'});
     });
 
     test('an active row on a non-deliverable target is unarmed — only a2a-webhook reaches the receiver', async () => {

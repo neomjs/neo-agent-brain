@@ -13,6 +13,12 @@ import logger       from '../../mcp/server/memory-core/logger.mjs';
 const UNKNOWN_SUBSCRIPTION_ERROR = 'unknown-subscription';
 
 /**
+ * The refusal a route keeps while the receiver answers {@link UNKNOWN_SUBSCRIPTION_ERROR} for it.
+ * @type {String}
+ */
+const NOT_IN_RECEIVER_MANIFEST = 'not-in-receiver-manifest';
+
+/**
  * @summary Service for delivering wake events via A2A Webhook Push Notifications (Shape B).
  *
  * Implements Shape-B webhook delivery. It is responsible for POSTing the
@@ -148,6 +154,7 @@ class WebhookDeliveryService extends Base {
                 if (response.ok) { // 2xx
                     // Success, reset consecutive failures
                     this.consecutiveFailures.set(subscription.id, 0);
+                    this._keepRefusal(subscription.id, null);
                     logger.info(`WebhookDeliveryService: Successfully delivered event ${eventData.eventId} to ${subscription.id}`);
                     return 'delivered';
                 }
@@ -172,11 +179,13 @@ class WebhookDeliveryService extends Base {
                     // first delivery that lands.
                     if (response.status === 404 && await this._isUnknownSubscriptionResponse(response)) {
                         logger.warn(`WebhookDeliveryService: Receiver does not yet know ${subscription.id} (manifest may be stale). Counting toward the failure threshold rather than degrading.`);
+                        this._keepRefusal(subscription.id, NOT_IN_RECEIVER_MANIFEST);
                         await this._recordConsecutiveFailure(subscription.id);
                         return 'failed';
                     }
 
                     logger.warn(`WebhookDeliveryService: Client error ${response.status} delivering to ${subscription.id}. Marking degraded.`);
+                    this._keepRefusal(subscription.id, null);
                     await this._markDegraded(subscription.id);
                     return 'skipped';
                 }
@@ -196,6 +205,7 @@ class WebhookDeliveryService extends Base {
         }
 
         // Exhausted retries
+        this._keepRefusal(subscription.id, null);
         await this._recordConsecutiveFailure(subscription.id);
         return 'failed';
     }
@@ -277,6 +287,29 @@ class WebhookDeliveryService extends Base {
             logger.info(`WebhookDeliveryService: Subscription ${subscriptionId} marked as degraded.`);
         } catch (error) {
             logger.error(`WebhookDeliveryService: Failed to mark subscription ${subscriptionId} degraded: ${error.message}`);
+        }
+    }
+
+    /**
+     * @summary Keeps the receiver's last refusal on the route's node: set by a `404 unknown-subscription`,
+     * cleared by any other answer. `who_is_online` and `healthcheck` read it to tell a route the receiver
+     * never loaded, which its owner re-arms, from one that failed to land, which its owner resumes.
+     *
+     * Reads the node rather than the passed subscription, which the flush builds from the route's
+     * coordinates alone, and writes only on a change. Same context-free read as {@link _markDegraded}.
+     * @param {String} subscriptionId
+     * @param {String|null} refusal
+     * @protected
+     */
+    _keepRefusal(subscriptionId, refusal) {
+        try {
+            const record = GraphService.getUnscopedNodeRecord({id: subscriptionId, writer: 'WebhookDeliveryService._keepRefusal'});
+
+            if (record && (record.properties.lastRefusal ?? null) !== refusal) {
+                GraphService.upsertNode({id: subscriptionId, properties: {lastRefusal: refusal}});
+            }
+        } catch (error) {
+            logger.error(`WebhookDeliveryService: Failed to keep the refusal of ${subscriptionId}: ${error.message}`);
         }
     }
 

@@ -3284,7 +3284,7 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
 
             const
                 REASON = 'opencode-server envelope requires \'agentIdentity\'',
-                route  = (owner, id) => GraphService.upsertNode({id, type: 'WAKE_SUBSCRIPTION', name: id, properties: {agentIdentity: owner, status: 'active'}}),
+                route  = (owner, id, properties = {}) => GraphService.upsertNode({id, type: 'WAKE_SUBSCRIPTION', name: id, properties: {agentIdentity: owner, status: 'active', ...properties}}),
                 record = (subscriptionId, state, minute, outcomeReason) => fs.writeFile(
                     path.join(recordsDir, `${subscriptionId.replace(/\W/g, '_')}-${minute}.json`),
                     JSON.stringify({subscriptionId, state, dispatchFinishedAt: iso(T0ms + minute * 60_000), ...(outcomeReason ? {outcomeReason} : {})})
@@ -3331,6 +3331,30 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 expect((await verboseRow('@neo-wake-half')).wake).toEqual({state: 'unknown'});
                 expect((await verboseRow('@neo-wake-new')).wake).toEqual({state: 'unknown'});
                 expect((await verboseRow('@neo-wake-none')).wake).toEqual({state: 'unsubscribed'});
+            });
+
+            test('a seat whose every route the sender withdrew reads withdrawn, and a route the receiver refused as unknown says so (#837)', async () => {
+                const refused = {lastRefusal: 'not-in-receiver-manifest'};
+
+                for (const id of ['@neo-wake-withdrawn', '@neo-wake-unloaded', '@neo-wake-refused', '@neo-wake-mixed']) { seedAgent(id); seedActivity(id) }
+                route('@neo-wake-withdrawn', 'WAKE_SUB:withdrawn',  {status: 'degraded'});
+                route('@neo-wake-unloaded',  'WAKE_SUB:unloaded',   {status: 'degraded', ...refused});
+                route('@neo-wake-refused',   'WAKE_SUB:refused',    refused);
+                route('@neo-wake-mixed',     'WAKE_SUB:mixed-old',  {status: 'degraded', ...refused});
+                route('@neo-wake-mixed',     'WAKE_SUB:mixed-live');
+                // delivered before the receiver lost the route: the refusal came after it
+                await record('WAKE_SUB:refused',    'delivered', 1);
+                await record('WAKE_SUB:mixed-live', 'delivered', 2);
+
+                const terse = await WakeSubscriptionService.whoIsOnline({now: new Date(T0)});
+
+                expect(terse.withdrawn).toEqual({'@neo-wake-withdrawn': null, '@neo-wake-unloaded': 'not-in-receiver-manifest'});
+                expect(terse.undeliverable).toEqual({'@neo-wake-refused': 'not-in-receiver-manifest'});
+                expect((await verboseRow('@neo-wake-withdrawn')).wake).toEqual({state: 'withdrawn'});
+                expect((await verboseRow('@neo-wake-unloaded')).wake).toEqual({state: 'withdrawn', reason: 'not-in-receiver-manifest'});
+                expect((await verboseRow('@neo-wake-refused')).wake).toEqual({state: 'undeliverable', reason: 'not-in-receiver-manifest'});
+                // the non-vacuity control: one route that lands keeps the seat reachable beside a withdrawn one
+                expect((await verboseRow('@neo-wake-mixed')).wake).toEqual({state: 'reachable'});
             });
 
             test('records the process cannot read degrade the wake axis: no map, unknown rows, never reachable', async () => {

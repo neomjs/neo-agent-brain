@@ -18,8 +18,8 @@ import Neo            from 'neo.mjs/src/Neo.mjs'
 import * as core      from 'neo.mjs/src/core/_export.mjs'
 
 import {readActiveWakeSubscriptionIdentities,
-        readActiveWakeSubscriptionIdsByIdentity,
-        readActiveWakeSubscriptionObservations} from '../../../../../../ai/services/memory-core/readActiveWakeSubscriptionIdentities.mjs'
+        readActiveWakeSubscriptionObservations,
+        readWakeRoutesByIdentity} from '../../../../../../ai/services/memory-core/readActiveWakeSubscriptionIdentities.mjs'
 
 /**
  * Models the `core.Base` contract this reader depends on: `db` does NOT exist until async init has
@@ -183,42 +183,45 @@ test.describe('readActiveWakeSubscriptionObservations — the redacted poll-rece
     })
 })
 
-test.describe('readActiveWakeSubscriptionIdsByIdentity — the join to the receiver records', () => {
-    test('reads one durable row per ACTIVE subscription and groups the ids by holder, nothing aggregated in SQL', async () => {
+test.describe('readWakeRoutesByIdentity — the join to the receiver records', () => {
+    test('reads one durable row per active or withdrawn route, grouped by holder, with its refusal and nothing aggregated in SQL', async () => {
         const service = graphServiceDouble({
             rows: [
-                {id: 'WAKE_SUB:a', agentIdentity: '@neo-opus-vega'},
-                {id: 'WAKE_SUB:b', agentIdentity: '@neo-opus-vega'},
-                {id: 'WAKE_SUB:c', agentIdentity: '@neo-gpt-emmy'},
-                {id: 'WAKE_SUB:d', agentIdentity: ''}
+                {id: 'WAKE_SUB:a', agentIdentity: '@neo-opus-vega', withdrawn: 0, refusal: null},
+                {id: 'WAKE_SUB:b', agentIdentity: '@neo-opus-vega', withdrawn: 1, refusal: 'not-in-receiver-manifest'},
+                {id: 'WAKE_SUB:c', agentIdentity: '@neo-gpt-emmy',  withdrawn: 0, refusal: null},
+                {id: 'WAKE_SUB:d', agentIdentity: '',               withdrawn: 0, refusal: null}
             ]
         })
 
-        expect(await readActiveWakeSubscriptionIdsByIdentity({graphService: service})).toEqual(new Map([
-            ['@neo-opus-vega', ['WAKE_SUB:a', 'WAKE_SUB:b']],
-            ['@neo-gpt-emmy',  ['WAKE_SUB:c']]
+        expect(await readWakeRoutesByIdentity({graphService: service})).toEqual(new Map([
+            ['@neo-opus-vega', [{id: 'WAKE_SUB:a', withdrawn: false, refusal: null}, {id: 'WAKE_SUB:b', withdrawn: true, refusal: 'not-in-receiver-manifest'}]],
+            ['@neo-gpt-emmy',  [{id: 'WAKE_SUB:c', withdrawn: false, refusal: null}]]
         ]))
 
         const [sql] = service.statements
 
         expect(sql).toContain("json_extract(data, '$.label') = 'WAKE_SUBSCRIPTION'")
-        expect(sql).toContain("COALESCE(json_extract(data, '$.properties.status'), 'active') = 'active'")
+        expect(sql).toContain("COALESCE(json_extract(data, '$.properties.status'), 'active') IN ('active', 'degraded')")
         expect(sql).not.toContain('GROUP BY')
     })
 
-    test('the cache seam keeps the active predicate, and no read surface throws', async () => {
+    test('the cache seam keeps the same predicate — a retired row is no route — and no read surface throws', async () => {
         const service = graphServiceDouble({
             items: [
-                {id: 'WAKE_SUB:live', label: 'WAKE_SUBSCRIPTION', properties: {status: 'active',   agentIdentity: '@neo-opus-vega'}},
-                {id: 'WAKE_SUB:gone', label: 'WAKE_SUBSCRIPTION', properties: {status: 'degraded', agentIdentity: '@neo-opus-vega'}},
-                {id: 'MESSAGE:x',     label: 'MESSAGE',           properties: {agentIdentity: '@neo-opus-vega'}}
+                {id: 'WAKE_SUB:live',    label: 'WAKE_SUBSCRIPTION', properties: {status: 'active',   agentIdentity: '@neo-opus-vega'}},
+                {id: 'WAKE_SUB:gone',    label: 'WAKE_SUBSCRIPTION', properties: {status: 'degraded', agentIdentity: '@neo-opus-vega', lastRefusal: 'not-in-receiver-manifest'}},
+                {id: 'WAKE_SUB:retired', label: 'WAKE_SUBSCRIPTION', properties: {status: 'retired',  agentIdentity: '@neo-opus-vega'}},
+                {id: 'MESSAGE:x',        label: 'MESSAGE',           properties: {agentIdentity: '@neo-opus-vega'}}
             ]
         })
 
-        expect(await readActiveWakeSubscriptionIdsByIdentity({graphService: service}))
-            .toEqual(new Map([['@neo-opus-vega', ['WAKE_SUB:live']]]))
+        expect(await readWakeRoutesByIdentity({graphService: service})).toEqual(new Map([['@neo-opus-vega', [
+            {id: 'WAKE_SUB:live', withdrawn: false, refusal: null},
+            {id: 'WAKE_SUB:gone', withdrawn: true,  refusal: 'not-in-receiver-manifest'}
+        ]]]))
 
-        await expect(readActiveWakeSubscriptionIdsByIdentity({graphService: graphServiceDouble()}))
+        await expect(readWakeRoutesByIdentity({graphService: graphServiceDouble()}))
             .rejects.toThrow('graph read surface unavailable')
     })
 })

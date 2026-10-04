@@ -181,22 +181,32 @@ export function projectWakeDelivery(records = []) {
 }
 
 /**
- * @summary Joins one identity's active subscriptions to their delivery verdicts: can a wake reach this
- * seat? One route that lands is enough, so any `reachable` subscription makes the seat `reachable`.
+ * @summary Joins one identity's wake routes to their delivery verdicts: can a wake reach this seat?
+ * One route that lands is enough, so any `reachable` route makes the seat `reachable`.
  * `undeliverable` is a claim about EVERY active route, so it needs every one of them concluded
- * `unreachable`; the newest failing route lends its reason and streak. A route the receiver never
- * concluded — no record at all, or an `unknown` verdict — might still deliver, so one such route
- * keeps the seat `unknown` whatever its siblings did. No active route at all is `unknown` too: the
- * loud direction never resolves to healthy on absence of evidence.
- * @param {String[]} subscriptionIds The identity's ACTIVE subscriptions.
+ * `unreachable`; the newest failing route lends its reason and streak. A route the receiver refused
+ * as unknown is concluded by that refusal, over the receiver's own records for it: the receiver
+ * records nothing it refuses, so they are older. A route the receiver never concluded — no record
+ * at all, or an `unknown` verdict — might still deliver, so one such route keeps the seat `unknown`
+ * whatever its siblings did. No route at all is `unknown` too: the loud direction never resolves to
+ * healthy on absence of evidence. A seat whose every route the sender withdrew is `withdrawn` until
+ * its owner resumes one, and names the refusal when every route carries it: resuming alone re-sends
+ * to a receiver that refuses the route.
+ * @param {Object[]} routes The identity's routes, `{id, withdrawn?, refusal?}`.
  * @param {Object} verdicts {@link projectWakeDelivery}'s output.
- * @returns {{state: 'reachable'|'undeliverable'|'unknown', reason?: String|null, consecutiveFailures?: Number}}
+ * @returns {{state: 'reachable'|'undeliverable'|'unknown'|'withdrawn', reason?: String|null, consecutiveFailures?: Number}}
  */
-export function projectIdentityWakeReachability(subscriptionIds = [], verdicts = {}) {
-    const own = subscriptionIds.map(id => verdicts[id] ?? null);
+export function projectIdentityWakeReachability(routes = [], verdicts = {}) {
+    const
+        active = routes.filter(route => !route.withdrawn),
+        own    = active.map(route => route.refusal ? {state: 'unreachable', lastOutcomeReason: route.refusal} : verdicts[route.id] ?? null);
 
     if (own.some(verdict => verdict?.state === 'reachable')) {
         return {state: 'reachable'}
+    }
+
+    if (active.length === 0 && routes.length > 0) {
+        return routes.every(route => route.refusal) ? {state: 'withdrawn', reason: routes[0].refusal} : {state: 'withdrawn'}
     }
 
     // Failure evidence on one route says nothing about a sibling the receiver never concluded.

@@ -465,6 +465,30 @@ test.describe('WebhookDeliveryService — a reload-lag 404 must not be terminal 
         expect(subscriptionNode.properties.status).toBe('active');
     });
 
+    test('the route keeps the receiver\'s refusal until the receiver answers otherwise (#837)', async () => {
+        const subscriptionNode = makeSubscriptionNode();
+        GraphService.db        = makeFakeDb(subscriptionNode);
+
+        // production hands deliver() the route's coordinates only, so the refusal is read from the node
+        const delivered = () => ({id: subscriptionNode.id, properties: {harnessTargetMetadata: subscriptionNode.properties.harnessTargetMetadata}});
+
+        nextResponse = () => makeResponse(202);
+        await WebhookDeliveryService.deliver(delivered(), {eventId: '01HXXX-0'});
+        expect(subscriptionNode.properties, 'a route never refused carries no refusal').not.toHaveProperty('lastRefusal');
+
+        // refused until withdrawn, and a withdrawn route keeps the refusal it was withdrawn on
+        nextResponse = () => makeResponse(404, {error: 'unknown-subscription'});
+        for (let i = 1; i <= 4; i++) await WebhookDeliveryService.deliver(delivered(), {eventId: `01HXXX-${i}`});
+        expect(subscriptionNode.properties).toMatchObject({status: 'degraded', lastRefusal: 'not-in-receiver-manifest'});
+
+        // resumed after a re-arm, the receiver takes the next wake
+        subscriptionNode.properties.status = 'active';
+        WebhookDeliveryService.clearDegraded(subscriptionNode.id);
+        nextResponse = () => makeResponse(202);
+        expect(await WebhookDeliveryService.deliver(delivered(), {eventId: '01HXXX-5'})).toBe('delivered');
+        expect(subscriptionNode.properties.lastRefusal).toBeNull();
+    });
+
     test('every other client error still degrades immediately — the boundary, not just the new branch', async () => {
         // A 404 at a wrong path or method is `not-found`, and a wrong URL is a persistent configuration
         // error, not a timing gap. Asserting the boundary is what stops the new tolerance from widening

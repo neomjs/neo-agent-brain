@@ -452,9 +452,10 @@ export function buildProviderPrerequisiteBlock(cfg, env = process.env) {
  * - `subscription`: the caller-scoped arming verdict — whether THIS identity holds a wake
  *   subscription the receiver-manifest build would accept. `armed` is tri-state: `null` means the
  *   question could not be answered (unbound identity, unreadable graph), never "not armed".
- *   `reason` is one of `deliverable` | `no-active-subscription` | `unmigrated-target` |
- *   `missing-signing-key` | `unbound-identity` | `unreadable`. It reports the Memory-Core leg only
- *   and does NOT claim a wake will arrive — see {@link buildSubscriptionArmingBlock}.
+ *   `reason` is one of `deliverable` | `no-active-subscription` | `withdrawn` | `unmigrated-target` |
+ *   `missing-signing-key` | `not-in-receiver-manifest` | `unbound-identity` | `unreadable`. It
+ *   reports the Memory-Core leg, plus the receiver's last refusal the sender recorded, and does NOT
+ *   claim a wake will arrive — see {@link buildSubscriptionArmingBlock}.
  *
  * @param {Number|Date} [now=Date.now()] Time source for deterministic tests
  * @returns {Promise<{gateState: String, gateTrippedAt: String|null,
@@ -579,8 +580,9 @@ async function buildWakeDeliveryBlock() {
  * reports the Memory-Core side ONLY: does the caller own an active subscription that delivery would
  * accept. It does NOT claim a wake will arrive — the receiver holds a boot-snapshotted route
  * manifest and its own adapter coordinates, neither of which Memory Core can see. A seat can be
- * `armed: true` here and still unreachable because its route is absent from the host manifest. The
- * field is named for what it measures.
+ * `armed: true` here and still unreachable because its route is absent from the host manifest,
+ * until a delivery is refused for it: the sender keeps that refusal on the route. The field is
+ * named for what it measures.
  *
  * The verdict mirrors `buildWakeReceiverManifest`'s own admission gate, in its order, because that
  * build is what actually decides whether a route exists: `status === 'active'`, then
@@ -591,7 +593,10 @@ async function buildWakeDeliveryBlock() {
  *
  * `reason` names the furthest gate the seat reached, so it points at the next repair rather than the
  * first failure: `unmigrated-target` outranks `no-active-subscription`, and `missing-signing-key`
- * outranks both. All three were live on this plane.
+ * outranks both. All three were live on this plane. `withdrawn` narrows `no-active-subscription`
+ * to rows the sender withdrew, which their owner can resume. `not-in-receiver-manifest` is the
+ * furthest: the receiver refused every route as unknown, withdrawn or not, so the owner re-arms
+ * them, and resumes a withdrawn one too.
  *
  * **The gates are not symmetric, and the verdict follows their asymmetry.** Status and target
  * failures SKIP their row; a missing key ABORTS the build. So one keyless row on the deliverable
@@ -618,10 +623,14 @@ async function buildSubscriptionArmingBlock() {
         // same divergence in the opposite direction: reporting `armed: false` for a row the build
         // publishes.
         const {subscriptions = []} = await WakeSubscriptionService.list(),
-              active               = subscriptions.filter(entry => isActiveWakeSubscriptionStatus(entry.status));
+              active               = subscriptions.filter(entry => isActiveWakeSubscriptionStatus(entry.status)),
+              // the receiver's own refusal, which the sender keeps on a route: resuming alone re-sends into it
+              refusal              = rows => rows.length > 0 && rows.every(entry => entry.lastRefusal) ? rows[0].lastRefusal : null;
 
         if (active.length === 0) {
-            return {armed: false, reason: 'no-active-subscription'};
+            const withdrawn = subscriptions.filter(entry => entry.status === 'degraded');
+
+            return {armed: false, reason: withdrawn.length === 0 ? 'no-active-subscription' : refusal(withdrawn) ?? 'withdrawn'};
         }
 
         const onDeliverablePath = active.filter(entry => entry.harnessTarget === DELIVERABLE_HARNESS_TARGET);
@@ -639,9 +648,14 @@ async function buildSubscriptionArmingBlock() {
         const armed = onDeliverablePath.every(entry =>
             isServerIssuedSigningKey(entry.harnessTargetMetadata?.signingKey));
 
-        return armed
-            ? {armed: true,  reason: 'deliverable'}
-            : {armed: false, reason: 'missing-signing-key'};
+        if (!armed) {
+            return {armed: false, reason: 'missing-signing-key'};
+        }
+
+        // The furthest gate: the build publishes these routes, and the receiver refused every one.
+        const refused = refusal(onDeliverablePath);
+
+        return refused ? {armed: false, reason: refused} : {armed: true, reason: 'deliverable'};
     } catch (e) {
         return {armed: null, reason: 'unreadable'};
     }
