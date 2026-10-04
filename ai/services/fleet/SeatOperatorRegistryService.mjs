@@ -31,6 +31,8 @@ function storeProblem(data) {
     if (!isMap(data) || data.schema !== STORE_SCHEMA)         return `it is not a schema-${STORE_SCHEMA} store`;
     if (!Number.isInteger(data.version) || data.version < 0) return 'its version is not a non-negative integer';
     if (!isMap(data.operators) || !Array.isArray(data.events)) return 'an operators or events table is missing';
+    if (data.events.length !== data.version)                  return 'its version does not count its events';
+    if (data.events.some((event, index) => event?.seq !== index + 1)) return 'its event log is out of sequence';
 
     for (const record of Object.values(data.operators)) {
         if (!isOwnerPrincipal(record?.principal)) return 'an operator record names no owner principal'
@@ -57,7 +59,8 @@ function refusal(refused, reason) {
  * `{seatId → {principal, since, actor}}` and an append-only event log; its `version` counts the events.
  * Two writers share it, so both hold an exclusive lock, re-read the store, build the next state, append
  * an event and replace the file atomically:
- * - the wire's one write, {@link stamp}, when `defineAgent` creates a seat for an admitted principal;
+ * - the seat registry: {@link claim} before `defineAgent` writes a seat, so a new seat holds its admitted
+ *   principal or none and never a predecessor's, and {@link release} when `removeAgent` removes one;
  * - the plane-local administrative path, the `seatOperators` CLI run on the plane host, for
  *   {@link assign} (legacy seats) and {@link transfer}. No wire verb, bridge method or grant reaches them:
  *   host access to the Fleet data root is their authority.
@@ -131,6 +134,33 @@ class SeatOperatorRegistryService extends Base {
     }
 
     /**
+     * @summary Records who operates a seat `defineAgent` is about to write: the admitted principal, or no one
+     * without admission. It runs before the definition exists, so a record an earlier seat of the same id
+     * left is replaced or cleared, and a new seat never inherits its predecessor's operator. A refusal
+     * refuses the create. A claim whose definition then fails to publish names a seat that does not exist:
+     * no lookup reads it as operated, and the next create of that id claims again.
+     * @param {Object}      options
+     * @param {String|null} options.principal The admission's owner principal, or null without admission.
+     * @param {String}      options.seatId
+     * @returns {Object} `{ok: true, applied, version}` or `{ok: false, refused, reason}`.
+     */
+    claim({principal, seatId}) {
+        if (principal !== null && !isOwnerPrincipal(principal)) return refusal('no-principal', 'an admission must carry an owner principal');
+
+        return this.mutate({actor: principal, apply: true, op: 'define', idle: result => !result.principal && !result.replaced}, store => {
+            const replaced = store.operators[seatId]?.principal ?? null;
+
+            if (principal) {
+                store.operators[seatId] = {actor: principal, principal, since: new Date().toISOString()}
+            } else {
+                delete store.operators[seatId]
+            }
+
+            return {ok: true, principal, replaced, seatId}
+        })
+    }
+
+    /**
      * @summary The Fleet data root the store lives in.
      * @returns {String}
      */
@@ -142,12 +172,13 @@ class SeatOperatorRegistryService extends Base {
      * @summary Runs one mutation: re-read under the lock, change a copy, append the event, write atomically.
      * An absent store starts empty; a store that cannot be trusted is never replaced. A refusal from
      * `change`, or a change `idle` calls a no-op, writes nothing.
-     * @param {Object}   options
-     * @param {String}   options.actor
-     * @param {Boolean}  options.apply
-     * @param {String}   options.op   The event's operation name.
-     * @param {Function} [options.idle] `result => Boolean`: true when the change moved nothing.
-     * @param {Function} change       `store => result`, mutating the copy; `{ok: false}` refuses.
+     * @param {Object}      options
+     * @param {String|null} options.actor The admitted principal or the host actor; null when the registry
+     *     acts for no admitted caller (a define without admission, a remove).
+     * @param {Boolean}     options.apply
+     * @param {String}      options.op    The event's operation name.
+     * @param {Function}    [options.idle] `result => Boolean`: true when the change moved nothing.
+     * @param {Function}    change        `store => result`, mutating the copy; `{ok: false}` refuses.
      * @returns {Object}
      * @protected
      */
@@ -214,6 +245,24 @@ class SeatOperatorRegistryService extends Base {
     }
 
     /**
+     * @summary Drops a seat's record when `removeAgent` removes the seat. Tidiness, not the guarantee: a
+     * refused release leaves a record for a seat that no longer exists, which no lookup reads as operated,
+     * and the next create of that id replaces or clears it ({@link claim}).
+     * @param {Object} options
+     * @param {String} options.seatId
+     * @returns {Object} `{ok: true, applied, version}` or `{ok: false, refused, reason}`.
+     */
+    release({seatId}) {
+        return this.mutate({actor: null, apply: true, op: 'remove', idle: result => !result.released}, store => {
+            const released = store.operators[seatId]?.principal ?? null;
+
+            delete store.operators[seatId];
+
+            return {ok: true, released, seatId}
+        })
+    }
+
+    /**
      * @summary The seats one principal operates, read fresh. Never throws.
      * @param {String} principal
      * @returns {{state: 'ok', seats: String[]}|{state: 'unavailable', reason: String}}
@@ -227,27 +276,6 @@ class SeatOperatorRegistryService extends Base {
             seats: Object.entries(store?.operators ?? {}).filter(([, record]) => record.principal === principal).map(([seatId]) => seatId),
             state: 'ok'
         }
-    }
-
-    /**
-     * @summary Records the admitted principal as the operator of a seat `defineAgent` just created. The seat
-     * registry's create-only check has already run, so any record left for a removed seat of the same id is
-     * stale and is replaced.
-     * @param {Object} options
-     * @param {String} options.principal
-     * @param {String} options.seatId
-     * @returns {Object} `{ok: true, applied, version}` or `{ok: false, refused, reason}`.
-     */
-    stamp({principal, seatId}) {
-        if (!isOwnerPrincipal(principal)) return refusal('no-principal', 'a stamp needs an admitted owner principal');
-
-        return this.mutate({actor: principal, apply: true, op: 'define'}, store => {
-            const replaced = store.operators[seatId]?.principal ?? null;
-
-            store.operators[seatId] = {actor: principal, principal, since: new Date().toISOString()};
-
-            return {ok: true, principal, replaced, seatId}
-        })
     }
 
     /**

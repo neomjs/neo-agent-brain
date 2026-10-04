@@ -33,6 +33,7 @@ test.describe('the seat operator relation — one principal per seat, written by
         registry  = FleetRegistryService,
         define    = (id, admission) => registry.defineAgent({credential: PAT, githubUsername: id, harnessType: 'codex'}, admission),
         exists    = seatId => registry.getAgent(seatId) !== null,
+        lockOf    = () => path.join(operators.getDataDir(), 'seat-operators.lock'),
         storeOf   = () => path.join(operators.getDataDir(), 'seat-operators.json');
 
     let dir;
@@ -153,24 +154,105 @@ test.describe('the seat operator relation — one principal per seat, written by
 
     test('a store that cannot be trusted is never replaced, a held lock refuses, and every write appends one event', () => {
         define('ada', {ownerPrincipal: A});
+        define('grace');
 
         const store = JSON.parse(fs.readFileSync(storeOf(), 'utf8'));
 
+        // a define without admission and nothing to clear writes no event
         expect(store.events.map(({op, seatId, principal}) => ({op, seatId, principal}))).toEqual([{op: 'define', principal: A, seatId: 'ada'}]);
 
-        fs.writeFileSync(path.join(dir, 'seat-operators.lock'), '');
-        define('grace');
+        fs.writeFileSync(lockOf(), '');
         expect(operators.assign({...HOST, principal: B, seatExists: exists, seats: ['grace']})).toMatchObject({ok: false, refused: 'busy'});
         expect(operators.assign({...HOST, apply: false, principal: B, seatExists: exists, seats: ['grace']}), 'a dry run needs no lock').toMatchObject({ok: true});
-        fs.rmSync(path.join(dir, 'seat-operators.lock'));
+        fs.rmSync(lockOf());
 
         fs.writeFileSync(storeOf(), '{"schema": 2}');
         expect(operators.assign({...HOST, principal: B, seatExists: exists, seats: ['grace']})).toMatchObject({ok: false, refused: 'store-unavailable'});
-        expect(fs.readFileSync(storeOf(), 'utf8'), 'left exactly as found').toBe('{"schema": 2}');
+        expect(() => define('vega', {ownerPrincipal: A}), 'a create whose operator cannot be recorded is refused').toThrow('cannot be trusted');
+        expect(() => define('vega'), 'an unadmitted one too: the store could hide a predecessor\'s record').toThrow('cannot be trusted');
+        expect(exists('vega'), 'nothing was written').toBe(false);
+        expect(fs.readFileSync(storeOf(), 'utf8'), 'left exactly as found').toBe('{"schema": 2}')
+    });
 
-        define('vega', {ownerPrincipal: A});
-        expect(exists('vega'), 'a refused stamp still leaves the defined seat').toBe(true);
-        expect(registry.operatesSeat(A, 'vega')).toEqual({operates: false, reason: 'unavailable'})
+    test('a recreated seat never inherits its predecessor\'s operator: the create claims it first, and a refused claim refuses the create', () => {
+        define('ada', {ownerPrincipal: A});
+        registry.removeAgent('ada');
+        expect(operators.operatorOf('ada'), 'a remove releases the record').toEqual({principal: null, state: 'ok'});
+
+        // a release the store refuses keeps the record; the next create clears it all the same
+        define('ada', {ownerPrincipal: A});
+        fs.writeFileSync(lockOf(), '');
+        registry.removeAgent('ada');
+        expect(operators.operatorOf('ada').principal, 'the refused release kept it').toBe(A);
+
+        expect(() => define('ada', {ownerPrincipal: B}), 'a held lock refuses the create').toThrow('in progress; try again');
+        expect(exists('ada'), 'nothing was written').toBe(false);
+        expect(registry.operatesSeat(A, 'ada'), 'the kept record names no defined seat').toEqual({operates: false, reason: 'unknown-seat'});
+        fs.rmSync(lockOf());
+
+        define('ada');
+        expect(registry.operatesSeat(A, 'ada'), 'recreated without admission').toEqual({operates: false, reason: 'unowned'});
+
+        registry.removeAgent('ada');
+        define('ada', {ownerPrincipal: B});
+        expect(registry.operatesSeat(B, 'ada')).toEqual({operates: true});
+        expect(registry.operatesSeat(A, 'ada')).toEqual({operates: false, reason: 'other-operator'})
+    });
+
+    test('a create whose credential or registry write fails leaves only an orphaned claim, which no lookup reads as operated and the next create replaces', () => {
+        for (const failing of ['writeCredentials', 'writeRegistry']) {
+            registry[failing] = () => {throw new Error(`${failing} failed`)};
+
+            try {
+                expect(() => define('ada', {ownerPrincipal: A}), failing).toThrow(`${failing} failed`)
+            } finally {
+                delete registry[failing]
+            }
+
+            expect(exists('ada'), failing).toBe(false);
+            expect(operators.operatorOf('ada').principal, `${failing}: the claim stays, orphaned`).toBe(A);
+            expect(registry.operatesSeat(A, 'ada'), failing).toEqual({operates: false, reason: 'unknown-seat'});
+            expect(registry.seatsOperatedBy(A), failing).toEqual({seats: [], state: 'ok'});
+
+            define('ada');
+            expect(registry.operatesSeat(A, 'ada'), `${failing}: the next create cleared it`).toEqual({operates: false, reason: 'unowned'});
+            registry.removeAgent('ada')
+        }
+    });
+
+    test('an event log its version does not count, or a registry with no agents table, reads unavailable and is never repaired', () => {
+        define('ada', {ownerPrincipal: A});
+
+        const good = JSON.parse(fs.readFileSync(storeOf(), 'utf8'));
+
+        for (const broken of [{...good, version: 999}, {...good, events: []}, {...good, events: [{...good.events[0], seq: 7}]}]) {
+            const bytes = JSON.stringify(broken);
+
+            fs.writeFileSync(storeOf(), bytes);
+            expect(registry.operatesSeat(A, 'ada')).toEqual({operates: false, reason: 'unavailable'});
+            expect(registry.seatsOperatedBy(A).state).toBe('unavailable');
+            expect(operators.assign({...HOST, principal: B, seatExists: exists, seats: ['ada']})).toMatchObject({ok: false, refused: 'store-unavailable'});
+            expect(operators.release({seatId: 'ada'})).toMatchObject({ok: false, refused: 'store-unavailable'});
+            expect(fs.readFileSync(storeOf(), 'utf8'), 'never repaired').toBe(bytes)
+        }
+
+        fs.writeFileSync(storeOf(), JSON.stringify(good));
+        expect(registry.operatesSeat(A, 'ada')).toEqual({operates: true});
+
+        for (const malformed of ['{"agents": 42}', '[]', '42']) {
+            const other = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-registry-'));
+
+            try {
+                fs.writeFileSync(path.join(other, 'registry.json'), malformed);
+                registry.dataDir = other;
+                expect(registry.operatesSeat(A, 'ada'), malformed).toEqual({operates: false, reason: 'unavailable'});
+                expect(registry.seatsOperatedBy(A).state, malformed).toBe('unavailable');
+                expect(fs.readFileSync(path.join(other, 'registry.json'), 'utf8'), malformed).toBe(malformed)
+            } finally {
+                registry.dataDir = dir;
+                fs.rmSync(other, {force: true, recursive: true})
+            }
+        }
     });
 
     test('no relation path keys on a login, an AgentIdentity id or a checkout path', () => {
@@ -184,13 +266,13 @@ test.describe('the seat operator relation — one principal per seat, written by
         shapes.forEach((shape, index) => {
             expect(registry.operatesSeat(shape, 'ada'), shape).toEqual({operates: false, reason: 'no-principal'});
             expect(registry.seatsOperatedBy(shape), shape).toEqual({seats: [], state: 'ok'});
-            expect(operators.stamp({principal: shape, seatId: 'legacy'}), shape).toMatchObject({ok: false, refused: 'no-principal'});
+            expect(operators.claim({principal: shape, seatId: 'legacy'}), shape).toMatchObject({ok: false, refused: 'no-principal'});
             expect(operators.assign({...HOST, principal: shape, seatExists: exists, seats: ['legacy']}), shape).toMatchObject({ok: false, refused: 'no-principal'});
             expect(operators.transfer({...HOST, from: A, seat: 'ada', to: shape}), shape).toMatchObject({ok: false, refused: 'no-principal'});
 
-            // an admission of that shape still defines the seat, unowned
-            define(`seat${index}`, {ownerPrincipal: shape});
-            expect(registry.operatesSeat(A, `seat${index}`), shape).toEqual({operates: false, reason: 'unowned'})
+            // an admission of that shape refuses the create: its operator could not be recorded
+            expect(() => define(`seat${index}`, {ownerPrincipal: shape}), shape).toThrow('the admission carries no owner principal');
+            expect(exists(`seat${index}`), shape).toBe(false)
         });
 
         expect(fs.readFileSync(storeOf(), 'utf8'), 'no refused shape wrote anything').toBe(before);

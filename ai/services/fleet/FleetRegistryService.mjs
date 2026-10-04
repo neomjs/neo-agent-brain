@@ -14,6 +14,12 @@ import {normalizeGitIdentityDeclaration}         from './seatGitIdentity.mjs';
 import SeatOperatorRegistryService, {isOwnerPrincipal} from './SeatOperatorRegistryService.mjs';
 
 const
+    // a refused operator claim in the operator's words: the store's own reason can name a host path
+    CLAIM_REFUSALS          = Object.freeze({
+        busy               : "another change to the seats' operators is in progress; try again",
+        'no-principal'     : 'the admission carries no owner principal',
+        'store-unavailable': "the seats' operator record cannot be trusted and needs repair on the plane host"
+    }),
     FORGE_HOSTNAME_RE       = /^(?:[a-z0-9._-]+|\[[0-9a-f:]+\])$/,
     LAUNCH_OWNERS           = Object.freeze(['external', 'fleet']),
     OPERATOR_FIELDS         = Object.freeze(['operatedBy', 'ownerPrincipal']),
@@ -392,8 +398,9 @@ class FleetRegistryService extends Base {
      * @param {String} [opts.gitEmail] The email the seat's commits carry, declared with `gitName`.
      * @param {Object} [admission={}]   The wire's admission for this create, never the caller's input.
      * @param {String} [admission.ownerPrincipal] The forge-resolved principal the new seat records as its
-     *     operator ({@link Neo.ai.services.fleet.SeatOperatorRegistryService#stamp}). Without one the seat is
-     *     unowned until the plane host assigns it.
+     *     operator ({@link Neo.ai.services.fleet.SeatOperatorRegistryService#claim}), before anything else is
+     *     written. Without one the seat has no operator until the plane host assigns it. A refused claim
+     *     refuses the create.
      * @returns {Object} The public agent definition (no credential).
      */
     defineAgent(options={}, admission={}) {
@@ -487,6 +494,13 @@ class FleetRegistryService extends Base {
             throw new Error(`FleetRegistryService.defineAgent: 'credential' is required — every agent holds its ${account.forge === 'gitlab' ? 'GitLab' : 'GitHub'} PAT.`)
         }
 
+        // the operator before anything else is written: a create never succeeds without it recorded
+        const claimed = SeatOperatorRegistryService.claim({principal: admission?.ownerPrincipal ?? null, seatId: agentId});
+
+        if (!claimed.ok) {
+            throw new Error(`FleetRegistryService.defineAgent: the seat's operator could not be recorded: ${CLAIM_REFUSALS[claimed.refused] ?? claimed.refused}.`)
+        }
+
         const previousCredentials = this.readCredentials();
 
         const
@@ -519,10 +533,11 @@ class FleetRegistryService extends Base {
 
         nextAgents.set(agentId, def);
 
-        // Two-store create transaction: credential first, registry row last. A credential failure
-        // cannot strand an unrecoverable create-only resident. If registry publish fails, restore the
-        // prior credential snapshot. If rollback itself fails or the process dies between files, the
-        // next create for the id carries a credential of its own and overwrites the orphan.
+        // Three-store create transaction: the operator claimed above, the credential next, the registry row
+        // last. A credential failure cannot strand an unrecoverable create-only resident. If registry publish
+        // fails, restore the prior credential snapshot. If rollback itself fails or the process dies between
+        // files, the next create for the id carries a credential and an operator claim of its own and
+        // overwrites both orphans; an orphaned claim names no defined seat, so no lookup reads it as operated.
         this.writeCredentials(Object.assign(Object.create(null), previousCredentials, {[agentId]: credential}));
 
         try {
@@ -536,14 +551,6 @@ class FleetRegistryService extends Base {
         }
 
         this.agents = nextAgents;
-
-        if (admission?.ownerPrincipal) {
-            // the seat exists either way; a stamp the operator store refuses leaves it unowned, which the
-            // plane host can assign, rather than failing an Add the registry already accepted
-            const stamped = SeatOperatorRegistryService.stamp({principal: admission.ownerPrincipal, seatId: agentId});
-
-            stamped.ok || console.warn(`[FleetRegistryService] seat '${agentId}' was defined without its operator: ${stamped.reason}`)
-        }
 
         return this.toPublic(def);
     }
@@ -901,7 +908,12 @@ class FleetRegistryService extends Base {
     removeAgent(id) {
         this.ensureLoaded();
         const existed = this.agents.delete(id);
-        if (existed) this.writeRegistry();
+        if (existed) {
+            this.writeRegistry();
+            // tidiness, not the guarantee: the next create of this id claims its operator anew
+            const released = SeatOperatorRegistryService.release({seatId: id});
+            released.ok || console.warn(`[FleetRegistryService] seat '${id}' was removed; its operator record stays until the id is created again: ${released.reason}`)
+        }
         // The PAT dies with the agent. The Bridge token is a stateless *signed* credential (no
         // store), so it can't be revoked at remove-time — it self-expires within bridgeTokenTtlMs
         // (the accepted ≤1h lag; immediate eviction of a compromised agent is a later additive
@@ -1015,8 +1027,8 @@ class FleetRegistryService extends Base {
 
     /**
      * @returns {Map<String,Object>} Agent definitions read from `registry.json` (empty on miss/corrupt).
-     *     A corrupt read is remembered in {@link registryUnreadable}, so a lookup can say the seats are
-     *     unknowable rather than absent.
+     *     A corrupt or malformed read (no `agents` table) is remembered in {@link registryUnreadable}, so a
+     *     lookup can say the seats are unknowable rather than absent.
      * @private
      */
     readRegistry() {
@@ -1033,6 +1045,14 @@ class FleetRegistryService extends Base {
         } catch (error) {
             console.warn(`[FleetRegistryService] Unreadable registry at ${file}; starting empty.`, error.message);
             this.registryUnreadable = `the seat registry cannot be read (${error.message})`;
+            return new Map();
+        }
+
+        const isTable = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+        if (!isTable(data) || (data.agents !== undefined && !isTable(data.agents))) {
+            console.warn(`[FleetRegistryService] Malformed registry at ${file}; starting empty.`);
+            this.registryUnreadable = 'the seat registry has no agents table';
             return new Map();
         }
 
