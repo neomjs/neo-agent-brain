@@ -282,7 +282,7 @@ export function getHarnessSeatSettings(harnessType) {
  * @param {String} [options.model]           The seat's declared model; `claude-code` takes it as
  *                                           `--model`. A Codex family reads its own from `config.toml`.
  * @param {String} [options.reasoningEffort] The seat's declared reasoning effort; `claude-code` takes it
- *                                           as `--effort`. Absent, the harness keeps its own default.
+ *                                           as `--effort`. Absent, the harness keeps its own configuration.
  * @returns {{command: String, args: String[], env: Object, versionProbeArgs: String[]|null}} a
  * fresh spec per call — `args` / `env` / `versionProbeArgs` are caller-mutable without cross-call
  * bleed. `versionProbeArgs` is the argv for the supervisor's best-effort version capture

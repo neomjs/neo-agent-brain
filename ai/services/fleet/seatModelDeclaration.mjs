@@ -16,9 +16,9 @@ const EFFORT_LEVEL = /^[a-z][a-z0-9_-]{0,31}$/;
 
 /**
  * @summary Validates the model and reasoning effort an operator declares for a seat, which its harness reads at
- * the next Start. Each field is set, or withdrawn with `null` so the harness's own default applies; a field the
- * intent does not name stays as it is. A harness that chooses both itself takes no declaration: the
- * `claude-desktop` app passes its own on every session it starts.
+ * the next Start. Each field is set, or handed back with `null`: Fleet stops setting it, and the harness keeps
+ * whatever its own configuration says. A field the intent does not name stays as it is. A harness that chooses
+ * both itself takes no declaration: the `claude-desktop` app passes its own on every session it starts.
  * @param {String} harnessType The seat's harness family once the change applies.
  * @param {Object} fields      The intent, read for `model` and `reasoningEffort` only.
  * @returns {{model?: String|null, reasoningEffort?: String|null}} The fields the intent names, validated.

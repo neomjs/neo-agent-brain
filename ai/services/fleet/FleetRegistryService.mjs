@@ -585,7 +585,7 @@ class FleetRegistryService extends Base {
      * Configure an existing agent through the ONE wire-serializable curated intent. Only `id`,
      * `harnessType`, sparse `mcpServers` overrides, the narrow `mcpTarget` intent, the declared commit
      * identity (`gitName` with `gitEmail`, or both `null` to return to derivation) and the declared `model`
-     * and `reasoningEffort` (each `null` to return to the harness default) are accepted. A model names one
+     * and `reasoningEffort` (each `null` to hand it back to the harness's own configuration) are accepted. A model names one
      * family's model, so a harness change withdraws both unless the same intent declares them again; credentials,
      * URLs, headers, launch fields, wake, hooks, the provider identity (`githubUsername`), and generic config
      * bags are mechanically rejected. Unspecified fields are preserved. The returned public definition is canonical persisted readback, never request

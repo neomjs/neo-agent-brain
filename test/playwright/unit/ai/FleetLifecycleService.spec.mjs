@@ -414,6 +414,28 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
 test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + security matrix', () => {
     const curatedAgent = (id, harnessType = 'codex') => ({id, githubUsername: id, harnessType, metadata: {}});
 
+    test('a Codex seat reads back what its config is set to now, running or stopped; other families read nothing', () => {
+        install();
+        FleetLifecycleService.instanceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-seat-readback-'));
+
+        const
+            seat     = curatedAgent('gpt-seat', 'codex-desktop'),
+            home     = path.join(FleetLifecycleService.getInstanceRoot(), 'gpt-seat', 'harness', 'codex-desktop', 'codex-home'),
+            readBack = () => FleetLifecycleService.harnessSettingsFor(seat);
+
+        expect(readBack(), 'no home provisioned yet').toBeNull();
+
+        fs.mkdirSync(home, {recursive: true});
+        fs.writeFileSync(path.join(home, 'config.toml'), 'cli_auth_credentials_store = "file"\nmodel = "gpt-6-astra"\n\n[features]\nmemories = true\n');
+        expect(readBack()).toEqual({model: 'gpt-6-astra', reasoningEffort: null});
+
+        fs.writeFileSync(path.join(home, 'config.toml'), 'model = "gpt-6-sol"\nmodel_reasoning_effort = "max"\n');
+        expect(readBack(), 'a pick made in the app shows on the next read').toEqual({model: 'gpt-6-sol', reasoningEffort: 'max'});
+
+        expect(FleetLifecycleService.harnessSettingsFor(curatedAgent('app-seat', 'claude-desktop'))).toBeNull();
+        expect(FleetLifecycleService.harnessSettingsFor(curatedAgent('cli-seat', 'claude-code')), 'flags, no config file to read').toBeNull()
+    });
+
     test('a curated launch carries the seat\'s declared model and effort to the harness that reads them on its command line', () => {
         install();
         FleetLifecycleService.instanceRoot       = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-seat-model-'));

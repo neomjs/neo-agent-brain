@@ -1302,6 +1302,36 @@ test.describe('prepareManagedAgentWorkspace', () => {
         });
     }
 
+    for (const harness of ['codex', 'codex-desktop']) {
+        test(`${harness}: a declared model and effort replace the app's own pick at Start, and a withdrawal leaves the file`, async () => {
+            const opts = options(makeAgent(harness));
+            opts.mcpTarget = tenantTarget();
+
+            const
+                first    = await prepareManagedAgentWorkspace(opts),
+                homePath = path.join(harness === 'codex' ? first.instanceHome : path.join(first.instanceHome, 'codex-home'), 'config.toml'),
+                picked   = (await read(homePath)).replace(
+                    '# Fleet-managed remote MCP project trust begin\n',
+                    '# Fleet-managed remote MCP project trust begin\nmodel = "app-pick"\nmodel_reasoning_effort = "medium"\n\n'
+                );
+
+            await fs.writeFile(homePath, picked);
+            opts.agent = {...opts.agent, model: 'gpt-6-astra', reasoningEffort: 'ultra'};
+
+            const declared = await prepareManagedAgentWorkspace(opts), written = await read(homePath);
+
+            expect(written, 'the two lines change in place; every other line stays')
+                .toBe(picked.replace('model = "app-pick"', 'model = "gpt-6-astra"').replace('model_reasoning_effort = "medium"', 'model_reasoning_effort = "ultra"'));
+            expect(declared.artifacts.find(item => item.path === homePath).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED);
+            expect((await prepareManagedAgentWorkspace(opts)).artifacts.every(item => item.status === WORKSPACE_ARTIFACT_STATES.MATCH), 'the next Start finds it converged')
+                .toBe(true);
+
+            opts.agent = {...opts.agent, model: null, reasoningEffort: null};
+            await prepareManagedAgentWorkspace(opts);
+            expect(await read(homePath), 'Fleet cannot tell its own write from the app\'s pick, so it leaves both').toBe(written);
+        });
+    }
+
 
     for (const harness of ['codex', 'codex-desktop']) {
         test(`${harness}: canonical trust migrates an exact lexical block once and preserves resident settings`, async () => {
