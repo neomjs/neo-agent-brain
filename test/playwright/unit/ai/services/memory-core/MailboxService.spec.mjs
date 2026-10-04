@@ -7021,6 +7021,22 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         expect(done.messages.find(row => row.messageId === older).task.state).toBe('Completed');
     });
 
+    test('#859 AC-4: each row\'s Task is the stored one its filter matched, never a cached copy that lags it', async () => {
+        await seedHumanRecipients();
+
+        const taskId = await ask('@operator');
+
+        // cached as InputRequired, then answered by a write this process's cache never saw
+        await openTasks('@operator');
+        GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.task.state', 'Working') WHERE id = ?`).run(taskId);
+        expect(GraphService.db.nodes.get(taskId).properties.task.state).toBe('InputRequired');
+
+        const working = await actAs('@operator', () => MailboxService.listMessages({taskStates: ['Working']}));
+
+        expect(working.totalCount).toBe(1);
+        expect(working.messages[0].task.state).toBe('Working');
+    });
+
     test('#859 AC-4: priority-age orders high, normal (an absent priority included), low, then oldest first, across a page boundary', async () => {
         await seedHumanRecipients();
 
