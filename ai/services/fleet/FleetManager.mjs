@@ -394,9 +394,10 @@ class FleetManager extends Base {
     /**
      * @summary Turnkey provision-then-start: ensure the agent's repo (at the resolved managed root)
      * exists, then start its harness inside it. Delegates to `startAgentProvisioned` — fail-closed on a
-     * provisioning failure (the harness is not spawned). A seat released to its own harness, or whose
-     * identity the operator benched, is refused before anything runs, and the bench is read again just
-     * before the spawn ({@link launchRefusalOf}). The start holds the seat's home until its harness is
+     * provisioning failure (the harness is not spawned). A seat released to its own harness is refused
+     * before anything runs. So is one whose identity the operator benched, when the participation read
+     * answers; it is read again just before the spawn, and a bench recorded after that read lands on a
+     * starting seat ({@link launchRefusalOf}). The start holds the seat's home until its harness is
      * launched or refused ({@link withSeatHome}).
      * @param {String} agentId Registry agent id.
      * @returns {Promise<Object>} the agent's lifecycle status.
