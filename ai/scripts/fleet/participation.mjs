@@ -2,6 +2,7 @@
 import {Command}                      from 'commander';
 import Neo                            from 'neo.mjs/src/Neo.mjs';
 import * as core                      from 'neo.mjs/src/core/_export.mjs';
+import InstanceManager                from 'neo.mjs/src/manager/Instance.mjs';
 import os                             from 'os';
 import {pathToFileURL}                from 'url';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
