@@ -39,22 +39,27 @@ function expectedAgentIdentity(agent) {
  * authority admitted at entry can be released while they run — and the queued spawn would still land.
  * Every spawn therefore goes through here rather than calling `start` directly: the refusal is read
  * from the registry AT the spawn, not inherited from the entry check, so no await placed above it can
- * reopen the window.
+ * reopen the window. The seat's participation is re-read here too, before the registry, so a bench
+ * recorded during preparation refuses the spawn; one recorded after this read lands on a started seat.
  *
  * @param {Object}   options
- * @param {Object}   options.lifecycleService Supervisor supplying `getRegistry()` and `start()`.
- * @param {Object}   options.registry         The lifecycle service's registry — re-read here.
- * @param {String}   options.agentId          Registry agent id.
- * @param {Object}  [options.startOptions]    Forwarded verbatim to `lifecycleService.start`.
+ * @param {Object}   options.lifecycleService   Supervisor supplying `getRegistry()` and `start()`.
+ * @param {Object}   options.registry           The lifecycle service's registry — re-read here.
+ * @param {String}   options.agentId            Registry agent id.
+ * @param {Object}  [options.startOptions]      Forwarded verbatim to `lifecycleService.start`.
+ * @param {Function}[options.readParticipation] `() => Promise<Object|null>` the seat's participation now.
  * @returns {Promise<Object>} the agent's lifecycle status.
- * @throws {Error} when the seat's launch authority was released while preparation ran.
+ * @throws {Error} when the seat's launch authority was released, or its identity benched, while preparation ran.
  * @private
  */
-async function spawnPermitted({lifecycleService, registry, agentId, startOptions}) {
-    const refusal = launchRefusalOf(registry.getAgent(agentId));
+async function spawnPermitted({lifecycleService, registry, agentId, startOptions, readParticipation}) {
+    const participation = readParticipation ? await readParticipation() : null,
+          definition    = registry.getAgent(agentId),
+          released      = launchRefusalOf(definition),
+          refusal       = released ?? launchRefusalOf(definition, participation);
 
     if (refusal) {
-        throw new Error(`startAgentProvisioned: agent '${agentId}' was ${refusal}; it was released while its start was being prepared, so the harness is not spawned.`)
+        throw new Error(`startAgentProvisioned: agent '${agentId}' was ${refusal}; it was ${released ? 'released' : 'benched'} while its start was being prepared, so the harness is not spawned.`)
     }
 
     return startOptions ? lifecycleService.start(agentId, startOptions) : lifecycleService.start(agentId)
@@ -148,6 +153,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                                 catalog the seat's harness offers, kept for Configuration and
  *                                                 checked against a declared model; defaults to
  *                                                 {@link module:ai/services/fleet/seatModelCatalog.readSeatModelCatalog}.
+ * @param {Function} [options.readParticipation]   `() => Promise<Object|null>`, the seat's participation as its
+ *                                                 identity node records it, re-read before the spawn; absent, the
+ *                                                 spawn checks the registry alone.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
  * @param {String}   [options.instanceRoot]     Explicit harness-home root; omitted ⇒ the lifecycle
@@ -170,7 +178,7 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   provisioning/preparation fails (re-thrown — no spawn), a consented memory import left the seat's
  *   memory empty (`FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED`, no spawn), the seat has no Git identity to commit under
  *   or a checkout holds another (`FLEET_SEAT_GIT_IDENTITY_MISSING` / `_UNKNOWN` / `_MISMATCH`, no spawn), or the
- *   seat's launch authority was released while preparation ran ({@link spawnPermitted}).
+ *   seat's launch authority was released, or its identity benched, while preparation ran ({@link spawnPermitted}).
  */
 export async function startAgentProvisioned({
     lifecycleService,
@@ -184,6 +192,7 @@ export async function startAgentProvisioned({
     resolveGitIdentity = resolveSeatGitIdentity,
     convergeGitIdentity = convergeSeatGitIdentity,
     readModelCatalog = readSeatModelCatalog,
+    readParticipation = null,
     tenantService = null,
     instanceRoot,
     agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT,
@@ -309,7 +318,7 @@ export async function startAgentProvisioned({
 
         await readOffered();
 
-        return spawnPermitted({lifecycleService, registry, agentId, startOptions: {resolvedCredential}});
+        return spawnPermitted({lifecycleService, registry, agentId, readParticipation, startOptions: {resolvedCredential}});
     }
 
     // The identity the seat's commits carry, resolved before anything is cloned or bound: without one, every commit
@@ -518,6 +527,7 @@ export async function startAgentProvisioned({
         lifecycleService,
         registry,
         agentId,
+        readParticipation,
         startOptions: {
             cwd: prepared.targetRepoRoot,
             resolvedCredential,

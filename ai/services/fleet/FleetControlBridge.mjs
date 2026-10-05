@@ -1201,7 +1201,7 @@ class FleetControlBridge extends Base {
                 participationSince : entry?.participation?.since ?? null,
                 participationRead  : entry?.participationRead ?? {state: 'unread', reason: 'presence producer not wired'},
                 launchable         : LAUNCHABLE_HARNESS_TYPES.includes(agent.harnessType),
-                launchRefusal      : launchRefusalOf(agent),
+                launchRefusal      : launchRefusalOf(agent, entry?.participation),
                 authMode           : getHarnessAuthMode(agent.harnessType)
             }
         });

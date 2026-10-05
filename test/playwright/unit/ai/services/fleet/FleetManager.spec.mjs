@@ -637,6 +637,60 @@ test.describe('Neo.ai.services.fleet.FleetManager — an explicit release is sta
     });
 });
 
+test.describe('Neo.ai.services.fleet.FleetManager — a benched identity is start authority (#885)', () => {
+    const rows = {
+        '@neo-kimi-iris': {identity: '@neo-kimi-iris', state: 'benched', reason: null, signals: {participationStatus: 'operator_benched', statusReason: 'the flatrate ended', participationSince: '2026-08-17T00:00:00.000Z'}},
+        '@neo-gpt'      : {identity: '@neo-gpt',       state: 'idle',    reason: null, signals: {participationStatus: 'active'}}
+    };
+
+    let calls, readPresence;
+
+    test.beforeEach(() => {
+        calls        = [];
+        readPresence = async () => ({agents: Object.values(rows)});
+
+        const definitions = {
+            iris: {id: 'iris', githubUsername: 'neo-kimi-iris'},
+            gpt : {id: 'gpt',  githubUsername: 'neo-gpt'}
+        };
+
+        FleetManager.lifecycleService = {
+            getRegistry: () => ({getAgent: id => definitions[id] ?? null}),
+            stop       : async id => { calls.push(['stop', id]); return {success: true, id, state: 'stopped'}; }
+        };
+        FleetManager.managedRoot          = '/managed/root';
+        FleetManager.presenceStateOptions = {readPresence: () => readPresence()};
+        FleetManager.provisionAndStartFn  = async options => {
+            calls.push(['start', options.agentId, await options.readParticipation()]);
+            return {id: options.agentId, state: 'running'};
+        };
+    });
+
+    test.afterEach(() => {
+        FleetManager.lifecycleService     = null;
+        FleetManager.managedRoot          = null;
+        FleetManager.presenceStateOptions = null;
+        FleetManager.provisionAndStartFn  = null;
+    });
+
+    test('a benched seat is refused in the operator\'s words before anything runs, a restart before its stop', async () => {
+        await expect(FleetManager.startAgent('iris'))
+            .rejects.toThrow("FleetManager.startAgent: agent 'iris' was benched by the operator on 2026-08-17: the flatrate ended.");
+        await expect(FleetManager.restartAgent('iris')).rejects.toThrow(/FleetManager\.restartAgent: agent 'iris' was benched by the operator/);
+
+        expect(calls).toEqual([]);
+    });
+
+    test('an active seat starts and hands the spawn its own re-read; an unread participation is no refusal', async () => {
+        await FleetManager.startAgent('gpt');
+        expect(calls).toEqual([['start', 'gpt', {status: 'active', reason: null, since: null}]]);
+
+        readPresence = async () => { throw new Error('plane unreachable') };
+        await FleetManager.startAgent('iris');
+        expect(calls[1]).toEqual(['start', 'iris', null]);
+    });
+});
+
 test.describe('Neo.ai.services.fleet.FleetManager — fleetWakeStatus (roster × wake observation)', () => {
     test.afterEach(() => {
         FleetManager.lifecycleService = null;
