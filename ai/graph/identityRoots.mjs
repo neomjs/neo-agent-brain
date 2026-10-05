@@ -493,13 +493,13 @@ export const IDENTITIES = [
             // No capability fields — engine facts are observation-owned and land through the
             // source-cited ModelStats.md discipline; the engine designation stays undisclosed.
             family: 'unknown',
-            // Activated 2026-08-22 after first-boot observation: full routing,
-            // quorum, and review-approval semantics per the active roster contract.
-            participationStatus: 'active',
-            statusReason       : null,
+            // Activated 2026-08-22 after first-boot observation; benched 2026-10-01 when the preview
+            // behind the chair ended.
+            participationStatus: 'operator_benched',
+            statusReason       : 'Operator-benched 2026-10-01: the preview model behind this guest chair ended; the seat waits for its next occupant',
             authority          : '@tobiu',
-            since              : '2026-08-22T19:53:10.918Z',
-            reactivationTrigger: null,
+            since              : '2026-10-01T00:00:00.000Z',
+            reactivationTrigger: 'A new preview model takes the guest chair and the operator seats it',
             createdAt          : '2026-08-22T19:53:10.918Z'
         }
     },
