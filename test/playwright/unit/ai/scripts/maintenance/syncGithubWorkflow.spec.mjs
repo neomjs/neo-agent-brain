@@ -1,17 +1,17 @@
-import {test, expect} from '@playwright/test';
-import {execFile}    from 'node:child_process';
-import fs             from 'fs/promises';
-import os             from 'node:os';
-import path           from 'path';
-import process        from 'node:process';
-import {promisify}    from 'node:util';
+import {test, expect}  from '@playwright/test';
+import {execFile}      from 'node:child_process';
+import fs              from 'fs/promises';
+import os              from 'node:os';
+import path            from 'path';
+import process         from 'node:process';
+import {promisify}     from 'node:util';
 import {pathToFileURL} from 'node:url';
 
 import {
     buildSyncGithubWorkflowDevBranchGuard
 } from '../../../../../../ai/scripts/maintenance/syncGithubWorkflowBranchGuard.mjs';
 
-const cliScriptPath = path.resolve(process.cwd(), 'ai/scripts/maintenance/syncGithubWorkflow.mjs');
+const cliScriptPath      = path.resolve(process.cwd(), 'ai/scripts/maintenance/syncGithubWorkflow.mjs');
 const configResolverPath = path.resolve(process.cwd(), 'test/playwright/configTemplateResolver.mjs');
 const execFileAsync      = promisify(execFile);
 
@@ -109,11 +109,11 @@ async function runCliChild({args = [], contentRoot, preload, env = {}} = {}) {
  * @returns {String} Node preload data URL.
  */
 function corpusAcquisitionPreload({fail = false, releases = true} = {}) {
-    const release = releases ? "{tagName:'v1.0.0',name:'v1.0.0',description:'fixture',publishedAt:'2026-01-03T00:00:00Z',url:'https://example.test/release'}" : '';
-    const issue = {number: 101, title: 'Corpus issue', body: 'issue body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, url: 'https://github.com/neomjs/neo/issues/101', author: {login: 'fixture'}, labels: {nodes: []}, assignees: {nodes: []}, milestone: null, parent: null, subIssues: {nodes: []}, subIssuesSummary: {total: 0, completed: 0, percentCompleted: 0}, blockedBy: {nodes: []}, blocking: {nodes: []}, timelineItems: {nodes: [], pageInfo: {hasNextPage: false, endCursor: null}}};
+    const release    = releases ? "{tagName:'v1.0.0',name:'v1.0.0',description:'fixture',publishedAt:'2026-01-03T00:00:00Z',url:'https://example.test/release'}" : '';
+    const issue      = {number: 101, title: 'Corpus issue', body: 'issue body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, url: 'https://github.com/neomjs/neo/issues/101', author: {login: 'fixture'}, labels: {nodes: []}, assignees: {nodes: []}, milestone: null, parent: null, subIssues: {nodes: []}, subIssuesSummary: {total: 0, completed: 0, percentCompleted: 0}, blockedBy: {nodes: []}, blocking: {nodes: []}, timelineItems: {nodes: [], pageInfo: {hasNextPage: false, endCursor: null}}};
     const discussion = {number: 102, title: 'Corpus discussion', body: 'discussion body', closed: false, closedAt: null, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', author: {login: 'fixture'}, category: {name: 'General'}, comments: {nodes: [], totalCount: 0, pageInfo: {hasNextPage: false, endCursor: null}}};
-    const pull = {number: 103, title: 'Corpus pull', body: 'pull body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, mergedAt: null, headRefName: 'fixture', baseRefName: 'dev', url: 'https://github.com/neomjs/neo/pull/103', author: {login: 'fixture'}, milestone: null, comments: {nodes: []}, reviews: {nodes: []}};
-    const source = `
+    const pull       = {number: 103, title: 'Corpus pull', body: 'pull body', state: 'OPEN', createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-02T00:00:00Z', closedAt: null, mergedAt: null, headRefName: 'fixture', baseRefName: 'dev', url: 'https://github.com/neomjs/neo/pull/103', author: {login: 'fixture'}, milestone: null, comments: {nodes: []}, reviews: {nodes: []}};
+    const source     = `
       import Neo from ${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'node_modules/neo.mjs/src/Neo.mjs')).href)};
       import ${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'node_modules/neo.mjs/src/core/_export.mjs')).href)};
       import GraphqlService from ${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/GraphqlService.mjs')).href)};
@@ -127,7 +127,7 @@ function corpusAcquisitionPreload({fail = false, releases = true} = {}) {
         throw new Error('unexpected acquisition query');
       };`}
       const {default: SyncService} = await import(${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs')).href)});
-      for (const name of ['rebuildContentIndexesAndSeo', 'autoPushGeneratedContent']) SyncService[name] = async () => { throw new Error(name + ' must not run') };
+      SyncService.autoPushGeneratedContent = async () => { throw new Error('autoPushGeneratedContent must not run') };
       const {default: IssueSyncer} = await import(${JSON.stringify(pathToFileURL(path.resolve(process.cwd(), 'ai/services/github-workflow/sync/IssueSyncer.mjs')).href)});
       IssueSyncer.pushToGitHub = async () => { throw new Error('pushToGitHub must not run') };
     `;
@@ -242,7 +242,7 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
             corpusSyncIndex  = source.indexOf('? GH_SyncService.emitConversationCorpus()', leaseIndex),
             syncIndex        = source.indexOf(': GH_SyncService.runFullSync()', leaseIndex),
             emitIndex        = source.indexOf(
-                'GH_SyncService.emitGeneratedContentAndDerive({pushLocalChanges: false})',
+                'GH_SyncService.emitGeneratedContent({pushLocalChanges: false})',
                 leaseIndex
             ),
             autorunGate      = source.indexOf("if (import.meta.url === pathToFileURL(process.argv[1] || '').href)");
@@ -357,7 +357,7 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
 
             const result = await runCorpusGuardChild({
                 contentRoot: corpusRoot,
-                env         : {NEO_MCP_GITHUB_ISSUES_DIR: path.join(outsideRoot, 'issues')}
+                env        : {NEO_MCP_GITHUB_ISSUES_DIR: path.join(outsideRoot, 'issues')}
             });
 
             expect(result.code).toBe(1);
@@ -365,7 +365,7 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
 
             const notes = await runCorpusGuardChild({
                 contentRoot: corpusRoot,
-                env         : {NEO_MCP_GITHUB_RELEASE_NOTES_DIR: path.join(outsideRoot, 'release-notes')}
+                env        : {NEO_MCP_GITHUB_RELEASE_NOTES_DIR: path.join(outsideRoot, 'release-notes')}
             });
 
             expect(notes.code).toBe(1);
@@ -403,7 +403,7 @@ test.describe('syncGithubWorkflow CLI dev-branch guard (#12780)', () => {
             expect(metadata.releases['v1.0.0'].contentHash).toMatch(/^[0-9a-f]{64}$/);
 
             const second = await runCliChild({
-                args: ['--corpus-only'], contentRoot: corpusRoot,
+                args   : ['--corpus-only'], contentRoot: corpusRoot,
                 preload: corpusAcquisitionPreload(), env: {NEO_MCP_GITHUB_REPO: 'neo-agent-brain'}
             });
             expect(second.code, second.stderr).toBe(0);

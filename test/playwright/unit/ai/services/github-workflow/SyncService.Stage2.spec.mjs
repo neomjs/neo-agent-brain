@@ -48,7 +48,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
     let originalReconcilePullIndex;
     let originalVerifyPullIntegrity;
     let originalGetViewerPermission;
-    let originalRebuildContentIndexesAndSeo;
     let originalExecGit;
 
     let originalIngestIssueStates;
@@ -95,7 +94,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         originalReconcilePullIndex = PullRequestSyncer.reconcilePullRequestIndex;
         originalVerifyPullIntegrity = PullRequestSyncer.verifyCorpusIntegrity;
         originalGetViewerPermission = RepositoryService.getViewerPermission;
-        originalRebuildContentIndexesAndSeo = SyncService.rebuildContentIndexesAndSeo;
         originalExecGit = SyncService.execGit;
         originalLoadMetadata = MetadataManager.load;
         originalSaveMetadata = MetadataManager.save;
@@ -118,7 +116,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         PullRequestSyncer.reconcilePullRequestIndex = async () => ({ reindexed: 0, unchanged: 0, removed: 0, skippedAmbiguous: [] });
         PullRequestSyncer.verifyCorpusIntegrity = async () => ({ ok: true, staleIndexEntries: [], inconsistentIndexEntries: [], duplicateIndexEntryIds: [], unindexedIds: [], identicalDuplicateIds: [], divergentDuplicateIds: [] });
         RepositoryService.getViewerPermission = async () => ({ permission: 'READ' }); // Skip git commands
-        SyncService.rebuildContentIndexesAndSeo = async () => ({});
         MetadataManager.load = async () => ({ issues: {}, releases: {}, discussions: {}, pullRequests: {} });
         MetadataManager.save = async () => {};
 
@@ -145,7 +142,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         PullRequestSyncer.reconcilePullRequestIndex = originalReconcilePullIndex;
         PullRequestSyncer.verifyCorpusIntegrity = originalVerifyPullIntegrity;
         RepositoryService.getViewerPermission = originalGetViewerPermission;
-        SyncService.rebuildContentIndexesAndSeo = originalRebuildContentIndexesAndSeo;
         SyncService.execGit = originalExecGit;
         MetadataManager.load = originalLoadMetadata;
         MetadataManager.save = originalSaveMetadata;
@@ -177,7 +173,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             order.push('metadata-save');
             savedPulls.push(structuredClone(metadata.pulls ?? null))
         };
-        SyncService.rebuildContentIndexesAndSeo = async () => { order.push('derive') };
         RepositoryService.getViewerPermission = async () => { order.push('permission-check'); return {permission: 'READ'} };
 
         PullRequestSyncer.verifyCorpusIntegrity = async () => ({
@@ -241,7 +236,7 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
             }
         };
 
-        const result = await SyncService.emitGeneratedContentAndDerive({pushLocalChanges: false});
+        const result = await SyncService.emitGeneratedContent({pushLocalChanges: false});
 
         expect(pushCalls).toBe(0);
         expect(pullCalls).toBe(1);
@@ -254,14 +249,12 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
     test('the corpus emits the conversation facets and the release notes, fetching releases with their notes in view', async () => {
         let fetchOptions     = null,
             releaseNoteCalls = 0,
-            pushCalls        = 0,
-            deriveCalls      = 0;
+            pushCalls        = 0;
 
         ReleaseNotesSyncer.sortedReleases = [{tagName: 'v13.0.0', publishedAt: '2026-05-10T00:00:00Z'}];
         ReleaseNotesSyncer.fetchAndCacheReleases = async (metadata, options) => { fetchOptions = options };
         ReleaseNotesSyncer.syncNotes = async () => { releaseNoteCalls++ };
         IssueSyncer.pushToGitHub = async () => { pushCalls++ };
-        SyncService.rebuildContentIndexesAndSeo = async () => { deriveCalls++ };
 
         const result = await SyncService.emitConversationCorpus();
 
@@ -269,7 +262,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         expect(fetchOptions).toEqual({needNotes: true});
         expect(releaseNoteCalls).toBe(1);
         expect(pushCalls).toBe(0);
-        expect(deriveCalls).toBe(0);
     });
 
     test('conversation corpus retains successful facet progress and rejects its failed facet', async () => {
@@ -297,11 +289,10 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         expect(stage2Calls.pullRequestFeedback).toBe(0);
     });
 
-    test('runFullSync rebuilds content indexes and SEO before the auto-push status check (#13260)', async () => {
+    test('runFullSync persists every facet before the auto-push status check (#13260)', async () => {
         const order = [];
 
         MetadataManager.save = async () => { order.push('metadata-save'); };
-        SyncService.rebuildContentIndexesAndSeo = async () => { order.push('derive'); };
         RepositoryService.getViewerPermission = async () => {
             order.push('permission-check');
             return {permission: 'READ'};
@@ -311,50 +302,25 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
         expect(result.success).toBe(true);
 
-        // The claim under test is an ORDERING — persist, then derive, then check push permission — and it
-        // is asserted as one here rather than as an exact three-element sequence. The save count is no
-        // longer one: each facet persists as it completes, so a corpus too large for a single pass
-        // converges across runs instead of failing whole. Pinning the count would make this test fail on
-        // every future facet while saying nothing about the order it exists to protect.
+        // The claim under test is an ORDERING — persist, then check push permission — not a sequence of
+        // pinned length. Each facet persists as it completes, so the save count grows with the facets;
+        // pinning it would fail on every future facet while saying nothing about the order.
         const
-            lastSave    = order.lastIndexOf('metadata-save'),
-            firstDerive = order.indexOf('derive'),
-            pushCheck   = order.indexOf('permission-check');
+            lastSave  = order.lastIndexOf('metadata-save'),
+            pushCheck = order.indexOf('permission-check');
 
         expect(lastSave).toBeGreaterThanOrEqual(0);
-        expect(lastSave).toBeLessThan(firstDerive);
-        expect(firstDerive).toBeLessThan(pushCheck);
-        expect(order.filter(step => step === 'derive')).toHaveLength(1);
+        expect(lastSave).toBeLessThan(pushCheck);
         expect(order.filter(step => step === 'permission-check')).toHaveLength(1);
     });
 
-    test('runFullSync rejects before auto-push and Stage 2 when the post-sync derive fails (#13260)', async () => {
-        let permissionChecks = 0;
-
-        SyncService.rebuildContentIndexesAndSeo = async () => {
-            throw new Error('derive failed');
-        };
-        RepositoryService.getViewerPermission = async () => {
-            permissionChecks++;
-            return {permission: 'WRITE'};
-        };
-
-        await expect(SyncService.runFullSync()).rejects.toThrow('derive failed');
-
-        expect(permissionChecks).toBe(0);
-        expect(stage2Calls).toEqual({
-            issueStates        : 0,
-            discussionStates   : 0,
-            pullRequestFeedback: 0
-        });
-    });
-
-    test('auto-commit allowlist includes content-derived Portal index and SEO artifacts (#13260)', async () => {
+    test('the auto-commit allowlist carries the emitted corpus and no Portal artifact (#888)', async () => {
+        // The sync derives no Portal index or SEO file, so an allowlist naming one would commit
+        // whatever another process left in the checkout as if the sync had produced it.
         const source = await fs.readFile(path.resolve(process.cwd(), 'ai/services/github-workflow/SyncService.mjs'), 'utf8');
 
-        expect(source).toContain("'apps/portal/resources/data/'");
-        expect(source).toContain("'apps/portal/sitemap.xml'");
-        expect(source).toContain("'apps/portal/llms.txt'");
+        expect(source).toContain("'resources/content/_index.json'");
+        expect(source).not.toContain('apps/portal/');
         expect(source).toContain('git status --porcelain ${generatedSyncStatusPaths}');
         expect(source).toContain('git add ${generatedSyncStatusPaths}');
     });
@@ -363,7 +329,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         const commands       = [];
         let   pullRuns       = 0;
         let   saves          = 0;
-        let   derives        = 0;
         let   rebaseAttempts = 0;
 
         RepositoryService.getViewerPermission = async () => ({permission: 'WRITE'});
@@ -387,10 +352,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
         MetadataManager.save = async () => {
             saves++;
-        };
-
-        SyncService.rebuildContentIndexesAndSeo = async () => {
-            derives++;
         };
 
         SyncService.execGit = async (command) => {
@@ -421,10 +382,9 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         expect(result.statistics.pulled.count).toBe(2);
         expect(pullRuns).toBe(2);
         // NOT pinned to the pass count: each facet persists as it completes, so a pass makes several
-        // saves. `derives` is the pass counter, so `saves > derives` asserts per-facet persistence is in
-        // force without hardcoding how many facets exist.
-        expect(saves).toBeGreaterThan(derives);
-        expect(derives).toBe(2);
+        // saves. `pullRuns` is the pass counter, so `saves > pullRuns` asserts per-facet persistence is
+        // in force without hardcoding how many facets exist.
+        expect(saves).toBeGreaterThan(pullRuns);
         expect(stage2Calls).toEqual({
             issueStates        : 0,
             discussionStates   : 0,
@@ -443,7 +403,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         const commands = [];
         let   pullRuns = 0;
         let   saves    = 0;
-        let   derives  = 0;
 
         RepositoryService.getViewerPermission = async () => ({permission: 'WRITE'});
 
@@ -466,10 +425,6 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
 
         MetadataManager.save = async () => {
             saves++;
-        };
-
-        SyncService.rebuildContentIndexesAndSeo = async () => {
-            derives++;
         };
 
         SyncService.execGit = async (command) => {
@@ -496,10 +451,9 @@ test.describe('SyncService — Stage 2 Ingestion', () => {
         expect(result.statistics.pulled.count).toBe(2);
         expect(pullRuns).toBe(2);
         // NOT pinned to the pass count: each facet persists as it completes, so a pass makes several
-        // saves. `derives` is the pass counter, so `saves > derives` asserts per-facet persistence is in
-        // force without hardcoding how many facets exist.
-        expect(saves).toBeGreaterThan(derives);
-        expect(derives).toBe(2);
+        // saves. `pullRuns` is the pass counter, so `saves > pullRuns` asserts per-facet persistence is
+        // in force without hardcoding how many facets exist.
+        expect(saves).toBeGreaterThan(pullRuns);
         expect(stage2Calls).toEqual({
             issueStates        : 0,
             discussionStates   : 0,

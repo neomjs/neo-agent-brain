@@ -26,10 +26,10 @@
 import Neo       from 'neo.mjs/src/Neo.mjs';
 import * as core from 'neo.mjs/src/core/_export.mjs';
 
-import GH_Config from '../../mcp/server/github-workflow/config.mjs';
-import AiConfig  from '../../config.mjs';
-import fs        from 'node:fs/promises';
-import path      from 'node:path';
+import GH_Config         from '../../mcp/server/github-workflow/config.mjs';
+import AiConfig          from '../../config.mjs';
+import fs                from 'node:fs/promises';
+import path              from 'node:path';
 import {validateSegment} from '../../services/github-workflow/shared/contentPath.mjs';
 
 import {
@@ -48,16 +48,18 @@ import {
  *
  * **Why this operator CLI is the canonical manual entry point:**
  *
- * The scheduled Data Sync pipeline invokes this CLI with `--emit-only`, delegating to
- * `GH_SyncService.emitGeneratedContentAndDerive({pushLocalChanges: false})`. Operators
- * retain the default `GH_SyncService.runFullSync()` mode, including its intentional
- * local-to-GitHub issue push. Native Graph projection is absent: the container-plane
+ * The scheduled corpus pipeline (`neomjs/github-content-sync`'s `publish-corpus.yml`) invokes this
+ * CLI with `--corpus-only`. `--emit-only` delegates to
+ * `GH_SyncService.emitGeneratedContent({pushLocalChanges: false})`, and the default mode runs
+ * `GH_SyncService.runFullSync()`, including its intentional local-to-GitHub issue push. No mode
+ * derives Portal indexes or SEO: the Portal's deploy derives them from the published corpus.
+ * Native Graph projection is absent: the container-plane
  * core-corpus projection owner is its only admitted writer. The long-running emission is absent from the
  * agent MCP surface: clean-slate emission can span
  * ~8.5k issues + ~2.8k PRs + ~165 discussions + ~166 release notes and must stay
  * behind the shared heavy-maintenance lease rather than an MCP request timeout.
  * `--corpus-only` instead emits the three conversation facets and the release notes into an explicitly
- * declared external corpus root, with a corpus-local shared lease and no git publication or consumer derivation.
+ * declared external corpus root, with a corpus-local shared lease and no git publication.
  *
  * Corpus publishers pin a Brain checkout by immutable commit, run `npm ci` and `npm run prepare`,
  * then invoke this script from that installation. `NEO_MCP_GITHUB_OWNER` and `NEO_MCP_GITHUB_REPO`
@@ -69,7 +71,7 @@ import {
  * `.corpus-sync.lock` is transient and must not be published. Progress stays in the destination;
  * the publisher owns cleanup of unsuccessful attempts and serialization across jobs.
  *
- * Ordinary invocation retains its existing local directory layout and consumer derivation.
+ * Ordinary invocation retains its existing local directory layout.
  * Both modes write origin-qualified index identities. Bootstrapping an unqualified legacy index
  * requires explicit `NEO_MCP_GITHUB_LEGACY_REPO_SLUG`; the current source is never guessed as owner.
  *
@@ -149,7 +151,7 @@ async function assertCorpusDestination() {
         throw new Error('Corpus contentRoot must be absolute.');
     }
 
-    const root = await fs.realpath(GH_Config.issueSync.contentRoot),
+    const root         = await fs.realpath(GH_Config.issueSync.contentRoot),
           runtimeRoots = [
               await fs.realpath(fileURLToPath(new URL('../../../', import.meta.url))),
               await fs.realpath(path.dirname(fileURLToPath(import.meta.resolve('neo.mjs/package.json'))))
@@ -209,7 +211,7 @@ async function syncGithubWorkflow() {
     const {default: GH_SyncService} = await import('../../services/github-workflow/SyncService.mjs');
 
     if (verbose) console.log('Corpus context:', {
-        source: `${GH_Config.owner}/${GH_Config.repo}`,
+        source     : `${GH_Config.owner}/${GH_Config.repo}`,
         contentRoot: GH_Config.issueSync.contentRoot
     });
 
@@ -227,7 +229,7 @@ async function syncGithubWorkflow() {
             async () => corpusOnly
                 ? GH_SyncService.emitConversationCorpus()
                 : emitOnly
-                ? GH_SyncService.emitGeneratedContentAndDerive({pushLocalChanges: false})
+                ? GH_SyncService.emitGeneratedContent({pushLocalChanges: false})
                 : GH_SyncService.runFullSync(),
             {
                 leasePath   : corpusOnly ? GH_Config.issueSync.corpusLeaseFile :
