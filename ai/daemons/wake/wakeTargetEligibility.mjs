@@ -1,78 +1,46 @@
-import {IDENTITIES}                   from '../../graph/identityRoots.mjs';
 import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
 
 /**
  * @module Neo.ai.daemons.wake.wakeTargetEligibility
- * @summary Two different questions about a wake identity, kept apart on purpose: may it RECEIVE a
- * wake, and should it HOLD a route.
+ * @summary May an identity RECEIVE a wake: the daemon's delivery permission, over the participation each
+ * identity node records.
  *
- * Extracted from the wake daemon rather than copied. Both the daemon and route tooling need the
- * participation rule, a second copy would drift, and the daemon is an entry point that exports
- * nothing. This module owns the graph read so the manifest builder does not have to — that builder
- * documents itself as importing nothing from the graph, and honouring it is what keeps host-edge
- * tooling runnable without the plane it is being wired to.
+ * Extracted from the wake daemon rather than copied, so the rule has one home. Participation is the identity
+ * node's fact, which an operator records for their own seats; the daemon reads the nodes from its graph store
+ * once per poll cycle (`getAgentIdentityNodes` in `queries.mjs`), the same rows `who_is_online` reads.
  *
- * **Conflating the two questions was a real defect.** Receive-permission is deliberately permissive:
- * an unknown identity stays eligible so forks and local custom agents keep working. Route-population
- * is a census of seats that ought to exist. Reusing the permission predicate as the census warned
- * about the human owner — permitted to receive a wake, and not a seat. It surfaced only when the
- * collector was run against the real roster: a fixture containing agents alone cannot reproduce it,
- * which is why the controls here read the live roster rather than a hand-built map.
+ * Receive-permission is deliberately permissive: an identity without a node stays eligible, so forks and
+ * local custom agents keep working. It is not a census of the seats that ought to hold a route; the receiver
+ * manifest builder takes that list from its caller.
  */
 
 /**
- * @summary Canonical identity → participation status, over every roster entry.
- *
- * Permission, not census. This deliberately includes humans and system accounts, because
- * {@link isWakeTargetEligible} answers *may this receive a wake*, which is not *should this have a
- * route*. Do not reuse it as a route expectation.
- * @member {Map<String,String>} identityParticipationById
+ * @summary Canonical identity → participation status, from AgentIdentity node records.
+ * @param {Object[]} nodes `{id, properties}` records.
+ * @returns {Map<String,String>}
  */
-export const identityParticipationById = new Map(
-    IDENTITIES
-        .filter(identity => identity.type === 'AgentIdentity')
-        .map(identity => [
-            normalizeAgentIdentityNodeId(identity.id),
-            identity.properties?.participationStatus || 'active'
-        ])
-);
+export function participationByIdentity(nodes) {
+    return new Map(nodes.map(node => [
+        normalizeAgentIdentityNodeId(node.id),
+        node.properties?.participationStatus || 'active'
+    ]))
+}
 
 /**
- * @summary The identities expected to hold a wake route: active agent seats, canonical and sorted.
+ * @summary Whether a wake subscription target may receive wake delivery now.
  *
- * `accountType` is the discriminator the roster already carries — `agent` for seats, `human` for the
- * owner, `system` for service accounts. Both filters are load-bearing: a retired agent is a seat
- * that should NOT be routed, and an active human is not a seat at all.
- *
- * Exported as canonical ids so a consumer can compare without normalising, which is what lets the
- * manifest builder stay free of graph imports.
- * @member {String[]} wakeSeatIdentities
- */
-export const wakeSeatIdentities = IDENTITIES
-    .filter(identity =>
-        identity.type === 'AgentIdentity' &&
-        identity.properties?.accountType === 'agent' &&
-        (identity.properties?.participationStatus || 'active') === 'active')
-    .map(identity => normalizeAgentIdentityNodeId(identity.id))
-    .sort();
-
-/**
- * @summary True when a wake subscription target may receive wake delivery.
- *
- * Unknown identities stay eligible for forks/local custom agents. Known repo identities with
- * non-active participationStatus are filtered before coalescing so they never create delivery
- * attempts or retries.
- *
- * Semantics unchanged from the daemon's original — deliberately. Tightening delivery permission is a
- * different decision from tightening a route census, and only the second is in scope here.
+ * Three answers, because two of them ask for different handling. `eligible`: deliver. `benched`: the node
+ * records a non-active participation, so queued and retried work for it is dropped. `unread`: no participation
+ * read answered, so queued and retried work waits for one. An identity without a node is `eligible`.
  * @param {String} identity Agent identity.
- * @param {Map<String,String>} [participation=identityParticipationById] Injectable for tests.
- * @returns {Boolean}
+ * @param {Map<String,String>|null} participation From {@link participationByIdentity}; `null` when unread.
+ * @returns {'eligible'|'benched'|'unread'}
  */
-export function isWakeTargetEligible(identity, participation=identityParticipationById) {
-    if (!identity) return true;
-    const normalizedIdentity  = normalizeAgentIdentityNodeId(identity),
-          participationStatus = participation.get(normalizedIdentity);
+export function wakeTargetPermission(identity, participation) {
+    if (!participation) return 'unread';
+    if (!identity) return 'eligible';
 
-    return !participationStatus || participationStatus === 'active';
+    const participationStatus = participation.get(normalizeAgentIdentityNodeId(identity));
+
+    return !participationStatus || participationStatus === 'active' ? 'eligible' : 'benched'
 }
