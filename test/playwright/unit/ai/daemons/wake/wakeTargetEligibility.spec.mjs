@@ -1,8 +1,8 @@
 import {test, expect} from '@playwright/test';
 
 import {
-    isWakeTargetEligible,
-    participationByIdentity
+    participationByIdentity,
+    wakeTargetPermission
 } from '../../../../../../ai/daemons/wake/wakeTargetEligibility.mjs';
 
 /**
@@ -10,7 +10,7 @@ import {
  * purpose: Iris's root reads benched and neo-gpt's reads active, so a module that still consulted the roots
  * would answer the opposite of what the nodes say.
  */
-test.describe('isWakeTargetEligible — receive permission, from the identity nodes (#879)', () => {
+test.describe('wakeTargetPermission — receive permission, from the identity nodes (#879)', () => {
     const participation = participationByIdentity([
         {id: '@neo-kimi-iris', properties: {participationStatus: 'active'}},
         {id: '@neo-gpt',       properties: {participationStatus: 'operator_benched'}},
@@ -18,20 +18,20 @@ test.describe('isWakeTargetEligible — receive permission, from the identity no
         {id: '@neo-plain',     properties: {}}
     ]);
 
-    test('the node decides: a node bench stops a root-active seat, a node-active seat is woken over a root bench', () => {
-        expect(isWakeTargetEligible('@neo-gpt', participation)).toBe(false);
-        expect(isWakeTargetEligible('@neo-kimi-iris', participation)).toBe(true);
-        expect(isWakeTargetEligible('neo-retired', participation), 'ids are canonicalized on both sides').toBe(false);
-        expect(isWakeTargetEligible('@neo-plain', participation), 'a node without a status reads active').toBe(true)
+    test('the node decides: a node bench is benched over an active root, a node-active seat is eligible over a root bench', () => {
+        expect(wakeTargetPermission('@neo-gpt', participation)).toBe('benched');
+        expect(wakeTargetPermission('@neo-kimi-iris', participation)).toBe('eligible');
+        expect(wakeTargetPermission('neo-retired', participation), 'ids are canonicalized on both sides').toBe('benched');
+        expect(wakeTargetPermission('@neo-plain', participation), 'a node without a status reads active').toBe('eligible')
     });
 
     test('an identity without a node stays eligible, the open-set case for forks and local agents', () => {
-        expect(isWakeTargetEligible('@a-fork', participation)).toBe(true);
-        expect(isWakeTargetEligible(null, participation), 'a null target is not filtered here').toBe(true)
+        expect(wakeTargetPermission('@a-fork', participation)).toBe('eligible');
+        expect(wakeTargetPermission(null, participation), 'a null target is not filtered here').toBe('eligible')
     });
 
-    test('without a participation read nothing is eligible', () => {
-        expect(isWakeTargetEligible('@neo-kimi-iris', null)).toBe(false);
-        expect(isWakeTargetEligible('@a-fork', null)).toBe(false)
+    test('without a participation read every target is unread, which defers rather than drops', () => {
+        expect(wakeTargetPermission('@neo-kimi-iris', null)).toBe('unread');
+        expect(wakeTargetPermission('@neo-gpt', null), 'not benched: no read said so').toBe('unread')
     })
 });

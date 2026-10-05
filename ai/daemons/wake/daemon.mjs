@@ -91,7 +91,7 @@ import {
     filterEventsByWatermark,
     maxLogId
 } from './wokenWatermark.mjs';
-import {isWakeTargetEligible, participationByIdentity} from './wakeTargetEligibility.mjs';
+import {participationByIdentity, wakeTargetPermission} from './wakeTargetEligibility.mjs';
 
 // Config-derived paths + PID_FILE (below) are declared here but ASSIGNED in initConfigDerivedState()
 // (called from the guarded main(), never at module-load): a stale memory-core overlay would otherwise
@@ -551,8 +551,8 @@ let lastHeavyPollAt = 0;
  */
 async function pollLoop() {
     try {
-        // A read that throws aborts the cycle before the cursor moves, and leaves no participation for a flush
-        // to deliver against meanwhile
+        // A read that throws aborts the cycle before the cursor moves and leaves participation unread, so queued
+        // flushes and retries wait for the next read instead of delivering or dropping
         participation = null;
         participation = participationByIdentity(getAgentIdentityNodes(db));
 
@@ -637,7 +637,7 @@ async function pollLoop() {
  * cache invalidation only and cannot classify themselves as transitions.
  */
 function evaluateSubscription(sub, trace, entity, nodesMap, edgesMap) {
-    if (!isWakeTargetEligible(sub.properties?.agentIdentity, participation)) return null;
+    if (wakeTargetPermission(sub.properties?.agentIdentity, participation) !== 'eligible') return null;
 
     const result = match(sub.properties || {}, {
         entity,
@@ -880,6 +880,22 @@ function logSuppressedMessageWakes({identity, subId, phase, suppressed, oldestAg
 async function flushSubscription(subId) {
     const state = coalesceState[subId];
     if (!state) return;
+
+    // Participation is read again here, not inherited from queue time: a bench recorded while the wake waited in
+    // the coalescing window drops it, and an unread participation keeps the queue for the next attempt
+    const permission = wakeTargetPermission(state.subscription.properties?.agentIdentity, participation);
+
+    if (permission === 'unread') {
+        state.timer = setTimeout(() => flushSubscription(subId), AiConfig.orchestrator.wakeDispatch.pollIntervalMs);
+        return;
+    }
+
+    if (permission === 'benched') {
+        delete coalesceState[subId];
+        writeLog('INFO', `[Wake Daemon] Dropped ${state.queue.length} queued wake event(s) for ` +
+                         `${state.subscription.properties?.agentIdentity || subId}: its identity node records it non-active.`);
+        return;
+    }
 
     // Defer while a heavy GraphLog / data-sync delta is still settling: mid-sync the per-message
     // read-state lookup is transiently inconsistent, so already-read backlog would leak into the
@@ -2548,7 +2564,11 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
  * @returns {void}
  */
 function enqueueDeliveryRetry(subscription, identity, events) {
-    if (!isWakeTargetEligible(identity, participation)) return;
+    // only a known bench drops the failed delivery's events; an unread participation keeps them for the retry
+    if (wakeTargetPermission(identity, participation) === 'benched') {
+        writeLog('INFO', `[Wake Daemon] Dropped a failed wake's retry for ${identity || subscription.id}: its identity node records it non-active.`);
+        return;
+    }
 
     const subId    = subscription.id,
           existing = pendingDeliveryRetries.get(subId);
@@ -2590,10 +2610,17 @@ async function attemptDeliveryRetries() {
 
     for (const [subId, entry] of pendingDeliveryRetries) {
         if (entry.nextAttemptAt > now) continue;
-        if (!isWakeTargetEligible(entry.subscription.properties?.agentIdentity || entry.identity, participation)) {
+
+        const permission = wakeTargetPermission(entry.subscription.properties?.agentIdentity || entry.identity, participation);
+
+        if (permission === 'benched') {
+            writeLog('INFO', `[Wake Daemon] Dropped a pending wake retry for ${entry.identity || subId}: its identity node records it non-active.`);
             pendingDeliveryRetries.delete(subId);
             continue;
         }
+
+        // an unread participation keeps the entry, and its attempt count, until a read answers
+        if (permission === 'unread') continue;
 
         // Snapshot-and-swap: THIS attempt delivers the snapshot while the map entry stays live
         // with an empty event set — a direct flush that finds this sub pending merges into

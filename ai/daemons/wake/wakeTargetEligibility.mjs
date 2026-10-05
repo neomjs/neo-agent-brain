@@ -27,20 +27,20 @@ export function participationByIdentity(nodes) {
 }
 
 /**
- * @summary True when a wake subscription target may receive wake delivery.
+ * @summary Whether a wake subscription target may receive wake delivery now.
  *
- * An identity without a node stays eligible. One whose node records a non-active participation is filtered
- * before coalescing, so it never creates delivery attempts or retries. Without a participation read, nothing
- * is eligible.
+ * Three answers, because two of them ask for different handling. `eligible`: deliver. `benched`: the node
+ * records a non-active participation, so queued and retried work for it is dropped. `unread`: no participation
+ * read answered, so queued and retried work waits for one. An identity without a node is `eligible`.
  * @param {String} identity Agent identity.
  * @param {Map<String,String>|null} participation From {@link participationByIdentity}; `null` when unread.
- * @returns {Boolean}
+ * @returns {'eligible'|'benched'|'unread'}
  */
-export function isWakeTargetEligible(identity, participation) {
-    if (!participation) return false;
-    if (!identity) return true;
+export function wakeTargetPermission(identity, participation) {
+    if (!participation) return 'unread';
+    if (!identity) return 'eligible';
 
     const participationStatus = participation.get(normalizeAgentIdentityNodeId(identity));
 
-    return !participationStatus || participationStatus === 'active'
+    return !participationStatus || participationStatus === 'active' ? 'eligible' : 'benched'
 }

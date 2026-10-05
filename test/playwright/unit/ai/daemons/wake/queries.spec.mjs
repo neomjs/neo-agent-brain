@@ -35,18 +35,30 @@ test.describe('ai/daemons/wake/queries', () => {
     });
 
     test.describe('getAgentIdentityNodes (#879)', () => {
-        test('answers the AgentIdentity rows only, and a malformed row elsewhere does not fail the query', () => {
+        test('answers the AgentIdentity rows only, through the graph store\'s label index', () => {
+            // the graph store's own index (ai/graph/storage/SQLite.mjs)
+            db.exec(`CREATE INDEX idx_nodes_label ON Nodes(json_extract(data, '$.label'))`);
+
             const insert = db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)');
 
             insert.run('@neo-gpt', JSON.stringify({id: '@neo-gpt', label: 'AgentIdentity', properties: {participationStatus: 'operator_benched'}}));
             insert.run('@neo-kimi-iris', JSON.stringify({id: '@neo-kimi-iris', label: 'AgentIdentity', properties: {}}));
             insert.run('msg_1', JSON.stringify({id: 'msg_1', label: 'MESSAGE', properties: {}}));
-            insert.run('@broken', '{"label": "AgentIdentity", ');
 
-            expect(getAgentIdentityNodes(db).map(node => [node.id, node.properties.participationStatus ?? null])).toEqual([
+            const prepared = [],
+                  spy      = {prepare: sql => { prepared.push(sql); return db.prepare(sql) }};
+
+            expect(getAgentIdentityNodes(spy).map(node => [node.id, node.properties.participationStatus ?? null])).toEqual([
                 ['@neo-gpt', 'operator_benched'],
                 ['@neo-kimi-iris', null]
-            ])
+            ]);
+
+            // the daemon reads this every poll: the exact SQL it prepares must search the index, never scan Nodes
+            const plan = db.prepare(`EXPLAIN QUERY PLAN ${prepared[0]}`).all().map(row => row.detail).join(' | ');
+
+            expect(plan).toContain('USING INDEX idx_nodes_label');
+            // and the same index rejects a row whose data does not parse, so the read never meets one
+            expect(() => insert.run('@broken', '{"label": "AgentIdentity", ')).toThrow(/malformed JSON/)
         });
 
         test('a store that cannot answer throws, so the daemon\'s cycle aborts before its cursor moves', () => {

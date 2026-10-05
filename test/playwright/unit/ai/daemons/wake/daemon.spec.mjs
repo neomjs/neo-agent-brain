@@ -462,6 +462,70 @@ test.describe('Wake Daemon', () => {
         expect(output).not.toContain('to the node-benched seat');
     });
 
+    // Participation governs the queued wake's delivery, not only its admission
+    const setIdentity = (identity, participationStatus) => {
+        db.prepare('INSERT OR REPLACE INTO Nodes (id, data) VALUES (?, ?)').run(identity, JSON.stringify({
+            id: identity, label: 'AgentIdentity', properties: {participationStatus, accountType: 'agent'}
+        }));
+    };
+
+    const spawnDaemon = () => {
+        daemonProcess = spawn('node', ['ai/daemons/wake/daemon.mjs'], {
+            stdio: 'pipe',
+            env  : {...process.env, NEO_MEMORY_DB_PATH: DB_PATH, NEO_AI_DAEMON_DIR: DAEMON_DIR, NEO_WAKE_DAEMON_POLL_INTERVAL_MS: FAST_POLL_MS}
+        });
+
+        const sink = {output: ''};
+        daemonProcess.stdout.on('data', data => { sink.output += data.toString() });
+
+        return sink
+    };
+
+    const daemonLog = () => fs.existsSync(path.join(DAEMON_DIR, 'wake-daemon.log'))
+        ? fs.readFileSync(path.join(DAEMON_DIR, 'wake-daemon.log'), 'utf8')
+        : '';
+
+    test('a bench recorded while a wake waits in the coalescing window drops it at the flush', async () => {
+        const identity = '@neo-kimi-iris';
+
+        insertWakeSubscription(db, {agentId: identity, harnessTargetMetadata: {adapter: 'test', coalesceWindow: 3}});
+        setIdentity(identity, 'active');
+
+        const sink = spawnDaemon();
+        await waitForDaemonReady(daemonProcess);
+
+        insertMessageWake(db, {agentId: identity, subject: 'queued while active'});
+        // the poll queues it while the node reads active; the bench lands before the 3 s window flushes
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        setIdentity(identity, 'operator_benched');
+
+        await expect.poll(daemonLog, {timeout: 10000}).toContain(`Dropped 1 queued wake event(s) for ${identity}`);
+        expect(sink.output).not.toContain('queued while active');
+    });
+
+    test('an unread participation defers a queued wake until a read answers, then delivers it once', async () => {
+        const identity = '@neo-gpt';
+
+        insertWakeSubscription(db, {agentId: identity, harnessTargetMetadata: {adapter: 'test', coalesceWindow: 1}});
+        setIdentity(identity, 'active');
+
+        const sink = spawnDaemon();
+        await waitForDaemonReady(daemonProcess);
+
+        insertMessageWake(db, {agentId: identity, subject: 'deferred while unread'});
+        await new Promise(resolve => setTimeout(resolve, 400));
+
+        // the identity read now throws, so every cycle aborts and the 1 s flush finds participation unread
+        db.exec('ALTER TABLE Nodes RENAME TO Nodes_hold');
+        await new Promise(resolve => setTimeout(resolve, 2500));
+        expect(sink.output).not.toContain('deferred while unread');
+
+        db.exec('ALTER TABLE Nodes_hold RENAME TO Nodes');
+        await expect.poll(() => sink.output, {timeout: 10000}).toContain('deferred while unread');
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        expect(sink.output.split('deferred while unread').length - 1, 'delivered once, not once per deferral').toBe(1);
+    });
+
     test('#14576: priority-filtered subscriptions only deliver high-priority direct and broadcast wakes', async () => {
         const subId   = 'sub_' + crypto.randomUUID();
         const agentId = '@test-agent-priority-filter';
