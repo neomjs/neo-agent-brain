@@ -13,6 +13,7 @@ setup({
 
 import {test, expect}  from '@playwright/test'
 import {spawnSync}     from 'node:child_process'
+import fs              from 'node:fs'
 import os              from 'node:os'
 import path            from 'node:path'
 import {fileURLToPath} from 'node:url'
@@ -108,5 +109,45 @@ test.describe('participation — the plane-host path for an identity\'s particip
 
         expect(result.status).toBe(1);
         expect(result.stderr).toContain('bench needs --reason')
+    })
+});
+
+/**
+ * The entrypoint over a real graph, each step its own process: a double never reaches the record store an
+ * update notifies, and an in-process run inherits a `Neo.get` the bare command does not have.
+ */
+test.describe('participation — the entrypoint over a real graph, each step its own process (#891)', () => {
+    let dir, env;
+
+    const node = (...argv) => spawnSync(process.execPath, argv, {cwd: repoRoot, encoding: 'utf-8', env, timeout: 120_000}),
+          show = identity => JSON.parse(node('ai/scripts/fleet/participation.mjs', 'show', '--identity', identity).stdout);
+
+    test.beforeAll(() => {
+        dir = fs.mkdtempSync(path.join(os.tmpdir(), 'participation-entry-'));
+
+        const graph = path.join(dir, 'graph.sqlite');
+
+        env = {...process.env, NEO_MEMORY_DB_PATH: graph, NEO_MEMORY_DB_PATH_TEST: graph}
+    });
+
+    test.afterAll(() => {
+        fs.rmSync(dir, {recursive: true, force: true})
+    });
+
+    test('a seeded identity is benched, kept by a reseed over its active root, and returned', () => {
+        expect(node('ai/scripts/setup/seedAgentIdentities.mjs').status).toBe(0);
+
+        const bench = node('ai/scripts/fleet/participation.mjs', 'bench', '--identity', '@neo-gpt', '--reason', 'the flatrate ended', '--apply');
+
+        expect(bench.status, bench.stderr).toBe(0);
+        expect(show('@neo-gpt')).toMatchObject({participationStatus: 'operator_benched', statusReason: 'the flatrate ended', participationDecidedBy: actor});
+
+        const reseed = node('ai/scripts/setup/seedAgentIdentities.mjs');
+
+        expect(reseed.stdout).toContain(`participation kept as ${actor} recorded it): @neo-gpt`);
+        expect(show('@neo-gpt').participationStatus).toBe('operator_benched');
+
+        expect(node('ai/scripts/fleet/participation.mjs', 'activate', '--identity', '@neo-gpt', '--apply').status).toBe(0);
+        expect(show('@neo-gpt')).toMatchObject({participationStatus: 'active', statusReason: null, participationDecidedBy: actor})
     })
 });
