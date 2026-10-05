@@ -11,12 +11,13 @@ setup({
     }
 });
 
-import {test, expect} from '@playwright/test';
-import crypto         from 'crypto';
-import fs             from 'node:fs';
-import os             from 'node:os';
-import path           from 'node:path';
-import {spawnSync}    from 'node:child_process';
+import {test, expect}  from '@playwright/test';
+import crypto          from 'crypto';
+import fs              from 'node:fs';
+import os              from 'node:os';
+import path            from 'node:path';
+import {spawnSync}     from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 
 import {SSEClientTransport}            from '@modelcontextprotocol/sdk/client/sse.js';
 import {StdioClientTransport}          from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -29,6 +30,7 @@ import Client                          from '../../../../../../ai/mcp/client/Cli
 import ClientConfig                    from '../../../../../../ai/mcp/client/config.mjs';
 
 const addedServerNames = new Set();
+const packageRoot      = path.resolve(fileURLToPath(new URL('../../../../../../', import.meta.url)));
 
 class TransportConfigClient extends Client {
     static config = {
@@ -67,12 +69,13 @@ test.describe('Neo.ai.mcp.client.Client transport config', () => {
         expect(client.transportType).toBe('stdio');
         expect(client.command).toBe('npm');
         expect(client.args).toEqual(['run', 'ai:mcp-server-github-workflow']);
-        expect(client.cwd).toBe(null);
+        expect(client.cwd).toBe(packageRoot);
+        expect(client.requiredEnv).toEqual(['GH_TOKEN']);
 
         const transport = client.createTransport();
 
         expect(transport).toBeInstanceOf(StdioClientTransport);
-        expect(transport._serverParams.cwd).toBeUndefined();
+        expect(transport._serverParams.cwd).toBe(packageRoot);
 
         client.destroy();
     });
@@ -141,7 +144,7 @@ test.describe('Neo.ai.mcp.client.Client transport config', () => {
         client.destroy();
     });
 
-    test('Neural Link derives both cwd inputs from the client module, never the invoking directory', () => {
+    test('owned stdio clients derive their cwd from the module, never the invoking directory', () => {
         const
             foreignCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-mcp-client-cwd-')),
             neoUrl     = import.meta.resolve('neo.mjs/src/Neo.mjs'),
@@ -151,7 +154,10 @@ test.describe('Neo.ai.mcp.client.Client transport config', () => {
                 await import(${JSON.stringify(neoUrl)});
                 await import(${JSON.stringify(coreUrl)});
                 const {default: config} = await import(${JSON.stringify(configUrl)});
-                process.stdout.write(JSON.stringify(config.mcpServers['neural-link']));
+                process.stdout.write(JSON.stringify({
+                    githubWorkflow: config.mcpServers['github-workflow'],
+                    neuralLink: config.mcpServers['neural-link']
+                }));
             `;
 
         try {
@@ -162,7 +168,13 @@ test.describe('Neo.ai.mcp.client.Client transport config', () => {
 
             expect(result.status, result.stderr).toBe(0);
 
-            const neuralLink = JSON.parse(result.stdout);
+            const {githubWorkflow, neuralLink} = JSON.parse(result.stdout);
+            const manifest                     = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+
+            expect(githubWorkflow.cwd).toBe(packageRoot);
+            expect(githubWorkflow.cwd).not.toBe(foreignCwd);
+            expect(githubWorkflow.args).toEqual(['run', 'ai:mcp-server-github-workflow']);
+            expect(typeof manifest.scripts[githubWorkflow.args[1]]).toBe('string');
 
             expect(neuralLink.cwd).toBe(ClientConfig.mcpServers['neural-link'].cwd);
             expect(neuralLink.cwd).not.toBe(foreignCwd);
@@ -175,6 +187,63 @@ test.describe('Neo.ai.mcp.client.Client transport config', () => {
             ]);
         } finally {
             fs.rmSync(foreignCwd, {recursive: true, force: true});
+        }
+    });
+
+    for (const scriptName of ['ai:mcp-server-github-workflow', 'ai:mcp-server-neural-link']) {
+        test(`refuses an owner manifest without ${scriptName}`, () => {
+            const
+                neoUrl    = import.meta.resolve('neo.mjs/src/Neo.mjs'),
+                coreUrl   = import.meta.resolve('neo.mjs/src/core/_export.mjs'),
+                configUrl = new URL('../../../../../../ai/mcp/client/config.mjs', import.meta.url).href,
+                manifest  = path.join(packageRoot, 'package.json'),
+                probe     = `
+                    import fs from 'node:fs';
+                    import {syncBuiltinESMExports} from 'node:module';
+                    await import(${JSON.stringify(neoUrl)});
+                    await import(${JSON.stringify(coreUrl)});
+                    const read = fs.readFileSync;
+                    fs.readFileSync = function(file, ...args) {
+                        const content = read.call(this, file, ...args);
+                        if (file !== ${JSON.stringify(manifest)}) return content;
+                        const owner = JSON.parse(content);
+                        delete owner.scripts[${JSON.stringify(scriptName)}];
+                        return JSON.stringify(owner);
+                    };
+                    syncBuiltinESMExports();
+                    try {
+                        await import(${JSON.stringify(configUrl)});
+                    } catch (error) {
+                        process.stdout.write(error.message);
+                        process.exitCode = 2;
+                    }
+                `,
+                result = spawnSync(process.execPath, ['--input-type=module', '--eval', probe], {encoding: 'utf8'});
+
+            expect(result.status, result.stderr).toBe(2);
+            expect(result.stdout).toContain(`does not declare '${scriptName}'`);
+        });
+    }
+
+    test('explicit stdio connection keeps its cwd, argv and environment over the built-in default', () => {
+        const
+            cwd    = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-mcp-explicit-cwd-')),
+            before = JSON.stringify(ClientConfig.mcpServers),
+            env    = {TEST_FORGE_TOKEN: 'fixture-token'},
+            config = {transportType: 'stdio', command: 'node', args: ['explicit-server.mjs'], cwd, requiredEnv: ['TEST_FORGE_TOKEN']};
+        let client;
+
+        try {
+            client = Neo.create(TransportConfigClient, {connectionConfig: config, env, serverName: 'github-workflow'});
+            client.loadServerConfig('github-workflow');
+            const transport = client.createTransport();
+
+            expect(client.requiredEnv).toEqual(['TEST_FORGE_TOKEN']);
+            expect(transport._serverParams).toMatchObject({command: config.command, args: config.args, cwd, env});
+            expect(JSON.stringify(ClientConfig.mcpServers)).toBe(before);
+        } finally {
+            client?.destroy();
+            fs.rmSync(cwd, {recursive: true, force: true});
         }
     });
 
