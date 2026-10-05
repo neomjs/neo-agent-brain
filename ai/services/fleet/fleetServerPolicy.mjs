@@ -126,7 +126,7 @@ const SLICE_LABELS = Object.freeze({
  * is the second: `fleetDeploymentState`, a read-observe projection of the orchestrator's snapshot,
  * served once the composed boot wires its read-source and answering `unavailable` until then. S4b's
  * operator relation opened the third and first write: `defineAgent`, admitted only with the
- * forge-resolved `ownerPrincipal`, which the new seat records as its operator (#856).
+ * forge-resolved `ownerPrincipal`, which the new seat records as its operator.
  * @type {ReadonlyArray<String>}
  */
 export const FLEET_S1_READY_METHODS = Object.freeze(
