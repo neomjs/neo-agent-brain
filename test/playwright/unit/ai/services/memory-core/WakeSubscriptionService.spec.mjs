@@ -29,6 +29,9 @@ import RequestContextService       from '../../../../../../ai/mcp/server/shared/
 import {buildWakeReceiverManifest} from '../../../../../../ai/daemons/wake/buildReceiverManifest.mjs';
 import {readWakeDelivery}          from '../../../../../../ai/services/memory-core/wakeDeliveryReader.mjs';
 
+import {createHostWhoIsOnlineReader} from '../../../../../../ai/services/fleet/hostWhoIsOnlineReader.mjs';
+import {readFleetPresenceSnapshot}   from '../../../../../../ai/services/fleet/fleetPresenceStateAdapter.mjs';
+
 // The per-machine receiver address a real boot envelope supplies. No committed file can hold it,
 // which is why bootstrap derives the transport but must be GIVEN the address.
 const BOOT_URL = 'http://host.docker.internal:3199/wake';
@@ -2958,12 +2961,12 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
               T0ms = new Date(T0).getTime(),
               iso  = ms => new Date(ms).toISOString();
 
-        function seedAgent(id, {participationStatus = 'active', family = 'claude', githubLogin = id} = {}) {
+        function seedAgent(id, {participationStatus = 'active', family = 'claude', githubLogin = id, ...extra} = {}) {
             GraphService.upsertNode({
                 id,
                 type      : 'AgentIdentity',
                 name      : id,
-                properties: {participationStatus, family, displayName: id, githubLogin}
+                properties: {participationStatus, family, displayName: id, githubLogin, ...extra}
             });
         }
 
@@ -3009,6 +3012,31 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(entry.online).toBe(false);
             expect(entry.participationStatus).toBe('operator_benched');
             expect(entry.reason).toContain('benched');
+        });
+
+        test('a row carries the node\'s own participation words, the operator\'s reason and date (#874)', async () => {
+            seedAgent('@neo-benched-words', {participationStatus: 'operator_benched', statusReason: 'the flatrate ended', since: '2026-10-01T00:00:00.000Z'});
+            seedAgent('@neo-active-words', {participationStatus: 'active'});
+
+            const
+                {agents} = await WakeSubscriptionService.whoIsOnline({verbose: true, now: new Date(T0)}),
+                signals  = identity => agents.find(a => a.identity === identity).signals;
+
+            expect(signals('@neo-benched-words')).toMatchObject({participationStatus: 'operator_benched', statusReason: 'the flatrate ended', participationSince: '2026-10-01T00:00:00.000Z'});
+            expect(signals('@neo-active-words')).toMatchObject({participationStatus: 'active', statusReason: null, participationSince: null});
+        });
+
+        test('a host Fleet reads the node\'s bench through the in-process projection (#874)', async () => {
+            seedAgent('@neo-host-benched', {participationStatus: 'operator_benched', statusReason: 'the flatrate ended', since: '2026-10-01T00:00:00.000Z'});
+
+            const
+                readPresence = createHostWhoIsOnlineReader(async () => ({wakeSubscriptions: WakeSubscriptionService, graph: GraphService})),
+                {states}     = await readFleetPresenceSnapshot({agents: [{id: 'host-seat', githubUsername: 'neo-host-benched'}], readPresence});
+
+            expect(states[0]).toMatchObject({
+                participation    : {status: 'operator_benched', reason: 'the flatrate ended', since: '2026-10-01T00:00:00.000Z'},
+                participationRead: {state: 'read'}
+            });
         });
 
         test('stale provider validation stamps only the matching identity and clears on the next projection', async () => {

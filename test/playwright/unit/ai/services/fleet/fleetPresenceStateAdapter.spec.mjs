@@ -26,6 +26,7 @@ import {
     PRESENCE_CAPABILITY_REASON_CODES,
     PRESENCE_SOURCE_LABEL,
     PRESENCE_STATES,
+    participationOf,
     presenceIdentityForAgent,
     readFleetPresenceSnapshot
 } from '../../../../../../ai/services/fleet/fleetPresenceStateAdapter.mjs'
@@ -166,7 +167,10 @@ test.describe('fleetPresenceStateAdapter — healthy report (band join)', () => 
             beacon    : 'absent',
             lastSeenAt: '2026-08-09T11:00:00.000Z',
             confidence: 'observed',
-            source    : PRESENCE_SOURCE_LABEL
+            source    : PRESENCE_SOURCE_LABEL,
+            // a row without participation signals carries no status of its own: the report answered
+            participation    : {status: null, reason: null, since: null},
+            participationRead: {state: 'read'}
         })
         expect(states[1].presence).toBe('recent')
         expect(states[1].lastSeenAt).toBeNull()
@@ -196,12 +200,14 @@ test.describe('fleetPresenceStateAdapter — healthy report (band join)', () => 
             since
         })
         expect(states[1]).toEqual({
-            agentId   : 'neo-gpt',
-            presence  : 'recent',
-            beacon    : 'absent',
-            lastSeenAt: null,
-            confidence: 'observed',
-            source    : PRESENCE_SOURCE_LABEL
+            agentId          : 'neo-gpt',
+            presence         : 'recent',
+            beacon           : 'absent',
+            lastSeenAt       : null,
+            confidence       : 'observed',
+            source           : PRESENCE_SOURCE_LABEL,
+            participation    : {status: null, reason: null, since: null},
+            participationRead: {state: 'read'}
         })
     })
 
@@ -485,5 +491,41 @@ test.describe('fleetPresenceStateAdapter — the beacon facet (#318)', () => {
         expect(await at('2026-08-11T00:15:00.000Z')).toEqual(['active-turn', 'fresh'])
         expect(await at('2026-08-11T00:45:00.000Z')).toEqual(['fresh', 'stale'])
         expect(await at('2026-08-11T01:30:00.000Z')).toEqual(['fresh', 'stale'])
+    })
+})
+
+test.describe('fleetPresenceStateAdapter — participation, the identity node\'s, never a local file (#874)', () => {
+    const benchedRow = {
+        identity: '@neo-gpt',
+        state   : 'benched',
+        reason  : "roster: participationStatus is 'operator_benched' (benched / unreachable)",
+        signals : {participationStatus: 'operator_benched', statusReason: 'the flatrate ended', participationSince: '2026-10-01T00:00:00.000Z'}
+    }
+
+    test('participationOf reads the node\'s status, reason and date from the row\'s signals', () => {
+        expect(participationOf(benchedRow)).toEqual({status: 'operator_benched', reason: 'the flatrate ended', since: '2026-10-01T00:00:00.000Z'});
+        expect(participationOf({signals: {participationStatus: 'active', statusReason: null, participationSince: null}})).toEqual({status: 'active', reason: null, since: null});
+        expect(participationOf(null)).toEqual({status: null, reason: null, since: null})
+    })
+
+    test('an answered report carries each seat\'s node participation, and a seat it holds no row for has none', async () => {
+        const {states} = await readFleetPresenceSnapshot({agents, readPresence: () => ({agents: [benchedRow]})})
+
+        expect(states.map(row => [row.agentId, row.participation, row.participationRead])).toEqual([
+            ['neo-fable-clio', null, {state: 'read'}],
+            ['neo-gpt', {status: 'operator_benched', reason: 'the flatrate ended', since: '2026-10-01T00:00:00.000Z'}, {state: 'read'}]
+        ])
+    })
+
+    test('a report that never answered leaves every seat\'s participation unread, with the reason, never a seat without a node', async () => {
+        const
+            noReader = await readFleetPresenceSnapshot({agents}),
+            throwing = await readFleetPresenceSnapshot({agents, readPresence: () => { throw new Error('plane unreachable') }})
+
+        for (const {states} of [noReader, throwing]) {
+            expect(states.every(row => row.participation === null && row.participationRead.state === 'unread')).toBe(true)
+        }
+
+        expect(throwing.states[0].participationRead.reason).toContain('plane unreachable')
     })
 })

@@ -65,6 +65,7 @@ import {createPlaneMailboxClient}             from './planeMailboxClient.mjs';
 import {createPlaneWakeIdentitiesReader,
         createPlaneWakeObservationsReader}                               from './planeWakeIdentitiesReader.mjs';
 import {createFleetWakeSseConsumer}       from './fleetWakeSseConsumer.mjs';
+import {createHostWhoIsOnlineReader}      from './hostWhoIsOnlineReader.mjs';
 import {createPlaneWhoIsOnlineReader}     from './planeWhoIsOnlineReader.mjs';
 import {createPlaneDeploymentStateReader} from './planeDeploymentStateReader.mjs';
 import {createPlanePrLaneActivityReader}  from './planePrLaneActivityReader.mjs';
@@ -267,18 +268,29 @@ async function boot() {
         console.log('[fleet] wake-state seam stays host-local (host plane: daemon PID file + host graph subscription scan)')
     }
 
-    // The roster's presence AXIS rides the same proven plane reader as the decomposed
-    // routes verb below — one producer contract, two consumers, never a second authority. Host
-    // mode stays null ⇒ the adapter renders every row honestly `unknown` under a degraded
-    // capability until a host presence surface lands.
-    FleetManager.presenceStateOptions = planeClient
-        ? {readPresence: createPlaneWhoIsOnlineReader(planeClient)}
-        : null;
+    // The presence AXIS has ONE reader per mode and two consumers, the roster and the decomposed
+    // routes verb below — never a second authority. A host Fleet reads the same projection from its
+    // in-process Memory Core, so a seat's participation comes from its identity node in both modes.
+    const readPresence = planeClient
+        ? createPlaneWhoIsOnlineReader(planeClient)
+        : createHostWhoIsOnlineReader(async () => {
+            const [{default: wakeSubscriptions}, {default: graph}] = await Promise.all([
+                import('../memory-core/WakeSubscriptionService.mjs'),
+                import('../memory-core/GraphService.mjs')
+            ]);
+
+            // the singleton opens its graph after import; a read before that is not a closed graph
+            await graph.ready();
+
+            return {wakeSubscriptions, graph}
+        });
+
+    FleetManager.presenceStateOptions = {readPresence};
 
     // The decomposed wake-routes verb rides the SAME per-mode truth the fused wake axis was bound
-    // to above — one authority per axis, never a second source. Presence joins plane-side over the
-    // proven client; host mode wraps the daemon PID-file liveness read and leaves presence and
-    // terminal receipts honestly unbound until host surfaces exist for them.
+    // to above — one authority per axis, never a second source. Presence joins over the roster's
+    // reader; host mode wraps the daemon PID-file liveness read and leaves terminal receipts
+    // honestly unbound until a host surface exists for them.
     wireFleetWakeRoutesSource({
         listAgents                        : () => FleetManager.getLifecycleService().getRegistry().listAgents(),
         resolveViewerIdentity             : () => RequestContextService.getAgentIdentityNodeId(),
@@ -300,7 +312,7 @@ async function boot() {
         // SOURCE, the Neo-free site the spec exercises. An explicit resolver stays the override seam.
         resolveSeatArming       : FleetManager.wakeStateOptions.resolveSeatArming ?? null,
         wakeReceiverManifestPath: FleetManager.wakeStateOptions.wakeReceiverManifestPath ?? null,
-        readPresence            : planeClient ? createPlaneWhoIsOnlineReader(planeClient) : null,
+        readPresence,
         // why a seat the manifest does not carry is unarmed, as the Fleet recorded it at the start
         readFleetArming         : agentId => FleetManager.getLifecycleService().status(agentId).wakeRoute
     });

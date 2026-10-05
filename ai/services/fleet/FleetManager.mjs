@@ -209,8 +209,8 @@ class FleetManager extends Base {
      * Presence observation options for {@link fleetPresenceStatus} — `{readPresence,
      * presenceIdentityFor}` per the `fleetPresenceStateAdapter` contract. `null` ⇒ every row is
      * honestly `unknown` under a degraded capability: the composing entrypoint injects the
-     * identity-proven plane `who_is_online` reader in plane mode and leaves host mode unbound
-     * until a host presence surface lands. Plain field, mirroring the sibling seams.
+     * identity-proven plane `who_is_online` reader in plane mode and the in-process Memory Core's
+     * projection in host mode. Plain field, mirroring the sibling seams.
      * @member {Object|null} presenceStateOptions=null
      */
     presenceStateOptions = null

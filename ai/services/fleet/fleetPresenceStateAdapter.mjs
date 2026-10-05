@@ -166,6 +166,22 @@ export const PRESENCE_SOURCE_LABEL = 'fleet:presenceState'
 export const PRESENCE_CAPABILITY_REASON_CODES = Object.freeze(['viewer-binding-unavailable'])
 
 /**
+ * @summary A presence row's participation, as its identity node records it: the status the plane gates on, and
+ * the operator's reason and date when the row carries them.
+ * @param {Object} row One `who_is_online` agent row
+ * @returns {{status: String|null, reason: String|null, since: String|null}}
+ */
+export function participationOf(row) {
+    const signals = row?.signals ?? {};
+
+    return {
+        status: signals.participationStatus ?? row?.participationStatus ?? null,
+        reason: typeof signals.statusReason === 'string' ? redactReason(signals.statusReason) : null,
+        since : typeof signals.participationSince === 'string' ? signals.participationSince : null
+    }
+}
+
+/**
  * @summary Reads the fleet-wide presence snapshot: one band row per registered agent plus a
  * capability envelope declaring whether the presence producer answered.
  *
@@ -185,8 +201,7 @@ export const PRESENCE_CAPABILITY_REASON_CODES = Object.freeze(['viewer-binding-u
  *     roster-presence report (`who_is_online` payload shape: `{agents: [{identity, state, reason,
  *     signals, validationState?, since?}]}` — the same seam `wireFleetWakeRoutesSource` consumes).
  *     Auth-validation provenance passes through; this adapter never re-derives it. Absent ⇒ every row is
- *     honestly `unknown` under a degraded capability (host mode's documented truth until a host
- *     presence surface lands).
+ *     honestly `unknown` under a degraded capability.
  * @param {Function} [options.presenceIdentityFor] `(agent) => String` roster row → presence report
  *     identity. The default canonicalizes into the report's `@<login>` shape while accepting the
  *     registry's FULL production input domain: `defineAgent` stores `githubUsername` unchanged and
@@ -195,9 +210,12 @@ export const PRESENCE_CAPABILITY_REASON_CODES = Object.freeze(['viewer-binding-u
  *     answered plane row is never converted into a fabricated `seat absent` by spelling alone.
  * @param {Date|String} [options.capturedAt] Capture timestamp — the observation-time bound above.
  * @returns {Promise<{capability: Object, states: Object[]}>} `states` rows:
- *     `{agentId, presence, beacon, lastSeenAt, confidence, source}` (+ `reason` when `presence`
- *     is `unknown`, or `{validationState, since}` when the plane vouched stale validation);
+ *     `{agentId, presence, beacon, lastSeenAt, confidence, source, participation, participationRead}` (+ `reason`
+ *     when `presence` is `unknown`, or `{validationState, since}` when the plane vouched stale validation);
  *     `beacon` is one of {@link PRESENCE_BEACON_FACETS}, evaluated at the same bound as the grade.
+ *     `participation` is the identity node's ({@link participationOf}), `null` where an answered report holds no
+ *     row for the seat; `participationRead` is `{state: 'read'}` once the report answered, else `{state: 'unread',
+ *     reason}`, so an unanswered read is never mistaken for a seat without a node.
  */
 export async function readFleetPresenceSnapshot({
     agents = [],
@@ -217,7 +235,7 @@ export async function readFleetPresenceSnapshot({
         readReasonCode = null,
         readReason     = hasReader
             ? null
-            : 'no presence truth source exists for this mode: plane mode injects the who_is_online reader; a host presence surface has not landed'
+            : 'no presence truth source exists for this mode: no who_is_online reader was injected'
 
     if (hasReader) {
         try {
@@ -247,7 +265,8 @@ export async function readFleetPresenceSnapshot({
                         lastSeenAt     : row.signals?.activityRecency?.lastActivityAt ?? null,
                         reason         : typeof row.reason === 'string' ? redactReason(row.reason) : null,
                         validationState: row.validationState === 'stale-validated' ? row.validationState : null,
-                        since          : row.validationState === 'stale-validated' && Number.isFinite(row.since) ? row.since : null
+                        since          : row.validationState === 'stale-validated' && Number.isFinite(row.since) ? row.since : null,
+                        participation  : participationOf(row)
                     })
                 }
             }
@@ -271,7 +290,10 @@ export async function readFleetPresenceSnapshot({
             lastSeenAt      = null,
             rowReason       = readReason,
             validationState = null,
-            since           = null
+            since           = null,
+            // a report that never answered leaves every seat's participation unread; an answered one
+            // without this seat's row has no identity node for it, the open-set case
+            participation   = null
 
         if (byIdentity) {
             const row = byIdentity.get(presenceIdentityFor(agent))
@@ -286,6 +308,7 @@ export async function readFleetPresenceSnapshot({
                 rowReason       = row.reason
                 validationState = row.validationState
                 since           = row.since
+                participation   = row.participation
             } else {
                 rowReason = 'seat absent from the presence report'
             }
@@ -296,8 +319,10 @@ export async function readFleetPresenceSnapshot({
             presence,
             beacon,
             lastSeenAt,
-            confidence: presence === 'unknown' ? 'none' : 'observed',
-            source    : PRESENCE_SOURCE_LABEL
+            confidence       : presence === 'unknown' ? 'none' : 'observed',
+            source           : PRESENCE_SOURCE_LABEL,
+            participation,
+            participationRead: byIdentity ? {state: 'read'} : {state: 'unread', reason: readReason || 'presence unreadable'}
         }
 
         if (presence === 'unknown') {

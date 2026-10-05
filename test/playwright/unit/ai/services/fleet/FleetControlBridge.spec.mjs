@@ -24,6 +24,7 @@ import FleetManager           from '../../../../../../ai/services/fleet/FleetMan
 import FleetRegistryService   from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
 import {dispatchFleetRequest} from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
 
+import {readFleetPresenceSnapshot}        from '../../../../../../ai/services/fleet/fleetPresenceStateAdapter.mjs';
 import {ManagedWorkspacePreparationError} from '../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs';
 
 import {createFleetWireRequest, FLEET_WIRE_RESPONSE_STATES} from '../../../../../../src/fleet/contract/wire.mjs';
@@ -751,6 +752,54 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(rows[0].participationStatus).toBeNull();
         guest.harnessType = 'claude-desktop';
         expect((await FleetControlBridge.fleetRoster()).rows[0].family).toBe('claude');
+    });
+
+    test('fleetRoster takes participation from the identity node, never the roots (#874)', async () => {
+        // neo-gpt's root reads active and Iris's root reads benched: the node says the opposite for both
+        registryStub.listAgents = () => [
+            {id: 'gpt',  githubUsername: 'neo-gpt',       harnessType: 'codex'},
+            {id: 'iris', githubUsername: 'neo-kimi-iris', harnessType: 'opencode'}
+        ];
+        managerStub.fleetRepoStatus     = () => [];
+        managerStub.fleetRuntimeStatus  = () => [];
+        managerStub.fleetPresenceStatus = () => readFleetPresenceSnapshot({
+            agents      : registryStub.listAgents(),
+            readPresence: async () => ({agents: [
+                {identity: '@neo-gpt', state: 'benched', reason: 'roster: generic', signals: {participationStatus: 'operator_benched', statusReason: 'the flatrate ended', participationSince: '2026-10-01T00:00:00.000Z', activityRecency: null}},
+                {identity: '@neo-kimi-iris', state: 'idle', reason: null, signals: {participationStatus: 'active', statusReason: null, participationSince: null, activityRecency: null}}
+            ]})
+        });
+
+        const rows = (await FleetControlBridge.fleetRoster()).rows;
+
+        expect(rows[0]).toMatchObject({
+            id: 'gpt', participationStatus: 'operator_benched', participationReason: 'the flatrate ended',
+            participationSince: '2026-10-01T00:00:00.000Z', participationRead: {state: 'read'}
+        });
+        expect(rows[1]).toMatchObject({id: 'iris', participationStatus: 'active', participationRead: {state: 'read'}});
+    });
+
+    test('fleetRoster never guesses participation: an unanswered read is unread with its reason, a seat without a node is null (#874)', async () => {
+        registryStub.listAgents        = () => [{id: 'iris', githubUsername: 'neo-kimi-iris', harnessType: 'opencode'}];
+        managerStub.fleetRepoStatus    = () => [];
+        managerStub.fleetRuntimeStatus = () => [];
+
+        const rowWith = async readPresence => {
+            managerStub.fleetPresenceStatus = () => readFleetPresenceSnapshot({agents: registryStub.listAgents(), readPresence});
+            return (await FleetControlBridge.fleetRoster()).rows[0]
+        };
+
+        // the root's bench is not a fallback for a read that failed
+        expect(await rowWith(async () => { throw new Error('plane unreachable') })).toMatchObject({
+            participationStatus: null, participationRead: {state: 'unread', reason: 'plane unreachable'}
+        });
+        // an answered report without the seat's row: no node, the open-set case
+        expect(await rowWith(async () => ({agents: []}))).toMatchObject({participationStatus: null, participationRead: {state: 'read'}});
+
+        delete managerStub.fleetPresenceStatus;
+        expect((await FleetControlBridge.fleetRoster()).rows[0]).toMatchObject({
+            participationStatus: null, participationRead: {state: 'unread', reason: 'presence producer not wired'}
+        });
     });
 
     test('fleetRoster stamps the start verb\'s own refusal: a released seat carries its words, every other seat null', async () => {

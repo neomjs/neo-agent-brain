@@ -1165,6 +1165,8 @@ class WakeSubscriptionService extends Base {
      *   normalized GitHub login.
      * @returns {Object} `{identity, name, family, participationStatus, online, reason, signals}` plus
      *   `{validationState, since}` only when this identity is currently admitted from stale validation.
+     *   `signals` carries the node's own participation words, `statusReason` and `participationSince`, so a
+     *   consumer can show the operator's reason rather than this row's generic one.
      * @protected
      */
     _projectAgentLiveness(node, nowMs, validationByLogin=new Map()) {
@@ -1173,7 +1175,7 @@ class WakeSubscriptionService extends Base {
               name                = node.name || props.displayName || node.id,
               family              = resolveResidentFamilyById(node.id) ?? props.family ?? props.modelFamily ?? null,
               participationStatus = props.participationStatus || 'active',
-              signals             = {participationStatus, activityRecency: null},
+              signals             = {participationStatus, statusReason: props.statusReason ?? null, participationSince: props.since ?? null, activityRecency: null},
               validation          = validationByLogin.get(normalizeGithubLogin(props.githubLogin ?? identity)),
               baseRow             = {
                   identity,
