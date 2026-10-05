@@ -12,6 +12,7 @@ import {deriveAgentInstanceHome}                                    from './deri
 import {deriveHarnessLaunchSpec}                                    from './deriveHarnessLaunchSpec.mjs';
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                     from './deriveNodeRuntimeEnv.mjs';
 import FleetRegistryService                                         from './FleetRegistryService.mjs';
+import {readSeatEnvOperatorKeys, SEAT_ENV_NOT_REGULAR}              from './seatEnvFile.mjs';
 import {readSeatSessionFolder}                                      from './seatSessionFolder.mjs';
 import memoryCoreConfig                                             from '../../mcp/server/memory-core/config.mjs';
 import knowledgeBaseConfig                                          from '../../mcp/server/knowledge-base/config.mjs';
@@ -573,6 +574,24 @@ class FleetLifecycleService extends Base {
             if (envKeys.includes(key)) {
                 throw new Error(`FleetLifecycleService.start: launch env key '${key}' collides with a reserved env slot for agent '${id}' (reserved: ${JSON.stringify(envKeys)}).`);
             }
+        }
+
+        // The seat's own .env may add keys for its servers, never a reserved slot: `--env-file` never
+        // overwrites, so such a line would only make the file disagree with what the seat runs on.
+        let operatorKeys = [];
+
+        try {
+            operatorKeys = agent.seatHome ? readSeatEnvOperatorKeys(agent.seatHome) : []
+        } catch (error) {
+            if (error.code !== SEAT_ENV_NOT_REGULAR) throw error;
+
+            throw new Error(`FleetLifecycleService.start: agent '${id}' cannot start: ${error.message}`)
+        }
+
+        const shadowed = operatorKeys.find(key => envKeys.includes(key) || key === 'GITHUB_TOKEN');
+
+        if (shadowed) {
+            throw new Error(`FleetLifecycleService.start: the seat's .env sets '${shadowed}', a slot the Fleet fills itself; remove it from the file before starting agent '${id}'.`);
         }
 
         // Child env: the MINIMAL allowlisted base — never a full parent-env copy. An instance must
