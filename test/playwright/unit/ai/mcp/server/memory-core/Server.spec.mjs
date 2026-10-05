@@ -38,7 +38,8 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
         '@existing-gitlab-agent-14388',
         '@colliding-gitlab-agent-14388',
         '@concurrent-gitlab-agent-14388',
-        '@xprovider-shared-login'
+        '@xprovider-shared-login',
+        '@benched-gitlab-agent-883'
     ]);
 
     const silentLogger = {info: () => {}, warn: () => {}, error: () => {}};
