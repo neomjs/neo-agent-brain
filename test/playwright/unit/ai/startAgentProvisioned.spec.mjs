@@ -1,6 +1,8 @@
 import {test, expect}                    from '@playwright/test';
 import {CREDENTIAL_FAMILIES}             from '../../../../ai/services/fleet/redactCredentials.mjs';
-import {LAUNCHABLE_HARNESS_TYPES}        from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
+import {LAUNCHABLE_HARNESS_TYPES, deriveCodexHome} from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
+import {deriveAgentInstanceHome}         from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
+import {readCodexModelCatalog}           from '../../../../ai/services/fleet/codexModelCatalog.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {startAgentProvisioned as startProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 import {resolveSeatGitIdentity}          from '../../../../ai/services/fleet/seatGitIdentity.mjs';
@@ -794,6 +796,24 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         })).rejects.toMatchObject({code: 'FLEET_SEAT_HOME_IN_USE', message: expect.stringContaining('cannot start: the app-server did not exit when told to')});
 
         expect([ensure.calls.length, lifecycle.calls.start.length], 'nothing cloned, nothing spawned').toEqual([0, 0]);
+    });
+
+    test('while a server an earlier read started still runs in the home, the start refuses before asking for a login', async () => {
+        const
+            {EventEmitter} = await import('node:events'),
+            lifecycle      = makeLifecycle({agents: {held: {id: 'held', githubUsername: 'held', harnessType: 'codex', metadata: {}, seatHome: '/managed/held'}}}),
+            codexHome      = deriveCodexHome({harnessType: 'codex', instanceHome: deriveAgentInstanceHome({instanceRoot: '/instances', agentId: 'held', harnessType: 'codex'})}),
+            // a Configuration read whose app-server never answers and ignores both signals
+            deaf           = Object.assign(new EventEmitter(), {pid: 5150, kill: () => {}, stdin: Object.assign(new EventEmitter(), {write: () => {}}), stdout: new EventEmitter()});
+
+        await readCodexModelCatalog({binaryPath: '/opt/codex', codexHome, timeoutMs: 10, graceMs: 10, spawnFn: () => deaf});
+
+        // the default catalog read: this fixture's homes have no login, so only the held home can refuse here
+        await expect(startAgentProvisioned({lifecycleService: lifecycle, agentId: 'held', managedRoot: '/managed'}))
+            .rejects.toMatchObject({code: 'FLEET_SEAT_HOME_IN_USE', message: expect.stringContaining('(pid 5150) has not exited')});
+        expect(lifecycle.calls.start, 'the harness did not start beside it').toHaveLength(0);
+
+        deaf.emit('exit', null, 'SIGKILL');
     });
 
     test('a seat without a repository reads its catalog too, and refuses a declared model its harness lacks', async () => {

@@ -1,6 +1,6 @@
 import {execFile}                              from 'node:child_process';
 import {promisify}                             from 'node:util';
-import {readCodexModelCatalog}                 from './codexModelCatalog.mjs';
+import {codexHomeInUse, readCodexModelCatalog} from './codexModelCatalog.mjs';
 import {deriveAgentInstanceHome}               from './deriveAgentInstanceHome.mjs';
 import {deriveCodexHome}                       from './deriveHarnessLaunchSpec.mjs';
 import {resolveHarnessSeatSettings}            from '../../../src/fleet/contract/harnessTypes.mjs';
@@ -87,7 +87,12 @@ export async function readSeatModelCatalog({agent, instanceRoot, lifecycleServic
         return {state: 'unsupported', models: [], reason: `a '${agent?.harnessType}' seat takes no declared model or reasoning effort`}
     }
 
-    const codexHome = deriveCodexHome({harnessType: agent.harnessType, instanceHome: deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: agent.harnessType})});
+    const
+        codexHome = deriveCodexHome({harnessType: agent.harnessType, instanceHome: deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: agent.harnessType})}),
+        // asked before the login, which can be gone while the server an earlier read started still runs
+        inUse     = codexHomeInUse(codexHome);
+
+    if (inUse) return inUse;
 
     if (lifecycleService.authRequiredForHome(agent.harnessType, codexHome) !== false) {
         return {state: 'unavailable', models: [], reason: 'the seat has no Codex login yet; its catalog is read once it has one'}

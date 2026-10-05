@@ -8,9 +8,11 @@ import {spawn} from 'node:child_process';
  * The app-server speaks one JSON message per line on stdio: `initialize`, the `initialized` notification, then
  * `model/list` pages followed through `nextCursor`, hidden entries included. A read starts the server, so it
  * writes the server's state into the home it is given, and it is over only when that process is: the answer waits
- * for the child's exit, so nothing the read started still owns the home when a caller goes on. A caller reads a
- * seat's home before that seat's harness starts, never beside it, and one read at a time. The answer is the
- * harness's catalog, not an entitlement receipt: a home without a login answers a bundled one.
+ * for the child's exit, so nothing the read started still owns the home when a caller goes on. A server that
+ * outlives both signals keeps its home until it exits ({@link codexHomeInUse}): no read starts a second one there,
+ * and no start launches the harness beside it. A caller reads a seat's home before that seat's harness starts,
+ * never beside it, and one read at a time. The answer is the harness's catalog, not an entitlement receipt: a home
+ * without a login answers a bundled one.
  */
 
 /**
@@ -30,6 +32,29 @@ const EXIT_GRACE_MS = 2000;
  * @type {Number}
  */
 const MAX_PAGES = 20;
+
+/**
+ * Each home whose app-server outlived its read, with that server's pid, until the server exits.
+ * @type {Map<String, Number>}
+ */
+const occupiedHomes = new Map();
+
+/**
+ * @summary What a read of this home answers while an app-server an earlier read started still runs there, so the
+ * caller neither starts a second one nor launches the harness beside it.
+ * @param {String} codexHome The seat's Codex home
+ * @returns {{state: 'unavailable', models: [], reason: String, stillRunning: true}|null} `null` when the home is free
+ */
+export function codexHomeInUse(codexHome) {
+    const pid = occupiedHomes.get(codexHome);
+
+    return pid === undefined ? null : {
+        state       : 'unavailable',
+        models      : [],
+        reason      : `the app-server an earlier catalog read started (pid ${pid}) has not exited, so the seat's home is still in use`,
+        stillRunning: true
+    }
+}
 
 /**
  * @summary One model as Configuration offers it, or `null` for an entry this reader cannot read: an id that is not
@@ -64,10 +89,14 @@ function offeredModel(model) {
  * @param {Number}   [options.graceMs]  How long the app-server has to exit after each signal
  * @returns {Promise<{state: 'complete'|'partial'|'unavailable', models: Object[], reason: String|null, stillRunning?: Boolean}>}
  * Settles after the app-server exited. `partial` when pages were read before the read failed, and a failed, partial
- * or unreadable read never says a model is missing. `stillRunning` when the app-server outlived both signals: its home
- * is not free.
+ * or unreadable read never says a model is missing. `stillRunning` when this read's app-server outlived both signals,
+ * or an earlier read's still runs in the home and this one started none: either way the home is not free.
  */
 export function readCodexModelCatalog({binaryPath, codexHome, spawnFn = spawn, timeoutMs = READ_TIMEOUT_MS, graceMs = EXIT_GRACE_MS}) {
+    const inUse = codexHomeInUse(codexHome);
+
+    if (inUse) return Promise.resolve(inUse);
+
     return new Promise(resolve => {
         const
             models = [],
@@ -99,9 +128,11 @@ export function readCodexModelCatalog({binaryPath, codexHome, spawnFn = spawn, t
                     await exit(graceMs) || (child.kill('SIGKILL'), await exit(graceMs))
                 }
 
-                resolve(child.pid === undefined || exited
-                    ? answer
-                    : {state: 'unavailable', models: [], reason: 'the app-server did not exit when told to, so the seat\'s home is still in use', stillRunning: true})
+                if (child.pid === undefined || exited) return resolve(answer);
+
+                // the server keeps the home until it exits, for every read and start that comes after this one
+                occupiedHomes.set(codexHome, child.pid);
+                resolve({state: 'unavailable', models: [], reason: `the app-server did not exit when told to (pid ${child.pid}), so the seat's home is still in use`, stillRunning: true})
             },
             listPage = cursor => send({id: 2 + pages, method: 'model/list', params: {includeHidden: true, cursor}}),
             timer    = setTimeout(() => finish('partial', `the catalog read took longer than ${timeoutMs} ms`), timeoutMs);
@@ -138,6 +169,7 @@ export function readCodexModelCatalog({binaryPath, codexHome, spawnFn = spawn, t
         child.on('error', error => finish('unavailable', `the app-server did not start: ${error.message}`));
         child.on('exit', code => {
             exited = true;
+            occupiedHomes.get(codexHome) === child.pid && occupiedHomes.delete(codexHome);
             finish('partial', `the app-server exited (${code}) before the catalog was read`)
         });
         child.stdin.on('error', () => {});

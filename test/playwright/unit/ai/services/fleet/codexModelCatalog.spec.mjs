@@ -126,17 +126,32 @@ test.describe('codexModelCatalog — a Codex seat\'s catalog through its own app
         expect(deaf.seen.exitedAt).toBeLessThanOrEqual(deafAnswer.answeredAt);
     });
 
-    test('an app-server that outlives both signals hands back no catalog: the home is still in use', async () => {
+    test('an app-server that outlives both signals keeps its home until it exits: the next read there starts none', async () => {
         const
             {EventEmitter} = await import('node:events'),
-            child          = Object.assign(new EventEmitter(), {pid: 4711, signals: [], stdin: new EventEmitter(), stdout: new EventEmitter()});
+            spawned        = [],
+            // answers one empty page; a child that obeys exits on the first signal, a deaf one never does
+            stub           = obeys => {
+                const child = Object.assign(new EventEmitter(), {pid: 4711 + spawned.length, signals: [], stdin: new EventEmitter(), stdout: new EventEmitter()});
 
-        child.kill        = signal => child.signals.push(signal);
-        child.stdin.write = () => queueMicrotask(() => child.stdout.emit('data', '{"id":1,"result":{}}\n{"id":2,"result":{"data":[],"nextCursor":null}}\n'));
+                child.kill        = signal => { child.signals.push(signal); obeys && queueMicrotask(() => child.emit('exit', null, signal)) };
+                child.stdin.write = () => queueMicrotask(() => child.stdout.emit('data', '{"id":1,"result":{}}\n{"id":2,"result":{"data":[],"nextCursor":null}}\n'));
+                spawned.push(child);
 
-        const answer = await readCodexModelCatalog({binaryPath: '/opt/codex', codexHome: '/agents/sophie/codex-home', graceMs: 50, spawnFn: () => child});
+                return child
+            },
+            read = obeys => readCodexModelCatalog({binaryPath: '/opt/codex', codexHome: '/agents/held/codex-home', graceMs: 50, spawnFn: () => stub(obeys)}),
+            deaf = await read(false);
 
-        expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
-        expect(answer).toEqual({state: 'unavailable', models: [], reason: 'the app-server did not exit when told to, so the seat\'s home is still in use', stillRunning: true});
+        expect(spawned[0].signals).toEqual(['SIGTERM', 'SIGKILL']);
+        expect(deaf).toEqual({state: 'unavailable', models: [], reason: 'the app-server did not exit when told to (pid 4711), so the seat\'s home is still in use', stillRunning: true});
+
+        expect(await read(true), 'names the process that holds the home').toEqual({...deaf, reason: 'the app-server an earlier catalog read started (pid 4711) has not exited, so the seat\'s home is still in use'});
+        expect(spawned).toHaveLength(1);
+
+        spawned[0].emit('exit', null, 'SIGKILL');
+
+        expect((await read(true)).state, 'the home is free once that process exited').toBe('complete');
+        expect(spawned).toHaveLength(2);
     });
 });
