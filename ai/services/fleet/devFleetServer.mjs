@@ -61,7 +61,8 @@ import {probeExistingFleetServer, resolveFleetBearer, resolveFleetViewer,
 import {assertFleetPlaneAdmissionBearerClass,
         assertFleetPlaneBearerClass,
         assertFleetViewerMcAuthorizationClass}                            from './fleetServer.mjs';
-import {createPlaneMailboxClient}             from './planeMailboxClient.mjs';
+import {createPlaneFleetClient}   from './planeFleetClient.mjs';
+import {createPlaneMailboxClient} from './planeMailboxClient.mjs';
 import {createPlaneWakeIdentitiesReader,
         createPlaneWakeObservationsReader}                               from './planeWakeIdentitiesReader.mjs';
 import {createFleetWakeSseConsumer}       from './fleetWakeSseConsumer.mjs';
@@ -213,6 +214,10 @@ async function boot() {
             wakeStreamConsumer.start();
             fleetWakeStreamConsumer = wakeStreamConsumer
         }
+
+        // The plane owns a seat's definition and operator, so a seat is defined there first, with the
+        // same fleet-surface credential; an empty one refuses every define with that reason.
+        FleetControlBridge.planeFleet = createPlaneFleetClient({baseUrl: planeBase, credential: planeAdmissionBearer});
 
         FleetManager.wakeStateOptions = {
             // The proven client returns PARSED payloads (its mapToolResult owns envelope handling)
