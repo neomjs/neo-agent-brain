@@ -252,6 +252,17 @@ closed instead of guessing a winner. Every successful transition also advances
 the message's `lastModifiedAt`, the canonical clock used by task-change
 consumers.
 
+A task sent directly to a registered human binds to that human the same way, so
+an operator owns the questions put to them. Since they are the ones asked, they
+may also leave `InputRequired` themselves, for `Working` or `Completed`; an
+agent assignee still waits for its originator. The owner is the identity on the
+task's one `SENT_TO` edge, so an older human task stored with a `null` assignee
+gains it on its first authorized transition, and ambiguous routing still fails
+closed. A reply is a new message: only `transition_task` on the original message
+moves its task. A recipient finds its open tasks by listing its mailbox with
+`taskStates` (and `taskOrder: 'priority-age'` for high-first, oldest-first),
+which counts and pages exactly that population from the stored task state.
+
 That split keeps the conceptual model clean. A message can simply be a note. It
 can also be the visible surface for an agent task that moves through states such
 as submitted, working, input-required, completed, failed, or blocked. The point

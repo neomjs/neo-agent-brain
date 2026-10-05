@@ -15,9 +15,11 @@ setup({
 
 import {test, expect}           from '@playwright/test';
 import {AjvJsonSchemaValidator} from '@modelcontextprotocol/sdk/validation/ajv-provider.js';
+import Database                 from 'better-sqlite3';
 import * as yaml                from 'js-yaml';
 import fs                       from 'fs-extra';
 import fsPromises               from 'fs/promises';
+import os                       from 'os';
 import path                     from 'path';
 import Neo                      from 'neo.mjs/src/Neo.mjs';
 import * as core                from 'neo.mjs/src/core/_export.mjs';
@@ -6885,6 +6887,286 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         });
 
         expect(readStoredTask(msgId).task).toMatchObject({state: 'Working', assignee: '@bob'});
+    });
+
+    /**
+     * Human recipients: an operator, a second human outside any roster, a system identity
+     * and an identity with no class, each letting @alice address them; @charlie may read the
+     * operator's inbox and nothing more.
+     */
+    async function seedHumanRecipients() {
+        GraphService.upsertNode({id: '@operator', type: 'AgentIdentity', name: 'Operator', properties: {accountType: 'human'}});
+        GraphService.upsertNode({id: '@guest',    type: 'AgentIdentity', name: 'Guest',    properties: {accountType: 'human'}});
+        GraphService.upsertNode({id: '@fleet',    type: 'AgentIdentity', name: 'Fleet',    properties: {accountType: 'system'}});
+        GraphService.upsertNode({id: '@nobody',   type: 'AgentIdentity', name: 'Nobody',   properties: {}});
+
+        for (const id of ['@operator', '@guest', '@fleet', '@nobody']) {
+            await RequestContextService.run({agentIdentityNodeId: id}, () => PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'}));
+        }
+
+        await RequestContextService.run({agentIdentityNodeId: '@operator'}, () => PermissionService.grantPermission({to: '@charlie', scope: 'CAN_READ_INBOX_OF'}));
+    }
+
+    const
+        ask       = (to, extra = {}) => RequestContextService.run({agentIdentityNodeId: '@alice'}, async () =>
+            (await MailboxService.addMessage({to, subject: 'a question', body: 'which one?', task: {state: 'InputRequired'}, ...extra})).messageId),
+        actAs     = (identity, fn) => RequestContextService.run({agentIdentityNodeId: identity}, fn),
+        openTasks = (identity, args = {}) => actAs(identity, () => MailboxService.listMessages({taskStates: ['InputRequired'], ...args}));
+
+    test('#859 AC-1: a direct Task to a registered human is that human\'s, whatever the caller supplies; system and unclassified targets stay unassigned', async () => {
+        await seedHumanRecipients();
+
+        const
+            spoofed = await ask('@operator', {task: {state: 'InputRequired', assignee: '@alice'}}),
+            guest   = await ask('@guest'),
+            system  = await ask('@fleet'),
+            noClass = await ask('@nobody');
+
+        expect(readStoredTask(spoofed).task.assignee).toBe('@operator');
+        expect(readStoredTask(guest).task.assignee).toBe('@guest');
+        expect(readStoredTask(system).task.assignee).toBeNull();
+        expect(readStoredTask(noClass).task.assignee).toBeNull();
+        // the human stays human: admission reads its class and never rewrites it
+        expect(GraphService.db.nodes.get('@operator').properties.accountType).toBe('human');
+    });
+
+    test('#859 AC-2: the human assignee leaves InputRequired itself, on the original message; another human, an inbox reader and a system identity cannot', async () => {
+        await seedHumanRecipients();
+
+        const
+            first  = await ask('@operator'),
+            second = await ask('@operator');
+
+        for (const identity of ['@guest', '@charlie', '@fleet']) {
+            await expect(actAs(identity, () => MailboxService.transitionTask({taskId: first, newState: 'Working'})), identity)
+                .rejects.toThrow(new RegExp(`Unauthorized: ${identity} is neither originator nor assignee`));
+        }
+
+        expect((await actAs('@operator', () => MailboxService.transitionTask({taskId: first, newState: 'Working'}))).success).toBe(true);
+        expect((await actAs('@operator', () => MailboxService.transitionTask({taskId: first, newState: 'Completed'}))).success).toBe(true);
+        expect((await actAs('@operator', () => MailboxService.transitionTask({taskId: second, newState: 'Completed'}))).success).toBe(true);
+
+        expect(readStoredTask(first).task).toMatchObject({state: 'Completed', assignee: '@operator'});
+        expect(readStoredTask(second).task).toMatchObject({state: 'Completed', assignee: '@operator'});
+    });
+
+    test('#859 AC-2: an agent assignee still waits for its originator to leave InputRequired', async () => {
+        const taskId = await ask('@bob');
+
+        await expect(actAs('@bob', () => MailboxService.transitionTask({taskId, newState: 'Working'})))
+            .rejects.toThrow(/@bob as assignee cannot transition `InputRequired → Working`/);
+        expect((await actAs('@alice', () => MailboxService.transitionTask({taskId, newState: 'Working'}))).success).toBe(true);
+    });
+
+    test('#859 AC-3: one answer wins: a second answer from the same question reads a mismatch, and one event is written', async () => {
+        await seedHumanRecipients();
+
+        const taskId = await ask('@operator');
+
+        expect((await actAs('@operator', () => MailboxService.transitionTask({taskId, newState: 'Completed', expectedCurrentState: 'InputRequired'}))).success).toBe(true);
+
+        const second = await actAs('@operator', () => MailboxService.transitionTask({taskId, newState: 'Working', expectedCurrentState: 'InputRequired'}));
+
+        expect(second).toMatchObject({success: false, rowsAffected: 0});
+        expect(second.reason).toMatch(/State mismatch: expected InputRequired, got Completed/);
+        expect(readTaskEvents(taskId).map(event => event.event_payload)).toEqual([
+            expect.objectContaining({previousState: 'InputRequired', newState: 'Completed', assignee: '@operator'})
+        ]);
+    });
+
+    test('#859 AC-3: a direct human Task stored without an assignee gains it from its one routing edge on the first answer', async () => {
+        await seedHumanRecipients();
+
+        const taskId = await ask('@operator');
+
+        // as stored before humans were assignable
+        GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.task.assignee', NULL) WHERE id = ?`).run(taskId);
+        clearTaskCacheWithoutStorageMutation();
+        expect(readStoredTask(taskId).task.assignee).toBeNull();
+
+        expect((await actAs('@operator', () => MailboxService.transitionTask({taskId, newState: 'Working'}))).success).toBe(true);
+        expect(readStoredTask(taskId).task).toMatchObject({state: 'Working', assignee: '@operator'});
+    });
+
+    test('#859 AC-4: the Task view filters before the page: an older open question behind newer traffic is counted, listed, and kept by a read receipt', async () => {
+        await seedHumanRecipients();
+
+        const older = await ask('@operator');
+
+        for (let i = 0; i < 6; i++) {
+            await actAs('@alice', () => MailboxService.addMessage({to: '@operator', subject: `newer ${i}`, body: 'fyi', ...(i % 2 ? {task: {state: 'Completed'}} : {})}));
+        }
+
+        const inbox = await actAs('@operator', () => MailboxService.listMessages({limit: 5}));
+
+        expect(inbox.totalCount).toBe(7);
+        expect(inbox.messages.map(row => row.messageId)).not.toContain(older);
+
+        const open = await openTasks('@operator', {limit: 5});
+
+        expect(open).toMatchObject({totalCount: 1, truncated: false, nextOffset: null});
+        expect(open.messages).toHaveLength(1);
+        expect(open.messages[0]).toMatchObject({messageId: older, priority: 'normal', from: '@alice', task: {state: 'InputRequired', assignee: '@operator'}});
+        expect(open.messages[0].task).not.toHaveProperty('expiresAt');
+
+        // a read receipt is not an answer
+        await actAs('@operator', () => MailboxService.markRead({messageId: older}));
+        expect((await openTasks('@operator')).totalCount).toBe(1);
+
+        // the answer is, and the next read reflects it
+        await actAs('@operator', () => MailboxService.transitionTask({taskId: older, newState: 'Completed'}));
+        expect((await openTasks('@operator')).totalCount).toBe(0);
+
+        const done = await actAs('@operator', () => MailboxService.listMessages({taskStates: ['Completed']}));
+
+        expect(done.totalCount).toBe(4);
+        expect(done.messages.find(row => row.messageId === older).task.state).toBe('Completed');
+    });
+
+    test('#859 AC-4: each row carries the Task its filter matched, even when an answer lands between the match and the row', async () => {
+        await seedHumanRecipients();
+
+        const
+            taskId  = await ask('@operator'),
+            project = MailboxService._projectMailboxRow;
+
+        // a concurrent answer lands after the page was read and before its row is projected
+        MailboxService._projectMailboxRow = function (...args) {
+            GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.task.state', 'Completed') WHERE id = ?`).run(taskId);
+            return project.apply(this, args)
+        };
+
+        try {
+            const open = await openTasks('@operator');
+
+            expect(open.totalCount).toBe(1);
+            expect(open.messages[0].task.state).toBe('InputRequired');
+        } finally {
+            MailboxService._projectMailboxRow = project
+        }
+
+        // the next read is fresh and sees the answer
+        expect((await openTasks('@operator')).totalCount).toBe(0);
+    });
+
+    test('#859 AC-4: the count and the page read one snapshot: an answer another connection commits between them leaves a coherent page', async () => {
+        await seedHumanRecipients();
+
+        const
+            taskId = await ask('@operator'),
+            memory = GraphService.db.storage.db,
+            file   = path.join(os.tmpdir(), `mailbox-snapshot-${process.pid}-${Date.now()}.sqlite`);
+
+        // the graph as a file, so a second connection can write to it the way another process would
+        fs.writeFileSync(file, memory.serialize());
+
+        const reader = new Database(file);
+
+        reader.pragma('journal_mode = WAL');
+
+        const
+            writer  = new Database(file),
+            prepare = reader.prepare;
+
+        GraphService.db.storage.db = reader;
+
+        // the answer commits after the count has been read and before the page is
+        reader.prepare = function (source) {
+            /SELECT messageId, task FROM tasks/.test(source) &&
+                writer.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.task.state', 'Completed') WHERE id = ?`).run(taskId);
+            return prepare.call(this, source)
+        };
+
+        try {
+            const open = await openTasks('@operator', {limit: 1});
+
+            expect(open).toMatchObject({totalCount: 1, truncated: false, nextOffset: null});
+            expect(open.messages.map(row => row.messageId)).toEqual([taskId]);
+
+            reader.prepare = prepare;
+
+            // the next read is a fresh snapshot, and sees the answer
+            expect((await openTasks('@operator')).totalCount).toBe(0);
+        } finally {
+            GraphService.db.storage.db = memory;
+            reader.close();
+            writer.close();
+            for (const suffix of ['', '-wal', '-shm']) fs.removeSync(file + suffix)
+        }
+    });
+
+    test('#859 AC-4: priority-age orders high, normal (an absent priority included), low, then oldest first, across a page boundary', async () => {
+        await seedHumanRecipients();
+
+        const
+            low      = await ask('@operator', {priority: 'low'}),
+            normal   = await ask('@operator', {priority: 'normal'}),
+            highOld  = await ask('@operator', {priority: 'high'}),
+            unset    = await ask('@operator'),
+            highNew  = await ask('@operator', {priority: 'high'}),
+            sentAt   = {[low]: '2026-10-04T10:00:00.000Z', [normal]: '2026-10-04T10:01:00.000Z', [highOld]: '2026-10-04T10:02:00.000Z', [unset]: '2026-10-04T10:03:00.000Z', [highNew]: '2026-10-04T10:04:00.000Z'},
+            setSentAt = GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.sentAt', ?) WHERE id = ?`);
+
+        for (const [id, at] of Object.entries(sentAt)) setSentAt.run(at, id);
+        // a row stored before priorities defaulted carries none, and reads normal
+        GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_remove(data, '$.properties.priority') WHERE id = ?`).run(unset);
+        clearTaskCacheWithoutStorageMutation();
+
+        const
+            first  = await openTasks('@operator', {taskOrder: 'priority-age', limit: 2}),
+            second = await openTasks('@operator', {taskOrder: 'priority-age', limit: 2, offset: first.nextOffset}),
+            third  = await openTasks('@operator', {taskOrder: 'priority-age', limit: 2, offset: second.nextOffset});
+
+        expect(first).toMatchObject({totalCount: 5, truncated: true, nextOffset: 2});
+        expect([...first.messages, ...second.messages, ...third.messages].map(row => row.messageId)).toEqual([highOld, highNew, normal, unset, low]);
+        expect(third).toMatchObject({truncated: false, nextOffset: null});
+
+        // without taskOrder the Task view keeps the mailbox's newest-first order
+        expect((await openTasks('@operator')).messages.map(row => row.messageId)).toEqual([highNew, unset, highOld, normal, low]);
+    });
+
+    test('#859 AC-4: an expired question leaves the open view on the next read, with its stored state', async () => {
+        await seedHumanRecipients();
+
+        const
+            expired = await ask('@operator', {task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z'}}),
+            live    = await ask('@operator');
+
+        await MailboxService.sweepExpiredTasks();
+
+        const open = await openTasks('@operator');
+
+        expect(open.messages.map(row => row.messageId)).toEqual([live]);
+
+        const gone = await actAs('@operator', () => MailboxService.listMessages({taskStates: ['Expired']}));
+
+        expect(gone.messages).toEqual([expect.objectContaining({messageId: expired, task: expect.objectContaining({state: 'Expired', expiresAt: '2020-01-01T00:00:00.000Z'})})]);
+    });
+
+    test('#859 AC-5: a malformed Task view, or another recipient\'s, is refused, never answered as an empty or unfiltered page', async () => {
+        await seedHumanRecipients();
+        await ask('@operator');
+
+        for (const args of [{taskStates: []}, {taskStates: ['Nope']}, {taskStates: 'InputRequired'}, {taskOrder: 'priority-age'}, {taskStates: ['InputRequired'], taskOrder: 'newest'}]) {
+            await expect(actAs('@operator', () => MailboxService.listMessages(args)), JSON.stringify(args)).rejects.toThrow(/MailboxService\.listMessages: task(States|Order)/);
+        }
+
+        await expect(actAs('@guest', () => MailboxService.listMessages({to: '@operator', taskStates: ['InputRequired']})))
+            .rejects.toThrow(/Unauthorized: no CAN_READ_INBOX_OF permission for @operator/);
+        await expect(MailboxService.listMessages({taskStates: ['InputRequired']})).rejects.toThrow();
+
+        // a granted reader sees the operator's open questions, which still gives it no answer
+        expect((await actAs('@charlie', () => MailboxService.listMessages({to: '@operator', taskStates: ['InputRequired']}))).totalCount).toBe(1);
+    });
+
+    test('#859 AC-6: the human reads its own question in full; another human cannot', async () => {
+        await seedHumanRecipients();
+
+        const taskId = await ask('@operator');
+
+        expect((await actAs('@operator', () => MailboxService.getMessage({messageId: taskId}))).body).toBe('which one?');
+        await expect(actAs('@guest', () => MailboxService.getMessage({messageId: taskId})))
+            .rejects.toThrow(/Unauthorized: message .* was not sent to or from @guest/);
     });
 });
 
