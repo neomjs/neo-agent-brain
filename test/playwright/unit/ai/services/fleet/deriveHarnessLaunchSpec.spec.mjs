@@ -1,6 +1,6 @@
 import {test, expect}                                                          from '@playwright/test';
-import {HARNESS_TYPES}                                                         from '../../../../../../src/fleet/contract/harnessTypes.mjs';
-import {LAUNCHABLE_HARNESS_TYPES, deriveHarnessLaunchSpec, getHarnessAuthMode, getHarnessSeatSettings} from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
+import {HARNESS_TYPES, resolveHarnessSeatSettings}                             from '../../../../../../src/fleet/contract/harnessTypes.mjs';
+import {LAUNCHABLE_HARNESS_TYPES, deriveHarnessLaunchSpec, getHarnessAuthMode} from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 
 // Pure function — imported directly (no fs / spawn / env / Neo runtime), so the suite has no
 // host-runtime side effects and each case is fully isolated. Mirrors deriveAgentRepoPath.spec.
@@ -83,7 +83,7 @@ test.describe('deriveHarnessLaunchSpec (per-family harness launch templates)', (
         // Codex reads its own from config.toml; the app families take no flag Fleet could set
         expect(args('codex')).toEqual(['app-server']);
         expect(args('claude-desktop').some(arg => arg.startsWith('--model') || arg.startsWith('--effort'))).toBe(false);
-        expect(['claude-code', 'claude-desktop', 'codex', 'codex-desktop', 'opencode'].map(getHarnessSeatSettings))
+        expect(['claude-code', 'claude-desktop', 'codex', 'codex-desktop', 'opencode'].map(resolveHarnessSeatSettings))
             .toEqual(['args', null, 'codex-config', 'codex-config', null]);
     });
 

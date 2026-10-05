@@ -216,6 +216,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 // the model and effort a Codex seat's config is set to now (configured state, never what a
                 // chat runs on); null for every other family
                 harnessSettings: runtime?.harnessSettings ?? null,
+                // what the last start found of the declared model in the harness's catalog, a refusal's
+                // reason included; null before a start read one
+                seatModel      : runtime?.seatModel ?? null,
                 lifecycle   : supervised
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.runtime,

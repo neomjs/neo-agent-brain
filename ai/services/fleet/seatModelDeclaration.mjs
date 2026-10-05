@@ -1,4 +1,4 @@
-import {getHarnessSeatSettings} from './deriveHarnessLaunchSpec.mjs';
+import {resolveHarnessSeatSettings} from '../../../src/fleet/contract/harnessTypes.mjs';
 
 /**
  * A model id as harnesses name one: an alias (`opus`), a full id (`claude-opus-5-5`) or a provider path
@@ -39,7 +39,7 @@ export function normalizeSeatModelDeclaration(harnessType, fields) {
         declaration[key] = value
     }
 
-    if (!getHarnessSeatSettings(harnessType) && Object.values(declaration).some(value => value !== null)) {
+    if (!resolveHarnessSeatSettings(harnessType) && Object.values(declaration).some(value => value !== null)) {
         throw new TypeError(`a '${harnessType}' seat takes no declared model or reasoning effort: its harness chooses them itself.`)
     }
 

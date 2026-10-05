@@ -10,17 +10,21 @@
  * `modelFamily` is display vocabulary; any-provider harnesses remain unclassified.
  * `product` is what a person chooses; `runsAs` is how that product runs, an `'app'` or a `'cli'`
  * (`null` for a type that cannot be launched), so a form shows one choice per product.
- * @type {ReadonlyArray<{type: String, label: String, tenantMcpTarget: Boolean, modelFamily: String|null, product: String, runsAs: String|null}>}
+ * `seatSettings` is where the type reads a seat's declared model and reasoning effort at launch: `'args'`
+ * (`--model` / `--effort`), `'codex-config'` (`model` / `model_reasoning_effort` in its `config.toml`), or `null`
+ * where Fleet cannot set them: the Claude app starts every session with its own flags, which outrank any settings
+ * file, and the other types are unprobed.
+ * @type {ReadonlyArray<{type: String, label: String, tenantMcpTarget: Boolean, modelFamily: String|null, product: String, runsAs: String|null, seatSettings: String|null}>}
  */
 export const HARNESS_TYPES = Object.freeze([
-    Object.freeze({type: 'codex',          label: 'Codex',         tenantMcpTarget: true,  modelFamily: 'gpt',    product: 'codex',       runsAs: 'cli'}),
-    Object.freeze({type: 'codex-desktop',  label: 'Codex Desktop', tenantMcpTarget: true,  modelFamily: 'gpt',    product: 'codex',       runsAs: 'app'}),
-    Object.freeze({type: 'claude-code',    label: 'Claude Code',   tenantMcpTarget: true,  modelFamily: 'claude', product: 'claude',      runsAs: 'cli'}),
-    Object.freeze({type: 'claude-desktop', label: 'Claude',        tenantMcpTarget: true,  modelFamily: 'claude', product: 'claude',      runsAs: 'app'}),
-    Object.freeze({type: 'opencode',       label: 'OpenCode',      tenantMcpTarget: true,  modelFamily: null,     product: 'opencode',    runsAs: 'cli'}),
-    Object.freeze({type: 'kimi-code',      label: 'Kimi Code',     tenantMcpTarget: true,  modelFamily: 'kimi',   product: 'kimi-code',   runsAs: 'cli'}),
-    Object.freeze({type: 'antigravity',    label: 'Antigravity',   tenantMcpTarget: false, modelFamily: 'gemini', product: 'antigravity', runsAs: 'app'}),
-    Object.freeze({type: 'native-neo',     label: 'Native',        tenantMcpTarget: false, modelFamily: null,     product: 'native-neo',  runsAs: null})
+    Object.freeze({type: 'codex',          label: 'Codex',         tenantMcpTarget: true,  modelFamily: 'gpt',    product: 'codex',       runsAs: 'cli', seatSettings: 'codex-config'}),
+    Object.freeze({type: 'codex-desktop',  label: 'Codex Desktop', tenantMcpTarget: true,  modelFamily: 'gpt',    product: 'codex',       runsAs: 'app', seatSettings: 'codex-config'}),
+    Object.freeze({type: 'claude-code',    label: 'Claude Code',   tenantMcpTarget: true,  modelFamily: 'claude', product: 'claude',      runsAs: 'cli', seatSettings: 'args'}),
+    Object.freeze({type: 'claude-desktop', label: 'Claude',        tenantMcpTarget: true,  modelFamily: 'claude', product: 'claude',      runsAs: 'app', seatSettings: null}),
+    Object.freeze({type: 'opencode',       label: 'OpenCode',      tenantMcpTarget: true,  modelFamily: null,     product: 'opencode',    runsAs: 'cli', seatSettings: null}),
+    Object.freeze({type: 'kimi-code',      label: 'Kimi Code',     tenantMcpTarget: true,  modelFamily: 'kimi',   product: 'kimi-code',   runsAs: 'cli', seatSettings: null}),
+    Object.freeze({type: 'antigravity',    label: 'Antigravity',   tenantMcpTarget: false, modelFamily: 'gemini', product: 'antigravity', runsAs: 'app', seatSettings: null}),
+    Object.freeze({type: 'native-neo',     label: 'Native',        tenantMcpTarget: false, modelFamily: null,     product: 'native-neo',  runsAs: null,  seatSettings: null})
 ]);
 
 /**
@@ -40,7 +44,7 @@ const PRODUCT_LABELS = Object.freeze({
 /**
  * @summary List every product in display order, each with its harness types: one choice per product,
  * with an app or a command line behind it where a product has both. Caller-owned copies.
- * @returns {Object[]} `[{product, label, types: [{type, label, tenantMcpTarget, modelFamily, product, runsAs}]}]`
+ * @returns {Object[]} `[{product, label, types: [{type, label, tenantMcpTarget, modelFamily, product, runsAs, seatSettings}]}]`
  */
 export function listHarnessProducts() {
     const products = new Map();
@@ -59,7 +63,7 @@ export function listHarnessProducts() {
 /**
  * @summary List every registered harness type in display order. Caller-owned copies: mutating a
  * result never corrupts the registry (the frozen source is the second line of defense).
- * @returns {Object[]} `[{type, label, tenantMcpTarget, modelFamily, product, runsAs}]`
+ * @returns {Object[]} `[{type, label, tenantMcpTarget, modelFamily, product, runsAs, seatSettings}]`
  */
 export function listHarnessTypes() {
     return HARNESS_TYPES.map(entry => ({...entry}))
@@ -69,7 +73,7 @@ export function listHarnessTypes() {
  * @summary Resolve one harness-type entry by its durable key — null for unregistered types
  * (consumers render fail-closed "Unknown harness", never a guess). Caller-owned copy.
  * @param {String} type
- * @returns {{type: String, label: String, tenantMcpTarget: Boolean, modelFamily: String|null, product: String, runsAs: String|null}|null}
+ * @returns {{type: String, label: String, tenantMcpTarget: Boolean, modelFamily: String|null, product: String, runsAs: String|null, seatSettings: String|null}|null}
  */
 export function resolveHarnessType(type) {
     const entry = HARNESS_TYPES.find(item => item.type === type);
@@ -95,4 +99,14 @@ export function resolveHarnessFamily(type) {
  */
 export function supportsTenantMcpTarget(type) {
     return HARNESS_TYPES.some(entry => entry.type === type && entry.tenantMcpTarget)
+}
+
+/**
+ * @summary Where a registered harness reads a seat's declared model and reasoning effort at launch: `'args'`,
+ * `'codex-config'`, or `null` where Fleet cannot set them, and for unknown types, so a declaration refuses.
+ * @param {String} type
+ * @returns {'args'|'codex-config'|null}
+ */
+export function resolveHarnessSeatSettings(type) {
+    return HARNESS_TYPES.find(entry => entry.type === type)?.seatSettings ?? null
 }
