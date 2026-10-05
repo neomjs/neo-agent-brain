@@ -270,7 +270,7 @@ export async function startAgentProvisioned({
     if (!repo) {
         if (agent.memoryImport && agent.memoryImport !== MEMORY_IMPORT_NONE) {
             throw Object.assign(new Error(
-                `startAgentProvisioned: agent '${agentId}' consented to import its memory, which converges into its managed workspace; set its repository before starting it.`
+                "startAgentProvisioned: the memory import needs the seat's repository: set it before starting it."
             ), {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: agent.memoryImport, destination: null, step: 'memory import'})
         }
 
