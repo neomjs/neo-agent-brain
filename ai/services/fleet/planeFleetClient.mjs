@@ -55,7 +55,8 @@ export function createPlaneFleetClient({baseUrl, credential, fetchImpl = globalT
          * @summary Define a seat on the plane, which records its operator from its own admission.
          * @param {Object} definition The operator's definition, credential included.
          * @returns {Promise<Object>} `{status: 'defined', definition}` carrying the plane's public answer,
-         *     `{status: 'rejected', reason}` in the plane's own words, or `{status: 'unavailable', reason}`.
+         *     `{status: 'rejected', reason}` in the plane's own words (or because it answered no definition),
+         *     or `{status: 'unavailable', reason}`.
          */
         async defineAgent(definition) {
             if (!credential) {
@@ -65,7 +66,13 @@ export function createPlaneFleetClient({baseUrl, credential, fetchImpl = globalT
             try {
                 const answer = await bridge.defineAgent(definition);
 
-                return answer?.status === 'rejected' ? answer : {status: 'defined', definition: answer}
+                if (answer?.status === 'rejected') {
+                    return answer
+                }
+
+                return answer && typeof answer === 'object'
+                    ? {status: 'defined', definition: answer}
+                    : {status: 'rejected', reason: 'the plane answered without a definition'}
             } catch (error) {
                 return error.message === UNREACHABLE
                     ? {status: 'unavailable', reason: `the plane did not answer at ${endpoint}`}

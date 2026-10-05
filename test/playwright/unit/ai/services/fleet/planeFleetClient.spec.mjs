@@ -94,6 +94,21 @@ test.describe('createPlaneFleetClient — the plane defines a seat first', () =>
         }
     });
 
+    test('a valid ok envelope carrying no definition is a refusal, never a define', async () => {
+        const answering = result => createPlaneFleetClient({
+            baseUrl   : BASE,
+            credential: CREDENTIAL,
+            fetchImpl : plane({ownerPrincipal: 'owner:conn-1:1001'}, {defineAgent: () => result}).fetchImpl
+        });
+
+        for (const result of [null, 'seat-one']) {
+            expect(await answering(result).defineAgent(DEFINITION)).toEqual({status: 'rejected', reason: 'the plane answered without a definition'})
+        }
+
+        // the wire refuses an ok without any result upstream, so it arrives as the plane's failure
+        expect((await answering(undefined).defineAgent(DEFINITION)).status).toBe('rejected')
+    });
+
     test('with no fleet-surface credential, a define refuses with that reason and sends nothing', async () => {
         const fixture = plane({ownerPrincipal: 'owner:conn-1:1001'});
         const answer  = await createPlaneFleetClient({baseUrl: BASE, credential: '', fetchImpl: fixture.fetchImpl}).defineAgent(DEFINITION);

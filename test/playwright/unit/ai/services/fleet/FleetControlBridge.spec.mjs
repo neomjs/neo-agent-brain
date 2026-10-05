@@ -902,6 +902,9 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — fleetRoster joins th
 test.describe('Neo.ai.services.fleet.FleetControlBridge — in plane mode a seat is defined on the plane first', () => {
     const DEFINITION = Object.freeze({githubUsername: 'seat-one', harnessType: 'codex', credential: `ghp_${'x'.repeat(36)}`});
 
+    // the plane's canonical answer, with a default this host would not pick and metadata it never submitted
+    const ACCEPTED = Object.freeze({id: 'seat-one', githubUsername: 'seat-one', harnessType: 'codex', modelProvider: 'plane-default', metadata: {canonical: true}});
+
     let calls, tmpDir;
 
     const planeAnswering = answer => ({defineAgent: async definition => { calls.push(definition); return answer }});
@@ -922,13 +925,14 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — in plane mode a seat
         fs.rmSync(tmpDir, {recursive: true, force: true})
     });
 
-    test('the plane defines first, then this host applies the same definition and claims no operator', async () => {
-        FleetControlBridge.planeFleet = planeAnswering({status: 'defined', definition: {id: 'seat-one'}});
+    test('the plane defines first, then this host applies the plane\'s accepted definition, defaults included, and claims no operator', async () => {
+        FleetControlBridge.planeFleet = planeAnswering({status: 'defined', definition: ACCEPTED});
 
         const result = await FleetControlBridge.defineAgent(DEFINITION, {ownerPrincipal: 'owner:conn-1:1001'});
 
         expect(calls).toEqual([DEFINITION]);
-        expect(result).toMatchObject({id: 'seat-one', harnessType: 'codex'});
+        expect(result).toMatchObject({id: 'seat-one', harnessType: 'codex', modelProvider: 'plane-default', metadata: {canonical: true}});
+        expect(FleetRegistryService.getAgent('seat-one'), 'the local copy holds the plane\'s answer, not this host\'s default').toMatchObject({modelProvider: 'plane-default', metadata: {canonical: true}});
         expect(JSON.stringify(result)).not.toContain(DEFINITION.credential);
         expect(FleetRegistryService.resolveCredential('seat-one'), 'this host keeps the PAT it starts the seat with').toBe(DEFINITION.credential);
         expect(SeatOperatorRegistryService.operatorOf('seat-one'), 'the operator relation is the plane\'s').toEqual({principal: null, state: 'ok'})
@@ -946,9 +950,20 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — in plane mode a seat
         }
     });
 
+    test('an answer without the accepted definition, or for another seat, writes nothing here', async () => {
+        for (const definition of [null, {}, {...ACCEPTED, id: 'other-seat', githubUsername: 'other-seat'}]) {
+            FleetControlBridge.planeFleet = planeAnswering({status: 'defined', definition});
+
+            expect(await FleetControlBridge.defineAgent(DEFINITION))
+                .toEqual({status: 'rejected', reason: "the plane answered no accepted definition for 'seat-one', so this host applied nothing"});
+            expect(FleetRegistryService.getAgent('seat-one')).toBeNull();
+            expect(FleetRegistryService.getAgent('other-seat')).toBeNull()
+        }
+    });
+
     test('a seat this host already holds refuses before the plane is asked', async () => {
         FleetRegistryService.defineAgent(DEFINITION);
-        FleetControlBridge.planeFleet = planeAnswering({status: 'defined', definition: {id: 'seat-one'}});
+        FleetControlBridge.planeFleet = planeAnswering({status: 'defined', definition: ACCEPTED});
 
         expect(await FleetControlBridge.defineAgent(DEFINITION))
             .toEqual({status: 'rejected', reason: "id 'seat-one' is already defined on this host; use a scoped update operation."});
@@ -958,7 +973,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — in plane mode a seat
     test('a local failure after the plane accepted says the seat now exists on the plane', async () => {
         FleetRegistryService.defineAgent({githubUsername: 'other', harnessType: 'codex', credential: DEFINITION.credential});
         fs.writeFileSync(path.join(tmpDir, 'credentials.enc'), 'not-a-ciphertext');
-        FleetControlBridge.planeFleet = planeAnswering({status: 'defined', definition: {id: 'seat-one'}});
+        FleetControlBridge.planeFleet = planeAnswering({status: 'defined', definition: ACCEPTED});
 
         const result = await FleetControlBridge.defineAgent(DEFINITION);
 

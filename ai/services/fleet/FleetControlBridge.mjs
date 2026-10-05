@@ -26,6 +26,17 @@ const START_REFUSAL_CALLERS = Object.freeze([
 ]);
 
 /**
+ * The declaration fields a host in plane mode applies exactly as the plane accepted them, defaults
+ * included. Everything else on its copy is this host's own: the PAT it starts the seat with, who launches
+ * it here, and what it derives itself, such as its seat home.
+ * @type {String[]}
+ */
+const PLANE_DECLARATION_FIELDS = Object.freeze([
+    'id', 'githubUsername', 'harnessType', 'forge', 'forgeHost', 'gitName', 'gitEmail',
+    'memoryImport', 'metadata', 'modelProvider', 'mcpServers', 'mcpTarget'
+]);
+
+/**
  * The fields a start refusal may carry beside its reason, each only when the refusal names it: a typed
  * code, the step that stopped, and a memory import's source and destination, which the reason no longer
  * spells out. Nothing else of the error crosses.
@@ -406,8 +417,10 @@ class FleetControlBridge extends Base {
 
     /**
      * @summary Plane mode's define: the plane defines the seat and records its operator first, then this
-     * host applies the same definition as its actuation copy, claiming no operator of its own. A local id
-     * clash, a refusal or an unreachable plane answers as itself and writes nothing here; a failure to
+     * host applies the plane's accepted definition as its actuation copy, claiming no operator of its own.
+     * The copy takes the plane's canonical declaration, defaults included, and keeps only what this host
+     * owns: the PAT it starts the seat with and who launches it here. A local id clash, a refusal, an
+     * unreachable plane or an answer without the accepted definition writes nothing here; a failure to
      * apply after the plane accepted says the seat now exists on the plane.
      * @param {Object} definition The operator's definition, credential included.
      * @returns {Promise<Object>} The public agent definition, or `{status, reason}`.
@@ -426,10 +439,24 @@ class FleetControlBridge extends Base {
             return answer
         }
 
+        const accepted = answer.definition;
+
+        if (accepted?.id !== agentId) {
+            return {status: 'rejected', reason: `the plane answered no accepted definition for '${agentId}', so this host applied nothing`}
+        }
+
+        const local = Object.fromEntries(PLANE_DECLARATION_FIELDS.filter(key => Object.hasOwn(accepted, key)).map(key => [key, accepted[key]]));
+
+        local.credential = definition.credential;
+
+        if (definition.launchOwner !== undefined) {
+            local.launchOwner = definition.launchOwner
+        }
+
         let applied;
 
         try {
-            applied = this.defineAgentHere(definition, null)
+            applied = this.defineAgentHere(local, null)
         } catch {
             applied = {status: 'rejected', reason: 'an unexpected local failure'}
         }
