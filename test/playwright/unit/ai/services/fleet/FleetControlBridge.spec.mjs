@@ -775,9 +775,11 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
 
         expect(rows[0]).toMatchObject({
             id: 'gpt', participationStatus: 'operator_benched', participationReason: 'the flatrate ended',
-            participationSince: '2026-10-01T00:00:00.000Z', participationRead: {state: 'read'}
+            participationSince: '2026-10-01T00:00:00.000Z', participationRead: {state: 'read'},
+            // the start verb's own words for the bench
+            launchRefusal: 'benched by the operator on 2026-10-01: the flatrate ended'
         });
-        expect(rows[1]).toMatchObject({id: 'iris', participationStatus: 'active', participationRead: {state: 'read'}});
+        expect(rows[1]).toMatchObject({id: 'iris', participationStatus: 'active', participationRead: {state: 'read'}, launchRefusal: null});
     });
 
     test('fleetRoster never guesses participation: an unanswered read is unread with its reason, a seat without a node is null (#874)', async () => {

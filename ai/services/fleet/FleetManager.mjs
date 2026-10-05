@@ -394,21 +394,28 @@ class FleetManager extends Base {
     /**
      * @summary Turnkey provision-then-start: ensure the agent's repo (at the resolved managed root)
      * exists, then start its harness inside it. Delegates to `startAgentProvisioned` — fail-closed on a
-     * provisioning failure (the harness is not spawned). A seat released to its own harness is refused
-     * before anything runs ({@link launchRefusalOf}). The start holds the seat's home until its harness
-     * is launched or refused ({@link withSeatHome}).
+     * provisioning failure (the harness is not spawned). A seat released to its own harness, or whose
+     * identity the operator benched, is refused before anything runs, and the bench is read again just
+     * before the spawn ({@link launchRefusalOf}). The start holds the seat's home until its harness is
+     * launched or refused ({@link withSeatHome}).
      * @param {String} agentId Registry agent id.
      * @returns {Promise<Object>} the agent's lifecycle status.
      */
     async startAgent(agentId) {
         this.assertStartPermitted('startAgent', agentId);
 
-        const status = await this.withSeatHome(agentId, () => this.getProvisionAndStartFn()({
-            lifecycleService: this.getLifecycleService(),
-            managedRoot     : this.getManagedRoot(),
-            planeBase       : this.planeBase,
-            agentId
-        }));
+        const status = await this.withSeatHome(agentId, async () => {
+            // the bench is read inside the seat's home, so this start keeps its place in the seat's queue
+            this.assertStartPermitted('startAgent', agentId, await this.seatParticipation(agentId));
+
+            return this.getProvisionAndStartFn()({
+                lifecycleService : this.getLifecycleService(),
+                managedRoot      : this.getManagedRoot(),
+                planeBase        : this.planeBase,
+                readParticipation: () => this.seatParticipation(agentId),
+                agentId
+            })
+        });
 
         return this.armSeatWake(agentId, status)
     }
@@ -658,7 +665,7 @@ class FleetManager extends Base {
      * @returns {Promise<Object>} the agent's lifecycle status (see {@link startAgent}).
      */
     async restartAgent(agentId) {
-        this.assertStartPermitted('restartAgent', agentId);
+        this.assertStartPermitted('restartAgent', agentId, await this.seatParticipation(agentId));
 
         const stopped = await this.stopAgent(agentId);
 
@@ -670,17 +677,37 @@ class FleetManager extends Base {
     }
 
     /**
-     * @summary Throws when the registry says this fleet may not start the seat ({@link launchRefusalOf}).
-     * @param {String} method  The refusing verb, for the error's origin.
-     * @param {String} agentId Registry agent id.
+     * @summary Throws when the registry, or the participation the seat's identity node records, says this
+     * fleet may not start the seat ({@link launchRefusalOf}).
+     * @param {String}      method               The refusing verb, for the error's origin.
+     * @param {String}      agentId              Registry agent id.
+     * @param {Object|null} [participation=null] The seat's participation ({@link seatParticipation}).
      * @private
      */
-    assertStartPermitted(method, agentId) {
-        const refusal = launchRefusalOf(this.getLifecycleService().getRegistry().getAgent(agentId));
+    assertStartPermitted(method, agentId, participation = null) {
+        const refusal = launchRefusalOf(this.getLifecycleService().getRegistry().getAgent(agentId), participation);
 
         if (refusal) {
             throw new Error(`FleetManager.${method}: agent '${agentId}' was ${refusal}.`)
         }
+    }
+
+    /**
+     * @summary The seat's participation as its identity node records it, from a presence snapshot of that
+     * one seat.
+     * @param {String} agentId Registry agent id.
+     * @returns {Promise<Object|null>} `{status, reason, since}`, or `null` when no reader is wired, the read did
+     *     not answer, or it holds no record for the seat, none of which a start gate refuses.
+     * @protected
+     */
+    async seatParticipation(agentId) {
+        const agent = this.getLifecycleService().getRegistry().getAgent(agentId);
+
+        if (!agent || !this.presenceStateOptions?.readPresence) return null;
+
+        const {states} = await readFleetPresenceSnapshot({...this.presenceStateOptions, agents: [agent]});
+
+        return states[0]?.participation ?? null
     }
 
     /**

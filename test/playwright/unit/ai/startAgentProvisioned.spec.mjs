@@ -1045,6 +1045,40 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.start[0].opts.cwd).toBe('/managed/a/neomjs-neo')
     });
 
+    test('a bench recorded while preparation runs refuses the spawn; an active seat spawns (#885)', async () => {
+        const
+            agents      = repoAgent('a'),
+            events      = [],
+            lifecycle   = makeLifecycle({agents, events}),
+            basePrepare = makePrepareWorkspace(events);
+
+        let participation = {status: 'active', reason: null, since: null};
+
+        const start = prepareWorkspace => startAgentProvisioned({
+            lifecycleService : lifecycle,
+            agentId          : 'a',
+            managedRoot      : '/managed',
+            ensureRepo       : makeEnsureRepo('/managed/a/neomjs-neo', events),
+            prepareWorkspace,
+            readParticipation: async () => participation
+        });
+
+        await expect(start(async args => {
+            participation = {status: 'operator_benched', reason: 'the flatrate ended', since: '2026-10-05T12:00:00.000Z'};
+            events.push('bench');
+
+            return basePrepare(args)
+        })).rejects.toThrow("agent 'a' was benched by the operator on 2026-10-05: the flatrate ended; it was benched while its start was being prepared");
+
+        expect(events).toEqual(['credential', 'ensure', 'bench', 'prepare']);
+        expect(lifecycle.calls.start).toEqual([]);
+
+        participation = {status: 'active', reason: null, since: '2026-10-05T12:30:00.000Z'};
+
+        expect((await start(basePrepare)).running).toBe(true);
+        expect(lifecycle.calls.start).toHaveLength(1)
+    });
+
     test('a row born with its record starts under its root; the record is read, never written, by a start', async () => {
         const
             agents    = repoAgent('a'),
