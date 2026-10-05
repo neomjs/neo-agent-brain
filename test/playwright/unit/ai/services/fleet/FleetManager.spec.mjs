@@ -306,8 +306,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         const registryStub = {listAgents: () => [{id: 'alice'}, {id: 'bob'}]};
 
         FleetManager.lifecycleService = {
-            getRegistry: () => registryStub,
-            status     : id => id === 'alice'
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            :id => id === 'alice'
                 ? {id, state: 'running', running: true,  pid: 4242, startedAt: '2026-07-04T00:00:00Z', exitCode: null}
                 : {id, state: 'stopped', running: false, pid: null, startedAt: null,                    exitCode: null}
         };
@@ -331,8 +332,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
             repos        = [{repoSlug: 'neomjs/missing', state: 'failed', reason: 'ensureAgentRepo: clone failed'}];
 
         FleetManager.lifecycleService = {
-            getRegistry: () => registryStub,
-            status     : id => id === 'alice'
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            :id => id === 'alice'
                 ? {id, state: 'running', running: true, pid: 4242, startedAt: '2026-10-01T20:00:00Z', exitCode: null, repos}
                 : {id, state: 'running', running: true, pid: 4343, startedAt: '2026-10-01T20:00:00Z', exitCode: null, repos: null}
         };
@@ -349,8 +351,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
             sessionFolder = {state: 'pending', expected: '/agents/alice/neomjs/neo'};
 
         FleetManager.lifecycleService = {
-            getRegistry: () => registryStub,
-            status     : id => id === 'alice'
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            :id => id === 'alice'
                 ? {id, state: 'running', running: true, pid: 4242, startedAt: '2026-10-03T19:00:00Z', exitCode: null, sessionFolder}
                 : {id, state: 'running', running: true, pid: 4343, startedAt: '2026-10-03T19:00:00Z', exitCode: null, sessionFolder: null}
         };
@@ -367,8 +370,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
             derived      = {state: 'derived', source: 'verified-primary', name: 'Alice', email: 'alice@example.test'};
 
         FleetManager.lifecycleService = {
-            getRegistry: () => registryStub,
-            status     : id => ({
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            :id => ({
                 alice: {id, state: 'running', running: true, pid: 4242, startedAt: '2026-10-03T20:00:00Z', exitCode: null, gitIdentity: derived},
                 bob  : {id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null, gitIdentity: {state: 'missing', name: 'Bob'}},
                 carol: {id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null, gitIdentity: null}
@@ -382,6 +386,23 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(Object.hasOwn(carol, 'gitIdentity')).toBe(false)
     });
 
+    test('what a Codex seat\'s config is set to rides its runtime row; a seat with nothing to read back adds nothing', () => {
+        const
+            registryStub = {listAgents: () => [{id: 'sophie', harnessType: 'codex-desktop'}, {id: 'ada', harnessType: 'claude-desktop'}]},
+            configured   = {model: 'gpt-6-astra', reasoningEffort: 'ultra'};
+
+        FleetManager.lifecycleService = {
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: agent => agent.id === 'sophie' ? configured : null,
+            status            : id => ({id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null})
+        };
+
+        const [sophie, ada] = FleetManager.fleetRuntimeStatus();
+
+        expect(sophie.harnessSettings, 'a stopped seat reads back too').toEqual(configured);
+        expect(Object.hasOwn(ada, 'harnessSettings')).toBe(false)
+    });
+
     test('an agent the fleet never launched reports unmanaged, NOT stopped — never-launched is not stopped (#17305)', () => {
         // The incident: nine external-harness seats rendered `benched / offline` because `status()`
         // answers `stopped` for an agent it holds no record of — a sound lifecycle default, an
@@ -390,8 +411,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         const registryStub = {listAgents: () => [{id: 'grace'}]};
 
         FleetManager.lifecycleService = {
-            getRegistry: () => registryStub,
-            status     : id => ({id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null})
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            :id => ({id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null})
         };
 
         const [row] = FleetManager.fleetRuntimeStatus();
@@ -408,8 +430,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         const registryStub = {listAgents: () => [{id: 'alice'}]};
 
         FleetManager.lifecycleService = {
-            getRegistry: () => registryStub,
-            status     : id => ({id, state: 'stopped', running: false, pid: null, startedAt: '2026-07-04T00:00:00Z', exitCode: 1})
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            :id => ({id, state: 'stopped', running: false, pid: null, startedAt: '2026-07-04T00:00:00Z', exitCode: 1})
         };
 
         expect(FleetManager.fleetRuntimeStatus()).toEqual([
@@ -421,8 +444,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         const registryStub = {listAgents: () => [{id: 'cockpit', launchOwner: 'fleet'}, {id: 'grace', launchOwner: 'external'}]};
 
         FleetManager.lifecycleService = {
-            getRegistry: () => registryStub,
-            status     : id => ({id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null})
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            :id => ({id, state: 'stopped', running: false, pid: null, startedAt: null, exitCode: null})
         };
 
         expect(FleetManager.fleetRuntimeStatus()).toEqual([{
@@ -446,8 +470,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         const registryStub = {listAgents: () => [{id: 'cockpit', launchOwner: 'fleet'}]};
 
         FleetManager.lifecycleService = {
-            getRegistry: () => registryStub,
-            status     : id => ({id, state: 'running', running: true, pid: 4242, startedAt: '2026-09-19T00:00:00Z', exitCode: null})
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            :id => ({id, state: 'running', running: true, pid: 4242, startedAt: '2026-09-19T00:00:00Z', exitCode: null})
         };
 
         expect(FleetManager.fleetRuntimeStatus()).toEqual([
@@ -459,8 +484,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         const registryStub = {listAgents: () => [{id: 'desktop'}]};
 
         FleetManager.lifecycleService = {
-            getRegistry: () => registryStub,
-            status     : id => ({
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            :id => ({
                 id,
                 state        : 'unavailable',
                 running      : false,

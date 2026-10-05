@@ -382,6 +382,51 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         expect(FleetRegistryService.configureAgent({id: 'desk', harnessType: 'claude-desktop'}).harnessType).toBe('claude-desktop');
     });
 
+    test('a seat declares the model and effort its harness starts on; each returns to the harness default with null', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'gpt-seat', harnessType: 'codex-desktop', credential: PAT});
+
+        expect(FleetRegistryService.configureAgent({id: 'gpt-seat', model: 'gpt-6-astra', reasoningEffort: 'ultra'}))
+            .toMatchObject({model: 'gpt-6-astra', reasoningEffort: 'ultra'});
+        expect(FleetRegistryService.configureAgent({id: 'gpt-seat', reasoningEffort: 'max'}), 'a field the intent does not name stays')
+            .toMatchObject({model: 'gpt-6-astra', reasoningEffort: 'max'});
+
+        const withdrawn = FleetRegistryService.configureAgent({id: 'gpt-seat', model: null});
+
+        expect(Object.hasOwn(withdrawn, 'model'), 'a withdrawn field leaves the record').toBe(false);
+        expect(withdrawn.reasoningEffort).toBe('max');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents['gpt-seat'].reasoningEffort, 'persisted').toBe('max');
+    });
+
+    test('a declaration the harness cannot read, or a value no harness names, refuses before writing', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'app-seat', harnessType: 'claude-desktop', credential: PAT});
+        FleetRegistryService.defineAgent({githubUsername: 'cli-seat', harnessType: 'claude-code', credential: PAT});
+
+        const before = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');
+
+        expect(() => FleetRegistryService.configureAgent({id: 'app-seat', model: 'claude-opus-5-5'}))
+            .toThrow("FleetRegistryService.configureAgent: a 'claude-desktop' seat takes no declared model or reasoning effort: its harness chooses them itself.");
+        expect(() => FleetRegistryService.configureAgent({id: 'cli-seat', model: 'opus" --dangerously'})).toThrow(/'model' must be one id/);
+        expect(() => FleetRegistryService.configureAgent({id: 'cli-seat', reasoningEffort: 'Max Effort'})).toThrow(/'reasoningEffort' must be one id/);
+        expect(() => FleetRegistryService.configureAgent({id: 'cli-seat', model: 5})).toThrow(/'model' must be one id/);
+        expect(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).toBe(before);
+
+        // withdrawing is always possible, the app's own family included
+        expect(FleetRegistryService.configureAgent({id: 'app-seat', model: null}).harnessType).toBe('claude-desktop');
+    });
+
+    test('a harness change withdraws the declared model unless the same intent declares one for the new harness', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'mover', harnessType: 'claude-code', credential: PAT});
+        FleetRegistryService.configureAgent({id: 'mover', model: 'claude-opus-5-5', reasoningEffort: 'max'});
+
+        const moved = FleetRegistryService.configureAgent({id: 'mover', harnessType: 'codex'});
+
+        expect([Object.hasOwn(moved, 'model'), Object.hasOwn(moved, 'reasoningEffort')], 'a Claude model id is no Codex model').toEqual([false, false]);
+        expect(FleetRegistryService.configureAgent({id: 'mover', harnessType: 'claude-code', model: 'opus', reasoningEffort: 'xhigh'}))
+            .toMatchObject({harnessType: 'claude-code', model: 'opus', reasoningEffort: 'xhigh'});
+        expect(FleetRegistryService.configureAgent({id: 'mover', mcpServers: null}), 'any other change keeps it').toMatchObject({model: 'opus', reasoningEffort: 'xhigh'});
+        expect(() => FleetRegistryService.configureAgent({id: 'mover', harnessType: 'claude-desktop', model: 'opus'})).toThrow(/takes no declared model/);
+    });
+
     test('target grammar rejects every transport, secret, or authority-bearing shape without a write', () => {
         FleetRegistryService.defineAgent({githubUsername: 'target-guard', harnessType: 'codex', credential: PAT});
         const before = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');
@@ -813,5 +858,62 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — the commit identit
         const cleared = FleetRegistryService.configureAgent({id: 'seat', gitName: null, gitEmail: null});
 
         expect(Object.hasOwn(cleared, 'gitName') || Object.hasOwn(cleared, 'gitEmail')).toBe(false);
+    });
+});
+
+test.describe('Neo.ai.services.fleet.FleetRegistryService — a credential store it cannot read', () => {
+    let credentialsFile, tmpDir;
+
+    test.beforeEach(() => {
+        tmpDir                       = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-fleet-reg-'));
+        credentialsFile              = path.join(tmpDir, 'credentials.enc');
+        FleetRegistryService.dataDir = tmpDir;
+    });
+
+    test.afterEach(() => {
+        FleetRegistryService.dataDir = null;
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+    });
+
+    // bytes this Fleet's key cannot decrypt, and a ciphertext that decrypts to something other than a record
+    for (const [unreadable, bytesOf] of [
+        ['a store that does not decrypt', () => 'not-a-ciphertext'],
+        ['a store that holds no record',  () => FleetRegistryService.encrypt('["alice"]')]
+    ]) {
+        test(`defineAgent over ${unreadable} refuses before anything is written, so the other PATs survive`, () => {
+            FleetRegistryService.defineAgent({githubUsername: 'alice', harnessType: 'codex', credential: 'ghp_alice'});
+            fs.writeFileSync(credentialsFile, bytesOf());
+
+            const before = fs.readFileSync(credentialsFile);
+
+            expect(() => FleetRegistryService.defineAgent({githubUsername: 'bob', harnessType: 'codex', credential: 'ghp_bob'}))
+                .toThrow(/^FleetRegistryService\.defineAgent: the credential store cannot be read, so no seat was added and no stored PAT was touched\. .*NEO_FLEET_SECRET_KEY/);
+            expect(fs.readFileSync(credentialsFile).equals(before), 'the store keeps every byte').toBe(true);
+            expect(FleetRegistryService.getAgent('bob')).toBeNull();
+            expect(FleetRegistryService.listAgents().map(agent => agent.id)).toEqual(['alice']);
+            expect(() => FleetRegistryService.storeCredential('bob', 'ghp_bob')).toThrow();
+            expect(fs.readFileSync(credentialsFile).equals(before), 'storeCredential writes nothing either').toBe(true)
+        });
+    }
+
+    test('a missing store takes the first define, and a readable store keeps every other PAT', () => {
+        expect(fs.existsSync(credentialsFile)).toBe(false);
+
+        FleetRegistryService.defineAgent({githubUsername: 'alice', harnessType: 'codex', credential: 'ghp_alice'});
+        FleetRegistryService.defineAgent({githubUsername: 'bob',   harnessType: 'codex', credential: 'ghp_bob'});
+
+        expect(FleetRegistryService.resolveCredential('alice')).toBe('ghp_alice');
+        expect(FleetRegistryService.resolveCredential('bob')).toBe('ghp_bob')
+    });
+
+    test('a read over a store it cannot read still fails closed, and removing a seat writes nothing to it', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'alice', harnessType: 'codex', credential: 'ghp_alice'});
+        fs.writeFileSync(credentialsFile, 'not-a-ciphertext');
+
+        const before = fs.readFileSync(credentialsFile);
+
+        expect(FleetRegistryService.resolveCredential('alice')).toBeNull();
+        expect(FleetRegistryService.removeAgent('alice')).toEqual({success: true, id: 'alice'});
+        expect(fs.readFileSync(credentialsFile).equals(before)).toBe(true)
     });
 });

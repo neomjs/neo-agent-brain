@@ -26,6 +26,14 @@ const START_REFUSAL_CALLERS = Object.freeze([
 ]);
 
 /**
+ * The fields a start refusal may carry beside its reason, each only when the refusal names it: a typed
+ * code, the step that stopped, and a memory import's source and destination, which the reason no longer
+ * spells out. Nothing else of the error crosses.
+ * @type {String[]}
+ */
+const START_REFUSAL_FIELDS = Object.freeze(['code', 'step', 'source', 'destination']);
+
+/**
  * The workspace preparation error's codes, the only part of it the wire carries. Its producer stays
  * unimported here (the plan/apply composer keeps one production caller); a spec pins this list to it.
  * @type {String[]}
@@ -55,9 +63,10 @@ function rejectionOf(error, callers) {
  * @summary A provisioned start or restart as a domain outcome: the lifecycle record resolves, a refusal
  * its start path names is rejected, a workspace that could not be prepared answers its declared code
  * (never its message, which can carry local paths), and any other failure rethrows. The preparation
- * error is matched by name, so the plan/apply composer keeps its one production caller.
+ * error is matched by name, so the plan/apply composer keeps its one production caller. A named refusal
+ * carries its {@link START_REFUSAL_FIELDS} beside the reason.
  * @param {Function} start Resolves the agent's lifecycle status.
- * @returns {Promise<Object>} the lifecycle status, or `{status: 'rejected', reason}`.
+ * @returns {Promise<Object>} the lifecycle status, or `{status: 'rejected', reason, code?, step?, source?, destination?}`.
  * @private
  */
 async function startOutcome(start) {
@@ -70,7 +79,10 @@ async function startOutcome(start) {
 
         const rejection = rejectionOf(error, START_REFUSAL_CALLERS);
 
-        if (rejection) return rejection;
+        if (rejection) {
+            START_REFUSAL_FIELDS.forEach(field => {error[field] != null && (rejection[field] = error[field])});
+            return rejection
+        }
 
         throw error
     }
@@ -433,7 +445,7 @@ class FleetControlBridge extends Base {
      * @summary Configure an existing agent through one serializable curated intent. Validation
      * failures become an explicit domain outcome the Accounts card may render; unexpected service
      * failures still throw and are sanitized by dispatchFleetRequest.
-     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?}`
+     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?, model?, reasoningEffort?}`
      * @returns {{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}}
      */
     configureAgent(intent) {

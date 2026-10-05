@@ -2559,8 +2559,9 @@ test.describe('HealthService #10783 — buildWakeFeaturesBlock', () => {
             // Absent records directory — a MEASURED absence of dispatch attempts, and explicitly
             // not a claim that any seat is reachable. It reports readable with no subscriptions
             // rather than an empty-but-healthy verdict, so "nothing was ever dispatched" and
-            // "everything is fine" cannot read the same.
-            delivery             : {deliveryReadable: true, deliveryReadReason: 'no-records', subscriptions: {}}
+            // "everything is fine" cannot read the same. With no records directory there is no
+            // receiver liveness either, so the receiver reads unknown, never fresh.
+            delivery             : {deliveryReadable: true, deliveryReadReason: 'no-records', subscriptions: {}, receiver: {state: 'unknown'}}
         });
     });
 

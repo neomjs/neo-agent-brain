@@ -9,7 +9,7 @@ import {PLANE_MEMORY_CORE_PATH, fakeHostObservers, hostLayout, parseArgs, produc
 import {RECIPE_VERSION, evaluateRecipe}                                                                    from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
 import {createHost}                                                                                        from '../../../../../../ai/services/fleet/hostEffects.mjs';
 import {presets}                                                                                           from '../../../../../../ai/services/fleet/placementPresets.mjs';
-import {createSetupRecord, withConsent}                                                                    from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
+import {createSetupRecord, runTarget, withConsent}                                                         from '../../../../../../ai/services/fleet/setupRunRecord.mjs';
 
 // The CLI on a fake host: a child process per arm, stdin closed (never a TTY), the record under a temp setup root.
 
@@ -52,14 +52,19 @@ function greenFake({patPath, planeId = 'plane-a', dataRoot = '/srv/plane-a', ser
     };
 }
 
-/** One CLI run; `dataRoot: null` omits `--data-root` (the resume that names only the identity). */
-async function runCli({setupRoot, stateRoot, fake, extra = [], dataRoot = '/srv/plane-a'}) {
+/**
+ * One CLI run; `dataRoot: null` omits `--data-root` (the resume that names only the identity), and
+ * `named: false` omits all three target flags (the run that names no plane).
+ */
+async function runCli({setupRoot, stateRoot, fake, extra = [], dataRoot = '/srv/plane-a', named = true}) {
     const fakePath = path.join(stateRoot, 'fake-host.json');
 
     await fs.mkdir(stateRoot, {recursive: true});
     await fs.writeFile(fakePath, JSON.stringify(fake));
 
-    const args = [script, '--json', '--setup-root', setupRoot, '--state-root', stateRoot, '--run-id', RUN_ID, '--plane-id', 'plane-a', ...(dataRoot ? ['--data-root', dataRoot] : []), '--endpoint', 'http://127.0.0.1:3102', '--fake-host', fakePath, ...extra];
+    const
+        target = named ? ['--plane-id', 'plane-a', ...(dataRoot ? ['--data-root', dataRoot] : []), '--endpoint', 'http://127.0.0.1:3102'] : [],
+        args   = [script, '--json', '--setup-root', setupRoot, '--state-root', stateRoot, '--run-id', RUN_ID, ...target, '--fake-host', fakePath, ...extra];
 
     try {
         const {stdout, stderr} = await execFileAsync(process.execPath, args, {cwd: brainRoot, encoding: 'utf8', env: {...process.env, NEO_HOST_SETUP_RECORD_ROOT: ''}});
@@ -124,7 +129,7 @@ test.describe('firstRun CLI', () => {
         // the compose invocation went through the recording runner, in the checkout's deploy folder
         const calls = JSON.parse(await fs.readFile(path.join(setupRoot, 'fake-run.json'), 'utf8'));
 
-        expect(calls).toEqual([{command: 'docker', args: ['compose', '-p', 'neo-local-agent-os', '--env-file', layout.envFile, '-f', 'docker-compose.yml', '-f', 'docker-compose.local-agent-os.yml', 'up', '-d', '--wait'], cwd: path.join(brainRoot, 'deploy', 'cloud')}]);
+        expect(calls).toEqual([{command: 'docker', args: ['compose', '-p', 'neo-local-agent-os', '--env-file', layout.envFile, '-f', 'docker-compose.yml', '-f', 'docker-compose.local-agent-os.yml', '--profile', 'cloud', '--profile', 'fleet', '--profile', 'ingress', 'up', '-d', '--wait'], cwd: path.join(brainRoot, 'deploy', 'cloud')}]);
 
         // a resumed run performs nothing again and exits 0
         const resumed = await runCli({setupRoot, stateRoot, fake: greenFake({patPath})});
@@ -590,5 +595,68 @@ test.describe('firstRun CLI', () => {
             ' · next: a re-run resumes it and writes nothing, or --new-attempt writes the witness again (a second row on the plane is possible)',
             ''
         ]);
+    });
+
+    test('the layout states the profile\'s target once, and the profile\'s compose file agrees with it', async () => {
+        const
+            {target} = hostLayout({stateRoot: '/srv/state'}),
+            compose  = await fs.readFile(path.join(brainRoot, 'deploy/cloud/docker-compose.local-agent-os.yml'), 'utf8'),
+            pinned   = `"--expected-plane-id", "${target.planeId}", "--expected-plane-data-root", "${target.dataRoot}"`;
+
+        expect(target).toEqual({planeId: 'neo-local-canonical', dataRoot: '/app/.neo-ai-data', endpoint: 'http://127.0.0.1:3102'});
+        // the services' own health checks pin the id and the root the layout declares; a drift fails here
+        expect(compose.split(pinned).length - 1, 'both served services pin the declared identity').toBe(2);
+        expect(compose).toContain(`- "127.0.0.1:${new URL(target.endpoint).port}:8080"`);
+        expect(parseArgs([], {}).endpoint).toBe(target.endpoint);
+
+        // the compose profiles the layout declares are the base file's own; local-model (a container Ollama no preset uses) is not one
+        const
+            base   = await fs.readFile(path.join(brainRoot, 'deploy/cloud/docker-compose.yml'), 'utf8'),
+            inFile = [...base.matchAll(/^    profiles:\n      - ([a-z-]+)$/gm)].map(match => match[1]).sort();
+
+        expect(hostLayout({stateRoot: '/srv/state'}).composeProfiles).toEqual(['cloud', 'fleet', 'ingress']);
+        expect(inFile).toEqual(['cloud', 'fleet', 'ingress', 'local-model']);
+    });
+
+    test('runTarget: what the invocation names, else what the record is bound to, else the profile\'s plane — whose root comes only with its id', () => {
+        const
+            profile = hostLayout({stateRoot: '/srv/state'}).target,
+            bound   = createSetupRecord({runId: RUN_ID, target: {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'}, recipeVersion: RECIPE_VERSION, now: () => 0}),
+            unbound = createSetupRecord({runId: RUN_ID, target: {}, recipeVersion: RECIPE_VERSION, now: () => 0});
+
+        expect(runTarget({profile})).toEqual(profile);
+        expect(runTarget({named: {planeId: null, dataRoot: null, endpoint: null}, profile})).toEqual(profile);
+        // a named plane takes nothing of the profile's identity or root
+        expect(runTarget({named: {planeId: 'plane-b'}, profile})).toEqual({planeId: 'plane-b', dataRoot: null, endpoint: profile.endpoint});
+        // a named root or endpoint wins over the profile's, under the profile's id
+        expect(runTarget({named: {dataRoot: '/srv/elsewhere', endpoint: 'http://127.0.0.1:9'}, profile})).toEqual({planeId: profile.planeId, dataRoot: '/srv/elsewhere', endpoint: 'http://127.0.0.1:9'});
+        // a resume keeps the record's binding; a record that was never bound takes the profile's
+        expect(runTarget({record: bound, named: {}, profile})).toEqual({planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'});
+        expect(runTarget({record: unbound, named: {}, profile})).toEqual(profile);
+    });
+
+    test('a cold run that names no plane binds the profile\'s target and gets past write-env; the flags still override it', async () => {
+        const
+            {setupRoot, stateRoot, patPath} = await scratch(),
+            profile                         = hostLayout({stateRoot}).target,
+            cold                            = await runCli({setupRoot, stateRoot, named: false, fake: greenFake({patPath, planeId: profile.planeId, dataRoot: profile.dataRoot})}),
+            output                          = JSON.parse(cold.stdout),
+            record                          = JSON.parse(await fs.readFile(path.join(setupRoot, `${RUN_ID}.json`), 'utf8')),
+            env                             = await fs.readFile(hostLayout({stateRoot}).envFile, 'utf8');
+
+        expect(output.target).toEqual(profile);
+        expect(record.target).toEqual(profile);
+        expect(output.steps.find(step => step.id === 'write-env')).toMatchObject({status: 'ok'});
+        expect(output.steps.find(step => step.id === 'served-plane')).toMatchObject({status: 'ok'});
+        expect(env).toContain(`NEO_PLANE_ID=${profile.planeId}\n`);
+        expect(env).toContain(`NEO_PLANE_DATA_ROOT=${profile.dataRoot}\n`);
+        // the whole plane is asked for: the orchestrator, the Fleet service and the ingress, by their profiles
+        expect(JSON.parse(await fs.readFile(path.join(setupRoot, 'fake-run.json'), 'utf8'))[0].args.join(' ')).toContain('--profile cloud --profile fleet --profile ingress up -d --wait');
+
+        // the same host with the flags: the named plane, nothing of the profile's
+        const other = await scratch();
+
+        expect(JSON.parse((await runCli({setupRoot: other.setupRoot, stateRoot: other.stateRoot, fake: greenFake({patPath: other.patPath})})).stdout).target)
+            .toEqual({planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'});
     });
 });

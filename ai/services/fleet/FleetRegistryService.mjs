@@ -11,6 +11,7 @@ import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePl
 import {normalizeMcpTarget}                      from './mcpServers.mjs';
 import {normalizeMemoryImport}                   from './seatMemoryImport.mjs';
 import {normalizeGitIdentityDeclaration}         from './seatGitIdentity.mjs';
+import {normalizeSeatModelDeclaration}           from './seatModelDeclaration.mjs';
 import SeatOperatorRegistryService, {isOwnerPrincipal} from './SeatOperatorRegistryService.mjs';
 
 const
@@ -231,6 +232,23 @@ function gitIdentityDeclaration(method, fields) {
 }
 
 /**
+ * @summary The model and reasoning effort an intent declares, validated for the seat's harness
+ * ({@link module:ai/services/fleet/seatModelDeclaration.normalizeSeatModelDeclaration}).
+ * @param {String} method      The writing verb, which prefixes a refusal.
+ * @param {String} harnessType The seat's harness family once the change applies.
+ * @param {Object} fields      The intent.
+ * @returns {{model?: String|null, reasoningEffort?: String|null}} The fields the intent names.
+ * @throws {TypeError} On a malformed value, or on a value for a harness that takes none.
+ */
+function seatModelDeclaration(method, harnessType, fields) {
+    try {
+        return normalizeSeatModelDeclaration(harnessType, fields)
+    } catch (error) {
+        throw new TypeError(`FleetRegistryService.${method}: ${error.message}`)
+    }
+}
+
+/**
  * @class Neo.ai.services.fleet.FleetRegistryService
  * @extends Neo.core.Base
  * @singleton
@@ -242,7 +260,8 @@ function gitIdentityDeclaration(method, fields) {
  *
  * An **agent definition** is `{id, githubUsername, harnessType, modelProvider, mcpServers,
  * mcpTarget, launchOwner, metadata, createdAt, updatedAt}`, plus `forge` and `forgeHost` for a GitLab seat and
- * `gitName` and `gitEmail` for a seat whose commit identity is declared — never a secret. `modelProvider` (the agent's model-provider login) resolves via the AiConfig
+ * `gitName` and `gitEmail` for a seat whose commit identity is declared, and `model` and `reasoningEffort` for one
+ * whose harness starts on a declared model — never a secret. `modelProvider` (the agent's model-provider login) resolves via the AiConfig
  * `modelProvider` SSOT leaf when not supplied — read-only, no service-local default shadow. The associated **credential** (the seat's
  * forge PAT: GitHub's, or a GitLab instance's) is stored separately, encrypted at
  * rest, and is the load-bearing security boundary of this service:
@@ -371,7 +390,8 @@ class FleetRegistryService extends Base {
      * to the machine's keyring account. Existing
      * ids reject: every edit of an established resident must use a scoped authority
      * (`configureAgent`, `setRepo`, `setAvatar`, or the Brain-only launch override), never replay this
-     * credential-bearing creation surface.
+     * credential-bearing creation surface. A credential store this Fleet cannot read refuses the create
+     * before anything is written, so the other seats' PATs survive it.
      * @param {Object}  opts
      * @param {String}  opts.githubUsername     The agent's GitHub username (required).
      * @param {String}  opts.harnessType        One of {@link harnessTypes} (required).
@@ -494,14 +514,21 @@ class FleetRegistryService extends Base {
             throw new Error(`FleetRegistryService.defineAgent: 'credential' is required — every agent holds its ${account.forge === 'gitlab' ? 'GitLab' : 'GitHub'} PAT.`)
         }
 
+        // read before the claim: an unreadable store refuses while nothing, not even the operator, is recorded
+        let previousCredentials;
+
+        try {
+            previousCredentials = this.readCredentialsForMutation()
+        } catch {
+            throw new Error("FleetRegistryService.defineAgent: the credential store cannot be read, so no seat was added and no stored PAT was touched. If it was written with another key, restore that key (NEO_FLEET_SECRET_KEY, or the key file in the Fleet's data folder), then add the seat again.")
+        }
+
         // the operator before anything else is written: a create never succeeds without it recorded
         const claimed = SeatOperatorRegistryService.claim({principal: admission?.ownerPrincipal ?? null, seatId: agentId});
 
         if (!claimed.ok) {
             throw new Error(`FleetRegistryService.defineAgent: the seat's operator could not be recorded: ${CLAIM_REFUSALS[claimed.refused] ?? claimed.refused}.`)
         }
-
-        const previousCredentials = this.readCredentials();
 
         const
             def        = {
@@ -598,8 +625,10 @@ class FleetRegistryService extends Base {
 
     /**
      * Configure an existing agent through the ONE wire-serializable curated intent. Only `id`,
-     * `harnessType`, sparse `mcpServers` overrides, the narrow `mcpTarget` intent and the declared commit
-     * identity (`gitName` with `gitEmail`, or both `null` to return to derivation) are accepted; credentials,
+     * `harnessType`, sparse `mcpServers` overrides, the narrow `mcpTarget` intent, the declared commit
+     * identity (`gitName` with `gitEmail`, or both `null` to return to derivation) and the declared `model`
+     * and `reasoningEffort` (each `null` to hand it back to the harness's own configuration) are accepted. A model names one
+     * family's model, so a harness change withdraws both unless the same intent declares them again; credentials,
      * URLs, headers, launch fields, wake, hooks, the provider identity (`githubUsername`), and generic config
      * bags are mechanically rejected. Unspecified fields are preserved. The returned public definition is canonical persisted readback, never request
      * echo. Controlled validation failures use the method prefix so FleetControlBridge can expose a
@@ -614,6 +643,9 @@ class FleetRegistryService extends Base {
      * @param {String|null} [intent.gitName]  The name the seat's commits carry, given with `gitEmail`; `null` with
      *     `gitEmail: null` removes the declaration.
      * @param {String|null} [intent.gitEmail] The email the seat's commits carry, given with `gitName`.
+     * @param {String|null} [intent.model] The model the seat's harness starts on, read at the next Start
+     *     ({@link module:ai/services/fleet/seatModelDeclaration.normalizeSeatModelDeclaration}).
+     * @param {String|null} [intent.reasoningEffort] The reasoning effort it starts on.
      * @returns {Object|null} Updated public definition, or `null` when the id is not registered.
      */
     configureAgent(intent={}) {
@@ -626,10 +658,11 @@ class FleetRegistryService extends Base {
         }
 
         const
-            allowed                                  = new Set(['id', 'harnessType', 'mcpServers', 'mcpTarget', 'gitName', 'gitEmail']),
+            allowed                                  = new Set(['id', 'harnessType', 'mcpServers', 'mcpTarget', 'gitName', 'gitEmail', 'model', 'reasoningEffort']),
             unknown                                  = Object.keys(intent).find(key => !allowed.has(key)),
             {id, harnessType, mcpServers, mcpTarget} = intent,
-            declaring                                = Object.hasOwn(intent, 'gitName') || Object.hasOwn(intent, 'gitEmail');
+            declaring                                = Object.hasOwn(intent, 'gitName') || Object.hasOwn(intent, 'gitEmail'),
+            seating                                  = Object.hasOwn(intent, 'model') || Object.hasOwn(intent, 'reasoningEffort');
 
         if (unknown) {
             reject(`unsupported field '${unknown}'.`)
@@ -640,7 +673,8 @@ class FleetRegistryService extends Base {
         if (!Object.hasOwn(intent, 'harnessType') &&
             !Object.hasOwn(intent, 'mcpServers') &&
             !Object.hasOwn(intent, 'mcpTarget') &&
-            !declaring) {
+            !declaring &&
+            !seating) {
             reject('at least one configuration field is required.')
         }
 
@@ -677,7 +711,9 @@ class FleetRegistryService extends Base {
             }
         }
 
-        const nextHarnessType = Object.hasOwn(intent, 'harnessType') ? harnessType : existing.harnessType;
+        const
+            nextHarnessType = Object.hasOwn(intent, 'harnessType') ? harnessType : existing.harnessType,
+            seat            = seatModelDeclaration('configureAgent', nextHarnessType, intent);
 
         const refusal = mcpDeclarationRefusal({harnessType: nextHarnessType, mcpMatrix: resolveMcpMatrix(matrix, catalog), tenant: !!target, forge: existing.forge});
 
@@ -704,6 +740,16 @@ class FleetRegistryService extends Base {
         if (declaring && !declaration) {
             delete def.gitName;
             delete def.gitEmail
+        }
+
+        // a model names one family's model: another harness starts on its own default unless declared again
+        if (nextHarnessType !== existing.harnessType) {
+            delete def.model;
+            delete def.reasoningEffort
+        }
+
+        for (const [key, value] of Object.entries(seat)) {
+            value === null ? delete def[key] : def[key] = value
         }
 
         const nextAgents = new Map(this.agents);
@@ -1079,30 +1125,57 @@ class FleetRegistryService extends Base {
      * @private
      */
     readCredentials() {
-        const file = this.credentialsPath();
-        if (!fs.existsSync(file)) return Object.create(null);
         try {
-            return Object.assign(Object.create(null), JSON.parse(this.decrypt(fs.readFileSync(file, 'utf8'))));
+            return this.readCredentialsForMutation()
         } catch (error) {
             console.warn('[FleetRegistryService] Credential store unreadable; failing closed.', error.message);
-            return Object.create(null);
+            return Object.create(null)
         }
     }
 
     /**
-     * Encrypt + persist a single credential, merged into the existing store.
+     * @summary The credential map a write starts from. A missing store is empty. A store this Fleet
+     * cannot read or decrypt, or one that holds no record, throws and stays byte-identical: a write
+     * over it would replace every other seat's PAT with the one being written.
+     * @returns {Object} The decrypted `{agentId: pat}` map, null-prototype.
+     * @private
+     */
+    readCredentialsForMutation() {
+        let raw;
+
+        try {
+            raw = fs.readFileSync(this.credentialsPath(), 'utf8')
+        } catch (error) {
+            if (error?.code === 'ENOENT') return Object.create(null);
+
+            throw error
+        }
+
+        const record = JSON.parse(this.decrypt(raw));
+
+        if (!record || typeof record !== 'object' || Array.isArray(record)) {
+            throw new TypeError('FleetRegistryService: credentials.enc must contain a credential record.')
+        }
+
+        return Object.assign(Object.create(null), record)
+    }
+
+    /**
+     * Encrypt + persist a single credential, merged into the existing store; throws over a store
+     * that cannot be read ({@link readCredentialsForMutation}).
      * @param {String} id
      * @param {String} pat
      * @private
      */
     storeCredential(id, pat) {
-        const map = this.readCredentials();
+        const map = this.readCredentialsForMutation();
         map[id] = pat;
         this.writeCredentials(map);
     }
 
     /**
-     * Remove a single credential from the store (no-op if absent).
+     * Remove a single credential from the store (no-op if absent). The lenient read is enough here:
+     * over a store that cannot be read the id is absent, so nothing is written.
      * @param {String} id
      * @private
      */

@@ -1497,7 +1497,10 @@ test.describe('startAgentProvisioned — an adopted seat\'s memory import', () =
     test('a seat without a managed repository cannot converge a consented import, so it is refused before the spawn', async () => {
         const lifecycle = makeLifecycle({agents: {a: {id: 'a', metadata: {launch: {command: 'h'}}, memoryImport: SOURCE}}});
 
-        await expect(start({lifecycle})).rejects.toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: SOURCE, step: 'memory import'});
+        await expect(start({lifecycle})).rejects.toMatchObject({
+            code   : 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: SOURCE, step: 'memory import',
+            message: "startAgentProvisioned: the memory import needs the seat's repository: set it before starting it."
+        });
         expect(lifecycle.calls.start).toHaveLength(0)
     });
 });

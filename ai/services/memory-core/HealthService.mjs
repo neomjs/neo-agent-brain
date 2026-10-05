@@ -559,7 +559,11 @@ export async function buildWakeFeaturesBlock(now = Date.now()) {
  * other consumer about what counts as a failure. It reads the records directory the deployment
  * declares (`fleet.wakeReceiverRecordsDir`); a process that declares none reports `unconfigured`.
  *
- * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object}>}
+ * `receiver` answers what the records cannot: is the receiver accepting anything at all? It carries
+ * the receiver's own liveness (last accept and sweep pass, with ages, and the last hour's starts and
+ * stuck exits) and reads `unknown` whenever that account cannot be read.
+ *
+ * @returns {Promise<{deliveryReadable: Boolean, deliveryReadReason: String, subscriptions: Object, receiver: Object}>}
  */
 async function buildWakeDeliveryBlock() {
     try {
@@ -568,7 +572,7 @@ async function buildWakeDeliveryBlock() {
         // The projection is observability. Losing it must not cost the caller the rest of the wake
         // block — and an exception here is by definition a question that could not be answered, so
         // it degrades in the same direction as an unreadable directory.
-        return {deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}};
+        return {deliveryReadable: false, deliveryReadReason: 'unreadable', subscriptions: {}, receiver: {state: 'unknown'}};
     }
 }
 

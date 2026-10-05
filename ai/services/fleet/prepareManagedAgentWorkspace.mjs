@@ -8,6 +8,7 @@ import {isDeepStrictEqual}                         from 'node:util';
 import {parse as parseToml}                        from 'smol-toml';
 import {hydrateCurrentWorktree}                    from '../../scripts/migrations/bootstrapWorktree.mjs';
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
+import {applyCodexSeatSettings, parseTomlTableHeader} from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv}                      from './deriveNodeRuntimeEnv.mjs';
 import {KIMI_SEAT_SERVERS, generateKimiSeatConfig} from './generateKimiSeatConfig.mjs';
 import {
@@ -20,6 +21,7 @@ import {
 } from './managedAgentWorkspacePlan.mjs';
 import {OPENCODE_SEAT_SERVERS, WAKE_ENVELOPE_PLANT_FILE_NAME, generateOpenCodeSeatConfig, isUnmodifiedGeneration} from './generateOpenCodeSeatConfig.mjs';
 import {SEAT_INSTRUCTION_STATES, projectSeatInstructions}                                                         from './projectSeatInstructions.mjs';
+import {ensureSeatEnvFile}                                                                                         from './seatEnvFile.mjs';
 
 export {createManagedAgentWorkspacePlan} from './managedAgentWorkspacePlan.mjs';
 
@@ -371,6 +373,9 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         fileSystem
     });
 
+    // the seat's own .env, in its seat folder beside the clones, where the operator adds keys
+    await ensureSeatEnvFile({seatHome: path.join(canonicalInstanceRoot, agent.id), fileSystem});
+
     artifacts.push(...await convergeSeatMemory({
         agent,
         targetRepoRoot: canonicalTargetRepoRoot,
@@ -482,7 +487,13 @@ export async function prepareManagedAgentWorkspace({
     let plan;
     try {
         plan = createManagedAgentWorkspacePlan({
-            agent    : {id: agent.id, harnessType: agent.harnessType, ...(agent.forge ? {forge: agent.forge} : {})},
+            agent    : {
+                id         : agent.id,
+                harnessType: agent.harnessType,
+                ...(agent.forge           ? {forge          : agent.forge}           : {}),
+                ...(agent.model           ? {model          : agent.model}           : {}),
+                ...(agent.reasoningEffort ? {reasoningEffort: agent.reasoningEffort} : {})
+            },
             mcpMatrix: resolveMatrix(agent.mcpServers, mcpCatalogFor(agent.forge)),
             mcpTarget
         })
@@ -1016,10 +1027,50 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
         homeArtifact.status = WORKSPACE_ARTIFACT_STATES.UPDATED
     }
 
+    if (await convergeCodexSeatSettings({filePath: homePath, agent, trustedRoot: instanceHome, fileSystem}) &&
+        homeArtifact.status === WORKSPACE_ARTIFACT_STATES.MATCH) {
+        homeArtifact.status = WORKSPACE_ARTIFACT_STATES.UPDATED
+    }
+
     artifacts.push(homeArtifact);
     artifacts.push(await ensureDirectoryArtifact(memoriesPath, instanceHome, fileSystem));
 
     return artifacts;
+}
+
+/**
+ * @summary Writes the seat's declared model and reasoning effort into its Codex home config, replacing whatever
+ * value it held, so the next thread starts on them. Every other key and comment stays as it is, and a file that
+ * cannot be written that way is refused unchanged ({@link module:ai/services/fleet/codexConfigToml.applyCodexSeatSettings}).
+ * @param {Object} options
+ * @param {String} options.filePath    The Codex home `config.toml`, converged just before.
+ * @param {Object} options.agent       The seat's record, read for `model` and `reasoningEffort`.
+ * @param {String} options.trustedRoot The root no path segment may leave by a symlink.
+ * @param {Object} options.fileSystem  Promise filesystem seam.
+ * @returns {Promise<Boolean>} Whether Fleet changed the file.
+ * @private
+ */
+async function convergeCodexSeatSettings({filePath, agent, trustedRoot, fileSystem}) {
+    if (!agent.model && !agent.reasoningEffort) return false;
+
+    await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: 'model,model_reasoning_effort'});
+
+    const source = await fileSystem.readFile(filePath, 'utf8');
+
+    let next;
+
+    try {
+        next = applyCodexSeatSettings(source, agent)
+    } catch (error) {
+        // a file Fleet cannot write without changing anything else is refused as it stands, and Start says why
+        throw divergentArtifact(filePath, 'model,model_reasoning_effort', error.message)
+    }
+
+    if (next === source) return false;
+
+    await publishTextAtomically({filePath, content: next, fileSystem});
+
+    return true
 }
 
 /**
@@ -1628,64 +1679,6 @@ function renderCodexHomeConfig() {
         'memories = true',
         ''
     ].join('\n');
-}
-
-/**
- * @summary Parse a TOML table header without mistaking brackets or `#` inside quoted keys for the
- * structural close/comment boundary. Both `[table]` and `[[array.table]]` forms are recognized,
- * including legal trailing comments.
- * @param {String} line One physical TOML line.
- * @returns {{array: Boolean, body: String}|null}
- * @private
- */
-function parseTomlTableHeader(line) {
-    const
-        source    = String(line).trimStart(),
-        array     = source.startsWith('[['),
-        openWidth = array ? 2 : 1;
-
-    if ((!array && !source.startsWith('[')) || source.length <= openWidth) return null;
-
-    let quote = null, escaped = false;
-
-    for (let index = openWidth; index < source.length; index++) {
-        const char = source[index];
-
-        if (quote) {
-            if (quote === '"' && escaped) {
-                escaped = false
-            } else if (quote === '"' && char === '\\') {
-                escaped = true
-            } else if (char === quote) {
-                quote = null
-            }
-
-            continue
-        }
-
-        if (char === '"' || char === "'") {
-            quote = char;
-            continue
-        }
-
-        if (char === '#') return null;
-
-        const closes = array
-            ? char === ']' && source[index + 1] === ']'
-            : char === ']';
-
-        if (!closes) continue;
-
-        const
-            body   = source.slice(openWidth, index).trim(),
-            suffix = source.slice(index + (array ? 2 : 1)).trim();
-
-        if (!body || (suffix && !suffix.startsWith('#'))) return null;
-
-        return {array, body}
-    }
-
-    return null
 }
 
 /**

@@ -114,6 +114,22 @@ export function resumeTarget(record, invocation = {}) {
 }
 
 /**
+ * @summary The target a run is evaluated for, for every renderer: what the invocation names, else what the
+ * record is bound to, else the plane the provisioned profile declares, whose root comes only with its id.
+ * @param {Object} options `{record, named, profile}`; `record` is `null` for a run being created.
+ * @returns {{planeId: String|null, dataRoot: String|null, endpoint: String|null}}
+ */
+export function runTarget({record = null, named = {}, profile}) {
+    const target = record ? resumeTarget(record, named) : normalizeTarget(named), declared = normalizeTarget(profile);
+
+    if (target.planeId !== null) {
+        return {...target, endpoint: target.endpoint ?? declared.endpoint};
+    }
+
+    return {planeId: declared.planeId, dataRoot: target.dataRoot ?? declared.dataRoot, endpoint: target.endpoint ?? declared.endpoint};
+}
+
+/**
  * @summary A fresh record for one run.
  * @param {Object} options
  * @param {String} options.runId         A UUID; the CLI mints it, a resume passes the existing one.

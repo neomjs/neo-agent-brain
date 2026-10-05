@@ -213,6 +213,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 sessionFolder: runtime?.sessionFolder ?? null,
                 // the Git identity the last start resolved, a refused start's included; null before a start
                 gitIdentity  : runtime?.gitIdentity ?? null,
+                // the model and effort a Codex seat's config is set to now (configured state, never what a
+                // chat runs on); null for every other family
+                harnessSettings: runtime?.harnessSettings ?? null,
                 lifecycle   : supervised
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.runtime,

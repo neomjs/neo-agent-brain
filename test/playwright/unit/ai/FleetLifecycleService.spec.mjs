@@ -414,6 +414,40 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService', () => {
 test.describe('Neo.ai.services.fleet.FleetLifecycleService — curated launch + security matrix', () => {
     const curatedAgent = (id, harnessType = 'codex') => ({id, githubUsername: id, harnessType, metadata: {}});
 
+    test('a Codex seat reads back what its config is set to now, running or stopped; other families read nothing', () => {
+        install();
+        FleetLifecycleService.instanceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-seat-readback-'));
+
+        const
+            seat     = curatedAgent('gpt-seat', 'codex-desktop'),
+            home     = path.join(FleetLifecycleService.getInstanceRoot(), 'gpt-seat', 'harness', 'codex-desktop', 'codex-home'),
+            readBack = () => FleetLifecycleService.harnessSettingsFor(seat);
+
+        expect(readBack(), 'no home provisioned yet').toBeNull();
+
+        fs.mkdirSync(home, {recursive: true});
+        fs.writeFileSync(path.join(home, 'config.toml'), 'cli_auth_credentials_store = "file"\nmodel = "gpt-6-astra"\n\n[features]\nmemories = true\n');
+        expect(readBack()).toEqual({model: 'gpt-6-astra', reasoningEffort: null});
+
+        fs.writeFileSync(path.join(home, 'config.toml'), 'model = "gpt-6-sol"\nmodel_reasoning_effort = "max"\n');
+        expect(readBack(), 'a pick made in the app shows on the next read').toEqual({model: 'gpt-6-sol', reasoningEffort: 'max'});
+
+        expect(FleetLifecycleService.harnessSettingsFor(curatedAgent('app-seat', 'claude-desktop'))).toBeNull();
+        expect(FleetLifecycleService.harnessSettingsFor(curatedAgent('cli-seat', 'claude-code')), 'flags, no config file to read').toBeNull()
+    });
+
+    test('a curated launch carries the seat\'s declared model and effort to the harness that reads them on its command line', () => {
+        install();
+        FleetLifecycleService.instanceRoot       = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-seat-model-'));
+        FleetLifecycleService.harnessBinaryPaths = {'claude-code': process.execPath};
+
+        const declared = {...curatedAgent('cli-seat', 'claude-code'), model: 'claude-opus-5-5', reasoningEffort: 'max'};
+
+        expect(FleetLifecycleService.resolveLaunch(declared).args.join(' ')).toContain('--model claude-opus-5-5 --effort max');
+        expect(FleetLifecycleService.resolveLaunch(curatedAgent('cli-seat', 'claude-code')).args, 'undeclared: the harness default')
+            .not.toContain('--model')
+    });
+
     test('without an injected root, harness homes derive under the AiConfig agents root', () => {
         install();
 
@@ -1457,6 +1491,66 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — remote MCP capabi
                   : expect(env, `${cloneUrl} on ${forgeHost}`).not.toHaveProperty('NEO_GITLAB_PROJECT');
             expect(env).toMatchObject({NEO_GITLAB_PAT: FIXTURE_PAT, NEO_GITLAB_HOST: forgeHost})
         });
+    });
+
+    test('SECURITY: a seat\'s .env cannot set a slot the Fleet fills itself, the configured PAT slot included; its own keys start normally', async () => {
+        const seatHome = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-seat-env-')),
+              envFile  = path.join(seatHome, '.env'),
+              original = FleetLifecycleService.credentialEnvVar;
+
+        try {
+            for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'NEO_AGENT_IDENTITY', 'NEO_FLEET_BRIDGE_TOKEN', 'NEO_GITLAB_PAT']) {
+                fs.writeFileSync(envFile, `# a second forge\nSECOND_FORGE_TOKEN=x\nexport ${key}=spoofed\n`);
+
+                const spawnStub = install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+
+                expect(() => FleetLifecycleService.start('a'), key).toThrow(`the seat's .env sets '${key}'`);
+                expect(spawnStub.calls, key).toHaveLength(0)
+            }
+
+            // the reserved set is the lifecycle's own: a renamed PAT slot is reserved under its new name
+            fs.writeFileSync(envFile, 'NEO_SEAT_PAT=spoofed\n');
+            install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+            FleetLifecycleService.credentialEnvVar = 'NEO_SEAT_PAT'; // after install(), which resets it
+            expect(() => FleetLifecycleService.start('a')).toThrow("the seat's .env sets 'NEO_SEAT_PAT'");
+
+            fs.writeFileSync(envFile, '# a second forge\nSECOND_FORGE_TOKEN=x\n');
+
+            const spawnStub = install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+
+            await FleetLifecycleService.start('a');
+            expect(spawnStub.calls).toHaveLength(1)
+        } finally {
+            FleetLifecycleService.credentialEnvVar = original;
+            fs.rmSync(seatHome, {recursive: true, force: true})
+        }
+    });
+
+    test('SECURITY: a reserved name inside a quoted .env value sets nothing and the seat starts; a linked .env refuses before any spawn', async () => {
+        const root     = fs.mkdtempSync(path.join(os.tmpdir(), 'lifecycle-seat-env-')),
+              seatHome = path.join(root, 'seat'),
+              envFile  = path.join(seatHome, '.env'),
+              outside  = path.join(root, 'outside.env');
+
+        try {
+            fs.mkdirSync(seatHome);
+            fs.writeFileSync(envFile, 'SECOND_FORGE_NOTE="first\nGH_TOKEN=ordinary text\nlast"\n');
+
+            let spawnStub = install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+
+            await FleetLifecycleService.start('a');
+            expect(spawnStub.calls).toHaveLength(1);
+
+            fs.rmSync(envFile);
+            fs.writeFileSync(outside, 'SECOND_FORGE_TOKEN=x\n');
+            fs.symlinkSync(outside, envFile);
+            spawnStub = install({agents: {a: agentDef('a', {seatHome, metadata: {launch: LAUNCH}})}});
+
+            expect(() => FleetLifecycleService.start('a')).toThrow("FleetLifecycleService.start: agent 'a' cannot start: the seat's .env is a link");
+            expect(spawnStub.calls).toHaveLength(0)
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
     });
 
     test('SECURITY: a launch env cannot pre-load a GitLab seat slot', () => {
