@@ -12,10 +12,18 @@ import {normalizeMcpTarget}                      from './mcpServers.mjs';
 import {normalizeMemoryImport}                   from './seatMemoryImport.mjs';
 import {normalizeGitIdentityDeclaration}         from './seatGitIdentity.mjs';
 import {normalizeSeatModelDeclaration}           from './seatModelDeclaration.mjs';
+import SeatOperatorRegistryService, {isOwnerPrincipal} from './SeatOperatorRegistryService.mjs';
 
 const
+    // a refused operator claim in the operator's words: the store's own reason can name a host path
+    CLAIM_REFUSALS          = Object.freeze({
+        busy               : "another change to the seats' operators is in progress; try again",
+        'no-principal'     : 'the admission carries no owner principal',
+        'store-unavailable': "the seats' operator record cannot be trusted and needs repair on the plane host"
+    }),
     FORGE_HOSTNAME_RE       = /^(?:[a-z0-9._-]+|\[[0-9a-f:]+\])$/,
     LAUNCH_OWNERS           = Object.freeze(['external', 'fleet']),
+    OPERATOR_FIELDS         = Object.freeze(['operatedBy', 'ownerPrincipal']),
     RETIRED_TARGET_FIELD    = ['mcp', 'Transport'].join(''),
     PUBLIC_SENSITIVE_KEY_RE = /^(?:credentials?|secrets?|tokens?|(?:github)?pats?|passwords?|authorization|(?:api|client|private)(?:key|token|secret|credential|password)s?|personalaccess(?:key|token|secret|credential|password)s?|(?:access|auth|bearer|github|id|oauth|refresh|session)(?:key|token|secret|credential|password)s?|launch|command|args|argv|env|environment)$/;
 
@@ -366,6 +374,14 @@ class FleetRegistryService extends Base {
      */
     loadedDir = null
 
+    /**
+     * Why the last registry read failed, or null after a clean (or absent) read: an unreadable registry
+     * loads empty, and this keeps that emptiness from passing for "no such seat".
+     * @member {String|null} registryUnreadable=null
+     * @private
+     */
+    registryUnreadable = null
+
     // ---- public API ---------------------------------------------------------
 
     /**
@@ -400,13 +416,22 @@ class FleetRegistryService extends Base {
      * @param {String} [opts.gitName]  The name the seat's commits carry, declared with `gitEmail`. Omitted, Start
      *     derives the identity from the seat's forge account ({@link module:ai/services/fleet/seatGitIdentity.resolveSeatGitIdentity}).
      * @param {String} [opts.gitEmail] The email the seat's commits carry, declared with `gitName`.
+     * @param {Object} [admission={}]   The wire's admission for this create, never the caller's input.
+     * @param {String} [admission.ownerPrincipal] The forge-resolved principal the new seat records as its
+     *     operator ({@link Neo.ai.services.fleet.SeatOperatorRegistryService#claim}), before anything else is
+     *     written. Without one the seat has no operator until the plane host assigns it. A refused claim
+     *     refuses the create.
      * @returns {Object} The public agent definition (no credential).
      */
-    defineAgent(options={}) {
+    defineAgent(options={}, admission={}) {
         if (Object.hasOwn(options || {}, RETIRED_TARGET_FIELD)) {
             throw new TypeError(
                 "FleetRegistryService.defineAgent: retired target-as-transport input is not accepted; use 'mcpTarget'."
             )
+        }
+
+        if (OPERATOR_FIELDS.some(field => Object.hasOwn(options || {}, field))) {
+            throw new Error("FleetRegistryService.defineAgent: a seat's operator is never named by the caller; it is the admitted principal.")
         }
 
         const {
@@ -489,12 +514,20 @@ class FleetRegistryService extends Base {
             throw new Error(`FleetRegistryService.defineAgent: 'credential' is required — every agent holds its ${account.forge === 'gitlab' ? 'GitLab' : 'GitHub'} PAT.`)
         }
 
+        // read before the claim: an unreadable store refuses while nothing, not even the operator, is recorded
         let previousCredentials;
 
         try {
             previousCredentials = this.readCredentialsForMutation()
         } catch {
             throw new Error("FleetRegistryService.defineAgent: the credential store cannot be read, so no seat was added and no stored PAT was touched. If it was written with another key, restore that key (NEO_FLEET_SECRET_KEY, or the key file in the Fleet's data folder), then add the seat again.")
+        }
+
+        // the operator before anything else is written: a create never succeeds without it recorded
+        const claimed = SeatOperatorRegistryService.claim({principal: admission?.ownerPrincipal ?? null, seatId: agentId});
+
+        if (!claimed.ok) {
+            throw new Error(`FleetRegistryService.defineAgent: the seat's operator could not be recorded: ${CLAIM_REFUSALS[claimed.refused] ?? claimed.refused}.`)
         }
 
         const
@@ -527,10 +560,11 @@ class FleetRegistryService extends Base {
 
         nextAgents.set(agentId, def);
 
-        // Two-store create transaction: credential first, registry row last. A credential failure
-        // cannot strand an unrecoverable create-only resident. If registry publish fails, restore the
-        // prior credential snapshot. If rollback itself fails or the process dies between files, the
-        // next create for the id carries a credential of its own and overwrites the orphan.
+        // Three-store create transaction: the operator claimed above, the credential next, the registry row
+        // last. A credential failure cannot strand an unrecoverable create-only resident. If registry publish
+        // fails, restore the prior credential snapshot. If rollback itself fails or the process dies between
+        // files, the next create for the id carries a credential and an operator claim of its own and
+        // overwrites both orphans; an orphaned claim names no defined seat, so no lookup reads it as operated.
         this.writeCredentials(Object.assign(Object.create(null), previousCredentials, {[agentId]: credential}));
 
         try {
@@ -544,6 +578,7 @@ class FleetRegistryService extends Base {
         }
 
         this.agents = nextAgents;
+
         return this.toPublic(def);
     }
 
@@ -870,6 +905,48 @@ class FleetRegistryService extends Base {
     }
 
     /**
+     * @summary Does this principal operate this seat? The one server-owned lookup the operator relation
+     * answers: the seat must be defined here, and the operator store, read fresh, must name this principal
+     * for it. A store that cannot be read answers `unavailable`, never `unknown-seat` or `unowned`.
+     * @param {String|null} principal An admitted owner principal. Anything else, such as a login, an
+     *     `@identity` or a path, is no principal.
+     * @param {String}      seatId
+     * @returns {{operates: true}|{operates: false, reason: 'no-principal'|'unavailable'|'unknown-seat'|'unowned'|'other-operator'}}
+     */
+    operatesSeat(principal, seatId) {
+        if (!isOwnerPrincipal(principal)) return {operates: false, reason: 'no-principal'};
+
+        this.ensureLoaded();
+
+        if (this.registryUnreadable)  return {operates: false, reason: 'unavailable'};
+        if (!this.agents.has(seatId)) return {operates: false, reason: 'unknown-seat'};
+
+        const operator = SeatOperatorRegistryService.operatorOf(seatId);
+
+        if (operator.state === 'unavailable') return {operates: false, reason: 'unavailable'};
+        if (!operator.principal)              return {operates: false, reason: 'unowned'};
+
+        return operator.principal === principal ? {operates: true} : {operates: false, reason: 'other-operator'}
+    }
+
+    /**
+     * @summary The defined seats one principal operates, read fresh: the inverse of {@link operatesSeat}.
+     * @param {String} principal An admitted owner principal.
+     * @returns {{state: 'ok', seats: String[]}|{state: 'unavailable', reason: String}}
+     */
+    seatsOperatedBy(principal) {
+        this.ensureLoaded();
+
+        if (this.registryUnreadable) return {reason: this.registryUnreadable, state: 'unavailable'};
+
+        const operated = SeatOperatorRegistryService.seatsOf(principal);
+
+        if (operated.state === 'unavailable') return operated;
+
+        return {seats: operated.seats.filter(seatId => this.agents.has(seatId)), state: 'ok'}
+    }
+
+    /**
      * Remove an agent definition and its stored credential.
      * @param {String} id
      * @returns {Object} `{success, id}`
@@ -877,7 +954,12 @@ class FleetRegistryService extends Base {
     removeAgent(id) {
         this.ensureLoaded();
         const existed = this.agents.delete(id);
-        if (existed) this.writeRegistry();
+        if (existed) {
+            this.writeRegistry();
+            // tidiness, not the guarantee: the next create of this id claims its operator anew
+            const released = SeatOperatorRegistryService.release({seatId: id});
+            released.ok || console.warn(`[FleetRegistryService] seat '${id}' was removed; its operator record stays until the id is created again: ${released.reason}`)
+        }
         // The PAT dies with the agent. The Bridge token is a stateless *signed* credential (no
         // store), so it can't be revoked at remove-time — it self-expires within bridgeTokenTtlMs
         // (the accepted ≤1h lag; immediate eviction of a compromised agent is a later additive
@@ -991,10 +1073,15 @@ class FleetRegistryService extends Base {
 
     /**
      * @returns {Map<String,Object>} Agent definitions read from `registry.json` (empty on miss/corrupt).
+     *     A corrupt or malformed read (no `agents` table) is remembered in {@link registryUnreadable}, so a
+     *     lookup can say the seats are unknowable rather than absent.
      * @private
      */
     readRegistry() {
         const file = this.registryPath();
+
+        this.registryUnreadable = null;
+
         if (!fs.existsSync(file)) return new Map();
 
         let data;
@@ -1003,6 +1090,15 @@ class FleetRegistryService extends Base {
             data = JSON.parse(fs.readFileSync(file, 'utf8'))
         } catch (error) {
             console.warn(`[FleetRegistryService] Unreadable registry at ${file}; starting empty.`, error.message);
+            this.registryUnreadable = `the seat registry cannot be read (${error.message})`;
+            return new Map();
+        }
+
+        const isTable = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+        if (!isTable(data) || (data.agents !== undefined && !isTable(data.agents))) {
+            console.warn(`[FleetRegistryService] Malformed registry at ${file}; starting empty.`);
+            this.registryUnreadable = 'the seat registry has no agents table';
             return new Map();
         }
 

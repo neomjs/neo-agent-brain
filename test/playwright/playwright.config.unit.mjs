@@ -1,7 +1,7 @@
 import './configTemplateResolver.mjs';
 
 import {defineConfig}                             from '@playwright/test';
-import {existsSync}                               from 'node:fs';
+import {existsSync, rmSync}                       from 'node:fs';
 import os                                         from 'os';
 import path                                       from 'path';
 import {fileURLToPath}                            from 'url';
@@ -43,6 +43,15 @@ process.env.NEO_KB_EMBEDDING_BACKOFF_BASE_MS = '1';
 // mutating and restoring shared state. A spec that needs real records injects `recordsDir`
 // explicitly — see `wakeDeliveryReader.spec.mjs`, which writes its own temp tree.
 process.env.NEO_WAKE_RECEIVER_RECORDS_DIR = path.join(os.tmpdir(), 'neo-unit-absent-wake-records');
+
+// The Fleet's durable root (`fleet.dataDir`, bound to this env) holds the host's seat registry and the
+// operator store every seat create claims. A spec that roots its registry elsewhere still creates seats
+// whose claim reads this leaf, so each worker process gets its own root here, never the host's, and no
+// two workers contend for one operator lock. Each process removes its own root when it exits.
+const unitFleetRoot = path.join(os.tmpdir(), `neo-unit-fleet-${process.pid}`);
+
+process.env.NEO_FLEET_DATA_DIR = unitFleetRoot;
+process.on('exit', () => rmSync(unitFleetRoot, {force: true, recursive: true}));
 
 // Brain specs retain the Chroma capability by default. Body-focused runs do not select this
 // project, so Playwright omits its setup dependency entirely instead of booting Chroma before it
