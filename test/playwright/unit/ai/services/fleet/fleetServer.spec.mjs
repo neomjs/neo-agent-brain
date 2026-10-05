@@ -20,7 +20,9 @@ import RequestContextService           from '../../../../../../ai/mcp/server/sha
 import ConfigBase                      from '../../../../../../ai/configBase.mjs';
 import FleetControlBridge              from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
 import FleetManager                    from '../../../../../../ai/services/fleet/FleetManager.mjs';
+import FleetRegistryService            from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
 import ForgeConnectionRegistryService  from '../../../../../../ai/services/fleet/ForgeConnectionRegistryService.mjs';
+import SeatOperatorRegistryService     from '../../../../../../ai/services/fleet/SeatOperatorRegistryService.mjs';
 import {
     createDeploymentStateSnapshot,
     writeDeploymentStateSnapshot
@@ -791,6 +793,43 @@ test.describe('composed Fleet S1 server', () => {
         }
     });
 
+    test('a forge-authenticated defineAgent writes the seat in the service root and records its owner as the operator (#856)', async () => {
+        globalThis.fetch = async (input, init) => String(input) === 'https://api.github.test/user'
+            ? new Response(JSON.stringify({id: 280105177, login: 'neo-gpt', name: 'Euclid'}), {
+                status : 200,
+                headers: {'content-type': 'application/json', 'x-oauth-scopes': 'repo, read:org'}
+            })
+            : nativeFetch(input, init);
+
+        const
+            forge  = await useForgeConnections(),
+            root   = await mkdtemp(path.join(os.tmpdir(), 'fleet-define-')),
+            server = await startApp();
+
+        FleetRegistryService.dataDir        = root;
+        SeatOperatorRegistryService.dataDir = root;
+
+        try {
+            const PAT      = `ghp_${'x'.repeat(36)}`;
+            const response = await nativeFetch(`${server.baseUrl}/fleet`, {
+                method : 'POST',
+                headers: {Authorization: 'Bearer forge-pat', 'Content-Type': 'application/json'},
+                body   : wireBody('defineAgent', {githubUsername: 'seat-one', harnessType: 'codex', credential: PAT})
+            }).then(response => response.json());
+
+            expect(response).toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok, result: {id: 'seat-one'}});
+            expect(JSON.stringify(response), 'the PAT never comes back').not.toContain(PAT);
+            expect(FleetRegistryService.getAgent('seat-one')).toMatchObject({id: 'seat-one', harnessType: 'codex'});
+            expect(FleetRegistryService.operatesSeat(`owner:${forge.connectionId}:280105177`, 'seat-one')).toEqual({operates: true})
+        } finally {
+            FleetRegistryService.dataDir        = null;
+            SeatOperatorRegistryService.dataDir = null;
+            await server.close();
+            await forge.restore();
+            await rm(root, {recursive: true, force: true})
+        }
+    });
+
     test('identityless admitted middleware refuses with zero dispatch', async () => {
         let   dispatchCount = 0;
         const server        = await startApp({
@@ -970,10 +1009,10 @@ test.describe('composed Fleet S1 server', () => {
 test.describe('Fleet S1 wire policy', () => {
     const PRINCIPAL_CONTEXT = Object.freeze({ownerPrincipal: 'principal:github:https%3A%2F%2Fapi.github.com:9'});
 
-    test('classifies every wire verb in BOTH ledgers — slice ownership and scope class — with getBootIdentity and fleetDeploymentState as the served verbs', () => {
+    test('classifies every wire verb in BOTH ledgers — slice ownership and scope class — with defineAgent, getBootIdentity and fleetDeploymentState as the served verbs', () => {
         expect(Object.keys(FLEET_S1_METHOD_POLICY).sort()).toEqual([...FLEET_WIRE_METHODS].sort());
         expect(Object.keys(FLEET_METHOD_SCOPE_CLASSES).sort()).toEqual([...FLEET_WIRE_METHODS].sort());
-        expect(FLEET_S1_READY_METHODS).toEqual(['getBootIdentity', 'fleetDeploymentState']);
+        expect(FLEET_S1_READY_METHODS).toEqual(['defineAgent', 'getBootIdentity', 'fleetDeploymentState']);
 
         for (const scopeClass of Object.values(FLEET_METHOD_SCOPE_CLASSES)) {
             expect(['read-observe', 'lifecycle-write']).toContain(scopeClass)
@@ -988,7 +1027,10 @@ test.describe('Fleet S1 wire policy', () => {
         }]));
 
         for (const method of FLEET_S1_READY_METHODS) {
-            expect(await dispatchFleetS1Request(createFleetWireRequest(method, 'x'), bridge))
+            // a served write still needs its subject: the authority boundary is the same for ready verbs
+            const context = FLEET_METHOD_SCOPE_CLASSES[method] === 'lifecycle-write' ? PRINCIPAL_CONTEXT : null;
+
+            expect(await dispatchFleetS1Request(createFleetWireRequest(method, 'x'), bridge, context))
                 .toMatchObject({ok: true, result: method, state: FLEET_WIRE_RESPONSE_STATES.ok})
         }
 
@@ -1006,7 +1048,6 @@ test.describe('Fleet S1 wire policy', () => {
             fleetGraphScene       : 'awaiting-s3',
             fleetOpenWork         : 'awaiting-s3',
             fleetSeatGitIdentity  : 'awaiting-s3',
-            defineAgent           : 'awaiting-s4',
             configureAgent        : 'awaiting-s4',
             adoptAgent            : 'awaiting-s4',
             releaseAgent          : 'awaiting-s4',
@@ -1060,6 +1101,27 @@ test.describe('Fleet S1 wire policy', () => {
         expect(Object.keys(expectedSlices).sort())
             .toEqual(FLEET_WIRE_METHODS.filter(method => !FLEET_S1_READY_METHODS.includes(method)).sort());
         expect(calls.map(([method]) => method)).toEqual(FLEET_S1_READY_METHODS)
+    });
+
+    test('defineAgent refuses with the owner resolution, or as possession only, and reaches the bridge only with its subject (#856)', async () => {
+        const
+            calls  = [],
+            bridge = {defineAgent: (...args) => { calls.push(args); return {id: 'seat'} }},
+            define = context => dispatchFleetS1Request(createFleetWireRequest('defineAgent', {githubUsername: 'seat'}), bridge, context);
+
+        for (const state of ['uninitialized', 'unregistered', 'refused', 'unavailable']) {
+            const refused = await define({ownerResolution: {state, reason: `the ${state} reason`}});
+
+            expect(refused.state).toBe(FLEET_WIRE_RESPONSE_STATES.refused);
+            expect(refused.error).toContain(`the owner is ${state}: the ${state} reason`)
+        }
+
+        // a possession-only admission names no forge: neither a subject nor a resolution
+        expect((await define(null)).error).toContain('possession admits the transport, identity owns the records');
+        expect(calls, 'no refused call reaches the bridge').toEqual([]);
+
+        expect(await define(PRINCIPAL_CONTEXT)).toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok});
+        expect(calls).toEqual([[{githubUsername: 'seat'}, {ownerPrincipal: PRINCIPAL_CONTEXT.ownerPrincipal}]])
     });
 
     test('unknown methods retain the canonical fail-closed wire envelope', async () => {

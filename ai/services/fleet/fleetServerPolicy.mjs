@@ -17,7 +17,7 @@ import {
  * @type {Readonly<Record<String, 'ready'|'awaiting-s2'|'awaiting-s3'|'awaiting-s4'|'awaiting-s5'|'awaiting-c1'>>}
  */
 export const FLEET_S1_METHOD_POLICY = Object.freeze({
-    defineAgent           : 'awaiting-s4',
+    defineAgent           : 'ready',
     configureAgent        : 'awaiting-s4',
     setRepo               : 'awaiting-s4',
     setRepos              : 'awaiting-s4',
@@ -124,7 +124,9 @@ const SLICE_LABELS = Object.freeze({
  * admission subject opened the first one: `getBootIdentity`, a read-observe advisory whose bridge
  * answer degrades honestly when no boot-identity source is wired. The deployment-state observation
  * is the second: `fleetDeploymentState`, a read-observe projection of the orchestrator's snapshot,
- * served once the composed boot wires its read-source and answering `unavailable` until then.
+ * served once the composed boot wires its read-source and answering `unavailable` until then. S4b's
+ * operator relation opened the third and first write: `defineAgent`, admitted only with the
+ * forge-resolved `ownerPrincipal`, which the new seat records as its operator (#856).
  * @type {ReadonlyArray<String>}
  */
 export const FLEET_S1_READY_METHODS = Object.freeze(
