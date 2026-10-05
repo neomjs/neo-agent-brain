@@ -6,6 +6,7 @@ import {redactReadFailure}             from './redactReadFailure.mjs';
 import {resolveSeatPlaneTarget}        from './resolveSeatPlaneTarget.mjs';
 import {importSeatMemory, MEMORY_IMPORT_NONE} from './seatMemoryImport.mjs';
 import {convergeSeatGitIdentity, resolveSeatGitIdentity} from './seatGitIdentity.mjs';
+import {readSeatModelCatalog, unofferedDeclaration} from './seatModelCatalog.mjs';
 import path                            from 'node:path';
 import {fileURLToPath}                 from 'node:url';
 
@@ -143,6 +144,10 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                                 commits carry; defaults to `resolveSeatGitIdentity`.
  * @param {Function} [options.convergeGitIdentity] `({repoPath, identity}) => Promise<Object>`, one checkout brought to
  *                                                 that identity; defaults to `convergeSeatGitIdentity`.
+ * @param {Function} [options.readModelCatalog]    `({agent, instanceRoot, lifecycleService}) => Promise<Object|null>`, the
+ *                                                 catalog the seat's harness offers, kept for Configuration and
+ *                                                 checked against a declared model; defaults to
+ *                                                 {@link module:ai/services/fleet/seatModelCatalog.readSeatModelCatalog}.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
  * @param {String}   [options.instanceRoot]     Explicit harness-home root; omitted ⇒ the lifecycle
@@ -178,6 +183,7 @@ export async function startAgentProvisioned({
     importMemory = importSeatMemory,
     resolveGitIdentity = resolveSeatGitIdentity,
     convergeGitIdentity = convergeSeatGitIdentity,
+    readModelCatalog = readSeatModelCatalog,
     tenantService = null,
     instanceRoot,
     agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT,
@@ -194,6 +200,10 @@ export async function startAgentProvisioned({
     const registry = lifecycleService.getRegistry(),
           agent    = registry.getDefinition?.(agentId) ?? registry.getAgent(agentId);
     if (!agent) throw new Error(`startAgentProvisioned: unknown agent '${agentId}'.`);
+
+    // What the seat says about its model belongs to this start: one refused before the model check, or with
+    // nothing declared, must not leave an earlier refusal standing as its cause.
+    lifecycleService.setSeatModel?.(agentId, null);
 
     // A raw launch override renders no MCP config, so it has no placement.
     const
@@ -265,6 +275,29 @@ export async function startAgentProvisioned({
         throw new Error(`startAgentProvisioned: agent '${agentId}' has no GitHub PAT stored; store one before starting it.`)
     }
 
+    // What the seat's harness offers is read at every start, declared or not, before the harness is configured or
+    // launched: Configuration offers it while the seat runs, and a declared value it lacks refuses here. Only a
+    // complete catalog proves an absence. A Codex read runs the harness's app-server in the seat's home, where it
+    // writes its own state, and is over before the start goes on.
+    const readOffered = async () => {
+        const
+            catalog     = await readModelCatalog({agent, instanceRoot: instanceRoot ?? lifecycleService.getInstanceRoot?.(), lifecycleService}),
+            unavailable = unofferedDeclaration(catalog, agent);
+
+        if (catalog?.stillRunning) {
+            throw Object.assign(new Error(`startAgentProvisioned: agent '${agentId}' cannot start: ${catalog.reason}. Nothing was cloned or configured and the harness did not start; start it again once that process has ended.`), {code: 'FLEET_SEAT_HOME_IN_USE'})
+        }
+
+        if (catalog && catalog.state !== 'unsupported') {
+            lifecycleService.setSeatCatalog?.(agentId, catalog);
+            (agent.model || agent.reasoningEffort) && lifecycleService.setSeatModel?.(agentId, {state: unavailable ? 'refused' : catalog.state, model: agent.model ?? null, reasoningEffort: agent.reasoningEffort ?? null, reason: unavailable ?? catalog.reason})
+        }
+
+        if (unavailable) {
+            throw Object.assign(new Error(`startAgentProvisioned: agent '${agentId}' cannot start: ${unavailable}. Nothing was cloned or configured and the harness did not start. Change it in Detail › Configuration, then start it again.`), {code: 'FLEET_SEAT_MODEL_UNAVAILABLE'})
+        }
+    };
+
     // No repo coordinates ⇒ nothing to provision; start in the inherited cwd (backward-compatible).
     // A consented memory import converges into the managed workspace, so without one it cannot.
     if (!repo) {
@@ -273,6 +306,8 @@ export async function startAgentProvisioned({
                 "startAgentProvisioned: the memory import needs the seat's repository: set it before starting it."
             ), {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source: agent.memoryImport, destination: null, step: 'memory import'})
         }
+
+        await readOffered();
 
         return spawnPermitted({lifecycleService, registry, agentId, startOptions: {resolvedCredential}});
     }
@@ -290,6 +325,9 @@ export async function startAgentProvisioned({
             mismatch: `startAgentProvisioned: agent '${agentId}' would commit as another account: ${gitIdentity.reason}. Nothing was changed. Store the seat's own PAT, or declare the name and email its commits carry (gitName and gitEmail), then start it again.`
         }[gitIdentity.state]), {code: `FLEET_SEAT_GIT_IDENTITY_${gitIdentity.state.toUpperCase()}`, gitIdentity})
     }
+
+    // read after the identity check, so its refusals stay true that nothing was changed
+    await readOffered();
 
     const commitIdentity = {name: gitIdentity.name, email: gitIdentity.email};
 

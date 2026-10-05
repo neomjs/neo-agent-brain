@@ -2781,6 +2781,8 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
                 // the seat's Git identity is its own spec's concern: here it resolves, and the checkout already has it
                 resolveGitIdentity : async () => ({state: 'declared', source: 'declared', name: 'Composed Seat', email: 'composed@example.test'}),
                 convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
+                // and so is the harness's catalog
+                readModelCatalog   : async () => null,
                 agentosRuntimeRoot,
                 nodePath        : NODE_PATH
             }),

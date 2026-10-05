@@ -6,10 +6,10 @@ import AiConfig                                                     from '../../
 import {generateLocalBearerToken}                                   from '../../mcp/server/shared/helpers/localBearer.mjs';
 import Base                                                         from 'neo.mjs/src/core/Base.mjs';
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}               from '../../../src/fleet/contract/mcpServers.mjs';
-import {listHarnessTypes}                                           from '../../../src/fleet/contract/harnessTypes.mjs';
+import {listHarnessTypes, resolveHarnessSeatSettings}               from '../../../src/fleet/contract/harnessTypes.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}     from './mcpServers.mjs';
 import {deriveAgentInstanceHome}                                    from './deriveAgentInstanceHome.mjs';
-import {deriveCodexHome, deriveHarnessLaunchSpec, getHarnessSeatSettings} from './deriveHarnessLaunchSpec.mjs';
+import {deriveCodexHome, deriveHarnessLaunchSpec}                   from './deriveHarnessLaunchSpec.mjs';
 import {readCodexSeatSettings}                                      from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                     from './deriveNodeRuntimeEnv.mjs';
 import FleetRegistryService                                         from './FleetRegistryService.mjs';
@@ -487,6 +487,21 @@ class FleetLifecycleService extends Base {
      * @private
      */
     gitIdentities = new Map()
+    /**
+     * What each seat's last provisioned start found of its declared model in its harness's catalog, keyed by agent
+     * id: offered, refused with the reason, or a read that could not say. Kept apart from {@link processes} for the
+     * same reason as {@link gitIdentities}.
+     * @member {Map<String,Object>} seatModels
+     * @private
+     */
+    seatModels = new Map()
+    /**
+     * The catalog each seat's harness offered at its last start that read one, with when: what Configuration offers
+     * while the seat runs, since a second app-server is never started beside a running seat's own.
+     * @member {Map<String,Object>} seatCatalogs
+     * @private
+     */
+    seatCatalogs = new Map()
 
     // ---- public API ---------------------------------------------------------
 
@@ -1014,13 +1029,14 @@ class FleetLifecycleService extends Base {
      *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is.
      *     `sessionFolder` is where a running Claude Desktop seat's session opened ({@link sessionFolderFor}).
      *     `gitIdentity` is the identity the seat's last provisioned start resolved ({@link setGitIdentity}), also
-     *     after a start it refused; `null` before the first.
+     *     after a start it refused; `null` before the first. `seatModel` is what that start found of the seat's
+     *     declared model in its harness's catalog ({@link setSeatModel}); `null` before a start read one.
      */
     status(id) {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, sessionFolder: null, gitIdentity: this.gitIdentityOf(id)};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id)};
 
         this.refreshAdoptedSeat(record);
 
@@ -1058,8 +1074,21 @@ class FleetLifecycleService extends Base {
             } : null,
             repos            : record.repos ? record.repos.map(repo => ({...repo})) : null,
             sessionFolder    : this.sessionFolderFor(record),
-            gitIdentity      : this.gitIdentityOf(id)
+            gitIdentity      : this.gitIdentityOf(id),
+            seatModel        : this.seatModelOf(id)
         };
+    }
+
+    /**
+     * @summary The status projection of what a seat's last provisioned start found of its declared model.
+     * @param {String} id
+     * @returns {Object|null} `{state, model, reasoningEffort, reason}`, or `null` before a start read a catalog.
+     * @private
+     */
+    seatModelOf(id) {
+        const recorded = this.seatModels.get(id);
+
+        return recorded ? {...recorded} : null
     }
 
     /**
@@ -1122,6 +1151,44 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary Records what a seat's provisioned start found of its declared model in its harness's catalog, so
+     * {@link status} says why a start refused (`refused`, with the reason) or that the read could not say
+     * (`partial`, `unavailable`). Each provisioned start clears it first, so it never outlives the start it describes.
+     * @param {String}      id
+     * @param {Object|null} seatModel `{state, model, reasoningEffort, reason}`; `null` clears it
+     */
+    setSeatModel(id, seatModel) {
+        if (!seatModel) {
+            this.seatModels.delete(id);
+            return
+        }
+
+        const {state, model = null, reasoningEffort = null, reason = null} = seatModel;
+
+        this.seatModels.set(id, {state, model, reasoningEffort, reason})
+    }
+
+    /**
+     * @summary Keeps the catalog a seat's start read, stamped with its time, for {@link seatCatalogOf}.
+     * @param {String} id
+     * @param {Object} catalog A {@link module:ai/services/fleet/seatModelCatalog.readSeatModelCatalog} answer
+     */
+    setSeatCatalog(id, catalog) {
+        this.seatCatalogs.set(id, {...catalog, observedAt: new Date().toISOString()})
+    }
+
+    /**
+     * @summary The catalog a seat's last start read, as it was then, or `null` before one did.
+     * @param {String} id
+     * @returns {Object|null}
+     */
+    seatCatalogOf(id) {
+        const kept = this.seatCatalogs.get(id);
+
+        return kept ? structuredClone(kept) : null
+    }
+
+    /**
      * @summary Records the wake route the Fleet armed for a GUI seat it started, so {@link status}
      * reports whether a peer can wake the seat and why not. An OpenCode route belongs to the seat's own
      * envelope lifecycle and is never replaced here.
@@ -1170,7 +1237,7 @@ class FleetLifecycleService extends Base {
      * configure through a config file, a raw launch, and a home with no readable config yet.
      */
     harnessSettingsFor(agent) {
-        if (getHarnessSeatSettings(agent?.harnessType) !== 'codex-config' || agent.metadata?.launch) return null;
+        if (resolveHarnessSeatSettings(agent?.harnessType) !== 'codex-config' || agent.metadata?.launch) return null;
 
         const instanceHome = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType: agent.harnessType});
 

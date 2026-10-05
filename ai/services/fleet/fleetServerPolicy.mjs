@@ -53,7 +53,8 @@ export const FLEET_S1_METHOD_POLICY = Object.freeze({
     fleetGoldenPath       : 'awaiting-s3',
     fleetGraphScene       : 'awaiting-s3',
     fleetOpenWork         : 'awaiting-s3',
-    fleetSeatGitIdentity  : 'awaiting-s3'
+    fleetSeatGitIdentity  : 'awaiting-s3',
+    fleetSeatModelCatalog : 'awaiting-s4'
 });
 
 /**
@@ -108,7 +109,9 @@ export const FLEET_METHOD_SCOPE_CLASSES = Object.freeze({
     fleetGoldenPath       : 'read-observe',
     fleetGraphScene       : 'read-observe',
     fleetOpenWork         : 'read-observe',
-    fleetSeatGitIdentity  : 'read-observe'
+    fleetSeatGitIdentity  : 'read-observe',
+    // it starts a stopped Codex seat's app-server, which writes its state into the seat's home
+    fleetSeatModelCatalog : 'lifecycle-write'
 });
 
 const SLICE_LABELS = Object.freeze({
