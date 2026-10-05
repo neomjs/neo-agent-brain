@@ -403,6 +403,65 @@ test.describe('Wake Daemon', () => {
         await expect.poll(() => fs.readJsonSync(deliveryFailurePath)).toEqual({});        // confirmed recovery clears the receipt
     });
 
+    test('a seat is woken by what its identity node records, not by the roots (#879)', async () => {
+        // Iris's root reads benched and neo-gpt's reads active: the nodes say the opposite
+        const seats = [
+            {identity: '@neo-kimi-iris', participationStatus: 'active',           subject: 'to the node-active seat'},
+            {identity: '@neo-gpt',       participationStatus: 'operator_benched', subject: 'to the node-benched seat'}
+        ];
+
+        for (const {identity, participationStatus} of seats) {
+            const subId = 'sub_' + crypto.randomUUID();
+
+            db.prepare('INSERT OR REPLACE INTO Nodes (id, data) VALUES (?, ?)').run(identity, JSON.stringify({
+                id: identity, label: 'AgentIdentity', properties: {participationStatus, accountType: 'agent'}
+            }));
+            db.prepare('INSERT OR REPLACE INTO Nodes (id, data) VALUES (?, ?)').run(subId, JSON.stringify({
+                id        : subId,
+                label     : 'WAKE_SUBSCRIPTION',
+                properties: {
+                    agentIdentity        : identity,
+                    harnessTarget        : 'bridge-daemon',
+                    status               : 'active',
+                    trigger              : 'SENT_TO_ME',
+                    harnessTargetMetadata: {adapter: 'test', coalesceWindow: 1}
+                }
+            }));
+            db.prepare('INSERT INTO GraphLog (entity_id, entity_type) VALUES (?, ?)').run(subId, 'nodes');
+        }
+
+        daemonProcess = spawn('node', ['ai/daemons/wake/daemon.mjs'], {
+            stdio: 'pipe',
+            env  : {...process.env, NEO_MEMORY_DB_PATH: DB_PATH, NEO_AI_DAEMON_DIR: DAEMON_DIR, NEO_WAKE_DAEMON_POLL_INTERVAL_MS: FAST_POLL_MS}
+        });
+
+        let output = '';
+        daemonProcess.stdout.on('data', data => { output += data.toString() });
+
+        await waitForDaemonReady(daemonProcess);
+
+        // both messages land in one poll cycle, so a benched seat's wake would flush beside the active one's
+        for (const {identity, subject} of seats) {
+            const msgId  = 'msg_' + crypto.randomUUID(),
+                  edgeId = 'edge_' + crypto.randomUUID();
+
+            db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(msgId, JSON.stringify({
+                id: msgId, label: 'MESSAGE', properties: {from: '@sender', priority: 'normal', sentAt: new Date().toISOString(), subject}
+            }));
+            db.prepare('INSERT INTO Edges (id, data, source, target, type) VALUES (?, ?, ?, ?, ?)').run(edgeId, JSON.stringify({
+                id: edgeId, source: msgId, target: identity, type: 'SENT_TO'
+            }), msgId, identity, 'SENT_TO');
+            db.prepare('INSERT INTO GraphLog (entity_id, entity_type) VALUES (?, ?)').run(msgId, 'nodes');
+            db.prepare('INSERT INTO GraphLog (entity_id, entity_type) VALUES (?, ?)').run(edgeId, 'edges');
+        }
+
+        await expect.poll(() => output, {timeout: 10000}).toContain('to the node-active seat');
+        // a further coalesce window and poll: the benched seat's wake would have flushed by now
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        expect(output).not.toContain('to the node-benched seat');
+    });
+
     test('#14576: priority-filtered subscriptions only deliver high-priority direct and broadcast wakes', async () => {
         const subId   = 'sub_' + crypto.randomUUID();
         const agentId = '@test-agent-priority-filter';
@@ -1675,6 +1734,12 @@ test.describe('Wake Daemon', () => {
                 coalesceWindow: 1
             }
         });
+
+        // known non-active means what the identity node records; written after the helper, which stores
+        // the agent as a plain AGENT row
+        db.prepare('INSERT OR REPLACE INTO Nodes (id, data) VALUES (?, ?)').run(agentId, JSON.stringify({
+            id: agentId, label: 'AgentIdentity', properties: {participationStatus: 'operator_benched', accountType: 'agent'}
+        }));
 
         daemonProcess = spawn('node', ['ai/daemons/wake/daemon.mjs'], {
             stdio: 'pipe',

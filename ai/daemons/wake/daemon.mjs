@@ -56,6 +56,7 @@ import {
     getNodesData,
     getEdgesData,
     getDbNode,
+    getAgentIdentityNodes,
     getActiveHarnessPresence,
     isHarnessPresenceFresh
 } from './queries.mjs';
@@ -90,7 +91,7 @@ import {
     filterEventsByWatermark,
     maxLogId
 } from './wokenWatermark.mjs';
-import {isWakeTargetEligible} from './wakeTargetEligibility.mjs';
+import {isWakeTargetEligible, participationByIdentity} from './wakeTargetEligibility.mjs';
 
 // Config-derived paths + PID_FILE (below) are declared here but ASSIGNED in initConfigDerivedState()
 // (called from the guarded main(), never at module-load): a stale memory-core overlay would otherwise
@@ -521,6 +522,8 @@ async function enforceSingleton() {
 
 let db;
 let lastSyncId;
+// The identity nodes' participation, read at the start of each poll cycle; `null` until a read answers
+let participation = null;
 
 // In-memory queues for coalescing
 // Structure: { [subscriptionId]: { timer: Timeout, queue: [events], subscription: {...}, firstQueuedAt: ms } }
@@ -548,6 +551,11 @@ let lastHeavyPollAt = 0;
  */
 async function pollLoop() {
     try {
+        // A read that throws aborts the cycle before the cursor moves, and leaves no participation for a flush
+        // to deliver against meanwhile
+        participation = null;
+        participation = participationByIdentity(getAgentIdentityNodes(db));
+
         // Fetch deltas
         const logs = getGraphLogEntries(db, lastSyncId);
 
@@ -629,7 +637,7 @@ async function pollLoop() {
  * cache invalidation only and cannot classify themselves as transitions.
  */
 function evaluateSubscription(sub, trace, entity, nodesMap, edgesMap) {
-    if (!isWakeTargetEligible(sub.properties?.agentIdentity)) return null;
+    if (!isWakeTargetEligible(sub.properties?.agentIdentity, participation)) return null;
 
     const result = match(sub.properties || {}, {
         entity,
@@ -2540,7 +2548,7 @@ async function deliverDigest(subscription, digest, deliveryEvidence = {}, abortS
  * @returns {void}
  */
 function enqueueDeliveryRetry(subscription, identity, events) {
-    if (!isWakeTargetEligible(identity)) return;
+    if (!isWakeTargetEligible(identity, participation)) return;
 
     const subId    = subscription.id,
           existing = pendingDeliveryRetries.get(subId);
@@ -2582,7 +2590,7 @@ async function attemptDeliveryRetries() {
 
     for (const [subId, entry] of pendingDeliveryRetries) {
         if (entry.nextAttemptAt > now) continue;
-        if (!isWakeTargetEligible(entry.subscription.properties?.agentIdentity || entry.identity)) {
+        if (!isWakeTargetEligible(entry.subscription.properties?.agentIdentity || entry.identity, participation)) {
             pendingDeliveryRetries.delete(subId);
             continue;
         }

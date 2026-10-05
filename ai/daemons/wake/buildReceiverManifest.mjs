@@ -7,8 +7,8 @@
  * subscription records out of `manage_wake_subscription list`, remembering the mode, and discovering
  * the shape rules one `throw` at a time.
  *
- * **The server owns the signing key; this module never mints one.** Per ADR 0002 §6.2.3 — ticket-ref-ok:
- * decision-record authority for key ownership, not issue archaeology — `WakeSubscriptionService.subscribe()`
+ * **The server owns the signing key; this module never mints one.** Per ADR 0002 [not-ticket-ref: decision record] §6.2.3,
+ * `WakeSubscriptionService.subscribe()`
  * generates the HMAC key once, at subscribe-time, and only for
  * `a2a-webhook` targets, storing it in `harnessTargetMetadata`. `WebhookDeliveryService` signs with
  * that key. A generator that minted its own would produce routes that boot cleanly and then reject
@@ -710,8 +710,8 @@ export async function runManifestBuilder({
     // `expectedSeatIdentities` arrives as PLAIN DATA and both sides are compared as given. That is
     // this module's graphless boundary, not an oversight: it imports nothing from the graph so
     // host-edge tooling stays runnable without the plane, exactly as subscription records already
-    // arrive from whoever queried them. The caller derives the census (`wakeSeatIdentities` in
-    // `wakeTargetEligibility.mjs` is the canonical source) and hands it over canonical.
+    // arrive from whoever queried them. The caller derives the census (the active agent seats
+    // `who_is_online` lists) and hands it over canonical.
     const routedIdentities = new Set(
               Object.values(manifest.routes).map(route => route?.agentIdentity).filter(Boolean)
           ),

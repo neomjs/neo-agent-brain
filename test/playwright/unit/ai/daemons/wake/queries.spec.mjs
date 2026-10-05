@@ -5,6 +5,7 @@ import os               from 'os';
 import path             from 'path';
 import {
     collapseDuplicateShapeCRoutes,
+    getAgentIdentityNodes,
     getGraphLogEntries,
     getLastSyncId,
     getUnreadSunsetHandovers,
@@ -31,6 +32,28 @@ test.describe('ai/daemons/wake/queries', () => {
         if (db) {
             try { db.close(); } catch (e) {}
         }
+    });
+
+    test.describe('getAgentIdentityNodes (#879)', () => {
+        test('answers the AgentIdentity rows only, and a malformed row elsewhere does not fail the query', () => {
+            const insert = db.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)');
+
+            insert.run('@neo-gpt', JSON.stringify({id: '@neo-gpt', label: 'AgentIdentity', properties: {participationStatus: 'operator_benched'}}));
+            insert.run('@neo-kimi-iris', JSON.stringify({id: '@neo-kimi-iris', label: 'AgentIdentity', properties: {}}));
+            insert.run('msg_1', JSON.stringify({id: 'msg_1', label: 'MESSAGE', properties: {}}));
+            insert.run('@broken', '{"label": "AgentIdentity", ');
+
+            expect(getAgentIdentityNodes(db).map(node => [node.id, node.properties.participationStatus ?? null])).toEqual([
+                ['@neo-gpt', 'operator_benched'],
+                ['@neo-kimi-iris', null]
+            ])
+        });
+
+        test('a store that cannot answer throws, so the daemon\'s cycle aborts before its cursor moves', () => {
+            db.close();
+
+            expect(() => getAgentIdentityNodes(db)).toThrow()
+        })
     });
 
     test.describe('getUnreadSunsetHandovers', () => {
