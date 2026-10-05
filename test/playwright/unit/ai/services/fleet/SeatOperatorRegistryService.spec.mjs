@@ -174,6 +174,15 @@ test.describe('the seat operator relation — one principal per seat, written by
         expect(fs.readFileSync(storeOf(), 'utf8'), 'left exactly as found').toBe('{"schema": 2}')
     });
 
+    test('a create over a credential store it cannot read refuses before its operator is recorded', () => {
+        define('ada', {ownerPrincipal: A});
+        fs.writeFileSync(path.join(dir, 'credentials.enc'), 'not-a-ciphertext');
+
+        expect(() => define('vega', {ownerPrincipal: A})).toThrow('the credential store cannot be read');
+        expect(operators.operatorOf('vega'), 'no orphaned claim').toEqual({principal: null, state: 'ok'});
+        expect(operators.operatorOf('ada')).toEqual({principal: A, state: 'ok'})
+    });
+
     test('a recreated seat never inherits its predecessor\'s operator: the create claims it first, and a refused claim refuses the create', () => {
         define('ada', {ownerPrincipal: A});
         registry.removeAgent('ada');
