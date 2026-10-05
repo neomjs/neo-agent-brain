@@ -355,7 +355,8 @@ class FleetRegistryService extends Base {
      * to the machine's keyring account. Existing
      * ids reject: every edit of an established resident must use a scoped authority
      * (`configureAgent`, `setRepo`, `setAvatar`, or the Brain-only launch override), never replay this
-     * credential-bearing creation surface.
+     * credential-bearing creation surface. A credential store this Fleet cannot read refuses the create
+     * before anything is written, so the other seats' PATs survive it.
      * @param {Object}  opts
      * @param {String}  opts.githubUsername     The agent's GitHub username (required).
      * @param {String}  opts.harnessType        One of {@link harnessTypes} (required).
@@ -469,7 +470,13 @@ class FleetRegistryService extends Base {
             throw new Error(`FleetRegistryService.defineAgent: 'credential' is required — every agent holds its ${account.forge === 'gitlab' ? 'GitLab' : 'GitHub'} PAT.`)
         }
 
-        const previousCredentials = this.readCredentials();
+        let previousCredentials;
+
+        try {
+            previousCredentials = this.readCredentialsForMutation()
+        } catch {
+            throw new Error("FleetRegistryService.defineAgent: the credential store cannot be read, so no seat was added and no stored PAT was touched. If it was written with another key, restore that key (NEO_FLEET_SECRET_KEY, or the key file in the Fleet's data folder), then add the seat again.")
+        }
 
         const
             def        = {
@@ -984,30 +991,57 @@ class FleetRegistryService extends Base {
      * @private
      */
     readCredentials() {
-        const file = this.credentialsPath();
-        if (!fs.existsSync(file)) return Object.create(null);
         try {
-            return Object.assign(Object.create(null), JSON.parse(this.decrypt(fs.readFileSync(file, 'utf8'))));
+            return this.readCredentialsForMutation()
         } catch (error) {
             console.warn('[FleetRegistryService] Credential store unreadable; failing closed.', error.message);
-            return Object.create(null);
+            return Object.create(null)
         }
     }
 
     /**
-     * Encrypt + persist a single credential, merged into the existing store.
+     * @summary The credential map a write starts from. A missing store is empty. A store this Fleet
+     * cannot read or decrypt, or one that holds no record, throws and stays byte-identical: a write
+     * over it would replace every other seat's PAT with the one being written.
+     * @returns {Object} The decrypted `{agentId: pat}` map, null-prototype.
+     * @private
+     */
+    readCredentialsForMutation() {
+        let raw;
+
+        try {
+            raw = fs.readFileSync(this.credentialsPath(), 'utf8')
+        } catch (error) {
+            if (error?.code === 'ENOENT') return Object.create(null);
+
+            throw error
+        }
+
+        const record = JSON.parse(this.decrypt(raw));
+
+        if (!record || typeof record !== 'object' || Array.isArray(record)) {
+            throw new TypeError('FleetRegistryService: credentials.enc must contain a credential record.')
+        }
+
+        return Object.assign(Object.create(null), record)
+    }
+
+    /**
+     * Encrypt + persist a single credential, merged into the existing store; throws over a store
+     * that cannot be read ({@link readCredentialsForMutation}).
      * @param {String} id
      * @param {String} pat
      * @private
      */
     storeCredential(id, pat) {
-        const map = this.readCredentials();
+        const map = this.readCredentialsForMutation();
         map[id] = pat;
         this.writeCredentials(map);
     }
 
     /**
-     * Remove a single credential from the store (no-op if absent).
+     * Remove a single credential from the store (no-op if absent). The lenient read is enough here:
+     * over a store that cannot be read the id is absent, so nothing is written.
      * @param {String} id
      * @private
      */

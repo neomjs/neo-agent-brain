@@ -815,3 +815,60 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — the commit identit
         expect(Object.hasOwn(cleared, 'gitName') || Object.hasOwn(cleared, 'gitEmail')).toBe(false);
     });
 });
+
+test.describe('Neo.ai.services.fleet.FleetRegistryService — a credential store it cannot read', () => {
+    let credentialsFile, tmpDir;
+
+    test.beforeEach(() => {
+        tmpDir                       = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-fleet-reg-'));
+        credentialsFile              = path.join(tmpDir, 'credentials.enc');
+        FleetRegistryService.dataDir = tmpDir;
+    });
+
+    test.afterEach(() => {
+        FleetRegistryService.dataDir = null;
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+    });
+
+    // bytes this Fleet's key cannot decrypt, and a ciphertext that decrypts to something other than a record
+    for (const [unreadable, bytesOf] of [
+        ['a store that does not decrypt', () => 'not-a-ciphertext'],
+        ['a store that holds no record',  () => FleetRegistryService.encrypt('["alice"]')]
+    ]) {
+        test(`defineAgent over ${unreadable} refuses before anything is written, so the other PATs survive`, () => {
+            FleetRegistryService.defineAgent({githubUsername: 'alice', harnessType: 'codex', credential: 'ghp_alice'});
+            fs.writeFileSync(credentialsFile, bytesOf());
+
+            const before = fs.readFileSync(credentialsFile);
+
+            expect(() => FleetRegistryService.defineAgent({githubUsername: 'bob', harnessType: 'codex', credential: 'ghp_bob'}))
+                .toThrow(/^FleetRegistryService\.defineAgent: the credential store cannot be read, so no seat was added and no stored PAT was touched\. .*NEO_FLEET_SECRET_KEY/);
+            expect(fs.readFileSync(credentialsFile).equals(before), 'the store keeps every byte').toBe(true);
+            expect(FleetRegistryService.getAgent('bob')).toBeNull();
+            expect(FleetRegistryService.listAgents().map(agent => agent.id)).toEqual(['alice']);
+            expect(() => FleetRegistryService.storeCredential('bob', 'ghp_bob')).toThrow();
+            expect(fs.readFileSync(credentialsFile).equals(before), 'storeCredential writes nothing either').toBe(true)
+        });
+    }
+
+    test('a missing store takes the first define, and a readable store keeps every other PAT', () => {
+        expect(fs.existsSync(credentialsFile)).toBe(false);
+
+        FleetRegistryService.defineAgent({githubUsername: 'alice', harnessType: 'codex', credential: 'ghp_alice'});
+        FleetRegistryService.defineAgent({githubUsername: 'bob',   harnessType: 'codex', credential: 'ghp_bob'});
+
+        expect(FleetRegistryService.resolveCredential('alice')).toBe('ghp_alice');
+        expect(FleetRegistryService.resolveCredential('bob')).toBe('ghp_bob')
+    });
+
+    test('a read over a store it cannot read still fails closed, and removing a seat writes nothing to it', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'alice', harnessType: 'codex', credential: 'ghp_alice'});
+        fs.writeFileSync(credentialsFile, 'not-a-ciphertext');
+
+        const before = fs.readFileSync(credentialsFile);
+
+        expect(FleetRegistryService.resolveCredential('alice')).toBeNull();
+        expect(FleetRegistryService.removeAgent('alice')).toEqual({success: true, id: 'alice'});
+        expect(fs.readFileSync(credentialsFile).equals(before)).toBe(true)
+    });
+});
