@@ -194,3 +194,48 @@ test.describe('seedAgentIdentities — createdAt authority (#15868)', () => {
         expect(entry).not.toContain('from registry')
     })
 });
+
+test.describe('seedAgentIdentities — a recorded participation decision outranks the registry (#883)', () => {
+    const decision = {
+        participationStatus   : 'active',
+        statusReason          : null,
+        since                 : '2026-10-05T12:00:00.000Z',
+        reactivationTrigger   : null,
+        participationDecidedBy: 'os-user:operator'
+    };
+
+    test('a recorded return to active survives a benched root, and the log says so', async () => {
+        const lines = [],
+              svc   = graphServiceDouble({'@probe': {createdAt: '2026-06-02T21:35:48.405Z', ...decision}});
+
+        await seedAgentIdentities({
+            graphService: svc,
+            identities  : [registryEntry({participationStatus: 'operator_benched', statusReason: 'seed bench', since: '2026-08-17', reactivationTrigger: 'seed trigger'})],
+            log         : line => lines.push(line)
+        });
+
+        expect(svc.stored['@probe']).toMatchObject(decision);
+        expect(lines.find(line => line.includes('@probe'))).toContain('participation kept as os-user:operator recorded it')
+    });
+
+    test('a recorded bench survives an active root', async () => {
+        const bench = {...decision, participationStatus: 'operator_benched', statusReason: 'the flatrate ended'},
+              svc   = graphServiceDouble({'@probe': {createdAt: '2026-06-02T21:35:48.405Z', ...bench}});
+
+        await seedAgentIdentities({graphService: svc, identities: [registryEntry({participationStatus: 'active'})], log: () => {}});
+
+        expect(svc.stored['@probe']).toMatchObject(bench)
+    });
+
+    test('a node without a decision still takes the root\'s participation', async () => {
+        const svc = graphServiceDouble({'@probe': {createdAt: '2026-06-02T21:35:48.405Z', participationStatus: 'active'}});
+
+        await seedAgentIdentities({
+            graphService: svc,
+            identities  : [registryEntry({participationStatus: 'operator_benched', statusReason: 'seed bench', since: '2026-08-17'})],
+            log         : () => {}
+        });
+
+        expect(svc.stored['@probe']).toMatchObject({participationStatus: 'operator_benched', statusReason: 'seed bench', since: '2026-08-17'})
+    })
+});
