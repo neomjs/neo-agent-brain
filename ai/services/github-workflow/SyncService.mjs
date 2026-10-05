@@ -26,10 +26,7 @@ const generatedSyncPaths = [
     'resources/content/release-notes/',
     'resources/content/archive/',
     'resources/content/_index.json',
-    'resources/content/.sync-metadata.json',
-    'apps/portal/resources/data/',
-    'apps/portal/sitemap.xml',
-    'apps/portal/llms.txt'
+    'resources/content/.sync-metadata.json'
 ];
 
 const isGeneratedSyncFile = file => generatedSyncPaths.some(item =>
@@ -68,16 +65,6 @@ class SyncService extends Base {
     }
 
     /**
-     * @summary Rebuilds Portal indexes and SEO artifacts after GitHub Workflow content emission.
-     * @returns {Promise<Object>} Generated artifact paths.
-     */
-    async rebuildContentIndexesAndSeo() {
-        const {rebuildContentIndexesAndSeo} = await import('neo.mjs/buildScripts/docs/rebuildContentIndexesAndSeo.mjs');
-
-        return rebuildContentIndexesAndSeo({root: aiConfig.projectRoot});
-    }
-
-    /**
      * @summary Executes a git command inside the sync checkout.
      * @param {String} command Git command to run.
      * @param {String} cwd Working directory for the command.
@@ -88,7 +75,10 @@ class SyncService extends Base {
     }
 
     /**
-     * @summary Emits the generated GitHub Workflow content and derived Portal artifacts.
+     * @summary Emits the generated GitHub Workflow content.
+     *
+     * Portal indexes and SEO are not derived here: the Portal's deploy derives them from the published
+     * corpus.
      *
      * This method orchestrates the generated-content half of the full sync in a specific order
      * to ensure data integrity and minimize conflicts. It is intentionally separated from the
@@ -119,19 +109,15 @@ class SyncService extends Base {
      * 6. Facet `pulls`: reconciles closed pull locations, syncs pulls, repairs duplicates, realigns
      *    `_index.json`, and takes the integrity verdict that decides whether the facet advances at all
      *    (`PullRequestSyncer`).
-     * 7. Rebuilds Portal content indexes and SEO artifacts from whatever advanced.
+     * 7. Re-chunks every corpus facet to its canonical ordinal-100 layout.
      * 8. Throws one aggregate verdict naming every facet that did not advance — partial progress must
      *    never report as a clean run.
      * @param {Object} [options]
      * @param {Boolean} [options.pushLocalChanges=true] Whether locally-authored issue changes may
      * be pushed to GitHub before the pull. Scheduled CI emission passes `false` and remains read-only.
-     * @param {Boolean} [options.deriveContent=true] Whether Portal indexes and SEO are derived.
      * @returns {Promise<object>} Statistics for the emitted generated content, plus `facetOutcomes`.
      */
-    async emitGeneratedContentAndDerive({
-        pushLocalChanges = true,
-        deriveContent = true
-    } = {}) {
+    async emitGeneratedContent({pushLocalChanges = true} = {}) {
         const
             metadata = await MetadataManager.load(),
             outcomes = [],
@@ -307,28 +293,19 @@ class SyncService extends Base {
             return stats
         });
 
-        // 7.5 Ordinal-100 enforcement: re-rank the full active corpus so the projection below reads
-        //     exact-100 folders. Position-dependent chunking drifts whenever the delta sync re-places
-        //     only the items it touched; this idempotent pass belongs HERE, with the corpus writer —
-        //     the emitter leaves the corpus canonical, so no reader (the portal index rebuild, release
-        //     prepare, the data-sync pipeline's CLI stage) has to reach across the engine↔Brain
-        //     boundary to repair layout it never wrote. The `issueSync` block is read at the use site;
-        //     only its `contentRoot` leaf is consumed.
+        // 7.5 Ordinal-100 enforcement: re-rank the full active corpus into exact-100 folders. Position-
+        //     dependent chunking drifts whenever the delta sync re-places only the items it touched; this
+        //     idempotent pass belongs HERE, with the corpus writer — the emitter leaves the corpus
+        //     canonical, so no reader has to repair layout it never wrote. It runs before the verdict
+        //     below, so a failed facet does not leave the facets that advanced in a drifted layout. The
+        //     `issueSync` block is read at the use site; only its `contentRoot` leaf is consumed.
         await reconcileActiveChunks(aiConfig.issueSync, {repoSlug: aiConfig.repo, type: 'pulls',       filePrefix: 'pr-'});
         await reconcileActiveChunks(aiConfig.issueSync, {repoSlug: aiConfig.repo, type: 'issues',      filePrefix: 'issue-'});
         await reconcileActiveChunks(aiConfig.issueSync, {repoSlug: aiConfig.repo, type: 'discussions', filePrefix: 'discussion-'});
 
-        // 8. Derive the portal projection from whatever DID advance. The indexes are a projection of the
-        //    corpus on disk, so a partially-advanced corpus derives a correspondingly partial projection
-        //    rather than a wrong one — and running it before the verdict below means a facet failure does
-        //    not also strand the facets that succeeded without their indexes.
-        if (deriveContent) {
-            await this.rebuildContentIndexesAndSeo();
-        }
-
         const failedFacets = outcomes.filter(outcome => !outcome.advanced);
 
-        // 9. One aggregate verdict, AFTER every facet has had its turn.
+        // 8. One aggregate verdict, AFTER every facet has had its turn.
         //
         //    Partial progress is the point — a corpus too large for one pass must converge across runs
         //    rather than failing whole — but a partial run must never REPORT as a clean one. Exiting 0
@@ -368,10 +345,7 @@ class SyncService extends Base {
      * @returns {Promise<object>} Facet statistics and truthful aggregate outcome.
      */
     async emitConversationCorpus() {
-        return this.emitGeneratedContentAndDerive({
-            deriveContent   : false,
-            pushLocalChanges: false
-        });
+        return this.emitGeneratedContent({pushLocalChanges: false});
     }
 
     /**
@@ -568,11 +542,11 @@ class SyncService extends Base {
      */
     async runFullSync() {
         const startTime = new Date();
-        let   syncStats = await this.emitGeneratedContentAndDerive();
+        let   syncStats = await this.emitGeneratedContent();
 
         await this.autoPushGeneratedContent({
             rerunEmission: async () => {
-                syncStats = await this.emitGeneratedContentAndDerive();
+                syncStats = await this.emitGeneratedContent();
             }
         });
 

@@ -233,7 +233,7 @@ test.describe('syncGithubWorkflow SDK-boundary exception — self-expiring', () 
         // fails and says so rather than letting the exception quietly widen its cost.
         const spec = readFileSync(OPENAPI, 'utf8');
 
-        for (const method of ['emitGeneratedContentAndDerive', 'emitConversationCorpus', 'runFullSync',
+        for (const method of ['emitGeneratedContent', 'emitConversationCorpus', 'runFullSync',
             'emit_generated_content', 'emit_conversation_corpus', 'run_full_sync']) {
             expect(
                 spec.includes(method),
