@@ -168,9 +168,9 @@ test.describe('fleetPresenceStateAdapter — healthy report (band join)', () => 
             lastSeenAt: '2026-08-09T11:00:00.000Z',
             confidence: 'observed',
             source    : PRESENCE_SOURCE_LABEL,
-            // a row without participation signals carries no status of its own: the report answered
-            participation    : {status: null, reason: null, since: null},
-            participationRead: {state: 'read'}
+            // a returned row that names no participation status is an unread seat, never a seat without a node
+            participation    : null,
+            participationRead: {state: 'unread', reason: 'the presence row names no participation status'}
         })
         expect(states[1].presence).toBe('recent')
         expect(states[1].lastSeenAt).toBeNull()
@@ -206,8 +206,8 @@ test.describe('fleetPresenceStateAdapter — healthy report (band join)', () => 
             lastSeenAt       : null,
             confidence       : 'observed',
             source           : PRESENCE_SOURCE_LABEL,
-            participation    : {status: null, reason: null, since: null},
-            participationRead: {state: 'read'}
+            participation    : null,
+            participationRead: {state: 'unread', reason: 'the presence row names no participation status'}
         })
     })
 
@@ -505,7 +505,27 @@ test.describe('fleetPresenceStateAdapter — participation, the identity node\'s
     test('participationOf reads the node\'s status, reason and date from the row\'s signals', () => {
         expect(participationOf(benchedRow)).toEqual({status: 'operator_benched', reason: 'the flatrate ended', since: '2026-10-01T00:00:00.000Z'});
         expect(participationOf({signals: {participationStatus: 'active', statusReason: null, participationSince: null}})).toEqual({status: 'active', reason: null, since: null});
+        // the row's top-level status is the fallback; a non-string status is no status
+        expect(participationOf({participationStatus: 'operator_benched'}).status).toBe('operator_benched');
+        expect(participationOf({signals: {participationStatus: 7}}).status).toBeNull();
         expect(participationOf(null)).toEqual({status: null, reason: null, since: null})
+    })
+
+    test('a returned row keeps its participation when its band is out of vocabulary (Sophie, #882)', async () => {
+        const {states} = await readFleetPresenceSnapshot({agents, readPresence: () => ({agents: [{...benchedRow, state: 'hibernating'}]})}),
+              gpt      = states.find(row => row.agentId === 'neo-gpt')
+
+        // the presence axis still refuses the band; the participation observation stands on its own
+        expect(gpt).toMatchObject({presence: 'unknown', participation: {status: 'operator_benched'}, participationRead: {state: 'read'}})
+    })
+
+    test('a returned row that names no participation status is an unread seat, not a seat without a node (Sophie, #882)', async () => {
+        const {states} = await readFleetPresenceSnapshot({agents, readPresence: () => ({agents: [{identity: '@neo-gpt', state: 'benched', reason: null, signals: {}}]})})
+
+        expect(states.map(row => [row.agentId, row.participation, row.participationRead])).toEqual([
+            ['neo-fable-clio', null, {state: 'read'}],
+            ['neo-gpt', null, {state: 'unread', reason: 'the presence row names no participation status'}]
+        ])
     })
 
     test('an answered report carries each seat\'s node participation, and a seat it holds no row for has none', async () => {
