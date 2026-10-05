@@ -26,6 +26,17 @@ const START_REFUSAL_CALLERS = Object.freeze([
 ]);
 
 /**
+ * The declaration fields a host in plane mode applies exactly as the plane accepted them, defaults
+ * included. Everything else on its copy is this host's own: the PAT it starts the seat with, who launches
+ * it here, and what it derives itself, such as its seat home.
+ * @type {String[]}
+ */
+const PLANE_DECLARATION_FIELDS = Object.freeze([
+    'id', 'githubUsername', 'harnessType', 'forge', 'forgeHost', 'gitName', 'gitEmail',
+    'memoryImport', 'metadata', 'modelProvider', 'mcpServers', 'mcpTarget'
+]);
+
+/**
  * The fields a start refusal may carry beside its reason, each only when the refusal names it: a typed
  * code, the step that stopped, and a memory import's source and destination, which the reason no longer
  * spells out. Nothing else of the error crosses.
@@ -174,6 +185,14 @@ class FleetControlBridge extends Base {
      * @member {Object|null} manager=null
      */
     manager = null
+    /**
+     * The plane's fleet surface, in plane mode only — an injected collaborator exposing
+     * `defineAgent(definition)` (`createPlaneFleetClient`). Wired by the plane-mode boot entry; then a
+     * seat is defined on the plane first and this host applies the plane's answer. Null in in-process
+     * mode, which stays exactly as it was. A plain field like `registry`.
+     * @member {Object|null} planeFleet=null
+     */
+    planeFleet = null
     /**
      * Boot-identity **read-observe** source — an injected collaborator exposing `produceBootIdentityFact()`
      * (the orchestrator's `BootIdentityHealthService`). READ-OBSERVE ONLY: the fact it returns is advisory,
@@ -386,11 +405,76 @@ class FleetControlBridge extends Base {
      * @param {String} [definition.gitName]  The name the seat's commits carry, declared with `gitEmail`.
      * @param {String} [definition.gitEmail] The email the seat's commits carry, declared with `gitName`.
      * @param {Object|null} [admission=null] The dispatcher's admission, `{ownerPrincipal}`, from the request
-     *     context and never from `definition`: the new seat's operator.
-     * @returns {Object} The public agent definition (no credential), or a controlled
-     *     `{status:'rejected', reason}` outcome for FleetRegistryService validation failures.
+     *     context and never from `definition`: the new seat's operator. Unused in plane mode, where the
+     *     plane records the operator from its own admission.
+     * @returns {Object|Promise<Object>} The public agent definition (no credential), or a controlled
+     *     `{status:'rejected', reason}` outcome for FleetRegistryService validation failures. In plane mode
+     *     a Promise of the same, or `{status:'unavailable', reason}` when the plane does not answer.
      */
     defineAgent(definition, admission=null) {
+        return this.planeFleet ? this.defineAgentOnPlane(definition) : this.defineAgentHere(definition, admission)
+    }
+
+    /**
+     * @summary Plane mode's define: the plane defines the seat and records its operator first, then this
+     * host applies the plane's accepted definition as its actuation copy, claiming no operator of its own.
+     * The copy takes the plane's canonical declaration, defaults included, and keeps only what this host
+     * owns: the PAT it starts the seat with and who launches it here. A local id clash, a refusal, an
+     * unreachable plane or an answer without the accepted definition writes nothing here; a failure to
+     * apply after the plane accepted says the seat now exists on the plane.
+     * @param {Object} definition The operator's definition, credential included.
+     * @returns {Promise<Object>} The public agent definition, or `{status, reason}`.
+     * @protected
+     */
+    async defineAgentOnPlane(definition) {
+        const agentId = definition?.id || definition?.githubUsername;
+
+        if (agentId && this.getRegistry().getAgent(agentId)) {
+            return {status: 'rejected', reason: `id '${agentId}' is already defined on this host; use a scoped update operation.`}
+        }
+
+        const answer = await this.planeFleet.defineAgent(definition);
+
+        if (answer.status !== 'defined') {
+            return answer
+        }
+
+        const accepted = answer.definition;
+
+        if (accepted?.id !== agentId) {
+            return {status: 'rejected', reason: `the plane answered no accepted definition for '${agentId}', so this host applied nothing`}
+        }
+
+        const local = Object.fromEntries(PLANE_DECLARATION_FIELDS.filter(key => Object.hasOwn(accepted, key)).map(key => [key, accepted[key]]));
+
+        local.credential = definition.credential;
+
+        if (definition.launchOwner !== undefined) {
+            local.launchOwner = definition.launchOwner
+        }
+
+        let applied;
+
+        try {
+            applied = this.defineAgentHere(local, null)
+        } catch {
+            applied = {status: 'rejected', reason: 'an unexpected local failure'}
+        }
+
+        return applied?.status === 'rejected'
+            ? {status: 'rejected', reason: `the plane defined '${agentId}', but this host could not apply it: ${applied.reason}`}
+            : applied
+    }
+
+    /**
+     * @summary The in-process define, and plane mode's local apply: tenant-target validation, then the
+     * registry's create-only write.
+     * @param {Object}      definition See {@link #defineAgent}.
+     * @param {Object|null} admission  See {@link #defineAgent}.
+     * @returns {Object} The public agent definition, or `{status:'rejected', reason}`.
+     * @protected
+     */
+    defineAgentHere(definition, admission) {
         try {
             const
                 registry        = this.getRegistry(),
