@@ -445,8 +445,9 @@ class FleetManager extends Base {
      * distinguish "not running" from "we do not know" — and delete this paragraph when you do.
      * @returns {Object[]} one `{agentId, state, running, confidence, source}` entry per registered agent;
      *     rows without a process record additionally carry `reason`, a running Claude Desktop seat
-     *     carries `sessionFolder`, where its session opened against its checkout, and a seat with a
-     *     provisioned start carries the `gitIdentity` that start resolved, a refused start's included.
+     *     carries `sessionFolder`, where its session opened against its checkout, a seat with a
+     *     provisioned start carries the `gitIdentity` that start resolved, a refused start's included, and a
+     *     Codex seat carries the `harnessSettings` its config is set to now ({@link FleetLifecycleService#harnessSettingsFor}).
      */
     fleetRuntimeStatus() {
         const lifecycle = this.getLifecycleService();
@@ -472,10 +473,13 @@ class FleetManager extends Base {
                 row.reason = 'no fleet process record: this agent runs outside fleet supervision'
             }
 
-            if (status.failureReason != null) row.failureReason = status.failureReason;
-            if (status.repos != null)         row.repos         = status.repos;
-            if (status.sessionFolder != null) row.sessionFolder = status.sessionFolder;
-            if (status.gitIdentity != null)   row.gitIdentity   = status.gitIdentity;
+            const harnessSettings = lifecycle.harnessSettingsFor(agent);
+
+            if (status.failureReason != null) row.failureReason   = status.failureReason;
+            if (status.repos != null)         row.repos           = status.repos;
+            if (status.sessionFolder != null) row.sessionFolder   = status.sessionFolder;
+            if (status.gitIdentity != null)   row.gitIdentity     = status.gitIdentity;
+            if (harnessSettings != null)      row.harnessSettings = harnessSettings;
 
             return row;
         });

@@ -38,6 +38,11 @@ import path            from 'node:path';
 //   per-home auth step exists at all: no marker to check (`authRequired` stays `null`), no window
 //   to sign in through (the supervised mode is headless) — the handoff names the provisioning
 //   assumption instead of inventing a login.
+// - `seatSettings` — where the family reads a seat's declared model and reasoning effort at launch:
+//   `'args'` = `--model` / `--effort` on its command line; `'codex-config'` = `model` /
+//   `model_reasoning_effort` in its `config.toml`. Absent where Fleet cannot set them: the
+//   `claude-desktop` app starts every session with its own `--model` / `--effort`, which outrank any
+//   settings file, and the other families are unprobed.
 const HARNESS_LAUNCH_CONTRACTS = {
     'antigravity': {
         authMode        : 'in-app',
@@ -49,6 +54,7 @@ const HARNESS_LAUNCH_CONTRACTS = {
         authMode        : 'marker',
         homeEnvVar      : 'CLAUDE_CONFIG_DIR',
         modeArgs        : ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print', '--verbose'],
+        seatSettings    : 'args',
         versionProbeArgs: ['--version']
     },
     'claude-desktop': {
@@ -61,10 +67,12 @@ const HARNESS_LAUNCH_CONTRACTS = {
         authMode        : 'marker',
         homeEnvVar      : 'CODEX_HOME',
         modeArgs        : ['app-server'],
+        seatSettings    : 'codex-config',
         versionProbeArgs: ['--version']
     },
     'codex-desktop': {
         authMode        : 'marker',
+        seatSettings    : 'codex-config',
         versionProbeArgs: null
     },
     // Isolation is a TWO-var XDG pair, not a single homeEnvVar: the derivation points BOTH
@@ -122,6 +130,17 @@ export const LAUNCHABLE_HARNESS_TYPES = Object.freeze(Object.keys(HARNESS_LAUNCH
  */
 export function getHarnessAuthMode(harnessType) {
     return HARNESS_LAUNCH_CONTRACTS[harnessType]?.authMode ?? null;
+}
+
+/**
+ * @summary Where the family reads a seat's declared model and reasoning effort at launch: `'args'`
+ * (`--model` / `--effort`), `'codex-config'` (`model` / `model_reasoning_effort` in its `config.toml`),
+ * or `null` where Fleet cannot set them, so a declaration for that family is refused.
+ * @param {String} harnessType
+ * @returns {'args'|'codex-config'|null}
+ */
+export function getHarnessSeatSettings(harnessType) {
+    return HARNESS_LAUNCH_CONTRACTS[harnessType]?.seatSettings ?? null;
 }
 
 /**
@@ -260,6 +279,10 @@ export function getHarnessAuthMode(harnessType) {
  *                                      wake-envelope plugin can copy the pair. Caller-generated
  *                                      (seat generator / lifecycle); this derivation stays
  *                                      deterministic — absent ⇒ no auth keys are provisioned.
+ * @param {String} [options.model]           The seat's declared model; `claude-code` takes it as
+ *                                           `--model`. A Codex family reads its own from `config.toml`.
+ * @param {String} [options.reasoningEffort] The seat's declared reasoning effort; `claude-code` takes it
+ *                                           as `--effort`. Absent, the harness keeps its own configuration.
  * @returns {{command: String, args: String[], env: Object, versionProbeArgs: String[]|null}} a
  * fresh spec per call — `args` / `env` / `versionProbeArgs` are caller-mutable without cross-call
  * bleed. `versionProbeArgs` is the argv for the supervisor's best-effort version capture
@@ -268,7 +291,7 @@ export function getHarnessAuthMode(harnessType) {
  * @throws {Error} If any argument is not a non-empty string, or `harnessType` is not a launchable
  * family.
  */
-export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, cwd, serverPassword} = {}) {
+export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, cwd, serverPassword, model, reasoningEffort} = {}) {
     assertNonEmptyString(harnessType,  'harnessType');
     assertNonEmptyString(instanceHome, 'instanceHome');
     assertNonEmptyString(binaryPath,   'binaryPath');
@@ -312,6 +335,8 @@ export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, 
             args   : [
                 '--mcp-config', path.join(instanceHome, 'mcp-config.json'),
                 '--strict-mcp-config',
+                ...(model           ? ['--model',  model]           : []),
+                ...(reasoningEffort ? ['--effort', reasoningEffort] : []),
                 ...contract.modeArgs
             ],
             env             : {[contract.homeEnvVar]: instanceHome},

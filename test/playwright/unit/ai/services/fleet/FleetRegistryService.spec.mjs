@@ -382,6 +382,51 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         expect(FleetRegistryService.configureAgent({id: 'desk', harnessType: 'claude-desktop'}).harnessType).toBe('claude-desktop');
     });
 
+    test('a seat declares the model and effort its harness starts on; each returns to the harness default with null', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'gpt-seat', harnessType: 'codex-desktop', credential: PAT});
+
+        expect(FleetRegistryService.configureAgent({id: 'gpt-seat', model: 'gpt-6-astra', reasoningEffort: 'ultra'}))
+            .toMatchObject({model: 'gpt-6-astra', reasoningEffort: 'ultra'});
+        expect(FleetRegistryService.configureAgent({id: 'gpt-seat', reasoningEffort: 'max'}), 'a field the intent does not name stays')
+            .toMatchObject({model: 'gpt-6-astra', reasoningEffort: 'max'});
+
+        const withdrawn = FleetRegistryService.configureAgent({id: 'gpt-seat', model: null});
+
+        expect(Object.hasOwn(withdrawn, 'model'), 'a withdrawn field leaves the record').toBe(false);
+        expect(withdrawn.reasoningEffort).toBe('max');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents['gpt-seat'].reasoningEffort, 'persisted').toBe('max');
+    });
+
+    test('a declaration the harness cannot read, or a value no harness names, refuses before writing', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'app-seat', harnessType: 'claude-desktop', credential: PAT});
+        FleetRegistryService.defineAgent({githubUsername: 'cli-seat', harnessType: 'claude-code', credential: PAT});
+
+        const before = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');
+
+        expect(() => FleetRegistryService.configureAgent({id: 'app-seat', model: 'claude-opus-5-5'}))
+            .toThrow("FleetRegistryService.configureAgent: a 'claude-desktop' seat takes no declared model or reasoning effort: its harness chooses them itself.");
+        expect(() => FleetRegistryService.configureAgent({id: 'cli-seat', model: 'opus" --dangerously'})).toThrow(/'model' must be one id/);
+        expect(() => FleetRegistryService.configureAgent({id: 'cli-seat', reasoningEffort: 'Max Effort'})).toThrow(/'reasoningEffort' must be one id/);
+        expect(() => FleetRegistryService.configureAgent({id: 'cli-seat', model: 5})).toThrow(/'model' must be one id/);
+        expect(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).toBe(before);
+
+        // withdrawing is always possible, the app's own family included
+        expect(FleetRegistryService.configureAgent({id: 'app-seat', model: null}).harnessType).toBe('claude-desktop');
+    });
+
+    test('a harness change withdraws the declared model unless the same intent declares one for the new harness', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'mover', harnessType: 'claude-code', credential: PAT});
+        FleetRegistryService.configureAgent({id: 'mover', model: 'claude-opus-5-5', reasoningEffort: 'max'});
+
+        const moved = FleetRegistryService.configureAgent({id: 'mover', harnessType: 'codex'});
+
+        expect([Object.hasOwn(moved, 'model'), Object.hasOwn(moved, 'reasoningEffort')], 'a Claude model id is no Codex model').toEqual([false, false]);
+        expect(FleetRegistryService.configureAgent({id: 'mover', harnessType: 'claude-code', model: 'opus', reasoningEffort: 'xhigh'}))
+            .toMatchObject({harnessType: 'claude-code', model: 'opus', reasoningEffort: 'xhigh'});
+        expect(FleetRegistryService.configureAgent({id: 'mover', mcpServers: null}), 'any other change keeps it').toMatchObject({model: 'opus', reasoningEffort: 'xhigh'});
+        expect(() => FleetRegistryService.configureAgent({id: 'mover', harnessType: 'claude-desktop', model: 'opus'})).toThrow(/takes no declared model/);
+    });
+
     test('target grammar rejects every transport, secret, or authority-bearing shape without a write', () => {
         FleetRegistryService.defineAgent({githubUsername: 'target-guard', harnessType: 'codex', credential: PAT});
         const before = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');

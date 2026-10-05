@@ -11,6 +11,7 @@ import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePl
 import {normalizeMcpTarget}                      from './mcpServers.mjs';
 import {normalizeMemoryImport}                   from './seatMemoryImport.mjs';
 import {normalizeGitIdentityDeclaration}         from './seatGitIdentity.mjs';
+import {normalizeSeatModelDeclaration}           from './seatModelDeclaration.mjs';
 
 const
     FORGE_HOSTNAME_RE       = /^(?:[a-z0-9._-]+|\[[0-9a-f:]+\])$/,
@@ -223,6 +224,23 @@ function gitIdentityDeclaration(method, fields) {
 }
 
 /**
+ * @summary The model and reasoning effort an intent declares, validated for the seat's harness
+ * ({@link module:ai/services/fleet/seatModelDeclaration.normalizeSeatModelDeclaration}).
+ * @param {String} method      The writing verb, which prefixes a refusal.
+ * @param {String} harnessType The seat's harness family once the change applies.
+ * @param {Object} fields      The intent.
+ * @returns {{model?: String|null, reasoningEffort?: String|null}} The fields the intent names.
+ * @throws {TypeError} On a malformed value, or on a value for a harness that takes none.
+ */
+function seatModelDeclaration(method, harnessType, fields) {
+    try {
+        return normalizeSeatModelDeclaration(harnessType, fields)
+    } catch (error) {
+        throw new TypeError(`FleetRegistryService.${method}: ${error.message}`)
+    }
+}
+
+/**
  * @class Neo.ai.services.fleet.FleetRegistryService
  * @extends Neo.core.Base
  * @singleton
@@ -234,7 +252,8 @@ function gitIdentityDeclaration(method, fields) {
  *
  * An **agent definition** is `{id, githubUsername, harnessType, modelProvider, mcpServers,
  * mcpTarget, launchOwner, metadata, createdAt, updatedAt}`, plus `forge` and `forgeHost` for a GitLab seat and
- * `gitName` and `gitEmail` for a seat whose commit identity is declared — never a secret. `modelProvider` (the agent's model-provider login) resolves via the AiConfig
+ * `gitName` and `gitEmail` for a seat whose commit identity is declared, and `model` and `reasoningEffort` for one
+ * whose harness starts on a declared model — never a secret. `modelProvider` (the agent's model-provider login) resolves via the AiConfig
  * `modelProvider` SSOT leaf when not supplied — read-only, no service-local default shadow. The associated **credential** (the seat's
  * forge PAT: GitHub's, or a GitLab instance's) is stored separately, encrypted at
  * rest, and is the load-bearing security boundary of this service:
@@ -571,8 +590,10 @@ class FleetRegistryService extends Base {
 
     /**
      * Configure an existing agent through the ONE wire-serializable curated intent. Only `id`,
-     * `harnessType`, sparse `mcpServers` overrides, the narrow `mcpTarget` intent and the declared commit
-     * identity (`gitName` with `gitEmail`, or both `null` to return to derivation) are accepted; credentials,
+     * `harnessType`, sparse `mcpServers` overrides, the narrow `mcpTarget` intent, the declared commit
+     * identity (`gitName` with `gitEmail`, or both `null` to return to derivation) and the declared `model`
+     * and `reasoningEffort` (each `null` to hand it back to the harness's own configuration) are accepted. A model names one
+     * family's model, so a harness change withdraws both unless the same intent declares them again; credentials,
      * URLs, headers, launch fields, wake, hooks, the provider identity (`githubUsername`), and generic config
      * bags are mechanically rejected. Unspecified fields are preserved. The returned public definition is canonical persisted readback, never request
      * echo. Controlled validation failures use the method prefix so FleetControlBridge can expose a
@@ -587,6 +608,9 @@ class FleetRegistryService extends Base {
      * @param {String|null} [intent.gitName]  The name the seat's commits carry, given with `gitEmail`; `null` with
      *     `gitEmail: null` removes the declaration.
      * @param {String|null} [intent.gitEmail] The email the seat's commits carry, given with `gitName`.
+     * @param {String|null} [intent.model] The model the seat's harness starts on, read at the next Start
+     *     ({@link module:ai/services/fleet/seatModelDeclaration.normalizeSeatModelDeclaration}).
+     * @param {String|null} [intent.reasoningEffort] The reasoning effort it starts on.
      * @returns {Object|null} Updated public definition, or `null` when the id is not registered.
      */
     configureAgent(intent={}) {
@@ -599,10 +623,11 @@ class FleetRegistryService extends Base {
         }
 
         const
-            allowed                                  = new Set(['id', 'harnessType', 'mcpServers', 'mcpTarget', 'gitName', 'gitEmail']),
+            allowed                                  = new Set(['id', 'harnessType', 'mcpServers', 'mcpTarget', 'gitName', 'gitEmail', 'model', 'reasoningEffort']),
             unknown                                  = Object.keys(intent).find(key => !allowed.has(key)),
             {id, harnessType, mcpServers, mcpTarget} = intent,
-            declaring                                = Object.hasOwn(intent, 'gitName') || Object.hasOwn(intent, 'gitEmail');
+            declaring                                = Object.hasOwn(intent, 'gitName') || Object.hasOwn(intent, 'gitEmail'),
+            seating                                  = Object.hasOwn(intent, 'model') || Object.hasOwn(intent, 'reasoningEffort');
 
         if (unknown) {
             reject(`unsupported field '${unknown}'.`)
@@ -613,7 +638,8 @@ class FleetRegistryService extends Base {
         if (!Object.hasOwn(intent, 'harnessType') &&
             !Object.hasOwn(intent, 'mcpServers') &&
             !Object.hasOwn(intent, 'mcpTarget') &&
-            !declaring) {
+            !declaring &&
+            !seating) {
             reject('at least one configuration field is required.')
         }
 
@@ -650,7 +676,9 @@ class FleetRegistryService extends Base {
             }
         }
 
-        const nextHarnessType = Object.hasOwn(intent, 'harnessType') ? harnessType : existing.harnessType;
+        const
+            nextHarnessType = Object.hasOwn(intent, 'harnessType') ? harnessType : existing.harnessType,
+            seat            = seatModelDeclaration('configureAgent', nextHarnessType, intent);
 
         const refusal = mcpDeclarationRefusal({harnessType: nextHarnessType, mcpMatrix: resolveMcpMatrix(matrix, catalog), tenant: !!target, forge: existing.forge});
 
@@ -677,6 +705,16 @@ class FleetRegistryService extends Base {
         if (declaring && !declaration) {
             delete def.gitName;
             delete def.gitEmail
+        }
+
+        // a model names one family's model: another harness starts on its own default unless declared again
+        if (nextHarnessType !== existing.harnessType) {
+            delete def.model;
+            delete def.reasoningEffort
+        }
+
+        for (const [key, value] of Object.entries(seat)) {
+            value === null ? delete def[key] : def[key] = value
         }
 
         const nextAgents = new Map(this.agents);

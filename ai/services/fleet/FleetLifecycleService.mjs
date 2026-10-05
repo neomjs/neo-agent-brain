@@ -9,7 +9,8 @@ import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix}               from '../../
 import {listHarnessTypes}                                           from '../../../src/fleet/contract/harnessTypes.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR, SEAT_PLANE_BASE_ENV_VAR}     from './mcpServers.mjs';
 import {deriveAgentInstanceHome}                                    from './deriveAgentInstanceHome.mjs';
-import {deriveHarnessLaunchSpec}                                    from './deriveHarnessLaunchSpec.mjs';
+import {deriveCodexHome, deriveHarnessLaunchSpec, getHarnessSeatSettings} from './deriveHarnessLaunchSpec.mjs';
+import {readCodexSeatSettings}                                      from './codexConfigToml.mjs';
 import {deriveNodeRuntimeEnv, NODE_RUNTIME_ENV}                     from './deriveNodeRuntimeEnv.mjs';
 import FleetRegistryService                                         from './FleetRegistryService.mjs';
 import {readSeatEnvOperatorKeys, SEAT_ENV_NOT_REGULAR}              from './seatEnvFile.mjs';
@@ -1160,6 +1161,27 @@ class FleetLifecycleService extends Base {
     }
 
     /**
+     * @summary What a Codex seat's home config is set to now, model and reasoning effort. This is configured
+     * state, which a running or resumed thread may override, so never proof of what a chat runs on
+     * ({@link module:ai/services/fleet/codexConfigToml.readCodexSeatSettings}). Read live, so a pick made in
+     * the app shows without a restart, a stopped seat's included.
+     * @param {Object} agent The seat's definition, `{id, harnessType, metadata}`.
+     * @returns {{model: String|null, reasoningEffort: String|null}|null} `null` for a family Fleet does not
+     * configure through a config file, a raw launch, and a home with no readable config yet.
+     */
+    harnessSettingsFor(agent) {
+        if (getHarnessSeatSettings(agent?.harnessType) !== 'codex-config' || agent.metadata?.launch) return null;
+
+        const instanceHome = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType: agent.harnessType});
+
+        try {
+            return readCodexSeatSettings(fs.readFileSync(path.join(deriveCodexHome({harnessType: agent.harnessType, instanceHome}), 'config.toml'), 'utf8'))
+        } catch {
+            return null
+        }
+    }
+
+    /**
      * @returns {Object[]} status of every currently-running agent.
      */
     listRunning() {
@@ -1679,11 +1701,13 @@ class FleetLifecycleService extends Base {
             const instanceHome = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType: agent.harnessType});
             return {
                 ...deriveHarnessLaunchSpec({
-                    harnessType   : agent.harnessType,
+                    harnessType    : agent.harnessType,
                     instanceHome,
                     binaryPath,
-                    cwd           : opts.cwd,
-                    serverPassword: opts.serverPassword
+                    cwd            : opts.cwd,
+                    model          : agent.model,
+                    reasoningEffort: agent.reasoningEffort,
+                    serverPassword : opts.serverPassword
                 }),
                 // carried for observability: `status` computes the live per-home authRequired from it
                 instanceHome

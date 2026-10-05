@@ -101,8 +101,9 @@ const HARNESSES_WITHOUT_GITLAB_WORKFLOW = Object.freeze(['kimi-code', 'opencode'
 
 /**
  * @typedef {Object} ManagedAgentWorkspacePlanInput
- * @property {{id: String, harnessType: String, forge?: String}} agent Closed opaque seat + harness intent; `forge`
- *     only for a seat bound to GitLab.
+ * @property {{id: String, harnessType: String, forge?: String, model?: String, reasoningEffort?: String}} agent Closed
+ *     opaque seat + harness intent; `forge` only for a seat bound to GitLab, `model` and `reasoningEffort` only
+ *     where the seat declares them.
  * @property {Object<String, Boolean>} mcpMatrix Complete canonical MCP enablement matrix.
  * @property {Object|null} [mcpTarget=null] Closed non-secret tenant resource intent.
  */
@@ -124,8 +125,9 @@ const HARNESSES_WITHOUT_GITLAB_WORKFLOW = Object.freeze(['kimi-code', 'opencode'
 
 /**
  * @typedef {Object} ManagedAgentWorkspacePlan
- * @property {{id: String, harnessType: String, forge?: String}} agent Closed opaque seat + harness intent; `forge`
- *     only for a seat bound to GitLab.
+ * @property {{id: String, harnessType: String, forge?: String, model?: String, reasoningEffort?: String}} agent Closed
+ *     opaque seat + harness intent; `forge` only for a seat bound to GitLab, `model` and `reasoningEffort` only
+ *     where the seat declares them.
  * @property {String} artifactProfile Curated harness artifact profile.
  * @property {Object<String, Boolean>} mcpMatrix Complete canonical MCP enablement matrix.
  * @property {ManagedAgentWorkspaceMcpPlan[]} mcpServers Closed logical MCP plan.
@@ -133,7 +135,7 @@ const HARNESSES_WITHOUT_GITLAB_WORKFLOW = Object.freeze(['kimi-code', 'opencode'
 
 const
     LOGICAL_INPUT_KEYS       = Object.freeze(['agent', 'mcpMatrix', 'mcpTarget']),
-    LOGICAL_AGENT_KEYS       = Object.freeze(['id', 'harnessType', 'forge']),
+    LOGICAL_AGENT_KEYS       = Object.freeze(['id', 'harnessType', 'forge', 'model', 'reasoningEffort']),
     MCP_TARGET_KEYS          = Object.freeze(['kind', 'credentialEnvVar', 'resources']),
     MCP_TARGET_RESOURCE_KEYS = Object.freeze(['memory-core', 'knowledge-base']),
     MCP_RESOURCE_KEYS        = Object.freeze(['url']),
@@ -217,8 +219,19 @@ function normalizeLogicalAgent(agent) {
         throw new TypeError(`createManagedAgentWorkspacePlan: 'agent.forge' must be one of ${REPO_FORGES.join(', ')}.`)
     }
 
-    // GitHub stays implicit, as on the registry row, so a GitHub seat's plan is unchanged
-    return {id: agent.id, harnessType: agent.harnessType, ...(agent.forge === 'gitlab' ? {forge: 'gitlab'} : {})}
+    for (const field of ['model', 'reasoningEffort']) {
+        Object.hasOwn(agent, field) && assertLogicalString(agent[field], `agent.${field}`)
+    }
+
+    // GitHub stays implicit, as on the registry row, and so does an undeclared model: a seat that
+    // declares neither keeps the plan it had
+    return {
+        id         : agent.id,
+        harnessType: agent.harnessType,
+        ...(agent.forge === 'gitlab' ? {forge: 'gitlab'} : {}),
+        ...(agent.model           ? {model          : agent.model}           : {}),
+        ...(agent.reasoningEffort ? {reasoningEffort: agent.reasoningEffort} : {})
+    }
 }
 
 /** @private */
