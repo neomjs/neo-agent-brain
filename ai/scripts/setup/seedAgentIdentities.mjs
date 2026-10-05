@@ -13,6 +13,10 @@
  * the other way, a wrong identity age was permanently unfixable — the registry called the field
  * immutable and the only writer that could enforce that was built to refuse it.
  *
+ * **A recorded participation decision outranks the registry.** A node carrying
+ * `participationDecidedBy` keeps its participation fields as `ai/scripts/fleet/participation.mjs`
+ * wrote them; the registry's participation seeds only nodes without a decision.
+ *
  * If identities disappeared without an intentional registry change, investigate the upstream wipe
  * (the historical hazard is test-pollution via the :memory: override leak described in
  * learn/agentos/IdentitySchema.md).
@@ -44,27 +48,28 @@
  * Usage: node ai/scripts/setup/seedAgentIdentities.mjs
  */
 
-import path            from 'node:path';
-import {fileURLToPath} from 'node:url';
-import {IDENTITIES}    from '../../graph/identityRoots.mjs';
+import path                   from 'node:path';
+import {fileURLToPath}        from 'node:url';
+import {IDENTITIES}           from '../../graph/identityRoots.mjs';
+import {PARTICIPATION_FIELDS} from '../../services/memory-core/recordParticipation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 
 /**
- * @summary Read one node's persisted `properties.createdAt` straight from the raw SQLite `Nodes`
- * row, bypassing the in-memory projection.
+ * @summary Read one node's persisted `properties` straight from the raw SQLite `Nodes` row,
+ * bypassing the in-memory projection.
  *
- * Reads storage rather than `getNode()` because the caller needs the *stored* stamp specifically:
- * it is deciding whether the registry's declared value differs from what is durably on disk, and a
- * projected read would answer a subtly different question. Returns `null` whenever storage is
- * absent, the row is missing, or the payload does not parse — every one of which means "no stored
- * stamp to fall back on", never "blank the field".
+ * Reads storage rather than `getNode()` because the caller needs what is *stored*: it decides
+ * whether the registry's declared `createdAt` differs from what is durably on disk, and whether an
+ * operator recorded a participation decision there. A projected read would answer a subtly
+ * different question. Returns `null` whenever storage is absent, the row is missing, or the payload
+ * does not parse — every one of which means "nothing stored to keep", never "blank the field".
  *
  * @param {Object} graphService The GraphService whose storage to peek.
  * @param {String} id The node id.
- * @returns {String|null} The persisted ISO timestamp, or null when none is readable.
+ * @returns {Object|null} The persisted properties bag, or null when none is readable.
  */
-function readStoredCreatedAt(graphService, id) {
+function readStoredProperties(graphService, id) {
     if (!graphService.db?.storage) {
         return null
     }
@@ -76,7 +81,7 @@ function readStoredCreatedAt(graphService, id) {
     }
 
     try {
-        return JSON.parse(row.data)?.properties?.createdAt || null
+        return JSON.parse(row.data)?.properties || null
     } catch (e) {
         return null
     }
@@ -117,7 +122,14 @@ export async function seedAgentIdentities({graphService, identities = IDENTITIES
             // The raw-SQLite peek survives, inverted: it now supplies a fallback for entries the
             // registry does NOT describe, so a silent registry never blanks a persisted stamp.
             const propertiesToUpdate = {...identity.properties},
-                  stored             = readStoredCreatedAt(graphService, identity.id);
+                  storedProperties   = readStoredProperties(graphService, identity.id),
+                  stored             = storedProperties?.createdAt || null,
+                  decidedBy          = storedProperties?.participationDecidedBy ?? null;
+
+            // A recorded participation decision outranks the seed: only the participation command changes it
+            if (decidedBy) {
+                PARTICIPATION_FIELDS.forEach(field => delete propertiesToUpdate[field])
+            }
 
             // Provenance is tracked rather than inferred from the resulting value: after the
             // fallback fires, a truthy `createdAt` no longer implies the registry supplied it, and
@@ -137,12 +149,14 @@ export async function seedAgentIdentities({graphService, identities = IDENTITIES
                 source                       = 'from stored fallback (registry silent)';
             }
 
-            const updatedIdentity = {...identity, properties: propertiesToUpdate};
+            const updatedIdentity = {...identity, properties: propertiesToUpdate},
+                  kept            = decidedBy ? `, participation kept as ${decidedBy} recorded it` : '';
+
             graphService.upsertNode(updatedIdentity);
             log(
                 reconciled
-                    ? `Updated AgentIdentity (createdAt RECONCILED ${reconciled} -> ${propertiesToUpdate.createdAt}): ${identity.id}`
-                    : `Updated AgentIdentity (createdAt ${source}): ${identity.id}`
+                    ? `Updated AgentIdentity (createdAt RECONCILED ${reconciled} -> ${propertiesToUpdate.createdAt}${kept}): ${identity.id}`
+                    : `Updated AgentIdentity (createdAt ${source}${kept}): ${identity.id}`
             );
         }
         seededCount++;

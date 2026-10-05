@@ -90,6 +90,25 @@ Identity projection has two deliberately separate write authorities:
   upsert layers the payload over the existing bag rather than replacing it, so a field the registry
   never mentions (a static wake route, say) survives the projection untouched.
 
+### Participation decisions
+
+A bench is the operator's decision, recorded on the plane host with `ai/scripts/fleet/participation.mjs`.
+The command writes these fields on the node:
+- `participationStatus`: `active` or `operator_benched`;
+- `statusReason`: required for a bench;
+- `since`;
+- `participationDecidedBy`: who decided.
+
+A recorded decision outranks both writers above. The seeder leaves the participation fields of a node
+that carries `participationDecidedBy` alone. The Memory Core's sign-in refresh writes
+`participationStatus` only when it creates a node. On the plane, run the command in the Memory Core
+container. Without `--apply` it only reports what it would write:
+
+```bash
+node ai/scripts/fleet/participation.mjs bench --identity @<resident> --reason "<why>" --apply
+node ai/scripts/fleet/participation.mjs activate --identity @<resident> --apply
+```
+
 After an intentional identity-root change merges, run the projection gate from the checkout that
 owns the target Memory Core deployment:
 

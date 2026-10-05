@@ -38,7 +38,8 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
         '@existing-gitlab-agent-14388',
         '@colliding-gitlab-agent-14388',
         '@concurrent-gitlab-agent-14388',
-        '@xprovider-shared-login'
+        '@xprovider-shared-login',
+        '@benched-gitlab-agent-883'
     ]);
 
     const silentLogger = {info: () => {}, warn: () => {}, error: () => {}};
@@ -596,6 +597,47 @@ test.describe('Neo.ai.mcp.server.memory-core.Server', () => {
             expect(node.properties.lastAuthenticatedAt).toBeTruthy();
             expect(node.properties.autoProvisioned).toBeUndefined();
             expect(node.properties.providerBaseUrl).toBeUndefined();
+        } finally {
+            serverInstance.destroy();
+        }
+    });
+
+    test('#883: a sign-in refresh of an auto-provisioned node keeps the operator\'s recorded bench', async () => {
+        await GraphService.initAsync();
+
+        GraphService.upsertGlobalNode({
+            id        : '@benched-gitlab-agent-883',
+            type      : 'AgentIdentity',
+            name      : 'Benched Agent',
+            properties: {
+                accountType           : 'agent',
+                autoProvisioned       : true,
+                participationStatus   : 'operator_benched',
+                statusReason          : 'the flatrate ended',
+                since                 : '2026-10-01T00:00:00.000Z',
+                participationDecidedBy: 'os-user:operator',
+                createdAt             : '2026-01-01T00:00:00.000Z'
+            }
+        });
+
+        const serverInstance = await createServerWithoutBoot({autoProvisionIdentitySources: ['gitlab-pat']});
+
+        try {
+            await serverInstance.buildRequestContext({
+                userId          : 'benched-gitlab-agent-883',
+                username        : 'Benched Agent',
+                source          : 'gitlab-pat',
+                providerUsername: 'benched-gitlab-agent-883'
+            });
+
+            // providerUsername shows the refresh ran; the decision fields show it left participation alone
+            expect(rawGraphNode('@benched-gitlab-agent-883').properties).toMatchObject({
+                providerUsername      : 'benched-gitlab-agent-883',
+                participationStatus   : 'operator_benched',
+                statusReason          : 'the flatrate ended',
+                since                 : '2026-10-01T00:00:00.000Z',
+                participationDecidedBy: 'os-user:operator'
+            });
         } finally {
             serverInstance.destroy();
         }

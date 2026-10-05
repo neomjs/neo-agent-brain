@@ -599,8 +599,8 @@ class Server extends BaseServer {
      * Missing identities are written as globally visible SQLite graph nodes (`userId: null`) so a
      * separate orchestrator process can observe them through GraphLog invalidation and lazy-load.
      * Existing AgentIdentity nodes are preserved; seeded nodes receive only `lastAuthenticatedAt`,
-     * while already-auto-provisioned nodes can refresh provider-neutral metadata. Non-identity
-     * collisions and malformed ids fail closed.
+     * while already-auto-provisioned nodes can refresh provider-neutral metadata, never their
+     * participation. Non-identity collisions and malformed ids fail closed.
      * @param {Object} reqAuth Server-stamped auth context from the validated bearer request.
      * @returns {Promise<String|null>} Bound AgentIdentity node id, or null when graph startup is degraded.
      * @protected
@@ -626,7 +626,8 @@ class Server extends BaseServer {
                   providerDisplay = reqAuth.providerDisplayName || reqAuth.username || reqAuth.providerUsername || userId,
                   fullProperties  = compactDefinedProperties({
                       accountType        : 'agent',
-                      participationStatus: 'active',
+                      // a sign-in creates a node active; after that, participation is the operator's decision
+                      participationStatus: existing ? undefined : 'active',
                       trustTier          : TRUST_TIERS.INTERNAL_AUTHORED,
                       authProvider       : reqAuth.authProvider || 'gitlab',
                       authSource         : reqAuth.authSource || reqAuth.source || 'gitlab-pat',
