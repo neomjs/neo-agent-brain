@@ -1155,9 +1155,11 @@ class FleetControlBridge extends Base {
      * launch-templated subset; `authMode` = `'marker' | 'in-app' | 'env-key' | null` — both DERIVED at read
      * time from the launch seam, never a second hand-maintained list, so a family becomes
      * cockpit-launchable exactly when its template lands; `launchRefusal` = why the start verb refuses the
-     * seat, or `null`, from the same {@link launchRefusalOf} the verb reads), and hands the enriched agents to the
-     * Body-side pure map (`createFleetCockpitStatus` — which never imports `ai/graph` or the Brain
-     * launch seam; the hemisphere boundary holds, the Body only hoists what arrives stamped).
+     * seat, or `null`, from the same {@link launchRefusalOf} the verb reads), stamps each seat's participation
+     * from its identity node as the presence report carries it (`participationRead` says whether that report
+     * answered), and hands the enriched agents to the Body-side pure map (`createFleetCockpitStatus` — which never
+     * imports `ai/graph` or the Brain launch seam; the hemisphere boundary holds, the Body only hoists what arrives
+     * stamped).
      *
      * Rides the authenticated `registryBridge` as a **read** verb; it carries NO lifecycle-write /
      * restart authority (the R3 read-observe ÷ lifecycle-write seam). An agent without an identity
@@ -1173,14 +1175,6 @@ class FleetControlBridge extends Base {
             manager  = me.getManager(),
             resolve  = me.getIdentityResolver();
 
-        const agents = (registry.listAgents() ?? []).map(agent => ({
-            ...agent,
-            ...resolve(agent.githubUsername ?? agent.id, {harnessType: agent.harnessType}),
-            launchable   : LAUNCHABLE_HARNESS_TYPES.includes(agent.harnessType),
-            launchRefusal: launchRefusalOf(agent),
-            authMode     : getHarnessAuthMode(agent.harnessType)
-        }));
-
         // The S2 telltale axes join the roster here: each producer snapshot becomes per-row state +
         // one capability. Fail-honest end to end: an un-injected producer — or a manager seam
         // without the producer method at all — yields not-wired/unknown, never a guessed state.
@@ -1191,6 +1185,26 @@ class FleetControlBridge extends Base {
             manager.fleetThrottleStatus?.() ?? null,
             manager.fleetPresenceStatus?.() ?? null
         ]);
+
+        // A seat's participation is its identity node's, which the presence report carries; a report that never
+        // answered leaves it unread rather than falling back to any local file
+        const presenceById = new Map((presence?.states ?? []).map(entry => [entry.agentId, entry]));
+
+        const agents = (registry.listAgents() ?? []).map(agent => {
+            const entry = presenceById.get(agent.id);
+
+            return {
+                ...agent,
+                ...resolve(agent.githubUsername ?? agent.id, {harnessType: agent.harnessType}),
+                participationStatus: entry?.participation?.status ?? null,
+                participationReason: entry?.participation?.reason ?? null,
+                participationSince : entry?.participation?.since ?? null,
+                participationRead  : entry?.participationRead ?? {state: 'unread', reason: 'presence producer not wired'},
+                launchable         : LAUNCHABLE_HARNESS_TYPES.includes(agent.harnessType),
+                launchRefusal      : launchRefusalOf(agent),
+                authMode           : getHarnessAuthMode(agent.harnessType)
+            }
+        });
 
         return createFleetCockpitStatus({
             agents,

@@ -29,18 +29,14 @@ import {resolveResidentFamilyById} from '../../../../../../ai/services/graph/age
 test.describe('ai/services/fleet/resolveIdentityDisplay — the fleet↔identity display join', () => {
     const agentNodes = IDENTITIES.filter(node => node.type === 'AgentIdentity' && node.properties?.accountType === 'agent');
 
-    test('resolves every named maintainer to its root family + authoritative participation fact — unprefixed and @-prefixed inputs alike', () => {
+    test('resolves every named maintainer to its root family, and never to a participation fact — unprefixed and @-prefixed inputs alike', () => {
         agentNodes.forEach(node => {
             const login    = node.id.replace(/^@/, ''),
                   expected = {
                       // era-chain-first with the identity-level modelFamily fallback — the same
                       // read the service performs (the flat `family` duplicate is retired)
                       family   : resolveResidentFamilyById(node.id) ?? node.properties.modelFamily ?? null,
-                      engineTag: null,
-                      // flows VERBATIM from the root — the identity registry documents this field
-                      // as the authoritative participation fact (benched roots resolve benched),
-                      // so no value is pinned here: a bench/unbench PR must not break the seam
-                      participationStatus: node.properties.participationStatus ?? null
+                      engineTag: null
                   };
 
             expect(resolveIdentityDisplay(login)).toEqual(expected);
@@ -65,7 +61,7 @@ test.describe('ai/services/fleet/resolveIdentityDisplay — the fleet↔identity
     });
 
     test('an agent without an identity root resolves to null facts — unclassified/tagless, never guessed', () => {
-        expect(resolveIdentityDisplay('freshly-defined-fleet-agent')).toEqual({family: null, engineTag: null, participationStatus: null})
+        expect(resolveIdentityDisplay('freshly-defined-fleet-agent')).toEqual({family: null, engineTag: null})
     });
 
     test('an unseeded agent uses its declared harness only for display family', () => {
@@ -73,15 +69,13 @@ test.describe('ai/services/fleet/resolveIdentityDisplay — the fleet↔identity
             ['codex-desktop', 'gpt'], ['claude-code', 'claude'], ['kimi-code', 'kimi'],
             ['antigravity', 'gemini'], ['opencode', null], ['native-neo', null], ['unknown', null]
         ]) {
-            expect(resolveIdentityDisplay('freshly-defined-fleet-agent', {harnessType})).toEqual({
-                family, engineTag: null, participationStatus: null
-            });
+            expect(resolveIdentityDisplay('freshly-defined-fleet-agent', {harnessType})).toEqual({family, engineTag: null});
         }
     });
 
     test('non-string / absent input degrades to null facts, never throws', () => {
-        expect(resolveIdentityDisplay(null)).toEqual({family: null, engineTag: null, participationStatus: null});
-        expect(resolveIdentityDisplay(undefined)).toEqual({family: null, engineTag: null, participationStatus: null});
-        expect(resolveIdentityDisplay(42)).toEqual({family: null, engineTag: null, participationStatus: null})
+        expect(resolveIdentityDisplay(null)).toEqual({family: null, engineTag: null});
+        expect(resolveIdentityDisplay(undefined)).toEqual({family: null, engineTag: null});
+        expect(resolveIdentityDisplay(42)).toEqual({family: null, engineTag: null})
     });
 });

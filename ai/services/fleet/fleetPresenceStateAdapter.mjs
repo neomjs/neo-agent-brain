@@ -5,14 +5,18 @@
  * wake and throttle telltales: presence-fresh ≠ wake-route-healthy ≠ identity-bound, and no axis
  * ever infers another.
  *
- * The truth source is the identity-proven plane client's `who_is_online` report (the shipped band
- * embryo: `online | idle | dark | benched | neverConnected`, plus per-row activity recency),
- * injected through the SAME bulk `readPresence` seam the decomposed wake-routes source consumes —
- * one producer contract, two consumers, never a second authority. Host mode has no presence
- * surface yet: an absent reader leaves every row honestly `unknown` under a `degraded/none`
- * capability. That is the tier-degradation rendering contract at the producer boundary: *a
- * liveness tier a deployment cannot emit produces ABSENCE OF SIGNAL, never a verdict* — "we cannot
- * see presence" stays mechanically distinguishable from "the fleet is dark".
+ * The truth source is the `who_is_online` report (the shipped band embryo: `online | idle | dark |
+ * benched | neverConnected`, plus per-row activity recency), read over the identity-proven plane
+ * client in plane mode and from the in-process Memory Core in host mode, and injected through the
+ * SAME bulk `readPresence` seam the decomposed wake-routes source consumes — one producer contract,
+ * two consumers, never a second authority. An absent reader leaves every row honestly `unknown`
+ * under a `degraded/none` capability. That is the tier-degradation rendering contract at the
+ * producer boundary: *a liveness tier a deployment cannot emit produces ABSENCE OF SIGNAL, never a
+ * verdict* — "we cannot see presence" stays mechanically distinguishable from "the fleet is dark".
+ *
+ * Participation is a separate observation from the same rows: a row whose band this vocabulary
+ * skips still says what the seat's identity node records, and a row that names no status is an
+ * unanswered read for that seat, never a seat without a node.
  *
  * Row-local honesty mirrors the wake-routes presence axis exactly: a seat missing from a HEALTHY
  * report answers `unknown` for itself (with its own reason) without degrading its siblings or the
@@ -166,6 +170,23 @@ export const PRESENCE_SOURCE_LABEL = 'fleet:presenceState'
 export const PRESENCE_CAPABILITY_REASON_CODES = Object.freeze(['viewer-binding-unavailable'])
 
 /**
+ * @summary A presence row's participation, as its identity node records it: the status the plane gates on, and
+ * the operator's reason and date when the row carries them.
+ * @param {Object} row One `who_is_online` agent row
+ * @returns {{status: String|null, reason: String|null, since: String|null}}
+ */
+export function participationOf(row) {
+    const signals = row?.signals ?? {},
+          status  = signals.participationStatus ?? row?.participationStatus;
+
+    return {
+        status: typeof status === 'string' && status ? status : null,
+        reason: typeof signals.statusReason === 'string' ? redactReason(signals.statusReason) : null,
+        since : typeof signals.participationSince === 'string' ? signals.participationSince : null
+    }
+}
+
+/**
  * @summary Reads the fleet-wide presence snapshot: one band row per registered agent plus a
  * capability envelope declaring whether the presence producer answered.
  *
@@ -185,8 +206,7 @@ export const PRESENCE_CAPABILITY_REASON_CODES = Object.freeze(['viewer-binding-u
  *     roster-presence report (`who_is_online` payload shape: `{agents: [{identity, state, reason,
  *     signals, validationState?, since?}]}` — the same seam `wireFleetWakeRoutesSource` consumes).
  *     Auth-validation provenance passes through; this adapter never re-derives it. Absent ⇒ every row is
- *     honestly `unknown` under a degraded capability (host mode's documented truth until a host
- *     presence surface lands).
+ *     honestly `unknown` under a degraded capability.
  * @param {Function} [options.presenceIdentityFor] `(agent) => String` roster row → presence report
  *     identity. The default canonicalizes into the report's `@<login>` shape while accepting the
  *     registry's FULL production input domain: `defineAgent` stores `githubUsername` unchanged and
@@ -195,9 +215,13 @@ export const PRESENCE_CAPABILITY_REASON_CODES = Object.freeze(['viewer-binding-u
  *     answered plane row is never converted into a fabricated `seat absent` by spelling alone.
  * @param {Date|String} [options.capturedAt] Capture timestamp — the observation-time bound above.
  * @returns {Promise<{capability: Object, states: Object[]}>} `states` rows:
- *     `{agentId, presence, beacon, lastSeenAt, confidence, source}` (+ `reason` when `presence`
- *     is `unknown`, or `{validationState, since}` when the plane vouched stale validation);
+ *     `{agentId, presence, beacon, lastSeenAt, confidence, source, participation, participationRead}` (+ `reason`
+ *     when `presence` is `unknown`, or `{validationState, since}` when the plane vouched stale validation);
  *     `beacon` is one of {@link PRESENCE_BEACON_FACETS}, evaluated at the same bound as the grade.
+ *     `participation` is the identity node's ({@link participationOf}), read from the seat's row even when its
+ *     band is out of vocabulary. It is `null` with `participationRead: {state: 'read'}` where an answered report
+ *     holds no row for the seat (no node), and `null` with `{state: 'unread', reason}` where the report never
+ *     answered or the seat's row names no status, so an unanswered read is never mistaken for a seat without a node.
  */
 export async function readFleetPresenceSnapshot({
     agents = [],
@@ -213,11 +237,12 @@ export async function readFleetPresenceSnapshot({
           capturedAtMs  = new Date(capturedAtIso).getTime(),
           states        = []
 
-    let byIdentity     = null,
-        readReasonCode = null,
-        readReason     = hasReader
+    let byIdentity        = null,
+        participationById = null,
+        readReasonCode    = null,
+        readReason        = hasReader
             ? null
-            : 'no presence truth source exists for this mode: plane mode injects the who_is_online reader; a host presence surface has not landed'
+            : 'no presence truth source exists for this mode: no who_is_online reader was injected'
 
     if (hasReader) {
         try {
@@ -226,13 +251,19 @@ export async function readFleetPresenceSnapshot({
             if (!Array.isArray(payload?.agents)) {
                 readReason = 'presence answer unreadable'
             } else {
-                byIdentity = new Map()
+                byIdentity        = new Map()
+                participationById = new Map()
 
                 for (const row of payload.agents) {
+                    if (typeof row?.identity !== 'string') continue
+
+                    // participation is its own observation, taken before the band check below
+                    participationById.set(row.identity, participationOf(row))
+
                     // Out-of-vocabulary rows are skipped, not admitted: a producer emitting a band
                     // this contract does not know must not leak an open enum to every consumer —
                     // the affected seat answers `unknown` via the absent-row path below instead.
-                    if (typeof row?.identity !== 'string' || !PRESENCE_STATES.includes(row.state)) continue
+                    if (!PRESENCE_STATES.includes(row.state)) continue
 
                     // the vouched beacon observation (horizons + boolean): the ONLY input the
                     // recency grade adds over the plane's own verdict — evaluated at the snapshot
@@ -265,16 +296,28 @@ export async function readFleetPresenceSnapshot({
 
         if (!agentId) continue
 
-        let presence        = 'unknown',
+        let presence          = 'unknown',
             // no observation for this seat until an answered report carries its row
-            beacon          = 'unobserved',
-            lastSeenAt      = null,
-            rowReason       = readReason,
-            validationState = null,
-            since           = null
+            beacon            = 'unobserved',
+            lastSeenAt        = null,
+            rowReason         = readReason,
+            validationState   = null,
+            since             = null,
+            // a report that never answered leaves every seat's participation unread; an answered one
+            // without this seat's row has no identity node for it, the open-set case
+            participation     = null,
+            participationRead = byIdentity ? {state: 'read'} : {state: 'unread', reason: readReason || 'presence unreadable'}
 
         if (byIdentity) {
-            const row = byIdentity.get(presenceIdentityFor(agent))
+            const identity = presenceIdentityFor(agent),
+                  row      = byIdentity.get(identity),
+                  observed = participationById.get(identity)
+
+            if (observed?.status) {
+                participation = observed
+            } else if (observed) {
+                participationRead = {state: 'unread', reason: 'the presence row names no participation status'}
+            }
 
             if (row) {
                 // the emitted band is the GRADED vocabulary: the plane's verdict refined by the
@@ -296,8 +339,10 @@ export async function readFleetPresenceSnapshot({
             presence,
             beacon,
             lastSeenAt,
-            confidence: presence === 'unknown' ? 'none' : 'observed',
-            source    : PRESENCE_SOURCE_LABEL
+            confidence       : presence === 'unknown' ? 'none' : 'observed',
+            source           : PRESENCE_SOURCE_LABEL,
+            participation,
+            participationRead
         }
 
         if (presence === 'unknown') {

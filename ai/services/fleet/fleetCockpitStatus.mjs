@@ -200,10 +200,14 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 avatarUrl  : publicAgent.metadata?.avatarUrl ?? githubAvatarUrl(publicAgent.githubUsername),
                 family     : publicAgent.family ?? null,
                 engineTag  : publicAgent.engineTag ?? null,
-                // The AUTHORITATIVE swarm-participation fact, resolved Brain-side through the ONE
-                // identity join seam — hoisted so fleet-level control eligibility can exclude an
-                // operator-benched identity. Tri-state: null = no identity root / not stamped.
+                // The AUTHORITATIVE swarm-participation fact, the seat's identity node as the Brain-side
+                // assembler stamped it from the presence report — hoisted so fleet-level control eligibility
+                // can exclude an operator-benched seat. null = no node for the seat, or a read that never
+                // answered; `participationRead` tells the two apart, and the reason and date are the operator's.
                 participationStatus: publicAgent.participationStatus ?? null,
+                participationReason: publicAgent.participationReason ?? null,
+                participationSince : publicAgent.participationSince ?? null,
+                participationRead  : publicAgent.participationRead ?? null,
                 agent              : publicAgent,
                 repoStatus,
                 // the last start's per-repository outcome from the launch record; null before a start
