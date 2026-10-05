@@ -5,7 +5,8 @@ import {fileURLToPath}                 from 'node:url';
 import Base                            from 'neo.mjs/src/core/Base.mjs';
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from '../../services/fleet/mcpServers.mjs';
 
-const NEURAL_LINK_MCP_SCRIPT = 'ai:mcp-server-neural-link';
+const GITHUB_WORKFLOW_MCP_SCRIPT = 'ai:mcp-server-github-workflow';
+const NEURAL_LINK_MCP_SCRIPT     = 'ai:mcp-server-neural-link';
 
 /**
  * @summary Resolves the package root owned by this built-in client configuration.
@@ -16,8 +17,7 @@ const NEURAL_LINK_MCP_SCRIPT = 'ai:mcp-server-neural-link';
  * authority rather than a plausible-looking ancestor.
  *
  * @returns {String}
- * @throws {Error} When this module no longer lives under the package that owns the Neural Link MCP
- * server script.
+ * @throws {Error} When the module-owned package does not declare its GitHub Workflow and Neural Link scripts.
  * @private
  */
 function resolveClientPackageRoot() {
@@ -30,8 +30,10 @@ function resolveClientPackageRoot() {
         throw new Error('MCP Client config: module-derived package root has no readable package.json');
     }
 
-    if (typeof manifest.scripts?.[NEURAL_LINK_MCP_SCRIPT] !== 'string') {
-        throw new Error(`MCP Client config: module-derived package root does not declare '${NEURAL_LINK_MCP_SCRIPT}'`);
+    for (const script of [GITHUB_WORKFLOW_MCP_SCRIPT, NEURAL_LINK_MCP_SCRIPT]) {
+        if (typeof manifest.scripts?.[script] !== 'string') {
+            throw new Error(`MCP Client config: module-derived package root does not declare '${script}'`);
+        }
     }
 
     return candidate
@@ -66,7 +68,8 @@ const defaultConfig = {
         "github-workflow": {
             transportType: "stdio",
             command      : "npm",
-            args         : ["run", "ai:mcp-server-github-workflow"],
+            cwd          : clientPackageRoot,
+            args         : ["run", GITHUB_WORKFLOW_MCP_SCRIPT],
             requiredEnv  : ["GH_TOKEN"]
         },
         "knowledge-base": {
