@@ -221,9 +221,8 @@ export async function runListener({
 
     if (decision !== 'listen') return {exit: 0, reason: decision};
 
-    // `wakeArmingHook` runs beside this one at session start and subscribes the same route. `subscribe`
-    // checks and creates in two steps, so give it the head start rather than race it into a duplicate.
-    if (payload.hook_event_name === 'SessionStart') await sleep(pollIntervalMs);
+    // SessionStart holds the first response, so a session only takes the seat there; Stop polls.
+    if (payload.hook_event_name === 'SessionStart') return {exit: 0, reason: 'claimed'};
 
     let backoff = 0, client = null, subscriptionId = null;
 

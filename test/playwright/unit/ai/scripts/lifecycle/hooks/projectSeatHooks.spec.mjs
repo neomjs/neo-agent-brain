@@ -1266,24 +1266,29 @@ test.describe('the real Claude manifest — contract properties of the shipped f
         expect(HOOK_TIMEOUT_MS).toBe(registered * 1000)
     });
 
-    test('wakeListenerHook rides SessionStart and Stop in the background, and reaches the seat that way', () => {
-        // The listener wakes a session only when the harness runs it in the background
-        // (`asyncRewake`) on both events: SessionStart arms a new session, Stop re-arms after each turn.
-        // A plain entry would block the turn it polls for; a missing one leaves an idle seat deaf.
+    test('wakeListenerHook polls on Stop in the background and only claims, bounded, on SessionStart', () => {
+        // The listener wakes a session only when the harness runs it in the background (`asyncRewake`),
+        // and Stop re-arms it after each turn. SessionStart holds the first response, so there it may only
+        // take the seat for the newest session — a background flag or a day-long timeout would let it block.
         const
             LISTENER   = '/.claude/hooks/wakeListenerHook.mjs',
-            {settings} = reconcileClaudeEvents({isOwned: () => false, manifest, settings: {}});
+            {settings} = reconcileClaudeEvents({isOwned: () => false, manifest, settings: {}}),
+            wired      = (events, event) => events[event].flatMap(bucket => bucket.hooks).filter(entry => entry.command.includes(LISTENER)),
+            stop       = wired(manifest.events, 'Stop'),
+            start      = wired(manifest.events, 'SessionStart');
 
-        ['SessionStart', 'Stop'].forEach(event => {
-            const
-                declared   = manifest.events[event].flatMap(bucket => bucket.hooks).filter(entry => entry.command.includes(LISTENER)),
-                reconciled = settings.hooks[event].flatMap(bucket => bucket.hooks).filter(entry => entry.command.includes(LISTENER));
+        expect(stop, 'Stop wires the listener exactly once').toHaveLength(1);
+        expect(stop[0].asyncRewake).toBe(true);
+        // Above the harness's 600 s default, which would end an idle seat's listener.
+        expect(stop[0].timeout).toBeGreaterThan(600);
 
-            expect(declared, `${event} wires the listener exactly once`).toHaveLength(1);
-            expect(declared[0].asyncRewake).toBe(true);
-            // Above the harness's 600 s default, which would end an idle seat's listener.
-            expect(declared[0].timeout).toBeGreaterThan(600);
-            expect(reconciled, `${event} keeps the listener's background flag through reconciliation`).toEqual(declared)
+        expect(start, 'SessionStart wires the listener exactly once').toHaveLength(1);
+        expect(start[0].asyncRewake).toBeUndefined();
+        expect(start[0].async).toBeUndefined();
+        expect(start[0].timeout).toBeLessThanOrEqual(15);
+
+        ['Stop', 'SessionStart'].forEach(event => {
+            expect(wired(settings.hooks, event), `${event} keeps the listener entry through reconciliation`).toEqual(wired(manifest.events, event))
         });
 
         expect(enumerateHooks(REPO_ROOT).map(hook => hook.target)).toContain('.claude/hooks/wakeListenerHook.mjs')
