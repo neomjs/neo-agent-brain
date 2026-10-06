@@ -909,29 +909,32 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect(await read(filePath)).toBe(before);
     });
 
-    test('a preparation interrupted before the profile write converges on the next Start, from either side of it', async () => {
-        const
-            opts    = options(makeAgent('claude-desktop')),
-            first   = await prepareManagedAgentWorkspace(opts),
-            file    = path.join(first.instanceHome, 'claude_desktop_config.json'),
-            written = await read(file),
-            failing = new Proxy(fs, {get(target, key) {
-                return key === 'rename'
-                    ? async (from, to) => {
-                        if (to === file) throw Object.assign(new Error('interrupted'), {code: 'EIO'});
-                        return target.rename(from, to)
-                    }
-                    : target[key]
-            }});
+    test('a preparation interrupted at either of its two writes converges on the next Start', async () => {
+        for (const interrupted of ['claude_desktop_config.json', '.neo-fleet-claude-desktop-profile.json']) {
+            const
+                opts    = options(makeAgent('claude-desktop', {id: `interrupted-${interrupted.length}`})),
+                first   = await prepareManagedAgentWorkspace(opts),
+                file    = path.join(first.instanceHome, 'claude_desktop_config.json'),
+                target  = path.join(first.instanceHome, interrupted),
+                written = await read(file),
+                failing = new Proxy(fs, {get(fileSystem, key) {
+                    return key === 'rename'
+                        ? async (from, to) => {
+                            if (to === target) throw Object.assign(new Error('interrupted'), {code: 'EIO'});
+                            return fileSystem.rename(from, to)
+                        }
+                        : fileSystem[key]
+                }});
 
-        // the receipt already names the rows this run would have written, the profile still holds the old ones
-        await expect(prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission(), fileSystem: failing})).rejects.toThrow();
-        expect(await read(file)).toBe(written);
+            await expect(prepareManagedAgentWorkspace({...opts, launchAdmission: desktopAdmission(), fileSystem: failing}), interrupted).rejects.toThrow();
+            expect(await read(file), interrupted).toBe(written);
 
-        const next = {...opts, launchAdmission: desktopAdmission()};
+            const next = {...opts, launchAdmission: desktopAdmission()};
 
-        await prepareManagedAgentWorkspace(next);
-        expect(JSON.parse(await read(file)).mcpServers['neo-mjs-memory-core'].env.NEO_FLEET_LAUNCH_GRANT).toBe(next.launchAdmission.grants['memory-core']);
+            await prepareManagedAgentWorkspace(next);
+            expect(JSON.parse(await read(file)).mcpServers['neo-mjs-memory-core'].env.NEO_FLEET_LAUNCH_GRANT, interrupted)
+                .toBe(next.launchAdmission.grants['memory-core'])
+        }
     });
 
     test('Node execution mode belongs only to the selected Electron executable', () => {
