@@ -131,7 +131,7 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             auth          : {},
             authMiddleware: noOpAuthMiddleware
         };
-        const mockLogger = { info: () => {} };
+        const mockLogger = { info: () => {}, warn: () => {} };
 
         await TransportService.setup({
             server      : mockServer,
@@ -161,6 +161,29 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
         expect(typeof response.status).toBe('number');
 
         TransportService.destroy();
+    });
+
+    test('statusLogger records an error response without headers or query, and stays silent below 400', async () => {
+        const
+            TransportService = (await import('../../../../../../../../ai/mcp/server/shared/services/TransportService.mjs')).default,
+            {EventEmitter}   = await import('node:events'),
+            lines            = [],
+            clock            = [1000, 1042, 3000, 3005],
+            listener         = TransportService.statusLogger({logger: {warn: line => lines.push(line)}, resourceName: 'MC', now: () => clock.shift()}),
+            respond          = (statusCode, req) => {
+                const res = Object.assign(new EventEmitter(), {statusCode});
+
+                listener(req, res);
+                res.emit('finish')
+            };
+
+        respond(404, {method: 'POST', url: '/mcp?token=secret', headers: {'mcp-session-id': 'abc', authorization: 'Bearer secret'}});
+        respond(500, {method: 'POST', url: '/mcp', headers: {}});
+        expect(lines).toEqual(['[MC] POST /mcp → 404 (session present, 42 ms)', '[MC] POST /mcp → 500 (session absent, 5 ms)']);
+
+        clock.push(2000);
+        respond(202, {method: 'POST', url: '/mcp', headers: {}});
+        expect(lines).toHaveLength(2)
     });
 
     test.describe('authentication ownership boundary', () => {
@@ -1086,7 +1109,7 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             })
         }
 
-        async function setupLocal({token=generateLocalBearerToken(), aiConfig={}, server} = {}) {
+        async function setupLocal({token=generateLocalBearerToken(), aiConfig={}, server, logger={info: () => {}, warn: () => {}, error: () => {}}} = {}) {
             const mcpServer = new McpServer({name: 'local-bearer-test', version: '1.0.0'});
 
             await TransportService.setup({
@@ -1095,7 +1118,7 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
                     onSessionClosed: () => {}
                 },
                 aiConfig    : localConfig(token, aiConfig),
-                logger      : {info: () => {}, warn: () => {}, error: () => {}},
+                logger,
                 resourceName: 'LocalBearerTest'
             });
 
@@ -1237,6 +1260,23 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             });
             expect(invalidHost.status).toBe(403);
             expect(invalidHost.body).toContain('Invalid Host');
+        });
+
+        test('logs each error response at the server, including what the SDK host check answers ahead of the routes', async () => {
+            const
+                lines         = [],
+                {port, token} = await setupLocal({
+                    server: {mcpServer: {connect: async () => {}}},
+                    logger: {info: () => {}, warn: line => lines.push(line), error: () => {}}
+                });
+
+            expect((await httpRequest({port, method: 'GET'})).status).toBe(401);
+            expect((await httpRequest({port, method: 'GET', headers: {Authorization: `Bearer ${token}`, Host: 'attacker.example'}})).status).toBe(403);
+
+            await expect.poll(() => lines.length).toBe(2);
+            expect(lines[0]).toMatch(/^\[LocalBearerTest\] GET \/mcp → 401 \(session absent, \d+ ms\)$/);
+            expect(lines[1]).toMatch(/^\[LocalBearerTest\] GET \/mcp → 403 \(session absent, \d+ ms\)$/);
+            expect(lines.join('\n')).not.toContain(token)
         });
 
         test('is unreachable through a discovered non-loopback IPv4 interface', async () => {
