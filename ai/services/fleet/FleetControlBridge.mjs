@@ -3,6 +3,7 @@ import FleetManager             from './FleetManager.mjs';
 import FleetRegistryService     from './FleetRegistryService.mjs';
 import FleetTenantService       from './FleetTenantService.mjs';
 import {resolveIdentityDisplay} from './resolveIdentityDisplay.mjs';
+import {seatHoldsMemory}        from './seatMemoryImport.mjs';
 
 import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from './deriveHarnessLaunchSpec.mjs';
 import {launchRefusalOf}                              from '../../../src/fleet/contract/launchAuthority.mjs';
@@ -529,10 +530,10 @@ class FleetControlBridge extends Base {
      * @summary Configure an existing agent through one serializable curated intent. Validation
      * failures become an explicit domain outcome the Accounts card may render; unexpected service
      * failures still throw and are sanitized by dispatchFleetRequest.
-     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?, model?, reasoningEffort?}`
-     * @returns {{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}}
+     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?, model?, reasoningEffort?, memoryImport?}`
+     * @returns {Promise<{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}>}
      */
-    configureAgent(intent) {
+    async configureAgent(intent) {
         try {
             const
                 registry = this.getRegistry(),
@@ -550,6 +551,10 @@ class FleetControlBridge extends Base {
                     this.rejectUnavailableMcpTarget(target);
 
             if (rejected) return rejected;
+
+            const late = await this.rejectLateMemoryImport(intent);
+
+            if (late) return late;
 
             const agent = registry.configureAgent(intent);
 
@@ -586,6 +591,27 @@ class FleetControlBridge extends Base {
         return {
             status: 'rejected',
             reason: `MCP tenant '${target.tenantId}' is unavailable.`
+        }
+    }
+
+    /**
+     * @summary Reject a memory consent for a seat that already holds its memory. The consent is chosen
+     * before the first Start, at definition or here; from then on the memory is the seat's own, and an
+     * import would copy over what it has written. An unknown id passes on, for the registry to answer.
+     * @param {Object} intent
+     * @returns {Promise<Object|null>} Controlled rejection or `null`.
+     * @protected
+     */
+    async rejectLateMemoryImport(intent) {
+        const agent = intent && Object.hasOwn(intent, 'memoryImport') ? this.getRegistry().getAgent(intent.id) : null;
+
+        if (!agent || !await seatHoldsMemory({agent, instanceRoot: this.getManager().getLifecycleService().getInstanceRoot()})) {
+            return null
+        }
+
+        return {
+            status: 'rejected',
+            reason: `A seat's memory import is chosen before its first Start, and '${agent.id}' already holds its memory.`
         }
     }
 

@@ -7,7 +7,8 @@ import {
     importSeatMemory,
     memoryDestination,
     MEMORY_IMPORT_RECEIPT,
-    normalizeMemoryImport
+    normalizeMemoryImport,
+    seatHoldsMemory
 } from '../../../../../../ai/services/fleet/seatMemoryImport.mjs';
 
 /**
@@ -115,6 +116,27 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
         expect(await importFor(seat())).toEqual({state: 'none'});
         expect(await importFor(seat('none'))).toEqual({state: 'none'});
         expect(fs.readdirSync(agents)).toEqual([])
+    });
+
+    test('a seat holds its memory once a receipt or any file exists at its destination; a never-started seat holds none', async () => {
+        const holds = agent => seatHoldsMemory({agent, instanceRoot: agents});
+
+        expect(await holds(seat()), 'never started').toBe(false);
+        expect(await holds(seat(null, 'codex')), 'a Codex seat, never started').toBe(false);
+        expect(await holds(seat(null, 'opencode')), 'a family that keeps no markdown memory').toBe(false);
+
+        write(memoryDestination({instanceRoot: agents, agentId: 'neo-vega', harnessType: 'claude-desktop'}), {'MEMORY.md': 'the seat wrote this'});
+
+        expect(await holds({id: 'neo-vega', harnessType: 'claude-desktop'}), 'memory the seat wrote itself, with no import').toBe(true);
+
+        write(claudeSource(), {'MEMORY.md': 'index'});
+        await importFor(seat(claudeSource()));
+
+        expect(await holds(seat()), 'a late consent converges like one born with the seat, and then it holds its memory').toBe(true);
+
+        fs.rmSync(path.join(agents, 'neo-fable', 'memory'), {recursive: true});
+
+        expect(await holds(seat()), 'the receipt alone: imported once, the folder emptied since').toBe(true)
     });
 
     test('a consented import copies identical files owner-only, receipts the copy, and leaves the source', async () => {

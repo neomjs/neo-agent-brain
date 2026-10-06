@@ -174,39 +174,39 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         ])
     });
 
-    test('configureAgent forwards one curated payload and returns accepted/rejected domain outcomes', () => {
+    test('configureAgent forwards one curated payload and returns accepted/rejected domain outcomes', async () => {
         const intent = {id: 'alice', harnessType: 'claude-code', mcpServers: {'memory-core': false}};
 
-        expect(FleetControlBridge.configureAgent(intent)).toEqual({
+        expect(await FleetControlBridge.configureAgent(intent)).toEqual({
             status: 'accepted',
             agent : {id: 'alice', harnessType: 'claude-code'}
         });
         expect(calls).toEqual([['configureAgent', intent]]);
 
         calls.length = 0;
-        expect(FleetControlBridge.configureAgent({id: 'ghost', harnessType: 'codex'}))
+        expect(await FleetControlBridge.configureAgent({id: 'ghost', harnessType: 'codex'}))
             .toEqual({status: 'rejected', reason: "Unknown agent 'ghost'."})
     });
 
-    test('configureAgent exposes only controlled validation reasons; unexpected failures still throw', () => {
+    test('configureAgent exposes only controlled validation reasons; unexpected failures still throw', async () => {
         registryStub.configureAgent = () => {
             throw new TypeError("FleetRegistryService.configureAgent: unsupported field 'credential'.")
         };
-        expect(FleetControlBridge.configureAgent({id: 'alice', credential: 'secret'}))
+        expect(await FleetControlBridge.configureAgent({id: 'alice', credential: 'secret'}))
             .toEqual({status: 'rejected', reason: "unsupported field 'credential'."});
 
         registryStub.configureAgent = () => { throw new Error('/secret/storage/path failed') };
-        expect(() => FleetControlBridge.configureAgent({id: 'alice', harnessType: 'codex'}))
-            .toThrow('/secret/storage/path failed')
+        await expect(FleetControlBridge.configureAgent({id: 'alice', harnessType: 'codex'}))
+            .rejects.toThrow('/secret/storage/path failed')
     });
 
-    test('configureAgent admits only a connected NEW tenant target and never persists an unavailable one', () => {
+    test('configureAgent admits only a connected NEW tenant target and never persists an unavailable one', async () => {
         const available = {
             id       : 'alice',
             mcpTarget: {kind: 'tenant', tenantId: 'connected'}
         };
 
-        expect(FleetControlBridge.configureAgent(available)).toEqual({
+        expect(await FleetControlBridge.configureAgent(available)).toEqual({
             status: 'accepted',
             agent : {id: 'alice', harnessType: undefined}
         });
@@ -223,7 +223,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             mcpTarget: {kind: 'tenant', tenantId: 'missing'}
         };
 
-        expect(FleetControlBridge.configureAgent(unavailable)).toEqual({
+        expect(await FleetControlBridge.configureAgent(unavailable)).toEqual({
             status: 'rejected',
             reason: "MCP tenant 'missing' is unavailable."
         });
@@ -233,7 +233,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         ])
     });
 
-    test('configureAgent preserves an unchanged saved remote target for the start-time readiness gate', () => {
+    test('configureAgent preserves an unchanged saved remote target for the start-time readiness gate', async () => {
         registryStub.getAgent = id => {
             calls.push(['getAgent', id]);
 
@@ -245,11 +245,41 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             mcpTarget: {kind: 'tenant', tenantId: 'stale-saved'}
         };
 
-        expect(FleetControlBridge.configureAgent(intent).status).toBe('accepted');
+        expect((await FleetControlBridge.configureAgent(intent)).status).toBe('accepted');
         expect(calls).toEqual([
             ['getAgent', 'alice'],
             ['configureAgent', intent]
         ])
+    });
+
+    test('configureAgent takes a memory consent only while the seat holds no memory yet', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-memory-'));
+
+        try {
+            managerStub.getLifecycleService = () => ({getInstanceRoot: () => root});
+            registryStub.getAgent           = id => { calls.push(['getAgent', id]); return id === 'alice' ? {id, harnessType: 'claude-desktop'} : null };
+
+            const consent = {id: 'alice', memoryImport: 'none'};
+
+            expect((await FleetControlBridge.configureAgent(consent)).status, 'a seat that never started').toBe('accepted');
+            expect(calls).toEqual([['getAgent', 'alice'], ['configureAgent', consent]]);
+
+            calls.length = 0;
+            fs.mkdirSync(path.join(root, 'alice', 'memory'), {recursive: true});
+            fs.writeFileSync(path.join(root, 'alice', 'memory', 'MEMORY.md'), 'the seat wrote this');
+
+            expect(await FleetControlBridge.configureAgent(consent)).toEqual({
+                status: 'rejected',
+                reason: "A seat's memory import is chosen before its first Start, and 'alice' already holds its memory."
+            });
+            expect(calls, 'nothing is written').toEqual([['getAgent', 'alice']]);
+
+            calls.length = 0;
+            expect(await FleetControlBridge.configureAgent({id: 'ghost', memoryImport: 'none'}), 'an unknown seat is the registry\'s answer')
+                .toEqual({status: 'rejected', reason: "Unknown agent 'ghost'."})
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
     });
 
     test('listAgents delegates to the registry roster', () => {
@@ -774,7 +804,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         const rows = (await FleetControlBridge.fleetRoster()).rows;
 
         expect(rows[0]).toMatchObject({
-            id: 'gpt', participationStatus: 'operator_benched', participationReason: 'the flatrate ended',
+            id                : 'gpt', participationStatus: 'operator_benched', participationReason: 'the flatrate ended',
             participationSince: '2026-10-01T00:00:00.000Z', participationRead: {state: 'read'},
             // the start verb's own words for the bench
             launchRefusal: 'benched by the operator on 2026-10-01: the flatrate ended'

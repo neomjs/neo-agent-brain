@@ -1,9 +1,9 @@
-import fs                                             from 'fs/promises';
-import os                                             from 'os';
-import path                                           from 'path';
+import fs                                              from 'fs/promises';
+import os                                              from 'os';
+import path                                            from 'path';
 import {deriveAgentInstanceHome, deriveAgentMemoryDir} from './deriveAgentInstanceHome.mjs';
-import {deriveCodexHome}                              from './deriveHarnessLaunchSpec.mjs';
-import {writeFileAtomic}                              from '../shared/atomicFileWrite.mjs';
+import {deriveCodexHome}                               from './deriveHarnessLaunchSpec.mjs';
+import {writeFileAtomic}                               from '../shared/atomicFileWrite.mjs';
 
 /**
  * @module ai/services/fleet/seatMemoryImport
@@ -243,6 +243,28 @@ export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem
     }
 
     return candidates.sort((a, b) => b.notes - a.notes)
+}
+
+/**
+ * @summary Whether a seat already holds its memory: an import receipt in its harness home, or any file in
+ * its family's destination. A consent can still be given or withdrawn only while this reads `false`; from
+ * then on the memory is the seat's own, and an import would copy over what it has written.
+ * @param {Object} options
+ * @param {Object} options.agent        The registry row (`id`, `harnessType`).
+ * @param {String} options.instanceRoot The absolute agents root.
+ * @param {Object} [options.fileSystem=fs]
+ * @returns {Promise<Boolean>}
+ */
+export async function seatHoldsMemory({agent, instanceRoot, fileSystem = fs}) {
+    const
+        instanceHome = deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}),
+        destination  = memoryDestination({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}),
+        receipted    = await fileSystem.access(path.join(instanceHome, MEMORY_IMPORT_RECEIPT)).then(() => true, error => {
+            if (error.code === 'ENOENT') return false;
+            throw error
+        });
+
+    return receipted || !!(destination && (await regularFiles(destination, fileSystem))?.length)
 }
 
 /**
