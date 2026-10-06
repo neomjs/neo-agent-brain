@@ -1399,14 +1399,20 @@ async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntim
         previousFiles = previous && rehomeFiles(generateKimiSeatConfig({...optionsAt(previous), environment, remoteServers}).files, previous, {targetRepoRoot, instanceHome});
 
     return convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, fileSystem, policies: [
-        {match: /config\.toml$/,                   ownedProjection: kimiConfigTomlOwnedProjection, ownedLabel: 'default_permission_mode,default_model,[[permission.rules]],[[hooks]]'},
         {
-            match          : /\.kimi-code\/mcp\.json$/,
-            ownedProjection: claudeJsonOwnedProjection,
-            ownedLabel     : 'mcpServers."neo-mjs-*"',
-            transport      : {adapter: 'kimi-code', containerName: 'mcpServers'}
+            match           : /config\.toml$/,
+            ownedProjection : kimiConfigTomlOwnedProjection,
+            relocatableLines: kimiConfigTomlOwnedLines,
+            ownedLabel      : 'default_permission_mode,default_model,[[permission.rules]],[[hooks]]'
         },
-        {match: /hooks\/identityAnchorHook\.mjs$/, ownedProjection: wholeFileOwnedProjection,      ownedLabel: 'generated identity-anchor hook'}
+        {
+            match           : /\.kimi-code\/mcp\.json$/,
+            ownedProjection : claudeJsonOwnedProjection,
+            relocatableLines: source => linesStartingWithin(source, jsonPropertyRanges(source, ['mcpServers'], key => key.startsWith(NEO_MCP_NAME_PREFIX))),
+            ownedLabel      : 'mcpServers."neo-mjs-*"',
+            transport       : {adapter: 'kimi-code', containerName: 'mcpServers'}
+        },
+        {match: /hooks\/identityAnchorHook\.mjs$/, ownedProjection: wholeFileOwnedProjection, relocatableLines: everyLine, ownedLabel: 'generated identity-anchor hook'}
         // Everything else (the four memory-layer files) is create-only bearer substrate.
     ]});
 }
@@ -1467,12 +1473,13 @@ async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRu
             files   : rest, legacyFiles: legacyRest, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, fileSystem,
             policies: [
                 {
-                    match          : /opencode\.jsonc$/,
-                    ownedProjection: opencodeJsoncOwnedProjection,
-                    ownedLabel     : 'mcp."neo-mjs-*",instructions',
-                    transport      : {adapter: 'opencode', containerName: 'mcp'}
+                    match           : /opencode\.jsonc$/,
+                    ownedProjection : opencodeJsoncOwnedProjection,
+                    relocatableLines: opencodeJsoncRelocatableLines,
+                    ownedLabel      : 'mcp."neo-mjs-*",instructions',
+                    transport       : {adapter: 'opencode', containerName: 'mcp'}
                 },
-                {match: /write-wake-envelope\.mjs$/, ownedProjection: wholeFileOwnedProjection, ownedLabel: 'generated wake-envelope boot hook'}
+                {match: /write-wake-envelope\.mjs$/, ownedProjection: wholeFileOwnedProjection, relocatableLines: everyLine, ownedLabel: 'generated wake-envelope boot hook'}
             ]
         }),
         ...await convergeWakeEnvelopePlant({plantFile, instanceHome, fileSystem})
@@ -1567,7 +1574,7 @@ async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, 
             trustedRoot    : file.path.startsWith(repoPath + path.sep) ? repoPath : instanceHome,
             fileSystem
         };
-        const moved     = previousFile && await relocateGeneratedText({...common, previousContent: previousFile.content});
+        const moved     = previousFile && await relocateGeneratedText({...common, previousContent: previousFile.content, relocatableLines: policy.relocatableLines});
         const converged = policy?.transport
             ? await convergeTransportArtifact({
                 ...common,
@@ -1599,19 +1606,23 @@ async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, 
 /**
  * @summary Moves one generated file with its relocated seat. When the file's Fleet-owned projection is
  * still exactly the generator's rendering at the previous home, each generated line that changed between
- * the two renderings is replaced by its new line. Every other byte stays as it was. Nothing is written
- * unless the result projects to the current rendering; then convergence decides, as on any Start.
+ * the two renderings is replaced by its new line, but only inside the ranges the policy owns
+ * (`relocatableLines`). The same line anywhere else, in an entry the operator added for instance, stays
+ * as it was. Nothing is written unless the result projects to the current rendering; then convergence
+ * decides, as on any Start.
  * @param {Object}   options
- * @param {String}   options.filePath        The file at the seat's current home.
- * @param {String}   options.previousContent The generator's rendering at the previous home.
- * @param {String}   options.desiredContent  Its rendering here.
- * @param {Function} options.ownedProjection The file's Fleet-owned projection.
- * @param {String}   options.trustedRoot     The root no path segment may leave by a symlink.
- * @param {Object}   options.fileSystem      Promise filesystem seam.
+ * @param {String}   options.filePath         The file at the seat's current home.
+ * @param {String}   options.previousContent  The generator's rendering at the previous home.
+ * @param {String}   options.desiredContent   Its rendering here.
+ * @param {Function} options.ownedProjection  The file's Fleet-owned projection.
+ * @param {Function} options.relocatableLines `(source, {previousContent, desiredContent}) => Set<Number>`, the
+ *     indexes of the lines the Fleet owns in `source`.
+ * @param {String}   options.trustedRoot      The root no path segment may leave by a symlink.
+ * @param {Object}   options.fileSystem       Promise filesystem seam.
  * @returns {Promise<Boolean>} Whether the file was rewritten.
  * @private
  */
-async function relocateGeneratedText({filePath, previousContent, desiredContent, ownedProjection, trustedRoot, fileSystem}) {
+async function relocateGeneratedText({filePath, previousContent, desiredContent, ownedProjection, relocatableLines, trustedRoot, fileSystem}) {
     await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: 'relocated seat file'});
 
     const
@@ -1638,7 +1649,9 @@ async function relocateGeneratedText({filePath, previousContent, desiredContent,
         moves.set(line, after[index])
     }
 
-    const relocated = existing.split('\n').map(line => moves.get(line) ?? line).join('\n');
+    const
+        owned     = relocatableLines(existing, {previousContent, desiredContent}),
+        relocated = existing.split('\n').map((line, index) => owned.has(index) ? moves.get(line) ?? line : line).join('\n');
 
     if (!projectsTo(relocated, desiredContent)) return false;
 
@@ -1775,6 +1788,87 @@ function opencodeJsoncOwnedProjection(source) {
     }
 
     return canonicalize(result);
+}
+
+/**
+ * @summary The lines of a generated `opencode.jsonc` a relocation may move: the `neo-mjs-*` MCP entries, the
+ * `instructions`, and the `external_directory` grants the Fleet wrote for the seat's own folders (the keys
+ * its rendering at the previous home has and its current rendering no longer does). An entry the operator
+ * added stays theirs, however much it resembles a Fleet one.
+ * @param {String} source
+ * @param {Object} renderings `{previousContent, desiredContent}`.
+ * @returns {Set<Number>}
+ * @private
+ */
+function opencodeJsoncRelocatableLines(source, {previousContent, desiredContent}) {
+    const grants = content => {
+        try {
+            return Object.keys(parseJsonLike(content)?.permission?.external_directory ?? {})
+        } catch {
+            return []
+        }
+    };
+    const kept = new Set(grants(desiredContent)), moved = new Set(grants(previousContent).filter(key => !kept.has(key)));
+
+    return linesStartingWithin(source, [
+        ...jsonPropertyRanges(source, ['mcp'], key => key.startsWith(NEO_MCP_NAME_PREFIX)),
+        ...jsonPropertyRanges(source, [], key => key === 'instructions'),
+        ...jsonPropertyRanges(source, ['permission', 'external_directory'], key => moved.has(key))
+    ])
+}
+
+/**
+ * @summary The lines of a generated Kimi `config.toml` the Fleet owns: its two scalars and every
+ * array-of-tables block, as {@link kimiConfigTomlOwnedProjection} reads them.
+ * @param {String} source
+ * @returns {Set<Number>}
+ * @private
+ */
+function kimiConfigTomlOwnedLines(source) {
+    const owned = new Set();
+    let   block = false;
+
+    source.split('\n').forEach((line, index) => {
+        const trimmed = line.trim();
+
+        if (/^\[\[[^\]]+\]\]$/.test(trimmed)) block = true;
+        else if (/^\[[^\]]+\]$/.test(trimmed)) block = false;
+
+        if (block || /^(default_permission_mode|default_model)\s*=/.test(trimmed)) owned.add(index)
+    });
+
+    return owned
+}
+
+/**
+ * @summary The lines whose first non-blank character lies inside one of the ranges.
+ * @param {String}     source
+ * @param {Number[][]} ranges `[start, end]` offsets.
+ * @returns {Set<Number>}
+ * @private
+ */
+function linesStartingWithin(source, ranges) {
+    const owned  = new Set();
+    let   offset = 0;
+
+    source.split('\n').forEach((line, index) => {
+        const first = offset + line.length - line.trimStart().length;
+
+        ranges.some(([start, end]) => first >= start && first < end) && owned.add(index);
+        offset += line.length + 1
+    });
+
+    return owned
+}
+
+/**
+ * @summary Every line of a file the Fleet owns whole.
+ * @param {String} source
+ * @returns {Set<Number>}
+ * @private
+ */
+function everyLine(source) {
+    return new Set(source.split('\n').keys())
 }
 
 /**
@@ -2052,6 +2146,11 @@ async function convergeCodexRemoteTrust({filePath, repoPath, previousRepoPaths =
                 return true
             }
             if (block !== expectedBlock && previousRepoPaths.some(previousPath => previousPath && block === renderCodexRemoteTrustBlock(previousPath))) {
+                // the operator's own decision about the new checkout stands: a distrust is never overwritten
+                if (existingTrust !== undefined && existingTrust !== 'trusted') {
+                    throw transportDivergence(filePath, 'projects.<managed-repo>.trust_level', 'resident trust row is not trusted')
+                }
+
                 const replacement = existingTrust === 'trusted' ? '' : expectedBlock;
 
                 await publishTextAtomically({filePath, content: source.slice(0, begin) + replacement + source.slice(end), fileSystem});
@@ -2727,7 +2826,20 @@ function findJsonObjectRange(source) {
 
 /** @private */
 function findDirectJsonProperty(source, objectRange, propertyName) {
-    if (!objectRange || source[objectRange.start] !== '{') return null;
+    const property = directJsonProperties(source, objectRange).find(entry => entry.key === propertyName);
+
+    return property ? {valueStart: property.valueStart, valueEnd: property.valueEnd} : null
+}
+
+/**
+ * @summary The direct properties of one object in a JSON(C) source, in order, up to the first one that
+ * does not parse: `{key, keyStart, valueStart, valueEnd}` each.
+ * @private
+ */
+function directJsonProperties(source, objectRange) {
+    const properties = [];
+
+    if (!objectRange || source[objectRange.start] !== '{') return properties;
 
     let cursor = objectRange.start + 1;
 
@@ -2737,26 +2849,46 @@ function findDirectJsonProperty(source, objectRange, propertyName) {
             cursor++;
             continue
         }
-        if (source[cursor] === '}') return null;
-        if (source[cursor] !== '"') return null;
+        if (source[cursor] !== '"') break;
 
-        const keyEnd = scanJsonStringEnd(source, cursor);
-        const key    = JSON.parse(source.slice(cursor, keyEnd));
+        const keyStart = cursor;
+        const keyEnd   = scanJsonStringEnd(source, cursor);
+        const key      = JSON.parse(source.slice(keyStart, keyEnd));
 
         cursor = skipJsonTrivia(source, keyEnd);
-        if (source[cursor] !== ':') return null;
+        if (source[cursor] !== ':') break;
 
         const valueStart = skipJsonTrivia(source, cursor + 1);
         const valueEnd   = scanJsonValueEnd(source, valueStart);
 
-        if (key === propertyName) {
-            return {valueStart, valueEnd}
-        }
-
+        properties.push({key, keyStart, valueStart, valueEnd});
         cursor = valueEnd
     }
 
-    return null
+    return properties
+}
+
+/**
+ * @summary The source ranges, key through value, of the direct properties a predicate selects in the object
+ * at `objectPath` (an empty path is the root object).
+ * @param {String}   source
+ * @param {String[]} objectPath
+ * @param {Function} selects `(key) => Boolean`.
+ * @returns {Number[][]} `[start, end]` per selected property.
+ * @private
+ */
+function jsonPropertyRanges(source, objectPath, selects) {
+    let range = findJsonObjectRange(source);
+
+    for (const name of objectPath) {
+        const property = findDirectJsonProperty(source, range, name);
+
+        if (!property || source[property.valueStart] !== '{') return [];
+
+        range = {start: property.valueStart, end: property.valueEnd}
+    }
+
+    return directJsonProperties(source, range).filter(entry => selects(entry.key)).map(entry => [entry.keyStart, entry.valueEnd])
 }
 
 /** @private */

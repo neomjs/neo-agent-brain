@@ -2,6 +2,7 @@ import {test, expect}                 from '@playwright/test';
 import fs                             from 'node:fs/promises';
 import os                             from 'node:os';
 import path                           from 'node:path';
+import {parse as parseToml}           from 'smol-toml';
 import {prepareManagedAgentWorkspace} from '../../../../../../ai/services/fleet/prepareManagedAgentWorkspace.mjs';
 import {LAUNCHABLE_HARNESS_TYPES}     from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 
@@ -150,6 +151,53 @@ for (const harnessType of PREPARED_HARNESS_TYPES) {
         })
     }
 }
+
+for (const [harnessType, file, container] of [['opencode', 'neomjs/neo/opencode.jsonc', 'mcp'], ['kimi-code', 'neomjs/neo/.kimi-code/mcp.json', 'mcpServers']]) {
+    test(`an operator's own ${harnessType} MCP entry stays as written, even when it copies a Fleet entry line for line`, async () => {
+        const
+            rootB          = path.join(root, 'B'),
+            {agent, rootA} = await preparedAndCopied({harnessType, remote: false, copies: [rootB]}),
+            filePath       = path.join(rootB, agent.id, file),
+            source         = await fs.readFile(filePath, 'utf8'),
+            fleetEntry     = source.match(new RegExp(`\\n( +)"neo-mjs-neural-link": \\{[\\s\\S]*?\\n\\1\\}`))[0],
+            operatorEntry  = fleetEntry.replace('"neo-mjs-neural-link"', '"operator-custom"');
+
+        // the operator's entry sits first in the container, a byte copy of the Fleet's under another name
+        await fs.writeFile(filePath, source.replace(`"${container}": {`, `"${container}": {${operatorEntry},`));
+
+        await prepare({agent, agentsRoot: rootB, remote: false, previousInstanceRoot: rootA});
+
+        const relocated = await fs.readFile(filePath, 'utf8');
+
+        expect(relocated, 'the operator entry is byte-identical').toContain(operatorEntry);
+        expect(relocated.match(new RegExp(`\\n( +)"neo-mjs-neural-link": \\{[\\s\\S]*?\\n\\1\\}`))[0], 'the Fleet entry moved').not.toContain(rootA)
+    })
+}
+
+test('a destination checkout the operator distrusts in Codex refuses the moved trust block, and the file stays as it was', async () => {
+    const
+        rootB          = path.join(root, 'B'),
+        {agent, rootA} = await preparedAndCopied({harnessType: 'codex-desktop', remote: true, copies: [rootB]}),
+        homeConfig     = path.join(rootB, agent.id, 'harness', 'codex-desktop', 'codex-home', 'config.toml'),
+        distrust       = `${await fs.readFile(homeConfig, 'utf8')}\n[projects.${JSON.stringify(path.join(rootB, agent.id, 'neomjs', 'neo'))}]\ntrust_level = "untrusted"\n`;
+
+    await fs.writeFile(homeConfig, distrust);
+
+    expect(await outcomeOf(prepare({agent, agentsRoot: rootB, remote: true, previousInstanceRoot: rootA}))).toBe('FLEET_WORKSPACE_DIVERGENT');
+    expect(await fs.readFile(homeConfig, 'utf8')).toBe(distrust)
+});
+
+test('a moved Codex trust block leaves one valid table for the new checkout', async () => {
+    const
+        rootB          = path.join(root, 'B'),
+        {agent, rootA} = await preparedAndCopied({harnessType: 'codex', remote: true, copies: [rootB]});
+
+    await prepare({agent, agentsRoot: rootB, remote: true, previousInstanceRoot: rootA});
+
+    const projects = parseToml(await fs.readFile(path.join(rootB, agent.id, 'harness', 'codex', 'config.toml'), 'utf8')).projects;
+
+    expect(projects).toEqual({[path.join(rootB, agent.id, 'neomjs', 'neo')]: {trust_level: 'trusted'}})
+});
 
 test('antigravity prepares no workspace, so a relocation has nothing to converge', async () => {
     const agent = {id: 'seat-a', githubUsername: 'shared-login', harnessType: 'antigravity', mcpServers: null};

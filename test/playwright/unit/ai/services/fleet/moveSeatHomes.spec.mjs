@@ -137,20 +137,31 @@ test('a seat folder the Fleet did not provision stops the move; renamed aside, i
     expect(rowOf(await moveSeatHomes({registry: FleetRegistryService, from, to}), 'alice')).toMatchObject({state: 'rebound', materialized: false})
 });
 
-test('a seat whose lease names a live process stops the move; a dead lease does not', async () => {
+test('a seat whose lease names a live process, or a lease that cannot be read, stops the move; a dead lease does not', async () => {
     const
         aliceHome = await seat('alice'),
         leasePath = path.join(aliceHome, 'harness', 'codex', SEAT_LEASE_FILE),
-        lease     = pid => fs.writeFile(leasePath, JSON.stringify({version: 1, agentId: 'alice', pid}));
+        lease     = pid => fs.writeFile(leasePath, JSON.stringify({version: 1, agentId: 'alice', pid})),
+        reasonOf  = async () => (await moveSeatHomes({registry: FleetRegistryService, from, to})).reason;
 
     await lease(process.pid);
 
-    expect(await moveSeatHomes({registry: FleetRegistryService, from, to})).toMatchObject({
-        state : 'refused',
-        reason: `seat 'alice' may still be running (its lease names live pid ${process.pid}); quit it, then move again`
-    });
+    expect(await reasonOf()).toBe(`seat 'alice' may still be running: its lease names live pid ${process.pid}. Quit it, or remove a lease you know is stale, then move again`);
     expect(await fs.stat(to).catch(error => error.code)).toBe('ENOENT');
 
+    // evidence that cannot be read is no evidence that the seat stopped
+    await fs.writeFile(leasePath, '{"version": 1, "pid": ');
+    expect(await reasonOf()).toMatch(/may still be running: its lease is not valid JSON\./);
+
+    await fs.writeFile(leasePath, JSON.stringify({version: 1}));
+    expect(await reasonOf()).toMatch(/may still be running: its lease names no process\./);
+
+    await fs.rm(leasePath);
+    await fs.mkdir(leasePath);
+    expect(await reasonOf()).toMatch(/may still be running: its lease cannot be read \(EISDIR\)\./);
+    expect(FleetRegistryService.getAgent('alice').seatHome, 'nothing was rebound').toBe(aliceHome);
+
+    await fs.rmdir(leasePath);
     await lease(2147483646);
 
     expect((await moveSeatHomes({registry: FleetRegistryService, from, to})).state).toBe('moved')
@@ -161,25 +172,75 @@ test('run again after an interruption at any step, the move completes', async ()
     await seat('bob');
     await seat('carol');
 
-    // alice: copied and published, binding not yet moved; bob: a partial staging copy; carol: already moved
+    // alice: copied and published, binding not yet moved; bob: this move's partial staging copy; carol: already moved
     await fs.mkdir(to, {recursive: true});
     await fs.cp(path.join(from, 'alice'), path.join(to, 'alice'), {recursive: true, verbatimSymlinks: true});
     await fs.mkdir(path.join(to, '.moving-bob', 'harness'), {recursive: true});
     await fs.writeFile(path.join(to, '.moving-bob', '.env'), 'NEO_AGENT');
+    await fs.writeFile(path.join(to, '.moving-bob.owner'), 'move-1');
     await fs.cp(path.join(from, 'carol'), path.join(to, 'carol'), {recursive: true, verbatimSymlinks: true});
     FleetRegistryService.relocateSeatHome('carol', {from: path.join(from, 'carol'), to: path.join(to, 'carol')});
 
-    const plan = await moveSeatHomes({registry: FleetRegistryService, from, to, dryRun: true});
+    const plan = await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1', dryRun: true});
 
     expect(plan.state).toBe('planned');
     expect(plan.rows.map(row => [row.id, row.state])).toEqual([['alice', 'relocate'], ['bob', 'copy'], ['carol', 'done']]);
     expect(FleetRegistryService.getAgent('alice').seatHome, 'a dry run changes nothing').toBe(path.join(from, 'alice'));
 
-    const result = await moveSeatHomes({registry: FleetRegistryService, from, to});
+    const result = await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1'});
 
     expect(result.rows.map(row => [row.id, row.state])).toEqual([['alice', 'moved'], ['bob', 'moved'], ['carol', 'done']]);
     expect(await fs.readFile(path.join(to, 'bob', '.env'), 'utf8'), 'the partial copy was discarded and copied again').toBe('NEO_AGENT_IDENTITY=bob\n');
-    expect((await fs.readdir(to)).sort()).toEqual(['alice', 'bob', 'carol'])
+    expect((await fs.readdir(to)).sort(), 'no stage and no marker remain').toEqual(['alice', 'bob', 'carol'])
+});
+
+test('a staging folder this move did not leave stops the move, and stays as it was', async () => {
+    await seat('alice');
+    await fs.mkdir(path.join(to, '.moving-alice'), {recursive: true});
+    await fs.writeFile(path.join(to, '.moving-alice', 'operator-note.txt'), 'mine');
+
+    const refusal = `'${path.join(to, '.moving-alice')}' holds something this move did not leave; remove it, then move again`;
+
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to})).reason, 'no move id claims it').toBe(refusal);
+
+    await fs.writeFile(path.join(to, '.moving-alice.owner'), 'another-move');
+
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1'})).reason, 'another move\'s mark').toBe(refusal);
+    expect(await fs.readFile(path.join(to, '.moving-alice', 'operator-note.txt'), 'utf8')).toBe('mine')
+});
+
+test('roots that resolve to the same folder, or one inside the other, refuse before anything is written', async () => {
+    await seat('alice');
+    await fs.mkdir(path.dirname(to), {recursive: true});
+    await fs.symlink(from, to);
+
+    expect(await moveSeatHomes({registry: FleetRegistryService, from, to})).toEqual({
+        state : 'refused',
+        reason: `'${to}' and '${from}' resolve to overlapping folders, so a copy would not be independent`,
+        rows  : []
+    });
+
+    const nested = path.join(from, 'nested-root');
+
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to: nested})).state).toBe('refused');
+    expect(await fs.readdir(from), 'nothing was staged under the source').toEqual(['alice']);
+    expect(FleetRegistryService.getAgent('alice').seatHome).toBe(path.join(from, 'alice'))
+});
+
+test('a published copy whose seat folder differs in its own permissions is no verified copy; a fresh copy keeps them', async () => {
+    const aliceHome = await seat('alice');
+
+    await fs.chmod(aliceHome, 0o700);
+    await fs.mkdir(to, {recursive: true});
+    await fs.cp(aliceHome, path.join(to, 'alice'), {recursive: true, verbatimSymlinks: true});
+    await fs.chmod(path.join(to, 'alice'), 0o777);
+
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to})).reason).toBe(`'${path.join(to, 'alice')}' holds something other than a verified copy of seat 'alice'`);
+
+    await fs.rm(path.join(to, 'alice'), {recursive: true});
+
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to})).state).toBe('moved');
+    expect((await fs.stat(path.join(to, 'alice'))).mode & 0o777).toBe(0o700)
 });
 
 test('sockets and pipes a harness left behind are not copied, and the row names them', async () => {

@@ -14,18 +14,27 @@ import {SEAT_LEASE_FILE}             from './FleetLifecycleService.mjs';
  * ({@link Neo.ai.services.fleet.FleetRegistryService#relocateSeatHome}). No seat file is rewritten here: the
  * first Start at the new root re-derives what Fleet rendered at the old one, from the row's `previousSeatHome`.
  *
- * A home is materialized when it holds the harness homes the Fleet provisions. Nothing changes when a source
- * folder holds none, when a destination holds anything but a verified copy of its source, or when a seat may
- * still be running: its home holds a seat lease whose process is alive. Run again after an interruption at
- * any step, the move completes. A staging folder is discarded and copied again, a published copy is verified
- * and kept, and a row already at its destination reads `done`. Sockets and pipes, which a harness leaves
- * behind and no copy can carry, are not copied; each row names the ones it skipped.
+ * A home is materialized when it holds the harness homes the Fleet provisions. Nothing changes when:
+ * - the two roots resolve to the same folder or one inside the other, so a copy would not be independent;
+ * - a source folder holds no harness home;
+ * - a destination holds anything but a verified copy of its source, or a staging folder this move did not
+ *   leave;
+ * - a seat may still be running, because its lease names a live process or cannot be read.
  *
- * The caller runs it while no seat runs: the shell's boot, before the fleet child starts.
+ * Run again after an interruption at any step, the move completes: its own staging folder (marked with
+ * `moveId`) is discarded and copied again, a published copy is verified and kept, and a row already at its
+ * destination reads `done`. Sockets and pipes, which a harness leaves behind and no copy can carry, are not
+ * copied; each row names the ones it skipped.
+ *
+ * The caller runs it while no seat runs: the shell's boot, before the fleet child starts. A `moved` result
+ * covers the rows it moved. Before committing anything installation-wide, the caller still reads the
+ * registry back and accounts for every row.
  * @param {Object}  options
  * @param {Object}  options.registry       The Fleet registry: `listAgents()` and `relocateSeatHome()`.
  * @param {String}  options.from           The agents root the seats live under now.
  * @param {String}  options.to             The agents root they move to.
+ * @param {String}  [options.moveId]       The caller's id for this move: a staging folder carrying it is this
+ *     move's own, and any other staging folder stops the move.
  * @param {Boolean} [options.dryRun=false] Report each row's plan and change nothing.
  * @returns {Promise<{state: 'moved'|'planned'|'refused', reason?: String, rows: Object[]}>} Each row is
  *     `{id, seatHome, destination, materialized, state, reason?, skipped?}`. A finished move reports `done`,
@@ -35,7 +44,7 @@ import {SEAT_LEASE_FILE}             from './FleetLifecycleService.mjs';
  * @throws {Error} For roots that are not absolute or are the same, or a copy that is not identical to its
  *     source; rows relocated before the throw stay relocated.
  */
-export async function moveSeatHomes({registry, from, to, dryRun = false}) {
+export async function moveSeatHomes({registry, from, to, moveId = null, dryRun = false}) {
     for (const [name, root] of [['from', from], ['to', to]]) {
         if (typeof root !== 'string' || !path.isAbsolute(root)) {
             throw new Error(`moveSeatHomes: '${name}' must be an absolute agents root.`)
@@ -48,9 +57,15 @@ export async function moveSeatHomes({registry, from, to, dryRun = false}) {
 
     if (source === destination) throw new Error(`moveSeatHomes: the seats already live under '${source}'.`);
 
+    const [realSource, realDestination] = await Promise.all([realLocation(source), realLocation(destination)]);
+
+    if (realSource === realDestination || realSource.startsWith(realDestination + path.sep) || realDestination.startsWith(realSource + path.sep)) {
+        return {state: 'refused', reason: `'${destination}' and '${source}' resolve to overlapping folders, so a copy would not be independent`, rows: []}
+    }
+
     const rows = [];
 
-    for (const agent of registry.listAgents()) rows.push(await planRow({agent, source, destination}));
+    for (const agent of registry.listAgents()) rows.push(await planRow({agent, source, destination, moveId}));
 
     const refusal = rows.find(row => row.refusal);
 
@@ -58,7 +73,9 @@ export async function moveSeatHomes({registry, from, to, dryRun = false}) {
         return {state: refusal ? 'refused' : 'planned', ...(refusal && {reason: refusal.refusal}), rows: rows.map(publicRow)}
     }
 
-    for (const row of rows) await applyRow({row, registry, destination});
+    const token = moveId ?? crypto.randomUUID();
+
+    for (const row of rows) await applyRow({row, registry, destination, token});
 
     return {state: 'moved', rows: rows.map(publicRow)}
 }
@@ -69,10 +86,11 @@ export async function moveSeatHomes({registry, from, to, dryRun = false}) {
  * @param {Object} options.agent       The row's public definition.
  * @param {String} options.source      The resolved root the seats leave.
  * @param {String} options.destination The resolved root they move to.
+ * @param {String|null} options.moveId  The caller's id for this move.
  * @returns {Promise<Object>} The row with its `state`, and a `refusal` when it stops the move.
  * @private
  */
-async function planRow({agent, source, destination}) {
+async function planRow({agent, source, destination, moveId}) {
     const
         seatHome = agent.seatHome ?? null,
         target   = path.join(destination, agent.id),
@@ -103,13 +121,22 @@ async function planRow({agent, source, destination}) {
 
     row.materialized = true;
 
-    const livePid = await liveLeasePid({agent, source});
+    const running = await leaseEvidence({agent, source});
 
-    if (livePid) {
-        return {...row, state: 'copy', refusal: `seat '${agent.id}' may still be running (its lease names live pid ${livePid}); quit it, then move again`}
+    if (running) {
+        return {...row, state: 'copy', refusal: `seat '${agent.id}' may still be running: ${running}. Quit it, or remove a lease you know is stale, then move again`}
     }
 
-    if (!occupant) return {...row, state: 'copy'};
+    if (!occupant) {
+        const {staging, marker} = stagingPaths(destination, agent.id), stage = await lstatOrNull(staging);
+
+        // a staging folder is this move's own only when it is a real folder carrying this move's id
+        const own = stage?.isDirectory() && moveId !== null && await fs.readFile(marker, 'utf8').then(id => id === moveId, () => false);
+
+        return stage && !own
+            ? {...row, state: 'copy', refusal: `'${staging}' holds something this move did not leave; remove it, then move again`}
+            : {...row, state: 'copy', ownStage: !!stage}
+    }
 
     return occupant.isDirectory() && await sameTree(seatHome, target)
         ? {...row, state: 'relocate'}
@@ -122,16 +149,18 @@ async function planRow({agent, source, destination}) {
  * @param {Object} options.row         A planned row ({@link planRow}).
  * @param {Object} options.registry    The Fleet registry.
  * @param {String} options.destination The resolved root the seats move to.
+ * @param {String} options.token       The id this move marks its staging folders with.
  * @returns {Promise<void>}
  * @private
  */
-async function applyRow({row, registry, destination}) {
+async function applyRow({row, registry, destination, token}) {
     if (row.state === 'copy') {
-        const staging = path.join(destination, `.moving-${row.id}`);
+        const {staging, marker} = stagingPaths(destination, row.id);
 
         await fs.mkdir(destination, {recursive: true, mode: 0o700});
-        // an interrupted run's partial copy is never published, so it is discarded
-        await fs.rm(staging, {recursive: true, force: true});
+        // this move's own interrupted copy is never published, so it is discarded
+        row.ownStage && await fs.rm(staging, {recursive: true});
+        await fs.writeFile(marker, token, {mode: 0o600});
 
         const skipped = await copyTree(row.seatHome, staging);
 
@@ -141,8 +170,12 @@ async function applyRow({row, registry, destination}) {
         }
 
         await fs.rename(staging, row.destination);
+        await fs.rm(marker, {force: true});
         skipped.length && (row.skipped = skipped)
     }
+
+    // a run interrupted after publishing its copy left the copy's marker behind
+    row.state === 'relocate' && await fs.rm(stagingPaths(destination, row.id).marker, {force: true});
 
     if (['copy', 'relocate', 'rebind'].includes(row.state)) {
         registry.relocateSeatHome(row.id, {from: row.seatHome, to: row.destination});
@@ -183,8 +216,45 @@ async function copyTree(from, to) {
 }
 
 /**
- * @summary Whether two folders hold the same tree: the same entries, each of the same kind and permission
- * bits, files with the same bytes, links with the same target. Sockets and pipes do not count.
+ * @summary Where a seat's copy is staged before it is published, and the file marking that stage as a move's own.
+ * @param {String} destination
+ * @param {String} id
+ * @returns {{staging: String, marker: String}}
+ * @private
+ */
+function stagingPaths(destination, id) {
+    const staging = path.join(destination, `.moving-${id}`);
+
+    return {staging, marker: `${staging}.owner`}
+}
+
+/**
+ * @summary The real location of a path that may not exist yet: its nearest existing ancestor resolved through
+ * links, joined with the rest.
+ * @param {String} file
+ * @returns {Promise<String>}
+ * @private
+ */
+async function realLocation(file) {
+    const rest    = [];
+    let   current = file;
+
+    for (;;) {
+        try {
+            return path.join(await fs.realpath(current), ...rest)
+        } catch (error) {
+            if (error?.code !== 'ENOENT' || path.dirname(current) === current) throw error;
+
+            rest.unshift(path.basename(current));
+            current = path.dirname(current)
+        }
+    }
+}
+
+/**
+ * @summary Whether two folders hold the same tree: the folder itself and every entry beneath it of the same
+ * kind and permission bits, files with the same bytes, links with the same target. Sockets and pipes do not
+ * count.
  * @param {String} a
  * @param {String} b
  * @returns {Promise<Boolean>}
@@ -197,14 +267,14 @@ async function sameTree(a, b) {
 }
 
 /**
- * @summary One line per entry beneath a folder, sorted: its relative path, kind, permission bits, and its
- * content's sha256 or its link target.
+ * @summary One line for the folder and one per entry beneath it, sorted: its relative path, kind, permission
+ * bits, and its content's sha256 or its link target.
  * @param {String} root
  * @returns {Promise<String[]>}
  * @private
  */
 async function treeManifest(root) {
-    const lines = [];
+    const lines = [`.\0dir\0${((await fs.lstat(root)).mode & 0o7777).toString(8)}`];
 
     for (const entry of await fs.readdir(root, {recursive: true, withFileTypes: true})) {
         const
@@ -231,33 +301,41 @@ async function sha256(file) {
 }
 
 /**
- * @summary The pid a seat's lease names, when that process is alive. A lease outlives its server, so a seat
- * whose app still runs writes into the home it started in; a missing, unreadable or dead lease names none.
+ * @summary Why a seat may still be running, or `null` when nothing says so. A lease outlives its server, so a
+ * seat whose app still runs writes into the home it started in. Only a missing lease, or one naming a process
+ * that is gone, says the seat is not running; a lease that cannot be read or names no process leaves it open.
  * @param {Object} options
  * @param {Object} options.agent  The row's public definition.
  * @param {String} options.source The root the seat's home lives under.
- * @returns {Promise<Number|null>}
+ * @returns {Promise<String|null>}
  * @private
  */
-async function liveLeasePid({agent, source}) {
-    let pid;
+async function leaseEvidence({agent, source}) {
+    const leasePath = path.join(deriveAgentInstanceHome({instanceRoot: source, agentId: agent.id, harnessType: agent.harnessType}), SEAT_LEASE_FILE);
+    let   raw, pid;
 
     try {
-        const leasePath = path.join(deriveAgentInstanceHome({instanceRoot: source, agentId: agent.id, harnessType: agent.harnessType}), SEAT_LEASE_FILE);
-
-        pid = JSON.parse(await fs.readFile(leasePath, 'utf8')).pid
-    } catch {
-        return null
+        raw = await fs.readFile(leasePath, 'utf8')
+    } catch (error) {
+        return error?.code === 'ENOENT' ? null : `its lease cannot be read (${error?.code ?? error?.message})`
     }
 
-    if (!Number.isInteger(pid) || pid <= 0) return null;
+    try {
+        pid = JSON.parse(raw)?.pid
+    } catch {
+        return 'its lease is not valid JSON'
+    }
+
+    if (!Number.isInteger(pid) || pid <= 0) return 'its lease names no process';
 
     try {
         process.kill(pid, 0);
-        return pid
+        return `its lease names live pid ${pid}`
     } catch (error) {
+        if (error?.code === 'ESRCH') return null;
+
         // a process this user may not signal is still alive
-        return error?.code === 'EPERM' ? pid : null
+        return error?.code === 'EPERM' ? `its lease names live pid ${pid}` : `its lease's process cannot be probed (${error?.code})`
     }
 }
 
@@ -270,6 +348,6 @@ function lstatOrNull(file) {
 }
 
 /** @private */
-function publicRow({refusal, ...row}) {
+function publicRow({refusal, ownStage, ...row}) {
     return refusal ? {...row, reason: refusal} : row
 }
