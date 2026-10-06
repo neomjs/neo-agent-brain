@@ -688,7 +688,7 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
         expect(FleetRegistryService.getAgentsRoot()).toBe('/agents')
     });
 
-    test('relocateSeatHome is the one write after birth: compare-and-set, null binds a legacy row, anything else is refused without a write', () => {
+    test('relocateSeatHome is the one write after birth: compare-and-set, null binds a legacy row, a move records the home it left, anything else is refused without a write', () => {
         writeLegacyRow('legacy');
         FleetRegistryService.dataDir    = tmpDir;
         FleetRegistryService.agentsRoot = '/agents';
@@ -701,13 +701,16 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — launch ownership',
         expect(FleetRegistryService.getAgent('seat').seatHome).toBe('/agents/seat');
 
         expect(FleetRegistryService.relocateSeatHome('seat', {from: '/agents/seat', to: '/moved/seat'}).seatHome).toBe('/moved/seat');
-        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.seat.seatHome).toBe('/moved/seat');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.seat).toMatchObject({seatHome: '/moved/seat', previousSeatHome: '/agents/seat'});
+        expect(FleetRegistryService.getAgent('seat').previousSeatHome).toBe('/agents/seat');
 
         // the deliberate bind of a legacy row: from nothing to where its files are, once
         expect(() => FleetRegistryService.relocateSeatHome('legacy', {from: '/agents/legacy', to: '/agents/legacy'}))
             .toThrow(/records seat home 'none', not '\/agents\/legacy'/);
         expect(FleetRegistryService.relocateSeatHome('legacy', {from: null, to: '/agents/legacy'}).seatHome).toBe('/agents/legacy');
         expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.legacy.seatHome).toBe('/agents/legacy');
+        // a bind left no home, so it records none
+        expect(FleetRegistryService.getAgent('legacy').previousSeatHome).toBeUndefined();
         expect(() => FleetRegistryService.relocateSeatHome('legacy', {from: null, to: '/elsewhere/legacy'}))
             .toThrow(/records seat home '\/agents\/legacy', not 'none'/);
 

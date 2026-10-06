@@ -134,7 +134,12 @@ const HARNESS_AUTH_MARKERS = {
 // its liveness (see "Seat survival" in the class summary). The catalog says which types run as an app.
 const SURVIVING_HARNESS_TYPES = new Set(listHarnessTypes().filter(entry => entry.runsAs === 'app').map(entry => entry.type));
 
-const SEAT_LEASE_FILE = '.neo-fleet-seat-lease.json';
+/**
+ * @summary The surviving seat's lease in its harness home: the pid a later server adopts. A seat home
+ * that holds one may still have its process running.
+ * @type {String}
+ */
+export const SEAT_LEASE_FILE = '.neo-fleet-seat-lease.json';
 
 // A Node system error code (`EACCES`, `ERR_…`): the only part of a caught failure a refusal may carry.
 const SYSTEM_ERROR_CODE = /^E[A-Z0-9_]+$/;
@@ -1072,10 +1077,10 @@ class FleetLifecycleService extends Base {
                 instanceAddress: record.wakeRoute.instanceAddress ?? null,
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
             } : null,
-            repos            : record.repos ? record.repos.map(repo => ({...repo})) : null,
-            sessionFolder    : this.sessionFolderFor(record),
-            gitIdentity      : this.gitIdentityOf(id),
-            seatModel        : this.seatModelOf(id)
+            repos        : record.repos ? record.repos.map(repo => ({...repo})) : null,
+            sessionFolder: this.sessionFolderFor(record),
+            gitIdentity  : this.gitIdentityOf(id),
+            seatModel    : this.seatModelOf(id)
         };
     }
 
@@ -2076,8 +2081,8 @@ class FleetLifecycleService extends Base {
                 }
             }
             const values = this.residentMcpEnvSource ? this.residentMcpEnvSource(key) : ({
-                'memory-core': memoryCoreConfig, 'knowledge-base': knowledgeBaseConfig,
-                'neural-link': neuralLinkConfig, 'github-workflow': githubWorkflowConfig,
+                'memory-core'    : memoryCoreConfig, 'knowledge-base': knowledgeBaseConfig,
+                'neural-link'    : neuralLinkConfig, 'github-workflow': githubWorkflowConfig,
                 'gitlab-workflow': gitlabWorkflowConfig
             })[key].exportEnv({
                 envNames,

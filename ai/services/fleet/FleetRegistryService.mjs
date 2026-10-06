@@ -818,6 +818,8 @@ class FleetRegistryService extends Base {
      * a seat. The files move outside this registry; this write is what lets the next start accept the
      * path it names. No automatic adoption exists: a directory that happens to exist under the current
      * root carries no binding authority, so an unbound row stays refused until this act names its home.
+     * A move records the home it left as `previousSeatHome`. The start re-derives every Fleet-owned file
+     * still exactly as Fleet rendered it there, so a copied seat names its new home.
      * @param {String}      id        Registry agent id.
      * @param {Object}      move
      * @param {String|null} move.from The seat home the row records now, `null` for a row without one.
@@ -837,7 +839,7 @@ class FleetRegistryService extends Base {
         }
 
         const
-            def        = {...existing, seatHome: to, updatedAt: new Date().toISOString()},
+            def        = {...existing, seatHome: to, ...(from && from !== to && {previousSeatHome: from}), updatedAt: new Date().toISOString()},
             nextAgents = new Map(this.agents);
 
         nextAgents.set(id, def);
