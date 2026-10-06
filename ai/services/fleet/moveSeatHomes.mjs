@@ -127,19 +127,24 @@ async function planRow({agent, source, destination, moveId}) {
         return {...row, state: 'copy', refusal: `seat '${agent.id}' may still be running: ${running}. Quit it, or remove a lease you know is stale, then move again`}
     }
 
-    if (!occupant) {
-        const {staging, marker} = stagingPaths(destination, agent.id), stage = await lstatOrNull(staging);
+    // the stage and its marker are this move's own only when the marker is a plain file carrying this move's
+    // id; anything else at either path stays as it is and stops the row
+    const
+        {staging, marker} = stagingPaths(destination, agent.id),
+        [stage, mark]     = await Promise.all([lstatOrNull(staging), lstatOrNull(marker)]),
+        ownMarker         = !!mark?.isFile() && moveId !== null && await fs.readFile(marker, 'utf8').then(id => id === moveId, () => false),
+        state             = occupant ? 'relocate' : 'copy';
 
-        // a staging folder is this move's own only when it is a real folder carrying this move's id
-        const own = stage?.isDirectory() && moveId !== null && await fs.readFile(marker, 'utf8').then(id => id === moveId, () => false);
+    if (mark && !ownMarker) return {...row, state, refusal: `'${marker}' is not this move's marker; remove it, then move again`};
 
-        return stage && !own
-            ? {...row, state: 'copy', refusal: `'${staging}' holds something this move did not leave; remove it, then move again`}
-            : {...row, state: 'copy', ownStage: !!stage}
+    if (stage && !(stage.isDirectory() && ownMarker)) {
+        return {...row, state, refusal: `'${staging}' holds something this move did not leave; remove it, then move again`}
     }
 
+    if (!occupant) return {...row, state, ownStage: !!stage, ownMarker};
+
     return occupant.isDirectory() && await sameTree(seatHome, target)
-        ? {...row, state: 'relocate'}
+        ? {...row, state, ownStage: !!stage, ownMarker}
         : {...row, state: 'copy', refusal: `'${target}' holds something other than a verified copy of seat '${agent.id}'`}
 }
 
@@ -154,28 +159,30 @@ async function planRow({agent, source, destination, moveId}) {
  * @private
  */
 async function applyRow({row, registry, destination, token}) {
-    if (row.state === 'copy') {
-        const {staging, marker} = stagingPaths(destination, row.id);
+    const {staging, marker} = stagingPaths(destination, row.id);
 
+    // this move's own leftovers from an interrupted run: a stage never published is discarded, and so is the
+    // marker of one that was (the plan admitted both, so nothing else is touched)
+    row.ownStage  && await fs.rm(staging, {recursive: true});
+    row.ownMarker && await fs.unlink(marker);
+
+    if (row.state === 'copy') {
         await fs.mkdir(destination, {recursive: true, mode: 0o700});
-        // this move's own interrupted copy is never published, so it is discarded
-        row.ownStage && await fs.rm(staging, {recursive: true});
-        await fs.writeFile(marker, token, {mode: 0o600});
+        // created exclusively: an existing path, a link included, is never written through
+        await fs.writeFile(marker, token, {flag: 'wx', mode: 0o600});
 
         const skipped = await copyTree(row.seatHome, staging);
 
         if (!await sameTree(row.seatHome, staging)) {
             await fs.rm(staging, {recursive: true, force: true});
+            await fs.unlink(marker);
             throw new Error(`moveSeatHomes: the copy of seat '${row.id}' differs from its source; its binding was not moved.`)
         }
 
         await fs.rename(staging, row.destination);
-        await fs.rm(marker, {force: true});
+        await fs.unlink(marker);
         skipped.length && (row.skipped = skipped)
     }
-
-    // a run interrupted after publishing its copy left the copy's marker behind
-    row.state === 'relocate' && await fs.rm(stagingPaths(destination, row.id).marker, {force: true});
 
     if (['copy', 'relocate', 'rebind'].includes(row.state)) {
         registry.relocateSeatHome(row.id, {from: row.seatHome, to: row.destination});
@@ -348,6 +355,6 @@ function lstatOrNull(file) {
 }
 
 /** @private */
-function publicRow({refusal, ownStage, ...row}) {
+function publicRow({refusal, ownStage, ownMarker, ...row}) {
     return refusal ? {...row, reason: refusal} : row
 }

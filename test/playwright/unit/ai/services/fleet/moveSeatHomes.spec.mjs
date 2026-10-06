@@ -205,8 +205,56 @@ test('a staging folder this move did not leave stops the move, and stays as it w
 
     await fs.writeFile(path.join(to, '.moving-alice.owner'), 'another-move');
 
-    expect((await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1'})).reason, 'another move\'s mark').toBe(refusal);
-    expect(await fs.readFile(path.join(to, '.moving-alice', 'operator-note.txt'), 'utf8')).toBe('mine')
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1'})).reason, 'another move\'s mark')
+        .toBe(`'${path.join(to, '.moving-alice.owner')}' is not this move's marker; remove it, then move again`);
+    expect(await fs.readFile(path.join(to, '.moving-alice', 'operator-note.txt'), 'utf8')).toBe('mine');
+    expect(await fs.readFile(path.join(to, '.moving-alice.owner'), 'utf8')).toBe('another-move')
+});
+
+test('a marker this move did not leave stops the move untouched, a link to another file included; its own marker resumes', async () => {
+    const aliceHome = await seat('alice');
+    const marker    = path.join(to, '.moving-alice.owner');
+    const note      = path.join(path.dirname(to), 'operator-note.txt');
+    const refusal   = `'${marker}' is not this move's marker; remove it, then move again`;
+
+    await fs.mkdir(to, {recursive: true});
+    await fs.writeFile(note, 'operator bytes');
+    await fs.symlink(note, marker);
+
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1'})).reason, 'a link is never followed').toBe(refusal);
+    expect(await fs.readFile(note, 'utf8')).toBe('operator bytes');
+    expect((await fs.lstat(marker)).isSymbolicLink()).toBe(true);
+
+    await fs.unlink(marker);
+    await fs.writeFile(marker, 'operator bytes');
+
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1'})).reason, 'a plain file of someone else\'s').toBe(refusal);
+    expect(await fs.readFile(marker, 'utf8')).toBe('operator bytes');
+    expect(FleetRegistryService.getAgent('alice').seatHome).toBe(aliceHome);
+
+    // the shell went down after writing its marker, before the copy began
+    await fs.writeFile(marker, 'move-1');
+
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1'})).state).toBe('moved');
+    expect((await fs.readdir(to)).sort(), 'the marker went with the copy').toEqual(['alice'])
+});
+
+test('a published copy with its own marker left behind is relocated, and the marker removed; another\'s marker stops it untouched', async () => {
+    const aliceHome = await seat('alice');
+    const marker    = path.join(to, '.moving-alice.owner');
+
+    // the shell went down after publishing the copy, before removing its marker
+    await fs.mkdir(to, {recursive: true});
+    await fs.cp(aliceHome, path.join(to, 'alice'), {recursive: true, verbatimSymlinks: true});
+    await fs.writeFile(marker, 'move-0');
+
+    expect((await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1'})).reason).toBe(`'${marker}' is not this move's marker; remove it, then move again`);
+    expect(await fs.readFile(marker, 'utf8')).toBe('move-0');
+
+    await fs.writeFile(marker, 'move-1');
+
+    expect(rowOf(await moveSeatHomes({registry: FleetRegistryService, from, to, moveId: 'move-1'}), 'alice').state).toBe('moved');
+    expect((await fs.readdir(to)).sort()).toEqual(['alice'])
 });
 
 test('roots that resolve to the same folder, or one inside the other, refuse before anything is written', async () => {
