@@ -122,6 +122,21 @@ test('a destination holding anything but a verified copy stops the move before a
         .toBe(`seat 'carol' was never materialized, but '${path.join(to, 'carol')}' already exists`)
 });
 
+test('a seat folder the Fleet did not provision stops the move; renamed aside, its row is rebound', async () => {
+    const aliceHome = await seat('alice', {materialized: false});
+
+    await fs.mkdir(path.join(aliceHome, 'neomjs', 'neo'), {recursive: true});
+
+    expect(await moveSeatHomes({registry: FleetRegistryService, from, to})).toMatchObject({
+        state : 'refused',
+        reason: `seat 'alice' names '${aliceHome}', which holds no harness home the Fleet provisioned; rename it aside, then move again`
+    });
+
+    await fs.rename(aliceHome, `${aliceHome}.aside`);
+
+    expect(rowOf(await moveSeatHomes({registry: FleetRegistryService, from, to}), 'alice')).toMatchObject({state: 'rebound', materialized: false})
+});
+
 test('a seat whose lease names a live process stops the move; a dead lease does not', async () => {
     const
         aliceHome = await seat('alice'),

@@ -14,7 +14,8 @@ import {SEAT_LEASE_FILE}             from './FleetLifecycleService.mjs';
  * ({@link Neo.ai.services.fleet.FleetRegistryService#relocateSeatHome}). No seat file is rewritten here: the
  * first Start at the new root re-derives what Fleet rendered at the old one, from the row's `previousSeatHome`.
  *
- * Nothing changes when a destination holds anything but a verified copy of its source, or when a seat may
+ * A home is materialized when it holds the harness homes the Fleet provisions. Nothing changes when a source
+ * folder holds none, when a destination holds anything but a verified copy of its source, or when a seat may
  * still be running: its home holds a seat lease whose process is alive. Run again after an interruption at
  * any step, the move completes. A staging folder is discarded and copied again, a published copy is verified
  * and kept, and a row already at its destination reads `done`. Sockets and pipes, which a harness leaves
@@ -91,9 +92,16 @@ async function planRow({agent, source, destination}) {
         return {...row, state: 'rebind', ...(occupant && {refusal: `seat '${agent.id}' was never materialized, but '${target}' already exists`})}
     }
 
-    row.materialized = true;
-
     if (!home.isDirectory()) return {...row, state: 'copy', refusal: `seat '${agent.id}' names '${seatHome}', which is not a real folder`};
+
+    // materialized means the Fleet provisioned it: a folder without the harness homes it derives is not adopted
+    const harnessRoot = path.dirname(deriveAgentInstanceHome({instanceRoot: source, agentId: agent.id, harnessType: agent.harnessType}));
+
+    if (!(await lstatOrNull(harnessRoot))?.isDirectory()) {
+        return {...row, state: 'copy', refusal: `seat '${agent.id}' names '${seatHome}', which holds no harness home the Fleet provisioned; rename it aside, then move again`}
+    }
+
+    row.materialized = true;
 
     const livePid = await liveLeasePid({agent, source});
 
