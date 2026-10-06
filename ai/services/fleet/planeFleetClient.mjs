@@ -61,7 +61,7 @@ export function createPlaneFleetClient({baseUrl, credential, fetchImpl = globalT
          */
         async defineAgent(definition) {
             if (!credential) {
-                return {status: 'rejected', reason: 'This connection can\'t add agents on the plane: reconnect the plane with your own GitHub or GitLab PAT. (No fleet-surface credential is declared: neither fleet.planeAdmissionBearer nor a forge-PAT fleet.planeBearerClass.)'}
+                return {status: 'rejected', reason: 'This plane connection can\'t add agents: reconnect the plane with your own GitHub or GitLab PAT. (No fleet-surface credential is declared: neither fleet.planeAdmissionBearer nor a forge-PAT fleet.planeBearerClass.)'}
             }
 
             try {

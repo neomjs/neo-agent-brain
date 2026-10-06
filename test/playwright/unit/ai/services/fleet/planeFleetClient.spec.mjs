@@ -113,7 +113,7 @@ test.describe('createPlaneFleetClient — the plane defines a seat first', () =>
         const fixture = plane({ownerPrincipal: 'owner:conn-1:1001'});
         const answer  = await createPlaneFleetClient({baseUrl: BASE, credential: '', fetchImpl: fixture.fetchImpl}).defineAgent(DEFINITION);
 
-        expect(answer).toEqual({status: 'rejected', reason: expect.stringContaining('reconnect the plane with your own GitHub or GitLab PAT')});
+        expect(answer).toEqual({status: 'rejected', reason: expect.stringContaining('This plane connection can\'t add agents: reconnect the plane with your own GitHub or GitLab PAT.')});
         expect(answer.reason).toContain('No fleet-surface credential is declared');
         expect(fixture.exchanges).toEqual([])
     });
