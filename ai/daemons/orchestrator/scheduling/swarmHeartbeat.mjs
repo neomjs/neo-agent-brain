@@ -77,15 +77,15 @@ export function getDueTask({state, now, swarmHeartbeatIntervalMs}) {
  * - **`'active-subscribers'`** — delegates to injected `activeSubscribersProvider`
  *   (the existing `WAKE_SUBSCRIPTION` SQL discovery in
  *   `SwarmHeartbeatService.getWakeSubscriptionIdentities()`); union with `selfIdentity`.
- *   Subscription-presence-based — degrades on dormant subscribers. Identities are still
- *   gated by their node's participation, so stale subscriptions cannot wake
+ *   Subscription-presence-based — degrades on dormant subscribers. Every identity, self
+ *   included, is gated by its node's participation, so stale subscriptions cannot wake
  *   operator-benched harnesses.
  * - **`'active-a2a-participants'`** — delegates to injected
  *   `activeA2aParticipantsProvider` (the `SwarmHeartbeatService.getActiveA2aParticipants()`
  *   3h `MESSAGE`-edge query); union with `selfIdentity`. Activity-derived — per-MC-instance
  *   discovery, tenant-safe (no team-registry coupling), self-healing 3h sliding window.
- *   Identities are still gated by their node's participation. This is the tracked template
- *   default.
+ *   Every identity, self included, is gated by its node's participation. This is the
+ *   tracked template default.
  *
  * **Participation** comes from `participationProvider`, a read of the plane's AgentIdentity
  * nodes, asked once per resolution by every source but an explicit list and `'disabled'`. A
@@ -149,6 +149,21 @@ export async function resolveTargets({
         return [normalizedSelf];
     };
 
+    /**
+     * Every target a source discovers, self included, passes the one participation gate:
+     * normalized, deduplicated and order-preserving.
+     */
+    const eligibleTargets = candidates => {
+        const seen = new Set();
+
+        for (const raw of candidates) {
+            const id = raw ? normalizeAgentIdentityNodeId(raw) : null;
+            if (id && isHeartbeatTargetEligible(id, participation)) seen.add(id);
+        }
+
+        return [...seen];
+    };
+
     // Step 1: explicit env target list (override-all). Empty array / null falls through.
     if (Array.isArray(explicitTargets) && explicitTargets.length > 0) {
         const seen = new Set();
@@ -179,42 +194,15 @@ export async function resolveTargets({
             log('info', '[resolveSwarmHeartbeatTargets] disabled — no pulse targets');
             return [];
 
-        case 'active-local-team': {
-            const seen = new Set();
-            const out  = [];
-            for (const entry of IDENTITIES) {
-                if (entry.type !== 'AgentIdentity') continue;
-                const id = normalizeAgentIdentityNodeId(entry.id);
-                if (id && !isHeartbeatTargetEligible(id, participation)) continue;
-                if (id && !seen.has(id)) {
-                    seen.add(id);
-                    out.push(id);
-                }
-            }
-            return out;
-        }
+        case 'active-local-team':
+            return eligibleTargets(IDENTITIES.filter(entry => entry.type === 'AgentIdentity').map(entry => entry.id));
 
         case 'active-subscribers': {
             if (typeof activeSubscribersProvider !== 'function') {
                 log('warn', `[resolveSwarmHeartbeatTargets] targetSource='active-subscribers' requires activeSubscribersProvider; falling back to 'self'`);
                 return selfFallback('active-subscribers-missing-provider');
             }
-            const subscribers = (await activeSubscribersProvider()) || [];
-            const seen        = new Set();
-            const out         = [];
-            if (normalizedSelf) {
-                seen.add(normalizedSelf);
-                out.push(normalizedSelf);
-            }
-            for (const raw of subscribers) {
-                const id = normalizeAgentIdentityNodeId(raw);
-                if (id && !isHeartbeatTargetEligible(id, participation)) continue;
-                if (id && !seen.has(id)) {
-                    seen.add(id);
-                    out.push(id);
-                }
-            }
-            return out;
+            return eligibleTargets([normalizedSelf, ...((await activeSubscribersProvider()) || [])]);
         }
 
         case 'active-a2a-participants': {
@@ -227,22 +215,7 @@ export async function resolveTargets({
                 log('warn', `[resolveSwarmHeartbeatTargets] targetSource='active-a2a-participants' requires activeA2aParticipantsProvider; falling back to 'self'`);
                 return selfFallback('active-a2a-participants-missing-provider');
             }
-            const participants = (await activeA2aParticipantsProvider()) || [];
-            const seen         = new Set();
-            const out          = [];
-            if (normalizedSelf) {
-                seen.add(normalizedSelf);
-                out.push(normalizedSelf);
-            }
-            for (const raw of participants) {
-                const id = normalizeAgentIdentityNodeId(raw);
-                if (id && !isHeartbeatTargetEligible(id, participation)) continue;
-                if (id && !seen.has(id)) {
-                    seen.add(id);
-                    out.push(id);
-                }
-            }
-            return out;
+            return eligibleTargets([normalizedSelf, ...((await activeA2aParticipantsProvider()) || [])]);
         }
 
         default:

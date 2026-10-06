@@ -3010,6 +3010,68 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
         }
     });
 
+    test('an epic awaiting resolution is a verified stall only when its owner\'s node reads the owner away: active, benched, no status, no node and an unread store', () => {
+        const issuesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-stall-resolution-'));
+        const chunkDir  = path.join(issuesDir, 'chunk-1');
+        const now       = new Date('2026-07-02T12:00:00Z');
+        fs.mkdirSync(chunkDir, {recursive: true});
+
+        // one open epic, every sub closed, one owner: only the owner's node changes between the cases
+        fs.writeFileSync(path.join(chunkDir, 'issue-9801.md'), [
+            '---', 'id: 9801', "title: 'Closed-sub epic'", 'state: OPEN', 'labels:', '  - epic', 'assignees:', '  - neo-gpt',
+            "createdAt: '2026-05-01T00:00:00Z'", "updatedAt: '2026-06-20T00:00:00Z'", 'subIssuesCompleted: 3', 'subIssuesTotal: 3',
+            "githubUrl: 'https://github.com/neomjs/neo/issues/9801'", '---', '# Closed-sub epic'
+        ].join('\n'));
+
+        const
+            graphDouble = storage => ({db: {edges: {getByIndex: () => []}, getAdjacentNodes() {}, nodes: {get: () => null}, storage}}),
+            findingsFor = properties => {
+                const store = new Database(':memory:');
+                store.exec('CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT)');
+
+                if (properties) {
+                    const node = {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: 'neo-gpt', ...properties}};
+                    store.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(node.id, JSON.stringify(node))
+                }
+
+                try {
+                    return buildWorkGraphStallFindings({issuesDir, now, graphService: graphDouble({db: store})})
+                } finally {
+                    store.close()
+                }
+            },
+            classes    = findings => findings.map(finding => finding.findingClass),
+            resolution = findings => findings.find(finding => finding.findingClass === 'RESOLUTION_PENDING'),
+            rendered   = findings => renderWorkGraphStallFindingsSection(findings, {capturedAt: now, limit: 10, renderEnabled: true});
+
+        try {
+            expect(findingsFor({participationStatus: 'active'}), 'an active owner').toEqual([]);
+            expect(findingsFor({}), 'a node that records no status reads active').toEqual([]);
+
+            const benched = findingsFor({participationStatus: 'operator_benched'});
+            expect(classes(benched)).toEqual(['OWNER_BENCHED_LANE', 'RESOLUTION_PENDING']);
+            expect(resolution(benched)).toMatchObject({grade: 'verified-stall', sourceFidelity: 'verified', verificationSource: 'AgentIdentity node + local issue sync'});
+            expect(resolution(benched).evidenceRefs).toContain('AgentIdentity:@neo-gpt:operator_benched');
+            expect(rendered(benched)).toContain('Verified Stalls (`2` of `2` items)');
+
+            const noNode = findingsFor(null);
+            expect(classes(noNode), 'an owner without a node is not read as away').toEqual(['RESOLUTION_PENDING']);
+            expect(resolution(noNode)).toMatchObject({grade: 'candidate-stall', presenceSource: 'issue assignee state', sourceFidelity: 'candidate'});
+
+            const unread = buildWorkGraphStallFindings({issuesDir, now, graphService: graphDouble(undefined)});
+            expect(classes(unread), 'an unread store marks no benched owner').toEqual(['RESOLUTION_PENDING']);
+            expect(resolution(unread)).toMatchObject({grade: 'source-degraded', sourceFidelity: 'degraded'});
+            expect(resolution(unread).evidenceRefs.some(ref => ref.startsWith('AgentIdentity:')), 'no participation evidence it did not read').toBe(false);
+
+            for (const advisory of [noNode, unread]) {
+                expect(rendered(advisory)).toContain('Verified Stalls (`0` of `0` items)');
+                expect(rendered(advisory)).toContain('<details><summary>Candidate / source-degraded findings (1)</summary>')
+            }
+        } finally {
+            fs.rmSync(issuesDir, {recursive: true, force: true});
+        }
+    });
+
     test('renderWorkGraphStallFindingsSection is bounded, visibility-only, and honors render-off', () => {
         const findings = [
             {

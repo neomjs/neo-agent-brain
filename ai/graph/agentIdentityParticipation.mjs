@@ -27,14 +27,19 @@ export function readAgentIdentityNodes(db) {
 }
 
 /**
- * @summary Canonical identity → participation status, from AgentIdentity node records; a node that records none is
- * `active`.
+ * @summary One node's participation status: the one it records, and `active` when it records none.
+ * @param {Object} node An AgentIdentity `{id, properties}` record.
+ * @returns {String}
+ */
+export function participationStatusOf(node) {
+    return node.properties?.participationStatus || 'active'
+}
+
+/**
+ * @summary Canonical identity → participation status, from AgentIdentity node records ({@link participationStatusOf}).
  * @param {Object[]} nodes `{id, properties}` records.
  * @returns {Map<String,String>}
  */
 export function participationByIdentity(nodes) {
-    return new Map(nodes.map(node => [
-        normalizeAgentIdentityNodeId(node.id),
-        node.properties?.participationStatus || 'active'
-    ]))
+    return new Map(nodes.map(node => [normalizeAgentIdentityNodeId(node.id), participationStatusOf(node)]))
 }

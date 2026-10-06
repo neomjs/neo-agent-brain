@@ -1,12 +1,12 @@
-import fs                                    from 'fs';
-import matter                                from 'gray-matter';
-import path                                  from 'path';
-import {qualifyOriginId}                     from './corpusProjectionContract.mjs';
-import {Memory_Config as aiConfig}           from '../../services.mjs';
-import {Memory_GraphService as GraphService} from '../../services.mjs';
-import logger                                from '../../mcp/server/memory-core/logger.mjs';
-import {IDENTITIES}                          from '../../graph/identityRoots.mjs';
-import {readAgentIdentityNodes}              from '../../graph/agentIdentityParticipation.mjs';
+import fs                                              from 'fs';
+import matter                                          from 'gray-matter';
+import path                                            from 'path';
+import {qualifyOriginId}                               from './corpusProjectionContract.mjs';
+import {Memory_Config as aiConfig}                     from '../../services.mjs';
+import {Memory_GraphService as GraphService}           from '../../services.mjs';
+import logger                                          from '../../mcp/server/memory-core/logger.mjs';
+import {IDENTITIES}                                    from '../../graph/identityRoots.mjs';
+import {participationStatusOf, readAgentIdentityNodes} from '../../graph/agentIdentityParticipation.mjs';
 
 /**
  * @module ai/services/graph/issueFocusSections
@@ -94,7 +94,8 @@ export function getStaleAssignmentMaintainers() {
  *
  * Stall inference consumes the same structured participation ledger as
  * family-keyed quorum. It does not infer absence from message recency or raw
- * issue timestamps.
+ * issue timestamps. A node that records no status reads `active`, as it does
+ * for every plane-side participation reader.
  *
  * @param {Object[]} identities AgentIdentity node records (`ai/graph/agentIdentityParticipation.mjs`).
  * @returns {Map<String, Object>} Login without leading `@` to identity metadata.
@@ -110,7 +111,7 @@ export function getParticipationStatusByLogin(identities) {
             authority          : identity.properties?.authority || null,
             identityId         : identity.id,
             login,
-            participationStatus: identity.properties?.participationStatus || 'unknown',
+            participationStatus: participationStatusOf(identity),
             reactivationTrigger: identity.properties?.reactivationTrigger || null,
             since              : identity.properties?.since || null,
             statusReason       : identity.properties?.statusReason || null
@@ -1089,6 +1090,47 @@ function buildStallFinding({
 }
 
 /**
+ * @summary How much a `RESOLUTION_PENDING` finding knows about its epic's owners being away.
+ *
+ * The sub-issue counters are observable either way; the owners' absence is verified only when every owner's
+ * identity node was read and records an inactive status. An unread store degrades the finding, and an owner without
+ * a node leaves it a candidate, since neither answer says the owner is away.
+ * @param {Array<Object|undefined>} owners   Each assignee's participation record, `undefined` when no node answers for it.
+ * @param {Boolean}                 unread   The identity nodes could not be read.
+ * @param {String[]}                counters The issue and its sub-issue counter refs.
+ * @returns {{evidenceRefs: String[], grade: String, presenceSource: String, sourceFidelity: String, verificationSource: String}}
+ */
+function resolutionOwnerEvidence(owners, unread, counters) {
+    if (owners.length === 0 || (!unread && owners.includes(undefined))) {
+        return {
+            evidenceRefs      : counters,
+            grade             : 'candidate-stall',
+            presenceSource    : 'issue assignee state',
+            sourceFidelity    : 'candidate',
+            verificationSource: owners.length === 0 ? 'local issue sync sub-issue counters' : 'local issue sync sub-issue counters; an owner has no identity node'
+        }
+    }
+
+    if (unread) {
+        return {
+            evidenceRefs      : counters,
+            grade             : 'source-degraded',
+            presenceSource    : 'AgentIdentity.participationStatus',
+            sourceFidelity    : 'degraded',
+            verificationSource: 'local issue sync sub-issue counters; the identity nodes did not answer'
+        }
+    }
+
+    return {
+        evidenceRefs      : [...counters, ...owners.map(owner => `AgentIdentity:${owner.identityId}:${owner.participationStatus}`)],
+        grade             : 'verified-stall',
+        presenceSource    : 'AgentIdentity.participationStatus',
+        sourceFidelity    : 'verified',
+        verificationSource: 'AgentIdentity node + local issue sync'
+    }
+}
+
+/**
  * @summary Builds deterministic work-graph stall findings for the handoff surface.
  *
  * This pass is visibility-only: it emits data for `sandman_handoff.md` and does
@@ -1112,7 +1154,8 @@ export function buildWorkGraphStallFindings({
 }) {
     if (!issuesDir) return [];
 
-    let nodes = identities;
+    let nodes  = identities,
+        unread = false;
 
     if (!nodes) {
         try {
@@ -1120,7 +1163,8 @@ export function buildWorkGraphStallFindings({
         } catch (error) {
             // a benched owner is the node's fact: unread nodes mark no lane, and the roots never stand in
             logger.warn(`[issueFocusSections] the identity nodes did not answer, so no lane is marked as a benched owner's: ${error.message}`);
-            nodes = []
+            nodes  = [];
+            unread = true
         }
     }
 
@@ -1184,23 +1228,19 @@ export function buildWorkGraphStallFindings({
 
         if (issue.labels.includes(EPIC_LABEL)) {
             const
-                total             = Number(issue.meta.subIssuesTotal),
-                completed         = Number(issue.meta.subIssuesCompleted),
-                allSubsClosed     = Number.isFinite(total) && total > 0 && Number.isFinite(completed) && completed >= total,
-                hasActiveAssignee = issue.assignees.some(login => {
-                    const status = statusByLogin.get(String(login).replace(/^@/, ''));
-                    return status?.participationStatus === 'active'
-                });
+                total         = Number(issue.meta.subIssuesTotal),
+                completed     = Number(issue.meta.subIssuesCompleted),
+                allSubsClosed = Number.isFinite(total) && total > 0 && Number.isFinite(completed) && completed >= total,
+                owners        = issue.assignees.map(login => statusByLogin.get(String(login).replace(/^@/, '')));
 
-            if (allSubsClosed && !hasActiveAssignee) {
+            if (allSubsClosed && !owners.some(owner => owner?.participationStatus === 'active')) {
+                const counters = [`#${issue.number}`, `subIssuesCompleted:${completed}`, `subIssuesTotal:${total}`];
+
                 findings.push(buildStallFinding({
+                    ...resolutionOwnerEvidence(owners, unread, counters),
                     capturedAt     : now,
-                    evidenceRefs   : [`#${issue.number}`, `subIssuesCompleted:${completed}`, `subIssuesTotal:${total}`],
                     findingClass   : 'RESOLUTION_PENDING',
                     motionPredicate: 'parent epic closes, /epic-resolution posts a verdict, or a required sub reopens',
-                    presenceSource : issue.assignees.length > 0 ? 'AgentIdentity.participationStatus' : 'issue assignee state',
-                    sourceFidelity : issue.assignees.length > 0 ? 'verified' : 'candidate',
-                    grade          : issue.assignees.length > 0 ? 'verified-stall' : 'candidate-stall',
                     subject        : {
                         id    : issue.issueId,
                         number: issue.number,
@@ -1208,8 +1248,7 @@ export function buildWorkGraphStallFindings({
                         type  : 'ISSUE',
                         url   : issue.url
                     },
-                    verificationSource: 'local issue sync sub-issue counters',
-                    waitingSince      : issue.meta.updatedAt || issue.meta.createdAt
+                    waitingSince: issue.meta.updatedAt || issue.meta.createdAt
                 }));
             }
         }

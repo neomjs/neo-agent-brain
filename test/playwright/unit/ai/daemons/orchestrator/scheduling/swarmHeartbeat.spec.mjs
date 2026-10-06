@@ -159,6 +159,29 @@ test.describe('resolveTargets — deployment-portable swarm-heartbeat target res
         expect(await resolveTargets({selfIdentity: '@neo-opus-4-7', targetSource: 'disabled', participationProvider: unread, logger: captureLogger()})).toEqual([])
     });
 
+    test('a benched self leaves both discovery sources, read afresh each resolution: a duplicate self, an active peer and a benched peer', async () => {
+        let selfStatus = 'active';
+
+        const
+            candidates    = async () => ['@neo-opus-4-7', '@neo-gpt', '@neo-gemini-pro', '@neo-opus-4-7'],
+            participation = () => new Map([['@neo-opus-4-7', selfStatus], ['@neo-gpt', 'active'], ['@neo-gemini-pro', 'operator_benched']]),
+            resolve       = targetSource => resolveTargets({
+                selfIdentity                 : '@neo-opus-4-7',
+                targetSource,
+                activeSubscribersProvider    : candidates,
+                activeA2aParticipantsProvider: candidates,
+                participationProvider        : participation
+            });
+
+        for (const targetSource of ['active-subscribers', 'active-a2a-participants']) {
+            selfStatus = 'active';
+            expect(await resolve(targetSource), targetSource).toEqual(['@neo-opus-4-7', '@neo-gpt']);
+
+            selfStatus = 'operator_benched';
+            expect(await resolve(targetSource), targetSource).toEqual(['@neo-gpt'])
+        }
+    });
+
     test('identityRoots marks @neo-opus-grace active without static wake-route or role-typing leakage (#12413)', () => {
         const identity = IDENTITIES.find(identity => identity.id === '@neo-opus-grace');
 
