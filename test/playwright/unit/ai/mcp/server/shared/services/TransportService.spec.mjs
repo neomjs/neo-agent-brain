@@ -163,12 +163,12 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
         TransportService.destroy();
     });
 
-    test('statusLogger records an error response without headers or query, and stays silent below 400', async () => {
+    test('statusLogger records an error response by its path alone, and stays silent below 400', async () => {
         const
             TransportService = (await import('../../../../../../../../ai/mcp/server/shared/services/TransportService.mjs')).default,
             {EventEmitter}   = await import('node:events'),
             lines            = [],
-            clock            = [1000, 1042, 3000, 3005],
+            clock            = [1000, 1042, 3000, 3005, 4000, 4001, 5000, 5002],
             listener         = TransportService.statusLogger({logger: {warn: line => lines.push(line)}, resourceName: 'MC', now: () => clock.shift()}),
             respond          = (statusCode, req) => {
                 const res = Object.assign(new EventEmitter(), {statusCode});
@@ -179,11 +179,18 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
 
         respond(404, {method: 'POST', url: '/mcp?token=secret', headers: {'mcp-session-id': 'abc', authorization: 'Bearer secret'}});
         respond(500, {method: 'POST', url: '/mcp', headers: {}});
-        expect(lines).toEqual(['[MC] POST /mcp → 404 (session present, 42 ms)', '[MC] POST /mcp → 500 (session absent, 5 ms)']);
+        respond(404, {method: 'POST', url: 'http://fixture-user:fixture-password@127.0.0.1/mcp?token=query-secret', headers: {}});
+        respond(400, {method: 'POST', url: 'http://[', headers: {}});
+        expect(lines).toEqual([
+            '[MC] POST /mcp → 404 (session present, 42 ms)',
+            '[MC] POST /mcp → 500 (session absent, 5 ms)',
+            '[MC] POST /mcp → 404 (session absent, 1 ms)',
+            '[MC] POST (unparsable target) → 400 (session absent, 2 ms)'
+        ]);
 
         clock.push(2000);
         respond(202, {method: 'POST', url: '/mcp', headers: {}});
-        expect(lines).toHaveLength(2)
+        expect(lines).toHaveLength(4)
     });
 
     test.describe('authentication ownership boundary', () => {
@@ -1069,12 +1076,12 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             }
         }
 
-        function httpRequest({port, method='POST', headers={}, body}) {
+        function httpRequest({port, method='POST', headers={}, body, target='/mcp'}) {
             return new Promise((resolve, reject) => {
                 const request = http.request({
                     host: '127.0.0.1',
                     port,
-                    path: '/mcp',
+                    path: target,
                     method,
                     headers
                 }, response => {
@@ -1262,21 +1269,39 @@ test.describe('Neo.ai.mcp.server.shared.services.TransportService', () => {
             expect(invalidHost.body).toContain('Invalid Host');
         });
 
-        test('logs each error response at the server, including what the SDK host check answers ahead of the routes', async () => {
+        test('logs each error response at the server by its path alone, including what the guards ahead of the routes answer', async () => {
             const
                 lines         = [],
-                {port, token} = await setupLocal({
-                    server: {mcpServer: {connect: async () => {}}},
-                    logger: {info: () => {}, warn: line => lines.push(line), error: () => {}}
-                });
+                {port, token} = await setupLocal({logger: {info: () => {}, warn: line => lines.push(line), error: () => {}}}),
+                secrets       = ['fixture-user', 'fixture-password', 'query-secret', 'header-secret', 'body-secret', '127.0.0.1', token];
 
+            const initialized = await httpRequest({
+                port,
+                headers: {Accept: 'application/json, text/event-stream', Authorization: `Bearer ${token}`, 'Content-Type': 'application/json'},
+                body   : initializeBody()
+            });
+
+            expect(initialized.status, 'a success logs nothing').toBe(200);
             expect((await httpRequest({port, method: 'GET'})).status).toBe(401);
             expect((await httpRequest({port, method: 'GET', headers: {Authorization: `Bearer ${token}`, Host: 'attacker.example'}})).status).toBe(403);
 
-            await expect.poll(() => lines.length).toBe(2);
+            const absolute = await httpRequest({
+                port,
+                target : `http://fixture-user:fixture-password@127.0.0.1:${port}/mcp?token=query-secret`,
+                headers: {Accept: 'application/json, text/event-stream', Authorization: 'Bearer header-secret', 'Content-Type': 'application/json'},
+                body   : JSON.stringify({jsonrpc: '2.0', id: 2, method: 'initialize', params: {secret: 'body-secret'}})
+            });
+
+            expect(absolute.status).toBe(401);
+
+            await expect.poll(() => lines.length).toBe(3);
             expect(lines[0]).toMatch(/^\[LocalBearerTest\] GET \/mcp → 401 \(session absent, \d+ ms\)$/);
             expect(lines[1]).toMatch(/^\[LocalBearerTest\] GET \/mcp → 403 \(session absent, \d+ ms\)$/);
-            expect(lines.join('\n')).not.toContain(token)
+            expect(lines[2]).toMatch(/^\[LocalBearerTest\] POST \/mcp → 401 \(session absent, \d+ ms\)$/);
+
+            for (const secret of secrets) {
+                expect(lines.join('\n')).not.toContain(secret)
+            }
         });
 
         test('is unreachable through a discovered non-loopback IPv4 interface', async () => {
