@@ -1,14 +1,14 @@
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR} from './mcpServers.mjs';
-import {ensureAgentRepo}               from './ensureAgentRepo.mjs';
-import {launchRefusalOf}               from '../../../src/fleet/contract/launchAuthority.mjs';
-import {prepareManagedAgentWorkspace}  from './prepareManagedAgentWorkspace.mjs';
-import {redactReadFailure}             from './redactReadFailure.mjs';
-import {resolveSeatPlaneTarget}        from './resolveSeatPlaneTarget.mjs';
-import {importSeatMemory, MEMORY_IMPORT_NONE} from './seatMemoryImport.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                   from './mcpServers.mjs';
+import {ensureAgentRepo}                                 from './ensureAgentRepo.mjs';
+import {launchRefusalOf}                                 from '../../../src/fleet/contract/launchAuthority.mjs';
+import {prepareManagedAgentWorkspace}                    from './prepareManagedAgentWorkspace.mjs';
+import {redactReadFailure}                               from './redactReadFailure.mjs';
+import {resolveSeatPlaneTarget}                          from './resolveSeatPlaneTarget.mjs';
+import {importSeatMemory, MEMORY_IMPORT_NONE}            from './seatMemoryImport.mjs';
 import {convergeSeatGitIdentity, resolveSeatGitIdentity} from './seatGitIdentity.mjs';
-import {readSeatModelCatalog, unofferedDeclaration} from './seatModelCatalog.mjs';
-import path                            from 'node:path';
-import {fileURLToPath}                 from 'node:url';
+import {readSeatModelCatalog, unofferedDeclaration}      from './seatModelCatalog.mjs';
+import path                                              from 'node:path';
+import {fileURLToPath}                                   from 'node:url';
 
 const DEFAULT_AGENTOS_RUNTIME_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -413,10 +413,10 @@ export async function startAgentProvisioned({
         resolvedMcpCredential = stored.credential;
 
         const readiness = await activeTenantService.probeSeatPlaneCredential({
-            planeBase       : placement.endpoint,
-            credential      : stored.credential,
+            planeBase    : placement.endpoint,
+            credential   : stored.credential,
             expectedIdentity,
-            expectedPlane   : stored.plane
+            expectedPlane: stored.plane
         });
 
         if (!readiness?.ok) {
@@ -482,10 +482,20 @@ export async function startAgentProvisioned({
     // propagates, so `start` is never called over divergent or unsupported resident state.
     const seatInstanceRoot = instanceRoot ?? lifecycleService.getInstanceRoot?.();
 
+    // A moved seat's row names the home it left (`relocateSeatHome`). When the harness homes live in the
+    // seat folders, as they do under one agents root, that home's root is where Fleet rendered the files
+    // the copy carries, and the preparation re-derives them for this root.
+    const previousInstanceRoot = typeof agent.previousSeatHome === 'string' &&
+        path.basename(agent.previousSeatHome) === agentId &&
+        path.resolve(seatInstanceRoot) === path.resolve(managedRoot)
+        ? path.dirname(agent.previousSeatHome)
+        : null;
+
     const prepared = await prepareWorkspace({
         agent,
         targetRepoRoot,
         instanceRoot       : seatInstanceRoot,
+        previousInstanceRoot,
         agentosRuntimeRoot,
         nodePath,
         residentMcpEnv     : resolvedResidentMcpEnv,
@@ -529,7 +539,7 @@ export async function startAgentProvisioned({
         agentId,
         readParticipation,
         startOptions: {
-            cwd: prepared.targetRepoRoot,
+            cwd        : prepared.targetRepoRoot,
             resolvedCredential,
             resolvedResidentMcpEnv,
             gitIdentity: commitIdentity,

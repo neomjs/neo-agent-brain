@@ -1,18 +1,18 @@
-import crypto                                    from 'crypto';
-import fs                                        from 'fs';
-import path                                      from 'path';
-import aiConfig                                  from '../../config.mjs';
-import Base                                      from 'neo.mjs/src/core/Base.mjs';
-import {HARNESS_TYPES}                           from '../../../src/fleet/contract/harnessTypes.mjs';
-import {writeFileAtomicSync}                     from '../shared/atomicFileWrite.mjs';
+import crypto                                                   from 'crypto';
+import fs                                                       from 'fs';
+import path                                                     from 'path';
+import aiConfig                                                 from '../../config.mjs';
+import Base                                                     from 'neo.mjs/src/core/Base.mjs';
+import {HARNESS_TYPES}                                          from '../../../src/fleet/contract/harnessTypes.mjs';
+import {writeFileAtomicSync}                                    from '../shared/atomicFileWrite.mjs';
 import {mcpCatalogFor, normalizeMcpOverrides, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
-import {REPO_FORGES}                             from './deriveAgentRepoPath.mjs';
-import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePlan.mjs';
-import {normalizeMcpTarget}                      from './mcpServers.mjs';
-import {normalizeMemoryImport}                   from './seatMemoryImport.mjs';
-import {normalizeGitIdentityDeclaration}         from './seatGitIdentity.mjs';
-import {normalizeSeatModelDeclaration}           from './seatModelDeclaration.mjs';
-import SeatOperatorRegistryService, {isOwnerPrincipal} from './SeatOperatorRegistryService.mjs';
+import {REPO_FORGES}                                            from './deriveAgentRepoPath.mjs';
+import {mcpDeclarationRefusal}                                  from './managedAgentWorkspacePlan.mjs';
+import {normalizeMcpTarget}                                     from './mcpServers.mjs';
+import {normalizeMemoryImport}                                  from './seatMemoryImport.mjs';
+import {normalizeGitIdentityDeclaration}                        from './seatGitIdentity.mjs';
+import {normalizeSeatModelDeclaration}                          from './seatModelDeclaration.mjs';
+import SeatOperatorRegistryService, {isOwnerPrincipal}          from './SeatOperatorRegistryService.mjs';
 
 const
     // a refused operator claim in the operator's words: the store's own reason can name a host path
@@ -799,6 +799,8 @@ class FleetRegistryService extends Base {
      * a seat. The files move outside this registry; this write is what lets the next start accept the
      * path it names. No automatic adoption exists: a directory that happens to exist under the current
      * root carries no binding authority, so an unbound row stays refused until this act names its home.
+     * A move records the home it left as `previousSeatHome`. The start re-derives every Fleet-owned file
+     * still exactly as Fleet rendered it there, so a copied seat names its new home.
      * @param {String}      id        Registry agent id.
      * @param {Object}      move
      * @param {String|null} move.from The seat home the row records now, `null` for a row without one.
@@ -818,7 +820,7 @@ class FleetRegistryService extends Base {
         }
 
         const
-            def        = {...existing, seatHome: to, updatedAt: new Date().toISOString()},
+            def        = {...existing, seatHome: to, ...(from && from !== to && {previousSeatHome: from}), updatedAt: new Date().toISOString()},
             nextAgents = new Map(this.agents);
 
         nextAgents.set(id, def);

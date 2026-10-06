@@ -1,16 +1,16 @@
-import {constants as fsConstants}                  from 'node:fs';
-import fs                                          from 'node:fs/promises';
-import {writeFileAtomic}                           from '../shared/atomicFileWrite.mjs';
-import path                                        from 'node:path';
-import os                                          from 'node:os';
-import crypto                                      from 'node:crypto';
-import {isDeepStrictEqual}                         from 'node:util';
-import {parse as parseToml}                        from 'smol-toml';
-import {hydrateCurrentWorktree}                    from '../../scripts/migrations/bootstrapWorktree.mjs';
+import {constants as fsConstants}                     from 'node:fs';
+import fs                                             from 'node:fs/promises';
+import {writeFileAtomic}                              from '../shared/atomicFileWrite.mjs';
+import path                                           from 'node:path';
+import os                                             from 'node:os';
+import crypto                                         from 'node:crypto';
+import {isDeepStrictEqual}                            from 'node:util';
+import {parse as parseToml}                           from 'smol-toml';
+import {hydrateCurrentWorktree}                       from '../../scripts/migrations/bootstrapWorktree.mjs';
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
 import {applyCodexSeatSettings, parseTomlTableHeader} from './codexConfigToml.mjs';
-import {deriveNodeRuntimeEnv}                      from './deriveNodeRuntimeEnv.mjs';
-import {KIMI_SEAT_SERVERS, generateKimiSeatConfig} from './generateKimiSeatConfig.mjs';
+import {deriveNodeRuntimeEnv}                         from './deriveNodeRuntimeEnv.mjs';
+import {KIMI_SEAT_SERVERS, generateKimiSeatConfig}    from './generateKimiSeatConfig.mjs';
 import {
     deriveAgentInstanceHome,
     deriveAgentMemoryDir
@@ -21,7 +21,7 @@ import {
 } from './managedAgentWorkspacePlan.mjs';
 import {OPENCODE_SEAT_SERVERS, WAKE_ENVELOPE_PLANT_FILE_NAME, generateOpenCodeSeatConfig, isUnmodifiedGeneration} from './generateOpenCodeSeatConfig.mjs';
 import {SEAT_INSTRUCTION_STATES, projectSeatInstructions}                                                         from './projectSeatInstructions.mjs';
-import {ensureSeatEnvFile}                                                                                         from './seatEnvFile.mjs';
+import {ensureSeatEnvFile}                                                                                        from './seatEnvFile.mjs';
 
 export {createManagedAgentWorkspacePlan} from './managedAgentWorkspacePlan.mjs';
 
@@ -258,6 +258,8 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {String|null} [options.repoSlug=null] The checkout's repository, `<owner>/<name>`; it names
  *     the seat's instructions and is a host fact beside `targetRepoRoot`, never part of the logical plan.
  * @param {String} options.instanceRoot Absolute Fleet harness-home root.
+ * @param {String|null} [options.previousInstanceRoot=null] The agents root a relocated seat's folder was
+ *     copied from. Each Fleet-owned file still exactly as Fleet rendered it there is re-derived for this root.
  * @param {String} options.agentosRuntimeRoot Installed AgentOS runtime root.
  * @param {String} [options.nodePath] Node executable used for installed MCP entrypoints.
  * @param {Object} [options.runtime=process] Host runtime facts for child execution mode.
@@ -297,6 +299,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
     targetRepoRoot,
     repoSlug = null,
     instanceRoot,
+    previousInstanceRoot = null,
     agentosRuntimeRoot,
     nodePath = process.execPath,
     runtime = process,
@@ -331,6 +334,13 @@ async function applyManagedAgentWorkspacePlanUnchecked({
             nodePath,
             runtime,
             residentMcpEnv
+        }),
+        previous                    = previousSeatPlacement({
+            previousInstanceRoot,
+            instanceRoot  : canonicalInstanceRoot,
+            targetRepoRoot: canonicalTargetRepoRoot,
+            agent,
+            deriveInstanceHome
         });
 
     assertAbsolutePath(instanceHome, 'instanceHome');
@@ -368,6 +378,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         instanceHome,
         agentosRuntimeRoot: canonicalAgentosRuntimeRoot,
         plan,
+        previous,
         remoteMcpCapability,
         claudeConfigRoot,
         fileSystem
@@ -380,6 +391,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         agent,
         targetRepoRoot: canonicalTargetRepoRoot,
         instanceRoot  : canonicalInstanceRoot,
+        previous,
         fileSystem
     }));
 
@@ -437,6 +449,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * @param {Object}   options.agent               Fleet registry agent definition.
  * @param {String}   options.targetRepoRoot      Absolute provisioned target checkout path.
  * @param {String}   options.instanceRoot        Absolute Fleet harness-home root.
+ * @param {String}  [options.previousInstanceRoot] The agents root a relocated seat's folder was copied from.
  * @param {String}   options.agentosRuntimeRoot  Installed AgentOS runtime root.
  * @param {String}  [options.nodePath]           Node executable used for installed MCP entrypoints.
  * @param {Object}  [options.mcpTarget]          Resolved non-secret tenant target:
@@ -461,6 +474,7 @@ export async function prepareManagedAgentWorkspace({
     agent,
     targetRepoRoot,
     instanceRoot,
+    previousInstanceRoot = null,
     agentosRuntimeRoot,
     nodePath = process.execPath,
     runtime = process,
@@ -507,6 +521,7 @@ export async function prepareManagedAgentWorkspace({
         targetRepoRoot,
         repoSlug: agent.metadata?.repo?.repoSlug ?? null,
         instanceRoot,
+        previousInstanceRoot,
         agentosRuntimeRoot,
         nodePath,
         runtime,
@@ -685,6 +700,7 @@ async function prepareHarnessArtifacts({
     instanceHome,
     agentosRuntimeRoot,
     plan,
+    previous,
     remoteMcpCapability,
     claudeConfigRoot,
     fileSystem
@@ -692,11 +708,11 @@ async function prepareHarnessArtifacts({
     switch (agent.harnessType) {
         case 'codex':
         case 'codex-desktop':
-            return prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem});
+            return prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
         case 'kimi-code':
-            return prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem});
+            return prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
         case 'opencode':
-            return prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem});
+            return prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
         case 'claude-code':
             return prepareClaudeJsonArtifact({
                 agent,
@@ -824,16 +840,18 @@ async function retireSeatInstructions({filePath, receiptPath, trustedRoot, fileS
  * checkout unless `autoMemoryDirectory` names a directory, so the checkout's local settings name
  * `<agentsRoot>/<agentId>/memory`: the seat keeps one memory whichever checkout it opens and wherever a
  * checkout moves. The directory is created owner-only, because it holds the seat's notes. The setting is
- * Claude Code's, so the other families get nothing here.
- * @param {Object} options
- * @param {Object} options.agent          Fleet registry agent definition.
- * @param {String} options.targetRepoRoot Absolute provisioned target checkout path.
- * @param {String} options.instanceRoot   Absolute Fleet agents root.
- * @param {Object} options.fileSystem     Promise filesystem seam.
+ * Claude Code's, so the other families get nothing here. A relocated seat's pin still naming the previous
+ * home's directory moves with it.
+ * @param {Object}      options
+ * @param {Object}      options.agent          Fleet registry agent definition.
+ * @param {String}      options.targetRepoRoot Absolute provisioned target checkout path.
+ * @param {String}      options.instanceRoot   Absolute Fleet agents root.
+ * @param {Object|null} options.previous       The relocated seat's previous placement ({@link previousSeatPlacement}).
+ * @param {Object}      options.fileSystem     Promise filesystem seam.
  * @returns {Promise<Object[]>} The directory and settings artifacts, or none for another family.
  * @private
  */
-async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, fileSystem}) {
+async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, previous, fileSystem}) {
     if (!CLAUDE_HARNESS_TYPES.has(agent.harnessType)) return [];
 
     const memoryDir = deriveAgentMemoryDir({instanceRoot, agentId: agent.id});
@@ -841,10 +859,11 @@ async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, fileSyst
     return [
         await ensureDirectoryArtifact(memoryDir, instanceRoot, fileSystem, {mode: 0o700}),
         await convergeJsonSetting({
-            filePath   : path.join(targetRepoRoot, '.claude', 'settings.local.json'),
-            key        : CLAUDE_MEMORY_SETTING,
-            value      : memoryDir,
-            trustedRoot: targetRepoRoot,
+            filePath     : path.join(targetRepoRoot, '.claude', 'settings.local.json'),
+            key          : CLAUDE_MEMORY_SETTING,
+            value        : memoryDir,
+            previousValue: previous && deriveAgentMemoryDir({instanceRoot: previous.instanceRoot, agentId: agent.id}),
+            trustedRoot  : targetRepoRoot,
             fileSystem
         })
     ]
@@ -854,17 +873,19 @@ async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, fileSyst
  * @summary Converges one Fleet-owned top-level key in a JSON settings file the seat and its person also
  * write. The key goes into the file's own text, so every other byte stays as it was. A value already
  * there that differs is refused, never replaced: it is someone else's decision about the same thing.
+ * The one exception is `previousValue`, the value Fleet itself wrote at a relocated seat's previous home.
  * @param {Object} options
  * @param {String} options.filePath    The settings file.
  * @param {String} options.key         The Fleet-owned top-level key.
  * @param {*}      options.value       Its JSON-serializable value.
+ * @param {*}      [options.previousValue=null] Fleet's value at the seat's previous home, replaced in place.
  * @param {String} options.trustedRoot The root no path segment may leave by a symlink.
  * @param {Object} options.fileSystem  Promise filesystem seam.
  * @returns {Promise<Object>} The artifact, `CREATED`, `MATCH` or `UPDATED`.
  * @throws {ManagedWorkspacePreparationError} For a file that is not a JSON object, or a different value.
  * @private
  */
-async function convergeJsonSetting({filePath, key, value, trustedRoot, fileSystem}) {
+async function convergeJsonSetting({filePath, key, value, previousValue = null, trustedRoot, fileSystem}) {
     await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: key});
 
     let existing;
@@ -895,7 +916,21 @@ async function convergeJsonSetting({filePath, key, value, trustedRoot, fileSyste
             return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: key}
         }
 
-        throw divergentArtifact(filePath, key, `it already names another ${key}`)
+        if (previousValue === null || !isDeepStrictEqual(settings[key], previousValue)) {
+            throw divergentArtifact(filePath, key, `it already names another ${key}`)
+        }
+
+        const
+            property = findDirectJsonProperty(existing, findJsonObjectRange(existing), key),
+            replaced = property && existing.slice(0, property.valueStart) + JSON.stringify(value) + existing.slice(property.valueEnd);
+
+        if (!replaced || !isDeepStrictEqual(parseJsonObject(replaced), {...settings, [key]: value})) {
+            throw divergentArtifact(filePath, key, 'the replacement could not preserve the file')
+        }
+
+        await publishTextAtomically({filePath, content: replaced, fileSystem});
+
+        return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.UPDATED, ownedKeys: key}
     }
 
     const merged = insertJsonProperty(existing, key, value);
@@ -957,7 +992,7 @@ function parseJsonObject(source) {
  * @returns {Promise<Object[]>} The artifact rows: project, home, memories directory.
  * @private
  */
-async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, fileSystem}) {
+async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, previous, fileSystem}) {
     const
         projectPath     = path.join(targetRepoRoot, '.codex', 'config.toml'),
         legacyContent   = renderCodexProjectConfig(localizePlan(plan)),
@@ -1018,10 +1053,12 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
     });
 
     if (await convergeCodexRemoteTrust({
-        filePath   : homePath,
-        repoPath   : targetRepoRoot,
+        filePath: homePath,
+        repoPath: targetRepoRoot,
+        // the block names the checkout's real path as it was then, so both spellings are Fleet's
+        previousRepoPaths: previous ? [previous.targetRepoRoot, await fileSystem.realpath(previous.targetRepoRoot).catch(() => null)] : [],
         remote,
-        trustedRoot: instanceHome,
+        trustedRoot      : instanceHome,
         fileSystem
     }) && homeArtifact.status === WORKSPACE_ARTIFACT_STATES.MATCH) {
         homeArtifact.status = WORKSPACE_ARTIFACT_STATES.UPDATED
@@ -1333,7 +1370,7 @@ async function convergeClaudeLocalScope({agent, targetRepoRoot, instanceHome, pl
  * clobber or even flag them); the config/hook surfaces converge on their Fleet-owned projections.
  * @private
  */
-async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem}) {
+async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem}) {
     const
         enabledKeys = new Set(plan.filter(server => server.enabled).map(server => server.key)),
         servers     = KIMI_SEAT_SERVERS.filter(server => enabledKeys.has(server.name.slice(NEO_MCP_NAME_PREFIX.length)));
@@ -1344,22 +1381,24 @@ async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntim
 
     const
         remoteServers = createRemoteServerMap(plan),
-        options       = {
+        optionsAt     = placement => ({
             agentosRuntimeRoot,
-            targetRepoRoot,
-            seatEnvFile: path.join(targetRepoRoot, '.env'),
-            kimiHome   : instanceHome,
-            memoryDir  : path.join(instanceHome, 'memory'),
-            nodeBinary : plan[0].command,
+            targetRepoRoot: placement.targetRepoRoot,
+            seatEnvFile   : path.join(placement.targetRepoRoot, '.env'),
+            kimiHome      : placement.instanceHome,
+            memoryDir     : path.join(placement.instanceHome, 'memory'),
+            nodeBinary    : plan[0].command,
             servers
-        },
+        }),
+        options     = optionsAt({targetRepoRoot, instanceHome}),
         environment = plan[0].environment,
         {files} = generateKimiSeatConfig({...options, environment, remoteServers}),
         {files: legacyFiles} = generateKimiSeatConfig({...options, environment}),
         runtimeLegacyFiles = environment && generateKimiSeatConfig({...options, remoteServers}).files,
-        runtimeLegacyStdioFiles = environment && generateKimiSeatConfig(options).files;
+        runtimeLegacyStdioFiles = environment && generateKimiSeatConfig(options).files,
+        previousFiles = previous && rehomeFiles(generateKimiSeatConfig({...optionsAt(previous), environment, remoteServers}).files, previous, {targetRepoRoot, instanceHome});
 
-    return convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, repoPath: targetRepoRoot, instanceHome, fileSystem, policies: [
+    return convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, fileSystem, policies: [
         {match: /config\.toml$/,                   ownedProjection: kimiConfigTomlOwnedProjection, ownedLabel: 'default_permission_mode,default_model,[[permission.rules]],[[hooks]]'},
         {
             match          : /\.kimi-code\/mcp\.json$/,
@@ -1379,7 +1418,7 @@ async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntim
  * Fleet-owned; divergence fails closed per the generated-artifact posture).
  * @private
  */
-async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem}) {
+async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem}) {
     const
         enabledKeys = new Set(plan.filter(server => server.enabled).map(server => server.key)),
         servers     = OPENCODE_SEAT_SERVERS.filter(server => enabledKeys.has(server.name.slice(NEO_MCP_NAME_PREFIX.length)));
@@ -1390,27 +1429,29 @@ async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRu
 
     const
         remoteServers = createRemoteServerMap(plan),
-        options       = {
+        optionsAt     = placement => ({
             agentosRuntimeRoot,
-            targetRepoRoot,
-            seatEnvFile : path.join(targetRepoRoot, '.env'),
-            memoryDir   : path.join(instanceHome, 'memory'),
-            nodeBinary  : plan[0].command,
-            environment : plan[0].environment,
-            seatHome    : instanceHome,
-            wakeHookPath: path.join(instanceHome, 'write-wake-envelope.mjs'),
+            targetRepoRoot: placement.targetRepoRoot,
+            seatEnvFile   : path.join(placement.targetRepoRoot, '.env'),
+            memoryDir     : path.join(placement.instanceHome, 'memory'),
+            nodeBinary    : plan[0].command,
+            environment   : plan[0].environment,
+            seatHome      : placement.instanceHome,
+            wakeHookPath  : path.join(placement.instanceHome, 'write-wake-envelope.mjs'),
             // The seat's OWN OpenCode plugins dir, resolved here rather than inside the boot hook:
             // `deriveHarnessLaunchSpec` points `XDG_CONFIG_HOME` at this same `instanceHome`, so the plant
             // lands where that seat's first OpenCode process looks for it — before the hook ever runs.
             // The hook runs after the server is listening, so a plant IT installed could only be loaded by
             // a later process, and `hookEnv` does not carry `XDG_CONFIG_HOME` at all.
-            wakePlantPath: path.join(instanceHome, 'opencode', 'plugins', WAKE_ENVELOPE_PLANT_FILE_NAME),
+            wakePlantPath : path.join(placement.instanceHome, 'opencode', 'plugins', WAKE_ENVELOPE_PLANT_FILE_NAME),
             servers
-        },
+        }),
+        options       = optionsAt({targetRepoRoot, instanceHome}),
         {files}       = generateOpenCodeSeatConfig({...options, remoteServers}),
         {files: legacyFiles} = generateOpenCodeSeatConfig(options),
         runtimeLegacyFiles = plan[0].environment && generateOpenCodeSeatConfig({...options, environment: {}, remoteServers}).files,
-        runtimeLegacyStdioFiles = plan[0].environment && generateOpenCodeSeatConfig({...options, environment: {}}).files;
+        runtimeLegacyStdioFiles = plan[0].environment && generateOpenCodeSeatConfig({...options, environment: {}}).files,
+        previousFiles = previous && rehomeFiles(generateOpenCodeSeatConfig({...optionsAt(previous), remoteServers}).files, previous, {targetRepoRoot, instanceHome});
 
     // The plant is WITHHELD from the generic text-artifact pass rather than given a policy row, because
     // `convergeTextArtifact` cannot replace and the plant has to be replaceable: the file already on a
@@ -1423,7 +1464,7 @@ async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRu
 
     return [
         ...await convergeSeatConfigFiles({
-            files   : rest, legacyFiles: legacyRest, runtimeLegacyFiles, runtimeLegacyStdioFiles, repoPath: targetRepoRoot, instanceHome, fileSystem,
+            files   : rest, legacyFiles: legacyRest, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, fileSystem,
             policies: [
                 {
                     match          : /opencode\.jsonc$/,
@@ -1507,16 +1548,18 @@ async function convergeWakeEnvelopePlant({plantFile, instanceHome, fileSystem}) 
  * its path matches (Fleet-owned projection, fail-closed on divergence) or falls through to the
  * create-only bearer default — an existing file of ANY content reports MATCH untouched (the
  * seat's own authorship is never a divergence), an absent file is created from the template.
+ * A relocated seat's `previousFiles` (the generator's rendering at its previous home) move first.
  * @private
  */
-async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, repoPath, instanceHome, fileSystem, policies}) {
+async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath, instanceHome, fileSystem, policies}) {
     const artifacts = [];
 
     for (const file of files) {
         const policy = policies.find(entry => entry.match.test(file.path));
 
-        const legacyFile = legacyFiles?.find(entry => entry.path === file.path);
-        const common     = {
+        const legacyFile   = legacyFiles?.find(entry => entry.path === file.path);
+        const previousFile = policy && previousFiles?.find(entry => entry.path === file.path);
+        const common       = {
             filePath       : file.path,
             desiredContent : file.content,
             ownedProjection: policy ? policy.ownedProjection : createOnlyOwnedProjection,
@@ -1524,9 +1567,9 @@ async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, 
             trustedRoot    : file.path.startsWith(repoPath + path.sep) ? repoPath : instanceHome,
             fileSystem
         };
-
-        if (policy?.transport) {
-            artifacts.push(...await convergeTransportArtifact({
+        const moved     = previousFile && await relocateGeneratedText({...common, previousContent: previousFile.content});
+        const converged = policy?.transport
+            ? await convergeTransportArtifact({
                 ...common,
                 legacyContent            : legacyFile.content,
                 runtimeLegacyContent     : runtimeLegacyFiles?.find(entry => entry.path === file.path)?.content,
@@ -1540,13 +1583,124 @@ async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, 
                 adapter: policy.transport.adapter,
                 instanceHome,
                 remote : file.content !== legacyFile.content
-            }))
-        } else {
-            artifacts.push(await convergeTextArtifact(common))
+            })
+            : [await convergeTextArtifact(common)];
+
+        if (moved && converged[0].status === WORKSPACE_ARTIFACT_STATES.MATCH) {
+            converged[0].status = WORKSPACE_ARTIFACT_STATES.UPDATED
         }
+
+        artifacts.push(...converged)
     }
 
     return artifacts;
+}
+
+/**
+ * @summary Moves one generated file with its relocated seat. When the file's Fleet-owned projection is
+ * still exactly the generator's rendering at the previous home, each generated line that changed between
+ * the two renderings is replaced by its new line. Every other byte stays as it was. Nothing is written
+ * unless the result projects to the current rendering; then convergence decides, as on any Start.
+ * @param {Object}   options
+ * @param {String}   options.filePath        The file at the seat's current home.
+ * @param {String}   options.previousContent The generator's rendering at the previous home.
+ * @param {String}   options.desiredContent  Its rendering here.
+ * @param {Function} options.ownedProjection The file's Fleet-owned projection.
+ * @param {String}   options.trustedRoot     The root no path segment may leave by a symlink.
+ * @param {Object}   options.fileSystem      Promise filesystem seam.
+ * @returns {Promise<Boolean>} Whether the file was rewritten.
+ * @private
+ */
+async function relocateGeneratedText({filePath, previousContent, desiredContent, ownedProjection, trustedRoot, fileSystem}) {
+    await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: 'relocated seat file'});
+
+    const
+        existing   = await fileSystem.readFile(filePath, 'utf8').catch(error => {
+            if (error?.code === 'ENOENT') return null;
+            throw error
+        }),
+        projectsTo = (source, rendering) => JSON.stringify(ownedProjection(source)) === JSON.stringify(ownedProjection(rendering));
+
+    if (existing === null || projectsTo(existing, desiredContent) || !projectsTo(existing, previousContent)) return false;
+
+    const
+        before = previousContent.split('\n'),
+        after  = desiredContent.split('\n'),
+        moves  = new Map();
+
+    if (before.length !== after.length) return false;
+
+    for (const [index, line] of before.entries()) {
+        if (line === after[index]) continue;
+        // one previous line rendered two ways has no single new line
+        if (moves.has(line) && moves.get(line) !== after[index]) return false;
+
+        moves.set(line, after[index])
+    }
+
+    const relocated = existing.split('\n').map(line => moves.get(line) ?? line).join('\n');
+
+    if (!projectsTo(relocated, desiredContent)) return false;
+
+    await publishTextAtomically({filePath, content: relocated, fileSystem});
+
+    return true
+}
+
+/**
+ * @summary Where a relocated seat's paths pointed before its folder was copied to this agents root: the
+ * previous root's harness home, and its checkout when that sat inside the seat's folder (one outside it
+ * did not move). `null` without a previous root, or when it is this root.
+ * @param {Object}      options
+ * @param {String|null} options.previousInstanceRoot The agents root the seat's folder was copied from.
+ * @param {String}      options.instanceRoot         This agents root, resolved.
+ * @param {String}      options.targetRepoRoot       This checkout, resolved.
+ * @param {Object}      options.agent                The plan's `{id, harnessType}`.
+ * @param {Function}    options.deriveInstanceHome   Per-agent home derivation seam.
+ * @returns {{instanceRoot: String, instanceHome: String, targetRepoRoot: String}|null}
+ * @private
+ */
+function previousSeatPlacement({previousInstanceRoot, instanceRoot, targetRepoRoot, agent, deriveInstanceHome}) {
+    if (previousInstanceRoot === null) return null;
+
+    assertAbsolutePath(previousInstanceRoot, 'previousInstanceRoot');
+
+    const
+        root   = path.resolve(previousInstanceRoot),
+        inSeat = path.relative(path.join(instanceRoot, agent.id), targetRepoRoot);
+
+    if (root === instanceRoot) return null;
+
+    return {
+        instanceRoot  : root,
+        instanceHome  : deriveInstanceHome({instanceRoot: root, agentId: agent.id, harnessType: agent.harnessType}),
+        targetRepoRoot: inSeat === '..' || inSeat.startsWith(`..${path.sep}`) || path.isAbsolute(inSeat)
+            ? targetRepoRoot
+            : path.join(root, agent.id, inSeat)
+    }
+}
+
+/**
+ * @summary Re-addresses a generator's rendering at a seat's previous placement to the files it becomes at
+ * the current one, so each rendering pairs with its current file.
+ * @param {Object[]} files     `{path, content}` rendered for the previous placement.
+ * @param {Object}   previous  `{targetRepoRoot, instanceHome}` there.
+ * @param {Object}   current   `{targetRepoRoot, instanceHome}` here.
+ * @returns {Object[]}
+ * @private
+ */
+function rehomeFiles(files, previous, current) {
+    return files.map(file => {
+        for (const key of ['targetRepoRoot', 'instanceHome']) {
+            const relative = path.relative(previous[key], file.path);
+
+            if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
+                return {...file, path: path.join(current[key], relative)}
+            }
+        }
+
+        return file
+    })
 }
 
 /**
@@ -1848,11 +2002,13 @@ async function convergeCodexProjectSwitches({filePath, plan, instanceHome, adapt
  * inserted inside Fleet's comments; mixed blocks cannot be removed on opt-out. A non-trusted row
  * rejects remote admission. This keeps the no-intent home artifact byte-identical
  * to the stdio baseline while making the generated project MCP config consumable at runtime.
+ * A relocated seat's block, exactly as Fleet rendered it for a `previousRepoPaths` entry, moves to the
+ * checkout's new path.
  * @param {Object} options
  * @returns {Promise<Boolean>} whether Fleet changed the home artifact.
  * @private
  */
-async function convergeCodexRemoteTrust({filePath, repoPath, remote, trustedRoot, fileSystem}) {
+async function convergeCodexRemoteTrust({filePath, repoPath, previousRepoPaths = [], remote, trustedRoot, fileSystem}) {
     await assertNoSymlinkSegments({
         rootPath  : trustedRoot,
         targetPath: filePath,
@@ -1890,6 +2046,12 @@ async function convergeCodexRemoteTrust({filePath, repoPath, remote, trustedRoot
                 }
 
                 // An existing resident grant already owns canonical trust; never create a duplicate table.
+                const replacement = existingTrust === 'trusted' ? '' : expectedBlock;
+
+                await publishTextAtomically({filePath, content: source.slice(0, begin) + replacement + source.slice(end), fileSystem});
+                return true
+            }
+            if (block !== expectedBlock && previousRepoPaths.some(previousPath => previousPath && block === renderCodexRemoteTrustBlock(previousPath))) {
                 const replacement = existingTrust === 'trusted' ? '' : expectedBlock;
 
                 await publishTextAtomically({filePath, content: source.slice(0, begin) + replacement + source.slice(end), fileSystem});
@@ -1997,7 +2159,7 @@ function previousNodeRuntimePlan(plan) {
  */
 function previousPlacementPlan(plan) {
     return plan.map(server => ({...server,
-        runtimeEnv: [...(MCP_SERVER_DESCRIPTORS[server.key].legacyRuntimeEnv || MCP_SERVER_DESCRIPTORS[server.key].runtimeEnv)],
+        runtimeEnv        : [...(MCP_SERVER_DESCRIPTORS[server.key].legacyRuntimeEnv || MCP_SERVER_DESCRIPTORS[server.key].runtimeEnv)],
         requiredRuntimeEnv: [...MCP_SERVER_DESCRIPTORS[server.key].requiredRuntimeEnv]
     }))
 }

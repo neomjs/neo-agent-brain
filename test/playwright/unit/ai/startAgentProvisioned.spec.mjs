@@ -1,12 +1,12 @@
-import {test, expect}                    from '@playwright/test';
-import {CREDENTIAL_FAMILIES}             from '../../../../ai/services/fleet/redactCredentials.mjs';
+import {test, expect}                              from '@playwright/test';
+import {CREDENTIAL_FAMILIES}                       from '../../../../ai/services/fleet/redactCredentials.mjs';
 import {LAUNCHABLE_HARNESS_TYPES, deriveCodexHome} from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
-import {deriveAgentInstanceHome}         from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
-import {readCodexModelCatalog}           from '../../../../ai/services/fleet/codexModelCatalog.mjs';
-import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import {deriveAgentInstanceHome}                   from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
+import {readCodexModelCatalog}                     from '../../../../ai/services/fleet/codexModelCatalog.mjs';
+import {createManagedAgentWorkspacePlan}           from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {startAgentProvisioned as startProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
-import {resolveSeatGitIdentity}          from '../../../../ai/services/fleet/seatGitIdentity.mjs';
-import {supportsTenantMcpTarget}         from '../../../../src/fleet/contract/harnessTypes.mjs';
+import {resolveSeatGitIdentity}                    from '../../../../ai/services/fleet/seatGitIdentity.mjs';
+import {supportsTenantMcpTarget}                   from '../../../../src/fleet/contract/harnessTypes.mjs';
 
 /** The Git identity a fixture seat resolves to unless a case says otherwise. */
 const SEAT_GIT_IDENTITY = {state: 'derived', source: 'verified-primary', name: 'Seat Agent', email: 'seat@example.test'};
@@ -1155,6 +1155,37 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(agents.a.seatHome).toBe('/moved/a')
     });
 
+    test('a moved seat\'s start hands the preparation the root its home left, where Fleet rendered the files its copy carries', async () => {
+        const
+            agents = repoAgent('a'),
+            start  = async ({instanceRoot} = {}) => {
+                const prepare = makePrepareWorkspace();
+
+                await startAgentProvisioned({
+                    lifecycleService: makeLifecycle({agents}),
+                    agentId         : 'a',
+                    managedRoot     : '/moved',
+                    ...(instanceRoot && {instanceRoot}),
+                    ensureRepo        : makeEnsureRepo('/moved/a/neomjs-neo'),
+                    prepareWorkspace  : prepare,
+                    agentosRuntimeRoot: '/installed/neo'
+                });
+
+                return prepare.calls[0].previousInstanceRoot
+            };
+
+        // what relocateSeatHome(id, {from: '/managed/a', to: '/moved/a'}) wrote after the copy
+        Object.assign(agents.a, {seatHome: '/moved/a', previousSeatHome: '/managed/a'});
+
+        expect(await start({instanceRoot: '/moved'})).toBe('/managed');
+        // harness homes kept under another root were never in the seat folder the copy carried
+        expect(await start()).toBeNull();
+
+        delete agents.a.previousSeatHome;
+
+        expect(await start({instanceRoot: '/moved'})).toBeNull()
+    });
+
     test('a registration that predates the record is refused until its home is bound, even when a directory already exists under the current root', async () => {
         // the stray empty home an earlier start minted under the changed root also "exists" — a
         // directory carries no binding authority, so the composer never consults the filesystem
@@ -1278,8 +1309,8 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
 
     /** The seat-plane half of the tenant service: existing-PAT binding and the start's proof of it. */
     function makePlaneService({events, stored = {credential: 'seat-plane-pat', plane: SERVED}, readiness = {ok: true}, storeResult = {status: 'stored'}, storeReadback} = {}) {
-        const calls = {resolve: [], probe: [], store: []};
-        let currentStored = stored;
+        const calls         = {resolve: [], probe: [], store: []};
+        let   currentStored = stored;
 
         return {
             calls,
@@ -1475,12 +1506,12 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
 
     test('a binding that appears during a failed registry-PAT proof is re-read and re-proved before checkout', async () => {
         const
-            registryPat      = 'ghp_seat_checkout',
-            explicitBinding  = 'explicit-plane-binding',
-            lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: registryPat}}),
-            planeService     = makePlaneService({
-                stored      : null,
-                storeResult : {status: 'rejected', reason: 'plane rejected the credential'},
+            registryPat     = 'ghp_seat_checkout',
+            explicitBinding = 'explicit-plane-binding',
+            lifecycle       = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: registryPat}}),
+            planeService    = makePlaneService({
+                stored       : null,
+                storeResult  : {status: 'rejected', reason: 'plane rejected the credential'},
                 storeReadback: {credential: explicitBinding, plane: SERVED}
             }),
             ensureRepo       = makeEnsureRepo(),
@@ -1680,10 +1711,10 @@ test.describe('startAgentProvisioned — an adopted seat\'s memory import', () =
 
 test.describe('startAgentProvisioned — the seat commits as itself', () => {
     const
-        BRAIN      = {repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git'},
-        MISSING    = {state: 'missing', name: 'Seat Agent', reason: 'its forge account offers no email this PAT can read'},
-        CONVERGED  = {state: 'converged', scope: 'local', action: 'written'},
-        withRepos  = (...repos) => ({a: {...repoAgent('a').a, metadata: {repo: REPO, repos}}}),
+        BRAIN     = {repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git'},
+        MISSING   = {state: 'missing', name: 'Seat Agent', reason: 'its forge account offers no email this PAT can read'},
+        CONVERGED = {state: 'converged', scope: 'local', action: 'written'},
+        withRepos = (...repos) => ({a: {...repoAgent('a').a, metadata: {repo: REPO, repos}}}),
         // each repository lands in its own checkout; a slug listed in `failing` cannot be cloned
         ensureRepo = (events, failing = []) => async ({repoSlug}) => {
             events.push('ensure');
