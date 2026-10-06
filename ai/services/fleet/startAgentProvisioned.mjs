@@ -1,5 +1,6 @@
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                   from './mcpServers.mjs';
 import {ensureAgentRepo}                                 from './ensureAgentRepo.mjs';
+import {LAUNCH_ADMISSION_REASONS}                        from '../../../src/fleet/contract/launchAdmission.mjs';
 import {launchRefusalOf}                                 from '../../../src/fleet/contract/launchAuthority.mjs';
 import {prepareManagedAgentWorkspace}                    from './prepareManagedAgentWorkspace.mjs';
 import {redactReadFailure}                               from './redactReadFailure.mjs';
@@ -338,6 +339,20 @@ export async function startAgentProvisioned({
     // read after the identity check, so its refusals stay true that nothing was changed
     await readOffered();
 
+    // A Claude Desktop seat's profile is rewritten below, which only a closed Desktop tolerates. The Fleet's
+    // own record says it is not running; a Desktop someone else opened on the profile is checked here.
+    const desktopRows = agent.harnessType === 'claude-desktop';
+
+    if (desktopRows) {
+        const inUse = lifecycleService.desktopProfileInUse(agent);
+
+        if (inUse !== false) {
+            throw Object.assign(new Error(`startAgentProvisioned: agent '${agentId}' cannot start: ${inUse
+                ? 'its Claude Desktop profile is open in a process this Fleet does not supervise. Quit that Claude Desktop, then start the seat again'
+                : 'the process table could not be read to confirm its Claude Desktop is closed'}. Nothing was cloned or configured.`), {code: 'FLEET_SEAT_PROFILE_IN_USE'})
+        }
+    }
+
     const commitIdentity = {name: gitIdentity.name, email: gitIdentity.email};
 
     let
@@ -491,63 +506,79 @@ export async function startAgentProvisioned({
         ? path.dirname(agent.previousSeatHome)
         : null;
 
-    const prepared = await prepareWorkspace({
-        agent,
-        targetRepoRoot,
-        instanceRoot       : seatInstanceRoot,
-        previousInstanceRoot,
-        agentosRuntimeRoot,
-        nodePath,
-        residentMcpEnv     : resolvedResidentMcpEnv,
-        remoteMcpCapability: remoteCapability,
-        // the plan's remote kind, whether a connected tenant or the Fleet's plane serves MC and KB
-        mcpTarget          : remotePlan && {
-            kind            : 'tenant',
-            credentialEnvVar: REMOTE_MCP_CREDENTIAL_ENV_VAR,
-            resources       : remotePlan.resources
-        }
-    });
+    // A Claude Desktop seat's profile rows carry one launch grant per enabled server, reserved before the rows
+    // are written. The lifecycle activates them once the seat runs and is leased; a Start that fails before
+    // that revokes them, so a row written here never admits a child of a seat this Start did not launch.
+    const
+        admission   = desktopRows ? lifecycleService.getLaunchAdmission() : null,
+        reservation = admission && await admission.reserve({agent, registry});
 
-    if (!prepared ||
-        prepared.targetRepoRoot !== targetRepoRoot ||
-        prepared.agentosRuntimeRoot !== path.resolve(agentosRuntimeRoot)) {
-        throw new Error(`startAgentProvisioned: preparation did not return the exact AgentOS runtime and target repo roots for agent '${agentId}'.`);
-    }
+    let prepared, memory, status;
 
-    if (remote) {
-        await lifecycleService.inspectPreparedRemoteMcpAdapter({
+    try {
+        prepared = await prepareWorkspace({
             agent,
-            binaryPath  : remoteCapability.binaryPath,
-            repoPath    : prepared.targetRepoRoot,
-            instanceHome: prepared.instanceHome,
-            mcpMatrix   : prepared.mcpMatrix,
-            mcpPlan     : prepared.mcpPlan,
-            mcpTarget   : {
-                kind     : 'tenant',
-                resources: remotePlan.resources
+            targetRepoRoot,
+            instanceRoot       : seatInstanceRoot,
+            previousInstanceRoot,
+            agentosRuntimeRoot,
+            nodePath,
+            residentMcpEnv     : resolvedResidentMcpEnv,
+            remoteMcpCapability: remoteCapability,
+            // the plan's remote kind, whether a connected tenant or the Fleet's plane serves MC and KB
+            mcpTarget          : remotePlan && {
+                kind            : 'tenant',
+                credentialEnvVar: REMOTE_MCP_CREDENTIAL_ENV_VAR,
+                resources       : remotePlan.resources
+            },
+            ...(reservation ? {launchAdmission: {issuer: reservation.issuer, identity: reservation.identity, grants: reservation.grants}} : {})
+        });
+
+        if (!prepared ||
+            prepared.targetRepoRoot !== targetRepoRoot ||
+            prepared.agentosRuntimeRoot !== path.resolve(agentosRuntimeRoot)) {
+            throw new Error(`startAgentProvisioned: preparation did not return the exact AgentOS runtime and target repo roots for agent '${agentId}'.`);
+        }
+
+        if (remote) {
+            await lifecycleService.inspectPreparedRemoteMcpAdapter({
+                agent,
+                binaryPath  : remoteCapability.binaryPath,
+                repoPath    : prepared.targetRepoRoot,
+                instanceHome: prepared.instanceHome,
+                mcpMatrix   : prepared.mcpMatrix,
+                mcpPlan     : prepared.mcpPlan,
+                mcpTarget   : {
+                    kind     : 'tenant',
+                    resources: remotePlan.resources
+                }
+            })
+        }
+
+        // an adopted seat starts with the memory it consented to import, never an empty folder that
+        // reads like a fresh seat's: converge the copy, then read the destination fresh
+        memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
+
+        status = await spawnPermitted({
+            lifecycleService,
+            registry,
+            agentId,
+            readParticipation,
+            startOptions: {
+                cwd        : prepared.targetRepoRoot,
+                resolvedCredential,
+                resolvedResidentMcpEnv,
+                gitIdentity: commitIdentity,
+                ...(remote
+                    ? {resolvedMcpCredential, resolvedMcpEndpoint: remotePlan.endpoint, remoteMcpCapability: remoteCapability}
+                    : {}),
+                ...(reservation ? {launchAdmission: {generation: reservation.generation, plan: prepared.mcpPlan}} : {})
             }
         })
+    } catch (error) {
+        reservation && admission.revoke(agentId, LAUNCH_ADMISSION_REASONS.START_FAILED, {generation: reservation.generation});
+        throw error
     }
-
-    // an adopted seat starts with the memory it consented to import, never an empty folder that
-    // reads like a fresh seat's: converge the copy, then read the destination fresh
-    const memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
-
-    const status = await spawnPermitted({
-        lifecycleService,
-        registry,
-        agentId,
-        readParticipation,
-        startOptions: {
-            cwd        : prepared.targetRepoRoot,
-            resolvedCredential,
-            resolvedResidentMcpEnv,
-            gitIdentity: commitIdentity,
-            ...(remote
-                ? {resolvedMcpCredential, resolvedMcpEndpoint: remotePlan.endpoint, remoteMcpCapability: remoteCapability}
-                : {})
-        }
-    });
 
     // the answer reaches whoever pressed Start; the launch record keeps it for every later read
     if (repos.length) {

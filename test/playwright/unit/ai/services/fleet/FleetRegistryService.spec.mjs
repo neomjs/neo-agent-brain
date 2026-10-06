@@ -229,6 +229,36 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         fs.rmSync(tmpDir, {recursive: true, force: true});
     });
 
+    test('every committed definition write announces itself once, after the file holds it, with the row before and after', () => {
+        const
+            changes  = [],
+            listener = FleetRegistryService.on('definitionChange', ({id, previous, next}) => changes.push({
+                id,
+                previous: previous && {harnessType: previous.harnessType, launchOwner: previous.launchOwner ?? null},
+                next    : next && {harnessType: next.harnessType, launchOwner: next.launchOwner ?? null},
+                persisted: FleetRegistryService.readRegistry().has?.(id) ?? Boolean(FleetRegistryService.readRegistry()[id])
+            }));
+
+        try {
+            FleetRegistryService.defineAgent({githubUsername: 'neo-opus-ada', harnessType: 'claude-desktop', credential: 'ghp_fixture'});
+            FleetRegistryService.configureAgent({id: 'neo-opus-ada', mcpServers: {'neural-link': false}});
+            FleetRegistryService.setLaunchOwner('neo-opus-ada', 'fleet');
+            expect(() => FleetRegistryService.configureAgent({id: 'neo-opus-ada', harnessType: 'unknown'})).toThrow();
+            FleetRegistryService.removeAgent('neo-opus-ada');
+        } finally {
+            FleetRegistryService.un('definitionChange', listener)
+        }
+
+        // a refused write announces nothing
+        expect(changes.map(({id, previous, next}) => [id, previous, next])).toEqual([
+            ['neo-opus-ada', null, {harnessType: 'claude-desktop', launchOwner: 'external'}],
+            ['neo-opus-ada', {harnessType: 'claude-desktop', launchOwner: 'external'}, {harnessType: 'claude-desktop', launchOwner: 'external'}],
+            ['neo-opus-ada', {harnessType: 'claude-desktop', launchOwner: 'external'}, {harnessType: 'claude-desktop', launchOwner: 'fleet'}],
+            ['neo-opus-ada', {harnessType: 'claude-desktop', launchOwner: 'fleet'}, null]
+        ]);
+        expect(changes.map(change => change.persisted), 'each announcement follows the write it names').toEqual([true, true, true, false])
+    });
+
     test('harnessTypes derives from the ONE shared registry (no second key list)', async () => {
         const {HARNESS_TYPES} = await import('../../../../../../src/fleet/contract/harnessTypes.mjs');
 

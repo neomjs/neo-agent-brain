@@ -31,7 +31,10 @@ function startAgentProvisioned(options) {
 /** Every agent holds a GitHub PAT; a known agent resolves this one unless `credentials` names another. */
 const FIXTURE_PAT = 'ghp_fixture_only';
 
-/** A recording FleetLifecycleService stub: tracks start/capability/credential calls. */
+/**
+ * A recording FleetLifecycleService stub: tracks start/capability/credential calls, and for a Claude Desktop seat
+ * the profile probe and the launch admission it reserves and revokes.
+ */
 function makeLifecycle({
     agents = {},
     definitions = agents,
@@ -39,12 +42,24 @@ function makeLifecycle({
     running = {},
     events,
     capabilityError = null,
-    inspectionError = null
+    inspectionError = null,
+    profileInUse = false
 } = {}) {
-    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], repoOutcomes: [], start: [], status: []};
+    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], start: [], status: []};
+    const admission = {
+        reserve: async ({agent, registry}) => {
+            events?.push('reserve');
+            calls.reserve.push({id: agent.id, registry});
+
+            return {generation: `generation-${agent.id}`, issuer: 'http://127.0.0.1:47123', identity: agent.githubUsername, grants: {'memory-core': 'grant-mc'}}
+        },
+        revoke: (id, reason, options) => { calls.revoke.push({id, reason, ...options}); return true }
+    };
     return {
         calls,
-        credentialEnvVar: 'GH_TOKEN',
+        credentialEnvVar   : 'GH_TOKEN',
+        desktopProfileInUse: agent => { calls.profile.push(agent.id); return profileInUse },
+        getLaunchAdmission : () => admission,
         isRunning       : id => !!running[id],
         status          : id => { calls.status.push(id); return {id, running: !!running[id], state: running[id] ? 'running' : 'stopped'}; },
         getRegistry     : () => ({
@@ -780,6 +795,82 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         expect([...kept.keys()]).toEqual(['codex']);
         expect(kept.get('codex').models.map(model => model.id)).toEqual(['gpt-6-luna']);
+    });
+
+    test('a Claude Desktop Start reserves launch admission before preparing, then hands its grants to the rows and its generation to the spawn', async () => {
+        const run = async (harnessType, events = []) => {
+            const
+                agents    = repoAgent('seat'),
+                lifecycle = makeLifecycle({agents, events}),
+                prepare   = makePrepareWorkspace(events);
+
+            agents.seat.harnessType = harnessType;
+
+            await startAgentProvisioned({
+                lifecycleService  : lifecycle,
+                agentId           : 'seat',
+                managedRoot       : '/managed',
+                ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+                prepareWorkspace  : prepare,
+                agentosRuntimeRoot: '/installed/neo'
+            });
+
+            return {events, lifecycle, prepare}
+        };
+
+        const {events, lifecycle, prepare} = await run('claude-desktop');
+
+        expect(lifecycle.calls.profile).toEqual(['seat']);
+        expect(events.indexOf('reserve')).toBeLessThan(events.indexOf('prepare'));
+        // the registry whose definition changes the issuer follows from here on
+        expect(lifecycle.calls.reserve[0].registry).toEqual(expect.objectContaining({getDefinition: expect.any(Function)}));
+        expect(prepare.calls[0].launchAdmission).toEqual({issuer: 'http://127.0.0.1:47123', identity: 'seat', grants: {'memory-core': 'grant-mc'}});
+        expect(lifecycle.calls.start[0].opts.launchAdmission).toEqual({generation: 'generation-seat', plan: expect.any(Array)});
+        expect(lifecycle.calls.revoke).toEqual([]);
+
+        // every other family neither probes a profile nor reserves a grant
+        const codex = await run('codex');
+
+        expect([codex.lifecycle.calls.profile, codex.lifecycle.calls.reserve, codex.prepare.calls[0].launchAdmission, codex.lifecycle.calls.start[0].opts.launchAdmission])
+            .toEqual([[], [], undefined, undefined])
+    });
+
+    test('a Claude Desktop profile another process holds, or a process table that cannot be read, refuses before anything is cloned', async () => {
+        for (const profileInUse of [true, null]) {
+            const
+                agents    = repoAgent('seat'),
+                lifecycle = makeLifecycle({agents, profileInUse}),
+                ensure    = makeEnsureRepo('/managed/seat/neomjs-neo');
+
+            agents.seat.harnessType = 'claude-desktop';
+
+            await expect(startAgentProvisioned({lifecycleService: lifecycle, agentId: 'seat', managedRoot: '/managed', ensureRepo: ensure}), String(profileInUse))
+                .rejects.toMatchObject({code: 'FLEET_SEAT_PROFILE_IN_USE', message: expect.stringContaining('Nothing was cloned or configured')});
+            expect([ensure.calls.length, lifecycle.calls.reserve.length, lifecycle.calls.start.length], String(profileInUse)).toEqual([0, 0, 0])
+        }
+    });
+
+    test('a Claude Desktop Start that fails after its reservation revokes it, so the rows it wrote admit nothing', async () => {
+        for (const failing of ['prepare', 'start']) {
+            const
+                agents    = repoAgent('seat'),
+                lifecycle = makeLifecycle({agents}),
+                broken    = async () => { throw new Error(`${failing} broke`) };
+
+            agents.seat.harnessType = 'claude-desktop';
+            if (failing === 'start') lifecycle.start = () => { throw new Error('start broke') };
+
+            await expect(startAgentProvisioned({
+                lifecycleService  : lifecycle,
+                agentId           : 'seat',
+                managedRoot       : '/managed',
+                ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+                prepareWorkspace  : failing === 'prepare' ? broken : makePrepareWorkspace(),
+                agentosRuntimeRoot: '/installed/neo'
+            }), failing).rejects.toThrow(`${failing} broke`);
+
+            expect(lifecycle.calls.revoke, failing).toEqual([{id: 'seat', reason: 'start-failed', generation: 'generation-seat'}])
+        }
     });
 
     test('a catalog read whose app-server outlived its signals refuses the start: the home is not free', async () => {

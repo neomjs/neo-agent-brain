@@ -24,6 +24,7 @@ import AiConfig                     from '../../../../ai/config.template.mjs';
 import FleetControlBridge           from '../../../../ai/services/fleet/FleetControlBridge.mjs';
 import FleetLifecycleService        from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
 import FleetManager                 from '../../../../ai/services/fleet/FleetManager.mjs';
+import McpLaunchAdmissionService    from '../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
 import ToolService                  from '../../../../ai/mcp/ToolService.mjs';
 import {dispatchFleetRequest}       from '../../../../ai/services/fleet/dispatchFleetRequest.mjs';
 import {generateOpenCodeSeatConfig} from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
@@ -153,6 +154,8 @@ function install({agents = {}, creds = {}} = {}) {
     FleetLifecycleService.processSignalFn   = () => { throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
     FleetLifecycleService.adoptedExitPollMs = 5;
     FleetLifecycleService.leasesAdopted     = false;
+    FleetLifecycleService.processListFn     = null;
+    FleetLifecycleService.launchAdmission   = null;
     return spawnStub;
 }
 
@@ -2510,5 +2513,123 @@ test.describe('FleetLifecycleService.setSeatModel — what a seat\'s last start 
         FleetLifecycleService.setSeatModel('refused', null);
 
         expect(FleetLifecycleService.status('refused').seatModel).toBeNull();
+    });
+});
+
+test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch admission', () => {
+    const STARTED_AT = 'Thu Oct  1 09:00:00 2026';
+
+    /** A Claude Desktop seat under a fresh agents root, with a recording issuer and a process table it controls. */
+    function installDesktopSeat() {
+        const
+            root   = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-launch-admission-')),
+            spawn  = install({agents: {seat: {id: 'seat', githubUsername: 'neo-opus-ada', harnessType: 'claude-desktop', metadata: {}}}}),
+            home   = path.join(root, 'seat', 'harness', 'claude-desktop'),
+            events = [],
+            calls  = {activate: [], revoke: []},
+            table  = {alive: true, startedAt: STARTED_AT};
+
+        fs.mkdirSync(home, {recursive: true});
+        FleetLifecycleService.instanceRoot       = root;
+        FleetLifecycleService.harnessBinaryPaths = {'claude-desktop': process.execPath};
+        FleetLifecycleService.processInspectFn   = () => table.alive ? {startedAt: table.startedAt, command: `${process.execPath} --user-data-dir=${home}`} : null;
+        FleetLifecycleService.processSignalFn    = (pid, signal) => { if (!table.alive) throw Object.assign(new Error('no such process'), {code: 'ESRCH'}) };
+        FleetLifecycleService.launchAdmission    = {
+            activate: options => { events.push('activate'); calls.activate.push(options) },
+            revoke  : (id, reason, options = {}) => { events.push(`revoke ${reason}`); calls.revoke.push({id, reason, ...options}); return true },
+            holds   : () => false,
+            statusOf: () => null
+        };
+
+        return {spawn, home, events, calls, table}
+    }
+
+    const ADMISSION = {generation: 'generation-1', plan: [{key: 'memory-core', enabled: true}]};
+
+    test('a Start activates its reserved generation once the seat runs and is leased, with the values it injected and a proof of the process', () => {
+        const {calls, events, table} = installDesktopSeat();
+
+        FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
+
+        const [activation] = calls.activate;
+
+        expect(events).toEqual(['activate']);
+        expect(activation).toMatchObject({generation: 'generation-1', agentId: 'seat', plan: ADMISSION.plan});
+        expect(activation.env).toMatchObject({GH_TOKEN: FIXTURE_PAT, NEO_FLEET_BRIDGE_TOKEN: 'bridge_seat_token', NEO_AGENT_IDENTITY: 'neo-opus-ada'});
+        expect(activation.probe()).toBe('live');
+
+        table.startedAt = 'Thu Oct  1 09:30:00 2026';
+        expect(activation.probe(), 'a reused pid is not the seat').toBe('gone');
+
+        table.alive = false;
+        expect(activation.probe()).toBe('gone')
+    });
+
+    test('a seat that cannot be leased revokes its generation before it is stopped, and never activates it', () => {
+        const {calls, events} = installDesktopSeat();
+
+        FleetLifecycleService.processInspectFn = () => null;
+
+        expect(() => FleetLifecycleService.start('seat', {launchAdmission: ADMISSION})).toThrow('could not be leased');
+        expect(events[0]).toBe('revoke lease-failed');
+        expect(calls.revoke[0]).toEqual({id: 'seat', reason: 'lease-failed', generation: 'generation-1'});
+        expect(calls.activate).toEqual([])
+    });
+
+    test('Stop revokes before it signals; the exit that follows only confirms it', async () => {
+        const {events} = installDesktopSeat();
+
+        FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
+
+        const child = FleetLifecycleService.processes.get('seat').child;
+
+        child.kill = signal => {
+            events.push(`signal ${signal}`);
+            queueMicrotask(() => child.emit('exit', null, signal));
+            return true
+        };
+
+        await FleetLifecycleService.stop('seat');
+
+        expect(events).toEqual(['activate', 'revoke stop-requested', 'signal SIGTERM', 'revoke process-exited'])
+    });
+
+    test('the seat\'s exit ends its own generation, and only that one', async () => {
+        const {calls} = installDesktopSeat();
+
+        FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
+        FleetLifecycleService.processes.get('seat').child.emit('exit', 0, null);
+
+        expect(calls.revoke).toEqual([{id: 'seat', reason: 'process-exited', generation: 'generation-1'}])
+    });
+
+    test('a running Desktop seat this Fleet holds no generation for reads stale; a stopped one and other families read nothing', () => {
+        installDesktopSeat();
+        FleetLifecycleService.launchAdmission = null;   // the real issuer, holding nothing for this seat
+        McpLaunchAdmissionService.generations.clear();
+        FleetLifecycleService.start('seat');
+
+        expect(FleetLifecycleService.status('seat').launchAdmission).toMatchObject({state: 'stale', reason: 'issuer-replaced'});
+
+        install({agents: {cli: agentDef('cli')}});
+        FleetLifecycleService.start('cli');
+
+        expect([FleetLifecycleService.status('cli').launchAdmission, FleetLifecycleService.status('never-started').launchAdmission]).toEqual([null, null])
+    });
+
+    test('a Desktop profile is in use only when the seat\'s own binary runs it; an unreadable process table is unknown', () => {
+        const {home} = installDesktopSeat(), agent = FleetLifecycleService.registry.getDefinition('seat');
+
+        for (const [lines, expected] of [
+            [[`${process.execPath} --user-data-dir=${home}`], true],
+            [[`/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper --type=gpu-process --user-data-dir=${home}`], false],
+            [[`${process.execPath} --user-data-dir=${home}-other`], false],
+            [[`/usr/bin/vi ${process.execPath} --user-data-dir=${home}`], false],
+            [null, null]
+        ]) {
+            FleetLifecycleService.processListFn = () => lines;
+
+            expect(FleetLifecycleService.desktopProfileInUse(agent), JSON.stringify(lines)).toBe(expected)
+        }
     });
 });
