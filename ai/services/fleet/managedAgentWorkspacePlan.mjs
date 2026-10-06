@@ -349,6 +349,36 @@ export function mcpDeclarationRefusal({harnessType, mcpMatrix, tenant=false, for
     return null
 }
 
+/**
+ * @summary How one bound plan row's environment splits between a Claude Desktop profile row and native
+ * launch admission (ADR 0038 §2.5.1 class 8). The row carries the identity, the Node runtime env and, for a
+ * resident server, its plane placement: the names Start resolved beyond the descriptor's own runtime
+ * slots. Every other name the server declares is redeemed through the launcher. A tenant row redeems only
+ * its credential slot. The profile renderer and the issuer both split with this function, so a name is
+ * either literal or redeemed, never both.
+ * @param {Object} server A bound plan row, as preparation returns it.
+ * @returns {{placement: String[], redeemed: String[], required: String[]}} `required` is the part of
+ *     `redeemed` the server cannot start without.
+ */
+export function launchRowEnvNames(server) {
+    if (server.target === 'tenant') {
+        return {placement: [], redeemed: [server.credentialEnvVar], required: [server.credentialEnvVar]}
+    }
+
+    const
+        declared  = MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS[server.key].runtimeEnv,
+        literal   = new Set(['NEO_AGENT_IDENTITY', ...Object.keys(server.environment || {})]),
+        placement = server.runtimeEnv.filter(name => !declared.includes(name) && !literal.has(name)),
+        excluded  = new Set([...literal, ...placement]),
+        keep      = names => [...new Set(names)].filter(name => !excluded.has(name));
+
+    return {
+        placement,
+        redeemed: keep([...server.runtimeEnv, ...server.requiredRuntimeEnv, ...server.secretEnv]),
+        required: keep([...server.requiredRuntimeEnv, ...server.secretEnv])
+    }
+}
+
 /** @private */
 function assertLogicalHarnessSupported({agent, mcpMatrix, tenant}) {
     if (!LAUNCHABLE_HARNESS_TYPES.includes(agent.harnessType)) {
