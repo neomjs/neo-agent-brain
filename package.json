@@ -90,7 +90,7 @@
     "dependencies": {
         "@chroma-core/default-embed": "0.1.9",
         "@google/generative-ai": "^0.24.1",
-        "@modelcontextprotocol/sdk": "^1.31.0",
+        "@modelcontextprotocol/sdk": "^1.32.0",
         "acorn": "^8.17.0",
         "ajv": "8.20.0",
         "better-sqlite3": "13.0.3",
