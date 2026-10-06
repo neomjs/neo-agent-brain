@@ -239,6 +239,7 @@
         "fleet.planeAdmissionBearerFile",
         "fleet.planeBase",
         "fleet.planeBearer",
+        "fleet.planeBearerClass",
         "fleet.planeBearerFile",
         "fleet.planeInternalHosts",
         "fleet.port",

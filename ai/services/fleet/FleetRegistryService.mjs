@@ -1,18 +1,18 @@
-import crypto                                    from 'crypto';
-import fs                                        from 'fs';
-import path                                      from 'path';
-import aiConfig                                  from '../../config.mjs';
-import Base                                      from 'neo.mjs/src/core/Base.mjs';
-import {HARNESS_TYPES}                           from '../../../src/fleet/contract/harnessTypes.mjs';
-import {writeFileAtomicSync}                     from '../shared/atomicFileWrite.mjs';
+import crypto                                                   from 'crypto';
+import fs                                                       from 'fs';
+import path                                                     from 'path';
+import aiConfig                                                 from '../../config.mjs';
+import Base                                                     from 'neo.mjs/src/core/Base.mjs';
+import {HARNESS_TYPES}                                          from '../../../src/fleet/contract/harnessTypes.mjs';
+import {writeFileAtomicSync}                                    from '../shared/atomicFileWrite.mjs';
 import {mcpCatalogFor, normalizeMcpOverrides, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
-import {REPO_FORGES}                             from './deriveAgentRepoPath.mjs';
-import {mcpDeclarationRefusal}                   from './managedAgentWorkspacePlan.mjs';
-import {normalizeMcpTarget}                      from './mcpServers.mjs';
-import {normalizeMemoryImport}                   from './seatMemoryImport.mjs';
-import {normalizeGitIdentityDeclaration}         from './seatGitIdentity.mjs';
-import {normalizeSeatModelDeclaration}           from './seatModelDeclaration.mjs';
-import SeatOperatorRegistryService, {isOwnerPrincipal} from './SeatOperatorRegistryService.mjs';
+import {REPO_FORGES}                                            from './deriveAgentRepoPath.mjs';
+import {mcpDeclarationRefusal}                                  from './managedAgentWorkspacePlan.mjs';
+import {normalizeMcpTarget}                                     from './mcpServers.mjs';
+import {normalizeMemoryImport}                                  from './seatMemoryImport.mjs';
+import {normalizeGitIdentityDeclaration}                        from './seatGitIdentity.mjs';
+import {normalizeSeatModelDeclaration}                          from './seatModelDeclaration.mjs';
+import SeatOperatorRegistryService, {isOwnerPrincipal}          from './SeatOperatorRegistryService.mjs';
 
 const
     // a refused operator claim in the operator's words: the store's own reason can name a host path
@@ -634,7 +634,8 @@ class FleetRegistryService extends Base {
      * echo. Controlled validation failures use the method prefix so FleetControlBridge can expose a
      * safe rejected-domain reason while unexpected storage failures remain transport-sanitized. A
      * declaration the seat's harness cannot carry is one of them, with the reason Start would give
-     * ({@link mcpDeclarationRefusal}).
+     * ({@link mcpDeclarationRefusal}). A `memoryImport` consent is the one {@link defineAgent} records,
+     * given late; FleetControlBridge accepts it only while the seat holds no memory yet.
      * @param {Object} intent
      * @param {String} intent.id Existing registry id.
      * @param {String} [intent.harnessType] Registered durable harness key.
@@ -646,6 +647,8 @@ class FleetRegistryService extends Base {
      * @param {String|null} [intent.model] The model the seat's harness starts on, read at the next Start
      *     ({@link module:ai/services/fleet/seatModelDeclaration.normalizeSeatModelDeclaration}).
      * @param {String|null} [intent.reasoningEffort] The reasoning effort it starts on.
+     * @param {String|null} [intent.memoryImport] An agent's memory folder or `'none'`
+     *     ({@link module:ai/services/fleet/seatMemoryImport.normalizeMemoryImport}); `null` withdraws the consent.
      * @returns {Object|null} Updated public definition, or `null` when the id is not registered.
      */
     configureAgent(intent={}) {
@@ -658,11 +661,12 @@ class FleetRegistryService extends Base {
         }
 
         const
-            allowed                                  = new Set(['id', 'harnessType', 'mcpServers', 'mcpTarget', 'gitName', 'gitEmail', 'model', 'reasoningEffort']),
+            allowed                                  = new Set(['id', 'harnessType', 'mcpServers', 'mcpTarget', 'gitName', 'gitEmail', 'model', 'reasoningEffort', 'memoryImport']),
             unknown                                  = Object.keys(intent).find(key => !allowed.has(key)),
             {id, harnessType, mcpServers, mcpTarget} = intent,
             declaring                                = Object.hasOwn(intent, 'gitName') || Object.hasOwn(intent, 'gitEmail'),
-            seating                                  = Object.hasOwn(intent, 'model') || Object.hasOwn(intent, 'reasoningEffort');
+            seating                                  = Object.hasOwn(intent, 'model') || Object.hasOwn(intent, 'reasoningEffort'),
+            consenting                               = Object.hasOwn(intent, 'memoryImport');
 
         if (unknown) {
             reject(`unsupported field '${unknown}'.`)
@@ -674,11 +678,22 @@ class FleetRegistryService extends Base {
             !Object.hasOwn(intent, 'mcpServers') &&
             !Object.hasOwn(intent, 'mcpTarget') &&
             !declaring &&
-            !seating) {
+            !seating &&
+            !consenting) {
             reject('at least one configuration field is required.')
         }
 
         const declaration = declaring ? gitIdentityDeclaration('configureAgent', intent) : null;
+
+        let consent = null;
+
+        if (consenting && intent.memoryImport !== null) {
+            try {
+                consent = normalizeMemoryImport(intent.memoryImport)
+            } catch (error) {
+                reject(error.message)
+            }
+        }
 
         this.ensureLoaded();
 
@@ -750,6 +765,10 @@ class FleetRegistryService extends Base {
 
         for (const [key, value] of Object.entries(seat)) {
             value === null ? delete def[key] : def[key] = value
+        }
+
+        if (consenting) {
+            consent === null ? delete def.memoryImport : def.memoryImport = consent
         }
 
         const nextAgents = new Map(this.agents);
