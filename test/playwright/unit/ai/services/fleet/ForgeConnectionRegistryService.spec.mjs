@@ -204,4 +204,31 @@ test.describe('ForgeConnectionRegistryService — the plane-governed owner princ
         expect(fs.existsSync(path.join(dir, 'forge-connections.lock')), 'the lock is released').toBe(false);
         expect(fs.statSync(storeOf()).mode & 0o777, 'owner-only').toBe(0o600)
     });
+
+    test('the owner resolver names the setup row as the remedy only where it remedies; status reads the declared endpoint\'s binding of either forge', () => {
+        const
+            github = {mode: 'github-pat', githubApiBaseUrl: 'https://api.github.com/', gitlabApiBaseUrl: 'https://gitlab.com'},
+            G      = {authProvider: 'github', providerBaseUrl: 'https://api.github.com', providerUserId: '7'};
+
+        expect(resolve(G).reason).toBe('the forge-connection registry is not initialized: the plane\'s setup step \'register-forge\' initializes it');
+
+        registry.initialize(ADMIN);
+
+        expect(resolve(G).reason).toBe('no github connection binds https://api.github.com: the plane\'s setup step \'register-forge\' registers it');
+
+        // another forge bound at the declared endpoint: the row never rebinds it, so it is no remedy
+        const conn = registry.register({...ADMIN, authProvider: 'gitlab', endpoint: 'https://api.github.com'}).connectionId;
+
+        expect(resolve(G).reason).toBe('no github connection binds https://api.github.com');
+        expect(registry.status({auth: github})).toEqual({
+            declared: {authProvider: 'github', endpoint: 'https://api.github.com'}, declaredReason: null,
+            state   : 'ok', reason: null, binding: {connectionId: conn, authProvider: 'gitlab'}, tombstoned: false
+        });
+
+        // nor for a detached endpoint, which never binds again
+        registry.detach({...ADMIN, endpoint: 'https://api.github.com'});
+
+        expect(resolve(G).reason).toBe('no github connection binds https://api.github.com');
+        expect(registry.status({auth: github})).toMatchObject({binding: null, tombstoned: true})
+    });
 });

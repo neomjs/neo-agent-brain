@@ -45,7 +45,8 @@ authentication, at its own boundary:
   **mutable login never participates**: a rename does not move ownership, and a recycled login
   cannot inherit it; the login is retained strictly as a display projection. An approved endpoint
   move keeps the principal; an endpoint no connection binds gets none. The registry is written only
-  on the plane host (`ai/scripts/fleet/forgeConnections.mjs`). Without a bound endpoint the context
+  on the plane host (`ai/scripts/fleet/forgeConnections.mjs`), which a first run's `register-forge`
+  step drives for the forge the plane declares. Without a bound endpoint the context
   carries `ownerResolution` (`uninitialized`, `unavailable`, `unregistered` or `refused`, with its
   reason). Neither field can be injected from the outside; the caller's `/fleet/probe` launch receipt
   echoes them back for verification.

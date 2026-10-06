@@ -15,14 +15,19 @@ import ForgeConnectionRegistryService, {FORGE_AUTH_PROVIDERS} from '../../servic
  *
  * ```
  * forgeConnections.mjs init                                         [--apply]
- * forgeConnections.mjs register      --provider github --endpoint https://github.com [--apply]
- * forgeConnections.mjs approve-alias --connection <id> --endpoint <url>              [--apply]
- * forgeConnections.mjs detach        --endpoint <url>                                [--apply]
+ * forgeConnections.mjs register      --provider github --endpoint https://api.github.com [--apply]
+ * forgeConnections.mjs approve-alias --connection <id> --endpoint <url>                  [--apply]
+ * forgeConnections.mjs detach        --endpoint <url>                                    [--apply]
  * forgeConnections.mjs list
+ * forgeConnections.mjs status
  * ```
+ *
+ * An endpoint is the API base admissions present (`https://api.github.com` for GitHub), never the forge's
+ * web origin. `status` reads, for this plane's own auth mode, the forge it declares and that endpoint's
+ * binding; it always exits 0, because a corrupt store is its answer, not its failure.
  */
 
-const COMMANDS = Object.freeze(['init', 'register', 'approve-alias', 'detach', 'list']);
+const COMMANDS = Object.freeze(['init', 'register', 'approve-alias', 'detach', 'list', 'status']);
 
 /**
  * @summary Parses one invocation.
@@ -95,6 +100,7 @@ function runCli({args, registry = ForgeConnectionRegistryService}) {
         case 'register'     : return registry.register({actor, apply, authProvider: provider, endpoint});
         case 'approve-alias': return registry.approveAlias({actor, apply, connectionId, endpoint});
         case 'detach'       : return registry.detach({actor, apply, endpoint});
+        case 'status'       : return {ok: true, dataDir: registry.getDataDir(), ...registry.status()};
         default: {
             const read = registry.read();
 

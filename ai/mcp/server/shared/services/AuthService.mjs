@@ -82,6 +82,31 @@ export function getAuthValidationStaleness() {
     return AUTH_VALIDATION_STALENESS
 }
 
+/**
+ * @summary The API base a forge's PAT verifier calls, from that forge's leaf, without trailing slashes:
+ * the `providerBaseUrl` its admissions stamp.
+ * @param {Object} auth The resolved `AiConfig.auth` subtree.
+ * @param {'github'|'gitlab'} authProvider
+ * @returns {String}
+ */
+export function forgeApiBase(auth, authProvider) {
+    return (authProvider === 'gitlab' ? auth.gitlabApiBaseUrl : auth.githubApiBaseUrl).replace(/\/+$/, '')
+}
+
+/**
+ * @summary The forge facts a PAT admission stamps under the configured mode: `authProvider` and its
+ * `providerBaseUrl` ({@link forgeApiBase}). `null` for a mode that admits no forge PAT. The Fleet's
+ * forge-connection registry declares its binding from here, so it names exactly the endpoint admissions
+ * present.
+ * @param {Object} auth The resolved `AiConfig.auth` subtree.
+ * @returns {{authProvider: String, providerBaseUrl: String}|null}
+ */
+export function forgeAdmissionFacts(auth) {
+    const authProvider = {'github-pat': 'github', 'gitlab-pat': 'gitlab'}[auth.mode];
+
+    return authProvider ? {authProvider, providerBaseUrl: forgeApiBase(auth, authProvider)} : null
+}
+
 class AuthService extends Base {
     static config = {
         /**
@@ -776,7 +801,7 @@ class AuthService extends Base {
      */
     createGitlabPatVerifier({aiConfig, logger, InvalidTokenError}) {
         const
-            apiBaseUrl          = aiConfig.auth.gitlabApiBaseUrl.replace(/\/+$/, ''),
+            apiBaseUrl          = forgeApiBase(aiConfig.auth, 'gitlab'),
             ttlSeconds          = aiConfig.auth.patCacheTtlSeconds,
             ttlMs               = ttlSeconds * 1000,
             validationTimeoutMs = this.#validatePatValidationTimeoutMs(aiConfig.auth.patValidationTimeoutMs),
@@ -1010,7 +1035,7 @@ class AuthService extends Base {
      */
     createGithubPatVerifier({aiConfig, logger, InvalidTokenError}) {
         const
-            apiBaseUrl          = aiConfig.auth.githubApiBaseUrl.replace(/\/+$/, ''),
+            apiBaseUrl          = forgeApiBase(aiConfig.auth, 'github'),
             ttlSeconds          = aiConfig.auth.patCacheTtlSeconds,
             ttlMs               = ttlSeconds * 1000,
             validationTimeoutMs = this.#validatePatValidationTimeoutMs(aiConfig.auth.patValidationTimeoutMs),

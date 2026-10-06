@@ -55,19 +55,20 @@ function fullRecord(target, {digest = 'd1'} = {}) {
 /** Observers that read every result as present and matching. */
 function greenObservers({digest = 'd1', dimension = 1024} = {}) {
     return {
-        placement   : async () => probeOf({hostAvailable: 60 * GiB, guestAvailable: 29 * GiB}),
-        envCarrier  : async () => ({present: true, digest}),
-        secretFiles : async () => ({present: true, digest}),
-        runningPlane: async () => ({present: true, digest: null}),
-        servedPlane : async target => ({id: target.planeId, dataRoot: target.dataRoot}),
-        validation  : async () => ({provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension}}),
-        verification: async () => ({present: true, digest: null}),
-        done        : async () => ({queryAnswered: true, persisted: true, at: '2026-10-01T20:00:00.000Z'})
+        placement      : async () => probeOf({hostAvailable: 60 * GiB, guestAvailable: 29 * GiB}),
+        envCarrier     : async () => ({present: true, digest}),
+        secretFiles    : async () => ({present: true, digest}),
+        runningPlane   : async () => ({present: true, digest: null}),
+        forgeConnection: async () => ({present: true, digest, problem: null}),
+        servedPlane    : async target => ({id: target.planeId, dataRoot: target.dataRoot}),
+        validation     : async () => ({provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension}}),
+        verification   : async () => ({present: true, digest: null}),
+        done           : async () => ({queryAnswered: true, persisted: true, at: '2026-10-01T20:00:00.000Z'})
     };
 }
 
 const failingObservers = () => Object.fromEntries(
-    ['placement', 'envCarrier', 'secretFiles', 'runningPlane', 'servedPlane', 'validation', 'verification', 'done']
+    ['placement', 'envCarrier', 'secretFiles', 'runningPlane', 'forgeConnection', 'servedPlane', 'validation', 'verification', 'done']
         .map(name => [name, async () => { throw new Error(`${name} unreachable`) }])
 );
 
@@ -93,7 +94,7 @@ test.describe('firstRunRecipe', () => {
 
         expect(fresh.binding).toBe('no-record');
 
-        for (const id of ['placement', 'write-env', 'write-secrets', 'compose-up', 'served-plane', 'validation', 'done']) {
+        for (const id of ['placement', 'write-env', 'write-secrets', 'compose-up', 'register-forge', 'served-plane', 'validation', 'done']) {
             expect(steps[id].status, id).toBe(STEP_STATUSES.ok);
         }
         expect(steps['write-env'].reason).toBe('observed; not performed by this run');
@@ -144,10 +145,33 @@ test.describe('firstRunRecipe', () => {
         expect(untried['write-env']).toMatchObject({status: STEP_STATUSES.pending, reason: '/state/config/local-agent-os.env does not exist'});
     });
 
+    test('the forge row: an unreadable registry is unknown even behind an accepted receipt, an unbound endpoint is pending in the observer\'s words, a refusal fails through its receipt, an interrupted registration is reconcile-required', async () => {
+        const
+            unreadable = async () => { throw new Error('the plane is not running, so its forge registry cannot be read') },
+            refusal    = 'https://api.github.com was detached from the plane, and never binds again',
+            row        = async (record, forgeConnection) => byId((await evaluateRecipe({target: targetA, record, observers: {...greenObservers(), forgeConnection}, presets, now: () => NOW})).steps)['register-forge'];
+
+        // unavailable evidence is neither an absence nor a result gone: an accepted receipt never turns it failed
+        expect(await row(fullRecord(targetA), unreadable)).toMatchObject({status: STEP_STATUSES.unknown, reason: 'the plane is not running, so its forge registry cannot be read', receipt: RECEIPT_OUTCOMES.accepted});
+        expect(await row(null, async () => ({present: false, reason: 'no github connection binds https://api.github.com yet'})))
+            .toMatchObject({status: STEP_STATUSES.pending, reason: 'no github connection binds https://api.github.com yet', receipt: null});
+
+        // a refused registration fails by its receipt's reason; the observation never claims presence to get there
+        const refused = withReceipt(fullRecord(targetA), {effectId: 'register-forge', outcome: RECEIPT_OUTCOMES.failed, inputDigest: 'i', failedAt: 't', reason: refusal});
+
+        expect(await row(refused, async () => ({present: false, reason: refusal}))).toMatchObject({status: STEP_STATUSES.failed, reason: refusal});
+
+        // an accepted binding since replaced reads changed; an interrupted registration waits for a settling observation
+        const parked = withReceipt(fullRecord(targetA), {effectId: 'register-forge', outcome: RECEIPT_OUTCOMES.pending, inputDigest: 'i', startedAt: 't'});
+
+        expect(await row(fullRecord(targetA), async () => ({present: true, digest: 'd2', problem: null}))).toMatchObject({status: STEP_STATUSES.failed, reason: 'the host content changed after the effect was accepted'});
+        expect(await row(parked, greenObservers().forgeConnection)).toMatchObject({status: STEP_STATUSES.reconcileRequired, observed: {present: true, digest: 'd1', problem: null}});
+    });
+
     test('AC-3: a record bound to target A turns no step green for target B; a recipe-version change retires the proof into readable history', async () => {
         const
             recordA = fullRecord(targetA),
-            absent  = {...greenObservers(), envCarrier: async () => ({present: false}), secretFiles: async () => ({present: false}), runningPlane: async () => ({present: false})},
+            absent  = {...greenObservers(), envCarrier: async () => ({present: false}), secretFiles: async () => ({present: false}), runningPlane: async () => ({present: false}), forgeConnection: async () => ({present: false})},
             forB    = await evaluateRecipe({target: targetB, record: recordA, observers: absent, presets, now: () => NOW}),
             stepsB  = byId(forB.steps);
 
@@ -155,7 +179,7 @@ test.describe('firstRunRecipe', () => {
         expect(stepsB.preset.status).toBe(STEP_STATUSES.pending);
         expect(stepsB.preset.reason).toMatch(/bound to another target/);
         // A's accepted receipts neither green nor fail B's effects: they contribute nothing
-        for (const id of ['write-env', 'write-secrets', 'compose-up']) {
+        for (const id of ['write-env', 'write-secrets', 'compose-up', 'register-forge']) {
             expect(stepsB[id].status, id).toBe(STEP_STATUSES.pending);
             expect(stepsB[id].receipt, id).toBeNull();
         }
@@ -177,9 +201,9 @@ test.describe('firstRunRecipe', () => {
         expect(retired.history).toHaveLength(1);
         expect(retired.history[0].reason).toBe(RETIRE_REASONS.versionChanged);
         expect(retired.history[0].consents).toHaveLength(2);
-        expect(retired.history[0].receipts).toHaveLength(4);
+        expect(retired.history[0].receipts).toHaveLength(5);
         expect(retired.history[0].recipeVersion).toBe(RECIPE_VERSION);
-        expect(recordA.receipts).toHaveLength(4); // the input is not mutated
+        expect(recordA.receipts).toHaveLength(5); // the input is not mutated
 
         const underNewVersion = await evaluateRecipe({target: targetA, record: retired, observers: greenObservers(), presets, now: () => NOW});
 
@@ -287,10 +311,10 @@ test.describe('firstRunRecipe', () => {
         }
         expect(result.steps.map(step => step.id)).toEqual(RECIPE_STEPS.map(step => step.id));
         // an effect row carries the effect it reads, so a renderer can settle the receipt it names
-        expect(result.steps.filter(row => row.kind === STEP_KINDS.effect).map(row => row.effectId)).toEqual(['write-secrets', 'write-env', 'compose-up', 'verify']);
+        expect(result.steps.filter(row => row.kind === STEP_KINDS.effect).map(row => row.effectId)).toEqual(['write-secrets', 'write-env', 'compose-up', 'register-forge', 'verify']);
         // both credential questions are answered by a file reference, admitted before it is recorded
         expect(RECIPE_STEPS.filter(step => step.answer === 'file').map(step => step.id)).toEqual(['plane-credential', 'provider-key']);
-        expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'provider-key', 'advanced', 'write-secrets', 'write-env', 'compose-up', 'served-plane', 'validation', 'verify', 'done']);
+        expect(RECIPE_STEPS.map(step => step.id)).toEqual(['placement', 'preset', 'plane-credential', 'provider-key', 'advanced', 'write-secrets', 'write-env', 'compose-up', 'register-forge', 'served-plane', 'validation', 'verify', 'done']);
         // the provider-key question is decided by the consented preset: pending until one is chosen, not needed for a local one
         expect(result.steps.find(step => step.id === 'provider-key')).toMatchObject({status: STEP_STATUSES.pending, reason: 'decided by the preset: none consented yet', waitsFor: 'preset'});
         expect(result.recipeVersion).toBe(RECIPE_VERSION);
@@ -305,7 +329,7 @@ test.describe('firstRunRecipe', () => {
     test('an effect row that is not ok names the step it waits for: the first earlier question, effect or declared gate that is not ok', async () => {
         const
             absent  = async () => ({present: false, reason: 'not performed'}),
-            unbuilt = {envCarrier: absent, secretFiles: absent, runningPlane: absent, verification: absent},
+            unbuilt = {envCarrier: absent, secretFiles: absent, runningPlane: absent, forgeConnection: absent, verification: absent},
             waits   = async (record, observers) => Object.fromEntries((await evaluateRecipe({target: targetA, record, observers: {...greenObservers(), ...observers}, presets, now: () => NOW})).steps
                 .filter(row => row.kind === STEP_KINDS.effect).map(row => [row.id, row.waitsFor])),
             consented = withConsent(withConsent(createSetupRecord({runId: RUN_ID, target: targetA, recipeVersion: RECIPE_VERSION, now: () => NOW}),
@@ -313,17 +337,22 @@ test.describe('firstRunRecipe', () => {
 
         // nothing consented: every effect waits for the first unanswered question; a placement that failed is no gate
         expect(await waits(null, {...unbuilt, placement: async () => { throw new Error('probe failed') }}))
-            .toEqual({'write-secrets': 'preset', 'write-env': 'preset', 'compose-up': 'preset', verify: 'preset'});
+            .toEqual({'write-secrets': 'preset', 'write-env': 'preset', 'compose-up': 'preset', 'register-forge': 'preset', verify: 'preset'});
 
         // consented, nothing performed: the first effect can run, each later one waits for the first unsettled effect
-        expect(await waits(consented, unbuilt)).toEqual({'write-secrets': null, 'write-env': 'write-secrets', 'compose-up': 'write-secrets', verify: 'write-secrets'});
-        expect(await waits(consented, {...unbuilt, secretFiles: greenObservers().secretFiles})).toEqual({'write-secrets': null, 'write-env': null, 'compose-up': 'write-env', verify: 'write-env'});
+        expect(await waits(consented, unbuilt)).toEqual({'write-secrets': null, 'write-env': 'write-secrets', 'compose-up': 'write-secrets', 'register-forge': 'write-secrets', verify: 'write-secrets'});
+        expect(await waits(consented, {...unbuilt, secretFiles: greenObservers().secretFiles})).toEqual({'write-secrets': null, 'write-env': null, 'compose-up': 'write-env', 'register-forge': 'write-env', verify: 'write-env'});
+
+        // the host files written, the plane down: its registry cannot be read, and the forge row waits for compose-up
+        const down = {...greenObservers(), runningPlane: absent, forgeConnection: async () => { throw new Error('the plane is not running, so its forge registry cannot be read') }, verification: absent};
+
+        expect(await waits(consented, down)).toEqual({'write-secrets': null, 'write-env': null, 'compose-up': null, 'register-forge': 'compose-up', verify: 'compose-up'});
 
         // the host effects observed: verify waits for its declared gates in their order, then for nothing
         expect(RECIPE_STEPS.find(step => step.id === 'verify').gates).toEqual(['served-plane', 'validation']);
         expect((await waits(consented, {verification: absent, servedPlane: async () => ({id: 'plane-x', dataRoot: targetA.dataRoot})})).verify).toBe('served-plane');
         expect((await waits(consented, {verification: absent, validation: async () => ({provider: {ok: false, reason: 'no key'}})})).verify).toBe('validation');
-        expect(await waits(consented, {verification: absent})).toEqual({'write-secrets': null, 'write-env': null, 'compose-up': null, verify: null});
+        expect(await waits(consented, {verification: absent})).toEqual({'write-secrets': null, 'write-env': null, 'compose-up': null, 'register-forge': null, verify: null});
 
         // an ok row waits for nothing, whatever stands before it
         expect((await waits(null, {})).verify).toBeNull();
@@ -398,7 +427,7 @@ test.describe('firstRunRecipe', () => {
         // bound: the record rides along to every observation and effect observer, with the target
         const bound = await seen(targetA, recordA);
 
-        expect(bound.map(call => call.name).sort()).toEqual(['done', 'envCarrier', 'placement', 'runningPlane', 'secretFiles', 'servedPlane', 'validation', 'verification']);
+        expect(bound.map(call => call.name).sort()).toEqual(['done', 'envCarrier', 'forgeConnection', 'placement', 'runningPlane', 'secretFiles', 'servedPlane', 'validation', 'verification']);
         for (const call of bound) {
             expect(call.target, call.name).toEqual(targetA);
             expect(call.context, call.name).toEqual({record: recordA});

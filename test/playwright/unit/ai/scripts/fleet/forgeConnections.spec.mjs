@@ -15,11 +15,12 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 test.describe('forgeConnections — the plane-local administrative path', () => {
     let dir;
 
-    const run = (...args) => {
+    // `env` adds the plane's own auth leaves, which a `status` reads
+    const runUnder = (env, ...args) => {
         const result = spawnSync(process.execPath, ['ai/scripts/fleet/forgeConnections.mjs', ...args], {
             cwd     : repoRoot,
             encoding: 'utf-8',
-            env     : {...process.env, NEO_FLEET_DATA_DIR: dir},
+            env     : {...process.env, NEO_FLEET_DATA_DIR: dir, ...env},
             timeout : 30_000
         });
 
@@ -31,6 +32,8 @@ test.describe('forgeConnections — the plane-local administrative path', () => 
 
         return {status: result.status, json, stderr: result.stderr, stdout: result.stdout}
     };
+
+    const run = (...args) => runUnder({}, ...args);
 
     test.beforeEach(() => {
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'forge-connections-cli-'))
@@ -92,6 +95,37 @@ test.describe('forgeConnections — the plane-local administrative path', () => 
         expect(run('list')).toMatchObject({status: 1, json: {ok: false, state: 'corrupt'}});
         expect(run('init', '--apply')).toMatchObject({status: 1, json: {refused: 'store-unavailable'}});
         expect(fs.readFileSync(path.join(dir, 'forge-connections.json'), 'utf8')).toBe(corrupt)
+    });
+
+    test('status reads the forge the plane\'s auth mode declares and that endpoint\'s binding, and exits 0 over every store', () => {
+        const
+            github = {NEO_AUTH_MODE: 'github-pat', NEO_AUTH_GITHUB_API_BASE_URL: 'https://api.github.com'},
+            status = (env = github) => runUnder(env, 'status');
+
+        // the declaration is the API base admissions stamp, never the web origin
+        expect(status()).toMatchObject({status: 0, json: {ok: true, dataDir: dir, declared: {authProvider: 'github', endpoint: 'https://api.github.com'}, declaredReason: null, state: 'absent', binding: null, tombstoned: false}});
+
+        run('init', '--apply');
+
+        const {connectionId} = run('register', '--provider', 'github', '--endpoint', 'https://api.github.com', '--apply').json;
+
+        expect(status().json).toMatchObject({state: 'ok', binding: {connectionId, authProvider: 'github'}, tombstoned: false});
+
+        // an alternate endpoint and the other forge come from their own leaves, normalized as admissions are resolved
+        expect(status({NEO_AUTH_MODE: 'github-pat', NEO_AUTH_GITHUB_API_BASE_URL: 'https://GHE.example.com/api/v3/'}).json)
+            .toMatchObject({declared: {authProvider: 'github', endpoint: 'https://ghe.example.com/api/v3'}, binding: null});
+        expect(status({NEO_AUTH_MODE: 'gitlab-pat', NEO_AUTH_GITLAB_API_BASE_URL: 'https://gitlab.example.com'}).json)
+            .toMatchObject({declared: {authProvider: 'gitlab', endpoint: 'https://gitlab.example.com'}, binding: null});
+
+        // a mode that admits no forge PAT declares nothing, and says why
+        expect(status({NEO_AUTH_MODE: 'oidc'}).json).toMatchObject({declared: null, declaredReason: 'the plane\'s auth mode \'oidc\' admits no forge PAT, so no seat can be owned on it'});
+
+        // a detached endpoint is tombstoned; a corrupt store is the answer, never a failure
+        run('detach', '--endpoint', 'https://api.github.com', '--apply');
+        expect(status().json).toMatchObject({binding: null, tombstoned: true});
+
+        fs.writeFileSync(path.join(dir, 'forge-connections.json'), '{"schema":1');
+        expect(status()).toMatchObject({status: 0, json: {ok: true, state: 'corrupt', binding: null, tombstoned: false}});
     });
 
     test('an invocation it cannot run is refused before the store is touched; --help exits 0', () => {

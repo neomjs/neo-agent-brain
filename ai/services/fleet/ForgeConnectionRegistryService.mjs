@@ -3,6 +3,7 @@ import fs                    from 'fs';
 import path                  from 'path';
 import aiConfig              from '../../config.mjs';
 import Base                  from 'neo.mjs/src/core/Base.mjs';
+import {forgeAdmissionFacts} from '../../mcp/server/shared/services/AuthService.mjs';
 import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
 
 /**
@@ -314,7 +315,7 @@ class ForgeConnectionRegistryService extends Base {
         const {state, store, reason} = this.read();
 
         if (state === 'absent') {
-            return {state: 'uninitialized', reason: 'the forge-connection registry is not initialized: run `node ai/scripts/fleet/forgeConnections.mjs init --apply` on the plane host'}
+            return {state: 'uninitialized', reason: 'the forge-connection registry is not initialized: the plane\'s setup step \'register-forge\' initializes it'}
         }
 
         if (state === 'corrupt') {
@@ -329,10 +330,41 @@ class ForgeConnectionRegistryService extends Base {
               connectionId = endpoint ? store.bindings[endpoint] : undefined;
 
         if (!connectionId || store.connections[connectionId].authProvider !== authProvider) {
-            return {state: 'unregistered', reason: endpoint ? `no ${authProvider} connection binds ${endpoint}` : 'the forge base URL is not an endpoint'}
+            // the setup row registers an unbound endpoint; it never rebinds a bound or detached one
+            const remedy = !connectionId && endpoint && !Object.hasOwn(store.tombstones, endpoint) ? ': the plane\'s setup step \'register-forge\' registers it' : '';
+
+            return {state: 'unregistered', reason: endpoint ? `no ${authProvider} connection binds ${endpoint}${remedy}` : 'the forge base URL is not an endpoint'}
         }
 
         return {state: 'admitted', principal: `owner:${connectionId}:${providerUserId}`}
+    }
+
+    /**
+     * @summary What this plane's own admissions need from the registry, read once and never written: the
+     * forge its auth mode declares ({@link forgeAdmissionFacts}, the provider and the API base its admissions
+     * stamp), the store's state, and that endpoint's binding or tombstone. The first-run recipe's forge row
+     * reads exactly this, inside the plane's Fleet service, so the declaration is the plane's own.
+     * @param {Object} [options]
+     * @param {Object} [options.auth=aiConfig.auth] The resolved auth subtree; an injection seam for tests.
+     * @returns {{declared: {authProvider: String, endpoint: String}|null, declaredReason: String|null, state: 'absent'|'ok'|'corrupt', reason: String|null, binding: {connectionId: String, authProvider: String}|null, tombstoned: Boolean}}
+     */
+    status({auth = aiConfig.auth} = {}) {
+        const
+            facts                  = forgeAdmissionFacts(auth),
+            endpoint               = facts ? normalizeEndpoint(facts.providerBaseUrl) : null,
+            {state, store, reason} = this.read(),
+            connectionId           = state === 'ok' && endpoint ? store.bindings[endpoint] : undefined;
+
+        return {
+            declared      : endpoint ? {authProvider: facts.authProvider, endpoint} : null,
+            declaredReason: endpoint ? null : facts
+                ? `the plane's ${facts.authProvider} API base ${facts.providerBaseUrl} is not an endpoint`
+                : `the plane's auth mode '${auth.mode}' admits no forge PAT, so no seat can be owned on it`,
+            state,
+            reason,
+            binding   : connectionId ? {connectionId, authProvider: store.connections[connectionId].authProvider} : null,
+            tombstoned: state === 'ok' && !!endpoint && Object.hasOwn(store.tombstones, endpoint)
+        }
     }
 
     /**

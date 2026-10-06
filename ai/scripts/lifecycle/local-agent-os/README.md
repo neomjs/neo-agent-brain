@@ -167,14 +167,17 @@ honest `404` while KB/MC remain available.
 
 Fleet admission adds a resolved subject on top of that shared authority: a forge-authenticated
 request carries an opaque `ownerPrincipal`, `owner:<connectionId>:<providerUserId>` (never the
-mutable login), once the plane's forge-connection registry binds the forge's endpoint. Only the plane
-host writes that registry, every mutation a dry run until `--apply`:
+mutable login), once the plane's forge-connection registry binds the forge's endpoint. A first run
+(`ai/scripts/setup/firstRun.mjs`) binds it in its `register-forge` step, for the forge the plane's
+auth mode declares. Otherwise only the plane host writes that registry, every mutation a dry run
+until `--apply`:
 
 ```sh
 docker compose --env-file .env -f deploy/cloud/docker-compose.yml \
   -f deploy/cloud/docker-compose.local-agent-os.yml --profile fleet exec fleet-server \
   node ai/scripts/fleet/forgeConnections.mjs init --apply
 # then: register --provider github --endpoint https://api.github.com --apply
+# `status` prints the forge the plane declares and that endpoint's binding
 ```
 
 `approve-alias` binds a moved endpoint to the same connection, `detach` retires one for good, and

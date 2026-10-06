@@ -20,15 +20,47 @@ const
     RUN_ID           = '0f1e2d3c-4b5a-4968-8777-6655443322aa',
     NOW              = Date.UTC(2026, 9, 2, 15, 0, 0),
     PAT              = 'ghp_FAKEPAT0123456789abcdefghijklmnopqrstuv',
+    FORGE_CLI        = 'ai/scripts/fleet/forgeConnections.mjs',
     target           = {planeId: 'plane-a', dataRoot: '/srv/plane-a', endpoint: 'http://127.0.0.1:3102'};
+
+/**
+ * @summary The plane's forge-connection CLI over one scripted store: `status` answers the forge the plane
+ * declares and its binding, `init` and `register` change the store as the real commands do.
+ * @returns {Function} `args → answer`
+ */
+function scriptedForge() {
+    const declared = {authProvider: 'github', endpoint: 'https://api.github.com'};
+
+    let store = null;
+
+    return ([command, ...options]) => {
+        if (command === 'init') {
+            store = {binding: null};
+
+            return {ok: true, applied: true, version: 1};
+        }
+
+        if (command === 'register') {
+            store.binding = {connectionId: 'conn-1', authProvider: options[options.indexOf('--provider') + 1]};
+
+            return {ok: true, connectionId: 'conn-1', applied: true};
+        }
+
+        return {ok: true, declared, declaredReason: null, state: store ? 'ok' : 'absent', reason: null, binding: store?.binding ?? null, tombstoned: false};
+    };
+}
+
+/** The forge-CLI commands among a run's calls, by their arguments. */
+const forgeCommands = calls => calls.filter(call => call.args.includes(FORGE_CLI)).map(call => call.args.slice(call.args.indexOf(FORGE_CLI) + 1));
 
 /**
  * @summary A run whose preset and PAT are consented and nothing is performed yet.
  * @param {Object} [options]
- * @param {String} [options.preset='local-small']
+ * @param {String}   [options.preset='local-small']
+ * @param {Function} [options.forge] Answers the plane's forge-connection CLI; a throw is a command that printed nothing.
  * @returns {Promise<Object>} `{root, stateRoot, recordPath, patPath, calls, reads, host, layout, record}`
  */
-async function consentedRun({preset = 'local-small'} = {}) {
+async function consentedRun({preset = 'local-small', forge = scriptedForge()} = {}) {
     const
         root       = await fs.mkdtemp(path.join(os.tmpdir(), 'setup-orchestration-')),
         stateRoot  = path.join(root, 'state'),
@@ -37,7 +69,11 @@ async function consentedRun({preset = 'local-small'} = {}) {
         calls      = [],
         reads      = [],
         fsModule   = {...fs, readFile: (file, ...rest) => { reads.push(String(file)); return fs.readFile(file, ...rest) }},
-        host       = createHost({fsModule, run: async (command, args, options) => { calls.push({command, args, cwd: options?.cwd}); return {stdout: '', stderr: ''} }, now: () => NOW}),
+        host       = createHost({fsModule, run: async (command, args, options) => {
+            calls.push({command, args, cwd: options?.cwd});
+
+            return {stdout: args.includes(FORGE_CLI) ? JSON.stringify(forge(args.slice(args.indexOf(FORGE_CLI) + 1))) : '', stderr: ''};
+        }, now: () => NOW}),
         layout     = {
             envFile       : path.join(stateRoot, 'config', 'local-agent-os.env'),
             secretsDir    : path.join(stateRoot, 'secrets'),
@@ -75,10 +111,11 @@ function evaluate(record, present = {}, servedPlane = {id: target.planeId, dataR
         presets,
         now      : () => NOW,
         observers: {
-            secretFiles : observe(EFFECT_IDS.writeSecrets),
-            envCarrier  : observe(EFFECT_IDS.writeEnv),
-            runningPlane: observe(EFFECT_IDS.composeUp),
-            servedPlane : async () => { if (servedPlane instanceof Error) throw servedPlane; return servedPlane }
+            secretFiles    : observe(EFFECT_IDS.writeSecrets),
+            envCarrier     : observe(EFFECT_IDS.writeEnv),
+            runningPlane   : observe(EFFECT_IDS.composeUp),
+            forgeConnection: observe(EFFECT_IDS.registerForge),
+            servedPlane    : async () => { if (servedPlane instanceof Error) throw servedPlane; return servedPlane }
         }
     });
 }
@@ -111,17 +148,40 @@ const receipts = record => record.receipts.map(receipt => [receipt.effectId, rec
 const exists = filePath => fs.access(filePath).then(() => true, () => false);
 
 test.describe('setupOrchestration', () => {
-    test('AC-2: with no filter the three effects run in their execution order, every one accepted', async () => {
+    test('AC-2: with no filter the host effects run in their execution order, every one accepted', async () => {
         const
             run      = await consentedRun(),
             {record} = await perform(run, {evaluation: await evaluate(run.record)});
 
         // one list: the order that runs is the recipe's effect steps as listed, the secret files before the carrier that points at them
         expect(EFFECT_ORDER).toEqual(RECIPE_STEPS.filter(step => step.kind === STEP_KINDS.effect).map(step => step.effectId));
-        expect(EFFECT_ORDER).toEqual([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp, EFFECT_IDS.verify]);
-        expect(receipts(record)).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted']]);
-        expect(run.calls.map(call => [call.command, call.args[0], call.cwd])).toEqual([['docker', 'compose', run.layout.composeDir]]);
+        expect(EFFECT_ORDER).toEqual([EFFECT_IDS.writeSecrets, EFFECT_IDS.writeEnv, EFFECT_IDS.composeUp, EFFECT_IDS.registerForge, EFFECT_IDS.verify]);
+        expect(receipts(record)).toEqual([['write-secrets', 'accepted'], ['write-env', 'accepted'], ['compose-up', 'accepted'], ['register-forge', 'accepted']]);
+        expect(run.calls.map(call => [call.command, call.args[0], call.cwd])).toEqual(Array(6).fill(['docker', 'compose', run.layout.composeDir]));
+        expect(run.calls[0].args).toContain('up');
+        // the forge is read from the plane compose-up brought up, once for the input and once before the handler mutates
+        expect(forgeCommands(run.calls)).toEqual([['status'], ['status'], ['init', '--apply'], ['register', '--provider', 'github', '--endpoint', 'https://api.github.com', '--apply'], ['status']]);
+        expect(findReceipt(record, EFFECT_IDS.registerForge).references).toEqual(['forge-connection:conn-1']);
         expect(await fs.readFile(run.layout.envFile, 'utf8')).toContain('NEO_PLANE_ID=plane-a\n')
+    });
+
+    test('register-forge selected behind an unfinished compose-up waits for it and asks the plane nothing; a plane that cannot say what it declares is reported, and nothing is applied', async () => {
+        const
+            hostFiles = {[EFFECT_IDS.writeSecrets]: true, [EFFECT_IDS.writeEnv]: true},
+            run       = await consentedRun(),
+            waiting   = await perform(run, {evaluation: await evaluate(run.record, hostFiles), effectIds: [EFFECT_IDS.registerForge]});
+
+        expect(waiting.record).toBe(run.record);
+        expect(waiting.reports).toEqual(["'register-forge' waits for 'compose-up': it is pending (not performed)"]);
+        expect(run.calls).toEqual([]);
+
+        const
+            mute    = await consentedRun({forge: () => { throw Object.assign(new Error('service "fleet-server" is not running'), {stdout: ''}) }}),
+            refused = await perform(mute, {evaluation: await evaluate(mute.record, {...hostFiles, [EFFECT_IDS.composeUp]: true}), effectIds: [EFFECT_IDS.registerForge]});
+
+        expect(refused.reports).toEqual(['\'register-forge\' could not read the forge the plane declares: the plane\'s forge-connection CLI did not answer: service "fleet-server" is not running']);
+        expect(findReceipt(refused.record, EFFECT_IDS.registerForge)).toBeNull();
+        expect(forgeCommands(mute.calls)).toEqual([['status']]);
     });
 
     test('AC-2: [\'write-env\'] applies that effect and nothing after it once write-secrets is ok', async () => {
@@ -202,7 +262,7 @@ test.describe('setupOrchestration', () => {
         expect(empty.record).toBe(run.record);
         expect(empty.reports).toEqual([]);
         expect(unknown.record).toBe(run.record);
-        expect(unknown.reports).toEqual(["unknown effect 'deploy': the effects are write-secrets, write-env, compose-up, verify"]);
+        expect(unknown.reports).toEqual(["unknown effect 'deploy': the effects are write-secrets, write-env, compose-up, register-forge, verify"]);
         expect(run.reads).toEqual([]);
         expect(run.calls).toEqual([])
     });
@@ -374,10 +434,11 @@ test.describe('setupOrchestration', () => {
                 close      : async function() { this.closed++ }
             }),
             evaluateWith = (record, validation) => evaluateRecipe({target, record, presets, now: () => NOW, observers: {
-                secretFiles : async () => ({present: true, digest: null}),
-                envCarrier  : async () => ({present: true, digest: null}),
-                runningPlane: async () => ({present: true, digest: null}),
-                servedPlane : async () => ({id: target.planeId, dataRoot: target.dataRoot}),
+                secretFiles    : async () => ({present: true, digest: null}),
+                envCarrier     : async () => ({present: true, digest: null}),
+                runningPlane   : async () => ({present: true, digest: null}),
+                forgeConnection: async () => ({present: true, digest: null, problem: null}),
+                servedPlane    : async () => ({id: target.planeId, dataRoot: target.dataRoot}),
                 // the production observer's read of the record's section, through the recipe's `{record}` argument
                 verification: async (_, {record: bound}) => ({present: bound?.verification?.recall?.hit === true, digest: null, problem: null, reason: 'not yet'}),
                 ...(validation ? {validation: async () => ({provider: {ok: true, model: 'm'}, embedding: {ok: true, dimension: 1024}})} : {})

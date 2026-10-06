@@ -16,14 +16,14 @@
  * preset is checked against arrives as `configSourcePath`, from the entrypoint.
  */
 
-import path                                          from 'node:path';
-import {composeCredentialEffects, presetEnvRefusals} from './credentialStep.mjs';
-import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}     from './firstRunRecipe.mjs';
-import {EFFECT_IDS, applyEffect, settleReceipt}      from './hostEffects.mjs';
-import {presets}                                     from './placementPresets.mjs';
-import {createPlaneWitnessClient}                    from './planeWitnessClient.mjs';
-import {RECEIPT_OUTCOMES, findReceipt}               from './setupRunRecord.mjs';
-import {performVerify, verifyExits}                  from './verifyEffect.mjs';
+import path                                                          from 'node:path';
+import {composeCredentialEffects, presetEnvRefusals}                 from './credentialStep.mjs';
+import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}                     from './firstRunRecipe.mjs';
+import {EFFECT_IDS, applyEffect, runForgeConnections, settleReceipt} from './hostEffects.mjs';
+import {presets}                                                     from './placementPresets.mjs';
+import {createPlaneWitnessClient}                                    from './planeWitnessClient.mjs';
+import {RECEIPT_OUTCOMES, findReceipt}                               from './setupRunRecord.mjs';
+import {performVerify, verifyExits}                                  from './verifyEffect.mjs';
 
 /**
  * The order the effects run in, whichever renderer runs them: the recipe's effect steps as it lists them,
@@ -47,6 +47,16 @@ export const VERIFY_GATES = RECIPE_STEPS.find(step => step.effectId === EFFECT_I
  * @type {String[]}
  */
 const HOST_FILE_EFFECTS = Object.freeze(EFFECT_ORDER.slice(0, EFFECT_ORDER.indexOf(EFFECT_IDS.composeUp)));
+
+/**
+ * @summary The compose context of the profile's plane, as `compose-up` brings it up and as every later command
+ * addresses it: the project, the checkout holding its files, the env carrier, the files in order and the profiles.
+ * @param {Object} layout `{composeProject, composeDir, envFile, composeFiles, composeProfiles}`.
+ * @returns {{project: String, cwd: String, envFile: String, composeFiles: String[], profiles: String[]}}
+ */
+export function composeContextOf(layout) {
+    return {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles, profiles: layout.composeProfiles ?? []};
+}
 
 /**
  * @summary The credential step and the effects after it. The preset's env set is refused BEFORE any write
@@ -151,7 +161,7 @@ export async function performEffects({record, recordPath, host, layout, target, 
     const inputs = {
         [EFFECT_IDS.writeSecrets]: {files: credentials.secretFiles.map(({path: filePath, content}) => ({path: filePath, content}))},
         [EFFECT_IDS.writeEnv]    : {path: layout.envFile, entries: {...preset.env, ...credentials.envEntries, NEO_PLANE_ID: target.planeId, NEO_PLANE_DATA_ROOT: target.dataRoot}},
-        [EFFECT_IDS.composeUp]   : {project: layout.composeProject, cwd: layout.composeDir, envFile: layout.envFile, composeFiles: layout.composeFiles, profiles: layout.composeProfiles ?? []}
+        [EFFECT_IDS.composeUp]   : composeContextOf(layout)
     };
 
     let current = record;
@@ -191,7 +201,14 @@ export async function performEffects({record, recordPath, host, layout, target, 
             break;
         }
 
-        const result = await applyEffect({effectId, input: inputs[effectId], record: current, recordPath, host});
+        // the forge the plane declares is read from the plane itself, so only once it is up
+        const input = effectId === EFFECT_IDS.registerForge ? await registerForgeInput(layout, host, report) : inputs[effectId];
+
+        if (!input) {
+            break;
+        }
+
+        const result = await applyEffect({effectId, input, record: current, recordPath, host});
 
         current = result.record;
 
@@ -201,6 +218,30 @@ export async function performEffects({record, recordPath, host, layout, target, 
     }
 
     return current;
+}
+
+/**
+ * @summary The `register-forge` input: the plane's compose context and the forge it declares, read through the
+ * plane's own `status` so the endpoint is the one its admissions present. The declaration is part of the input,
+ * so a plane that comes to declare another forge is a new application, never a replay. A plane that cannot answer
+ * is reported, and nothing is applied.
+ * @param {Object}   layout
+ * @param {Object}   host
+ * @param {Function} report
+ * @returns {Promise<Object|null>}
+ */
+async function registerForgeInput(layout, host, report) {
+    const context = composeContextOf(layout);
+
+    try {
+        const {declared, declaredReason} = await runForgeConnections(context, ['status'], host);
+
+        return {...context, declared, declaredReason};
+    } catch (error) {
+        report(`'register-forge' could not read the forge the plane declares: ${error.message}`);
+
+        return null;
+    }
 }
 
 /**

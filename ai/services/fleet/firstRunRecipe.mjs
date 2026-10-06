@@ -80,6 +80,7 @@ export const RECIPE_STEPS = Object.freeze([
     Object.freeze({id: 'write-secrets',    kind: STEP_KINDS.effect,      observer: 'secretFiles',  effectId: 'write-secrets', summary: 'the secret files exist, owner-only'}),
     Object.freeze({id: 'write-env',        kind: STEP_KINDS.effect,      observer: 'envCarrier',   effectId: 'write-env',     summary: 'the plane env carrier holds the preset and the plane bindings'}),
     Object.freeze({id: 'compose-up',       kind: STEP_KINDS.effect,      observer: 'runningPlane', effectId: 'compose-up',    summary: 'the compose project is running'}),
+    Object.freeze({id: 'register-forge',   kind: STEP_KINDS.effect,      observer: 'forgeConnection', effectId: 'register-forge', summary: 'the plane\'s forge connection is registered, so seats can be owned'}),
     Object.freeze({id: 'served-plane',     kind: STEP_KINDS.observation, observer: 'servedPlane',  summary: 'the served plane identity and data root match the target'}),
     Object.freeze({id: 'validation',       kind: STEP_KINDS.observation, observer: 'validation',   summary: 'one fresh provider call and one fresh embedding with the configuration the run supplied, at the preset dimension — never read from a receipt'}),
     Object.freeze({id: 'verify',           kind: STEP_KINDS.effect,      observer: 'verification', effectId: 'verify',        gates: Object.freeze(['served-plane', 'validation']), summary: 'the first-run witness: one memory written through the served plane under this run, read back and recalled through its embedding lane'}),
