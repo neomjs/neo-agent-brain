@@ -12,7 +12,8 @@ import {writeFileAtomic}                               from '../shared/atomicFil
  * converge.
  *
  * The consent is the registry row's `memoryImport`: a source path or `'none'`, recorded at birth by
- * `defineAgent`. A seat with no consent is a fresh one and starts empty by design. The destination is
+ * `defineAgent`, or later through `configureAgent` while the seat neither runs nor holds its memory
+ * ({@link seatHoldsMemory}). A seat with no consent is a fresh one and starts empty by design. The destination is
  * never a field: it is a function of the seat's family ({@link memoryDestination}). The copy never moves
  * the source, which stays the rollback. Its receipt beside the seat's other convergence receipts is
  * provenance only: it keeps a later Start from copying again over memory the seat has written since.
