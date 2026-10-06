@@ -351,7 +351,7 @@ export function mcpDeclarationRefusal({harnessType, mcpMatrix, tenant=false, for
 
 /**
  * @summary How one bound plan row's environment splits between a Claude Desktop profile row and native
- * launch admission (ADR 0038 §2.5.1 class 8). The row carries the identity, the Node runtime env and, for a
+ * launch admission. The row carries the identity, the Node runtime env and, for a
  * resident server, its plane placement: the names Start resolved beyond the descriptor's own runtime
  * slots. Every other name the server declares is redeemed through the launcher. A tenant row redeems only
  * its credential slot. The profile renderer and the issuer both split with this function, so a name is

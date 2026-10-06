@@ -3,8 +3,8 @@ import {LAUNCH_ADMISSION_OUTCOMES} from '../../../src/fleet/contract/launchAdmis
 
 /**
  * @module ai/services/fleet/mcpLaunchAdmission
- * @summary The wire between Fleet's MCP launcher and the issuer it redeems from: native launch admission,
- * ADR 0038 §2.5.1 class 8. A profile row carries a grant `<id>.<secret>`. The secret never crosses the
+ * @summary The wire between Fleet's MCP launcher and the issuer it redeems from: native MCP launch
+ * admission. A profile row carries a grant `<id>.<secret>`. The secret never crosses the
  * wire. A request proves possession with an HMAC over a fresh nonce, and the issuer signs its answer with
  * the same secret. A process that binds a dead issuer's port can therefore neither learn the grant nor
  * hand the launcher an environment. Pure: only `node:crypto` and the Body-safe vocabulary, so the

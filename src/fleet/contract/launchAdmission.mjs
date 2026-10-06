@@ -1,7 +1,7 @@
 /**
  * @module src/fleet/contract/launchAdmission
- * @summary What a Claude Desktop seat card may say about native MCP launch admission (ADR 0038 §2.5.1
- * class 8): whether the seat's Neo MCP servers can start new children, and why not.
+ * @summary What a Claude Desktop seat card may say about native MCP launch admission: whether the seat's
+ * Neo MCP servers can start new children, and why not.
  *
  * Desktop starts a profile row's MCP child itself, with a stripped environment, so each row runs Fleet's
  * fixed launcher. The launcher redeems a per-server grant from the Fleet's issuer before it starts the

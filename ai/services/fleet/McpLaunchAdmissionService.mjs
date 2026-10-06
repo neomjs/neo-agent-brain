@@ -30,8 +30,9 @@ const BRIDGE_ENTRYPOINT = 'ai/mcp/client/stdioToStreamableHttp.mjs';
  * @extends Neo.core.Base
  * @singleton
  *
- * @summary The issuer of native MCP launch admission (ADR 0038 §2.5.1 class 8, §2.5.2): the Fleet side of
- * the profile rows that let a Claude Desktop seat start its Neo MCP servers in every folder.
+ * @summary The issuer of native MCP launch admission: the Fleet side of the profile rows that let a Claude
+ * Desktop seat start its Neo MCP servers in every folder. Its grants are their own credential class, never
+ * a PAT, plane bearer, process bearer or Bridge token, and no Fleet wire method reaches them.
  *
  * Desktop starts each MCP child itself, with a stripped environment, so it cannot inherit what Start
  * resolved. Each owned profile row therefore runs Fleet's fixed launcher with a grant for that one server.

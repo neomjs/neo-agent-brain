@@ -1279,7 +1279,7 @@ function renderClaudeJsonContent({agent, plan, interpolateEnv, legacyDesktop = f
 
 /**
  * @summary Converge a managed Desktop seat's Neo MCP rows into its own profile, so every Code session of that
- * Desktop has them, whatever folder it opened (ADR 0038 §2.5.2). Desktop starts a profile row's child with a
+ * Desktop has them, whatever folder it opened. Desktop starts a profile row's child with a
  * stripped environment, so each enabled server's row runs Fleet's launcher with that server's reserved grant
  * ({@link renderDesktopLaunchRows}). Then the rows an earlier Fleet wrote into the Code-tab local scope are
  * retired. Start prepares only while the seat's Desktop is stopped, so no Desktop writes the profile meanwhile.
