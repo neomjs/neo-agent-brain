@@ -158,7 +158,17 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
 
         expect(answers.map(answer => answer.outcome)).toEqual(['admitted', 'admitted', 'admitted']);
         expect((await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).outcome).toBe('admitted');
-        expect(service.statusOf('seat').recent.map(entry => [entry.server, entry.outcome])).toEqual(Array(4).fill(['memory-core', 'admitted']))
+        expect(service.statusOf('seat').recent.map(entry => [entry.server, entry.outcome])).toEqual(Array(4).fill(['memory-core', 'admitted']));
+
+        // the audit keeps the newest entries only, and none of them carries a value it handed over
+        for (let i = 0; i < service.auditLimit; i++) await redeem(reservation.grants['neural-link'], {server: 'neural-link'});
+
+        const {recent} = service.statusOf('seat');
+
+        expect(recent).toHaveLength(service.auditLimit);
+        expect(recent.every(entry => entry.server === 'neural-link')).toBe(true);
+        expect(Object.keys(recent[0]).sort()).toEqual(['at', 'code', 'outcome', 'reason', 'server']);
+        expect(JSON.stringify(recent)).not.toContain('bridge-fixture-token')
     });
 
     test('a redemption during Start waits for its outcome: admitted after activation, refused after revocation or the bound', async () => {

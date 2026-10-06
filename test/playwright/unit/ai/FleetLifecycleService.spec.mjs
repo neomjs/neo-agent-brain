@@ -2594,13 +2594,15 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         expect(events).toEqual(['activate', 'revoke stop-requested', 'signal SIGTERM', 'revoke process-exited'])
     });
 
-    test('the seat\'s exit ends its own generation, and only that one', async () => {
-        const {calls} = installDesktopSeat();
+    test('the seat\'s exit, or an error its process emits after the spawn, ends its own generation and only that one', async () => {
+        for (const event of ['exit', 'error']) {
+            const {calls} = installDesktopSeat();
 
-        FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
-        FleetLifecycleService.processes.get('seat').child.emit('exit', 0, null);
+            FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
+            FleetLifecycleService.processes.get('seat').child.emit(event, ...(event === 'exit' ? [0, null] : [new Error('spawn EACCES')]));
 
-        expect(calls.revoke).toEqual([{id: 'seat', reason: 'process-exited', generation: 'generation-1'}])
+            expect(calls.revoke, event).toEqual([{id: 'seat', reason: 'process-exited', generation: 'generation-1'}])
+        }
     });
 
     test('a running Desktop seat this Fleet holds no generation for reads stale; a stopped one and other families read nothing', () => {
