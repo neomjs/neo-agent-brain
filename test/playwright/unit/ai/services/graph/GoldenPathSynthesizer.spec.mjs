@@ -20,6 +20,8 @@ import fs                          from 'fs';
 import path                        from 'path';
 import os                          from 'os';
 import child_process               from 'child_process';
+import Database                    from 'better-sqlite3';
+import {IDENTITIES}                from '../../../../../../ai/graph/identityRoots.mjs';
 import {resolveCrossFamilyVerdict} from '../../../../../../ai/services/graph/agentFamilyResolution.mjs';
 import {TestLifecycleHelper}       from '../../services/memory-core/util.mjs';
 
@@ -2931,8 +2933,11 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             }
         ];
 
+        // the identity nodes a plane seeds from the roots, the records the owner marks read
+        const identities = IDENTITIES.filter(entry => entry.type === 'AgentIdentity').map(({id, properties}) => ({id, label: 'AgentIdentity', properties}));
+
         try {
-            const findings = buildWorkGraphStallFindings({issuesDir, now, prs, graphService});
+            const findings = buildWorkGraphStallFindings({issuesDir, now, prs, graphService, identities});
             const classes  = findings.map(finding => `${finding.findingClass}:${finding.subject.number}`);
 
             expect(classes).toEqual([
@@ -2947,10 +2952,10 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             expect(ownerFinding).toMatchObject({
                 grade             : 'verified-stall',
                 sourceFidelity    : 'verified',
-                verificationSource: 'identityRoots.mjs + local issue sync'
+                verificationSource: 'AgentIdentity node + local issue sync'
             });
             expect(ownerFinding.motionPredicate).toContain('participationStatus');
-            expect(ownerFinding.evidenceRefs).toContain('ai/graph/identityRoots.mjs:neo-gemini-pro:operator_benched');
+            expect(ownerFinding.evidenceRefs).toContain('AgentIdentity:@neo-gemini-pro:operator_benched');
             expect(ownerFinding.waitingSince).toBe('2026-05-18T00:00:00.000Z');
             expect(ownerFinding.lastSeen).toBe('2026-07-02T12:00:00.000Z');
 
@@ -2965,6 +2970,42 @@ test.describe('Neo.ai.daemons.services.GoldenPathSynthesizer', () => {
             expect(staleDefer.evidenceRefs).toContain('blockedBy:9506');
             expect(staleDefer).toHaveProperty('ttlExpiresAt');
         } finally {
+            fs.rmSync(issuesDir, {recursive: true, force: true});
+        }
+    });
+
+    test('a lane owner is benched by its identity node, never by the roots: a node bench marks the lane, a root bench the node contradicts does not, and a store that cannot answer marks none', () => {
+        const issuesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'neo-stall-nodes-'));
+        const chunkDir  = path.join(issuesDir, 'chunk-1');
+        const now       = new Date('2026-07-02T12:00:00Z');
+        const store     = new Database(':memory:');
+        fs.mkdirSync(chunkDir, {recursive: true});
+
+        const writeIssue = (number, assignee) => fs.writeFileSync(path.join(chunkDir, `issue-${number}.md`), [
+            '---', `id: ${number}`, `title: 'Lane ${number}'`, 'state: OPEN', 'labels:', '  - enhancement', 'assignees:', `  - ${assignee}`,
+            "createdAt: '2026-06-01T00:00:00Z'", "updatedAt: '2026-07-02T11:00:00Z'", `githubUrl: 'https://github.com/neomjs/neo/issues/${number}'`, '---', `# Lane ${number}`
+        ].join('\n'));
+
+        // neo-gpt's root reads active and neo-gemini-pro's benched: the nodes below say the opposite of both
+        writeIssue(9701, 'neo-gpt');
+        writeIssue(9702, 'neo-gemini-pro');
+
+        store.exec('CREATE TABLE Nodes (id TEXT PRIMARY KEY, data TEXT)');
+        [
+            {id: '@neo-gpt', label: 'AgentIdentity', properties: {githubLogin: 'neo-gpt', participationStatus: 'operator_benched', since: '2026-07-01T00:00:00Z'}},
+            {id: '@neo-gemini-pro', label: 'AgentIdentity', properties: {githubLogin: 'neo-gemini-pro', participationStatus: 'active'}}
+        ].forEach(node => store.prepare('INSERT INTO Nodes (id, data) VALUES (?, ?)').run(node.id, JSON.stringify(node)));
+
+        const
+            graphDouble = storage => ({db: {edges: {getByIndex: () => []}, getAdjacentNodes() {}, nodes: {get: () => null}, storage}}),
+            owners      = findings => findings.filter(finding => finding.findingClass === 'OWNER_BENCHED_LANE').map(finding => finding.subject.number);
+
+        try {
+            // read from the graph store when no records are handed in
+            expect(owners(buildWorkGraphStallFindings({issuesDir, now, graphService: graphDouble({db: store})}))).toEqual([9701]);
+            expect(owners(buildWorkGraphStallFindings({issuesDir, now, graphService: graphDouble(undefined)}))).toEqual([]);
+        } finally {
+            store.close();
             fs.rmSync(issuesDir, {recursive: true, force: true});
         }
     });

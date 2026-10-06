@@ -6,6 +6,7 @@ import {Memory_Config as aiConfig}           from '../../services.mjs';
 import {Memory_GraphService as GraphService} from '../../services.mjs';
 import logger                                from '../../mcp/server/memory-core/logger.mjs';
 import {IDENTITIES}                          from '../../graph/identityRoots.mjs';
+import {readAgentIdentityNodes}              from '../../graph/agentIdentityParticipation.mjs';
 
 /**
  * @module ai/services/graph/issueFocusSections
@@ -54,13 +55,14 @@ const INACTIVE_PARTICIPATION_STATUSES = Object.freeze(new Set([
 const MAINTAINER_PROGRESS_PATTERN = /\b(?:in[-\s]?progress|picking up|taking|claim(?:ed|ing)?|lane-claim|lane-state:\s*next-lane|working|implement(?:ing)?|opened\s+(?:PR|pull request)|PR\s*#\d+)\b/i;
 
 /**
- * @summary Normalizes an `identityRoots.mjs` GitHub login for local issue payload matching.
+ * @summary Normalizes an AgentIdentity's GitHub login for local issue payload matching: its `githubLogin`, or for a
+ * node that records none, its id.
  *
- * @param {Object} identity AgentIdentity root entry.
+ * @param {Object} identity AgentIdentity root entry or node record.
  * @returns {String|null} Bare GitHub login, or `null` when unavailable.
  */
 function getIdentityGithubLogin(identity) {
-    const login = identity.properties?.githubLogin;
+    const login = identity.properties?.githubLogin ?? identity.id;
 
     return typeof login === 'string' && login ? login.replace(/^@/, '') : null
 }
@@ -94,10 +96,10 @@ export function getStaleAssignmentMaintainers() {
  * family-keyed quorum. It does not infer absence from message recency or raw
  * issue timestamps.
  *
- * @param {Object[]} identities AgentIdentity roots.
+ * @param {Object[]} identities AgentIdentity node records (`ai/graph/agentIdentityParticipation.mjs`).
  * @returns {Map<String, Object>} Login without leading `@` to identity metadata.
  */
-export function getParticipationStatusByLogin(identities = IDENTITIES) {
+export function getParticipationStatusByLogin(identities) {
     const statusByLogin = new Map();
 
     for (const identity of identities) {
@@ -1097,7 +1099,7 @@ function buildStallFinding({
  * @param {String} options.issuesDir Local synced issue directory.
  * @param {Object[]} [options.prs=[]] Open PR payloads from GitHub.
  * @param {Date} [options.now=new Date()] Capture timestamp.
- * @param {Object[]} [options.identities=IDENTITIES] AgentIdentity roots.
+ * @param {Object[]} [options.identities] AgentIdentity node records; read from `graphService`'s store when omitted.
  * @param {Object} [options.graphService=GraphService] Graph service or test double.
  * @returns {Object[]} Stall findings.
  */
@@ -1105,15 +1107,27 @@ export function buildWorkGraphStallFindings({
     issuesDir,
     prs = [],
     now = new Date(),
-    identities = IDENTITIES,
+    identities = null,
     graphService = GraphService
 }) {
     if (!issuesDir) return [];
 
+    let nodes = identities;
+
+    if (!nodes) {
+        try {
+            nodes = readAgentIdentityNodes(graphService.db?.storage?.db)
+        } catch (error) {
+            // a benched owner is the node's fact: unread nodes mark no lane, and the roots never stand in
+            logger.warn(`[issueFocusSections] the identity nodes did not answer, so no lane is marked as a benched owner's: ${error.message}`);
+            nodes = []
+        }
+    }
+
     const
         findings      = [],
         issueRecords  = readWorkGraphIssueRecords(issuesDir),
-        statusByLogin = getParticipationStatusByLogin(identities);
+        statusByLogin = getParticipationStatusByLogin(nodes);
 
     for (const issue of issueRecords) {
         if (issue.meta.state !== 'OPEN') continue;
@@ -1151,7 +1165,7 @@ export function buildWorkGraphStallFindings({
             const assignee = inactiveAssignees[0];
             findings.push(buildStallFinding({
                 capturedAt     : now,
-                evidenceRefs   : [`#${issue.number}`, `ai/graph/identityRoots.mjs:${assignee.login}:${assignee.participationStatus}`],
+                evidenceRefs   : [`#${issue.number}`, `AgentIdentity:${assignee.identityId}:${assignee.participationStatus}`],
                 findingClass   : 'OWNER_BENCHED_LANE',
                 motionPredicate: 'owned open work moves when AgentIdentity.participationStatus returns active, the lane is reassigned, or linked work advances under an active owner',
                 presenceSource : 'AgentIdentity.participationStatus',
@@ -1163,7 +1177,7 @@ export function buildWorkGraphStallFindings({
                     type  : 'ISSUE',
                     url   : issue.url
                 },
-                verificationSource: 'identityRoots.mjs + local issue sync',
+                verificationSource: 'AgentIdentity node + local issue sync',
                 waitingSince      : assignee.since || issue.meta.createdAt
             }));
         }

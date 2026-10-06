@@ -14,17 +14,18 @@ setup({
     }
 });
 
-import {test, expect}                                 from '@playwright/test';
-import {execFileSync}                                 from 'child_process';
-import {mkdtempSync, rmSync}                          from 'fs';
-import os                                             from 'os';
-import path                                           from 'path';
-import Neo                                            from 'neo.mjs/src/Neo.mjs';
-import * as core                                      from 'neo.mjs/src/core/_export.mjs';
-import {deriveAllAgentIdleCycleId, checkAllAgentIdle} from '../../../../../../ai/scripts/lifecycle/checkAllAgentIdle.mjs';
-import {resolveTargets}                               from '../../../../../../ai/daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
-import SQLite                                         from '../../../../../../ai/graph/storage/SQLite.mjs';
-import AiConfig                                       from '../../../../../../ai/config.template.mjs';
+import {test, expect}                                    from '@playwright/test';
+import {execFileSync}                                    from 'child_process';
+import {mkdtempSync, rmSync}                             from 'fs';
+import os                                                from 'os';
+import path                                              from 'path';
+import Neo                                               from 'neo.mjs/src/Neo.mjs';
+import * as core                                         from 'neo.mjs/src/core/_export.mjs';
+import {deriveAllAgentIdleCycleId, checkAllAgentIdle}    from '../../../../../../ai/scripts/lifecycle/checkAllAgentIdle.mjs';
+import {resolveTargets}                                  from '../../../../../../ai/daemons/orchestrator/scheduling/swarmHeartbeat.mjs';
+import {participationByIdentity, readAgentIdentityNodes} from '../../../../../../ai/graph/agentIdentityParticipation.mjs';
+import SQLite                                            from '../../../../../../ai/graph/storage/SQLite.mjs';
+import AiConfig                                          from '../../../../../../ai/config.template.mjs';
 
 /**
  * @summary Creates one disposable file-backed graph that a fresh detector process can reopen.
@@ -213,8 +214,15 @@ test.describe('ai/scripts/checkAllAgentIdle', () => {
     test('checkAllAgentIdle.mjs default identity set resolves via active-local-team (no hardcoded roster)', async () => {
         // With NEO_SWARM_IDENTITIES UNSET, the all-idle check set must come from the
         // resolveTargets({targetSource:'active-local-team'}) registry path — deployment-portable,
-        // NOT the retired hardcoded `@neo-gemini-pro,@neo-opus-ada,@neo-gpt` fallback.
-        const expected = await resolveTargets({targetSource: 'active-local-team'});
+        // NOT the retired hardcoded `@neo-gemini-pro,@neo-opus-ada,@neo-gpt` fallback — kept to
+        // the seats the test graph's identity nodes let participate, as the script reads them.
+        const GraphService = (await import('../../../../../../ai/services/memory-core/GraphService.mjs')).default;
+        await GraphService.initAsync();
+
+        const expected = await resolveTargets({
+            targetSource         : 'active-local-team',
+            participationProvider: () => participationByIdentity(readAgentIdentityNodes(GraphService.db.storage.db))
+        });
         expect(expected.length).toBeGreaterThan(0);
 
         const scriptPath = path.resolve(process.cwd(), 'ai/scripts/lifecycle/checkAllAgentIdle.mjs');

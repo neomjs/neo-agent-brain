@@ -312,20 +312,6 @@ export function getDbNode(db, id) {
     }
 }
 
-/**
- * @summary Every AgentIdentity node record in the graph store, the rows `who_is_online` reads.
- *
- * The predicate is the graph store's `idx_nodes_label` expression, so the daemon reads it through that index
- * on every poll instead of scanning `Nodes`; the same index rejects a row whose data does not parse, at write.
- * @param {Object} db better-sqlite3 handle.
- * @returns {Object[]} Parsed `{id, properties}` records.
- * @throws {Error} When the store cannot answer the query.
- */
-export function getAgentIdentityNodes(db) {
-    return db.prepare(`SELECT data FROM Nodes WHERE json_extract(data, '$.label') = 'AgentIdentity'`).all()
-        .map(row => JSON.parse(row.data))
-}
-
 export function getUnreadSunsetHandovers(db) {
     const stmt = db.prepare(`
         SELECT id, data FROM Nodes
