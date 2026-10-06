@@ -529,11 +529,26 @@ class FleetControlBridge extends Base {
     /**
      * @summary Configure an existing agent through one serializable curated intent. Validation
      * failures become an explicit domain outcome the Accounts card may render; unexpected service
-     * failures still throw and are sanitized by dispatchFleetRequest.
+     * failures still throw and are sanitized by dispatchFleetRequest. A memory consent is decided in the
+     * seat's home queue ({@link Neo.ai.services.fleet.FleetManager#withSeatHome}), after any Start already
+     * holding it, because a Start decides from the definition it read before it launched.
      * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?, model?, reasoningEffort?, memoryImport?}`
      * @returns {Promise<{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}>}
      */
-    async configureAgent(intent) {
+    configureAgent(intent) {
+        return intent && Object.hasOwn(intent, 'memoryImport') && typeof intent.id === 'string' && intent.id
+            ? this.getManager().withSeatHome(intent.id, () => this.applyConfiguration(intent))
+            : this.applyConfiguration(intent)
+    }
+
+    /**
+     * @summary The configuration itself, once its turn has come: the tenant and memory checks, then the
+     * registry's write.
+     * @param {Object} intent See {@link #configureAgent}.
+     * @returns {Promise<{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}>}
+     * @protected
+     */
+    async applyConfiguration(intent) {
         try {
             const
                 registry = this.getRegistry(),
@@ -595,9 +610,9 @@ class FleetControlBridge extends Base {
     }
 
     /**
-     * @summary Reject a memory consent for a seat that already holds its memory. The consent is chosen
-     * before the first Start, at definition or here; from then on the memory is the seat's own, and an
-     * import would copy over what it has written. An unknown id passes on, for the registry to answer.
+     * @summary Reject a memory consent for a seat that runs or already holds its memory. The consent is
+     * chosen before the first Start, at definition or here; from then on the memory is the seat's own, and
+     * an import would copy over what it has written. An unknown id passes on, for the registry to answer.
      * @param {Object} intent
      * @returns {Promise<Object|null>} Controlled rejection or `null`.
      * @protected
@@ -605,13 +620,17 @@ class FleetControlBridge extends Base {
     async rejectLateMemoryImport(intent) {
         const agent = intent && Object.hasOwn(intent, 'memoryImport') ? this.getRegistry().getAgent(intent.id) : null;
 
-        if (!agent || !await seatHoldsMemory({agent, instanceRoot: this.getManager().getLifecycleService().getInstanceRoot()})) {
-            return null
-        }
+        if (!agent) return null;
 
-        return {
+        const
+            lifecycle = this.getManager().getLifecycleService(),
+            state     = lifecycle.isRunning(agent.id) ? 'is running'
+                : await seatHoldsMemory({agent, instanceRoot: lifecycle.getInstanceRoot()}) ? 'already holds its memory'
+                : null;
+
+        return state && {
             status: 'rejected',
-            reason: `A seat's memory import is chosen before its first Start, and '${agent.id}' already holds its memory.`
+            reason: `A seat's memory import is chosen before its first Start, and '${agent.id}' ${state}.`
         }
     }
 

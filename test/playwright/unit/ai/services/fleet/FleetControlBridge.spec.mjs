@@ -38,6 +38,12 @@ import {createFleetWireRequest, FLEET_WIRE_RESPONSE_STATES} from '../../../../..
 test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist over the two Brain singletons', () => {
     let calls, registryStub, managerStub, tenantServiceStub;
 
+    // the manager's own seat-home queue on the stub: an operation waits for the one holding the home
+    const useSeatHomeQueue = () => Object.assign(managerStub, {
+        seatHomeHolds: new Map(),
+        withSeatHome(id, operation) { return FleetManager.withSeatHome.call(this, id, operation) }
+    });
+
     test.beforeEach(() => {
         calls = [];
 
@@ -256,7 +262,8 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-memory-'));
 
         try {
-            managerStub.getLifecycleService = () => ({getInstanceRoot: () => root});
+            useSeatHomeQueue();
+            managerStub.getLifecycleService = () => ({getInstanceRoot: () => root, isRunning: () => false});
             registryStub.getAgent           = id => { calls.push(['getAgent', id]); return id === 'alice' ? {id, harnessType: 'claude-desktop'} : null };
 
             const consent = {id: 'alice', memoryImport: 'none'};
@@ -278,6 +285,37 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
             calls.length = 0;
             expect(await FleetControlBridge.configureAgent({id: 'ghost', memoryImport: 'none'}), 'an unknown seat is the registry\'s answer')
                 .toEqual({status: 'rejected', reason: "Unknown agent 'ghost'."})
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
+    test('a memory consent waits for a Start already holding the seat, and a seat that then runs refuses it', async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-memory-'));
+
+        try {
+            let running = false, launch;
+
+            useSeatHomeQueue();
+            managerStub.getLifecycleService = () => ({getInstanceRoot: () => root, isRunning: () => running});
+            registryStub.getAgent           = id => ({id, harnessType: 'claude-desktop'});
+
+            // a Start holds the seat's home, and launches the seat when it settles
+            const
+                start   = managerStub.withSeatHome('alice', () => new Promise(resolve => { launch = () => { running = true; resolve() } })),
+                consent = FleetControlBridge.configureAgent({id: 'alice', memoryImport: 'none'});
+
+            await new Promise(resolve => setTimeout(resolve, 20));
+            expect(calls, 'nothing is decided while the Start holds the seat').toEqual([]);
+
+            launch();
+            await start;
+
+            expect(await consent).toEqual({
+                status: 'rejected',
+                reason: "A seat's memory import is chosen before its first Start, and 'alice' is running."
+            });
+            expect(calls.filter(([name]) => name === 'configureAgent'), 'nothing is written').toEqual([])
         } finally {
             fs.rmSync(root, {recursive: true, force: true})
         }
