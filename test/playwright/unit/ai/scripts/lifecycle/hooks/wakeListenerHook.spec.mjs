@@ -54,7 +54,7 @@ function writeState(record) {
  * @param {Object} [options.refusal] What `connect` answers instead of a client.
  * @returns {Promise<Object>} `{outcome, polls, sleeps, connects}`
  */
-async function listen({answers = [], session = OLDER, sessionId = 'session-older', event = 'Stop', procs, onSleep, config, refusal} = {}) {
+async function listen({answers = [], session = OLDER, sessionId = 'session-older', procs, onSleep, config, refusal} = {}) {
     const
         table    = procs ?? new Map([[OLDER.pid, OLDER], [NEWER.pid, NEWER], [LISTENER.pid, LISTENER]]),
         polls    = [],
@@ -75,7 +75,7 @@ async function listen({answers = [], session = OLDER, sessionId = 'session-older
         };
 
     const outcome = await runListener({
-        payload     : {session_id: sessionId, hook_event_name: event},
+        payload     : {session_id: sessionId, hook_event_name: 'Stop'},
         homeDir,
         config      : config ?? {planeBase: SOURCE, planeBearer: 'token', identity: `@${IDENTITY}`},
         connect     : async options => {connects.push(options); return refusal ?? {client, identity: `@${IDENTITY}`}},
@@ -142,15 +142,6 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
 
         expect(outcome).toEqual({exit: 2, digest: 'D'});
         expect(sleeps).toEqual([POLL_INTERVAL_MS, 2 * POLL_INTERVAL_MS, POLL_INTERVAL_MS])
-    });
-
-    test('at SessionStart the first poll waits one interval for the arming hook', async () => {
-        writeState({watermark: 1, source: SOURCE});
-
-        const {sleeps, polls} = await listen({event: 'SessionStart', answers: [{pending: 1, digest: 'D', watermark: 2}]});
-
-        expect(sleeps).toEqual([POLL_INTERVAL_MS]);
-        expect(polls).toEqual([1])
     });
 
     test('a second Stop in the owning session, with its listener alive, arms nothing new', async () => {
