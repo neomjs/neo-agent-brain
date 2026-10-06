@@ -273,6 +273,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
                 reason: "A seat's memory import is chosen before its first Start, and 'alice' already holds its memory."
             });
             expect(calls, 'nothing is written').toEqual([['getAgent', 'alice']]);
+            expect((await FleetControlBridge.configureAgent({id: 'alice', memoryImport: null})).status, 'nor withdrawn').toBe('rejected');
 
             calls.length = 0;
             expect(await FleetControlBridge.configureAgent({id: 'ghost', memoryImport: 'none'}), 'an unknown seat is the registry\'s answer')
