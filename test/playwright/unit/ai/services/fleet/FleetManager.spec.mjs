@@ -18,6 +18,7 @@ import Neo                  from 'neo.mjs/src/Neo.mjs';
 import * as core            from 'neo.mjs/src/core/_export.mjs';
 import FleetManager         from '../../../../../../ai/services/fleet/FleetManager.mjs';
 import FleetRegistryService from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {createFleetCockpitStatus} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
 import fs                   from 'fs';
 import os                   from 'os';
 import path                 from 'path';
@@ -384,6 +385,28 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(alice.gitIdentity).toEqual(derived);
         expect(bob.gitIdentity).toEqual({state: 'missing', name: 'Bob'});
         expect(Object.hasOwn(carol, 'gitIdentity')).toBe(false)
+    });
+
+    test('a Desktop seat\'s launch admission rides its runtime row and reaches the cockpit row; a seat without one adds nothing', () => {
+        const
+            registryStub = {listAgents: () => [{id: 'ada', harnessType: 'claude-desktop'}, {id: 'sophie', harnessType: 'codex-desktop'}]},
+            stale        = {state: 'stale', reason: 'issuer-replaced', generation: null, since: null, servers: [], recent: []};
+
+        FleetManager.lifecycleService = {
+            getRegistry       : () => registryStub,
+            harnessSettingsFor: () => null,
+            status            : id => ({id, state: 'running', running: true, pid: 4242, startedAt: '2026-10-07T08:00:00Z', exitCode: null,
+                launchAdmission: id === 'ada' ? stale : null})
+        };
+
+        const
+            runtime       = FleetManager.fleetRuntimeStatus(),
+            [ada, sophie] = runtime,
+            rows          = createFleetCockpitStatus({agents: registryStub.listAgents(), runtimeStatus: runtime}).rows;
+
+        expect(ada.launchAdmission).toEqual(stale);
+        expect(Object.hasOwn(sophie, 'launchAdmission')).toBe(false);
+        expect(rows.map(row => row.launchAdmission)).toEqual([stale, null])
     });
 
     test('what a Codex seat\'s config is set to rides its runtime row; a seat with nothing to read back adds nothing', () => {

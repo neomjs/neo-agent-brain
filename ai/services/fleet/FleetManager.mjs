@@ -568,6 +568,7 @@ class FleetManager extends Base {
             if (status.sessionFolder != null) row.sessionFolder   = status.sessionFolder;
             if (status.gitIdentity != null)   row.gitIdentity     = status.gitIdentity;
             if (status.seatModel != null)     row.seatModel       = status.seatModel;
+            if (status.launchAdmission != null) row.launchAdmission = status.launchAdmission;
             if (harnessSettings != null)      row.harnessSettings = harnessSettings;
 
             return row;
