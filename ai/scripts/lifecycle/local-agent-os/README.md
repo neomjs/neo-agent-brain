@@ -229,6 +229,13 @@ those values into it. A seat never carries `NEO_FLEET_PLANE_*`: its hooks reach
 the plane as the seat, through `NEO_SEAT_PLANE_BASE` and `NEO_MCP_REMOTE_TOKEN`,
 which the Fleet injects when it starts the seat.
 
+The plane's fleet surface (`/fleet`: the wake stream, plane-first Add) needs a
+fleet-client credential too. Either declare a distinct one in
+`NEO_FLEET_PLANE_ADMISSION_BEARER`, or, when `NEO_FLEET_PLANE_BEARER` is the
+operator's own forge PAT, set `NEO_FLEET_PLANE_BEARER_CLASS` to the class the
+plane reports for it (`github-pat` or `gitlab-pat`). That declares the one PAT
+for both surfaces (ADR 0038 §2.5.1 row 1); equal bytes alone are refused.
+
 A nonempty `NEO_FLEET_PLANE_BASE` is a topology declaration, not a health
 probe. `npm --prefix harness run start:brain` will therefore start or reuse only
 the host Fleet transport. If the ingress is down or the bearer resolves to the

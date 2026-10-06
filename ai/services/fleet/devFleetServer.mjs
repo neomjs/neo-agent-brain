@@ -194,10 +194,11 @@ async function boot() {
     if (planeClient) {
         // The plane NOW exposes the vouching surface this branch was honestly waiting for: the
         // composed fleet-server's `/fleet/events` stream. This process consumes it with the
-        // fleet-client PLANE-ADMISSION bearer — its own mint, class-checked at resolution: the
-        // plane-MCP credential must never dial the fleet surface, and an ALIASED declaration
-        // refuses the boot loudly right here (the structural close below still runs). An EMPTY
-        // declaration arms nothing: the axis renders the honest reason and poll stays the truth
+        // fleet-client PLANE-ADMISSION bearer — its own mint, class-checked at resolution: a
+        // plane-minted MC credential must never dial the fleet surface, and an ALIASED declaration
+        // refuses the boot loudly right here (the structural close below still runs); only a plane
+        // bearer declared as the operator's forge PAT (`fleet.planeBearerClass`) serves both. An
+        // EMPTY declaration arms nothing: the axis renders the honest reason and poll stays the truth
         // lane. One credential either way — no second header is synthesized, and the composed
         // server's boot arming covers the shared viewer identity. Connection catch-up rides
         // `poll-digest` through the proven plane client, cold start included (the stream's
@@ -232,7 +233,7 @@ async function boot() {
                 ? () => fleetWakeStreamConsumer.resolveDeliveryLiveness()
                 : () => ({
                     alive : 'unknown',
-                    reason: 'no fleet-surface credential declared (fleet.planeAdmissionBearer / fleet.planeAdmissionBearerFile) — poll remains the truth lane'
+                    reason: 'no fleet-surface credential declared (fleet.planeAdmissionBearer / fleet.planeAdmissionBearerFile, or a forge-PAT fleet.planeBearerClass) — poll remains the truth lane'
                 }),
             resolveTerminalDeliveryFailures   : () => ({
                 state     : 'unknown',

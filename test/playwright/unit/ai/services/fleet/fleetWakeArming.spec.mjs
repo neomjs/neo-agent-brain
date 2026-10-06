@@ -369,13 +369,14 @@ test.describe('fleet wake arming - the fleet-client plane-admission credential c
     const cleanFleet = overrides => ({
         planeBearer             : '',
         planeBearerFile         : '',
+        planeBearerClass        : '',
         planeAdmissionBearer    : '',
         planeAdmissionBearerFile: '',
         admissionTokenFile      : '',
         ...overrides
     });
 
-    test('the direct value wins; the secret file is the fallback; absence resolves empty — never a fallback onto the plane-MCP bearer', () => {
+    test('the direct value wins; the secret file is the fallback; absence resolves empty — never an undeclared fallback onto the plane-MCP bearer', () => {
         expect(resolveFleetPlaneAdmissionBearer({
             aiConfig: {fleet: cleanFleet({planeAdmissionBearer: ' direct-pat '})}
         })).toBe('direct-pat');
@@ -430,6 +431,67 @@ test.describe('fleet wake arming - the fleet-client plane-admission credential c
 
         expect(assertFleetPlaneAdmissionBearerClass({
             aiConfig: {fleet: cleanFleet({planeBearer: 'class-3-mint'})}
+        })).toBe('')
+    });
+
+    test('a plane bearer declared as the operator\'s forge PAT is the fleet-surface credential too — the ledger\'s declared reuse', () => {
+        for (const planeBearerClass of ['github-pat', 'gitlab-pat']) {
+            const aiConfig = {fleet: cleanFleet({planeBearer: 'operator-pat', planeBearerClass})};
+
+            expect(resolveFleetPlaneAdmissionBearer({aiConfig})).toBe('operator-pat');
+            expect(assertFleetPlaneAdmissionBearerClass({aiConfig})).toBe('operator-pat')
+        }
+
+        expect(resolveFleetPlaneAdmissionBearer({
+            aiConfig: {fleet: cleanFleet({planeBearerFile: '/run/secrets/plane', planeBearerClass: 'github-pat'})},
+            readFile: target => (target === '/run/secrets/plane' ? 'operator-pat\n' : '')
+        })).toBe('operator-pat')
+    });
+
+    test('equal bytes never declare the reuse: an undeclared or non-forge class still refuses, and the bootstrap token refuses under any class', () => {
+        for (const planeBearerClass of ['', 'local-bearer', 'seat-token', 'oidc']) {
+            expect(() => assertFleetPlaneAdmissionBearerClass({
+                aiConfig: {fleet: cleanFleet({
+                    planeAdmissionBearer: 'one-mint-two-audiences',
+                    planeBearer         : 'one-mint-two-audiences',
+                    planeBearerClass
+                })}
+            })).toThrow(/credential-class ledger forbids/);
+
+            expect(resolveFleetPlaneAdmissionBearer({
+                aiConfig: {fleet: cleanFleet({planeBearer: 'class-3-mint', planeBearerClass})}
+            })).toBe('')
+        }
+
+        const files = {'/run/secrets/mcp-auth-token': 'bootstrap-token\n'};
+
+        expect(() => assertFleetPlaneAdmissionBearerClass({
+            aiConfig: {fleet: cleanFleet({
+                planeBearer       : 'bootstrap-token',
+                planeBearerClass  : 'github-pat',
+                admissionTokenFile: '/run/secrets/mcp-auth-token'
+            })},
+            readFile: target => files[target]
+        })).toThrow(/bootstrap\/healthcheck admission token/)
+    });
+
+    test('a declared fleet-surface bearer still wins over the derivation, and an unreadable one never falls back onto the plane bearer', () => {
+        const forge = {planeBearer: 'operator-pat', planeBearerClass: 'github-pat'};
+
+        expect(assertFleetPlaneAdmissionBearerClass({
+            aiConfig: {fleet: cleanFleet({...forge, planeAdmissionBearer: 'distinct-fleet-client-pat'})}
+        })).toBe('distinct-fleet-client-pat');
+
+        expect(assertFleetPlaneAdmissionBearerClass({
+            aiConfig: {fleet: cleanFleet({...forge, planeAdmissionBearer: 'operator-pat'})}
+        })).toBe('operator-pat');
+
+        expect(resolveFleetPlaneAdmissionBearer({
+            aiConfig: {fleet: cleanFleet({...forge, planeAdmissionBearerFile: '/missing'})},
+            readFile: target => {
+                if (target === '/missing') throw new Error('ENOENT');
+                return ''
+            }
         })).toBe('')
     })
 });
