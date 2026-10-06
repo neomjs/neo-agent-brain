@@ -61,7 +61,7 @@ export function createPlaneFleetClient({baseUrl, credential, fetchImpl = globalT
          */
         async defineAgent(definition) {
             if (!credential) {
-                return {status: 'rejected', reason: 'no fleet-surface credential is declared (fleet.planeAdmissionBearer), and the plane-MCP bearer never dials the fleet surface'}
+                return {status: 'rejected', reason: 'This connection can\'t add agents on the plane: reconnect the plane with your own GitHub or GitLab PAT. (No fleet-surface credential is declared: neither fleet.planeAdmissionBearer nor a forge-PAT fleet.planeBearerClass.)'}
             }
 
             try {
