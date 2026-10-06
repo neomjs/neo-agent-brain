@@ -192,6 +192,39 @@ class TransportService extends Base {
     }
 
     /**
+     * @summary An HTTP `request` listener that logs each error response: method, path, status, whether an MCP
+     * session id was sent, and duration, never the target's authority or query, headers or body. A client like
+     * `mcp-remote` reports an empty-body error as a bare "Error POSTing to endpoint", so this line is the only record
+     * of the status. It listens on the server, so it also sees what middleware ahead of the routes answers.
+     * @param {Object}   options
+     * @param {Object}   options.logger
+     * @param {String}   options.resourceName
+     * @param {Function} [options.now=Date.now]
+     * @returns {Function} `(req, res) => void`
+     */
+    statusLogger({logger, resourceName, now=Date.now}) {
+        return (req, res) => {
+            const startedAt = now();
+
+            res.on('finish', () => {
+                if (res.statusCode >= 400) {
+                    const session = req.headers['mcp-session-id'] ? 'present' : 'absent';
+                    let path;
+
+                    // An absolute-form target (`http://user:pass@host/mcp`) carries its authority: keep the path alone
+                    try {
+                        path = new URL(req.url, 'http://target.invalid').pathname
+                    } catch {
+                        path = '(unparsable target)'
+                    }
+
+                    logger.warn(`[${resourceName}] ${req.method} ${path} → ${res.statusCode} (session ${session}, ${now() - startedAt} ms)`)
+                }
+            })
+        }
+    }
+
+    /**
      * @summary Sets up the Streamable HTTP transport for an MCP server.
      * @param {Object} options
      * @param {Object} options.server The Neo MCP Server instance
@@ -341,6 +374,7 @@ class TransportService extends Base {
                 ? app.listen(port, aiConfig.mcpListenHost, onListening)
                 : app.listen(port, onListening);
             this.httpServer.on('error', reject);
+            this.httpServer.on('request', this.statusLogger({logger, resourceName}));
         });
     }
 
