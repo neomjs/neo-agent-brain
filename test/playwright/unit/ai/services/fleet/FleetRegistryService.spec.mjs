@@ -810,6 +810,26 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService — an adopted seat\'s
             .toThrow(/FleetRegistryService\.defineAgent: 'memoryImport' must be 'none' or an agent's memory folder/);
         expect(FleetRegistryService.getAgent('leak')).toBeNull()
     });
+
+    test('configureAgent records a late consent the same way, withdraws it with null, and refuses anything else without a write', () => {
+        const
+            source  = path.join(os.homedir(), '.claude', 'projects', '-Users-x-neo', 'memory'),
+            persist = () => JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents.late;
+
+        FleetRegistryService.defineAgent({githubUsername: 'late', harnessType: 'claude-desktop', credential: PAT});
+
+        expect(FleetRegistryService.configureAgent({id: 'late', memoryImport: source}).memoryImport, 'a consent alone is a configuration').toBe(source);
+        expect(persist().memoryImport).toBe(source);
+        expect(FleetRegistryService.configureAgent({id: 'late', memoryImport: 'none'}).memoryImport).toBe('none');
+
+        expect(() => FleetRegistryService.configureAgent({id: 'late', memoryImport: path.join(os.homedir(), '.ssh')}))
+            .toThrow(/FleetRegistryService\.configureAgent: 'memoryImport' must be 'none' or an agent's memory folder/);
+        expect(persist().memoryImport, 'a refused consent writes nothing').toBe('none');
+
+        expect(FleetRegistryService.configureAgent({id: 'late', memoryImport: null}), 'withdrawn, the seat is a fresh one again').not.toHaveProperty('memoryImport');
+        expect(persist()).not.toHaveProperty('memoryImport');
+        expect(FleetRegistryService.configureAgent({id: 'ghost', memoryImport: 'none'})).toBeNull()
+    });
 });
 
 // The identity a seat's commits carry is declared on its definition, beside the provider login it never replaces.

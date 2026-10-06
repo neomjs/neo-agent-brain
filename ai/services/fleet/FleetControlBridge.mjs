@@ -3,6 +3,7 @@ import FleetManager             from './FleetManager.mjs';
 import FleetRegistryService     from './FleetRegistryService.mjs';
 import FleetTenantService       from './FleetTenantService.mjs';
 import {resolveIdentityDisplay} from './resolveIdentityDisplay.mjs';
+import {seatHoldsMemory}        from './seatMemoryImport.mjs';
 
 import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from './deriveHarnessLaunchSpec.mjs';
 import {launchRefusalOf}                              from '../../../src/fleet/contract/launchAuthority.mjs';
@@ -528,11 +529,27 @@ class FleetControlBridge extends Base {
     /**
      * @summary Configure an existing agent through one serializable curated intent. Validation
      * failures become an explicit domain outcome the Accounts card may render; unexpected service
-     * failures still throw and are sanitized by dispatchFleetRequest.
-     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?, model?, reasoningEffort?}`
-     * @returns {{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}}
+     * failures still throw and are sanitized by dispatchFleetRequest. A memory consent is decided in the
+     * seat's home queue ({@link Neo.ai.services.fleet.FleetManager#withSeatHome}), after any Start already
+     * holding it, because a Start decides from the definition it read before it launched.
+     * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?, model?, reasoningEffort?, memoryImport?}`
+     * @returns {Promise<{status: 'accepted', agent: Object}|{status: 'rejected', reason: String, code?: String}>}
+     *     `code` is `'FLEET_SEAT_MEMORY_IMPORT_CLOSED'` when the memory choice is closed ({@link #rejectLateMemoryImport}).
      */
     configureAgent(intent) {
+        return intent && Object.hasOwn(intent, 'memoryImport') && typeof intent.id === 'string' && intent.id
+            ? this.getManager().withSeatHome(intent.id, () => this.applyConfiguration(intent))
+            : this.applyConfiguration(intent)
+    }
+
+    /**
+     * @summary The configuration itself, once its turn has come: the tenant and memory checks, then the
+     * registry's write.
+     * @param {Object} intent See {@link #configureAgent}.
+     * @returns {Promise<{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}>}
+     * @protected
+     */
+    async applyConfiguration(intent) {
         try {
             const
                 registry = this.getRegistry(),
@@ -550,6 +567,10 @@ class FleetControlBridge extends Base {
                     this.rejectUnavailableMcpTarget(target);
 
             if (rejected) return rejected;
+
+            const late = await this.rejectLateMemoryImport(intent);
+
+            if (late) return late;
 
             const agent = registry.configureAgent(intent);
 
@@ -586,6 +607,34 @@ class FleetControlBridge extends Base {
         return {
             status: 'rejected',
             reason: `MCP tenant '${target.tenantId}' is unavailable.`
+        }
+    }
+
+    /**
+     * @summary Reject a memory consent for a seat that runs or already holds its memory. The consent is
+     * chosen before the first Start, at definition or here; from then on the memory is the seat's own, and
+     * an import would copy over what it has written. An unknown id passes on, for the registry to answer.
+     * Both refusals carry `code: 'FLEET_SEAT_MEMORY_IMPORT_CLOSED'`: the choice is closed for good, while
+     * any other rejection of the same call can be corrected and sent again.
+     * @param {Object} intent
+     * @returns {Promise<Object|null>} Controlled rejection or `null`.
+     * @protected
+     */
+    async rejectLateMemoryImport(intent) {
+        const agent = intent && Object.hasOwn(intent, 'memoryImport') ? this.getRegistry().getAgent(intent.id) : null;
+
+        if (!agent) return null;
+
+        const
+            lifecycle = this.getManager().getLifecycleService(),
+            state     = lifecycle.isRunning(agent.id) ? 'is running'
+                : await seatHoldsMemory({agent, instanceRoot: lifecycle.getInstanceRoot()}) ? 'already holds its memory'
+                : null;
+
+        return state && {
+            status: 'rejected',
+            code  : 'FLEET_SEAT_MEMORY_IMPORT_CLOSED',
+            reason: `A seat's memory import is chosen before its first Start, and '${agent.id}' ${state}.`
         }
     }
 
