@@ -22,10 +22,11 @@
  * Reconnects respect the server's `retry:` hint as a floor.
  *
  * One credential, deliberately: the connection presents the relay's fleet-client PLANE-ADMISSION
- * bearer — a distinct mint from its plane-MCP credential, which must never dial the fleet
- * surface — and nothing else. No second header is synthesized from it: the composed server
- * refuses byte-identical pairs by design, and the boot-armed shared viewer identity means
- * listening is sufficient in the transitional topology.
+ * bearer — a distinct mint from a plane-minted MC credential, which must never dial the fleet
+ * surface, or the operator's declared forge PAT serving both — and nothing else. No second
+ * header is synthesized from it: the composed server refuses byte-identical pairs by design,
+ * and the boot-armed shared viewer identity means listening is sufficient in the transitional
+ * topology.
  */
 
 const

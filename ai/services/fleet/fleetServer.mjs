@@ -38,9 +38,10 @@ import {
 } from '../../../src/fleet/contract/wire.mjs';
 
 const
-    REPO_ROOT             = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
-    STARTED_AT            = new Date().toISOString(),
-    SAFE_AUTH_INFO_FIELDS = Object.freeze([
+    REPO_ROOT                = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
+    STARTED_AT               = new Date().toISOString(),
+    FORGE_PAT_BEARER_CLASSES = Object.freeze(['github-pat', 'gitlab-pat']),
+    SAFE_AUTH_INFO_FIELDS    = Object.freeze([
         'userId',
         'username',
         'source',
@@ -673,7 +674,9 @@ export function assertFleetPlaneBearerClass({aiConfig = AiConfig, readFile = nul
  * surface — the fleet-client admission bearer, a DIFFERENT MINT from the plane-MCP bearer
  * (`resolveFleetPlaneBearer`). Same two declared homes, same precedence: the direct
  * `fleet.planeAdmissionBearer` value wins; otherwise `fleet.planeAdmissionBearerFile` names a
- * secret file. Returns `''` when neither yields a value — the caller renders that as an honest
+ * secret file. With neither declared, a plane bearer whose declared class is a forge PAT
+ * (`fleet.planeBearerClass`) is the answer: the operator's one PAT serves both audiences, a reuse
+ * the credential-class ledger declares. Otherwise `''` — the caller renders that as an honest
  * unarmed state, never a fallback onto a different credential class.
  * @param {Object} [options]
  * @param {Object} [options.aiConfig=AiConfig] Resolved Tier-1 config tree.
@@ -687,14 +690,18 @@ export function resolveFleetPlaneAdmissionBearer({aiConfig = AiConfig, readFile 
 
     const bearerFile = aiConfig.fleet.planeAdmissionBearerFile.trim();
 
-    if (!bearerFile) return '';
-
-    try {
-        const read = readFile ?? (target => readFileSync(target, 'utf8'));
-        return String(read(bearerFile)).trim()
-    } catch {
-        return ''
+    if (bearerFile) {
+        try {
+            const read = readFile ?? (target => readFileSync(target, 'utf8'));
+            return String(read(bearerFile)).trim()
+        } catch {
+            return ''
+        }
     }
+
+    return FORGE_PAT_BEARER_CLASSES.includes(aiConfig.fleet.planeBearerClass.trim())
+        ? resolveFleetPlaneBearer({aiConfig, readFile})
+        : ''
 }
 
 /**
@@ -702,12 +709,14 @@ export function resolveFleetPlaneAdmissionBearer({aiConfig = AiConfig, readFile 
  * not BE the plane-MCP bearer, and must not BE the bootstrap/healthcheck admission token. Both
  * surfaces can share a verifier, so byte-identity is exactly how one mint silently serves two
  * audiences — this refuses the aliasing at resolution time, at the one moment someone can mint
- * the distinct credential.
+ * the distinct credential. A forge PAT is not a plane mint: when `fleet.planeBearerClass`
+ * declares the plane bearer one, presenting it to the fleet surface is the ledger's declared
+ * reuse. Equal bytes never declare it, and the bootstrap token refuses regardless.
  * @param {Object} [options]
  * @param {Object} [options.aiConfig=AiConfig] Resolved Tier-1 config tree.
  * @param {Function} [options.readFile] Injection seam for tests; defaults to `readFileSync`.
  * @returns {String} The class-clean resolved bearer (may be `''`).
- * @throws {Error} When the fleet-surface bearer aliases the plane-MCP bearer or the admission token.
+ * @throws {Error} When the fleet-surface bearer aliases an undeclared plane-MCP bearer or the admission token.
  */
 export function assertFleetPlaneAdmissionBearerClass({aiConfig = AiConfig, readFile = null} = {}) {
     const
@@ -718,11 +727,12 @@ export function assertFleetPlaneAdmissionBearerClass({aiConfig = AiConfig, readF
 
     const planeBearer = resolveFleetPlaneBearer({aiConfig, readFile: read});
 
-    if (planeBearer && admissionBearer === planeBearer) {
+    if (planeBearer && admissionBearer === planeBearer && !FORGE_PAT_BEARER_CLASSES.includes(aiConfig.fleet.planeBearerClass.trim())) {
         throw new Error(
             '[FleetServer] fleet.planeAdmissionBearer resolves to the same bytes as the plane-MCP ' +
             'bearer — the credential-class ledger forbids presenting the MC credential to the ' +
-            'fleet surface. Mint a distinct fleet-client admission credential.'
+            'fleet surface. Mint a distinct fleet-client admission credential, or declare ' +
+            'fleet.planeBearerClass when the plane bearer is the operator\'s own forge PAT.'
         )
     }
 

@@ -14,10 +14,11 @@ const UNREACHABLE = 'fleet: the plane did not answer';
  * is defined on the plane first, because the plane owns a seat's definition and its operator; the relay
  * only applies what the plane answered.
  *
- * It presents the **fleet-surface credential** (`fleet.planeAdmissionBearer`) and never the plane-MCP
- * bearer: the credential-class ledger forbids the MC credential at `/fleet`, and the boot entry asserts
- * the two are distinct mints (`assertFleetPlaneAdmissionBearerClass`). Without one, every call refuses
- * with that reason and sends nothing.
+ * It presents the **fleet-surface credential** (`fleet.planeAdmissionBearer`) and never a plane-minted
+ * MC bearer: the credential-class ledger forbids that at `/fleet`, and the boot entry asserts the two are
+ * distinct mints unless the plane bearer is the operator's declared forge PAT
+ * (`assertFleetPlaneAdmissionBearerClass`). Without a credential, every call refuses with that reason and
+ * sends nothing.
  *
  * Zero config reads: the boot entry (`devFleetServer.mjs`) resolves the leaves at its use site and
  * injects them. The envelope is {@link createFleetRegistryBridge}'s versioned wire; this module owns the

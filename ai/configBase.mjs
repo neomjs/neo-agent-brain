@@ -384,9 +384,10 @@ class ConfigBase extends ConfigProvider {
                  * client — a DIFFERENT MINT from `planeBearer`, which serves the plane's MCP
                  * resources. The two audiences can share a verifier, so only distinct mints keep
                  * the credential classes apart: the Fleet entry refuses a value whose bytes alias
-                 * either `planeBearer` or the bootstrap admission token. Empty means the
-                 * deployment declares no fleet-surface credential; plane-stream consumers then
-                 * stay honestly unarmed with that reason instead of dialing with the wrong class.
+                 * either `planeBearer` (unless `planeBearerClass` declares it a forge PAT) or the
+                 * bootstrap admission token. Empty means the deployment declares no fleet-surface
+                 * credential; plane-stream consumers then stay honestly unarmed with that reason
+                 * instead of dialing with the wrong class.
                  * @type {string}
                  */
                 planeAdmissionBearer: leaf('', 'NEO_FLEET_PLANE_ADMISSION_BEARER', 'string'),
@@ -397,6 +398,16 @@ class ConfigBase extends ConfigProvider {
                  * @type {string}
                  */
                 planeAdmissionBearerFile: leaf('', 'NEO_FLEET_PLANE_ADMISSION_BEARER_FILE', 'string'),
+                /**
+                 * The class of `planeBearer`, as the plane's own admission verdict names it
+                 * (`authSource`, read back on `/fleet/probe`). `github-pat` or `gitlab-pat`
+                 * declares the operator's one PAT for both of the plane's audiences, a reuse the
+                 * credential-class ledger declares: with no fleet-surface bearer declared, the Fleet
+                 * entry presents the plane bearer at `/fleet`. Empty or any other class keeps two
+                 * distinct mints. Never inferred from equal bytes.
+                 * @type {string}
+                 */
+                planeBearerClass: leaf('', 'NEO_FLEET_PLANE_BEARER_CLASS', 'string'),
                 /**
                  * Absolute path of the deployment's bootstrap/healthcheck admission token file
                  * — bound to the SAME env name the MCP services already boot on (the

@@ -719,6 +719,29 @@ test.describe('FleetServerComposition - the relay stream consumer against the co
             logger      : QUIET
         });
 
+        // The operator's one PAT, a reuse the ledger declares: a plane bearer DECLARED a forge PAT
+        // resolves as the fleet credential through the same chain, with no admission leaf set.
+        const operatorPat = assertFleetPlaneAdmissionBearerClass({
+            aiConfig: {fleet: {
+                planeBearer             : 'relay-fleet-pat',
+                planeBearerFile         : '',
+                planeBearerClass        : 'github-pat',
+                planeAdmissionBearer    : '',
+                planeAdmissionBearerFile: '',
+                admissionTokenFile      : ''
+            }}
+        });
+
+        expect(operatorPat).toBe('relay-fleet-pat');
+
+        const declaredReuse = createFleetWakeSseConsumer({
+            eventsUrl   : `${base}/fleet/events`,
+            credential  : operatorPat,
+            retryFloorMs: 50,
+            logger      : QUIET,
+            pollDigest  : async () => ({counts: {pending: 0}, watermark: 30})
+        });
+
         try {
             consumer.start();
 
@@ -741,10 +764,19 @@ test.describe('FleetServerComposition - the relay stream consumer against the co
 
             expect(wrongClass.describe().lastDisconnect).toBe('stream refused: HTTP 401');
             expect(wrongClass.resolveDeliveryLiveness().alive).toBe('unknown');
-            expect(wrongClass.describe().subscriptionId).toBeNull()
+            expect(wrongClass.describe().subscriptionId).toBeNull();
+
+            // The composed surface admits the declared reuse exactly as it admits a distinct mint.
+            consumer.stop();
+            declaredReuse.start();
+            await waitUntil(() => declaredReuse.resolveDeliveryLiveness().reason?.includes?.('caught up'));
+
+            expect(declaredReuse.describe().subscriptionId).toBe('WAKE_SUB:svc');
+            expect(declaredReuse.resolveDeliveryLiveness().alive).toBe(true)
         } finally {
             consumer.stop();
             wrongClass.stop();
+            declaredReuse.stop();
             await new Promise(resolve => server.close(resolve))
         }
     })
