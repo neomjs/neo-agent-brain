@@ -533,7 +533,8 @@ class FleetControlBridge extends Base {
      * seat's home queue ({@link Neo.ai.services.fleet.FleetManager#withSeatHome}), after any Start already
      * holding it, because a Start decides from the definition it read before it launched.
      * @param {Object} intent `{id, harnessType?, mcpServers?, mcpTarget?, gitName?, gitEmail?, model?, reasoningEffort?, memoryImport?}`
-     * @returns {Promise<{status: 'accepted', agent: Object}|{status: 'rejected', reason: String}>}
+     * @returns {Promise<{status: 'accepted', agent: Object}|{status: 'rejected', reason: String, code?: String}>}
+     *     `code` is `'FLEET_SEAT_MEMORY_IMPORT_CLOSED'` when the memory choice is closed ({@link #rejectLateMemoryImport}).
      */
     configureAgent(intent) {
         return intent && Object.hasOwn(intent, 'memoryImport') && typeof intent.id === 'string' && intent.id
@@ -613,6 +614,8 @@ class FleetControlBridge extends Base {
      * @summary Reject a memory consent for a seat that runs or already holds its memory. The consent is
      * chosen before the first Start, at definition or here; from then on the memory is the seat's own, and
      * an import would copy over what it has written. An unknown id passes on, for the registry to answer.
+     * Both refusals carry `code: 'FLEET_SEAT_MEMORY_IMPORT_CLOSED'`: the choice is closed for good, while
+     * any other rejection of the same call can be corrected and sent again.
      * @param {Object} intent
      * @returns {Promise<Object|null>} Controlled rejection or `null`.
      * @protected
@@ -630,6 +633,7 @@ class FleetControlBridge extends Base {
 
         return state && {
             status: 'rejected',
+            code  : 'FLEET_SEAT_MEMORY_IMPORT_CLOSED',
             reason: `A seat's memory import is chosen before its first Start, and '${agent.id}' ${state}.`
         }
     }

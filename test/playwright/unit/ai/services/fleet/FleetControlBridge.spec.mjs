@@ -277,14 +277,20 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
 
             expect(await FleetControlBridge.configureAgent(consent)).toEqual({
                 status: 'rejected',
+                code  : 'FLEET_SEAT_MEMORY_IMPORT_CLOSED',
                 reason: "A seat's memory import is chosen before its first Start, and 'alice' already holds its memory."
             });
             expect(calls, 'nothing is written').toEqual([['getAgent', 'alice']]);
-            expect((await FleetControlBridge.configureAgent({id: 'alice', memoryImport: null})).status, 'nor withdrawn').toBe('rejected');
+            expect((await FleetControlBridge.configureAgent({id: 'alice', memoryImport: null})).code, 'nor withdrawn').toBe('FLEET_SEAT_MEMORY_IMPORT_CLOSED');
 
+            // the refusals a person can correct carry no code: the choice stays open
             calls.length = 0;
             expect(await FleetControlBridge.configureAgent({id: 'ghost', memoryImport: 'none'}), 'an unknown seat is the registry\'s answer')
-                .toEqual({status: 'rejected', reason: "Unknown agent 'ghost'."})
+                .toEqual({status: 'rejected', reason: "Unknown agent 'ghost'."});
+
+            registryStub.configureAgent = () => { throw new TypeError("FleetRegistryService.configureAgent: memoryImport must name an agent's memory folder.") };
+            expect(await FleetControlBridge.configureAgent({id: 'ghost', memoryImport: '/home/me/.ssh'}))
+                .toEqual({status: 'rejected', reason: "memoryImport must name an agent's memory folder."})
         } finally {
             fs.rmSync(root, {recursive: true, force: true})
         }
@@ -313,6 +319,7 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
 
             expect(await consent).toEqual({
                 status: 'rejected',
+                code  : 'FLEET_SEAT_MEMORY_IMPORT_CLOSED',
                 reason: "A seat's memory import is chosen before its first Start, and 'alice' is running."
             });
             expect(calls.filter(([name]) => name === 'configureAgent'), 'nothing is written').toEqual([])
