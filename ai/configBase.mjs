@@ -385,9 +385,9 @@ class ConfigBase extends ConfigProvider {
                  * resources. The two audiences can share a verifier, so only distinct mints keep
                  * the credential classes apart: the Fleet entry refuses a value whose bytes alias
                  * either `planeBearer` (unless `planeBearerClass` declares it a forge PAT) or the
-                 * bootstrap admission token. Empty means the deployment declares no fleet-surface
-                 * credential; plane-stream consumers then stay honestly unarmed with that reason
-                 * instead of dialing with the wrong class.
+                 * bootstrap admission token. Empty, with no forge-PAT `planeBearerClass` declared, means
+                 * the deployment declares no fleet-surface credential; plane-stream consumers then stay
+                 * honestly unarmed with that reason instead of dialing with the wrong class.
                  * @type {string}
                  */
                 planeAdmissionBearer: leaf('', 'NEO_FLEET_PLANE_ADMISSION_BEARER', 'string'),
