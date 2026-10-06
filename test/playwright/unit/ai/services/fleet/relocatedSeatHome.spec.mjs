@@ -29,6 +29,15 @@ const tenantTarget = (endpoint = 'https://tenant.example.com/agentos') => ({
     resources       : {'memory-core': {url: `${endpoint}/mc/mcp`}, 'knowledge-base': {url: `${endpoint}/kb/mcp`}}
 });
 
+// One reservation for every Start of a test: the profile rows name no path of the seat, so a moved seat's rows
+// stay what they were.
+const DESKTOP_ADMISSION = Object.freeze({
+    issuer  : 'http://127.0.0.1:47123',
+    identity: 'shared-login',
+    grants  : Object.fromEntries(['memory-core', 'knowledge-base', 'neural-link', 'github-workflow', 'gitlab-workflow']
+        .map(key => [key, `${'g'.repeat(22)}.${key.replace(/-/g, '_').padEnd(43, 's')}`]))
+});
+
 let root, runtime;
 
 test.beforeEach(async () => {
@@ -37,6 +46,7 @@ test.beforeEach(async () => {
 
     await fs.mkdir(path.join(runtime, 'ai/mcp/client'), {recursive: true});
     await fs.writeFile(path.join(runtime, 'ai/mcp/client/stdioToStreamableHttp.mjs'), '// installed Neo bridge entrypoint\n');
+    await fs.writeFile(path.join(runtime, 'ai/mcp/client/fleetMcpLauncher.mjs'), '// installed Neo launcher entrypoint\n');
 
     for (const relativePath of MCP_ENTRYPOINTS) {
         await fs.mkdir(path.dirname(path.join(runtime, relativePath)), {recursive: true});
@@ -68,7 +78,7 @@ function prepare({agent, agentsRoot, remote, previousInstanceRoot}) {
             binaryPath      : '/Applications/Claude.app/Contents/MacOS/Claude',
             launchBinaryPath: '/Applications/Claude.app/Contents/MacOS/Claude',
             bridge          : {kind: 'neo-stdio-streamable-http', command: process.execPath, entrypoint: path.join(runtime, 'ai/mcp/client/stdioToStreamableHttp.mjs')}
-        }}),
+        }, launchAdmission: DESKTOP_ADMISSION}),
         ...(previousInstanceRoot && {previousInstanceRoot})
     })
 }
@@ -126,9 +136,7 @@ for (const harnessType of PREPARED_HARNESS_TYPES) {
             const first = await prepare({agent, agentsRoot: rootB, remote, previousInstanceRoot: rootA});
 
             expect(first.instanceHome.startsWith(path.join(rootB, agent.id) + path.sep)).toBe(true);
-            // Claude Desktop backs up the operator's shared config before adding the new checkout's rows: a byte
-            // copy of that file, which still lists the old checkout's rows for a rollback
-            expect((await filesNaming(path.join(rootB, agent.id), rootA)).filter(file => !file.endsWith('.neo-fleet-claude-backup.json')), 'no Fleet-owned file names the old root').toEqual([]);
+            expect(await filesNaming(path.join(rootB, agent.id), rootA), 'no Fleet-owned file names the old root').toEqual([]);
             expect(first.artifacts.some(artifact => artifact.status === 'UPDATED'), 'the move is reported as Fleet moving its own files').toBe(pinsItsHome);
 
             const second = await prepare({agent, agentsRoot: rootB, remote, previousInstanceRoot: rootA});

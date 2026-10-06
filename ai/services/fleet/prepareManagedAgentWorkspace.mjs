@@ -17,8 +17,10 @@ import {
 } from './deriveAgentInstanceHome.mjs';
 import {
     MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS as MCP_SERVER_DESCRIPTORS,
-    createManagedAgentWorkspacePlan
+    createManagedAgentWorkspacePlan,
+    launchRowEnvNames
 } from './managedAgentWorkspacePlan.mjs';
+import {LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR, isLaunchIdentity} from './mcpLaunchAdmission.mjs';
 import {OPENCODE_SEAT_SERVERS, WAKE_ENVELOPE_PLANT_FILE_NAME, generateOpenCodeSeatConfig, isUnmodifiedGeneration} from './generateOpenCodeSeatConfig.mjs';
 import {SEAT_INSTRUCTION_STATES, projectSeatInstructions}                                                         from './projectSeatInstructions.mjs';
 import {ensureSeatEnvFile}                                                                                        from './seatEnvFile.mjs';
@@ -33,7 +35,11 @@ const
     // The header an earlier Fleet wrote, while the tables still carried `enabled`.
     CODEX_PROJECT_HEADER_V1  = '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; enabled values are the current Brain projection.',
     CLAUDE_HARNESS_TYPES     = new Set(['claude-code', 'claude-desktop']),
-    CLAUDE_MEMORY_SETTING    = 'autoMemoryDirectory';
+    CLAUDE_MEMORY_SETTING    = 'autoMemoryDirectory',
+    // What a Claude Desktop profile row runs, and what a tenant row's launcher hands to.
+    LAUNCHER_ENTRYPOINT      = 'ai/mcp/client/fleetMcpLauncher.mjs',
+    BRIDGE_ENTRYPOINT        = 'ai/mcp/client/stdioToStreamableHttp.mjs',
+    DESKTOP_PROFILE_RECEIPT  = '.neo-fleet-claude-desktop-profile.json';
 
 /**
  * @summary Convergence states for Fleet-owned workspace artifacts. `DIVERGENT` is emitted on the
@@ -266,6 +272,9 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {String} [options.claudeConfigRoot] Claude Desktop's shared Code-tab config root (host home by default).
  * @param {Object} [options.residentMcpEnv] Per-server resolved child environment supplied at Start.
  * @param {Object} [options.remoteMcpCapability] Existing non-secret installed-adapter proof.
+ * @param {Object} [options.launchAdmission] `{issuer, identity, grants}`: a Claude Desktop seat's reserved
+ *     launch admission ({@link Neo.ai.services.fleet.McpLaunchAdmissionService#reserve}), which its profile
+ *     rows carry. Required for that harness only.
  * @param {Function} [options.hydrateWorkspace] Import-safe checkout hydration seam.
  * @param {Function} [options.deriveInstanceHome] Per-agent home derivation seam.
  * @param {Object} [options.fileSystem] Promise filesystem seam.
@@ -306,6 +315,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
     claudeConfigRoot = os.homedir(),
     residentMcpEnv = {},
     remoteMcpCapability = null,
+    launchAdmission = null,
     hydrateWorkspace = hydrateCurrentWorktree,
     deriveInstanceHome = deriveAgentInstanceHome,
     fileSystem = fs,
@@ -381,6 +391,8 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         previous,
         remoteMcpCapability,
         claudeConfigRoot,
+        residentMcpEnv,
+        launchAdmission,
         fileSystem
     });
 
@@ -440,9 +452,9 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * hydrated for resident workspace tooling; no resident dependency artifact is created or adopted.
  *
  * Product adapters are evidence-gated. Codex uses project TOML plus an isolated home; Claude Code
- * uses an explicit strict MCP JSON with environment-variable references; Claude Desktop uses the
- * Code-tab local scope keyed by the managed clone's real cwd, with all child capabilities by reference.
- * Its isolated Desktop profile retires the old Fleet rows. Antigravity refuses until a contained
+ * uses an explicit strict MCP JSON with environment-variable references; Claude Desktop uses its isolated
+ * profile, whose rows start each server through Fleet's launcher and native launch admission, and retires
+ * the rows earlier Fleets wrote into the Code-tab local scope. Antigravity refuses until a contained
  * per-resident MCP authority is proven.
  *
  * @param {Object}   options
@@ -462,6 +474,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * @param {Object}  [options.runtime=process]     Host runtime facts for child execution mode.
  * @param {String}  [options.claudeConfigRoot]    Claude Desktop's shared Code-tab config root.
  * @param {Object}  [options.residentMcpEnv]      Per-server resolved child environment supplied at Start.
+ * @param {Object}  [options.launchAdmission]     A Claude Desktop seat's reserved launch admission.
  * @param {Object}  [options.fileSystem]          Promise filesystem seam.
  * @param {Function}[options.log]                 Hydration logger.
  * @returns {Promise<{agentosRuntimeRoot: String, targetRepoRoot: String, instanceHome: String, mcpMatrix: Object, mcpPlan: Object[], hydration: Object, artifacts: Object[], seatInstructions: Object}>}
@@ -485,6 +498,7 @@ export async function prepareManagedAgentWorkspace({
     resolveMatrix = resolveMcpMatrix,
     mcpTarget = null,
     remoteMcpCapability = null,
+    launchAdmission = null,
     fileSystem = fs,
     log = () => {}
 } = {}) {
@@ -528,6 +542,7 @@ export async function prepareManagedAgentWorkspace({
         claudeConfigRoot,
         residentMcpEnv,
         remoteMcpCapability,
+        launchAdmission,
         hydrateWorkspace,
         deriveInstanceHome,
         fileSystem,
@@ -703,6 +718,8 @@ async function prepareHarnessArtifacts({
     previous,
     remoteMcpCapability,
     claudeConfigRoot,
+    residentMcpEnv,
+    launchAdmission,
     fileSystem
 }) {
     switch (agent.harnessType) {
@@ -724,7 +741,7 @@ async function prepareHarnessArtifacts({
                 interpolateEnv: true
             });
         case 'claude-desktop':
-            return prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem});
+            return prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, residentMcpEnv, launchAdmission, fileSystem});
         default:
             throw unsupported(`harness '${agent.harnessType}' has no workspace adapter`);
     }
@@ -1261,105 +1278,271 @@ function renderClaudeJsonContent({agent, plan, interpolateEnv, legacyDesktop = f
 }
 
 /**
- * @summary Move the managed Desktop seat's MCP projection into its Code-tab local project scope.
- * Retire only exact legacy Fleet rows; divergent rows refuse before touching the shared file.
- * @param {Object} options Explicit host roots and name-only bound plan.
- * @returns {Promise<Object[]>} Carrier and profile convergence observations.
+ * @summary Converge a managed Desktop seat's Neo MCP rows into its own profile, so every Code session of that
+ * Desktop has them, whatever folder it opened (ADR 0038 §2.5.2). Desktop starts a profile row's child with a
+ * stripped environment, so each enabled server's row runs Fleet's launcher with that server's reserved grant
+ * ({@link renderDesktopLaunchRows}). Then the rows an earlier Fleet wrote into the Code-tab local scope are
+ * retired. Start prepares only while the seat's Desktop is stopped, so no Desktop writes the profile meanwhile.
+ * @param {Object} options Explicit host roots, the bound plan, the resident values and the reserved admission.
+ * @returns {Promise<Object[]>} Profile and local-scope convergence observations.
  * @private
  */
-async function prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem}) {
-    targetRepoRoot = await fileSystem.realpath(targetRepoRoot);
-    const desktopPath = path.join(instanceHome, 'claude_desktop_config.json');
-    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: desktopPath, fileSystem, label: 'Desktop MCP retirement'});
-    const desktopSource = await fileSystem.readFile(desktopPath, 'utf8').catch(error => {
-        if (error.code === 'ENOENT') return null;
-        throw error
+async function prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, residentMcpEnv, launchAdmission, fileSystem}) {
+    if (!launchAdmission?.issuer || !launchAdmission.grants || !launchAdmission.identity) {
+        throw unsupported('Claude Desktop profile rows need a reserved native launch admission')
+    }
+
+    await assertLaunchEntrypoints({plan, fileSystem});
+
+    const profile = await convergeDesktopProfile({
+        agent,
+        instanceHome,
+        plan,
+        desired: renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission}),
+        fileSystem
     });
-    const actual = desktopSource === null ? {} : claudeJsonOwnedProjection(desktopSource);
-    if (Object.keys(actual).length) {
-        const legacyPlan = previousPlacementPlan(plan).map(server => ({...server, enabled: server.enabled &&
-            !server.requiredRuntimeEnv.some(name => server.secretEnv.includes(name))}));
-        const candidates = [legacyPlan, localizePlan(legacyPlan)];
-        const previous   = previousNodeRuntimePlan(legacyPlan);
-        if (previous) candidates.push(previous, localizePlan(previous));
-        if (!candidates.some(candidate => isDeepStrictEqual(actual, claudeJsonOwnedProjection(renderClaudeJsonContent({
-            agent, plan: candidate, interpolateEnv: false, legacyDesktop: true
-        }))))) throw divergentArtifact(desktopPath, 'Desktop MCP retirement', 'not an exact prior Fleet projection');
-    }
-    const local  = await convergeClaudeLocalScope({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem});
-    let   status = WORKSPACE_ARTIFACT_STATES.MATCH;
-    if (desktopSource === null) {
-        await fileSystem.mkdir(instanceHome, {recursive: true});
-        await fileSystem.writeFile(desktopPath, '{"mcpServers":{}}\n', {flag: 'wx', mode: 0o600});
-        status = WORKSPACE_ARTIFACT_STATES.CREATED
-    } else if (Object.keys(actual).length) {
-        if (await fileSystem.readFile(desktopPath, 'utf8') !== desktopSource) {
-            throw divergentArtifact(desktopPath, 'Desktop MCP retirement', 'changed during preparation')
-        }
-        const parsed = JSON.parse(desktopSource);
-        for (const key of Object.keys(parsed.mcpServers)) if (key.startsWith(NEO_MCP_NAME_PREFIX)) delete parsed.mcpServers[key];
-        await publishTextAtomically({filePath: desktopPath, content: JSON.stringify(parsed, null, 2) + '\n', fileSystem});
-        status = WORKSPACE_ARTIFACT_STATES.UPDATED
-    }
-    return [local, {path: desktopPath, status, ownedKeys: 'mcpServers.neo-mjs-* retired'}]
+
+    return [profile, await retireClaudeLocalScope({targetRepoRoot: await fileSystem.realpath(targetRepoRoot), instanceHome, claudeConfigRoot, fileSystem})]
 }
 
 /**
- * @summary Own only neo-mjs rows under the managed clone in the shared Claude config. A projection
- * receipt admits later plan transitions while foreign projects, trust and toggles remain resident-owned.
- * Back up changed bytes and refuse an observed concurrent rewrite rather than overwriting it.
- * @param {Object} options Explicit clone, profile, config root and bound plan.
- * @returns {Promise<Object>} Local-scope convergence observation.
+ * @summary One profile row per enabled server: Fleet's launcher, the server it starts, and literally the
+ * validated forge login, the Node runtime env, the resident server's plane placement, the issuer's origin
+ * and the server's grant. Every value a row leaves out is redeemed at launch
+ * ({@link launchRowEnvNames}), so the profile holds no PAT, plane bearer or signing key.
+ * @param {Object} options
+ * @returns {Object} Canonical `neo-mjs-*` rows.
  * @private
  */
-async function convergeClaudeLocalScope({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem}) {
-    const filePath    = path.join(claudeConfigRoot, '.claude.json');
-    const receiptPath = path.join(instanceHome, '.neo-fleet-claude-project.json');
-    const ownedLabel  = 'projects.<managed-clone>.mcpServers.neo-mjs-*';
-    await assertNoSymlinkSegments({rootPath: claudeConfigRoot, targetPath: filePath, fileSystem, label: ownedLabel});
-    const readSource = () => fileSystem.readFile(filePath, 'utf8').catch(error => {
-        if (error.code === 'ENOENT') return null;
-        throw error
-    });
-    const source = await readSource();
+function renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission}) {
+    // the login the grants were reserved for, never the Fleet id: a custom id may differ from it
+    const {identity} = launchAdmission;
+
+    if (!isLaunchIdentity(identity)) {
+        throw unsupported(`agent '${agent.id}' has no valid forge login for its profile rows`)
+    }
+
+    const rows = {};
+
+    for (const server of plan) {
+        if (!server.enabled) continue;
+
+        const
+            capability = launchAdmission.grants[server.key],
+            resolved   = residentMcpEnv[server.key] || {};
+
+        if (!capability) throw unsupported(`enabled MCP server '${server.key}' has no reserved launch grant`);
+
+        rows[server.name] = {
+            command: server.command,
+            args   : [path.join(server.sourceRoot, LAUNCHER_ENTRYPOINT), '--server', server.key],
+            env    : {
+                ...server.environment,
+                NEO_AGENT_IDENTITY: identity,
+                ...Object.fromEntries(launchRowEnvNames(server).placement
+                    .filter(name => typeof resolved[name] === 'string')
+                    .map(name => [name, resolved[name]])),
+                [LAUNCH_ISSUER_ENV_VAR]: launchAdmission.issuer,
+                [LAUNCH_GRANT_ENV_VAR] : capability
+            }
+        }
+    }
+
+    return canonicalize(rows)
+}
+
+/**
+ * @summary Prove the files the profile rows start: the launcher for every enabled row, and for a tenant row
+ * the stdio bridge it hands to.
+ * @private
+ */
+async function assertLaunchEntrypoints({plan, fileSystem}) {
+    for (const server of plan.filter(row => row.enabled)) {
+        const files = [LAUNCHER_ENTRYPOINT, ...(server.target === 'tenant' ? [BRIDGE_ENTRYPOINT] : [])];
+
+        for (const file of files.map(relative => path.join(server.sourceRoot, relative))) {
+            if (!(await fileSystem.lstat(file).catch(() => null))?.isFile()) {
+                throw unsupported(`enabled MCP server '${server.key}' has no installed launch entrypoint at '${file}'`)
+            }
+        }
+    }
+}
+
+/**
+ * @summary Converge the owned `neo-mjs-*` rows of the Desktop profile; every other key stays the operator's.
+ * Rows count as Fleet's when the receipt recorded them, or when they are exactly a projection an earlier
+ * Fleet wrote before receipts. Anything else refuses before a byte changes. The receipt names the new rows
+ * before the profile does and keeps the old ones admissible, so a preparation interrupted between the two
+ * writes converges on its next run.
+ * @param {Object} options
+ * @returns {Promise<Object>} Profile convergence observation.
+ * @private
+ */
+async function convergeDesktopProfile({agent, instanceHome, plan, desired, fileSystem}) {
+    const
+        filePath    = path.join(instanceHome, 'claude_desktop_config.json'),
+        receiptPath = path.join(instanceHome, DESKTOP_PROFILE_RECEIPT),
+        ownedLabel  = 'mcpServers.neo-mjs-*';
+
+    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: filePath, fileSystem, label: ownedLabel});
+    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: receiptPath, fileSystem, label: 'profile receipt'});
+
+    const source = await readOptionalText(filePath, fileSystem);
     let parsed;
+
+    try {
+        parsed = source === null ? {} : JSON.parse(source);
+        for (const value of [parsed, parsed.mcpServers]) {
+            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError()
+        }
+    } catch {
+        throw divergentArtifact(filePath, ownedLabel, 'invalid Claude Desktop profile')
+    }
+
+    const
+        actual      = claudeJsonOwnedProjection(JSON.stringify(parsed)),
+        actualHash  = hashContent(JSON.stringify(actual)),
+        desiredHash = hashContent(JSON.stringify(desired)),
+        recorded    = await readDesktopProfileReceipt({receiptPath, fileSystem}),
+        record      = previous => publishTextAtomically({
+            filePath: receiptPath,
+            content : JSON.stringify({version: 2, artifact: path.basename(filePath), sha256: desiredHash, previous}, null, 2) + '\n',
+            fileSystem
+        });
+
+    await fileSystem.mkdir(instanceHome, {recursive: true});
+
+    if (source !== null && actualHash === desiredHash) {
+        recorded.includes(desiredHash) || await record(null);
+        return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: ownedLabel}
+    }
+
+    if (Object.keys(actual).length && !recorded.includes(actualHash) && !isFormerDesktopProjection({agent, plan, actual})) {
+        throw divergentArtifact(filePath, ownedLabel, 'Fleet-owned profile rows differ from what Fleet last wrote')
+    }
+
+    await record(Object.keys(actual).length ? actualHash : null);
+
+    if (await readOptionalText(filePath, fileSystem) !== source) {
+        throw divergentArtifact(filePath, ownedLabel, 'changed during preparation; quit the seat\'s Claude Desktop and start it again')
+    }
+
+    const rows = parsed.mcpServers ??= {};
+
+    for (const name of Object.keys(rows)) if (name.startsWith(NEO_MCP_NAME_PREFIX)) delete rows[name];
+    Object.assign(rows, desired);
+
+    await publishTextAtomically({filePath, content: JSON.stringify(parsed, null, 2) + '\n', fileSystem});
+
+    return {path: filePath, status: source === null ? WORKSPACE_ARTIFACT_STATES.CREATED : WORKSPACE_ARTIFACT_STATES.UPDATED, ownedKeys: ownedLabel}
+}
+
+/**
+ * @returns {Promise<String[]>} The row hashes the profile receipt admits: the rows Fleet wrote last, and the
+ *     ones before them while that write may not have landed. Empty when no receipt can vouch.
+ * @private
+ */
+async function readDesktopProfileReceipt({receiptPath, fileSystem}) {
+    let receipt;
+
+    try {
+        receipt = JSON.parse(await fileSystem.readFile(receiptPath, 'utf8'))
+    } catch (error) {
+        if (error?.code === 'ENOENT' || error instanceof SyntaxError) return [];
+        throw error
+    }
+
+    return receipt?.version === 2 && receipt.artifact === 'claude_desktop_config.json'
+        ? [receipt.sha256, receipt.previous].filter(hash => /^[a-f0-9]{64}$/.test(hash ?? ''))
+        : []
+}
+
+/**
+ * @summary Whether profile rows are exactly a projection Fleet wrote before profile receipts existed, so a
+ * seat moved by an earlier Fleet converges instead of refusing.
+ * @private
+ */
+function isFormerDesktopProjection({agent, plan, actual}) {
+    const legacyPlan = previousPlacementPlan(plan).map(server => ({...server, enabled: server.enabled &&
+        !server.requiredRuntimeEnv.some(name => server.secretEnv.includes(name))}));
+    const candidates = [legacyPlan, localizePlan(legacyPlan)];
+    const previous   = previousNodeRuntimePlan(legacyPlan);
+
+    if (previous) candidates.push(previous, localizePlan(previous));
+
+    return candidates.some(candidate => isDeepStrictEqual(actual, claudeJsonOwnedProjection(renderClaudeJsonContent({
+        agent, plan: candidate, interpolateEnv: false, legacyDesktop: true
+    }))))
+}
+
+/**
+ * @summary Retire the `neo-mjs-*` rows an earlier Fleet wrote into the shared Code-tab config under the managed
+ * clone. The profile rows replace them, and a duplicate would mask whichever Desktop prefers. Only rows exactly
+ * as the receipt recorded them go; anything else refuses, naming the file, and foreign projects, trust and
+ * toggles stay as they are. The changed bytes are backed up first and a concurrent rewrite refuses.
+ * @param {Object} options Explicit clone, profile and config root.
+ * @returns {Promise<Object>} Local-scope retirement observation.
+ * @private
+ */
+async function retireClaudeLocalScope({targetRepoRoot, instanceHome, claudeConfigRoot, fileSystem}) {
+    const
+        filePath    = path.join(claudeConfigRoot, '.claude.json'),
+        receiptPath = path.join(instanceHome, '.neo-fleet-claude-project.json'),
+        ownedLabel  = 'projects.<managed-clone>.mcpServers.neo-mjs-*',
+        retired     = {path: filePath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: `${ownedLabel} retired`};
+
+    await assertNoSymlinkSegments({rootPath: claudeConfigRoot, targetPath: filePath, fileSystem, label: ownedLabel});
+
+    const source = await readOptionalText(filePath, fileSystem);
+    let parsed;
+
     try {
         parsed = source === null ? {} : JSON.parse(source);
         for (const value of [parsed, parsed.projects, parsed.projects?.[targetRepoRoot], parsed.projects?.[targetRepoRoot]?.mcpServers]) {
-            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError();
+            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError()
         }
     } catch {
         throw divergentArtifact(filePath, ownedLabel, 'invalid Claude local config')
     }
-    const actual        = claudeJsonOwnedProjection(JSON.stringify(parsed.projects?.[targetRepoRoot] || {}));
-    const desiredSource = renderClaudeJsonContent({agent, plan, interpolateEnv: true});
-    const desired       = claudeJsonOwnedProjection(desiredSource);
-    const recorded      = await readContentReceipt({receiptPath, filePath, trustedRoot: instanceHome, fileSystem});
-    const matches       = isDeepStrictEqual(actual, desired);
-    if (!matches && Object.keys(actual).length && recorded !== hashContent(JSON.stringify(actual))) {
-        throw divergentArtifact(filePath, ownedLabel, 'Fleet-owned project rows differ from their receipt')
-    }
-    let status = WORKSPACE_ARTIFACT_STATES.MATCH;
-    if (!matches || source === null) {
-        const project = (parsed.projects ??= {})[targetRepoRoot] ??= {};
-        const rows    = project.mcpServers ??= {};
-        for (const name of Object.keys(rows)) if (name.startsWith(NEO_MCP_NAME_PREFIX)) delete rows[name];
-        Object.assign(rows, JSON.parse(desiredSource).mcpServers);
-        await fileSystem.mkdir(claudeConfigRoot, {recursive: true});
-        if (source !== null) {
-            const backup = path.join(instanceHome, '.neo-fleet-claude-backup.json');
-            await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: backup, fileSystem, label: 'Claude config backup'});
-            await fileSystem.mkdir(instanceHome, {recursive: true});
-            await publishTextAtomically({filePath: backup, content: source, fileSystem});
+
+    const actual = claudeJsonOwnedProjection(JSON.stringify(parsed.projects?.[targetRepoRoot] || {}));
+
+    if (Object.keys(actual).length) {
+        const recorded = await readContentReceipt({receiptPath, filePath, trustedRoot: instanceHome, fileSystem});
+
+        if (recorded !== hashContent(JSON.stringify(actual))) {
+            throw divergentArtifact(filePath, ownedLabel, 'Code-tab rows differ from what Fleet wrote; remove them from the managed clone\'s project, then start again')
         }
-        if (await readSource() !== source) throw divergentArtifact(filePath, ownedLabel, 'changed during preparation; retry after the config writer settles');
-        const content = JSON.stringify(parsed, null, 2) + '\n';
-        if (source === null) await fileSystem.writeFile(filePath, content, {flag: 'wx', mode: 0o600});
-        else await publishTextAtomically({filePath, content, fileSystem});
-        status = source === null ? WORKSPACE_ARTIFACT_STATES.CREATED : WORKSPACE_ARTIFACT_STATES.UPDATED
+
+        const backup = path.join(instanceHome, '.neo-fleet-claude-backup.json');
+
+        await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: backup, fileSystem, label: 'Claude config backup'});
+        await fileSystem.mkdir(instanceHome, {recursive: true});
+        await publishTextAtomically({filePath: backup, content: source, fileSystem});
+
+        if (await readOptionalText(filePath, fileSystem) !== source) {
+            throw divergentArtifact(filePath, ownedLabel, 'changed during preparation; retry after the config writer settles')
+        }
+
+        const rows = parsed.projects[targetRepoRoot].mcpServers;
+
+        for (const name of Object.keys(rows)) if (name.startsWith(NEO_MCP_NAME_PREFIX)) delete rows[name];
+
+        await publishTextAtomically({filePath, content: JSON.stringify(parsed, null, 2) + '\n', fileSystem});
+        retired.status = WORKSPACE_ARTIFACT_STATES.UPDATED
     }
-    await writeContentReceipt({receiptPath, filePath, content: JSON.stringify(desired), trustedRoot: instanceHome, fileSystem});
-    return {path: filePath, status, ownedKeys: ownedLabel}
+
+    await removeContentReceipt({receiptPath, trustedRoot: instanceHome, fileSystem});
+
+    return retired
+}
+
+/** @private */
+async function readOptionalText(filePath, fileSystem) {
+    return fileSystem.readFile(filePath, 'utf8').catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error
+    })
 }
 
 /**
