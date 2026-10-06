@@ -105,7 +105,7 @@
         "gray-matter": "^4.0.3",
         "js-yaml": "^5.4.2",
         "micromatch": "4.0.8",
-        "neo-agent-skills": "^0.1.29",
+        "neo-agent-skills": "^0.1.30",
         "neo.mjs": "https://github.com/neomjs/neo/archive/7f16355a9bf6bc7cdf7cbf94873b649711298f28.tar.gz",
         "playwright": "1.63.0",
         "semver": "^7.8.5",
