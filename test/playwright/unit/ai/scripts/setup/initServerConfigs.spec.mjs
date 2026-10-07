@@ -1350,10 +1350,9 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
     //
     // It used to be labelled "the tracked template the materializer reads". It was not: the
     // materializer defaults to `<engineRoot>/.claude/settings.template.json` from the INSTALLED
-    // package, and after the ADR 0040 §2.7 custody split the tracked Engine template declares only
-    // `PreToolUse -> rgReplaceGuardHook`. So a reader took this fixture's Stop entry as proof the
-    // Engine still owned no-hold wiring, and every assertion here stayed green through the cut that
-    // removed it (#250 AC-9).
+    // package, and the tracked Engine template declares only `PreToolUse -> rgReplaceGuardHook`.
+    // So a reader took this fixture's Stop entry as proof the Engine still owned no-hold wiring, and
+    // every assertion here stayed green through the cut that removed it.
     //
     // The merge tests are legitimate as they stand — `mergeClaudeHooks` is a pure function and this
     // is its input. What was missing is anything reading the real file, which the final describe in
@@ -1383,7 +1382,7 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
     };
 
     // A repository root the materializer writes into: its package name is what tells an Engine
-    // checkout, which carries no `node_modules/neo.mjs`, from a consumer that does (#912).
+    // checkout, which carries no `node_modules/neo.mjs`, from a consumer that does.
     const buildTargetRepo = (name, packageName, {settings} = {}) => {
         const root = path.join(claudeRoot, name);
         fs.mkdirSync(path.join(root, '.claude'), {recursive: true});
@@ -1547,8 +1546,8 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
  * The template the materializer ACTUALLY reads — not a fixture standing in for it.
  *
  * Everything above drives `mergeClaudeHooks` and `initClaudeSettings` with controlled inputs, which
- * is correct for testing those functions and tells you nothing about the real file. #250 AC-9 exists
- * because the gap was invisible: a hand-written `TEMPLATE` declaring `Stop -> laneStateStopHook` read
+ * is correct for testing those functions and tells you nothing about the real file. The gap was
+ * invisible: a hand-written `TEMPLATE` declaring `Stop -> laneStateStopHook` read
  * as evidence that the Engine wires the no-hold hook, and stayed green straight through the leaf-11
  * cut that removed it.
  *
@@ -1594,8 +1593,9 @@ test.describe('the installed Engine settings template — properties that hold a
     });
 
     test('declares the Engine-owned PreToolUse guard on both sides of the cut', () => {
-        // The one entry the Engine owns outright under ADR 0040 §2.7. Pre-cut it sits beside the four
-        // Agent-OS events; post-cut it is the only entry left. Either way its absence would mean the
+        // The one entry the Engine owns outright: a contributor guard with no Brain dependency.
+        // Pre-cut it sits beside the four Agent-OS events; post-cut it is the only entry left.
+        // Either way its absence would mean the
         // Engine had stopped wiring its own guard, which no custody split licenses.
         const template = JSON.parse(fs.readFileSync(templatePath, 'utf-8'));
 

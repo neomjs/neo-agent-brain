@@ -1142,7 +1142,7 @@ export function mergeClaudeHooks(activeSettings = {}, templateSettings = {}) {
  *
  * The Engine itself is the one target left as authored: a package does not carry itself in its own
  * `node_modules`, so a retargeted command in an Engine checkout names a file that cannot exist, and
- * its hook fails without blocking anything (#912).
+ * its hook fails without blocking anything.
  *
  * @param {Object} [templateSettings={}] Parsed Engine settings template.
  * @param {Object} [options]
