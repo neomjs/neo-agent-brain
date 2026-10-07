@@ -125,6 +125,7 @@ async function activeSeat({definition = seatDefinition(), registry = null, probe
 test.beforeEach(() => {
     service.generations.clear();
     service.grants.clear();
+    service.revocations.clear();
     service.unattributed.length = 0;
     service.pendingTimeoutMs = 30000;
     service.proofTimeoutMs   = 10000
@@ -345,6 +346,28 @@ test.describe('McpLaunchAdmissionService — committed registry changes', () => 
             expect((await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).outcome, JSON.stringify(current))
                 .toBe(expected.github?.state === 'reserved' ? 'admitted' : 'refused')
         }
+    });
+
+    test('a Stop asked for before any generation exists ends the reservation of the Start already under way; a later Start begins fresh', async () => {
+        const mark = service.revocationMark('seat');
+
+        expect(service.revoke('seat', 'stop-requested'), 'nothing to revoke yet').toBe(false);
+        expect(service.revocationMark('seat')).toBe(mark + 1);
+
+        const stopped = await service.reserve({agent: seatDefinition(), since: mark});
+
+        expect(service.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'stop-requested', generation: stopped.generation});
+        service.activate({generation: stopped.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
+        expect(await redeem(stopped.grants['github-workflow'], {server: 'github-workflow'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+
+        // a Start that read the mark after that Stop reserves fresh authority
+        const fresh = await service.reserve({agent: seatDefinition(), since: service.revocationMark('seat')});
+
+        service.revoke('seat', 'start-failed', {generation: stopped.generation});
+        expect(service.revocationMark('seat'), 'neither replacing a generation nor revoking one counts as a Stop').toBe(mark + 1);
+
+        service.activate({generation: fresh.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
+        expect((await redeem(fresh.grants['github-workflow'], {server: 'github-workflow'})).outcome).toBe('admitted')
     });
 
     test('a switch-off or a Stop while the reservation awaits its listener lands on it; a listener that fails revokes it', async () => {

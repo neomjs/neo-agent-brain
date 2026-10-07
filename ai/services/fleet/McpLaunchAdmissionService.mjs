@@ -113,6 +113,14 @@ class McpLaunchAdmissionService extends Base {
     grants = new Map()
 
     /**
+     * Per agent id, the seat-wide revocations asked for, whether or not a generation existed to take them:
+     * `{count, reason}` of the last one. A Start reads the count as it begins ({@link revocationMark}).
+     * @member {Map<String, Object>} revocations
+     * @private
+     */
+    revocations = new Map()
+
+    /**
      * Refusals of requests that proved no grant.
      * @member {Object[]} unattributed
      * @private
@@ -142,18 +150,22 @@ class McpLaunchAdmissionService extends Base {
 
     /**
      * @summary Mint one grant per enabled server for a seat's next Start, ending the seat's previous
-     * generation. The registry the definition came from is followed from here on. The generation is
-     * published before anything is awaited and held against the registry's current definition, so no
-     * revocation falls into the gap between the caller's read and its reservation.
+     * generation. The registry the definition came from is followed from here on.
+     *
+     * The generation is published before anything is awaited, so every revocation from then on reaches it.
+     * What came before is caught up at once. A Stop asked for since the Start's `since` mark revokes it,
+     * and so does a definition write since the caller's read. A Start therefore answers for its whole
+     * attempt, not just the part after it reserved.
      * @param {Object} options
      * @param {Object} options.agent The raw registry definition.
      * @param {Object} [options.registry] Its registry, an Observable firing `definitionChange` that reads
      *     raw definitions through `getDefinition`.
+     * @param {Number} [options.since] The {@link revocationMark} the Start read as it began.
      * @returns {Promise<{generation: String, issuer: String, identity: String, grants: Object<String, String>}>}
      *     `grants` maps each enabled server to the capability its profile row carries; `identity` is the
      *     validated login the rows must name.
      */
-    async reserve({agent, registry = null}) {
+    async reserve({agent, registry = null, since = null}) {
         const identity = loginOf(agent);
 
         if (!isLaunchIdentity(identity)) {
@@ -185,7 +197,7 @@ class McpLaunchAdmissionService extends Base {
             grants     = {};
 
         if (previous) {
-            this.revoke(agent.id, REASONS.REPLACED);
+            this.revoke(agent.id, REASONS.REPLACED, {generation: previous.id});
             previous.servers.forEach(server => this.grants.delete(server.grantId))
         }
 
@@ -199,9 +211,13 @@ class McpLaunchAdmissionService extends Base {
             grants[key] = grant.capability
         }
 
-        // Published before anything is awaited, then held against the registry as it stands now: the caller read
-        // the definition earlier, and a write since then fired before this generation could hear it.
+        // Published before anything is awaited, then caught up with what fired before it could hear it
         this.generations.set(agent.id, generation);
+
+        if (since !== null && this.revocationMark(agent.id) !== since) {
+            this.revoke(agent.id, this.revocations.get(agent.id).reason, {generation: generation.id})
+        }
+
         registry?.getDefinition && this.onDefinitionChange({id: agent.id, next: registry.getDefinition(agent.id)});
 
         let issuer;
@@ -277,7 +293,9 @@ class McpLaunchAdmissionService extends Base {
 
     /**
      * @summary End a seat's generation for good: no grant of it admits again, and the values and owners it
-     * held are dropped. Waiting redemptions are answered with the refusal.
+     * held are dropped. Waiting redemptions are answered with the refusal. A revocation of the seat rather
+     * than of one generation is also counted when no generation takes it, so the reservation of a Start
+     * already under way catches it up ({@link reserve}).
      * @param {String} agentId
      * @param {String} reason A `LAUNCH_ADMISSION_REASONS` value.
      * @param {Object} [options]
@@ -287,6 +305,8 @@ class McpLaunchAdmissionService extends Base {
     revoke(agentId, reason, {generation: id = null} = {}) {
         const generation = this.generations.get(agentId);
 
+        if (!id) this.revocations.set(agentId, {count: this.revocationMark(agentId) + 1, reason});
+
         if (!generation || (id && generation.id !== id) || generation.state === STATES.REVOKED) return false;
 
         Object.assign(generation, {state: STATES.REVOKED, reason, revokedAt: new Date().toISOString(), probe: null, owners: {}});
@@ -295,6 +315,17 @@ class McpLaunchAdmissionService extends Base {
         this.settle(generation);
 
         return true
+    }
+
+    /**
+     * @summary How many seat-wide revocations the seat has been asked for. A Start reads it as it begins and
+     * hands it to {@link reserve}, so a Stop asked for while the Start provisions, before any generation
+     * exists to take it, still ends that Start's admission.
+     * @param {String} agentId
+     * @returns {Number}
+     */
+    revocationMark(agentId) {
+        return this.revocations.get(agentId)?.count ?? 0
     }
 
     /**

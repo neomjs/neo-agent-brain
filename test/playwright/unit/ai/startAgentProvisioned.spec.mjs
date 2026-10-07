@@ -45,11 +45,17 @@ function makeLifecycle({
     inspectionError = null,
     profileInUse = false
 } = {}) {
-    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], start: [], status: []};
+    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], start: [], status: []};
     const admission = {
-        reserve: async ({agent, registry}) => {
+        revocationMark: id => {
+            events?.push('mark');
+            calls.mark.push(id);
+
+            return 5
+        },
+        reserve: async ({agent, registry, since}) => {
             events?.push('reserve');
-            calls.reserve.push({id: agent.id, registry});
+            calls.reserve.push({id: agent.id, registry, since});
 
             return {generation: `generation-${agent.id}`, issuer: 'http://127.0.0.1:47123', identity: agent.githubUsername, grants: {'memory-core': 'grant-mc'}}
         },
@@ -822,6 +828,9 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         expect(lifecycle.calls.profile).toEqual(['seat']);
         expect(events.indexOf('reserve')).toBeLessThan(events.indexOf('prepare'));
+        // the attempt's revocation mark is read before anything is awaited, and the reservation is held to it
+        expect(events.indexOf('mark')).toBeLessThan(events.indexOf('credential'));
+        expect(lifecycle.calls.reserve[0].since).toBe(5);
         // the registry whose definition changes the issuer follows from here on
         expect(lifecycle.calls.reserve[0].registry).toEqual(expect.objectContaining({getDefinition: expect.any(Function)}));
         expect(prepare.calls[0].launchAdmission).toEqual({issuer: 'http://127.0.0.1:47123', identity: 'seat', grants: {'memory-core': 'grant-mc'}});
@@ -835,8 +844,28 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         // every other family neither probes a profile nor reserves a grant
         const codex = await run('codex');
 
-        expect([codex.lifecycle.calls.profile, codex.lifecycle.calls.reserve, codex.prepare.calls[0].launchAdmission, codex.lifecycle.calls.start[0].opts.launchAdmission])
-            .toEqual([[], [], undefined, undefined])
+        expect([codex.lifecycle.calls.profile, codex.lifecycle.calls.mark, codex.lifecycle.calls.reserve, codex.prepare.calls[0].launchAdmission, codex.lifecycle.calls.start[0].opts.launchAdmission])
+            .toEqual([[], [], [], undefined, undefined])
+    });
+
+    test('a Claude Desktop Start holds its reservation to the mark the managed Start read where it began', async () => {
+        const
+            agents    = repoAgent('seat'),
+            lifecycle = makeLifecycle({agents});
+
+        agents.seat.harnessType = 'claude-desktop';
+
+        await startAgentProvisioned({
+            lifecycleService  : lifecycle,
+            agentId           : 'seat',
+            managedRoot       : '/managed',
+            ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+            prepareWorkspace  : makePrepareWorkspace(),
+            agentosRuntimeRoot: '/installed/neo',
+            admissionMark     : 2
+        });
+
+        expect([lifecycle.calls.mark, lifecycle.calls.reserve[0].since]).toEqual([[], 2])
     });
 
     test('a Claude Desktop seat\'s rows redeem its PAT from the registry, proved as the seat\'s own account even when a Git identity is declared', async () => {

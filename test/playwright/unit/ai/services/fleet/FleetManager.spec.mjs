@@ -621,6 +621,23 @@ test.describe('Neo.ai.services.fleet.FleetManager — an explicit release is sta
         expect(calls).toEqual([]);
     });
 
+    test('a managed Start reads the launch admission mark before it waits for the seat, and hands it to the provisioned start', async () => {
+        let mark = 3;
+
+        const marks = [];
+
+        FleetManager.lifecycleService.getLaunchAdmission = () => ({revocationMark: id => id === 'adopted' ? mark : -1});
+        FleetManager.provisionAndStartFn = async options => { marks.push(options.admissionMark); return {id: options.agentId, state: 'running'} };
+
+        const started = FleetManager.startAgent('adopted');
+
+        // a Stop asked for while the Start waits for the seat's home
+        mark = 4;
+        await started;
+
+        expect(marks).toEqual([3])
+    });
+
     test('a seat with no ownership act, an adopted seat, and an id the registry does not know start as before', async () => {
         await FleetManager.startAgent('default');
         await FleetManager.restartAgent('adopted');

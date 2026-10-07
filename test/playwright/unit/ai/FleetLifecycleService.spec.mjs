@@ -28,6 +28,13 @@ import McpLaunchAdmissionService    from '../../../../ai/services/fleet/McpLaunc
 import ToolService                  from '../../../../ai/mcp/ToolService.mjs';
 import {dispatchFleetRequest}       from '../../../../ai/services/fleet/dispatchFleetRequest.mjs';
 import {generateOpenCodeSeatConfig} from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
+import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import {startAgentProvisioned}      from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {
+    createLaunchRequest,
+    parseLaunchCapability,
+    verifyLaunchResponse
+}                                   from '../../../../ai/services/fleet/mcpLaunchAdmission.mjs';
 
 import {createFleetWireRequest, FLEET_WIRE_RESPONSE_STATES} from '../../../../src/fleet/contract/wire.mjs';
 
@@ -2545,6 +2552,99 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
     }
 
     const ADMISSION = {generation: 'generation-1', plan: [{key: 'memory-core', enabled: true}]};
+
+    test('PRODUCTION COMPOSER: a Stop at any point of a managed Start is never undone by its reservation or activation; a later Start admits', async () => {
+        const
+            root     = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-launch-attempt-')),
+            home     = path.join(root, 'seat', 'harness', 'claude-desktop'),
+            checkout = path.join(root, 'seat', 'neomjs-neo'),
+            issuer   = McpLaunchAdmissionService,
+            grants   = [],
+            matrix   = {'memory-core': true, 'knowledge-base': true, 'neural-link': true, 'github-workflow': true, 'gitlab-workflow': false};
+
+        install({agents: {seat: {
+            id            : 'seat',
+            githubUsername: 'neo-opus-ada',
+            harnessType   : 'claude-desktop',
+            launchOwner   : 'fleet',
+            metadata      : {repo: {cloneUrl: 'https://github.com/neomjs/neo.git', repoSlug: 'neomjs/neo'}},
+            seatHome      : path.join(root, 'seat')
+        }}});
+        fs.mkdirSync(home, {recursive: true});
+        Object.assign(FleetLifecycleService, {
+            instanceRoot      : root,
+            harnessBinaryPaths: {'claude-desktop': process.execPath},
+            processListFn     : () => [],
+            processInspectFn  : () => ({startedAt: STARTED_AT, command: `${process.execPath} --user-data-dir=${home}`}),
+            processSignalFn   : () => {}
+        });
+        [issuer.generations, issuer.grants, issuer.revocations].forEach(map => map.clear());
+
+        // the actual composer and lifecycle; only the checkout, the files and the forge are stand-ins
+        const
+            start = ({ensureRepo = async () => ({repoPath: checkout}), beforePrepared = async () => {}} = {}) => startAgentProvisioned({
+                lifecycleService  : FleetLifecycleService,
+                agentId           : 'seat',
+                managedRoot       : root,
+                agentosRuntimeRoot: root,
+                ensureRepo,
+                prepareWorkspace  : async args => {
+                    grants.push(args.launchAdmission.grants);
+                    await beforePrepared();
+
+                    return {
+                        agentosRuntimeRoot: args.agentosRuntimeRoot,
+                        targetRepoRoot    : args.targetRepoRoot,
+                        instanceHome      : home,
+                        mcpMatrix         : matrix,
+                        mcpPlan           : createManagedAgentWorkspacePlan({agent: {id: 'seat', harnessType: 'claude-desktop'}, mcpMatrix: matrix}).mcpServers
+                            .map(row => ({...row, command: process.execPath, sourceRoot: root, args: [path.join(root, row.entrypoint)]}))
+                    }
+                },
+                resolveGitIdentity : async () => ({state: 'derived', source: 'public', name: 'Ada', email: 'ada@example.test'}),
+                convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
+                readModelCatalog   : async () => null,
+                importMemory       : async () => ({state: 'none'}),
+                proveForgeAccount  : async () => ({ok: true})
+            }),
+            github = async capability => {
+                const
+                    grant   = parseLaunchCapability(capability),
+                    request = createLaunchRequest({grant, server: 'github-workflow', identity: 'neo-opus-ada'});
+
+                return verifyLaunchResponse(grant.secret, request, JSON.parse(JSON.stringify(await issuer.redeem(request))))
+            };
+
+        // Stop while the checkout is still being prepared, before anything is reserved
+        const checkoutGate = Promise.withResolvers(), inCheckout = Promise.withResolvers();
+        const early = start({ensureRepo: async () => { inCheckout.resolve(); await checkoutGate.promise; return {repoPath: checkout} }});
+
+        await inCheckout.promise;
+        expect(await FleetLifecycleService.stop('seat'), 'nothing runs yet').toMatchObject({success: false, state: 'stopped'});
+        checkoutGate.resolve();
+        await early;
+
+        expect(issuer.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'stop-requested'});
+        expect(await github(grants[0]['github-workflow'])).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+        await FleetLifecycleService.stop('seat');
+
+        // Stop after the reservation, while the rows are being written
+        const rowsGate = Promise.withResolvers(), inRows = Promise.withResolvers();
+        const late = start({beforePrepared: async () => { inRows.resolve(); await rowsGate.promise }});
+
+        await inRows.promise;
+        await FleetLifecycleService.stop('seat');
+        rowsGate.resolve();
+        await late;
+
+        expect(await github(grants[1]['github-workflow'])).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+        await FleetLifecycleService.stop('seat');
+
+        // an explicit later Start is a fresh attempt
+        await start();
+        expect(await github(grants[2]['github-workflow'])).toMatchObject({outcome: 'admitted', env: {GH_TOKEN: FIXTURE_PAT}});
+        await FleetLifecycleService.stop('seat')
+    });
 
     test('a Start activates its reserved generation once the seat runs and is leased: its credentials by their owners, the rest as injected, and a proof of the process', () => {
         const

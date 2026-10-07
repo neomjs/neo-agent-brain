@@ -181,6 +181,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                                 spawn checks the registry alone.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
+ * @param {Number}   [options.admissionMark]    The launch admission's revocation mark, read where the managed
+ *                                              Start began; omitted, this composer reads it before its first
+ *                                              await.
  * @param {String}   [options.instanceRoot]     Explicit harness-home root; omitted ⇒ the lifecycle
  *                                              service's config-resolved `getInstanceRoot()` value.
  * @param {String}   [options.agentosRuntimeRoot] Installed AgentOS runtime root; defaults to the
@@ -218,6 +221,7 @@ export async function startAgentProvisioned({
     readModelCatalog = readSeatModelCatalog,
     readParticipation = null,
     tenantService = null,
+    admissionMark = null,
     instanceRoot,
     agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT,
     nodePath
@@ -297,6 +301,13 @@ export async function startAgentProvisioned({
         throw new Error(`startAgentProvisioned: 'agentosRuntimeRoot' must be an absolute path for agent '${agentId}'.`)
     }
 
+    // A Claude Desktop seat's launch admission answers for this whole attempt. Its mark is read before
+    // anything is awaited, so a Stop while the seat is still provisioning ends the admission reserved below.
+    const
+        desktopRows = Boolean(repo) && agent.harnessType === 'claude-desktop',
+        admission   = desktopRows ? lifecycleService.getLaunchAdmission() : null,
+        stopMark    = admission ? admissionMark ?? admission.revocationMark(agentId) : null;
+
     // Resolve the resident child envelope and seat PAT before any checkout/config mutation.
     // The same resolved envelope names the rendered slots and supplies the eventual spawn.
     const resolvedResidentMcpEnv = lifecycleService.resolveResidentMcpEnvironment(agent, {remote});
@@ -364,8 +375,6 @@ export async function startAgentProvisioned({
 
     // A Claude Desktop seat's profile is rewritten below, which only a closed Desktop tolerates. The Fleet's
     // own record says it is not running; a Desktop someone else opened on the profile is checked here.
-    const desktopRows = agent.harnessType === 'claude-desktop';
-
     if (desktopRows) {
         const inUse = lifecycleService.desktopProfileInUse(agent);
 
@@ -550,9 +559,7 @@ export async function startAgentProvisioned({
     // A Claude Desktop seat's profile rows carry one launch grant per enabled server, reserved before the rows
     // are written. The lifecycle activates them once the seat runs and is leased; a Start that fails before
     // that revokes them, so a row written here never admits a child of a seat this Start did not launch.
-    const
-        admission   = desktopRows ? lifecycleService.getLaunchAdmission() : null,
-        reservation = admission && await admission.reserve({agent, registry});
+    const reservation = admission && await admission.reserve({agent, registry, since: stopMark});
 
     let prepared, memory, status;
 
