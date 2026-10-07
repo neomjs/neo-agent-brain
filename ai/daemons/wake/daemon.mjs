@@ -56,14 +56,14 @@ import {
     getNodesData,
     getEdgesData,
     getDbNode,
-    getAgentIdentityNodes,
     getActiveHarnessPresence,
     isHarnessPresenceFresh
 } from './queries.mjs';
 import {
     applyHarnessMetadataDefaults
 } from '../../scripts/lifecycle/harnessRouting.mjs';
-import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {normalizeAgentIdentityNodeId}                    from '../../graph/normalizeAgentIdentityNodeId.mjs';
+import {participationByIdentity, readAgentIdentityNodes} from '../../graph/agentIdentityParticipation.mjs';
 import {
     getDefaultInstanceTarget,
     resolveGuiInstancePid
@@ -91,7 +91,7 @@ import {
     filterEventsByWatermark,
     maxLogId
 } from './wokenWatermark.mjs';
-import {participationByIdentity, wakeTargetPermission} from './wakeTargetEligibility.mjs';
+import {wakeTargetPermission} from './wakeTargetEligibility.mjs';
 
 // Config-derived paths + PID_FILE (below) are declared here but ASSIGNED in initConfigDerivedState()
 // (called from the guarded main(), never at module-load): a stale memory-core overlay would otherwise
@@ -554,7 +554,7 @@ async function pollLoop() {
         // A read that throws aborts the cycle before the cursor moves and leaves participation unread, so queued
         // flushes and retries wait for the next read instead of delivering or dropping
         participation = null;
-        participation = participationByIdentity(getAgentIdentityNodes(db));
+        participation = participationByIdentity(readAgentIdentityNodes(db));
 
         // Fetch deltas
         const logs = getGraphLogEntries(db, lastSyncId);

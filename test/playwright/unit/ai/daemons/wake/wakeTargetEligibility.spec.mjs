@@ -1,9 +1,7 @@
 import {test, expect} from '@playwright/test';
 
-import {
-    participationByIdentity,
-    wakeTargetPermission
-} from '../../../../../../ai/daemons/wake/wakeTargetEligibility.mjs';
+import {participationByIdentity} from '../../../../../../ai/graph/agentIdentityParticipation.mjs';
+import {wakeTargetPermission}    from '../../../../../../ai/daemons/wake/wakeTargetEligibility.mjs';
 
 /**
  * Receive permission over the identity nodes' participation. The identities below are real roster ids on

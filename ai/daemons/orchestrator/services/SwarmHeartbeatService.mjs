@@ -24,8 +24,9 @@ import {
     inspectHeartbeatLock,
     releaseHeartbeatLock
 } from '../../../scripts/lifecycle/heartbeatLock.mjs';
-import {checkSunsetted as checkSunsettedScript} from '../../../scripts/lifecycle/checkSunsetted.mjs';
-import {normalizeAgentIdentityNodeId}           from '../../../graph/normalizeAgentIdentityNodeId.mjs';
+import {checkSunsetted as checkSunsettedScript}          from '../../../scripts/lifecycle/checkSunsetted.mjs';
+import {normalizeAgentIdentityNodeId}                    from '../../../graph/normalizeAgentIdentityNodeId.mjs';
+import {participationByIdentity, readAgentIdentityNodes} from '../../../graph/agentIdentityParticipation.mjs';
 import {
     resumeHarness as resumeHarnessScript
 } from '../../../scripts/lifecycle/resumeHarness.mjs';
@@ -687,18 +688,27 @@ class SwarmHeartbeatService extends Base {
      * `'active-subscribers'` source unions the harness owner with active `WAKE_SUBSCRIPTION`
      * identities discovered via `getWakeSubscriptionIdentities()`.
      *
+     * Participation is the identity nodes' fact, read from the graph store once per pulse.
+     * A read that cannot answer leaves the pulse without per-identity targets and says so;
+     * the next interval reads again.
      * @returns {Promise<String[]>}
      * @protected
      */
     async getPulseIdentities() {
-        return await resolveHeartbeatTargets({
-            selfIdentity                 : this.identity,
-            targetSource                 : this.targetSource,
-            explicitTargets              : this.explicitTargets,
-            activeSubscribersProvider    : () => this.getWakeSubscriptionIdentities(),
-            activeA2aParticipantsProvider: () => this.getActiveA2aParticipants(),
-            logger
-        });
+        try {
+            return await resolveHeartbeatTargets({
+                selfIdentity                 : this.identity,
+                targetSource                 : this.targetSource,
+                explicitTargets              : this.explicitTargets,
+                activeSubscribersProvider    : () => this.getWakeSubscriptionIdentities(),
+                activeA2aParticipantsProvider: () => this.getActiveA2aParticipants(),
+                participationProvider        : () => participationByIdentity(readAgentIdentityNodes(this.getGraphDb())),
+                logger
+            });
+        } catch (err) {
+            logger.warn(`[SwarmHeartbeatService] the participation read did not answer, so this pulse has no per-identity targets: ${err.message}`);
+            return [];
+        }
     }
 
     /**
