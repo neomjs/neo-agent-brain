@@ -86,8 +86,8 @@ function connectionOf(connection) {
  * @param {Object} node A `PullRequest` node from the open-work search.
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
  * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, draft, owner, requested,
- *     reviews, opinions, requestsComplete, partial}`. `title` is the forge's prose with its whitespace
- *     collapsed, or `null`; it names the PR and is never a transition.
+ *     reviews, opinions, requestsComplete, opinionsComplete, partial}`. `title` is the forge's prose with its
+ *     whitespace collapsed, or `null`; it names the PR and is never a transition.
  */
 export function normalizePullRequest(node, identities) {
     const
@@ -123,6 +123,7 @@ export function normalizePullRequest(node, identities) {
         reviews  : reviewed.filter(review => review.reviewer),
         opinions : opined.filter(opinion => opinion.reviewer),
         requestsComplete,
+        opinionsComplete,
         partial  : !requestsComplete || !reviewsComplete || !opinionsComplete
     }
 }
@@ -173,6 +174,33 @@ function transition(row, kind, from, to, pulse) {
 }
 
 /**
+ * @summary What a push or a verdict change carries beside from and to: the verdict a push landed on, and
+ * the reviewers observed moving the decision. A reviewer moved it when their standing opinion became the
+ * new decision, or the same opinion moved onto the current head (a re-approval). Both observations must
+ * hold every standing opinion; otherwise, like a dismissal or a branch rule, the change names no one.
+ * @param {String} kind
+ * @param {Object} before
+ * @param {Object} after
+ * @returns {Object}
+ * @private
+ */
+function contextOf(kind, before, after) {
+    if (kind === 'head') return {verdict: before.verdict};
+
+    if (kind !== 'verdict') return {};
+
+    if (before.opinionsComplete !== true || after.opinionsComplete !== true) return {by: []};
+
+    const moved = ({reviewer, state, onHead}) => {
+        const was = before.opinions.find(opinion => opinion.reviewer === reviewer);
+
+        return state === after.verdict && (was?.state !== state || onHead && !(was.onHead && before.head === after.head))
+    };
+
+    return {by: after.opinions.filter(moved).map(({reviewer}) => reviewer)}
+}
+
+/**
  * @summary The transitions between two observations of one open PR. A removal needs a complete list.
  * @param {Object} before
  * @param {Object} after
@@ -184,7 +212,7 @@ function changesOf(before, after, pulse) {
     const changes = [];
 
     for (const kind of ['head', 'ci', 'verdict']) {
-        before[kind] !== after[kind] && changes.push(transition(after, kind, before[kind], after[kind], pulse))
+        before[kind] !== after[kind] && changes.push({...transition(after, kind, before[kind], after[kind], pulse), ...contextOf(kind, before, after)})
     }
 
     after.requested.filter(seat => !before.requested.includes(seat))

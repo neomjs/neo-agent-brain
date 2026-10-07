@@ -8,7 +8,8 @@ import {TRANSITION_WINDOW}                                  from './openWorkProd
 /**
  * @module ai/services/fleet/producerPrLaneEvents
  * @summary The PR/lane slot's pull-request contributor over the open-work producer: the transitions it
- * observed (opened, review verdict, merged, closed) become `pr-activity` events for every repository the
+ * observed (opened, a review verdict with the reviewers who moved it, a push answering a change request,
+ * merged, closed) become `pr-activity` events for every repository the
  * producer snapshots, each carrying the producer's observation time. The slot's capability carries the
  * producer's high-water time, coverage and declared retained window, so a reader behind that window reads
  * a coverage gap, never a silent loss. The issue, lane-claim and stall contributors stay on their own
@@ -18,18 +19,27 @@ import {TRANSITION_WINDOW}                                  from './openWorkProd
  */
 
 /**
- * @summary The transition kinds the PR lane shows. Head, CI and review-request churn stay with the
- * open-work projection, where a holder reads them.
+ * @summary The transition kinds the PR lane shows. A push shows only when it answers a change request;
+ * other pushes, CI and review-request churn stay with the open-work projection, where a holder reads them.
  */
-export const PR_LANE_TRANSITION_KINDS = Object.freeze(['opened', 'verdict', 'merged', 'closed']);
+export const PR_LANE_TRANSITION_KINDS = Object.freeze(['opened', 'verdict', 'head', 'merged', 'closed']);
 
 const
     PR_STATE_BY_KIND = Object.freeze({opened: 'OPEN', merged: 'MERGED', closed: 'CLOSED'}),
     REASON_MAX       = 240;
 
 /**
+ * @summary A reviewer key as a GitHub login: a seat (`@<login>`) or a `login:` key; a team names none.
+ * @param {String} reviewer
+ * @returns {String|null}
+ * @private
+ */
+const loginOf = reviewer => /^(?:@|login:)([^/\s]+)$/.exec(reviewer ?? '')?.[1] ?? null;
+
+/**
  * @summary One `pr-activity` event per retained transition of a shown kind, for every repository.
- * The event is the observation: its id is the transition's, its time the observing pulse.
+ * The event is the observation: its id is the transition's, its time the observing pulse. Its actor is
+ * the PR's author, unless exactly one reviewer moved a verdict; the reviewers ride in `transition.by`.
  * @param {Object[]} transitions The producer's retained transitions.
  * @param {Object}   [options]
  * @param {String[]} [options.kinds=PR_LANE_TRANSITION_KINDS]
@@ -38,17 +48,19 @@ const
 export function createPrTransitionEvents(transitions = [], {kinds = PR_LANE_TRANSITION_KINDS} = {}) {
     return asArray(transitions)
         .filter(transition => typeof transition?.id === 'string' && kinds.includes(transition.kind)
+            && (transition.kind !== 'head' || transition.verdict === 'CHANGES_REQUESTED')
             && Number.isInteger(transition.number) && !Number.isNaN(Date.parse(transition.pulse)))
         .map(transition => {
             const
                 repo  = typeof transition.repo === 'string' && transition.repo ? transition.repo : null,
-                owner = transition.owner ?? {};
+                owner = transition.owner ?? {},
+                by    = asArray(transition.by);
 
             return createFleetCockpitEvent({
                 eventId   : createFleetCockpitEventId(FLEET_COCKPIT_SOURCES.githubPr, transition.id),
                 type      : 'pr-activity',
                 source    : FLEET_COCKPIT_SOURCES.githubPr,
-                agentId   : owner.login ?? null,
+                agentId   : (by.length === 1 ? loginOf(by[0]) : null) ?? owner.login ?? null,
                 confidence: 'observed',
                 occurredAt: new Date(transition.pulse).toISOString(),
                 payload   : {
@@ -61,7 +73,7 @@ export function createPrTransitionEvents(transitions = [], {kinds = PR_LANE_TRAN
                     state         : PR_STATE_BY_KIND[transition.kind] ?? null,
                     reviewDecision: transition.kind === 'verdict' ? transition.to ?? null : null,
                     owner         : {kind: owner.kind ?? null, seat: owner.seat ?? null, login: owner.login ?? null},
-                    transition    : {kind: transition.kind, from: transition.from ?? null, to: transition.to ?? null},
+                    transition    : {kind: transition.kind, from: transition.from ?? null, to: transition.to ?? null, ...(by.length ? {by} : {})},
                     observedAt    : new Date(transition.pulse).toISOString(),
                     relatedPrs    : [transition.number],
                     relatedTickets: []
