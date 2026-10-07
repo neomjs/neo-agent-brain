@@ -253,7 +253,7 @@ class McpLaunchAdmissionService extends Base {
 
             const
                 names = launchRowEnvNames(row),
-                owned = names.redeemed.filter(name => Object.hasOwn(owners, name)),
+                owned = names.redeemed.filter(name => typeof owners[name]?.resolve === 'function' && typeof owners[name].prove === 'function'),
                 held  = names.redeemed.filter(name => !owned.includes(name) && typeof env[name] === 'string');
 
             if (names.required.some(name => !owned.includes(name) && !held.includes(name))) {

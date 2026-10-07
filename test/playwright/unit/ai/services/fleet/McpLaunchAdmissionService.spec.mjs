@@ -175,7 +175,10 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
 
         expect(service.statusOf('seat').servers).toContainEqual({key: 'github-workflow', state: 'revoked', reason: 'credential-missing'});
         expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'credential-missing'});
-        expect((await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).outcome).toBe('admitted')
+        expect((await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).outcome).toBe('admitted');
+
+        await activeSeat({owners: {...planeOnly, GH_TOKEN: {credential: 'seat-pat', resolve: () => PAT}}});
+        expect(service.statusOf('seat').servers, 'an owner that cannot prove owns nothing').toContainEqual({key: 'github-workflow', state: 'revoked', reason: 'credential-missing'})
     });
 
     test('redemptions repeat and run concurrently for as long as the generation is active', async () => {
