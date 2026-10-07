@@ -137,11 +137,12 @@ function unreadReason(unread, failed = []) {
  * read: the open pull requests it authored or holds a review request on, and the
  * ones it authored that closed in its catch-up window. One seat's PAT never reads another seat's
  * work, so every row was read as the seat it belongs to. A seat without a readable PAT, or whose read
- * fails, leaves the pulse `partial` and is named with its next step; its rows carry, never vanish.
+ * fails, leaves the pulse `partial` and is named with its next step; its rows carry, never vanish. A
+ * benched seat owes no coverage: it reads when it can, and a read it misses only carries its rows.
  * @param {Object}   options
- * @param {Function} options.readers    `() → Promise<{seat: String, login: String, query: Function|null}[]>`:
+ * @param {Function} options.readers    `() → Promise<{seat: String, login: String, query: Function|null, benched: Boolean}[]>`:
  *     each seat with its GitHub login and its GraphQL call `(text, variables) → Promise<data>`, null
- *     when the seat has no readable PAT.
+ *     when the seat has no readable PAT, and whether the operator benched it.
  * @param {Function} options.repos      `() → Promise<String[]>`, the `owner/repo` slugs the seats work on.
  * @param {{byName: Function, byLogin: Function}} options.identities Resolve a social name or a login to a seat.
  * @param {Function} [options.now]      Clock.
@@ -241,10 +242,13 @@ export function createOpenWorkProducer({
         }
 
         const
+            benched  = new Set(seats.filter(seat => seat.benched).map(seat => seat.seat)),
+            owes     = seat => !benched.has(seat),
+            missed   = [...unread, ...reads.filter(read => read.failure || !read.complete || !read.ended.complete).map(read => read.seat)].filter(seat => !owes(seat)),
             byKey    = rows => [...new Map(rows.map(row => [row.key, row])).values()],
             rows     = byKey(answered.flatMap(read => read.nodes).map(node => normalizePullRequest(node, identities))),
-            terminal = {rows: byKey(answered.flatMap(read => read.ended.nodes).map(node => normalizeTerminal(node, identities))), complete: !failed.length && answered.every(read => read.ended.complete)},
-            complete = !unread.length && !failed.length && answered.every(read => read.complete),
+            terminal = {rows: byKey(answered.flatMap(read => read.ended.nodes).map(node => normalizeTerminal(node, identities))), complete: !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.ended.complete)},
+            complete = !unread.some(owes) && !failed.some(read => owes(read.seat)) && answered.every(read => !owes(read.seat) || read.complete),
             // a seat unread or failed this pulse keeps its mark for when it reads again, and one with no mark yet holds
             // the boundary it would inherit now, so a seat that did read cannot carry the aggregate past a close the
             // other has not read; a seat no longer registered drops out
@@ -265,17 +269,17 @@ export function createOpenWorkProducer({
         const
             // the earliest seat's watermark bounds what is still closing, and seeds a seat that joins later
             watermark = Object.values(marks).map(mark => mark.watermark).filter(Boolean).sort()[0] ?? null,
-            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete}, terminal, since: state.watermark ?? null, id: at}),
+            next      = reduceOpenWork({previous: state.snapshot, observed: {rows, complete, missed}, terminal, since: state.watermark ?? null, id: at}),
             coverage  = complete && !rows.some(row => row.partial) && terminal.complete ? 'complete' : 'partial';
 
         return commit({
-            snapshot   : {rows: next.rows, closed: next.closed, complete: next.complete},
+            snapshot   : {rows: next.rows, closed: next.closed, complete: next.complete, missed: next.missed},
             observedAt : at,
             coverage,
             readers    : marks,
             watermark,
             window     : null,
-            reason     : unreadReason(unread, failed),
+            reason     : unreadReason(unread.filter(owes), failed.filter(read => owes(read.seat))),
             detail     : failed[0]?.failure ?? null,
             transitions: [...state.transitions, ...next.transitions].slice(-transitionWindow)
         }, {at, ...tally, coverage, transitions: countBySeat(next.transitions), vanished: next.vanished, ...(unread.length || failed.length ? {unread: [...unread, ...failed.map(read => read.seat)]} : {})})
