@@ -173,6 +173,26 @@ function transition(row, kind, from, to, pulse) {
 }
 
 /**
+ * @summary What a push or a verdict change carries beside from and to: the verdict a push landed on, and
+ * the reviewers whose standing opinion became the new decision. A decision no opinion explains, such as a
+ * dismissal or a branch rule, names no one.
+ * @param {String} kind
+ * @param {Object} before
+ * @param {Object} after
+ * @returns {Object}
+ * @private
+ */
+function contextOf(kind, before, after) {
+    if (kind === 'head') return {verdict: before.verdict};
+
+    if (kind !== 'verdict') return {};
+
+    const held = new Set((before.opinions ?? []).filter(({state}) => state === after.verdict).map(({reviewer}) => reviewer));
+
+    return {by: (after.opinions ?? []).filter(({reviewer, state}) => state === after.verdict && !held.has(reviewer)).map(({reviewer}) => reviewer)}
+}
+
+/**
  * @summary The transitions between two observations of one open PR. A removal needs a complete list.
  * @param {Object} before
  * @param {Object} after
@@ -184,7 +204,7 @@ function changesOf(before, after, pulse) {
     const changes = [];
 
     for (const kind of ['head', 'ci', 'verdict']) {
-        before[kind] !== after[kind] && changes.push(transition(after, kind, before[kind], after[kind], pulse))
+        before[kind] !== after[kind] && changes.push({...transition(after, kind, before[kind], after[kind], pulse), ...contextOf(kind, before, after)})
     }
 
     after.requested.filter(seat => !before.requested.includes(seat))

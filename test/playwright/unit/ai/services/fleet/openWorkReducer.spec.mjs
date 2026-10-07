@@ -138,6 +138,26 @@ test.describe('openWorkReducer — transitions, never a holder-only diff (#760)'
         expect(next.transitions.map(({key, kind, to}) => [key, kind, to])).toEqual([['acme/app#8', 'review-requested', '@neo-gpt']])
     });
 
+    test('a verdict names the reviewers whose standing opinion became it, a dismissal names none, and a push carries the verdict it landed on (#919)', () => {
+        const
+            review        = (state, oid) => [{state, author: {login: 'neo-gpt'}, commit: {oid}}],
+            {transitions} = run([
+                [node({verdict: 'REVIEW_REQUIRED'})],
+                [node({verdict: 'CHANGES_REQUESTED', reviews: review('CHANGES_REQUESTED', 'a1')})],
+                [node({head: 'b2', verdict: 'CHANGES_REQUESTED', reviews: review('CHANGES_REQUESTED', 'a1')})],
+                [node({head: 'b2', verdict: 'APPROVED', reviews: review('APPROVED', 'b2')})],
+                [node({head: 'b2', verdict: 'REVIEW_REQUIRED'})]
+            ]),
+            pick          = list => list.map(({kind, to, by, verdict}) => ({kind, to, ...(by ? {by} : {}), ...(verdict !== undefined ? {verdict} : {})}));
+
+        expect(transitions.slice(1).map(pick)).toEqual([
+            [{kind: 'verdict', to: 'CHANGES_REQUESTED', by: ['@neo-gpt']}],
+            [{kind: 'head', to: 'b2', verdict: 'CHANGES_REQUESTED'}],
+            [{kind: 'verdict', to: 'APPROVED', by: ['@neo-gpt']}],
+            [{kind: 'verdict', to: 'REVIEW_REQUIRED', by: []}]
+        ])
+    });
+
     test('each reviewer\'s latest review is kept, and whether it judged the current head', () => {
         const row = normalizePullRequest(node({head: 'b2', reviews: [
             {state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: 'b2'}},

@@ -38,8 +38,8 @@ const
  * @param {Object} fields
  * @returns {Object}
  */
-function transition({repo = 'neomjs/neo-agent-brain', number = 764, head = 'da3bf6a', kind, from = null, to = null, pulse = T1}) {
-    return {id: `${repo}#${number}@${head}:${kind}:${from}->${to}#${pulse}`, key: `${repo}#${number}`, repo, number, head, owner, kind, from, to, pulse}
+function transition({repo = 'neomjs/neo-agent-brain', number = 764, head = 'da3bf6a', kind, from = null, to = null, pulse = T1, ...context}) {
+    return {id: `${repo}#${number}@${head}:${kind}:${from}->${to}#${pulse}`, key: `${repo}#${number}`, repo, number, head, owner, kind, from, to, pulse, ...context}
 }
 
 /**
@@ -131,7 +131,7 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
             transition({repo: 'neomjs/neo', number: 19364, kind: 'review-requested', from: null, to: '@neo-gpt-sophie', pulse: T1})
         ]);
 
-        expect(PR_LANE_TRANSITION_KINDS).toEqual(['opened', 'verdict', 'merged', 'closed']);
+        expect(PR_LANE_TRANSITION_KINDS).toEqual(['opened', 'verdict', 'head', 'merged', 'closed']);
         expect(events.map(event => [event.payload.repoSlug, event.payload.number, event.payload.transition.kind, event.occurredAt])).toEqual([
             ['neo-agent-brain',       764,   'opened',  T0],
             ['neo-agent-institution', 434,   'verdict', T1],
@@ -150,6 +150,24 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
         });
         expect(verdict.payload).toMatchObject({state: null, reviewDecision: 'APPROVED', transition: {from: null, to: 'APPROVED'}});
         expect(merged.payload).toMatchObject({state: 'MERGED', head: 'da3bf6a'})
+    });
+
+    test('a verdict names the reviewers who moved it, a single one as its actor; a push shows only when it answers a change request (#919)', () => {
+        const events = createPrTransitionEvents([
+            transition({kind: 'verdict', from: 'REVIEW_REQUIRED', to: 'CHANGES_REQUESTED', by: ['@neo-gpt'], pulse: T0}),
+            transition({kind: 'head', from: 'da3bf6a', to: 'e41c0d2', verdict: 'CHANGES_REQUESTED', pulse: T1}),
+            transition({kind: 'head', from: 'e41c0d2', to: 'f00ba12', verdict: 'APPROVED', pulse: T1}),
+            transition({kind: 'verdict', from: 'CHANGES_REQUESTED', to: 'APPROVED', by: ['@neo-gpt', 'login:outsider'], pulse: T2}),
+            transition({kind: 'verdict', from: 'APPROVED', to: 'REVIEW_REQUIRED', by: [], pulse: T2})
+        ]);
+
+        // the second push landed on an approval, so it stays off the lane
+        expect(events.map(({agentId, payload}) => [payload.transition.kind, payload.transition.to, agentId, payload.transition.by ?? null])).toEqual([
+            ['verdict', 'CHANGES_REQUESTED', 'neo-gpt',       ['@neo-gpt']],
+            ['head',    'e41c0d2',           'neo-opus-vega', null],
+            ['verdict', 'APPROVED',          'neo-opus-vega', ['@neo-gpt', 'login:outsider']],
+            ['verdict', 'REVIEW_REQUIRED',   'neo-opus-vega', null]
+        ])
     });
 
     test('AC-2: the base slot keeps its issue, lane-claim and stall events; its corpus PR events are replaced, the merge is ranked and bounded', async () => {
