@@ -398,12 +398,15 @@ class FleetManager extends Base {
      * before anything runs. So is one whose identity the operator benched, when the participation read
      * answers; it is read again just before the spawn, and a bench recorded after that read lands on a
      * starting seat ({@link launchRefusalOf}). The start holds the seat's home until its harness is
-     * launched or refused ({@link withSeatHome}).
+     * launched or refused ({@link withSeatHome}). A Stop asked for once it began, even while it waits for
+     * the seat's home, ends the launch admission it reserves.
      * @param {String} agentId Registry agent id.
      * @returns {Promise<Object>} the agent's lifecycle status.
      */
     async startAgent(agentId) {
         this.assertStartPermitted('startAgent', agentId);
+
+        const admissionMark = this.getLifecycleService().getLaunchAdmission?.()?.revocationMark(agentId) ?? null;
 
         const status = await this.withSeatHome(agentId, async () => {
             // the bench is read inside the seat's home, so this start keeps its place in the seat's queue
@@ -414,6 +417,7 @@ class FleetManager extends Base {
                 managedRoot      : this.getManagedRoot(),
                 planeBase        : this.planeBase,
                 readParticipation: () => this.seatParticipation(agentId),
+                admissionMark,
                 agentId
             })
         });
@@ -568,6 +572,7 @@ class FleetManager extends Base {
             if (status.sessionFolder != null) row.sessionFolder   = status.sessionFolder;
             if (status.gitIdentity != null)   row.gitIdentity     = status.gitIdentity;
             if (status.seatModel != null)     row.seatModel       = status.seatModel;
+            if (status.launchAdmission != null) row.launchAdmission = status.launchAdmission;
             if (harnessSettings != null)      row.harnessSettings = harnessSettings;
 
             return row;

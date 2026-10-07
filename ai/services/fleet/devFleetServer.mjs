@@ -355,7 +355,10 @@ async function boot() {
         });
 
         wireOperatorComposeWriter({
-            addMessage: args => planeClient.addMessage(args)
+            addMessage    : args => planeClient.addMessage(args),
+            getMessage    : args => planeClient.getMessage(args),
+            markRead      : args => planeClient.markRead(args),
+            transitionTask: args => planeClient.transitionTask(args)
         })
     } else {
         Promise.all([
@@ -377,7 +380,10 @@ async function boot() {
             // the request context the authenticated ingress stamped; the seam carries payload, never
             // identity. Fail-soft: an unavailable singleton leaves the compose seam honestly unwired.
             wireOperatorComposeWriter({
-                addMessage: MailboxService.addMessage.bind(MailboxService)
+                addMessage    : MailboxService.addMessage.bind(MailboxService),
+                getMessage    : MailboxService.getMessage.bind(MailboxService),
+                markRead      : MailboxService.markRead.bind(MailboxService),
+                transitionTask: MailboxService.transitionTask.bind(MailboxService)
             })
         }).catch(error => console.warn('[fleet] activity source not wired:', error?.message ?? error))
     }
@@ -522,7 +528,8 @@ async function boot() {
     // with its own PAT from the registry's credential store. A token in this process's environment is
     // the explicit headless/dev override, a process secret no AiConfig leaf binds, so the entrypoint
     // reads it. A seat without a readable PAT is named by each pulse: an optional reader never refuses the boot.
-    const openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService});
+    // A benched seat owes no coverage; its participation comes from the roster's presence read.
+    const openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService, readPresence});
 
         const server = await startFleetBridgeServer({
             port,

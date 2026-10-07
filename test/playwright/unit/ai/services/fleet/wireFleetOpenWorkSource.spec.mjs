@@ -23,6 +23,7 @@ import {
     fileStore,
     githubSlugsOf,
     seatIdentities,
+    seatReaders,
     wireFleetOpenWorkSource
 } from '../../../../../../ai/services/fleet/wireFleetOpenWorkSource.mjs';
 
@@ -78,6 +79,46 @@ test.describe('wireFleetOpenWorkSource — the producer wired into a Fleet serve
                 reason  : '@neo-opus-ada, @lab-seat, @idle-seat have no readable PAT: connect again with a current token for each'
             });
             expect(JSON.stringify(wired.producer.getState())).not.toMatch(/GH_TOKEN|GITHUB_TOKEN/)
+        } finally {
+            fs.rmSync(dataDir, {recursive: true, force: true})
+        }
+    });
+
+    test('a seat its identity node benches is benched; dark is not, and participation nobody could read stays owed (#916)', async () => {
+        const
+            seats   = [{id: 'ada', githubUsername: 'neo-opus-ada'}, {id: 'iris', githubUsername: '@neo-kimi-iris'}, {id: 'gpt', githubUsername: 'neo-gpt'}],
+            benched = async readPresence => (await seatReaders({listDefinitions: () => seats, resolveCredential: () => null, readPresence})())
+                .map(seat => [seat.seat, seat.benched]),
+            answered = async () => ({agents: [
+                {identity: '@neo-opus-ada',  state: 'dark',    signals: {participationStatus: 'active'}},
+                {identity: '@neo-kimi-iris', state: 'benched', signals: {participationStatus: 'operator_benched', statusReason: 'the flatrate ended'}},
+                {identity: '@neo-gpt',       state: 'online',  signals: {}}
+            ]});
+
+        expect(await benched(answered)).toEqual([['@neo-opus-ada', false], ['@neo-kimi-iris', true], ['@neo-gpt', false]]);
+
+        for (const unanswered of [null, async () => ({}), async () => { throw new Error('plane who_is_online answer unreadable') }]) {
+            expect((await benched(unanswered)).every(([, isBenched]) => !isBenched)).toBe(true)
+        }
+    });
+
+    test('a server whose benched seats have no readable PAT reads complete over the seats that participate (#916)', async () => {
+        const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'open-work-wire-'));
+
+        try {
+            const wired = wireFleetOpenWorkSource({
+                registry    : {listAgents: () => definitions, getDataDir: () => dataDir, resolveCredential: id => id === 'ada' ? 'pat-ada' : null},
+                bridge      : {},
+                createQuery : () => async () => ({rateLimit: {cost: 1}, search: {pageInfo: {hasNextPage: false}, nodes: []}}),
+                readPresence: async () => ({agents: ['@lab-seat', '@idle-seat'].map(identity => ({identity, state: 'benched', signals: {participationStatus: 'operator_benched'}}))}),
+                pulseMs     : 3600000
+            });
+
+            await wired.producer.pulse();
+            wired.stop();
+
+            expect(wired.producer.getState()).toMatchObject({coverage: 'complete', reason: null});
+            expect(wired.producer.getState().pulses.at(-1).unread).toEqual(['@lab-seat', '@idle-seat'])
         } finally {
             fs.rmSync(dataDir, {recursive: true, force: true})
         }

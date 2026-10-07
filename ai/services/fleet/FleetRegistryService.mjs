@@ -3,6 +3,7 @@ import fs                                                       from 'fs';
 import path                                                     from 'path';
 import aiConfig                                                 from '../../config.mjs';
 import Base                                                     from 'neo.mjs/src/core/Base.mjs';
+import Observable                                               from 'neo.mjs/src/core/Observable.mjs';
 import {HARNESS_TYPES}                                          from '../../../src/fleet/contract/harnessTypes.mjs';
 import {writeFileAtomicSync}                                    from '../shared/atomicFileWrite.mjs';
 import {mcpCatalogFor, normalizeMcpOverrides, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
@@ -311,8 +312,19 @@ function seatModelDeclaration(method, harnessType, fields) {
  * record instead of provisioning a second, empty seat under a changed root. A row older than the
  * record names none and stays refused until it is bound; the move and that first bind are the one
  * write after birth ({@link relocateSeatHome}), never an adoption of whatever directory exists.
+ *
+ * **Change event:** each committed definition write fires `definitionChange` with `{id, previous, next}`,
+ * synchronously and after the registry file holds it (`previous` is `null` for a created row, `next` for a
+ * removed one). Native launch admission revokes a running seat's grants from it, so no write path can
+ * leave a grant standing for a server it switched off.
  */
 class FleetRegistryService extends Base {
+    /**
+     * @member {Boolean} observable=true
+     * @static
+     */
+    static observable = true
+
     static config = {
         /**
          * @member {String} className='Neo.ai.services.fleet.FleetRegistryService'
@@ -578,6 +590,7 @@ class FleetRegistryService extends Base {
         }
 
         this.agents = nextAgents;
+        this.announceDefinition(agentId, null, def);
 
         return this.toPublic(def);
     }
@@ -619,6 +632,7 @@ class FleetRegistryService extends Base {
         nextAgents.set(id, def);
         this.writeRegistry(nextAgents);
         this.agents = nextAgents;
+        this.announceDefinition(id, existing, def);
 
         return this.toPublic(def);
     }
@@ -775,6 +789,7 @@ class FleetRegistryService extends Base {
         nextAgents.set(id, def);
         this.writeRegistry(nextAgents);
         this.agents = nextAgents;
+        this.announceDefinition(id, existing, def);
 
         return this.toPublic(def);
     }
@@ -807,6 +822,7 @@ class FleetRegistryService extends Base {
         nextAgents.set(id, def);
         this.writeRegistry(nextAgents);
         this.agents = nextAgents;
+        this.announceDefinition(id, existing, def);
 
         return this.toPublic(def);
     }
@@ -818,6 +834,8 @@ class FleetRegistryService extends Base {
      * a seat. The files move outside this registry; this write is what lets the next start accept the
      * path it names. No automatic adoption exists: a directory that happens to exist under the current
      * root carries no binding authority, so an unbound row stays refused until this act names its home.
+     * A move records the home it left as `previousSeatHome`. The start re-derives every Fleet-owned file
+     * still exactly as Fleet rendered it there, so a copied seat names its new home.
      * @param {String}      id        Registry agent id.
      * @param {Object}      move
      * @param {String|null} move.from The seat home the row records now, `null` for a row without one.
@@ -837,12 +855,13 @@ class FleetRegistryService extends Base {
         }
 
         const
-            def        = {...existing, seatHome: to, updatedAt: new Date().toISOString()},
+            def        = {...existing, seatHome: to, ...(from && from !== to && {previousSeatHome: from}), updatedAt: new Date().toISOString()},
             nextAgents = new Map(this.agents);
 
         nextAgents.set(id, def);
         this.writeRegistry(nextAgents);
         this.agents = nextAgents;
+        this.announceDefinition(id, existing, def);
 
         return this.toPublic(def);
     }
@@ -880,6 +899,7 @@ class FleetRegistryService extends Base {
 
         this.agents.set(id, def);
         this.writeRegistry();
+        this.announceDefinition(id, existing, def);
 
         return this.getDefinition(id);
     }
@@ -972,9 +992,11 @@ class FleetRegistryService extends Base {
      */
     removeAgent(id) {
         this.ensureLoaded();
-        const existed = this.agents.delete(id);
+        const previous = this.agents.get(id) ?? null;
+        const existed  = this.agents.delete(id);
         if (existed) {
             this.writeRegistry();
+            this.announceDefinition(id, previous, null);
             // tidiness, not the guarantee: the next create of this id claims its operator anew
             const released = SeatOperatorRegistryService.release({seatId: id});
             released.ok || console.warn(`[FleetRegistryService] seat '${id}' was removed; its operator record stays until the id is created again: ${released.reason}`)
@@ -1134,6 +1156,17 @@ class FleetRegistryService extends Base {
         const payload = {agents: Object.fromEntries(agents)};
 
         writeFileAtomicSync(this.registryPath(), JSON.stringify(payload, null, 2))
+    }
+
+    /**
+     * @summary Fire `definitionChange` for one committed write (see the class summary).
+     * @param {String} id
+     * @param {Object|null} previous The raw definition before the write.
+     * @param {Object|null} next The raw definition after it.
+     * @protected
+     */
+    announceDefinition(id, previous, next) {
+        this.fire('definitionChange', {id, previous, next})
     }
 
     /**

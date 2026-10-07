@@ -6,25 +6,13 @@ import {normalizeAgentIdentityNodeId} from '../../graph/normalizeAgentIdentityNo
  * identity node records.
  *
  * Extracted from the wake daemon rather than copied, so the rule has one home. Participation is the identity
- * node's fact, which an operator records for their own seats; the daemon reads the nodes from its graph store
- * once per poll cycle (`getAgentIdentityNodes` in `queries.mjs`), the same rows `who_is_online` reads.
+ * node's fact, which an operator records for their own seats; the daemon reads it from its graph store once per
+ * poll cycle (`ai/graph/agentIdentityParticipation.mjs`), the same rows `who_is_online` reads.
  *
  * Receive-permission is deliberately permissive: an identity without a node stays eligible, so forks and
  * local custom agents keep working. It is not a census of the seats that ought to hold a route; the receiver
  * manifest builder takes that list from its caller.
  */
-
-/**
- * @summary Canonical identity → participation status, from AgentIdentity node records.
- * @param {Object[]} nodes `{id, properties}` records.
- * @returns {Map<String,String>}
- */
-export function participationByIdentity(nodes) {
-    return new Map(nodes.map(node => [
-        normalizeAgentIdentityNodeId(node.id),
-        node.properties?.participationStatus || 'active'
-    ]))
-}
 
 /**
  * @summary Whether a wake subscription target may receive wake delivery now.

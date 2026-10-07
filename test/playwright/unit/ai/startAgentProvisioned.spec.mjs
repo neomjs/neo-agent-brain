@@ -1,12 +1,12 @@
-import {test, expect}                    from '@playwright/test';
-import {CREDENTIAL_FAMILIES}             from '../../../../ai/services/fleet/redactCredentials.mjs';
+import {test, expect}                              from '@playwright/test';
+import {CREDENTIAL_FAMILIES}                       from '../../../../ai/services/fleet/redactCredentials.mjs';
 import {LAUNCHABLE_HARNESS_TYPES, deriveCodexHome} from '../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
-import {deriveAgentInstanceHome}         from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
-import {readCodexModelCatalog}           from '../../../../ai/services/fleet/codexModelCatalog.mjs';
-import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
+import {deriveAgentInstanceHome}                   from '../../../../ai/services/fleet/deriveAgentInstanceHome.mjs';
+import {readCodexModelCatalog}                     from '../../../../ai/services/fleet/codexModelCatalog.mjs';
+import {createManagedAgentWorkspacePlan}           from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {startAgentProvisioned as startProvisioned} from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
-import {resolveSeatGitIdentity}          from '../../../../ai/services/fleet/seatGitIdentity.mjs';
-import {supportsTenantMcpTarget}         from '../../../../src/fleet/contract/harnessTypes.mjs';
+import {resolveSeatGitIdentity}                    from '../../../../ai/services/fleet/seatGitIdentity.mjs';
+import {supportsTenantMcpTarget}                   from '../../../../src/fleet/contract/harnessTypes.mjs';
 
 /** The Git identity a fixture seat resolves to unless a case says otherwise. */
 const SEAT_GIT_IDENTITY = {state: 'derived', source: 'verified-primary', name: 'Seat Agent', email: 'seat@example.test'};
@@ -31,7 +31,10 @@ function startAgentProvisioned(options) {
 /** Every agent holds a GitHub PAT; a known agent resolves this one unless `credentials` names another. */
 const FIXTURE_PAT = 'ghp_fixture_only';
 
-/** A recording FleetLifecycleService stub: tracks start/capability/credential calls. */
+/**
+ * A recording FleetLifecycleService stub: tracks start/capability/credential calls, and for a Claude Desktop seat
+ * the profile probe and the launch admission it reserves and revokes.
+ */
 function makeLifecycle({
     agents = {},
     definitions = agents,
@@ -39,12 +42,30 @@ function makeLifecycle({
     running = {},
     events,
     capabilityError = null,
-    inspectionError = null
+    inspectionError = null,
+    profileInUse = false
 } = {}) {
-    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], repoOutcomes: [], start: [], status: []};
+    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], start: [], status: []};
+    const admission = {
+        revocationMark: id => {
+            events?.push('mark');
+            calls.mark.push(id);
+
+            return 5
+        },
+        reserve: async ({agent, registry, since}) => {
+            events?.push('reserve');
+            calls.reserve.push({id: agent.id, registry, since});
+
+            return {generation: `generation-${agent.id}`, issuer: 'http://127.0.0.1:47123', identity: agent.githubUsername, grants: {'memory-core': 'grant-mc'}}
+        },
+        revoke: (id, reason, options) => { calls.revoke.push({id, reason, ...options}); return true }
+    };
     return {
         calls,
-        credentialEnvVar: 'GH_TOKEN',
+        credentialEnvVar   : 'GH_TOKEN',
+        desktopProfileInUse: agent => { calls.profile.push(agent.id); return profileInUse },
+        getLaunchAdmission : () => admission,
         isRunning       : id => !!running[id],
         status          : id => { calls.status.push(id); return {id, running: !!running[id], state: running[id] ? 'running' : 'stopped'}; },
         getRegistry     : () => ({
@@ -782,6 +803,175 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(kept.get('codex').models.map(model => model.id)).toEqual(['gpt-6-luna']);
     });
 
+    test('a Claude Desktop Start reserves launch admission before preparing, then hands its grants to the rows and its generation to the spawn', async () => {
+        const run = async (harnessType, events = []) => {
+            const
+                agents    = repoAgent('seat'),
+                lifecycle = makeLifecycle({agents, events}),
+                prepare   = makePrepareWorkspace(events);
+
+            agents.seat.harnessType = harnessType;
+
+            await startAgentProvisioned({
+                lifecycleService  : lifecycle,
+                agentId           : 'seat',
+                managedRoot       : '/managed',
+                ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+                prepareWorkspace  : prepare,
+                agentosRuntimeRoot: '/installed/neo'
+            });
+
+            return {events, lifecycle, prepare}
+        };
+
+        const {events, lifecycle, prepare} = await run('claude-desktop');
+
+        expect(lifecycle.calls.profile).toEqual(['seat']);
+        expect(events.indexOf('reserve')).toBeLessThan(events.indexOf('prepare'));
+        // the attempt's revocation mark is read before anything is awaited, and the reservation is held to it
+        expect(events.indexOf('mark')).toBeLessThan(events.indexOf('credential'));
+        expect(lifecycle.calls.reserve[0].since).toBe(5);
+        // the registry whose definition changes the issuer follows from here on
+        expect(lifecycle.calls.reserve[0].registry).toEqual(expect.objectContaining({getDefinition: expect.any(Function)}));
+        expect(prepare.calls[0].launchAdmission).toEqual({issuer: 'http://127.0.0.1:47123', identity: 'seat', grants: {'memory-core': 'grant-mc'}});
+        expect(lifecycle.calls.start[0].opts.launchAdmission).toEqual({
+            generation: 'generation-seat',
+            plan      : expect.any(Array),
+            owners    : {pat: expect.objectContaining({credential: 'seat-pat'})}
+        });
+        expect(lifecycle.calls.revoke).toEqual([]);
+
+        // every other family neither probes a profile nor reserves a grant
+        const codex = await run('codex');
+
+        expect([codex.lifecycle.calls.profile, codex.lifecycle.calls.mark, codex.lifecycle.calls.reserve, codex.prepare.calls[0].launchAdmission, codex.lifecycle.calls.start[0].opts.launchAdmission])
+            .toEqual([[], [], [], undefined, undefined])
+    });
+
+    test('a Claude Desktop Start holds its reservation to the mark the managed Start read where it began', async () => {
+        const
+            agents    = repoAgent('seat'),
+            lifecycle = makeLifecycle({agents});
+
+        agents.seat.harnessType = 'claude-desktop';
+
+        await startAgentProvisioned({
+            lifecycleService  : lifecycle,
+            agentId           : 'seat',
+            managedRoot       : '/managed',
+            ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+            prepareWorkspace  : makePrepareWorkspace(),
+            agentosRuntimeRoot: '/installed/neo',
+            admissionMark     : 2
+        });
+
+        expect([lifecycle.calls.mark, lifecycle.calls.reserve[0].since]).toEqual([[], 2])
+    });
+
+    test('a Claude Desktop seat\'s rows redeem its PAT from the registry, proved as the seat\'s own account even when a Git identity is declared', async () => {
+        const
+            agents    = repoAgent('seat'),
+            lifecycle = makeLifecycle({agents}),
+            proofs    = [];
+
+        Object.assign(agents.seat, {harnessType: 'claude-desktop', gitName: 'Seat Agent', gitEmail: 'seat@example.test'});
+
+        await startAgentProvisioned({
+            lifecycleService  : lifecycle,
+            agentId           : 'seat',
+            managedRoot       : '/managed',
+            ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+            prepareWorkspace  : makePrepareWorkspace(),
+            agentosRuntimeRoot: '/installed/neo',
+            proveForgeAccount : async args => { proofs.push(args); return {ok: args.credential === FIXTURE_PAT} }
+        });
+
+        const {owners} = lifecycle.calls.start[0].opts.launchAdmission;
+
+        expect(proofs, 'the Start itself takes the declaration').toEqual([]);
+
+        lifecycle.calls.credential.length = 0;
+        expect(owners.pat.resolve()).toBe(FIXTURE_PAT);
+        expect(lifecycle.calls.credential, 'read from the registry when redeemed, never kept').toEqual(['seat']);
+
+        expect(await owners.pat.prove('ghp_another_account')).toEqual({ok: false});
+        expect(proofs).toEqual([{agent: expect.objectContaining({id: 'seat', githubUsername: 'seat', gitName: 'Seat Agent'}), credential: 'ghp_another_account'}])
+    });
+
+    test('a Claude Desktop seat on a tenant redeems its plane credential from that tenant, proved as its Start proves it', async () => {
+        const
+            agents        = remoteRepoAgent('seat'),
+            lifecycle     = makeLifecycle({agents, credentials: {seat: 'ghp_repository_only'}}),
+            tenantService = makeTenantService({credential: 'tenant_plane_credential'});
+
+        agents.seat.harnessType = 'claude-desktop';
+
+        await startAgentProvisioned({
+            lifecycleService  : lifecycle,
+            tenantService,
+            agentId           : 'seat',
+            managedRoot       : '/managed',
+            ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+            prepareWorkspace  : makePrepareWorkspace(),
+            agentosRuntimeRoot: '/installed/neo'
+        });
+
+        const {plane} = lifecycle.calls.start[0].opts.launchAdmission.owners;
+
+        expect(plane.credential).toBe('plane-bearer');
+        expect(plane.resolve()).toBe('tenant_plane_credential');
+        expect(tenantService.calls.credential.at(-1)).toBe('tenant-a');
+        expect(await plane.prove('tenant_plane_credential')).toEqual({ok: true});
+        expect(tenantService.calls.probe.at(-1)).toEqual({tenantId: 'tenant-a', credential: 'tenant_plane_credential', expectedIdentity: '@seat'});
+
+        // the Start's own acceptance: both resources answer and the Memory Core names the seat
+        for (const resources of [
+            {'memory-core': {ok: true, identity: '@seat'}, 'knowledge-base': {ok: false}},
+            {'memory-core': {ok: true, identity: '@someone-else'}, 'knowledge-base': {ok: true}}
+        ]) {
+            tenantService.probeSeatCredential = async () => ({ok: true, resources});
+            expect(await plane.prove('tenant_plane_credential')).toEqual({ok: false})
+        }
+    });
+
+    test('a Claude Desktop profile another process holds, or a process table that cannot be read, refuses before anything is cloned', async () => {
+        for (const profileInUse of [true, null]) {
+            const
+                agents    = repoAgent('seat'),
+                lifecycle = makeLifecycle({agents, profileInUse}),
+                ensure    = makeEnsureRepo('/managed/seat/neomjs-neo');
+
+            agents.seat.harnessType = 'claude-desktop';
+
+            await expect(startAgentProvisioned({lifecycleService: lifecycle, agentId: 'seat', managedRoot: '/managed', ensureRepo: ensure}), String(profileInUse))
+                .rejects.toMatchObject({code: 'FLEET_SEAT_PROFILE_IN_USE', message: expect.stringContaining('Nothing was cloned or configured')});
+            expect([ensure.calls.length, lifecycle.calls.reserve.length, lifecycle.calls.start.length], String(profileInUse)).toEqual([0, 0, 0])
+        }
+    });
+
+    test('a Claude Desktop Start that fails after its reservation revokes it, so the rows it wrote admit nothing', async () => {
+        for (const failing of ['prepare', 'start']) {
+            const
+                agents    = repoAgent('seat'),
+                lifecycle = makeLifecycle({agents}),
+                broken    = async () => { throw new Error(`${failing} broke`) };
+
+            agents.seat.harnessType = 'claude-desktop';
+            if (failing === 'start') lifecycle.start = () => { throw new Error('start broke') };
+
+            await expect(startAgentProvisioned({
+                lifecycleService  : lifecycle,
+                agentId           : 'seat',
+                managedRoot       : '/managed',
+                ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+                prepareWorkspace  : failing === 'prepare' ? broken : makePrepareWorkspace(),
+                agentosRuntimeRoot: '/installed/neo'
+            }), failing).rejects.toThrow(`${failing} broke`);
+
+            expect(lifecycle.calls.revoke, failing).toEqual([{id: 'seat', reason: 'start-failed', generation: 'generation-seat'}])
+        }
+    });
+
     test('a catalog read whose app-server outlived its signals refuses the start: the home is not free', async () => {
         const
             lifecycle = makeLifecycle({agents: repoAgent('a')}),
@@ -1155,6 +1345,37 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(agents.a.seatHome).toBe('/moved/a')
     });
 
+    test('a moved seat\'s start hands the preparation the root its home left, where Fleet rendered the files its copy carries', async () => {
+        const
+            agents = repoAgent('a'),
+            start  = async ({instanceRoot} = {}) => {
+                const prepare = makePrepareWorkspace();
+
+                await startAgentProvisioned({
+                    lifecycleService: makeLifecycle({agents}),
+                    agentId         : 'a',
+                    managedRoot     : '/moved',
+                    ...(instanceRoot && {instanceRoot}),
+                    ensureRepo        : makeEnsureRepo('/moved/a/neomjs-neo'),
+                    prepareWorkspace  : prepare,
+                    agentosRuntimeRoot: '/installed/neo'
+                });
+
+                return prepare.calls[0].previousInstanceRoot
+            };
+
+        // what relocateSeatHome(id, {from: '/managed/a', to: '/moved/a'}) wrote after the copy
+        Object.assign(agents.a, {seatHome: '/moved/a', previousSeatHome: '/managed/a'});
+
+        expect(await start({instanceRoot: '/moved'})).toBe('/managed');
+        // harness homes kept under another root were never in the seat folder the copy carried
+        expect(await start()).toBeNull();
+
+        delete agents.a.previousSeatHome;
+
+        expect(await start({instanceRoot: '/moved'})).toBeNull()
+    });
+
     test('a registration that predates the record is refused until its home is bound, even when a directory already exists under the current root', async () => {
         // the stray empty home an earlier start minted under the changed root also "exists" — a
         // directory carries no binding authority, so the composer never consults the filesystem
@@ -1278,8 +1499,8 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
 
     /** The seat-plane half of the tenant service: existing-PAT binding and the start's proof of it. */
     function makePlaneService({events, stored = {credential: 'seat-plane-pat', plane: SERVED}, readiness = {ok: true}, storeResult = {status: 'stored'}, storeReadback} = {}) {
-        const calls = {resolve: [], probe: [], store: []};
-        let currentStored = stored;
+        const calls         = {resolve: [], probe: [], store: []};
+        let   currentStored = stored;
 
         return {
             calls,
@@ -1360,6 +1581,27 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
             resolvedMcpEndpoint   : PLANE,
             remoteMcpCapability   : CAPABILITY
         })
+    });
+
+    test('a Claude Desktop seat redeems its plane credential from its binding, proved on the plane this Start met', async () => {
+        const
+            agents       = repoAgent('a'),
+            lifecycle    = makePlaneLifecycle({agents, credentials: {a: 'ghp_seat_checkout'}}),
+            planeService = makePlaneService();
+
+        agents.a.harnessType = 'claude-desktop';
+
+        await start({lifecycle, planeService});
+
+        const {owners} = lifecycle.calls.start[0].opts.launchAdmission;
+
+        expect(owners.plane.credential).toBe('plane-bearer');
+        expect(owners.plane.resolve(), 'the binding, never the registry PAT').toBe('seat-plane-pat');
+        expect(planeService.calls.resolve.at(-1)).toEqual({planeBase: PLANE, agentId: 'a'});
+
+        expect(await owners.plane.prove('rebound_plane_credential')).toEqual({ok: true});
+        expect(planeService.calls.probe.at(-1)).toEqual({planeBase: PLANE, credential: 'rebound_plane_credential', expectedIdentity: '@a', expectedPlane: SERVED});
+        expect(planeService.calls.store, 'a redemption never binds').toEqual([])
     });
 
     test('a missing default-plane binding uses the existing registry PAT once, then re-proves it before checkout', async () => {
@@ -1475,12 +1717,12 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
 
     test('a binding that appears during a failed registry-PAT proof is re-read and re-proved before checkout', async () => {
         const
-            registryPat      = 'ghp_seat_checkout',
-            explicitBinding  = 'explicit-plane-binding',
-            lifecycle        = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: registryPat}}),
-            planeService     = makePlaneService({
-                stored      : null,
-                storeResult : {status: 'rejected', reason: 'plane rejected the credential'},
+            registryPat     = 'ghp_seat_checkout',
+            explicitBinding = 'explicit-plane-binding',
+            lifecycle       = makePlaneLifecycle({agents: repoAgent('a'), credentials: {a: registryPat}}),
+            planeService    = makePlaneService({
+                stored       : null,
+                storeResult  : {status: 'rejected', reason: 'plane rejected the credential'},
                 storeReadback: {credential: explicitBinding, plane: SERVED}
             }),
             ensureRepo       = makeEnsureRepo(),
@@ -1680,10 +1922,10 @@ test.describe('startAgentProvisioned — an adopted seat\'s memory import', () =
 
 test.describe('startAgentProvisioned — the seat commits as itself', () => {
     const
-        BRAIN      = {repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git'},
-        MISSING    = {state: 'missing', name: 'Seat Agent', reason: 'its forge account offers no email this PAT can read'},
-        CONVERGED  = {state: 'converged', scope: 'local', action: 'written'},
-        withRepos  = (...repos) => ({a: {...repoAgent('a').a, metadata: {repo: REPO, repos}}}),
+        BRAIN     = {repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git'},
+        MISSING   = {state: 'missing', name: 'Seat Agent', reason: 'its forge account offers no email this PAT can read'},
+        CONVERGED = {state: 'converged', scope: 'local', action: 'written'},
+        withRepos = (...repos) => ({a: {...repoAgent('a').a, metadata: {repo: REPO, repos}}}),
         // each repository lands in its own checkout; a slug listed in `failing` cannot be cloned
         ensureRepo = (events, failing = []) => async ({repoSlug}) => {
             events.push('ensure');

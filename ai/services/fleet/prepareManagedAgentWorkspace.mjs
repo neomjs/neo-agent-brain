@@ -1,27 +1,29 @@
-import {constants as fsConstants}                  from 'node:fs';
-import fs                                          from 'node:fs/promises';
-import {writeFileAtomic}                           from '../shared/atomicFileWrite.mjs';
-import path                                        from 'node:path';
-import os                                          from 'node:os';
-import crypto                                      from 'node:crypto';
-import {isDeepStrictEqual}                         from 'node:util';
-import {parse as parseToml}                        from 'smol-toml';
-import {hydrateCurrentWorktree}                    from '../../scripts/migrations/bootstrapWorktree.mjs';
+import {constants as fsConstants}                     from 'node:fs';
+import fs                                             from 'node:fs/promises';
+import {writeFileAtomic}                              from '../shared/atomicFileWrite.mjs';
+import path                                           from 'node:path';
+import os                                             from 'node:os';
+import crypto                                         from 'node:crypto';
+import {isDeepStrictEqual}                            from 'node:util';
+import {parse as parseToml}                           from 'smol-toml';
+import {hydrateCurrentWorktree}                       from '../../scripts/migrations/bootstrapWorktree.mjs';
 import {MCP_SERVERS, mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
 import {applyCodexSeatSettings, parseTomlTableHeader} from './codexConfigToml.mjs';
-import {deriveNodeRuntimeEnv}                      from './deriveNodeRuntimeEnv.mjs';
-import {KIMI_SEAT_SERVERS, generateKimiSeatConfig} from './generateKimiSeatConfig.mjs';
+import {deriveNodeRuntimeEnv}                         from './deriveNodeRuntimeEnv.mjs';
+import {KIMI_SEAT_SERVERS, generateKimiSeatConfig}    from './generateKimiSeatConfig.mjs';
 import {
     deriveAgentInstanceHome,
     deriveAgentMemoryDir
 } from './deriveAgentInstanceHome.mjs';
 import {
     MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS as MCP_SERVER_DESCRIPTORS,
-    createManagedAgentWorkspacePlan
+    createManagedAgentWorkspacePlan,
+    launchRowEnvNames
 } from './managedAgentWorkspacePlan.mjs';
+import {LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR, isLaunchIdentity} from './mcpLaunchAdmission.mjs';
 import {OPENCODE_SEAT_SERVERS, WAKE_ENVELOPE_PLANT_FILE_NAME, generateOpenCodeSeatConfig, isUnmodifiedGeneration} from './generateOpenCodeSeatConfig.mjs';
 import {SEAT_INSTRUCTION_STATES, projectSeatInstructions}                                                         from './projectSeatInstructions.mjs';
-import {ensureSeatEnvFile}                                                                                         from './seatEnvFile.mjs';
+import {ensureSeatEnvFile}                                                                                        from './seatEnvFile.mjs';
 
 export {createManagedAgentWorkspacePlan} from './managedAgentWorkspacePlan.mjs';
 
@@ -33,7 +35,11 @@ const
     // The header an earlier Fleet wrote, while the tables still carried `enabled`.
     CODEX_PROJECT_HEADER_V1  = '# Fleet-managed Neo MCP tables: executable paths come from the installed canonical checkout; cwd/project paths stay bound to this prepared resident checkout; enabled values are the current Brain projection.',
     CLAUDE_HARNESS_TYPES     = new Set(['claude-code', 'claude-desktop']),
-    CLAUDE_MEMORY_SETTING    = 'autoMemoryDirectory';
+    CLAUDE_MEMORY_SETTING    = 'autoMemoryDirectory',
+    // What a Claude Desktop profile row runs, and what a tenant row's launcher hands to.
+    LAUNCHER_ENTRYPOINT      = 'ai/mcp/client/fleetMcpLauncher.mjs',
+    BRIDGE_ENTRYPOINT        = 'ai/mcp/client/stdioToStreamableHttp.mjs',
+    DESKTOP_PROFILE_RECEIPT  = '.neo-fleet-claude-desktop-profile.json';
 
 /**
  * @summary Convergence states for Fleet-owned workspace artifacts. `DIVERGENT` is emitted on the
@@ -258,12 +264,17 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {String|null} [options.repoSlug=null] The checkout's repository, `<owner>/<name>`; it names
  *     the seat's instructions and is a host fact beside `targetRepoRoot`, never part of the logical plan.
  * @param {String} options.instanceRoot Absolute Fleet harness-home root.
+ * @param {String|null} [options.previousInstanceRoot=null] The agents root a relocated seat's folder was
+ *     copied from. Each Fleet-owned file still exactly as Fleet rendered it there is re-derived for this root.
  * @param {String} options.agentosRuntimeRoot Installed AgentOS runtime root.
  * @param {String} [options.nodePath] Node executable used for installed MCP entrypoints.
  * @param {Object} [options.runtime=process] Host runtime facts for child execution mode.
  * @param {String} [options.claudeConfigRoot] Claude Desktop's shared Code-tab config root (host home by default).
  * @param {Object} [options.residentMcpEnv] Per-server resolved child environment supplied at Start.
  * @param {Object} [options.remoteMcpCapability] Existing non-secret installed-adapter proof.
+ * @param {Object} [options.launchAdmission] `{issuer, identity, grants}`: a Claude Desktop seat's reserved
+ *     launch admission ({@link Neo.ai.services.fleet.McpLaunchAdmissionService#reserve}), which its profile
+ *     rows carry. Required for that harness only.
  * @param {Function} [options.hydrateWorkspace] Import-safe checkout hydration seam.
  * @param {Function} [options.deriveInstanceHome] Per-agent home derivation seam.
  * @param {Object} [options.fileSystem] Promise filesystem seam.
@@ -297,12 +308,14 @@ async function applyManagedAgentWorkspacePlanUnchecked({
     targetRepoRoot,
     repoSlug = null,
     instanceRoot,
+    previousInstanceRoot = null,
     agentosRuntimeRoot,
     nodePath = process.execPath,
     runtime = process,
     claudeConfigRoot = os.homedir(),
     residentMcpEnv = {},
     remoteMcpCapability = null,
+    launchAdmission = null,
     hydrateWorkspace = hydrateCurrentWorktree,
     deriveInstanceHome = deriveAgentInstanceHome,
     fileSystem = fs,
@@ -331,6 +344,13 @@ async function applyManagedAgentWorkspacePlanUnchecked({
             nodePath,
             runtime,
             residentMcpEnv
+        }),
+        previous                    = previousSeatPlacement({
+            previousInstanceRoot,
+            instanceRoot  : canonicalInstanceRoot,
+            targetRepoRoot: canonicalTargetRepoRoot,
+            agent,
+            deriveInstanceHome
         });
 
     assertAbsolutePath(instanceHome, 'instanceHome');
@@ -368,8 +388,11 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         instanceHome,
         agentosRuntimeRoot: canonicalAgentosRuntimeRoot,
         plan,
+        previous,
         remoteMcpCapability,
         claudeConfigRoot,
+        residentMcpEnv,
+        launchAdmission,
         fileSystem
     });
 
@@ -380,6 +403,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         agent,
         targetRepoRoot: canonicalTargetRepoRoot,
         instanceRoot  : canonicalInstanceRoot,
+        previous,
         fileSystem
     }));
 
@@ -428,15 +452,16 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * hydrated for resident workspace tooling; no resident dependency artifact is created or adopted.
  *
  * Product adapters are evidence-gated. Codex uses project TOML plus an isolated home; Claude Code
- * uses an explicit strict MCP JSON with environment-variable references; Claude Desktop uses the
- * Code-tab local scope keyed by the managed clone's real cwd, with all child capabilities by reference.
- * Its isolated Desktop profile retires the old Fleet rows. Antigravity refuses until a contained
+ * uses an explicit strict MCP JSON with environment-variable references; Claude Desktop uses its isolated
+ * profile, whose rows start each server through Fleet's launcher and native launch admission, and retires
+ * the rows earlier Fleets wrote into the Code-tab local scope. Antigravity refuses until a contained
  * per-resident MCP authority is proven.
  *
  * @param {Object}   options
  * @param {Object}   options.agent               Fleet registry agent definition.
  * @param {String}   options.targetRepoRoot      Absolute provisioned target checkout path.
  * @param {String}   options.instanceRoot        Absolute Fleet harness-home root.
+ * @param {String}  [options.previousInstanceRoot] The agents root a relocated seat's folder was copied from.
  * @param {String}   options.agentosRuntimeRoot  Installed AgentOS runtime root.
  * @param {String}  [options.nodePath]           Node executable used for installed MCP entrypoints.
  * @param {Object}  [options.mcpTarget]          Resolved non-secret tenant target:
@@ -449,6 +474,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * @param {Object}  [options.runtime=process]     Host runtime facts for child execution mode.
  * @param {String}  [options.claudeConfigRoot]    Claude Desktop's shared Code-tab config root.
  * @param {Object}  [options.residentMcpEnv]      Per-server resolved child environment supplied at Start.
+ * @param {Object}  [options.launchAdmission]     A Claude Desktop seat's reserved launch admission.
  * @param {Object}  [options.fileSystem]          Promise filesystem seam.
  * @param {Function}[options.log]                 Hydration logger.
  * @returns {Promise<{agentosRuntimeRoot: String, targetRepoRoot: String, instanceHome: String, mcpMatrix: Object, mcpPlan: Object[], hydration: Object, artifacts: Object[], seatInstructions: Object}>}
@@ -461,6 +487,7 @@ export async function prepareManagedAgentWorkspace({
     agent,
     targetRepoRoot,
     instanceRoot,
+    previousInstanceRoot = null,
     agentosRuntimeRoot,
     nodePath = process.execPath,
     runtime = process,
@@ -471,6 +498,7 @@ export async function prepareManagedAgentWorkspace({
     resolveMatrix = resolveMcpMatrix,
     mcpTarget = null,
     remoteMcpCapability = null,
+    launchAdmission = null,
     fileSystem = fs,
     log = () => {}
 } = {}) {
@@ -507,12 +535,14 @@ export async function prepareManagedAgentWorkspace({
         targetRepoRoot,
         repoSlug: agent.metadata?.repo?.repoSlug ?? null,
         instanceRoot,
+        previousInstanceRoot,
         agentosRuntimeRoot,
         nodePath,
         runtime,
         claudeConfigRoot,
         residentMcpEnv,
         remoteMcpCapability,
+        launchAdmission,
         hydrateWorkspace,
         deriveInstanceHome,
         fileSystem,
@@ -685,18 +715,21 @@ async function prepareHarnessArtifacts({
     instanceHome,
     agentosRuntimeRoot,
     plan,
+    previous,
     remoteMcpCapability,
     claudeConfigRoot,
+    residentMcpEnv,
+    launchAdmission,
     fileSystem
 }) {
     switch (agent.harnessType) {
         case 'codex':
         case 'codex-desktop':
-            return prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem});
+            return prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
         case 'kimi-code':
-            return prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem});
+            return prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
         case 'opencode':
-            return prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem});
+            return prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
         case 'claude-code':
             return prepareClaudeJsonArtifact({
                 agent,
@@ -708,7 +741,7 @@ async function prepareHarnessArtifacts({
                 interpolateEnv: true
             });
         case 'claude-desktop':
-            return prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem});
+            return prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, residentMcpEnv, launchAdmission, fileSystem});
         default:
             throw unsupported(`harness '${agent.harnessType}' has no workspace adapter`);
     }
@@ -824,16 +857,18 @@ async function retireSeatInstructions({filePath, receiptPath, trustedRoot, fileS
  * checkout unless `autoMemoryDirectory` names a directory, so the checkout's local settings name
  * `<agentsRoot>/<agentId>/memory`: the seat keeps one memory whichever checkout it opens and wherever a
  * checkout moves. The directory is created owner-only, because it holds the seat's notes. The setting is
- * Claude Code's, so the other families get nothing here.
- * @param {Object} options
- * @param {Object} options.agent          Fleet registry agent definition.
- * @param {String} options.targetRepoRoot Absolute provisioned target checkout path.
- * @param {String} options.instanceRoot   Absolute Fleet agents root.
- * @param {Object} options.fileSystem     Promise filesystem seam.
+ * Claude Code's, so the other families get nothing here. A relocated seat's pin still naming the previous
+ * home's directory moves with it.
+ * @param {Object}      options
+ * @param {Object}      options.agent          Fleet registry agent definition.
+ * @param {String}      options.targetRepoRoot Absolute provisioned target checkout path.
+ * @param {String}      options.instanceRoot   Absolute Fleet agents root.
+ * @param {Object|null} options.previous       The relocated seat's previous placement ({@link previousSeatPlacement}).
+ * @param {Object}      options.fileSystem     Promise filesystem seam.
  * @returns {Promise<Object[]>} The directory and settings artifacts, or none for another family.
  * @private
  */
-async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, fileSystem}) {
+async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, previous, fileSystem}) {
     if (!CLAUDE_HARNESS_TYPES.has(agent.harnessType)) return [];
 
     const memoryDir = deriveAgentMemoryDir({instanceRoot, agentId: agent.id});
@@ -841,10 +876,11 @@ async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, fileSyst
     return [
         await ensureDirectoryArtifact(memoryDir, instanceRoot, fileSystem, {mode: 0o700}),
         await convergeJsonSetting({
-            filePath   : path.join(targetRepoRoot, '.claude', 'settings.local.json'),
-            key        : CLAUDE_MEMORY_SETTING,
-            value      : memoryDir,
-            trustedRoot: targetRepoRoot,
+            filePath     : path.join(targetRepoRoot, '.claude', 'settings.local.json'),
+            key          : CLAUDE_MEMORY_SETTING,
+            value        : memoryDir,
+            previousValue: previous && deriveAgentMemoryDir({instanceRoot: previous.instanceRoot, agentId: agent.id}),
+            trustedRoot  : targetRepoRoot,
             fileSystem
         })
     ]
@@ -854,17 +890,19 @@ async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, fileSyst
  * @summary Converges one Fleet-owned top-level key in a JSON settings file the seat and its person also
  * write. The key goes into the file's own text, so every other byte stays as it was. A value already
  * there that differs is refused, never replaced: it is someone else's decision about the same thing.
+ * The one exception is `previousValue`, the value Fleet itself wrote at a relocated seat's previous home.
  * @param {Object} options
  * @param {String} options.filePath    The settings file.
  * @param {String} options.key         The Fleet-owned top-level key.
  * @param {*}      options.value       Its JSON-serializable value.
+ * @param {*}      [options.previousValue=null] Fleet's value at the seat's previous home, replaced in place.
  * @param {String} options.trustedRoot The root no path segment may leave by a symlink.
  * @param {Object} options.fileSystem  Promise filesystem seam.
  * @returns {Promise<Object>} The artifact, `CREATED`, `MATCH` or `UPDATED`.
  * @throws {ManagedWorkspacePreparationError} For a file that is not a JSON object, or a different value.
  * @private
  */
-async function convergeJsonSetting({filePath, key, value, trustedRoot, fileSystem}) {
+async function convergeJsonSetting({filePath, key, value, previousValue = null, trustedRoot, fileSystem}) {
     await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: key});
 
     let existing;
@@ -895,7 +933,21 @@ async function convergeJsonSetting({filePath, key, value, trustedRoot, fileSyste
             return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: key}
         }
 
-        throw divergentArtifact(filePath, key, `it already names another ${key}`)
+        if (previousValue === null || !isDeepStrictEqual(settings[key], previousValue)) {
+            throw divergentArtifact(filePath, key, `it already names another ${key}`)
+        }
+
+        const
+            property = findDirectJsonProperty(existing, findJsonObjectRange(existing), key),
+            replaced = property && existing.slice(0, property.valueStart) + JSON.stringify(value) + existing.slice(property.valueEnd);
+
+        if (!replaced || !isDeepStrictEqual(parseJsonObject(replaced), {...settings, [key]: value})) {
+            throw divergentArtifact(filePath, key, 'the replacement could not preserve the file')
+        }
+
+        await publishTextAtomically({filePath, content: replaced, fileSystem});
+
+        return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.UPDATED, ownedKeys: key}
     }
 
     const merged = insertJsonProperty(existing, key, value);
@@ -957,7 +1009,7 @@ function parseJsonObject(source) {
  * @returns {Promise<Object[]>} The artifact rows: project, home, memories directory.
  * @private
  */
-async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, fileSystem}) {
+async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan, previous, fileSystem}) {
     const
         projectPath     = path.join(targetRepoRoot, '.codex', 'config.toml'),
         legacyContent   = renderCodexProjectConfig(localizePlan(plan)),
@@ -1018,10 +1070,12 @@ async function prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, plan,
     });
 
     if (await convergeCodexRemoteTrust({
-        filePath   : homePath,
-        repoPath   : targetRepoRoot,
+        filePath: homePath,
+        repoPath: targetRepoRoot,
+        // the block names the checkout's real path as it was then, so both spellings are Fleet's
+        previousRepoPaths: previous ? [previous.targetRepoRoot, await fileSystem.realpath(previous.targetRepoRoot).catch(() => null)] : [],
         remote,
-        trustedRoot: instanceHome,
+        trustedRoot      : instanceHome,
         fileSystem
     }) && homeArtifact.status === WORKSPACE_ARTIFACT_STATES.MATCH) {
         homeArtifact.status = WORKSPACE_ARTIFACT_STATES.UPDATED
@@ -1224,105 +1278,271 @@ function renderClaudeJsonContent({agent, plan, interpolateEnv, legacyDesktop = f
 }
 
 /**
- * @summary Move the managed Desktop seat's MCP projection into its Code-tab local project scope.
- * Retire only exact legacy Fleet rows; divergent rows refuse before touching the shared file.
- * @param {Object} options Explicit host roots and name-only bound plan.
- * @returns {Promise<Object[]>} Carrier and profile convergence observations.
+ * @summary Converge a managed Desktop seat's Neo MCP rows into its own profile, so every Code session of that
+ * Desktop has them, whatever folder it opened. Desktop starts a profile row's child with a
+ * stripped environment, so each enabled server's row runs Fleet's launcher with that server's reserved grant
+ * ({@link renderDesktopLaunchRows}). Then the rows an earlier Fleet wrote into the Code-tab local scope are
+ * retired. Start prepares only while the seat's Desktop is stopped, so no Desktop writes the profile meanwhile.
+ * @param {Object} options Explicit host roots, the bound plan, the resident values and the reserved admission.
+ * @returns {Promise<Object[]>} Profile and local-scope convergence observations.
  * @private
  */
-async function prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem}) {
-    targetRepoRoot = await fileSystem.realpath(targetRepoRoot);
-    const desktopPath = path.join(instanceHome, 'claude_desktop_config.json');
-    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: desktopPath, fileSystem, label: 'Desktop MCP retirement'});
-    const desktopSource = await fileSystem.readFile(desktopPath, 'utf8').catch(error => {
-        if (error.code === 'ENOENT') return null;
-        throw error
+async function prepareClaudeDesktopArtifacts({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, residentMcpEnv, launchAdmission, fileSystem}) {
+    if (!launchAdmission?.issuer || !launchAdmission.grants || !launchAdmission.identity) {
+        throw unsupported('Claude Desktop profile rows need a reserved native launch admission')
+    }
+
+    await assertLaunchEntrypoints({plan, fileSystem});
+
+    const profile = await convergeDesktopProfile({
+        agent,
+        instanceHome,
+        plan,
+        desired: renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission}),
+        fileSystem
     });
-    const actual = desktopSource === null ? {} : claudeJsonOwnedProjection(desktopSource);
-    if (Object.keys(actual).length) {
-        const legacyPlan = previousPlacementPlan(plan).map(server => ({...server, enabled: server.enabled &&
-            !server.requiredRuntimeEnv.some(name => server.secretEnv.includes(name))}));
-        const candidates = [legacyPlan, localizePlan(legacyPlan)];
-        const previous   = previousNodeRuntimePlan(legacyPlan);
-        if (previous) candidates.push(previous, localizePlan(previous));
-        if (!candidates.some(candidate => isDeepStrictEqual(actual, claudeJsonOwnedProjection(renderClaudeJsonContent({
-            agent, plan: candidate, interpolateEnv: false, legacyDesktop: true
-        }))))) throw divergentArtifact(desktopPath, 'Desktop MCP retirement', 'not an exact prior Fleet projection');
-    }
-    const local  = await convergeClaudeLocalScope({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem});
-    let   status = WORKSPACE_ARTIFACT_STATES.MATCH;
-    if (desktopSource === null) {
-        await fileSystem.mkdir(instanceHome, {recursive: true});
-        await fileSystem.writeFile(desktopPath, '{"mcpServers":{}}\n', {flag: 'wx', mode: 0o600});
-        status = WORKSPACE_ARTIFACT_STATES.CREATED
-    } else if (Object.keys(actual).length) {
-        if (await fileSystem.readFile(desktopPath, 'utf8') !== desktopSource) {
-            throw divergentArtifact(desktopPath, 'Desktop MCP retirement', 'changed during preparation')
-        }
-        const parsed = JSON.parse(desktopSource);
-        for (const key of Object.keys(parsed.mcpServers)) if (key.startsWith(NEO_MCP_NAME_PREFIX)) delete parsed.mcpServers[key];
-        await publishTextAtomically({filePath: desktopPath, content: JSON.stringify(parsed, null, 2) + '\n', fileSystem});
-        status = WORKSPACE_ARTIFACT_STATES.UPDATED
-    }
-    return [local, {path: desktopPath, status, ownedKeys: 'mcpServers.neo-mjs-* retired'}]
+
+    return [profile, await retireClaudeLocalScope({targetRepoRoot: await fileSystem.realpath(targetRepoRoot), instanceHome, claudeConfigRoot, fileSystem})]
 }
 
 /**
- * @summary Own only neo-mjs rows under the managed clone in the shared Claude config. A projection
- * receipt admits later plan transitions while foreign projects, trust and toggles remain resident-owned.
- * Back up changed bytes and refuse an observed concurrent rewrite rather than overwriting it.
- * @param {Object} options Explicit clone, profile, config root and bound plan.
- * @returns {Promise<Object>} Local-scope convergence observation.
+ * @summary One profile row per enabled server: Fleet's launcher, the server it starts, and literally the
+ * validated forge login, the Node runtime env, the resident server's plane placement, the issuer's origin
+ * and the server's grant. Every value a row leaves out is redeemed at launch
+ * ({@link launchRowEnvNames}), so the profile holds no PAT, plane bearer or signing key.
+ * @param {Object} options
+ * @returns {Object} Canonical `neo-mjs-*` rows.
  * @private
  */
-async function convergeClaudeLocalScope({agent, targetRepoRoot, instanceHome, plan, claudeConfigRoot, fileSystem}) {
-    const filePath    = path.join(claudeConfigRoot, '.claude.json');
-    const receiptPath = path.join(instanceHome, '.neo-fleet-claude-project.json');
-    const ownedLabel  = 'projects.<managed-clone>.mcpServers.neo-mjs-*';
-    await assertNoSymlinkSegments({rootPath: claudeConfigRoot, targetPath: filePath, fileSystem, label: ownedLabel});
-    const readSource = () => fileSystem.readFile(filePath, 'utf8').catch(error => {
-        if (error.code === 'ENOENT') return null;
-        throw error
-    });
-    const source = await readSource();
+function renderDesktopLaunchRows({agent, plan, residentMcpEnv, launchAdmission}) {
+    // the login the grants were reserved for, never the Fleet id: a custom id may differ from it
+    const {identity} = launchAdmission;
+
+    if (!isLaunchIdentity(identity)) {
+        throw unsupported(`agent '${agent.id}' has no valid forge login for its profile rows`)
+    }
+
+    const rows = {};
+
+    for (const server of plan) {
+        if (!server.enabled) continue;
+
+        const
+            capability = launchAdmission.grants[server.key],
+            resolved   = residentMcpEnv[server.key] || {};
+
+        if (!capability) throw unsupported(`enabled MCP server '${server.key}' has no reserved launch grant`);
+
+        rows[server.name] = {
+            command: server.command,
+            args   : [path.join(server.sourceRoot, LAUNCHER_ENTRYPOINT), '--server', server.key],
+            env    : {
+                ...server.environment,
+                NEO_AGENT_IDENTITY: identity,
+                ...Object.fromEntries(launchRowEnvNames(server).placement
+                    .filter(name => typeof resolved[name] === 'string')
+                    .map(name => [name, resolved[name]])),
+                [LAUNCH_ISSUER_ENV_VAR]: launchAdmission.issuer,
+                [LAUNCH_GRANT_ENV_VAR] : capability
+            }
+        }
+    }
+
+    return canonicalize(rows)
+}
+
+/**
+ * @summary Prove the files the profile rows start: the launcher for every enabled row, and for a tenant row
+ * the stdio bridge it hands to.
+ * @private
+ */
+async function assertLaunchEntrypoints({plan, fileSystem}) {
+    for (const server of plan.filter(row => row.enabled)) {
+        const files = [LAUNCHER_ENTRYPOINT, ...(server.target === 'tenant' ? [BRIDGE_ENTRYPOINT] : [])];
+
+        for (const file of files.map(relative => path.join(server.sourceRoot, relative))) {
+            if (!(await fileSystem.lstat(file).catch(() => null))?.isFile()) {
+                throw unsupported(`enabled MCP server '${server.key}' has no installed launch entrypoint at '${file}'`)
+            }
+        }
+    }
+}
+
+/**
+ * @summary Converge the owned `neo-mjs-*` rows of the Desktop profile; every other key stays the operator's.
+ * Rows count as Fleet's when the receipt recorded them, or when they are exactly a projection an earlier
+ * Fleet wrote before receipts. Anything else refuses before a byte changes. The receipt names the new rows
+ * before the profile does and keeps the old ones admissible, so a preparation interrupted between the two
+ * writes converges on its next run.
+ * @param {Object} options
+ * @returns {Promise<Object>} Profile convergence observation.
+ * @private
+ */
+async function convergeDesktopProfile({agent, instanceHome, plan, desired, fileSystem}) {
+    const
+        filePath    = path.join(instanceHome, 'claude_desktop_config.json'),
+        receiptPath = path.join(instanceHome, DESKTOP_PROFILE_RECEIPT),
+        ownedLabel  = 'mcpServers.neo-mjs-*';
+
+    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: filePath, fileSystem, label: ownedLabel});
+    await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: receiptPath, fileSystem, label: 'profile receipt'});
+
+    const source = await readOptionalText(filePath, fileSystem);
     let parsed;
+
+    try {
+        parsed = source === null ? {} : JSON.parse(source);
+        for (const value of [parsed, parsed.mcpServers]) {
+            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError()
+        }
+    } catch {
+        throw divergentArtifact(filePath, ownedLabel, 'invalid Claude Desktop profile')
+    }
+
+    const
+        actual      = claudeJsonOwnedProjection(JSON.stringify(parsed)),
+        actualHash  = hashContent(JSON.stringify(actual)),
+        desiredHash = hashContent(JSON.stringify(desired)),
+        recorded    = await readDesktopProfileReceipt({receiptPath, fileSystem}),
+        record      = previous => publishTextAtomically({
+            filePath: receiptPath,
+            content : JSON.stringify({version: 2, artifact: path.basename(filePath), sha256: desiredHash, previous}, null, 2) + '\n',
+            fileSystem
+        });
+
+    await fileSystem.mkdir(instanceHome, {recursive: true});
+
+    if (source !== null && actualHash === desiredHash) {
+        recorded.includes(desiredHash) || await record(null);
+        return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: ownedLabel}
+    }
+
+    if (Object.keys(actual).length && !recorded.includes(actualHash) && !isFormerDesktopProjection({agent, plan, actual})) {
+        throw divergentArtifact(filePath, ownedLabel, 'Fleet-owned profile rows differ from what Fleet last wrote')
+    }
+
+    await record(Object.keys(actual).length ? actualHash : null);
+
+    if (await readOptionalText(filePath, fileSystem) !== source) {
+        throw divergentArtifact(filePath, ownedLabel, 'changed during preparation; quit the seat\'s Claude Desktop and start it again')
+    }
+
+    const rows = parsed.mcpServers ??= {};
+
+    for (const name of Object.keys(rows)) if (name.startsWith(NEO_MCP_NAME_PREFIX)) delete rows[name];
+    Object.assign(rows, desired);
+
+    await publishTextAtomically({filePath, content: JSON.stringify(parsed, null, 2) + '\n', fileSystem});
+
+    return {path: filePath, status: source === null ? WORKSPACE_ARTIFACT_STATES.CREATED : WORKSPACE_ARTIFACT_STATES.UPDATED, ownedKeys: ownedLabel}
+}
+
+/**
+ * @returns {Promise<String[]>} The row hashes the profile receipt admits: the rows Fleet wrote last, and the
+ *     ones before them while that write may not have landed. Empty when no receipt can vouch.
+ * @private
+ */
+async function readDesktopProfileReceipt({receiptPath, fileSystem}) {
+    let receipt;
+
+    try {
+        receipt = JSON.parse(await fileSystem.readFile(receiptPath, 'utf8'))
+    } catch (error) {
+        if (error?.code === 'ENOENT' || error instanceof SyntaxError) return [];
+        throw error
+    }
+
+    return receipt?.version === 2 && receipt.artifact === 'claude_desktop_config.json'
+        ? [receipt.sha256, receipt.previous].filter(hash => /^[a-f0-9]{64}$/.test(hash ?? ''))
+        : []
+}
+
+/**
+ * @summary Whether profile rows are exactly a projection Fleet wrote before profile receipts existed, so a
+ * seat moved by an earlier Fleet converges instead of refusing.
+ * @private
+ */
+function isFormerDesktopProjection({agent, plan, actual}) {
+    const legacyPlan = previousPlacementPlan(plan).map(server => ({...server, enabled: server.enabled &&
+        !server.requiredRuntimeEnv.some(name => server.secretEnv.includes(name))}));
+    const candidates = [legacyPlan, localizePlan(legacyPlan)];
+    const previous   = previousNodeRuntimePlan(legacyPlan);
+
+    if (previous) candidates.push(previous, localizePlan(previous));
+
+    return candidates.some(candidate => isDeepStrictEqual(actual, claudeJsonOwnedProjection(renderClaudeJsonContent({
+        agent, plan: candidate, interpolateEnv: false, legacyDesktop: true
+    }))))
+}
+
+/**
+ * @summary Retire the `neo-mjs-*` rows an earlier Fleet wrote into the shared Code-tab config under the managed
+ * clone. The profile rows replace them, and a duplicate would mask whichever Desktop prefers. Only rows exactly
+ * as the receipt recorded them go; anything else refuses, naming the file, and foreign projects, trust and
+ * toggles stay as they are. The changed bytes are backed up first and a concurrent rewrite refuses.
+ * @param {Object} options Explicit clone, profile and config root.
+ * @returns {Promise<Object>} Local-scope retirement observation.
+ * @private
+ */
+async function retireClaudeLocalScope({targetRepoRoot, instanceHome, claudeConfigRoot, fileSystem}) {
+    const
+        filePath    = path.join(claudeConfigRoot, '.claude.json'),
+        receiptPath = path.join(instanceHome, '.neo-fleet-claude-project.json'),
+        ownedLabel  = 'projects.<managed-clone>.mcpServers.neo-mjs-*',
+        retired     = {path: filePath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: `${ownedLabel} retired`};
+
+    await assertNoSymlinkSegments({rootPath: claudeConfigRoot, targetPath: filePath, fileSystem, label: ownedLabel});
+
+    const source = await readOptionalText(filePath, fileSystem);
+    let parsed;
+
     try {
         parsed = source === null ? {} : JSON.parse(source);
         for (const value of [parsed, parsed.projects, parsed.projects?.[targetRepoRoot], parsed.projects?.[targetRepoRoot]?.mcpServers]) {
-            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError();
+            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError()
         }
     } catch {
         throw divergentArtifact(filePath, ownedLabel, 'invalid Claude local config')
     }
-    const actual        = claudeJsonOwnedProjection(JSON.stringify(parsed.projects?.[targetRepoRoot] || {}));
-    const desiredSource = renderClaudeJsonContent({agent, plan, interpolateEnv: true});
-    const desired       = claudeJsonOwnedProjection(desiredSource);
-    const recorded      = await readContentReceipt({receiptPath, filePath, trustedRoot: instanceHome, fileSystem});
-    const matches       = isDeepStrictEqual(actual, desired);
-    if (!matches && Object.keys(actual).length && recorded !== hashContent(JSON.stringify(actual))) {
-        throw divergentArtifact(filePath, ownedLabel, 'Fleet-owned project rows differ from their receipt')
-    }
-    let status = WORKSPACE_ARTIFACT_STATES.MATCH;
-    if (!matches || source === null) {
-        const project = (parsed.projects ??= {})[targetRepoRoot] ??= {};
-        const rows    = project.mcpServers ??= {};
-        for (const name of Object.keys(rows)) if (name.startsWith(NEO_MCP_NAME_PREFIX)) delete rows[name];
-        Object.assign(rows, JSON.parse(desiredSource).mcpServers);
-        await fileSystem.mkdir(claudeConfigRoot, {recursive: true});
-        if (source !== null) {
-            const backup = path.join(instanceHome, '.neo-fleet-claude-backup.json');
-            await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: backup, fileSystem, label: 'Claude config backup'});
-            await fileSystem.mkdir(instanceHome, {recursive: true});
-            await publishTextAtomically({filePath: backup, content: source, fileSystem});
+
+    const actual = claudeJsonOwnedProjection(JSON.stringify(parsed.projects?.[targetRepoRoot] || {}));
+
+    if (Object.keys(actual).length) {
+        const recorded = await readContentReceipt({receiptPath, filePath, trustedRoot: instanceHome, fileSystem});
+
+        if (recorded !== hashContent(JSON.stringify(actual))) {
+            throw divergentArtifact(filePath, ownedLabel, 'Code-tab rows differ from what Fleet wrote; remove them from the managed clone\'s project, then start again')
         }
-        if (await readSource() !== source) throw divergentArtifact(filePath, ownedLabel, 'changed during preparation; retry after the config writer settles');
-        const content = JSON.stringify(parsed, null, 2) + '\n';
-        if (source === null) await fileSystem.writeFile(filePath, content, {flag: 'wx', mode: 0o600});
-        else await publishTextAtomically({filePath, content, fileSystem});
-        status = source === null ? WORKSPACE_ARTIFACT_STATES.CREATED : WORKSPACE_ARTIFACT_STATES.UPDATED
+
+        const backup = path.join(instanceHome, '.neo-fleet-claude-backup.json');
+
+        await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: backup, fileSystem, label: 'Claude config backup'});
+        await fileSystem.mkdir(instanceHome, {recursive: true});
+        await publishTextAtomically({filePath: backup, content: source, fileSystem});
+
+        if (await readOptionalText(filePath, fileSystem) !== source) {
+            throw divergentArtifact(filePath, ownedLabel, 'changed during preparation; retry after the config writer settles')
+        }
+
+        const rows = parsed.projects[targetRepoRoot].mcpServers;
+
+        for (const name of Object.keys(rows)) if (name.startsWith(NEO_MCP_NAME_PREFIX)) delete rows[name];
+
+        await publishTextAtomically({filePath, content: JSON.stringify(parsed, null, 2) + '\n', fileSystem});
+        retired.status = WORKSPACE_ARTIFACT_STATES.UPDATED
     }
-    await writeContentReceipt({receiptPath, filePath, content: JSON.stringify(desired), trustedRoot: instanceHome, fileSystem});
-    return {path: filePath, status, ownedKeys: ownedLabel}
+
+    await removeContentReceipt({receiptPath, trustedRoot: instanceHome, fileSystem});
+
+    return retired
+}
+
+/** @private */
+async function readOptionalText(filePath, fileSystem) {
+    return fileSystem.readFile(filePath, 'utf8').catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error
+    })
 }
 
 /**
@@ -1333,7 +1553,7 @@ async function convergeClaudeLocalScope({agent, targetRepoRoot, instanceHome, pl
  * clobber or even flag them); the config/hook surfaces converge on their Fleet-owned projections.
  * @private
  */
-async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem}) {
+async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem}) {
     const
         enabledKeys = new Set(plan.filter(server => server.enabled).map(server => server.key)),
         servers     = KIMI_SEAT_SERVERS.filter(server => enabledKeys.has(server.name.slice(NEO_MCP_NAME_PREFIX.length)));
@@ -1344,30 +1564,38 @@ async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntim
 
     const
         remoteServers = createRemoteServerMap(plan),
-        options       = {
+        optionsAt     = placement => ({
             agentosRuntimeRoot,
-            targetRepoRoot,
-            seatEnvFile: path.join(targetRepoRoot, '.env'),
-            kimiHome   : instanceHome,
-            memoryDir  : path.join(instanceHome, 'memory'),
-            nodeBinary : plan[0].command,
+            targetRepoRoot: placement.targetRepoRoot,
+            seatEnvFile   : path.join(placement.targetRepoRoot, '.env'),
+            kimiHome      : placement.instanceHome,
+            memoryDir     : path.join(placement.instanceHome, 'memory'),
+            nodeBinary    : plan[0].command,
             servers
-        },
+        }),
+        options     = optionsAt({targetRepoRoot, instanceHome}),
         environment = plan[0].environment,
         {files} = generateKimiSeatConfig({...options, environment, remoteServers}),
         {files: legacyFiles} = generateKimiSeatConfig({...options, environment}),
         runtimeLegacyFiles = environment && generateKimiSeatConfig({...options, remoteServers}).files,
-        runtimeLegacyStdioFiles = environment && generateKimiSeatConfig(options).files;
+        runtimeLegacyStdioFiles = environment && generateKimiSeatConfig(options).files,
+        previousFiles = previous && rehomeFiles(generateKimiSeatConfig({...optionsAt(previous), environment, remoteServers}).files, previous, {targetRepoRoot, instanceHome});
 
-    return convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, repoPath: targetRepoRoot, instanceHome, fileSystem, policies: [
-        {match: /config\.toml$/,                   ownedProjection: kimiConfigTomlOwnedProjection, ownedLabel: 'default_permission_mode,default_model,[[permission.rules]],[[hooks]]'},
+    return convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, fileSystem, policies: [
         {
-            match          : /\.kimi-code\/mcp\.json$/,
-            ownedProjection: claudeJsonOwnedProjection,
-            ownedLabel     : 'mcpServers."neo-mjs-*"',
-            transport      : {adapter: 'kimi-code', containerName: 'mcpServers'}
+            match           : /config\.toml$/,
+            ownedProjection : kimiConfigTomlOwnedProjection,
+            relocatableLines: kimiConfigTomlOwnedLines,
+            ownedLabel      : 'default_permission_mode,default_model,[[permission.rules]],[[hooks]]'
         },
-        {match: /hooks\/identityAnchorHook\.mjs$/, ownedProjection: wholeFileOwnedProjection,      ownedLabel: 'generated identity-anchor hook'}
+        {
+            match           : /\.kimi-code\/mcp\.json$/,
+            ownedProjection : claudeJsonOwnedProjection,
+            relocatableLines: source => linesStartingWithin(source, jsonPropertyRanges(source, ['mcpServers'], key => key.startsWith(NEO_MCP_NAME_PREFIX))),
+            ownedLabel      : 'mcpServers."neo-mjs-*"',
+            transport       : {adapter: 'kimi-code', containerName: 'mcpServers'}
+        },
+        {match: /hooks\/identityAnchorHook\.mjs$/, ownedProjection: wholeFileOwnedProjection, relocatableLines: everyLine, ownedLabel: 'generated identity-anchor hook'}
         // Everything else (the four memory-layer files) is create-only bearer substrate.
     ]});
 }
@@ -1379,7 +1607,7 @@ async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntim
  * Fleet-owned; divergence fails closed per the generated-artifact posture).
  * @private
  */
-async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, fileSystem}) {
+async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem}) {
     const
         enabledKeys = new Set(plan.filter(server => server.enabled).map(server => server.key)),
         servers     = OPENCODE_SEAT_SERVERS.filter(server => enabledKeys.has(server.name.slice(NEO_MCP_NAME_PREFIX.length)));
@@ -1390,27 +1618,29 @@ async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRu
 
     const
         remoteServers = createRemoteServerMap(plan),
-        options       = {
+        optionsAt     = placement => ({
             agentosRuntimeRoot,
-            targetRepoRoot,
-            seatEnvFile : path.join(targetRepoRoot, '.env'),
-            memoryDir   : path.join(instanceHome, 'memory'),
-            nodeBinary  : plan[0].command,
-            environment : plan[0].environment,
-            seatHome    : instanceHome,
-            wakeHookPath: path.join(instanceHome, 'write-wake-envelope.mjs'),
+            targetRepoRoot: placement.targetRepoRoot,
+            seatEnvFile   : path.join(placement.targetRepoRoot, '.env'),
+            memoryDir     : path.join(placement.instanceHome, 'memory'),
+            nodeBinary    : plan[0].command,
+            environment   : plan[0].environment,
+            seatHome      : placement.instanceHome,
+            wakeHookPath  : path.join(placement.instanceHome, 'write-wake-envelope.mjs'),
             // The seat's OWN OpenCode plugins dir, resolved here rather than inside the boot hook:
             // `deriveHarnessLaunchSpec` points `XDG_CONFIG_HOME` at this same `instanceHome`, so the plant
             // lands where that seat's first OpenCode process looks for it — before the hook ever runs.
             // The hook runs after the server is listening, so a plant IT installed could only be loaded by
             // a later process, and `hookEnv` does not carry `XDG_CONFIG_HOME` at all.
-            wakePlantPath: path.join(instanceHome, 'opencode', 'plugins', WAKE_ENVELOPE_PLANT_FILE_NAME),
+            wakePlantPath : path.join(placement.instanceHome, 'opencode', 'plugins', WAKE_ENVELOPE_PLANT_FILE_NAME),
             servers
-        },
+        }),
+        options       = optionsAt({targetRepoRoot, instanceHome}),
         {files}       = generateOpenCodeSeatConfig({...options, remoteServers}),
         {files: legacyFiles} = generateOpenCodeSeatConfig(options),
         runtimeLegacyFiles = plan[0].environment && generateOpenCodeSeatConfig({...options, environment: {}, remoteServers}).files,
-        runtimeLegacyStdioFiles = plan[0].environment && generateOpenCodeSeatConfig({...options, environment: {}}).files;
+        runtimeLegacyStdioFiles = plan[0].environment && generateOpenCodeSeatConfig({...options, environment: {}}).files,
+        previousFiles = previous && rehomeFiles(generateOpenCodeSeatConfig({...optionsAt(previous), remoteServers}).files, previous, {targetRepoRoot, instanceHome});
 
     // The plant is WITHHELD from the generic text-artifact pass rather than given a policy row, because
     // `convergeTextArtifact` cannot replace and the plant has to be replaceable: the file already on a
@@ -1423,15 +1653,16 @@ async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRu
 
     return [
         ...await convergeSeatConfigFiles({
-            files   : rest, legacyFiles: legacyRest, runtimeLegacyFiles, runtimeLegacyStdioFiles, repoPath: targetRepoRoot, instanceHome, fileSystem,
+            files   : rest, legacyFiles: legacyRest, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, fileSystem,
             policies: [
                 {
-                    match          : /opencode\.jsonc$/,
-                    ownedProjection: opencodeJsoncOwnedProjection,
-                    ownedLabel     : 'mcp."neo-mjs-*",instructions',
-                    transport      : {adapter: 'opencode', containerName: 'mcp'}
+                    match           : /opencode\.jsonc$/,
+                    ownedProjection : opencodeJsoncOwnedProjection,
+                    relocatableLines: opencodeJsoncRelocatableLines,
+                    ownedLabel      : 'mcp."neo-mjs-*",instructions',
+                    transport       : {adapter: 'opencode', containerName: 'mcp'}
                 },
-                {match: /write-wake-envelope\.mjs$/, ownedProjection: wholeFileOwnedProjection, ownedLabel: 'generated wake-envelope boot hook'}
+                {match: /write-wake-envelope\.mjs$/, ownedProjection: wholeFileOwnedProjection, relocatableLines: everyLine, ownedLabel: 'generated wake-envelope boot hook'}
             ]
         }),
         ...await convergeWakeEnvelopePlant({plantFile, instanceHome, fileSystem})
@@ -1507,16 +1738,18 @@ async function convergeWakeEnvelopePlant({plantFile, instanceHome, fileSystem}) 
  * its path matches (Fleet-owned projection, fail-closed on divergence) or falls through to the
  * create-only bearer default — an existing file of ANY content reports MATCH untouched (the
  * seat's own authorship is never a divergence), an absent file is created from the template.
+ * A relocated seat's `previousFiles` (the generator's rendering at its previous home) move first.
  * @private
  */
-async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, repoPath, instanceHome, fileSystem, policies}) {
+async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath, instanceHome, fileSystem, policies}) {
     const artifacts = [];
 
     for (const file of files) {
         const policy = policies.find(entry => entry.match.test(file.path));
 
-        const legacyFile = legacyFiles?.find(entry => entry.path === file.path);
-        const common     = {
+        const legacyFile   = legacyFiles?.find(entry => entry.path === file.path);
+        const previousFile = policy && previousFiles?.find(entry => entry.path === file.path);
+        const common       = {
             filePath       : file.path,
             desiredContent : file.content,
             ownedProjection: policy ? policy.ownedProjection : createOnlyOwnedProjection,
@@ -1524,9 +1757,9 @@ async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, 
             trustedRoot    : file.path.startsWith(repoPath + path.sep) ? repoPath : instanceHome,
             fileSystem
         };
-
-        if (policy?.transport) {
-            artifacts.push(...await convergeTransportArtifact({
+        const moved     = previousFile && await relocateGeneratedText({...common, previousContent: previousFile.content, relocatableLines: policy.relocatableLines});
+        const converged = policy?.transport
+            ? await convergeTransportArtifact({
                 ...common,
                 legacyContent            : legacyFile.content,
                 runtimeLegacyContent     : runtimeLegacyFiles?.find(entry => entry.path === file.path)?.content,
@@ -1540,13 +1773,130 @@ async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, 
                 adapter: policy.transport.adapter,
                 instanceHome,
                 remote : file.content !== legacyFile.content
-            }))
-        } else {
-            artifacts.push(await convergeTextArtifact(common))
+            })
+            : [await convergeTextArtifact(common)];
+
+        if (moved && converged[0].status === WORKSPACE_ARTIFACT_STATES.MATCH) {
+            converged[0].status = WORKSPACE_ARTIFACT_STATES.UPDATED
         }
+
+        artifacts.push(...converged)
     }
 
     return artifacts;
+}
+
+/**
+ * @summary Moves one generated file with its relocated seat. When the file's Fleet-owned projection is
+ * still exactly the generator's rendering at the previous home, each generated line that changed between
+ * the two renderings is replaced by its new line, but only inside the ranges the policy owns
+ * (`relocatableLines`). The same line anywhere else, in an entry the operator added for instance, stays
+ * as it was. Nothing is written unless the result projects to the current rendering; then convergence
+ * decides, as on any Start.
+ * @param {Object}   options
+ * @param {String}   options.filePath         The file at the seat's current home.
+ * @param {String}   options.previousContent  The generator's rendering at the previous home.
+ * @param {String}   options.desiredContent   Its rendering here.
+ * @param {Function} options.ownedProjection  The file's Fleet-owned projection.
+ * @param {Function} options.relocatableLines `(source, {previousContent, desiredContent}) => Set<Number>`, the
+ *     indexes of the lines the Fleet owns in `source`.
+ * @param {String}   options.trustedRoot      The root no path segment may leave by a symlink.
+ * @param {Object}   options.fileSystem       Promise filesystem seam.
+ * @returns {Promise<Boolean>} Whether the file was rewritten.
+ * @private
+ */
+async function relocateGeneratedText({filePath, previousContent, desiredContent, ownedProjection, relocatableLines, trustedRoot, fileSystem}) {
+    await assertNoSymlinkSegments({rootPath: trustedRoot, targetPath: filePath, fileSystem, label: 'relocated seat file'});
+
+    const
+        existing   = await fileSystem.readFile(filePath, 'utf8').catch(error => {
+            if (error?.code === 'ENOENT') return null;
+            throw error
+        }),
+        projectsTo = (source, rendering) => JSON.stringify(ownedProjection(source)) === JSON.stringify(ownedProjection(rendering));
+
+    if (existing === null || projectsTo(existing, desiredContent) || !projectsTo(existing, previousContent)) return false;
+
+    const
+        before = previousContent.split('\n'),
+        after  = desiredContent.split('\n'),
+        moves  = new Map();
+
+    if (before.length !== after.length) return false;
+
+    for (const [index, line] of before.entries()) {
+        if (line === after[index]) continue;
+        // one previous line rendered two ways has no single new line
+        if (moves.has(line) && moves.get(line) !== after[index]) return false;
+
+        moves.set(line, after[index])
+    }
+
+    const
+        owned     = relocatableLines(existing, {previousContent, desiredContent}),
+        relocated = existing.split('\n').map((line, index) => owned.has(index) ? moves.get(line) ?? line : line).join('\n');
+
+    if (!projectsTo(relocated, desiredContent)) return false;
+
+    await publishTextAtomically({filePath, content: relocated, fileSystem});
+
+    return true
+}
+
+/**
+ * @summary Where a relocated seat's paths pointed before its folder was copied to this agents root: the
+ * previous root's harness home, and its checkout when that sat inside the seat's folder (one outside it
+ * did not move). `null` without a previous root, or when it is this root.
+ * @param {Object}      options
+ * @param {String|null} options.previousInstanceRoot The agents root the seat's folder was copied from.
+ * @param {String}      options.instanceRoot         This agents root, resolved.
+ * @param {String}      options.targetRepoRoot       This checkout, resolved.
+ * @param {Object}      options.agent                The plan's `{id, harnessType}`.
+ * @param {Function}    options.deriveInstanceHome   Per-agent home derivation seam.
+ * @returns {{instanceRoot: String, instanceHome: String, targetRepoRoot: String}|null}
+ * @private
+ */
+function previousSeatPlacement({previousInstanceRoot, instanceRoot, targetRepoRoot, agent, deriveInstanceHome}) {
+    if (previousInstanceRoot === null) return null;
+
+    assertAbsolutePath(previousInstanceRoot, 'previousInstanceRoot');
+
+    const
+        root   = path.resolve(previousInstanceRoot),
+        inSeat = path.relative(path.join(instanceRoot, agent.id), targetRepoRoot);
+
+    if (root === instanceRoot) return null;
+
+    return {
+        instanceRoot  : root,
+        instanceHome  : deriveInstanceHome({instanceRoot: root, agentId: agent.id, harnessType: agent.harnessType}),
+        targetRepoRoot: inSeat === '..' || inSeat.startsWith(`..${path.sep}`) || path.isAbsolute(inSeat)
+            ? targetRepoRoot
+            : path.join(root, agent.id, inSeat)
+    }
+}
+
+/**
+ * @summary Re-addresses a generator's rendering at a seat's previous placement to the files it becomes at
+ * the current one, so each rendering pairs with its current file.
+ * @param {Object[]} files     `{path, content}` rendered for the previous placement.
+ * @param {Object}   previous  `{targetRepoRoot, instanceHome}` there.
+ * @param {Object}   current   `{targetRepoRoot, instanceHome}` here.
+ * @returns {Object[]}
+ * @private
+ */
+function rehomeFiles(files, previous, current) {
+    return files.map(file => {
+        for (const key of ['targetRepoRoot', 'instanceHome']) {
+            const relative = path.relative(previous[key], file.path);
+
+            if (!relative.startsWith('..') && !path.isAbsolute(relative)) {
+                return {...file, path: path.join(current[key], relative)}
+            }
+        }
+
+        return file
+    })
 }
 
 /**
@@ -1621,6 +1971,87 @@ function opencodeJsoncOwnedProjection(source) {
     }
 
     return canonicalize(result);
+}
+
+/**
+ * @summary The lines of a generated `opencode.jsonc` a relocation may move: the `neo-mjs-*` MCP entries, the
+ * `instructions`, and the `external_directory` grants the Fleet wrote for the seat's own folders (the keys
+ * its rendering at the previous home has and its current rendering no longer does). An entry the operator
+ * added stays theirs, however much it resembles a Fleet one.
+ * @param {String} source
+ * @param {Object} renderings `{previousContent, desiredContent}`.
+ * @returns {Set<Number>}
+ * @private
+ */
+function opencodeJsoncRelocatableLines(source, {previousContent, desiredContent}) {
+    const grants = content => {
+        try {
+            return Object.keys(parseJsonLike(content)?.permission?.external_directory ?? {})
+        } catch {
+            return []
+        }
+    };
+    const kept = new Set(grants(desiredContent)), moved = new Set(grants(previousContent).filter(key => !kept.has(key)));
+
+    return linesStartingWithin(source, [
+        ...jsonPropertyRanges(source, ['mcp'], key => key.startsWith(NEO_MCP_NAME_PREFIX)),
+        ...jsonPropertyRanges(source, [], key => key === 'instructions'),
+        ...jsonPropertyRanges(source, ['permission', 'external_directory'], key => moved.has(key))
+    ])
+}
+
+/**
+ * @summary The lines of a generated Kimi `config.toml` the Fleet owns: its two scalars and every
+ * array-of-tables block, as {@link kimiConfigTomlOwnedProjection} reads them.
+ * @param {String} source
+ * @returns {Set<Number>}
+ * @private
+ */
+function kimiConfigTomlOwnedLines(source) {
+    const owned = new Set();
+    let   block = false;
+
+    source.split('\n').forEach((line, index) => {
+        const trimmed = line.trim();
+
+        if (/^\[\[[^\]]+\]\]$/.test(trimmed)) block = true;
+        else if (/^\[[^\]]+\]$/.test(trimmed)) block = false;
+
+        if (block || /^(default_permission_mode|default_model)\s*=/.test(trimmed)) owned.add(index)
+    });
+
+    return owned
+}
+
+/**
+ * @summary The lines whose first non-blank character lies inside one of the ranges.
+ * @param {String}     source
+ * @param {Number[][]} ranges `[start, end]` offsets.
+ * @returns {Set<Number>}
+ * @private
+ */
+function linesStartingWithin(source, ranges) {
+    const owned  = new Set();
+    let   offset = 0;
+
+    source.split('\n').forEach((line, index) => {
+        const first = offset + line.length - line.trimStart().length;
+
+        ranges.some(([start, end]) => first >= start && first < end) && owned.add(index);
+        offset += line.length + 1
+    });
+
+    return owned
+}
+
+/**
+ * @summary Every line of a file the Fleet owns whole.
+ * @param {String} source
+ * @returns {Set<Number>}
+ * @private
+ */
+function everyLine(source) {
+    return new Set(source.split('\n').keys())
 }
 
 /**
@@ -1848,11 +2279,13 @@ async function convergeCodexProjectSwitches({filePath, plan, instanceHome, adapt
  * inserted inside Fleet's comments; mixed blocks cannot be removed on opt-out. A non-trusted row
  * rejects remote admission. This keeps the no-intent home artifact byte-identical
  * to the stdio baseline while making the generated project MCP config consumable at runtime.
+ * A relocated seat's block, exactly as Fleet rendered it for a `previousRepoPaths` entry, moves to the
+ * checkout's new path.
  * @param {Object} options
  * @returns {Promise<Boolean>} whether Fleet changed the home artifact.
  * @private
  */
-async function convergeCodexRemoteTrust({filePath, repoPath, remote, trustedRoot, fileSystem}) {
+async function convergeCodexRemoteTrust({filePath, repoPath, previousRepoPaths = [], remote, trustedRoot, fileSystem}) {
     await assertNoSymlinkSegments({
         rootPath  : trustedRoot,
         targetPath: filePath,
@@ -1890,6 +2323,17 @@ async function convergeCodexRemoteTrust({filePath, repoPath, remote, trustedRoot
                 }
 
                 // An existing resident grant already owns canonical trust; never create a duplicate table.
+                const replacement = existingTrust === 'trusted' ? '' : expectedBlock;
+
+                await publishTextAtomically({filePath, content: source.slice(0, begin) + replacement + source.slice(end), fileSystem});
+                return true
+            }
+            if (block !== expectedBlock && previousRepoPaths.some(previousPath => previousPath && block === renderCodexRemoteTrustBlock(previousPath))) {
+                // the operator's own decision about the new checkout stands: a distrust is never overwritten
+                if (existingTrust !== undefined && existingTrust !== 'trusted') {
+                    throw transportDivergence(filePath, 'projects.<managed-repo>.trust_level', 'resident trust row is not trusted')
+                }
+
                 const replacement = existingTrust === 'trusted' ? '' : expectedBlock;
 
                 await publishTextAtomically({filePath, content: source.slice(0, begin) + replacement + source.slice(end), fileSystem});
@@ -1997,7 +2441,7 @@ function previousNodeRuntimePlan(plan) {
  */
 function previousPlacementPlan(plan) {
     return plan.map(server => ({...server,
-        runtimeEnv: [...(MCP_SERVER_DESCRIPTORS[server.key].legacyRuntimeEnv || MCP_SERVER_DESCRIPTORS[server.key].runtimeEnv)],
+        runtimeEnv        : [...(MCP_SERVER_DESCRIPTORS[server.key].legacyRuntimeEnv || MCP_SERVER_DESCRIPTORS[server.key].runtimeEnv)],
         requiredRuntimeEnv: [...MCP_SERVER_DESCRIPTORS[server.key].requiredRuntimeEnv]
     }))
 }
@@ -2565,7 +3009,20 @@ function findJsonObjectRange(source) {
 
 /** @private */
 function findDirectJsonProperty(source, objectRange, propertyName) {
-    if (!objectRange || source[objectRange.start] !== '{') return null;
+    const property = directJsonProperties(source, objectRange).find(entry => entry.key === propertyName);
+
+    return property ? {valueStart: property.valueStart, valueEnd: property.valueEnd} : null
+}
+
+/**
+ * @summary The direct properties of one object in a JSON(C) source, in order, up to the first one that
+ * does not parse: `{key, keyStart, valueStart, valueEnd}` each.
+ * @private
+ */
+function directJsonProperties(source, objectRange) {
+    const properties = [];
+
+    if (!objectRange || source[objectRange.start] !== '{') return properties;
 
     let cursor = objectRange.start + 1;
 
@@ -2575,26 +3032,46 @@ function findDirectJsonProperty(source, objectRange, propertyName) {
             cursor++;
             continue
         }
-        if (source[cursor] === '}') return null;
-        if (source[cursor] !== '"') return null;
+        if (source[cursor] !== '"') break;
 
-        const keyEnd = scanJsonStringEnd(source, cursor);
-        const key    = JSON.parse(source.slice(cursor, keyEnd));
+        const keyStart = cursor;
+        const keyEnd   = scanJsonStringEnd(source, cursor);
+        const key      = JSON.parse(source.slice(keyStart, keyEnd));
 
         cursor = skipJsonTrivia(source, keyEnd);
-        if (source[cursor] !== ':') return null;
+        if (source[cursor] !== ':') break;
 
         const valueStart = skipJsonTrivia(source, cursor + 1);
         const valueEnd   = scanJsonValueEnd(source, valueStart);
 
-        if (key === propertyName) {
-            return {valueStart, valueEnd}
-        }
-
+        properties.push({key, keyStart, valueStart, valueEnd});
         cursor = valueEnd
     }
 
-    return null
+    return properties
+}
+
+/**
+ * @summary The source ranges, key through value, of the direct properties a predicate selects in the object
+ * at `objectPath` (an empty path is the root object).
+ * @param {String}   source
+ * @param {String[]} objectPath
+ * @param {Function} selects `(key) => Boolean`.
+ * @returns {Number[][]} `[start, end]` per selected property.
+ * @private
+ */
+function jsonPropertyRanges(source, objectPath, selects) {
+    let range = findJsonObjectRange(source);
+
+    for (const name of objectPath) {
+        const property = findDirectJsonProperty(source, range, name);
+
+        if (!property || source[property.valueStart] !== '{') return [];
+
+        range = {start: property.valueStart, end: property.valueEnd}
+    }
+
+    return directJsonProperties(source, range).filter(entry => selects(entry.key)).map(entry => [entry.keyStart, entry.valueEnd])
 }
 
 /** @private */

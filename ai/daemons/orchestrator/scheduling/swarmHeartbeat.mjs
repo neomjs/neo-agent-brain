@@ -14,26 +14,20 @@ export const VALID_TARGET_SOURCES = Object.freeze([
     'disabled'
 ]);
 
-const identityParticipationById = new Map(
-    IDENTITIES
-        .filter(identity => identity.type === 'AgentIdentity')
-        .map(identity => [
-            normalizeAgentIdentityNodeId(identity.id),
-            identity.properties?.participationStatus || 'active'
-        ])
-);
-
 /**
  * @summary True when heartbeat target discovery may include the identity.
  *
- * Unknown identities are allowed for forks/local custom agents. Known repo
- * identities with a non-active participationStatus are excluded; explicit
- * target lists remain the operator override for diagnostics.
+ * Participation is the identity node's fact, read from the plane's graph
+ * (`ai/graph/agentIdentityParticipation.mjs`). An identity without a node is
+ * allowed, for forks and local custom agents; a node that records a non-active
+ * status excludes it. Explicit target lists remain the operator override for
+ * diagnostics.
  * @param {String} id Normalized agent identity.
+ * @param {Map<String,String>|null} participation Canonical identity → status; `null` when no read was supplied.
  * @returns {Boolean}
  */
-function isHeartbeatTargetEligible(id) {
-    const participationStatus = identityParticipationById.get(id);
+function isHeartbeatTargetEligible(id, participation) {
+    const participationStatus = participation?.get(id);
     return !participationStatus || participationStatus === 'active';
 }
 
@@ -76,22 +70,27 @@ export function getDueTask({state, now, swarmHeartbeatIntervalMs}) {
  *
  * - **`'self'`** — pulses only the active harness owner (`selfIdentity`); deployment-
  *   portable minimal-fan-out shape.
- * - **`'active-local-team'`** — reads `identityRoots.IDENTITIES` filtered on
- *   `type === 'AgentIdentity'` AND `properties.participationStatus === 'active'`. Team-
- *   registry coupled (suitable for Neo team workspace; external forks customize
- *   `identityRoots.mjs` to get their own team filter for free).
+ * - **`'active-local-team'`** — the team is `identityRoots.IDENTITIES`' AgentIdentity
+ *   entries, kept to those the participation read lets through. Team-registry coupled for
+ *   membership (suitable for Neo team workspace; external forks customize
+ *   `identityRoots.mjs` to get their own team), never for participation.
  * - **`'active-subscribers'`** — delegates to injected `activeSubscribersProvider`
  *   (the existing `WAKE_SUBSCRIPTION` SQL discovery in
  *   `SwarmHeartbeatService.getWakeSubscriptionIdentities()`); union with `selfIdentity`.
- *   Subscription-presence-based — degrades on dormant subscribers. Known repo identities
- *   are still gated by `participationStatus === 'active'` so stale subscriptions cannot
- *   wake operator-benched harnesses.
+ *   Subscription-presence-based — degrades on dormant subscribers. Every identity, self
+ *   included, is gated by its node's participation, so stale subscriptions cannot wake
+ *   operator-benched harnesses.
  * - **`'active-a2a-participants'`** — delegates to injected
  *   `activeA2aParticipantsProvider` (the `SwarmHeartbeatService.getActiveA2aParticipants()`
  *   3h `MESSAGE`-edge query); union with `selfIdentity`. Activity-derived — per-MC-instance
  *   discovery, tenant-safe (no team-registry coupling), self-healing 3h sliding window.
- *   Known repo identities are still gated by `participationStatus === 'active'`. This is
- *   the tracked template default.
+ *   Every identity, self included, is gated by its node's participation. This is the
+ *   tracked template default.
+ *
+ * **Participation** comes from `participationProvider`, a read of the plane's AgentIdentity
+ * nodes, asked once per resolution by every source but an explicit list and `'disabled'`. A
+ * read that throws propagates for the caller to name, and is never replaced by the roots;
+ * with no provider supplied, no identity is gated.
  * - **`'disabled'`** — returns `[]` plus an info log. Downstream `pulse()` skips per-identity
  *   work (sunset detection, idle-out nudge) while identity-agnostic substrate maintenance
  *   (TTL sweep, all-agent-idle detection, liveness touch) still runs.
@@ -111,8 +110,10 @@ export function getDueTask({state, now, swarmHeartbeatIntervalMs}) {
  * @param {String[]|null}  [opts.explicitTargets=null]             Explicit target list (wins when non-empty).
  * @param {Function}       [opts.activeSubscribersProvider]        Async `() => Promise<String[]>` for `'active-subscribers'`.
  * @param {Function}       [opts.activeA2aParticipantsProvider]    Async `() => Promise<String[]>` for `'active-a2a-participants'`.
+ * @param {Function}       [opts.participationProvider]            `() => Map|Promise<Map>`: canonical identity → participation status.
  * @param {Object}         [opts.logger=console]                   Logger; defaults to console.
  * @returns {Promise<String[]>}  Normalized canonical `@<identity>` strings (deduplicated, order-preserving).
+ * @throws {Error} When the participation read cannot answer.
  */
 export async function resolveTargets({
     selfIdentity,
@@ -120,6 +121,7 @@ export async function resolveTargets({
     explicitTargets               = null,
     activeSubscribersProvider     = null,
     activeA2aParticipantsProvider = null,
+    participationProvider         = null,
     logger                        = console
 } = {}) {
     const log = (level, msg) => {
@@ -128,6 +130,8 @@ export async function resolveTargets({
     };
 
     const normalizedSelf = selfIdentity ? normalizeAgentIdentityNodeId(selfIdentity) : null;
+
+    let participation = null;
 
     /**
      * Self-fallback: returns `[selfIdentity]` when present, otherwise emits an
@@ -141,8 +145,23 @@ export async function resolveTargets({
             log('info', `[resolveSwarmHeartbeatTargets] '${resolvedFrom}' resolved to self but selfIdentity is null — disabled (no pulse targets). Set NEO_AGENT_IDENTITY or orchestrator.swarmHeartbeat.targetSource='disabled' explicitly to silence this notice.`);
             return [];
         }
-        if (!isHeartbeatTargetEligible(normalizedSelf)) return [];
+        if (!isHeartbeatTargetEligible(normalizedSelf, participation)) return [];
         return [normalizedSelf];
+    };
+
+    /**
+     * Every target a source discovers, self included, passes the one participation gate:
+     * normalized, deduplicated and order-preserving.
+     */
+    const eligibleTargets = candidates => {
+        const seen = new Set();
+
+        for (const raw of candidates) {
+            const id = raw ? normalizeAgentIdentityNodeId(raw) : null;
+            if (id && isHeartbeatTargetEligible(id, participation)) seen.add(id);
+        }
+
+        return [...seen];
     };
 
     // Step 1: explicit env target list (override-all). Empty array / null falls through.
@@ -162,6 +181,11 @@ export async function resolveTargets({
     // Step 2 + 3: targetSource enum (nullish → 'self')
     const source = targetSource || 'self';
 
+    // the plane's participation read, once per resolution; one that throws propagates for the caller to name
+    if (source !== 'disabled' && participationProvider) {
+        participation = await participationProvider();
+    }
+
     switch (source) {
         case 'self':
             return selfFallback('self');
@@ -170,42 +194,15 @@ export async function resolveTargets({
             log('info', '[resolveSwarmHeartbeatTargets] disabled — no pulse targets');
             return [];
 
-        case 'active-local-team': {
-            const seen = new Set();
-            const out  = [];
-            for (const entry of IDENTITIES) {
-                if (entry.type !== 'AgentIdentity') continue;
-                if (entry.properties?.participationStatus !== 'active') continue;
-                const id = normalizeAgentIdentityNodeId(entry.id);
-                if (id && !seen.has(id)) {
-                    seen.add(id);
-                    out.push(id);
-                }
-            }
-            return out;
-        }
+        case 'active-local-team':
+            return eligibleTargets(IDENTITIES.filter(entry => entry.type === 'AgentIdentity').map(entry => entry.id));
 
         case 'active-subscribers': {
             if (typeof activeSubscribersProvider !== 'function') {
                 log('warn', `[resolveSwarmHeartbeatTargets] targetSource='active-subscribers' requires activeSubscribersProvider; falling back to 'self'`);
                 return selfFallback('active-subscribers-missing-provider');
             }
-            const subscribers = (await activeSubscribersProvider()) || [];
-            const seen        = new Set();
-            const out         = [];
-            if (normalizedSelf) {
-                seen.add(normalizedSelf);
-                out.push(normalizedSelf);
-            }
-            for (const raw of subscribers) {
-                const id = normalizeAgentIdentityNodeId(raw);
-                if (id && !isHeartbeatTargetEligible(id)) continue;
-                if (id && !seen.has(id)) {
-                    seen.add(id);
-                    out.push(id);
-                }
-            }
-            return out;
+            return eligibleTargets([normalizedSelf, ...((await activeSubscribersProvider()) || [])]);
         }
 
         case 'active-a2a-participants': {
@@ -218,22 +215,7 @@ export async function resolveTargets({
                 log('warn', `[resolveSwarmHeartbeatTargets] targetSource='active-a2a-participants' requires activeA2aParticipantsProvider; falling back to 'self'`);
                 return selfFallback('active-a2a-participants-missing-provider');
             }
-            const participants = (await activeA2aParticipantsProvider()) || [];
-            const seen         = new Set();
-            const out          = [];
-            if (normalizedSelf) {
-                seen.add(normalizedSelf);
-                out.push(normalizedSelf);
-            }
-            for (const raw of participants) {
-                const id = normalizeAgentIdentityNodeId(raw);
-                if (id && !isHeartbeatTargetEligible(id)) continue;
-                if (id && !seen.has(id)) {
-                    seen.add(id);
-                    out.push(id);
-                }
-            }
-            return out;
+            return eligibleTargets([normalizedSelf, ...((await activeA2aParticipantsProvider()) || [])]);
         }
 
         default:

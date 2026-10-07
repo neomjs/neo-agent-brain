@@ -223,6 +223,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 // what the last start found of the declared model in the harness's catalog, a refusal's
                 // reason included; null before a start read one
                 seatModel      : runtime?.seatModel ?? null,
+                // whether a Claude Desktop seat's profile rows can start new MCP children (the
+                // `launchAdmission` contract); null for every other family and before a start
+                launchAdmission: runtime?.launchAdmission ?? null,
                 lifecycle   : supervised
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.runtime,

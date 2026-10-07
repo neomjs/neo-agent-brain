@@ -54,7 +54,7 @@ function writeState(record) {
  * @param {Object} [options.refusal] What `connect` answers instead of a client.
  * @returns {Promise<Object>} `{outcome, polls, sleeps, connects}`
  */
-async function listen({answers = [], session = OLDER, sessionId = 'session-older', event = 'Stop', procs, onSleep, config, refusal} = {}) {
+async function listen({answers = [], session = OLDER, sessionId = 'session-older', event = 'Stop', pid = LISTENER.pid, procs, onPoll, onSleep, config, refusal} = {}) {
     const
         table    = procs ?? new Map([[OLDER.pid, OLDER], [NEWER.pid, NEWER], [LISTENER.pid, LISTENER]]),
         polls    = [],
@@ -63,6 +63,7 @@ async function listen({answers = [], session = OLDER, sessionId = 'session-older
         client   = {
             async callTool(name, args) {
                 polls.push(args.sinceLogId);
+                onPoll?.();
 
                 const answer = answers.shift();
 
@@ -82,7 +83,7 @@ async function listen({answers = [], session = OLDER, sessionId = 'session-older
         resolveRoute: async () => 'WAKE_SUB:pull',
         findSession : async () => session,
         read        : async pid => table.get(pid) ?? null,
-        pid         : LISTENER.pid,
+        pid,
         sleep       : async ms => {
             sleeps.push(ms);
             if (sleeps.length > 20) throw new Error('the listener never stopped');
@@ -144,13 +145,41 @@ test.describe('AC-2: a digest wakes, the backlog does not', () => {
         expect(sleeps).toEqual([POLL_INTERVAL_MS, 2 * POLL_INTERVAL_MS, POLL_INTERVAL_MS])
     });
 
-    test('at SessionStart the first poll waits one interval for the arming hook', async () => {
-        writeState({watermark: 1, source: SOURCE});
+    test('a newer session takes the seat at SessionStart, so an older poll in flight cannot consume its digest', async () => {
+        // The SessionStart run claims and exits; the older listener re-reads after its poll and stands
+        // down without the watermark moving, and the newer session's first Stop gets the event.
+        const
+            STARTER = {pid: 901, ppid: NEWER.pid, startedAt: 'Fri Oct 2 12:05:00 2026', command: 'node wakeListenerHook.mjs'},
+            POLLER  = {pid: 902, ppid: NEWER.pid, startedAt: 'Fri Oct 2 12:10:00 2026', command: 'node wakeListenerHook.mjs'},
+            table   = new Map([[OLDER.pid, OLDER], [NEWER.pid, NEWER], [LISTENER.pid, LISTENER], [STARTER.pid, STARTER]]);
 
-        const {sleeps, polls} = await listen({event: 'SessionStart', answers: [{pending: 1, digest: 'D', watermark: 2}]});
+        writeState({watermark: 10, source: SOURCE});
 
-        expect(sleeps).toEqual([POLL_INTERVAL_MS]);
-        expect(polls).toEqual([1])
+        let release, polling;
+        const inFlight = new Promise(resolve => {polling = resolve}),
+              older    = listen({procs: table, onPoll: polling, answers: [new Promise(resolve => {release = resolve})]});
+
+        await inFlight;
+
+        const started = await listen({procs: table, event: 'SessionStart', session: NEWER, sessionId: 'session-newer', pid: STARTER.pid});
+
+        expect(started.outcome).toEqual({exit: 0, reason: 'claimed'});
+        expect([started.connects, started.polls, started.sleeps]).toEqual([[], [], []]);
+        expect(readState().owner.sessionId).toBe('session-newer');
+
+        release({pending: 1, digest: 'D', watermark: 11});
+
+        expect((await older).outcome).toEqual({exit: 0, reason: 'superseded'});
+        expect(readState().watermark).toBe(10);
+
+        table.delete(STARTER.pid);
+        table.set(POLLER.pid, POLLER);
+
+        const first = await listen({procs: table, session: NEWER, sessionId: 'session-newer', pid: POLLER.pid,
+            answers: [{pending: 1, digest: 'D', watermark: 11}]});
+
+        expect(first.outcome).toEqual({exit: 2, digest: 'D'});
+        expect(first.polls).toEqual([10])
     });
 
     test('a second Stop in the owning session, with its listener alive, arms nothing new', async () => {

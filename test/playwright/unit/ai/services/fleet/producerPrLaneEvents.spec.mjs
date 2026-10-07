@@ -21,11 +21,12 @@ import {
     PR_LANE_TRANSITION_KINDS,
     withProducerPrLane
 } from '../../../../../../ai/services/fleet/producerPrLaneEvents.mjs'
-import {createFleetPrLaneActivitySnapshot}                    from '../../../../../../ai/services/fleet/fleetPrLaneActivityAdapter.mjs'
-import {createPlanePrLaneActivityReader}                      from '../../../../../../ai/services/fleet/planePrLaneActivityReader.mjs'
+import {createFleetPrLaneActivitySnapshot}                   from '../../../../../../ai/services/fleet/fleetPrLaneActivityAdapter.mjs'
+import {createPlanePrLaneActivityReader}                     from '../../../../../../ai/services/fleet/planePrLaneActivityReader.mjs'
 import {createFleetActivityReadSource, FLEET_ACTIVITY_SLOTS} from '../../../../../../ai/services/fleet/fleetActivityComposer.mjs'
-import {createOpenWorkProducer}                               from '../../../../../../ai/services/fleet/openWorkProducer.mjs'
-import {FLEET_COCKPIT_SOURCES}                                from '../../../../../../src/fleet/contract/cockpit.mjs'
+import {createOpenWorkProducer}                              from '../../../../../../ai/services/fleet/openWorkProducer.mjs'
+import {normalizePullRequest, reduceOpenWork}                from '../../../../../../ai/services/fleet/openWorkReducer.mjs'
+import {FLEET_COCKPIT_SOURCES}                               from '../../../../../../src/fleet/contract/cockpit.mjs'
 
 const
     T0    = '2026-10-02T12:00:00.000Z',
@@ -38,8 +39,8 @@ const
  * @param {Object} fields
  * @returns {Object}
  */
-function transition({repo = 'neomjs/neo-agent-brain', number = 764, head = 'da3bf6a', kind, from = null, to = null, pulse = T1}) {
-    return {id: `${repo}#${number}@${head}:${kind}:${from}->${to}#${pulse}`, key: `${repo}#${number}`, repo, number, head, owner, kind, from, to, pulse}
+function transition({repo = 'neomjs/neo-agent-brain', number = 764, head = 'da3bf6a', kind, from = null, to = null, pulse = T1, ...context}) {
+    return {id: `${repo}#${number}@${head}:${kind}:${from}->${to}#${pulse}`, key: `${repo}#${number}`, repo, number, head, owner, kind, from, to, pulse, ...context}
 }
 
 /**
@@ -131,7 +132,7 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
             transition({repo: 'neomjs/neo', number: 19364, kind: 'review-requested', from: null, to: '@neo-gpt-sophie', pulse: T1})
         ]);
 
-        expect(PR_LANE_TRANSITION_KINDS).toEqual(['opened', 'verdict', 'merged', 'closed']);
+        expect(PR_LANE_TRANSITION_KINDS).toEqual(['opened', 'verdict', 'head', 'merged', 'closed']);
         expect(events.map(event => [event.payload.repoSlug, event.payload.number, event.payload.transition.kind, event.occurredAt])).toEqual([
             ['neo-agent-brain',       764,   'opened',  T0],
             ['neo-agent-institution', 434,   'verdict', T1],
@@ -150,6 +151,41 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
         });
         expect(verdict.payload).toMatchObject({state: null, reviewDecision: 'APPROVED', transition: {from: null, to: 'APPROVED'}});
         expect(merged.payload).toMatchObject({state: 'MERGED', head: 'da3bf6a'})
+    });
+
+    test('a verdict names the reviewers who moved it, a single one as its actor; a push shows only when it answers a change request (#919)', () => {
+        const events = createPrTransitionEvents([
+            transition({kind: 'verdict', from: 'REVIEW_REQUIRED', to: 'CHANGES_REQUESTED', by: ['@neo-gpt'], pulse: T0}),
+            transition({kind: 'head', from: 'da3bf6a', to: 'e41c0d2', verdict: 'CHANGES_REQUESTED', pulse: T1}),
+            transition({kind: 'head', from: 'e41c0d2', to: 'f00ba12', verdict: 'APPROVED', pulse: T1}),
+            transition({kind: 'verdict', from: 'CHANGES_REQUESTED', to: 'APPROVED', by: ['@neo-gpt', 'login:outsider'], pulse: T2}),
+            transition({kind: 'verdict', from: 'APPROVED', to: 'REVIEW_REQUIRED', by: [], pulse: T2})
+        ]);
+
+        // the second push landed on an approval, so it stays off the lane
+        expect(events.map(({agentId, payload}) => [payload.transition.kind, payload.transition.to, agentId, payload.transition.by ?? null])).toEqual([
+            ['verdict', 'CHANGES_REQUESTED', 'neo-gpt',       ['@neo-gpt']],
+            ['head',    'e41c0d2',           'neo-opus-vega', null],
+            ['verdict', 'APPROVED',          'neo-opus-vega', ['@neo-gpt', 'login:outsider']],
+            ['verdict', 'REVIEW_REQUIRED',   'neo-opus-vega', null]
+        ])
+    });
+
+    test('reducer to event: a re-approval on the current head is the reviewer\'s, and a read that cut its opinions keeps the author (#919)', () => {
+        const
+            identities = {byLogin: login => ({'neo-gpt': '@neo-gpt', 'neo-opus-vega': '@neo-opus-vega'})[login] ?? null, byName: name => name === 'Vega' ? '@neo-opus-vega' : null},
+            pr         = ({verdict, approvedOn = null, more = false}) => ({
+                number                  : 920, headRefOid: 'b2', reviewDecision: verdict, mergeable: 'MERGEABLE', isDraft: false,
+                body                    : 'Authored by Vega (Claude).', author: {login: 'neo-opus-vega'}, repository: {nameWithOwner: 'neomjs/neo-agent-brain'},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []}, latestReviews: {pageInfo: {hasNextPage: false}, nodes: []},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: more}, nodes: approvedOn ? [{state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: approvedOn}}] : []},
+                commits                 : {nodes: [{commit: {oid: 'b2', statusCheckRollup: {state: 'SUCCESS'}}}]}
+            }),
+            reduce     = (previous, item, id) => reduceOpenWork({previous, observed: {rows: [normalizePullRequest(item, identities)], complete: true}, terminal: {rows: [], complete: true}, since: null, id}),
+            actors     = (first, second) => createPrTransitionEvents(reduce(reduce(null, first, T0), second, T1).transitions).map(({agentId}) => agentId);
+
+        expect(actors(pr({verdict: 'REVIEW_REQUIRED', approvedOn: 'a1'}), pr({verdict: 'APPROVED', approvedOn: 'b2'}))).toEqual(['neo-gpt']);
+        expect(actors(pr({verdict: 'REVIEW_REQUIRED', more: true}), pr({verdict: 'APPROVED', approvedOn: 'b2'}))).toEqual(['neo-opus-vega'])
     });
 
     test('AC-2: the base slot keeps its issue, lane-claim and stall events; its corpus PR events are replaced, the merge is ranked and bounded', async () => {

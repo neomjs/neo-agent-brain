@@ -392,6 +392,33 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
         },
 
         /**
+         * @summary MailboxService-compatible `getMessage(args)`.
+         * @param {Object} args `{messageId}`
+         * @returns {Promise<Object>}
+         */
+        getMessage(args) {
+            return this.callTool('get_message', args)
+        },
+
+        /**
+         * @summary MailboxService-compatible `markRead(args)`.
+         * @param {Object} args `{messageId}`
+         * @returns {Promise<Object>}
+         */
+        markRead(args) {
+            return this.callTool('mark_read', args)
+        },
+
+        /**
+         * @summary MailboxService-compatible `transitionTask(args)`.
+         * @param {Object} args `{taskId, newState, expectedCurrentState}`
+         * @returns {Promise<Object>}
+         */
+        transitionTask(args) {
+            return this.callTool('transition_task', args)
+        },
+
+        /**
          * @summary The SHARED TERMINAL close barrier. Every closer — explicit close, concurrent
          * signal handlers, refusal exits — awaits the SAME promise, and that promise resolves only
          * after (1) any in-flight establishment is fenced (awaited; with the expectation already
