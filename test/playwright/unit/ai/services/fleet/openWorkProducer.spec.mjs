@@ -429,6 +429,50 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
         expect(await control.pulse()).toMatchObject({coverage: 'partial', reason: 'GitHub refused the PAT of @neo-gpt: connect again with a current token for it'})
     });
 
+    test('a request list cut at its first page may hide a benched seat: its row carries and is no opened, while a complete list still leaves (#916)', async () => {
+        let failing = false;
+
+        const
+            // an outside author's PR whose review requests show `visible`, and continue past the first page when `more`
+            held     = (number, visible, more) => ({
+                ...pr({number, author: 'outsider', name: 'Nobody'}),
+                reviewRequests: {pageInfo: {hasNextPage: more}, nodes: visible.map(login => ({requestedReviewer: {__typename: 'User', login}}))}
+            }),
+            ada      = {authored: [], held: [held(19, ['neo-opus-ada'], true), held(21, ['neo-opus-ada'], false)]},
+            euclid   = {authored: [], held: [held(19, ['neo-opus-ada'], true)]},
+            answer   = work => async (text, {query: search}) => ({rateLimit: {cost: 1}, search: {nodes: {open: work.authored, held: work.held, terminal: []}[kindOf(search)], pageInfo: {hasNextPage: false}}}),
+            producer = createOpenWorkProducer({
+                readers   : async () => [
+                    {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: answer(ada), benched: false},
+                    {seat: '@neo-gpt',      login: 'neo-gpt',      query: async (...args) => { if (failing) throw new Error('GitHub GraphQL answered 502: no data'); return answer(euclid)(...args) }, benched: true}
+                ],
+                repos     : async () => ['acme/app'],
+                identities,
+                now       : clock('2026-10-02T10:00:00Z')
+            }),
+            first    = await producer.pulse();
+
+        // Ada's requests are gone, and benched Euclid, past the first page of the cut list, misses
+        ada.held = [];
+        failing  = true;
+
+        const missed = await producer.pulse();
+
+        expect(missed).toMatchObject({coverage: 'complete'});
+        expect(missed.snapshot.rows['acme/app#19'].observedAt).toBe(first.observedAt);
+        // control: a complete list that does not name Euclid is evidence, so its row leaves
+        expect(missed.pulses.at(-1).vanished).toEqual(['acme/app#21']);
+
+        // Euclid reads again: a cut row first seen now may only have been unread, while Ada's own new PR opened
+        failing      = false;
+        euclid.held  = [held(19, ['neo-opus-ada'], true), held(20, ['neo-opus-ada'], true)];
+        ada.authored = [{...pr({number: 22}), reviewRequests: {pageInfo: {hasNextPage: false}, nodes: []}}];
+
+        const back = await producer.pulse();
+
+        expect(back.transitions.filter(({kind, pulse}) => kind === 'opened' && pulse === back.observedAt).map(({key}) => key)).toEqual(['acme/app#22'])
+    });
+
     test('only a PAT GitHub refused (401) asks for a new token; any other failed read names the next pulse', async () => {
         const
             refused  = async () => { throw Object.assign(new Error('GitHub GraphQL answered 401: Bad credentials'), {status: 401}) },

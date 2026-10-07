@@ -214,14 +214,15 @@ function arrivalOf(row, previousComplete, pulse) {
 }
 
 /**
- * @summary Whether one of the seats could have read a row: its author, or a seat holding a review request on it.
+ * @summary Whether one of the seats could have read a row: its author, a seat holding a review request on it, or
+ * any of them while its request list is incomplete, since an unseen request may be theirs.
  * @param {Object} row
  * @param {String[]} seats
  * @returns {Boolean}
  * @private
  */
 function readBy(row, seats) {
-    return seats.includes(`@${row.owner?.login}`) || row.requested.some(seat => seats.includes(seat))
+    return seats.length > 0 && (!row.requestsComplete || seats.includes(`@${row.owner?.login}`) || row.requested.some(seat => seats.includes(seat)))
 }
 
 /**
