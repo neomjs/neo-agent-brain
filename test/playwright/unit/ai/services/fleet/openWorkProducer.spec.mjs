@@ -446,9 +446,9 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
                     {seat: '@neo-opus-ada', login: 'neo-opus-ada', query: answer(ada), benched: false},
                     {seat: '@neo-gpt',      login: 'neo-gpt',      query: async (...args) => { if (failing) throw new Error('GitHub GraphQL answered 502: no data'); return answer(euclid)(...args) }, benched: true}
                 ],
-                repos     : async () => ['acme/app'],
+                repos: async () => ['acme/app'],
                 identities,
-                now       : clock('2026-10-02T10:00:00Z')
+                now  : clock('2026-10-02T10:00:00Z')
             }),
             first    = await producer.pulse();
 
