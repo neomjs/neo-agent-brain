@@ -26,15 +26,24 @@ import FleetControlBridge from './FleetControlBridge.mjs';
  * @param {Object}   options
  * @param {Function} [options.addMessage] MailboxService-compatible `addMessage(payload)`, bound by
  *     the caller (never imported here). Absent → the seam stays unwired.
+ * @param {Function} [options.getMessage]     The own-inbox body read; absent → only its verb is `not-wired`.
+ * @param {Function} [options.markRead]       The own-inbox receipt write; same rule.
+ * @param {Function} [options.transitionTask] The own-Task move; same rule.
  * @param {Object}   [options.bridge=FleetControlBridge] The control bridge to wire (a stub in specs).
  * @returns {Object|null} the installed writer, or `null` when no writer is available (left unwired).
  */
-export function wireOperatorComposeWriter({addMessage, bridge = FleetControlBridge} = {}) {
+export function wireOperatorComposeWriter({addMessage, getMessage, markRead, transitionTask, bridge = FleetControlBridge} = {}) {
     if (typeof addMessage !== 'function') {
         return null
     }
 
-    bridge.composeWriter = {addMessage};
+    const writer = {addMessage};
+
+    Object.entries({getMessage, markRead, transitionTask}).forEach(([name, primitive]) => {
+        if (typeof primitive === 'function') writer[name] = primitive
+    });
+
+    bridge.composeWriter = writer;
 
     return bridge.composeWriter
 }

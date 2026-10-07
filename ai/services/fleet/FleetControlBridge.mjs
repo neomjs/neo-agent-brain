@@ -38,6 +38,29 @@ const PLANE_DECLARATION_FIELDS = Object.freeze([
 ]);
 
 /**
+ * @summary Routes one own-inbox verb to its primitive on the operator-mailbox seam. The verbs build
+ * `args` field by field, so no identity-shaped field crosses; a missing message id, or the verb's
+ * own `invalid` reason, is rejected before the primitive runs.
+ * @param {Object|null} seam      The bridge's `composeWriter`.
+ * @param {String}      primitive `getMessage`, `markRead` or `transitionTask`.
+ * @param {*}           messageId The wire's message id.
+ * @param {Object}      args      The primitive's argument object.
+ * @param {String|null} [invalid] Why the verb's other params are refused, or `null`.
+ * @returns {Promise<Object>|Object}
+ */
+function callOwnInbox(seam, primitive, messageId, args, invalid = null) {
+    if (typeof seam?.[primitive] !== 'function') {
+        return {status: 'not-wired', reason: `fleet: operator inbox ${primitive} not wired`}
+    }
+
+    if (typeof messageId !== 'string' || !messageId) {
+        return {status: 'rejected', reason: `${primitive}: messageId must be a non-empty string`}
+    }
+
+    return invalid ? {status: 'rejected', reason: `${primitive}: ${invalid}`} : seam[primitive](args)
+}
+
+/**
  * The fields a start refusal may carry beside its reason, each only when the refusal names it: a typed
  * code, the step that stopped, and a memory import's source and destination, which the reason no longer
  * spells out. Nothing else of the error crosses.
@@ -335,6 +358,10 @@ class FleetControlBridge extends Base {
      * writer moves payload, never sender. Same DI contract as {@link #activitySource} (no static
      * default; the launch entry wires the live writer); unwired → `composeOperatorMessage` answers
      * an honest `not-wired` refusal, never a fabricated acceptance.
+     *
+     * Named for its first verb, the seam also carries the operator's own-inbox primitives:
+     * `getMessage`, `markRead` and `transitionTask`, each optional and each acting under the same
+     * request identity. A missing one leaves only its verb `not-wired`.
      * @member {Object|null} composeWriter=null
      */
     composeWriter = null
@@ -1100,9 +1127,11 @@ class FleetControlBridge extends Base {
      * @param {Boolean}  [params.wakeSuppressed] Omitted → sender-class default (human ⇒ quiet).
      * @param {String[]} [params.relatedTickets] Must be an array; a non-array value is rejected before
      *     the writer is invoked (the fleet wire's only schema-less shape guard — the primitive spreads it).
+     * @param {String}   [params.inReplyTo]      The MESSAGE id this message answers; a non-string
+     *     value is rejected before the writer is invoked.
      * @returns {Promise<Object>|Object} the writer's acceptance (`{messageId, sentAt, …}`), the
      *     `{status:'not-wired'}` refusal when no writer is installed, or `{status:'rejected'}` when
-     *     `relatedTickets` is a non-array.
+     *     `relatedTickets` is a non-array or `inReplyTo` a non-string.
      */
     composeOperatorMessage(params = {}) {
         const writer = this.composeWriter;
@@ -1111,8 +1140,12 @@ class FleetControlBridge extends Base {
             return {status: 'not-wired', reason: 'fleet: operator compose writer not wired'};
         }
 
-        const {to, subject, body, priority, wakeSuppressed, relatedTickets} = params;
-        const payload                                                       = {to, subject, body};
+        const {to, subject, body, priority, wakeSuppressed, relatedTickets, inReplyTo} = params;
+        const payload                                                                  = {to, subject, body};
+
+        if (inReplyTo !== undefined && typeof inReplyTo !== 'string') {
+            return {status: 'rejected', reason: 'inReplyTo must be a message id string'};
+        }
 
         // Shape-guard the one array-typed whitelisted field. The fleet wire has NO schema layer (the
         // MCP transport enforces `String[]`; this verb is the single schema-less caller), and
@@ -1127,8 +1160,58 @@ class FleetControlBridge extends Base {
         if (priority       !== undefined) payload.priority       = priority;
         if (wakeSuppressed !== undefined) payload.wakeSuppressed = wakeSuppressed;
         if (relatedTickets !== undefined) payload.relatedTickets = relatedTickets;
+        if (inReplyTo      !== undefined) payload.inReplyTo      = inReplyTo;
 
         return writer.addMessage(payload)
+    }
+
+    /**
+     * @summary READ-OBSERVE: one message in full, read under the TRANSPORT-STAMPED request
+     * identity: the operator opening a message from his own inbox. `MailboxService.getMessage`
+     * enforces its own `CAN_READ_INBOX_OF` gate and writes no receipt; this verb only routes.
+     * @param {Object} params
+     * @param {String} params.messageId
+     * @returns {Promise<Object>|Object} the message, `{status:'not-wired'}` when no reader is
+     *     installed, or `{status:'rejected'}` for a missing id.
+     */
+    fleetOwnMessage(params = {}) {
+        const {messageId} = params ?? {};
+
+        return callOwnInbox(this.composeWriter, 'getMessage', messageId, {messageId})
+    }
+
+    /**
+     * @summary WRITE: mark one of the operator's own messages read, a receipt under the
+     * TRANSPORT-STAMPED request identity. Exactly the named message: the verb has no bulk path.
+     * Reading is not resolving, so an open Task stays open.
+     * @param {Object} params
+     * @param {String} params.messageId
+     * @returns {Promise<Object>|Object} the primitive's receipt, `not-wired`, or `rejected`.
+     */
+    markOwnMessageRead(params = {}) {
+        const {messageId} = params ?? {};
+
+        return callOwnInbox(this.composeWriter, 'markRead', messageId, {messageId})
+    }
+
+    /**
+     * @summary WRITE: move a Task the operator holds, under the TRANSPORT-STAMPED request identity.
+     * `MailboxService.transitionTask` decides which moves its recipient may make (neomjs/neo-agent-brain#860)
+     * and refuses the rest with its reason; this verb only routes.
+     * @param {Object} params
+     * @param {String} params.messageId              The MESSAGE that carries the Task.
+     * @param {String} params.newState
+     * @param {String} [params.expectedCurrentState] Optional guard against a concurrent move.
+     * @returns {Promise<Object>|Object} the primitive's answer, `not-wired`, or `rejected`.
+     */
+    transitionOwnTask(params = {}) {
+        const {messageId, newState, expectedCurrentState} = params ?? {};
+        const args                                        = {taskId: messageId, newState};
+
+        if (expectedCurrentState !== undefined) args.expectedCurrentState = expectedCurrentState;
+
+        return callOwnInbox(this.composeWriter, 'transitionTask', messageId, args,
+            typeof newState === 'string' && newState ? null : 'newState must be a non-empty string')
     }
 
     /**

@@ -116,4 +116,79 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             expect(invoked, `the writer must NEVER be invoked for a non-array relatedTickets (${JSON.stringify(bad)})`).toBe(false);
         }
     });
+
+    test('a reply carries inReplyTo to the writer, and a non-string inReplyTo is rejected before it', async () => {
+        let captured = null;
+        wireOperatorComposeWriter({addMessage: payload => { captured = payload; return {messageId: 'MESSAGE:reply'}; }});
+
+        await FleetControlBridge.composeOperatorMessage({to: '@neo-gpt', subject: 'Re: q', body: 'a', inReplyTo: 'MESSAGE:q'});
+        expect(captured).toEqual({to: '@neo-gpt', subject: 'Re: q', body: 'a', inReplyTo: 'MESSAGE:q'});
+
+        captured = null;
+        const result = await FleetControlBridge.composeOperatorMessage({to: '@neo-gpt', subject: 's', body: 'b', inReplyTo: 42});
+
+        expect(result.status).toBe('rejected');
+        expect(captured, 'the writer must not run for a non-string inReplyTo').toBeNull()
+    });
+
+    test('the own-inbox primitives are installed only when given, and each missing one leaves only its verb not-wired', async () => {
+        const bridge = stubBridge(), getMessage = () => ({id: 'MESSAGE:m'});
+
+        wireOperatorComposeWriter({bridge, addMessage: () => ({}), getMessage, markRead: 'not-a-function'});
+        expect(bridge.composeWriter.getMessage).toBe(getMessage);
+        expect(Object.hasOwn(bridge.composeWriter, 'markRead')).toBe(false);
+        expect(Object.hasOwn(bridge.composeWriter, 'transitionTask')).toBe(false);
+
+        wireOperatorComposeWriter({addMessage: () => ({}), getMessage});
+        expect(await FleetControlBridge.fleetOwnMessage({messageId: 'MESSAGE:m'})).toEqual({id: 'MESSAGE:m'});
+        expect(FleetControlBridge.markOwnMessageRead({messageId: 'MESSAGE:m'}).status).toBe('not-wired');
+        expect(FleetControlBridge.transitionOwnTask({messageId: 'MESSAGE:m', newState: 'Completed'}).status).toBe('not-wired')
+    });
+
+    test('the own-inbox verbs pass exactly their whitelisted args: one message, never a bulk read or a caller identity', async () => {
+        const calls = [];
+        wireOperatorComposeWriter({
+            addMessage    : () => ({}),
+            getMessage    : args => { calls.push(['getMessage', args]); return {ok: true} },
+            markRead      : args => { calls.push(['markRead', args]); return {ok: true} },
+            transitionTask: args => { calls.push(['transitionTask', args]); return {ok: true} }
+        });
+
+        await FleetControlBridge.fleetOwnMessage({messageId: 'MESSAGE:a', from: '@mallory'});
+        await FleetControlBridge.markOwnMessageRead({messageId: 'MESSAGE:a', all: true, includeUnseen: true});
+        await FleetControlBridge.transitionOwnTask({messageId: 'MESSAGE:t', newState: 'Working'});
+        await FleetControlBridge.transitionOwnTask({messageId: 'MESSAGE:t', newState: 'Completed', expectedCurrentState: 'Working', assignee: '@mallory'});
+
+        expect(calls).toEqual([
+            ['getMessage',     {messageId: 'MESSAGE:a'}],
+            ['markRead',       {messageId: 'MESSAGE:a'}],
+            ['transitionTask', {taskId: 'MESSAGE:t', newState: 'Working'}],
+            ['transitionTask', {taskId: 'MESSAGE:t', newState: 'Completed', expectedCurrentState: 'Working'}]
+        ])
+    });
+
+    test('the own-inbox verbs reject a missing message id or a missing newState before the primitive runs', () => {
+        let invoked = false;
+        const primitive = () => { invoked = true; return {} };
+        wireOperatorComposeWriter({addMessage: () => ({}), getMessage: primitive, markRead: primitive, transitionTask: primitive});
+
+        for (const result of [
+            FleetControlBridge.fleetOwnMessage({}),
+            FleetControlBridge.markOwnMessageRead({messageId: ''}),
+            FleetControlBridge.markOwnMessageRead(null),
+            FleetControlBridge.transitionOwnTask({messageId: 'MESSAGE:t'}),
+            FleetControlBridge.transitionOwnTask({newState: 'Completed'})
+        ]) {
+            expect(result.status).toBe('rejected')
+        }
+
+        expect(invoked).toBe(false)
+    });
+
+    test('a refused transition comes back as the primitive answered it', async () => {
+        const refusal = {error: 'Unauthorized: only the originator may move InputRequired → Working'};
+        wireOperatorComposeWriter({addMessage: () => ({}), transitionTask: async () => refusal});
+
+        expect(await FleetControlBridge.transitionOwnTask({messageId: 'MESSAGE:t', newState: 'Working'})).toBe(refusal)
+    });
 });
