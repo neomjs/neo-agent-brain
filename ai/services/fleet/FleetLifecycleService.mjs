@@ -21,6 +21,8 @@ import neuralLinkConfig                                             from '../../
 import githubWorkflowConfig                                         from '../../mcp/server/github-workflow/config.mjs';
 import gitlabWorkflowConfig                                         from '../../mcp/server/gitlab-workflow/config.mjs';
 import {MANAGED_WORKSPACE_MCP_SERVER_DESCRIPTORS}                   from './managedAgentWorkspacePlan.mjs';
+import McpLaunchAdmissionService                                    from './McpLaunchAdmissionService.mjs';
+import {LAUNCH_ADMISSION_REASONS}                                   from '../../../src/fleet/contract/launchAdmission.mjs';
 import {isOnInstance}                                               from './provisionAgentRepo.mjs';
 import {cleanupCodexDesktopCrashpad, probeCodexDesktopCapabilities} from './manageCodexDesktopRuntime.mjs';
 import {GIT_IDENTITY_ENV, gitIdentityEnv}                           from './seatGitIdentity.mjs';
@@ -188,6 +190,23 @@ function inspectProcess(pid) {
             exited   : state.startsWith('Z'),
             command  : execFileSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], options).trim()
         } : null
+    } catch {
+        return null
+    }
+}
+
+/**
+ * @summary Every process's command line, through `ps`.
+ * @returns {String[]|null} `null` when the process table cannot be read.
+ * @private
+ */
+function listProcessCommands() {
+    try {
+        return execFileSync('ps', ['-axww', '-o', 'command='], {
+            encoding : 'utf8',
+            env      : {PATH: process.env.PATH ?? '/usr/bin:/bin', LC_ALL: 'C'},
+            maxBuffer: 16 * 1024 * 1024
+        }).split('\n').map(line => line.trim()).filter(Boolean)
     } catch {
         return null
     }
@@ -451,11 +470,25 @@ class FleetLifecycleService extends Base {
     codexDesktopCleanupFn = null
 
     /**
+     * The issuer of native MCP launch admission for Claude Desktop seats. Defaults (via
+     * {@link getLaunchAdmission}) to the `McpLaunchAdmissionService` singleton.
+     * @member {Object|null} launchAdmission=null
+     */
+    launchAdmission = null
+
+    /**
      * Process inspection behind the seat lease: `(pid) => {startedAt, exited, command}|null`. Defaults
      * to a `ps` read; injectable so unit specs never inspect host processes.
      * @member {Function|null} processInspectFn=null
      */
     processInspectFn = null
+
+    /**
+     * Process-table read behind {@link desktopProfileInUse}: `() => String[]|null`, one command line per
+     * process. Defaults to a `ps` read; injectable so unit specs never inspect host processes.
+     * @member {Function|null} processListFn=null
+     */
+    processListFn = null
 
     /**
      * Signal delivery to an adopted seat, which has no child handle: `(pid, signal) => void`.
@@ -529,6 +562,11 @@ class FleetLifecycleService extends Base {
      *     snapshot instead of re-reading a mutable AiConfig path after preparation.
      * @param {Object} [opts.gitIdentity] `{name, email}` the seat commits as, injected as author and committer
      *     under the four reserved `GIT_AUTHOR_*` / `GIT_COMMITTER_*` slots.
+     * @param {Object} [opts.launchAdmission] `{generation, plan, owners}`: a Claude Desktop seat's reserved
+     *     launch admission, its bound MCP plan, and `owners.pat` / `owners.plane`, the owners Start selected for
+     *     the seat's PAT and plane credential. Once the seat is launched and leased, the generation is activated
+     *     and bound to the launched process. The credentials reach its children only through those owners,
+     *     never from the environment injected here; a lease that fails revokes it.
      * @returns {Object} status (see {@link status}).
      */
     start(id, opts = {}) {
@@ -823,7 +861,11 @@ class FleetLifecycleService extends Base {
             // Seat survival: set by writeSeatLease for a leased seat; a later server's adopted record
             // carries `adopted: true` instead of a child handle.
             adopted     : false,
-            pidStartedAt: null
+            pidStartedAt: null,
+            // what proves later that the leased pid still runs this seat ({@link probeSeat})
+            launchInterpreter  : survivesFleetExit ? readShebangLine(resolvedCommand) : null,
+            profileArg         : survivesFleetExit ? args.find(arg => arg.startsWith('--user-data-dir=')) ?? null : null,
+            admissionGeneration: null
         };
         this.processes.set(id, record);
 
@@ -877,6 +919,8 @@ class FleetLifecycleService extends Base {
             record.failureReason = 'tracked harness process emitted an error';
             record.exitedAt      = new Date().toISOString();
 
+            record.admissionGeneration && this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.PROCESS_EXITED, {generation: record.admissionGeneration});
+
             if (record.electronProfile && record.pid != null) {
                 // A successfully spawned Desktop main can emit `error` without proving process exit.
                 // Keep the child handle + block replacement until stop drives the main to `exit` and
@@ -897,8 +941,29 @@ class FleetLifecycleService extends Base {
 
             if (leaseFailure) {
                 record.failureReason = `the seat could not be leased (${leaseFailure}), so it was stopped`;
+                opts.launchAdmission && this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.LEASE_FAILED, {generation: opts.launchAdmission.generation});
                 void this.stop(id);
                 throw new Error(`FleetLifecycleService.start: ${record.failureReason} — agent '${id}'.`)
+            }
+
+            // the seat now runs and is leased: its profile rows' grants may admit its MCP children
+            if (opts.launchAdmission) {
+                const
+                    owners = opts.launchAdmission.owners ?? {},
+                    slots  = {
+                        [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
+                        [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                       : owners.plane
+                    };
+
+                record.admissionGeneration = opts.launchAdmission.generation;
+                this.getLaunchAdmission().activate({
+                    generation: opts.launchAdmission.generation,
+                    agentId   : id,
+                    plan      : opts.launchAdmission.plan,
+                    env       : Object.fromEntries(Object.entries(env).filter(([name]) => !Object.hasOwn(slots, name))),
+                    owners    : Object.fromEntries(Object.entries(slots).filter(([, owner]) => owner)),
+                    probe     : () => this.probeSeat(record)
+                })
             }
         }
 
@@ -913,6 +978,9 @@ class FleetLifecycleService extends Base {
      */
     stop(id) {
         this.adoptLeasedSeats();
+
+        // Stop intent ends the seat's launch admission before any signal, and a Stop that fails keeps it ended.
+        this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.STOP_REQUESTED);
 
         const record = this.processes.get(id);
 
@@ -1041,7 +1109,7 @@ class FleetLifecycleService extends Base {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id)};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
 
         this.refreshAdoptedSeat(record);
 
@@ -1077,11 +1145,32 @@ class FleetLifecycleService extends Base {
                 instanceAddress: record.wakeRoute.instanceAddress ?? null,
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
             } : null,
-            repos        : record.repos ? record.repos.map(repo => ({...repo})) : null,
-            sessionFolder: this.sessionFolderFor(record),
-            gitIdentity  : this.gitIdentityOf(id),
-            seatModel    : this.seatModelOf(id)
+            repos          : record.repos ? record.repos.map(repo => ({...repo})) : null,
+            sessionFolder  : this.sessionFolderFor(record),
+            gitIdentity    : this.gitIdentityOf(id),
+            seatModel      : this.seatModelOf(id),
+            launchAdmission: this.launchAdmissionOf(id, record)
         };
+    }
+
+    /**
+     * @summary Whether a Claude Desktop seat's profile rows can start new MCP children
+     * ({@link Neo.ai.services.fleet.McpLaunchAdmissionService#statusOf}): its generation's state, or `stale`
+     * for a running seat this Fleet holds none for. `null` for every other family, for a raw launch, and for
+     * a stopped seat with nothing to say.
+     * @param {String} id
+     * @param {Object|null} record The lifecycle record, if any.
+     * @returns {Object|null}
+     * @private
+     */
+    launchAdmissionOf(id, record) {
+        const
+            admission = this.getLaunchAdmission(),
+            running   = record?.state === 'running';
+
+        return admission.holds(id) || (running && record.harnessType === 'claude-desktop')
+            ? admission.statusOf(id, {running})
+            : null
     }
 
     /**
@@ -1580,6 +1669,30 @@ class FleetLifecycleService extends Base {
         }
     }
 
+    /** @returns {Object} the issuer of native MCP launch admission. @private */
+    getLaunchAdmission() {
+        return this.launchAdmission || McpLaunchAdmissionService;
+    }
+
+    /**
+     * @summary Whether a process runs a Claude Desktop seat's profile: the seat's launch binary with the
+     * seat's own `--user-data-dir` as a whole word, the proof the lease uses ({@link probeSeat}). Helpers
+     * carry the argument too, but not the binary, so they do not count. Start rewrites the profile's MCP rows
+     * only when this answers `false`.
+     * @param {Object} agent Raw registry definition of a `claude-desktop` seat.
+     * @returns {Boolean|null} `null` when the process table cannot be read.
+     */
+    desktopProfileInUse(agent) {
+        const
+            instanceHome  = deriveAgentInstanceHome({instanceRoot: this.getInstanceRoot(), agentId: agent.id, harnessType: agent.harnessType}),
+            launch        = deriveHarnessLaunchSpec({harnessType: agent.harnessType, instanceHome, binaryPath: this.getHarnessBinaryPath(agent.harnessType)}),
+            launchCommand = this.resolveExecutable(launch.command, process.env.PATH),
+            seat          = {launchCommand, launchInterpreter: readShebangLine(launchCommand), profileArg: launch.args.find(arg => arg.startsWith('--user-data-dir=')) ?? null},
+            commands      = (this.processListFn || listProcessCommands)();
+
+        return Array.isArray(commands) ? commands.some(command => runsSeatLaunch(command, seat)) : null
+    }
+
     /** @returns {Function} process inspection behind the seat lease. @private */
     getProcessInspectFn() {
         return this.processInspectFn || inspectProcess;
@@ -1662,6 +1775,7 @@ class FleetLifecycleService extends Base {
         record.exitedAt = new Date().toISOString();
         record.child    = null;
 
+        record.admissionGeneration && this.getLaunchAdmission().revoke(record.id, LAUNCH_ADMISSION_REASONS.PROCESS_EXITED, {generation: record.admissionGeneration});
         this.removeSeatLease(record);
 
         if (!record.electronProfile) {
