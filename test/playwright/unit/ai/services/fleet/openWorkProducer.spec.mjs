@@ -398,6 +398,37 @@ test.describe('openWorkProducer — each seat reads its own work with its own PA
         expect(state.pulses.at(-1).vanished).toEqual([])
     });
 
+    test('a benched seat owes no coverage: its failed read leaves the pulse complete, and its rows carry (#916)', async () => {
+        let failing = false;
+
+        const
+            adaSeat    = asSeat({authored: [pr()]}),
+            euclidSeat = asSeat({authored: [pr({number: 9, author: 'neo-gpt', name: 'Euclid'})]}),
+            euclid     = async (...args) => { if (failing) throw Object.assign(new Error('GitHub GraphQL answered 401: Bad credentials'), {status: 401}); return euclidSeat.query(...args) },
+            producer   = benched => createOpenWorkProducer({
+                readers: async () => [{seat: '@neo-opus-ada', login: 'neo-opus-ada', query: adaSeat.query, benched: false}, {seat: '@neo-gpt', login: 'neo-gpt', query: euclid, benched}],
+                repos  : async () => ['acme/app'],
+                identities,
+                now    : clock('2026-10-02T10:00:00Z')
+            }),
+            bench      = producer(true),
+            control    = producer(false);
+
+        await bench.pulse();
+        await control.pulse();
+        failing = true;
+
+        const state = await bench.pulse();
+
+        expect(state).toMatchObject({coverage: 'complete', reason: null});
+        expect(Object.keys(state.snapshot.rows).sort()).toEqual(['acme/app#7', 'acme/app#9']);
+        expect(state.snapshot.rows['acme/app#9'].observedAt).toBe(state.pulses[0].at);
+        // the miss stays on the pulse's record, never in the coverage verdict
+        expect(state.pulses.at(-1)).toMatchObject({unread: ['@neo-gpt'], vanished: []});
+        // control: the same failure from a seat that participates leaves the pulse partial and named
+        expect(await control.pulse()).toMatchObject({coverage: 'partial', reason: 'GitHub refused the PAT of @neo-gpt: connect again with a current token for it'})
+    });
+
     test('only a PAT GitHub refused (401) asks for a new token; any other failed read names the next pulse', async () => {
         const
             refused  = async () => { throw Object.assign(new Error('GitHub GraphQL answered 401: Bad credentials'), {status: 401}) },

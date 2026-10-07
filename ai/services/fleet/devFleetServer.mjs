@@ -522,7 +522,8 @@ async function boot() {
     // with its own PAT from the registry's credential store. A token in this process's environment is
     // the explicit headless/dev override, a process secret no AiConfig leaf binds, so the entrypoint
     // reads it. A seat without a readable PAT is named by each pulse: an optional reader never refuses the boot.
-    const openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService});
+    // A benched seat owes no coverage; its participation comes from the roster's presence read.
+    const openWork = wireFleetOpenWorkSource({token: readGithubToken(), registry: FleetRegistryService, readPresence});
 
         const server = await startFleetBridgeServer({
             port,

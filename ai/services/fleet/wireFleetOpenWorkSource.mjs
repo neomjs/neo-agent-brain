@@ -12,15 +12,19 @@
  * A login resolves to a seat from the registry first (`@<githubUsername>`), then from `identityRoots`,
  * so another operator's seats resolve from their own registry. The PR body's social name resolves
  * through `identityRoots`.
+ *
+ * A seat's participation is its identity node's, read through the roster's presence read: a benched
+ * seat owes the pulse no coverage.
  */
 
-import fs                          from 'fs';
-import path                        from 'path';
-import FleetControlBridge          from './FleetControlBridge.mjs';
-import {IDENTITIES}                from '../../graph/identityRoots.mjs';
-import {createFleetOpenWorkSource} from './fleetOpenWorkSource.mjs';
-import {createOpenWorkProducer}    from './openWorkProducer.mjs';
-import {writeFileAtomicSync}       from '../shared/atomicFileWrite.mjs';
+import fs                                          from 'fs';
+import path                                        from 'path';
+import FleetControlBridge                          from './FleetControlBridge.mjs';
+import {IDENTITIES}                                from '../../graph/identityRoots.mjs';
+import {createFleetOpenWorkSource}                 from './fleetOpenWorkSource.mjs';
+import {createOpenWorkProducer}                    from './openWorkProducer.mjs';
+import {participationOf, presenceIdentityForAgent} from './fleetPresenceStateAdapter.mjs';
+import {writeFileAtomicSync}                       from '../shared/atomicFileWrite.mjs';
 
 /** @summary The pulse cadence: one search a minute stays far inside GitHub's GraphQL budget. */
 const PULSE_MS = 60 * 1000;
@@ -55,6 +59,24 @@ export function githubSlugsOf(definitions) {
 }
 
 /**
+ * @summary The identities whose node records the operator's bench. A read that fails, or a row that
+ * names no status, benches no one, so participation nobody could read stays owed.
+ * @param {Function|null} readPresence `() → Promise<{agents: Object[]}>`, the `who_is_online` read.
+ * @returns {Promise<Set<String>>} `@<login>` identities.
+ */
+export async function benchedIdentities(readPresence) {
+    try {
+        const {agents} = await readPresence?.() ?? {};
+
+        return new Set((Array.isArray(agents) ? agents : [])
+            .filter(row => participationOf(row).status === 'operator_benched')
+            .map(row => row.identity))
+    } catch {
+        return new Set()
+    }
+}
+
+/**
  * @summary The seats that read GitHub, each with its own GraphQL call: every GitHub seat in the
  * registry, reading with its PAT from the Fleet's credential store, or with the override when the
  * entrypoint passed one. A seat without either reads nothing, and its `query` is null.
@@ -63,18 +85,23 @@ export function githubSlugsOf(definitions) {
  * @param {Function} options.resolveCredential `(agentId) → String|null`, the seat's PAT.
  * @param {String|null} [options.override]     The headless/dev token every seat then reads with.
  * @param {Function} [options.createQuery]     `(token) → query`; the GitHub call by default.
- * @returns {Function} `() → Promise<{seat: String, login: String, query: Function|null}[]>`
+ * @param {Function|null} [options.readPresence] The `who_is_online` read ({@link benchedIdentities}), each pulse.
+ * @returns {Function} `() → Promise<{seat: String, login: String, query: Function|null, benched: Boolean}[]>`
  */
-export function seatReaders({listDefinitions, resolveCredential, override = null, createQuery = token => createGithubGraphqlQuery({token})}) {
-    return async () => listDefinitions()
-        .filter(definition => definition.githubUsername && (definition.forge ?? 'github') === 'github')
-        .map(definition => {
-            const
-                login = String(definition.githubUsername).replace(/^@/, ''),
-                token = override || resolveCredential(definition.id);
+export function seatReaders({listDefinitions, resolveCredential, override = null, createQuery = token => createGithubGraphqlQuery({token}), readPresence = null}) {
+    return async () => {
+        const benched = await benchedIdentities(readPresence);
 
-            return {seat: `@${login}`, login, query: token ? createQuery(token) : null}
-        })
+        return listDefinitions()
+            .filter(definition => definition.githubUsername && (definition.forge ?? 'github') === 'github')
+            .map(definition => {
+                const
+                    login = String(definition.githubUsername).replace(/^@/, ''),
+                    token = override || resolveCredential(definition.id);
+
+                return {seat: `@${login}`, login, query: token ? createQuery(token) : null, benched: benched.has(presenceIdentityForAgent(definition))}
+            })
+    }
 }
 
 /**
@@ -143,10 +170,11 @@ export function fileStore(filePath) {
  * @param {Object}   [options.bridge]
  * @param {Function} [options.query]      Replaces every seat's GitHub call, credential included (tests).
  * @param {Function} [options.createQuery] `(token) → query`; replaces the GitHub call per token (tests).
+ * @param {Function} [options.readPresence] The roster's `who_is_online` read; without it no seat is benched.
  * @param {Function} [options.now]
  * @returns {{producer: Object, source: Object, stop: Function}|null} null without a registry.
  */
-export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, createQuery, now} = {}) {
+export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE_MS, bridge = FleetControlBridge, query, createQuery, readPresence = null, now} = {}) {
     if (typeof registry?.listAgents !== 'function' || typeof registry.getDataDir !== 'function') {
         return null
     }
@@ -158,6 +186,7 @@ export function wireFleetOpenWorkSource({token = null, registry, pulseMs = PULSE
                 listDefinitions,
                 resolveCredential: id => query ? 'injected' : registry.resolveCredential?.(id) ?? null,
                 override         : token,
+                readPresence,
                 ...(query ? {createQuery: () => query} : createQuery ? {createQuery} : {})
             }),
             repos     : async () => githubSlugsOf(listDefinitions()),

@@ -170,6 +170,25 @@ test.describe('openWorkReducer — merges come from the terminal read, never fro
         expect(pulse(base(), {id: 'p1'})).toMatchObject({transitions: [], rows: {}, vanished: ['acme/app#7']})
     });
 
+    test('a row a missed seat could have read carries through complete reads, and one first seen after the miss is no opened (#916)', () => {
+        const
+            euclid = number => node({number, body: 'Authored by Euclid (GPT 5, Codex).', login: 'neo-gpt', reviewers: []}),
+            reduce = (previous, open, missed, id) => reduceOpenWork({
+                previous, observed: {rows: open.map(item => normalizePullRequest(item, identities)), complete: true, missed}, terminal: {rows: [], complete: true}, since: null, id
+            }),
+            p0     = reduce(null, [node(), euclid(9)], [], 'p0'),
+            p1     = reduce(p0, [node()], ['@neo-gpt'], 'p1'),
+            p2     = reduce(p1, [node(), euclid(9), euclid(10), node({number: 8, reviewers: []})], [], 'p2'),
+            p3     = reduce(p2, [node(), euclid(10), node({number: 8, reviewers: []})], [], 'p3');
+
+        expect(p1).toMatchObject({transitions: [], vanished: [], missed: ['@neo-gpt']});
+        expect(p1.rows['acme/app#9'].observedAt).toBe('p0');
+        // Euclid's new row may only have been unread; Ada's was not, so it opened
+        expect(p2.transitions.map(({key, kind}) => [key, kind])).toEqual([['acme/app#8', 'opened']]);
+        // control: once the seat reads every page again, absence is evidence
+        expect(p3.vanished).toEqual(['acme/app#9'])
+    });
+
     test('the terminal read records the merge once, even when the next pulse reads it again', () => {
         const
             merged = terminal('MERGED', '2026-10-02T10:05:00Z'),

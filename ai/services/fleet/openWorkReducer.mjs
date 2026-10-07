@@ -14,7 +14,8 @@
  * seen, so a later partial pulse never makes it look fresh. A row first seen after a read that missed
  * pages may only have been unread, so it is no `opened`; the reviews already requested on it are
  * reported either way. A row that leaves complete reads with no terminal row is `vanished`: absence is
- * never a close, and never silent.
+ * never a close, and never silent. A seat that owes no coverage can still miss its read: the rows it
+ * would have read carry, and a row first seen after that miss is no `opened`.
  */
 
 /**
@@ -213,27 +214,40 @@ function arrivalOf(row, previousComplete, pulse) {
 }
 
 /**
+ * @summary Whether one of the seats could have read a row: its author, or a seat holding a review request on it.
+ * @param {Object} row
+ * @param {String[]} seats
+ * @returns {Boolean}
+ * @private
+ */
+function readBy(row, seats) {
+    return seats.includes(`@${row.owner?.login}`) || row.requested.some(seat => seats.includes(seat))
+}
+
+/**
  * @summary Reduce one pulse: the next snapshot and the transitions observed since the previous one.
  *
  * The first pulse (no previous snapshot) is the baseline and records no transition. `closed` maps a
  * PR to the close it last recorded, so a re-read of that close records nothing, while a PR observed
  * open again retires its marker and its next close is a new episode. A PR absent from an open read
  * that covered every page leaves the snapshot when the terminal read was complete too, as `vanished`
- * unless that read closed it; while either was partial it is carried forward with its own
- * `observedAt`, because missing evidence is not a close.
+ * unless that read closed it; while either was partial, or a seat that could have read it missed, it is
+ * carried forward with its own `observedAt`, because missing evidence is not a close.
  * @param {Object} pulse
- * @param {Object|null} pulse.previous `{rows: {[key]: row}, closed: {[key]: at}, complete}`, or null on the first pulse.
- * @param {{rows: Object[], complete: Boolean}} pulse.observed The open rows this pulse read; `complete` when it read every page.
+ * @param {Object|null} pulse.previous `{rows: {[key]: row}, closed: {[key]: at}, complete, missed}`, or null on the first pulse.
+ * @param {{rows: Object[], complete: Boolean, missed: String[]}} pulse.observed The open rows this pulse read;
+ *     `complete` when the seats that owe coverage read every page, `missed` the other seats whose read did not.
  * @param {{rows: Object[], complete: Boolean}} pulse.terminal Terminal rows ({@link normalizeTerminal}) read since `since`.
  * @param {String|null} pulse.since The watermark: where the terminal read began, ISO.
  * @param {String} pulse.id This pulse's identity, its time.
- * @returns {{rows: Object, closed: Object, complete: Boolean, transitions: Object[], vanished: String[]}}
+ * @returns {{rows: Object, closed: Object, complete: Boolean, missed: String[], transitions: Object[], vanished: String[]}}
  */
 export function reduceOpenWork({previous, observed, terminal, since, id}) {
     const
         rows        = {},
         closed      = Object.fromEntries(Object.entries(previous?.closed ?? {}).filter(([, at]) => !since || at >= since)),
         complete    = observed.complete,
+        missed      = observed.missed ?? [],
         transitions = [],
         vanished    = [];
 
@@ -245,10 +259,10 @@ export function reduceOpenWork({previous, observed, terminal, since, id}) {
         rows[row.key] = {...merged, observedAt: id};
         delete closed[row.key];
 
-        previous && transitions.push(...before ? changesOf(before, merged, id) : arrivalOf(merged, previous.complete !== false, id))
+        previous && transitions.push(...before ? changesOf(before, merged, id) : arrivalOf(merged, previous.complete !== false && !readBy(merged, previous.missed ?? []), id))
     }
 
-    if (!previous) return {rows, closed, complete, transitions, vanished};
+    if (!previous) return {rows, closed, complete, missed, transitions, vanished};
 
     for (const row of terminal.rows) {
         if (!rows[row.key] && closed[row.key] !== row.at && (!since || row.at >= since)) {
@@ -261,9 +275,9 @@ export function reduceOpenWork({previous, observed, terminal, since, id}) {
 
     for (const [key, before] of Object.entries(previous.rows)) {
         if (!rows[key] && !closed[key]) {
-            complete && terminal.complete ? vanished.push(key) : rows[key] = before
+            complete && terminal.complete && !readBy(before, missed) ? vanished.push(key) : rows[key] = before
         }
     }
 
-    return {rows, closed, complete, transitions, vanished}
+    return {rows, closed, complete, missed, transitions, vanished}
 }
