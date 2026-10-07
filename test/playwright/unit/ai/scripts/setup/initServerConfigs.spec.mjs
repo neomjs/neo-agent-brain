@@ -1350,10 +1350,9 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
     //
     // It used to be labelled "the tracked template the materializer reads". It was not: the
     // materializer defaults to `<engineRoot>/.claude/settings.template.json` from the INSTALLED
-    // package, and after the ADR 0040 §2.7 custody split the tracked Engine template declares only
-    // `PreToolUse -> rgReplaceGuardHook`. So a reader took this fixture's Stop entry as proof the
-    // Engine still owned no-hold wiring, and every assertion here stayed green through the cut that
-    // removed it (#250 AC-9).
+    // package, and the tracked Engine template declares only `PreToolUse -> rgReplaceGuardHook`.
+    // So a reader took this fixture's Stop entry as proof the Engine still owned no-hold wiring, and
+    // every assertion here stayed green through the cut that removed it.
     //
     // The merge tests are legitimate as they stand — `mergeClaudeHooks` is a pure function and this
     // is its input. What was missing is anything reading the real file, which the final describe in
@@ -1381,6 +1380,25 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         if (settings !== undefined) fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(settings, null, 2));
         return dir;
     };
+
+    // A repository root the materializer writes into: its package name is what tells an Engine
+    // checkout, which carries no `node_modules/neo.mjs`, from a consumer that does.
+    const buildTargetRepo = (name, packageName, {settings} = {}) => {
+        const root = path.join(claudeRoot, name);
+        fs.mkdirSync(path.join(root, '.claude'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({name: packageName}));
+        fs.writeFileSync(path.join(root, 'settings.template.json'), JSON.stringify(TEMPLATE, null, 2));
+        if (settings !== undefined) fs.writeFileSync(path.join(root, '.claude/settings.json'), JSON.stringify(settings, null, 2));
+        return root;
+    };
+
+    const materializeInto = root => initClaudeSettings({
+        claudeDir   : path.join(root, '.claude'),
+        logger      : recordingLogger(),
+        templatePath: path.join(root, 'settings.template.json')
+    });
+
+    const readTargetSettings = root => JSON.parse(fs.readFileSync(path.join(root, '.claude/settings.json'), 'utf-8'));
 
     test.beforeAll(async () => {
         ({initClaudeSettings, mergeClaudeHooks, retargetClaudeHookCommands} =
@@ -1424,6 +1442,42 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         expect(TEMPLATE.hooks.Stop[0].hooks[0].command)
             .toContain('/.claude/hooks/laneStateStopHook.mjs');
         expect(TEMPLATE.hooks.Stop[0].hooks[0].command).not.toContain('/node_modules/neo.mjs/')
+    });
+
+    test('the Engine package as target keeps its hook commands as authored, on a detached copy (#912)', () => {
+        const kept = retargetClaudeHookCommands(TEMPLATE, {targetPackageName: 'neo.mjs'});
+
+        expect(kept).toEqual(TEMPLATE);
+        expect(kept).not.toBe(TEMPLATE)
+    });
+
+    test('initClaudeSettings: an Engine checkout runs the guard it tracks, not one under node_modules/neo.mjs (#912)', async () => {
+        const root = buildTargetRepo('engine-target', 'neo.mjs');
+
+        expect((await materializeInto(root)).action).toBe('clone');
+        expect(readTargetSettings(root).hooks.PreToolUse).toEqual(TEMPLATE.hooks.PreToolUse)
+    });
+
+    test('initClaudeSettings: a consumer checkout still reaches the hooks through node_modules/neo.mjs (#912 control)', async () => {
+        const root = buildTargetRepo('consumer-target', 'neo-agent-brain');
+
+        expect((await materializeInto(root)).action).toBe('clone');
+        expect(readTargetSettings(root).hooks.PreToolUse[0].hooks[0].command)
+            .toContain('/node_modules/neo.mjs/.claude/hooks/rgReplaceGuardHook.mjs')
+    });
+
+    test('initClaudeSettings: an Engine seat holding the dead guard path is rewired to the live one (#912)', async () => {
+        // What every earlier hydration wrote into an Engine seat: the consumer retarget.
+        const
+            dead = retargetClaudeHookCommands(TEMPLATE).hooks,
+            root = buildTargetRepo('engine-seat', 'neo.mjs', {settings: {permissions: {allow: ['seat-perm']}, hooks: dead}});
+
+        expect((await materializeInto(root)).action).toBe('wired');
+
+        const written = readTargetSettings(root);
+
+        expect(written.hooks.PreToolUse).toEqual(TEMPLATE.hooks.PreToolUse);
+        expect(written.permissions.allow).toEqual(['seat-perm'])
     });
 
     test('initClaudeSettings: missing settings.json → clone (full template, enforce=1 command wired)', async () => {
@@ -1492,8 +1546,8 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
  * The template the materializer ACTUALLY reads — not a fixture standing in for it.
  *
  * Everything above drives `mergeClaudeHooks` and `initClaudeSettings` with controlled inputs, which
- * is correct for testing those functions and tells you nothing about the real file. #250 AC-9 exists
- * because the gap was invisible: a hand-written `TEMPLATE` declaring `Stop -> laneStateStopHook` read
+ * is correct for testing those functions and tells you nothing about the real file. The gap was
+ * invisible: a hand-written `TEMPLATE` declaring `Stop -> laneStateStopHook` read
  * as evidence that the Engine wires the no-hold hook, and stayed green straight through the leaf-11
  * cut that removed it.
  *
@@ -1539,8 +1593,9 @@ test.describe('the installed Engine settings template — properties that hold a
     });
 
     test('declares the Engine-owned PreToolUse guard on both sides of the cut', () => {
-        // The one entry the Engine owns outright under ADR 0040 §2.7. Pre-cut it sits beside the four
-        // Agent-OS events; post-cut it is the only entry left. Either way its absence would mean the
+        // The one entry the Engine owns outright: a contributor guard with no Brain dependency.
+        // Pre-cut it sits beside the four Agent-OS events; post-cut it is the only entry left.
+        // Either way its absence would mean the
         // Engine had stopped wiring its own guard, which no custody split licenses.
         const template = JSON.parse(fs.readFileSync(templatePath, 'utf-8'));
 
