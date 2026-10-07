@@ -825,7 +825,11 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         // the registry whose definition changes the issuer follows from here on
         expect(lifecycle.calls.reserve[0].registry).toEqual(expect.objectContaining({getDefinition: expect.any(Function)}));
         expect(prepare.calls[0].launchAdmission).toEqual({issuer: 'http://127.0.0.1:47123', identity: 'seat', grants: {'memory-core': 'grant-mc'}});
-        expect(lifecycle.calls.start[0].opts.launchAdmission).toEqual({generation: 'generation-seat', plan: expect.any(Array)});
+        expect(lifecycle.calls.start[0].opts.launchAdmission).toEqual({
+            generation: 'generation-seat',
+            plan      : expect.any(Array),
+            owners    : {pat: expect.objectContaining({credential: 'seat-pat'})}
+        });
         expect(lifecycle.calls.revoke).toEqual([]);
 
         // every other family neither probes a profile nor reserves a grant
@@ -833,6 +837,72 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         expect([codex.lifecycle.calls.profile, codex.lifecycle.calls.reserve, codex.prepare.calls[0].launchAdmission, codex.lifecycle.calls.start[0].opts.launchAdmission])
             .toEqual([[], [], undefined, undefined])
+    });
+
+    test('a Claude Desktop seat\'s rows redeem its PAT from the registry, proved as the seat\'s own account even when a Git identity is declared', async () => {
+        const
+            agents    = repoAgent('seat'),
+            lifecycle = makeLifecycle({agents}),
+            proofs    = [];
+
+        Object.assign(agents.seat, {harnessType: 'claude-desktop', gitName: 'Seat Agent', gitEmail: 'seat@example.test'});
+
+        await startAgentProvisioned({
+            lifecycleService  : lifecycle,
+            agentId           : 'seat',
+            managedRoot       : '/managed',
+            ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+            prepareWorkspace  : makePrepareWorkspace(),
+            agentosRuntimeRoot: '/installed/neo',
+            proveForgeAccount : async args => { proofs.push(args); return {ok: args.credential === FIXTURE_PAT} }
+        });
+
+        const {owners} = lifecycle.calls.start[0].opts.launchAdmission;
+
+        expect(proofs, 'the Start itself takes the declaration').toEqual([]);
+
+        lifecycle.calls.credential.length = 0;
+        expect(owners.pat.resolve()).toBe(FIXTURE_PAT);
+        expect(lifecycle.calls.credential, 'read from the registry when redeemed, never kept').toEqual(['seat']);
+
+        expect(await owners.pat.prove('ghp_another_account')).toEqual({ok: false});
+        expect(proofs).toEqual([{agent: expect.objectContaining({id: 'seat', githubUsername: 'seat', gitName: 'Seat Agent'}), credential: 'ghp_another_account'}])
+    });
+
+    test('a Claude Desktop seat on a tenant redeems its plane credential from that tenant, proved as its Start proves it', async () => {
+        const
+            agents        = remoteRepoAgent('seat'),
+            lifecycle     = makeLifecycle({agents, credentials: {seat: 'ghp_repository_only'}}),
+            tenantService = makeTenantService({credential: 'tenant_plane_credential'});
+
+        agents.seat.harnessType = 'claude-desktop';
+
+        await startAgentProvisioned({
+            lifecycleService  : lifecycle,
+            tenantService,
+            agentId           : 'seat',
+            managedRoot       : '/managed',
+            ensureRepo        : makeEnsureRepo('/managed/seat/neomjs-neo'),
+            prepareWorkspace  : makePrepareWorkspace(),
+            agentosRuntimeRoot: '/installed/neo'
+        });
+
+        const {plane} = lifecycle.calls.start[0].opts.launchAdmission.owners;
+
+        expect(plane.credential).toBe('plane-bearer');
+        expect(plane.resolve()).toBe('tenant_plane_credential');
+        expect(tenantService.calls.credential.at(-1)).toBe('tenant-a');
+        expect(await plane.prove('tenant_plane_credential')).toEqual({ok: true});
+        expect(tenantService.calls.probe.at(-1)).toEqual({tenantId: 'tenant-a', credential: 'tenant_plane_credential', expectedIdentity: '@seat'});
+
+        // the Start's own acceptance: both resources answer and the Memory Core names the seat
+        for (const resources of [
+            {'memory-core': {ok: true, identity: '@seat'}, 'knowledge-base': {ok: false}},
+            {'memory-core': {ok: true, identity: '@someone-else'}, 'knowledge-base': {ok: true}}
+        ]) {
+            tenantService.probeSeatCredential = async () => ({ok: true, resources});
+            expect(await plane.prove('tenant_plane_credential')).toEqual({ok: false})
+        }
     });
 
     test('a Claude Desktop profile another process holds, or a process table that cannot be read, refuses before anything is cloned', async () => {
@@ -1482,6 +1552,27 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
             resolvedMcpEndpoint   : PLANE,
             remoteMcpCapability   : CAPABILITY
         })
+    });
+
+    test('a Claude Desktop seat redeems its plane credential from its binding, proved on the plane this Start met', async () => {
+        const
+            agents       = repoAgent('a'),
+            lifecycle    = makePlaneLifecycle({agents, credentials: {a: 'ghp_seat_checkout'}}),
+            planeService = makePlaneService();
+
+        agents.a.harnessType = 'claude-desktop';
+
+        await start({lifecycle, planeService});
+
+        const {owners} = lifecycle.calls.start[0].opts.launchAdmission;
+
+        expect(owners.plane.credential).toBe('plane-bearer');
+        expect(owners.plane.resolve(), 'the binding, never the registry PAT').toBe('seat-plane-pat');
+        expect(planeService.calls.resolve.at(-1)).toEqual({planeBase: PLANE, agentId: 'a'});
+
+        expect(await owners.plane.prove('rebound_plane_credential')).toEqual({ok: true});
+        expect(planeService.calls.probe.at(-1)).toEqual({planeBase: PLANE, credential: 'rebound_plane_credential', expectedIdentity: '@a', expectedPlane: SERVED});
+        expect(planeService.calls.store, 'a redemption never binds').toEqual([])
     });
 
     test('a missing default-plane binding uses the existing registry PAT once, then re-proves it before checkout', async () => {

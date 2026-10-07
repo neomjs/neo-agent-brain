@@ -40,10 +40,11 @@ const BRIDGE_ENTRYPOINT = 'ai/mcp/client/stdioToStreamableHttp.mjs';
  * ({@link Neo.ai.services.fleet.mcpLaunchAdmission}) and receives exactly the values that server needs.
  *
  * **Generation.** One managed Start of one seat. {@link reserve} mints a grant for every enabled server
- * before preparation writes the rows. {@link activate} binds them after the seat is launched and leased,
- * to the values Start injected and to the launched process. Redemptions repeat, concurrently and later,
- * for as long as the generation is active. A redemption that arrives while Start is still running waits
- * for it, up to {@link pendingTimeoutMs}.
+ * before preparation writes the rows, and publishes the generation at once, so every revocation from then
+ * on reaches it. {@link activate} binds the grants after the seat is launched and leased: to the launched
+ * process, to the owners of the seat's credentials and to the other values Start injected. Redemptions
+ * repeat, concurrently and later, for as long as the generation is active. A redemption that arrives while
+ * Start is still running waits for it, up to {@link pendingTimeoutMs}.
  *
  * **Revocation is sticky.** Stop intent, a failed Start or lease, the process's exit and a newer Start
  * end the generation. The registry's `definitionChange` ends it when the seat's harness, MCP target, launch
@@ -51,9 +52,13 @@ const BRIDGE_ENTRYPOINT = 'ai/mcp/client/stdioToStreamableHttp.mjs';
  * Nothing re-enables a grant: a server switched back on waits for a managed restart. A new Fleet process
  * holds no generation, so a seat it adopts reads `stale` until it is restarted.
  *
- * **Custody.** The values handed out are the ones Start resolved and proved, held only in this process
- * for the generation's lifetime and dropped at revocation. No new credential is persisted. A changed
- * registry PAT never replaces a plane or tenant credential the generation holds.
+ * **Custody.** A seat credential stays with its owner: the registry holds the PAT; the explicit tenant
+ * or the plane binding holds the plane credential. Each redemption resolves it from the owner Start
+ * selected, proves that value, and hands over exactly the proved bytes. A missing or unproved value
+ * refuses the child and never falls back to another credential class, so a changed registry PAT never
+ * stands in for a plane credential. The issuer holds only what Start itself or the Fleet's configuration
+ * produced, such as the Bridge token, for the generation's lifetime, and drops it at revocation. No new
+ * credential is persisted.
  *
  * **Audit.** Each redemption whose proof holds is recorded against its seat, server and generation. A
  * request that proves nothing is recorded without attribution, whatever it claims.
@@ -79,6 +84,13 @@ class McpLaunchAdmissionService extends Base {
      * @member {Number} pendingTimeoutMs=30000
      */
     pendingTimeoutMs = 30000
+
+    /**
+     * How long a credential proof may take before it counts as unproved. With {@link pendingTimeoutMs}, it
+     * stays inside the launcher's own bound.
+     * @member {Number} proofTimeoutMs=10000
+     */
+    proofTimeoutMs = 10000
 
     /**
      * How many redemptions each seat's audit, and the unattributed audit, keep.
@@ -130,10 +142,13 @@ class McpLaunchAdmissionService extends Base {
 
     /**
      * @summary Mint one grant per enabled server for a seat's next Start, ending the seat's previous
-     * generation. The registry the definition came from is followed from here on.
+     * generation. The registry the definition came from is followed from here on. The generation is
+     * published before anything is awaited and held against the registry's current definition, so no
+     * revocation falls into the gap between the caller's read and its reservation.
      * @param {Object} options
      * @param {Object} options.agent The raw registry definition.
-     * @param {Object} [options.registry] Its registry, an Observable firing `definitionChange`.
+     * @param {Object} [options.registry] Its registry, an Observable firing `definitionChange` that reads
+     *     raw definitions through `getDefinition`.
      * @returns {Promise<{generation: String, issuer: String, identity: String, grants: Object<String, String>}>}
      *     `grants` maps each enabled server to the capability its profile row carries; `identity` is the
      *     validated login the rows must name.
@@ -148,7 +163,6 @@ class McpLaunchAdmissionService extends Base {
         this.observeRegistry(registry);
 
         const
-            issuer     = await this.listen(),
             previous   = this.generations.get(agent.id),
             definition = projectDefinition(agent),
             generation = {
@@ -162,6 +176,8 @@ class McpLaunchAdmissionService extends Base {
                 revokedAt  : null,
                 definition,
                 servers    : new Map(),
+                owners     : {},
+                proofs     : new Map(),
                 probe      : null,
                 waiters    : new Set(),
                 audit      : []
@@ -178,32 +194,49 @@ class McpLaunchAdmissionService extends Base {
 
             const grant = mintLaunchGrant();
 
-            generation.servers.set(key, {key, grantId: grant.id, secret: grant.secret, state: STATES.RESERVED, reason: null, args: null, env: null});
+            generation.servers.set(key, {key, grantId: grant.id, secret: grant.secret, state: STATES.RESERVED, reason: null, args: null, env: null, owned: []});
             this.grants.set(grant.id, {generation, key});
             grants[key] = grant.capability
         }
 
+        // Published before anything is awaited, then held against the registry as it stands now: the caller read
+        // the definition earlier, and a write since then fired before this generation could hear it.
         this.generations.set(agent.id, generation);
+        registry?.getDefinition && this.onDefinitionChange({id: agent.id, next: registry.getDefinition(agent.id)});
+
+        let issuer;
+
+        try {
+            issuer = await this.listen()
+        } catch (error) {
+            this.revoke(agent.id, REASONS.START_FAILED, {generation: generation.id});
+            throw error
+        }
 
         return {generation: generation.id, issuer, identity, grants}
     }
 
     /**
-     * @summary Bind a reserved generation to the Start that launched and leased its seat. Each server gets
-     * the values its row redeems ({@link Neo.ai.services.fleet.managedAgentWorkspacePlan.launchRowEnvNames}),
-     * taken from the environment Start injected, and the argv of its fixed target. A server whose required
-     * value is absent is revoked with `credential-missing`. A generation revoked or replaced meanwhile stays
-     * as it is.
+     * @summary Bind a reserved generation to the Start that launched and leased its seat. Each server
+     * redeems its row's values ({@link Neo.ai.services.fleet.managedAgentWorkspacePlan.launchRowEnvNames}):
+     * a seat credential from its owner at each redemption, every other value from the environment Start
+     * injected. It also gets the argv of its fixed target. A server whose required value has neither is
+     * revoked with `credential-missing`. A generation revoked or replaced meanwhile stays as it is.
      * @param {Object} options
      * @param {String} options.generation The id {@link reserve} returned.
      * @param {String} options.agentId
      * @param {Object[]} options.plan The bound MCP plan preparation returned.
-     * @param {Object<String,String>} options.env The environment Start injected into the seat.
+     * @param {Object<String,String>} options.env The environment Start injected into the seat. A name that
+     *     has an owner is never read from it.
+     * @param {Object<String,Object>} [options.owners] The owner Start selected for each seat credential, by
+     *     the name its value goes under: `{credential, resolve, prove}`, where `credential` is a
+     *     `LAUNCH_ADMISSION_CREDENTIALS` value, `resolve()` returns what the owner holds now, and
+     *     `prove(value)` answers `{ok}`.
      * @param {Function} options.probe `() => 'live'|'gone'|'unknown'`, whether the launched process is still
      *     the seat: the lifecycle's own process proof.
      * @returns {Object} The seat's admission status ({@link statusOf}).
      */
-    activate({generation: id, agentId, plan, env, probe}) {
+    activate({generation: id, agentId, plan, env, owners = {}, probe}) {
         const generation = this.generations.get(agentId);
 
         if (generation?.id !== id || generation.state !== STATES.RESERVED) return this.statusOf(agentId);
@@ -218,29 +251,33 @@ class McpLaunchAdmissionService extends Base {
                 continue
             }
 
-            const names = launchRowEnvNames(row);
+            const
+                names = launchRowEnvNames(row),
+                owned = names.redeemed.filter(name => Object.hasOwn(owners, name)),
+                held  = names.redeemed.filter(name => !owned.includes(name) && typeof env[name] === 'string');
 
-            if (names.required.some(name => typeof env[name] !== 'string')) {
+            if (names.required.some(name => !owned.includes(name) && !held.includes(name))) {
                 revokeServer(server, REASONS.CREDENTIAL_MISSING);
                 continue
             }
 
-            server.env   = Object.fromEntries(names.redeemed.filter(name => typeof env[name] === 'string').map(name => [name, env[name]]));
+            server.owned = owned;
+            server.env   = Object.fromEntries(held.map(name => [name, env[name]]));
             server.args  = row.target === 'tenant'
                 ? [path.join(row.sourceRoot, BRIDGE_ENTRYPOINT), '--url', row.url, '--token-env', row.credentialEnvVar]
                 : [...row.args];
             server.state = STATES.ACTIVE
         }
 
-        Object.assign(generation, {state: STATES.ACTIVE, activatedAt: new Date().toISOString(), probe});
+        Object.assign(generation, {state: STATES.ACTIVE, activatedAt: new Date().toISOString(), owners: {...owners}, probe});
         this.settle(generation);
 
         return this.statusOf(agentId)
     }
 
     /**
-     * @summary End a seat's generation for good: no grant of it admits again, and the values it held are
-     * dropped. Waiting redemptions are answered with the refusal.
+     * @summary End a seat's generation for good: no grant of it admits again, and the values and owners it
+     * held are dropped. Waiting redemptions are answered with the refusal.
      * @param {String} agentId
      * @param {String} reason A `LAUNCH_ADMISSION_REASONS` value.
      * @param {Object} [options]
@@ -252,7 +289,8 @@ class McpLaunchAdmissionService extends Base {
 
         if (!generation || (id && generation.id !== id) || generation.state === STATES.REVOKED) return false;
 
-        Object.assign(generation, {state: STATES.REVOKED, reason, revokedAt: new Date().toISOString(), probe: null});
+        Object.assign(generation, {state: STATES.REVOKED, reason, revokedAt: new Date().toISOString(), probe: null, owners: {}});
+        generation.proofs.clear();
         generation.servers.forEach(server => revokeServer(server, server.state === STATES.REVOKED ? server.reason : reason));
         this.settle(generation);
 
@@ -309,8 +347,13 @@ class McpLaunchAdmissionService extends Base {
 
     /**
      * @summary Answer one parsed request body. Every answer to a request whose proof holds is signed with its
-     * grant's secret and audited against the seat. The final checks run after any wait, with nothing awaited
-     * between them and the answer, so a revocation can never be overtaken.
+     * grant's secret and audited against the seat.
+     *
+     * Each seat credential the server needs is resolved from its owner and proved now, and the child gets
+     * exactly the value that proved. An owner holding nothing refuses `credential-missing`; a value that
+     * does not prove refuses `credential-unproven`. Neither ends the generation. The final checks run after
+     * every wait and proof, with nothing awaited between them and the answer, so a revocation can never be
+     * overtaken.
      * @param {*} body
      * @returns {Promise<Object>} The answer payload.
      */
@@ -336,9 +379,22 @@ class McpLaunchAdmissionService extends Base {
             return refuse(REFUSALS.PENDING_TIMEOUT)
         }
 
-        if (generation.state !== STATES.ACTIVE || server.state !== STATES.ACTIVE) {
-            return refuse(REFUSALS.REVOKED, server.reason ?? generation.reason)
-        }
+        const revoked = () => generation.state !== STATES.ACTIVE || server.state !== STATES.ACTIVE;
+
+        if (revoked()) return refuse(REFUSALS.REVOKED, server.reason ?? generation.reason);
+
+        const
+            owners      = server.owned.map(name => generation.owners[name]),
+            credentials = server.owned.map((name, index) => readOwner(owners[index])),
+            missing     = credentials.indexOf(null);
+
+        if (missing > -1) return refuse(REFUSALS.CREDENTIAL_MISSING, owners[missing].credential);
+
+        const unproven = (await Promise.all(server.owned.map((name, index) => this.prove(generation, name, credentials[index])))).indexOf(false);
+
+        if (unproven > -1) return refuse(REFUSALS.CREDENTIAL_UNPROVEN, owners[unproven].credential);
+
+        if (revoked()) return refuse(REFUSALS.REVOKED, server.reason ?? generation.reason);
 
         const observed = observeProcess(generation.probe);
 
@@ -349,7 +405,45 @@ class McpLaunchAdmissionService extends Base {
 
         if (observed !== 'live') return refuse(REFUSALS.PROCESS_UNKNOWN);
 
-        return answer({outcome: OUTCOMES.ADMITTED, env: {...server.env}, args: [...server.args]})
+        return answer({
+            outcome: OUTCOMES.ADMITTED,
+            env    : {...server.env, ...Object.fromEntries(server.owned.map((name, index) => [name, credentials[index]]))},
+            args   : [...server.args]
+        })
+    }
+
+    /**
+     * @summary Prove one credential value with its owner. Concurrent redemptions proving the same value share
+     * one proof; a proof that throws, answers anything but `ok: true`, or outlasts {@link proofTimeoutMs} did
+     * not prove.
+     * @param {Object} generation
+     * @param {String} name The name the value goes under.
+     * @param {String} value
+     * @returns {Promise<Boolean>}
+     * @protected
+     */
+    prove(generation, name, value) {
+        const
+            {owners, proofs} = generation,
+            key              = `${name}\0${crypto.createHash('sha256').update(value).digest('base64url')}`;
+
+        if (!proofs.has(key)) {
+            let timer;
+
+            const proof = Promise.race([
+                Promise.resolve().then(() => owners[name].prove(value)),
+                new Promise(resolve => (timer = setTimeout(resolve, this.proofTimeoutMs, null)).unref?.())
+            ])
+                .then(result => result?.ok === true, () => false)
+                .finally(() => {
+                    clearTimeout(timer);
+                    proofs.get(key) === proof && proofs.delete(key)
+                });
+
+            proofs.set(key, proof)
+        }
+
+        return proofs.get(key)
     }
 
     /**
@@ -524,7 +618,22 @@ function projectDefinition(definition) {
 
 /** @private */
 function revokeServer(server, reason) {
-    Object.assign(server, {state: STATES.REVOKED, reason, env: null, args: null})
+    Object.assign(server, {state: STATES.REVOKED, reason, env: null, args: null, owned: []})
+}
+
+/**
+ * @summary What a credential's owner holds now: a non-blank string, else `null`. An owner that throws holds
+ * nothing.
+ * @private
+ */
+function readOwner(owner) {
+    try {
+        const value = owner.resolve();
+
+        return typeof value === 'string' && value.trim() ? value : null
+    } catch {
+        return null
+    }
 }
 
 /**

@@ -131,10 +131,12 @@ async function readJson(fetchFn, url, headers, timeoutMs) {
  * @param {String}   options.credential
  * @param {Function} options.fetchFn
  * @param {Number}   options.timeoutMs
+ * @param {Boolean}  [options.addresses=true] Whether to list the account's addresses; without them only the public
+ *                                            one is a candidate.
  * @returns {Promise<{login: String, name: String|null, candidates: Object[]}>}
  * @private
  */
-async function readGithubAccount({credential, fetchFn, timeoutMs}) {
+async function readGithubAccount({credential, fetchFn, timeoutMs, addresses = true}) {
     const
         headers = {Accept: 'application/vnd.github+json', Authorization: `Bearer ${credential}`, 'X-GitHub-Api-Version': '2022-11-28'},
         user    = await readJson(fetchFn, `${GITHUB_API}/user`, headers, timeoutMs);
@@ -142,7 +144,7 @@ async function readGithubAccount({credential, fetchFn, timeoutMs}) {
     let emails = [];
 
     try {
-        emails = await readJson(fetchFn, `${GITHUB_API}/user/emails?per_page=100`, headers, timeoutMs)
+        if (addresses) emails = await readJson(fetchFn, `${GITHUB_API}/user/emails?per_page=100`, headers, timeoutMs)
     } catch (error) {
         if (error.status !== 403 && error.status !== 404) throw error
     }
@@ -181,6 +183,63 @@ async function readGitlabAccount({forgeHost, credential, fetchFn, timeoutMs}) {
 }
 
 /**
+ * @summary The forge account a PAT answers for, read at the origin that PAT belongs to and held against the seat's own
+ * login (`githubUsername`, compared as the forge does, without case).
+ * @param {Object}   options
+ * @param {Object}   options.agent
+ * @param {String}   options.credential
+ * @param {Function} options.fetchFn
+ * @param {Number}   options.timeoutMs
+ * @param {Boolean}  options.addresses Whether the account's addresses are needed.
+ * @returns {Promise<Object>} `{state: 'own', account}`, `{state: 'mismatch', found, reason}`, or
+ *     `{state: 'unknown', reason}`.
+ * @private
+ */
+async function readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses}) {
+    let account;
+
+    try {
+        account = agent?.forge === 'gitlab'
+            ? await readGitlabAccount({forgeHost: agent.forgeHost, credential, fetchFn, timeoutMs})
+            : await readGithubAccount({credential, fetchFn, timeoutMs, addresses})
+    } catch (error) {
+        return {state: 'unknown', reason: `its forge account could not be read (${error.message})`}
+    }
+
+    const
+        seatLogin = typeof agent?.githubUsername === 'string' ? agent.githubUsername.trim().replace(/^@/, '') : '',
+        readLogin = typeof account.login === 'string' ? account.login : '';
+
+    if (!seatLogin || readLogin.toLowerCase() !== seatLogin.toLowerCase()) {
+        return {
+            state : 'mismatch',
+            found : readLogin || null,
+            reason: `its PAT belongs to the forge account '${readLogin || '(unnamed)'}', not to the seat's '${seatLogin || '(none)'}'`
+        }
+    }
+
+    return {state: 'own', account}
+}
+
+/**
+ * @summary Proves that a PAT is the seat's own: its forge account is read, whatever Git identity the definition
+ * declares, because a declaration names the commits' author and says nothing about whose PAT this is.
+ * @param {Object}   options
+ * @param {Object}   options.agent                 The seat's definition: `githubUsername`, `forge`, and `forgeHost`
+ *                                                 for a GitLab seat.
+ * @param {String}   options.credential            The PAT to prove.
+ * @param {Function} [options.fetchFn=globalThis.fetch]
+ * @param {Number}   [options.timeoutMs=10000]     Per request.
+ * @returns {Promise<Object>} `{ok: true}`, or `{ok: false, reason: 'mismatch' | 'unknown'}`: another account's PAT, or
+ *     an account that could not be read.
+ */
+export async function proveSeatForgeAccount({agent, credential, fetchFn = globalThis.fetch, timeoutMs = 10000}) {
+    const read = await readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses: false});
+
+    return read.state === 'own' ? {ok: true} : {ok: false, reason: read.state}
+}
+
+/**
  * @summary The identity a seat's commits carry, and where it comes from.
  *
  * A declaration on the definition wins and needs no forge read. Otherwise the seat's own forge account is read with
@@ -208,31 +267,14 @@ export async function resolveSeatGitIdentity({agent, credential, fetchFn = globa
         return {state: 'declared', source: 'declared', name: agent.gitName, email: agent.gitEmail}
     }
 
-    let account;
+    const read = await readSeatAccount({agent, credential, fetchFn, timeoutMs, addresses: true});
 
-    try {
-        account = agent?.forge === 'gitlab'
-            ? await readGitlabAccount({forgeHost: agent.forgeHost, credential, fetchFn, timeoutMs})
-            : await readGithubAccount({credential, fetchFn, timeoutMs})
-    } catch (error) {
-        return {state: 'unknown', reason: `its forge account could not be read (${error.message})`}
-    }
+    if (read.state !== 'own') return read;
 
     const
-        seatLogin = typeof agent?.githubUsername === 'string' ? agent.githubUsername.trim().replace(/^@/, '') : '',
-        readLogin = typeof account.login === 'string' ? account.login : '';
-
-    if (!seatLogin || readLogin.toLowerCase() !== seatLogin.toLowerCase()) {
-        return {
-            state : 'mismatch',
-            found : readLogin || null,
-            reason: `its PAT belongs to the forge account '${readLogin || '(unnamed)'}', not to the seat's '${seatLogin || '(none)'}'`
-        }
-    }
-
-    const
-        name   = gitRecordedName(account.name ?? '') || gitRecordedName(account.login ?? ''),
-        chosen = account.candidates.find(candidate => isCommitEmail(candidate.email));
+        {account} = read,
+        name      = gitRecordedName(account.name ?? '') || gitRecordedName(account.login ?? ''),
+        chosen    = account.candidates.find(candidate => isCommitEmail(candidate.email));
 
     if (!name) {
         return {state: 'missing', reason: 'its forge account names neither a name nor a login'}

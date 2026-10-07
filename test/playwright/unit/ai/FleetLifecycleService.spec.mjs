@@ -2546,16 +2546,22 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
     const ADMISSION = {generation: 'generation-1', plan: [{key: 'memory-core', enabled: true}]};
 
-    test('a Start activates its reserved generation once the seat runs and is leased, with the values it injected and a proof of the process', () => {
-        const {calls, events, table} = installDesktopSeat();
+    test('a Start activates its reserved generation once the seat runs and is leased: its credentials by their owners, the rest as injected, and a proof of the process', () => {
+        const
+            {calls, events, table} = installDesktopSeat(),
+            pat                    = {credential: 'seat-pat'},
+            plane                  = {credential: 'plane-bearer'};
 
-        FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
+        FleetLifecycleService.start('seat', {resolvedMcpCredential: 'plane_fixture_only', launchAdmission: {...ADMISSION, owners: {pat, plane}}});
 
         const [activation] = calls.activate;
 
         expect(events).toEqual(['activate']);
         expect(activation).toMatchObject({generation: 'generation-1', agentId: 'seat', plan: ADMISSION.plan});
-        expect(activation.env).toMatchObject({GH_TOKEN: FIXTURE_PAT, NEO_FLEET_BRIDGE_TOKEN: 'bridge_seat_token', NEO_AGENT_IDENTITY: 'neo-opus-ada'});
+        expect(activation.owners).toEqual({GH_TOKEN: pat, NEO_MCP_REMOTE_TOKEN: plane});
+        expect(activation.env).toMatchObject({NEO_FLEET_BRIDGE_TOKEN: 'bridge_seat_token', NEO_AGENT_IDENTITY: 'neo-opus-ada'});
+        expect(activation.env, 'a seat credential reaches a child only through its owner').not.toHaveProperty('GH_TOKEN');
+        expect(activation.env).not.toHaveProperty('NEO_MCP_REMOTE_TOKEN');
         expect(activation.probe()).toBe('live');
 
         table.startedAt = 'Thu Oct  1 09:30:00 2026';
@@ -2563,6 +2569,18 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
         table.alive = false;
         expect(activation.probe()).toBe('gone')
+    });
+
+    test('a credential Start named no owner for is held by nobody: never taken from what the seat was given', () => {
+        const {calls} = installDesktopSeat();
+
+        FleetLifecycleService.start('seat', {launchAdmission: ADMISSION});
+
+        const [activation] = calls.activate;
+
+        expect(activation.owners).toEqual({});
+        expect(activation.env).not.toHaveProperty('GH_TOKEN');
+        expect(activation.env).toHaveProperty('NEO_FLEET_BRIDGE_TOKEN')
     });
 
     test('a seat that cannot be leased revokes its generation before it is stopped, and never activates it', () => {

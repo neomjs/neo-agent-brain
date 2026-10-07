@@ -7,6 +7,7 @@ import {
     convergeSeatGitIdentity,
     gitIdentityEnv,
     normalizeGitIdentityDeclaration,
+    proveSeatForgeAccount,
     resolveSeatGitIdentity
 } from '../../../../../../ai/services/fleet/seatGitIdentity.mjs';
 
@@ -281,6 +282,31 @@ test.describe('resolveSeatGitIdentity', () => {
             {fetchFn} = forge({'https://gitlab.example.test/api/v4/user': {body: {username: 'other-agent', name: 'Other Agent', commit_email: 'other@example.test'}}});
 
         expect(await resolveSeatGitIdentity({agent, credential: 'glpat_other', fetchFn})).toMatchObject({state: 'mismatch', found: 'other-agent'});
+    });
+});
+
+test.describe('proveSeatForgeAccount', () => {
+    test('a declared Git identity proves nothing about the PAT: the account is read, and only the seat\'s own proves', async () => {
+        const
+            declared         = {...GITHUB_SEAT, gitName: 'Declared', gitEmail: 'declared@example.test'},
+            {calls, fetchFn} = forge({[GITHUB_USER]: {body: {login: 'Seat-Agent', name: 'Seat Agent'}}});
+
+        expect(await proveSeatForgeAccount({agent: declared, credential: 'ghp_seat', fetchFn})).toEqual({ok: true});
+        expect(calls, 'one read, and no addresses').toEqual([{url: GITHUB_USER, authorization: 'Bearer ghp_seat'}]);
+
+        const other = forge({[GITHUB_USER]: {body: {login: 'different-account'}}});
+
+        expect(await proveSeatForgeAccount({agent: declared, credential: 'ghp_other', fetchFn: other.fetchFn})).toEqual({ok: false, reason: 'mismatch'})
+    });
+
+    test('an account that cannot be read proves nothing, at GitHub or at a GitLab seat\'s instance', async () => {
+        const
+            gitlab = {id: 'seat', githubUsername: 'seat-agent', forge: 'gitlab', forgeHost: 'https://gitlab.example.test'},
+            mine   = forge({'https://gitlab.example.test/api/v4/user': {body: {username: 'seat-agent'}}});
+
+        expect(await proveSeatForgeAccount({agent: GITHUB_SEAT, credential: 'ghp_revoked', fetchFn: forge({}).fetchFn})).toEqual({ok: false, reason: 'unknown'});
+        expect(await proveSeatForgeAccount({agent: gitlab, credential: 'glpat_seat', fetchFn: mine.fetchFn})).toEqual({ok: true});
+        expect(mine.calls).toEqual([{url: 'https://gitlab.example.test/api/v4/user', authorization: 'Bearer glpat_seat'}])
     });
 });
 

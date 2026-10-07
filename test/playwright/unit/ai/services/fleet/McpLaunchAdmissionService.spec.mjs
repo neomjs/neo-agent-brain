@@ -37,16 +37,42 @@ const
     REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../..'),
     LAUNCHER  = path.join(REPO_ROOT, 'ai/mcp/client/fleetMcpLauncher.mjs'),
     LOGIN     = 'neo-opus-ada',
-    // what Start injected into the seat: its PAT, its plane bearer, its Bridge token, its placement
+    PAT       = 'ghp_fixture_seat_pat',
+    BEARER    = 'plane-fixture-bearer',
+    // what Start injected into the seat, less the credentials its owners keep: the Bridge token, the placement
     START_ENV = Object.freeze({
-        GH_TOKEN              : 'ghp_fixture_seat_pat',
-        NEO_MCP_REMOTE_TOKEN  : 'plane-fixture-bearer',
         NEO_FLEET_BRIDGE_TOKEN: 'bridge-fixture-token',
         NEO_AGENT_IDENTITY    : LOGIN,
         NEO_PLANE_DATA_ROOT   : '/plane',
         HOME                  : '/Users/seat'
     }),
     service   = McpLaunchAdmissionService;
+
+/**
+ * @summary The owners Start names for the seat's PAT and plane credential. Each holds `held[name]` and proves a value
+ * when `proves(name, value)` resolves true; every proof is recorded as `[name, value]`.
+ */
+function makeOwners({held = {GH_TOKEN: PAT, NEO_MCP_REMOTE_TOKEN: BEARER}, proves = () => true} = {}) {
+    const
+        state  = {held: {...held}, proves, proofs: []},
+        owner  = (name, credential) => ({
+            credential,
+            resolve: () => state.held[name] ?? null,
+            prove  : async value => { state.proofs.push([name, value]); return {ok: await state.proves(name, value)} }
+        });
+
+    state.owners = {GH_TOKEN: owner('GH_TOKEN', 'seat-pat'), NEO_MCP_REMOTE_TOKEN: owner('NEO_MCP_REMOTE_TOKEN', 'plane-bearer')};
+
+    return state
+}
+
+/** @summary A promise the test settles by hand. */
+function deferred() {
+    let resolve;
+    const promise = new Promise(settle => resolve = settle);
+
+    return {promise, resolve}
+}
 
 /** @summary A registry definition of a Claude Desktop seat whose Fleet id is not its login. */
 function seatDefinition(overrides = {}) {
@@ -88,10 +114,10 @@ function makeRegistry() {
 }
 
 /** @summary Reserve and activate a seat whose process the probe reports. */
-async function activeSeat({definition = seatDefinition(), registry = null, probe = () => 'live', plan = boundPlan(), env = START_ENV} = {}) {
+async function activeSeat({definition = seatDefinition(), registry = null, probe = () => 'live', plan = boundPlan(), env = START_ENV, owners = makeOwners().owners} = {}) {
     const reservation = await service.reserve({agent: definition, registry});
 
-    service.activate({generation: reservation.generation, agentId: definition.id, plan, env, probe});
+    service.activate({generation: reservation.generation, agentId: definition.id, plan, env, owners, probe});
 
     return reservation
 }
@@ -100,7 +126,8 @@ test.beforeEach(() => {
     service.generations.clear();
     service.grants.clear();
     service.unattributed.length = 0;
-    service.pendingTimeoutMs = 30000
+    service.pendingTimeoutMs = 30000;
+    service.proofTimeoutMs   = 10000
 });
 
 test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
@@ -119,19 +146,19 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
         await expect(service.reserve({agent: seatDefinition({githubUsername: '@'})})).rejects.toThrow('has no valid githubUsername identity')
     });
 
-    test('activation hands each server exactly its own values: the tenant credential slot, the PAT, the Bridge token', async () => {
+    test('each server gets exactly its own values: a seat credential from its owner, the Bridge token as Start injected it', async () => {
         const reservation = await activeSeat();
 
         const mc = await redeem(reservation.grants['memory-core'], {server: 'memory-core'});
 
         expect(mc).toEqual({
             outcome: 'admitted',
-            env    : {NEO_MCP_REMOTE_TOKEN: 'plane-fixture-bearer'},
+            env    : {NEO_MCP_REMOTE_TOKEN: BEARER},
             args   : ['/installed/neo/ai/mcp/client/stdioToStreamableHttp.mjs', '--url', 'https://plane.example.test/mc/mcp', '--token-env', 'NEO_MCP_REMOTE_TOKEN']
         });
         expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).toEqual({
             outcome: 'admitted',
-            env    : {GH_TOKEN: 'ghp_fixture_seat_pat'},
+            env    : {GH_TOKEN: PAT},
             args   : ['/installed/neo/ai/mcp/server/github-workflow/mcp-server.mjs']
         });
         expect(await redeem(reservation.grants['neural-link'], {server: 'neural-link'})).toEqual({
@@ -141,10 +168,10 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
         })
     });
 
-    test('a server whose required value Start did not hold is revoked at activation; the others are admitted', async () => {
+    test('a server whose required value has neither an owner nor a value from Start is revoked at activation; the others are admitted', async () => {
         const
-            {GH_TOKEN, ...withoutPat} = START_ENV,
-            reservation               = await activeSeat({env: withoutPat});
+            {GH_TOKEN, ...planeOnly} = makeOwners().owners,
+            reservation              = await activeSeat({owners: planeOnly});
 
         expect(service.statusOf('seat').servers).toContainEqual({key: 'github-workflow', state: 'revoked', reason: 'credential-missing'});
         expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'credential-missing'});
@@ -176,7 +203,7 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
 
         const pending = redeem(reservation.grants['memory-core'], {server: 'memory-core'});
 
-        service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, probe: () => 'live'});
+        service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
         expect((await pending).outcome).toBe('admitted');
 
         reservation = await service.reserve({agent: seatDefinition()});
@@ -234,10 +261,11 @@ test.describe('McpLaunchAdmissionService — a generation\'s grants', () => {
         expect(service.revoke('seat', 'stop-requested')).toBe(true);
         expect(service.revoke('seat', 'process-exited'), 'the first reason stands').toBe(false);
 
-        service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, probe: () => 'live'});
+        service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
 
         expect(service.statusOf('seat', {running: true})).toMatchObject({state: 'revoked', reason: 'stop-requested'});
-        expect(JSON.stringify([...service.generations.get('seat').servers.values()])).not.toContain('ghp_fixture_seat_pat');
+        expect(service.generations.get('seat').owners, 'nor does it keep an owner').toEqual({});
+        expect(JSON.stringify([...service.generations.get('seat').servers.values()])).not.toContain('bridge-fixture-token');
         expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'})
     });
 
@@ -289,9 +317,172 @@ test.describe('McpLaunchAdmissionService — committed registry changes', () => 
             reservation = await service.reserve({agent: seatDefinition(), registry});
 
         registry.fire('definitionChange', {id: 'seat', previous: null, next: seatDefinition({mcpServers: {'github-workflow': false}})});
-        service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, probe: () => 'live'});
+        service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
 
         expect(service.statusOf('seat').servers).toContainEqual({key: 'github-workflow', state: 'revoked', reason: 'server-disabled'})
+    });
+
+    test('a write committed after the caller read the definition, before it reserved, revokes what it would at once', async () => {
+        for (const [current, expected] of [
+            [seatDefinition({mcpServers: {'github-workflow': false}}), {state: 'reserved', github: {key: 'github-workflow', state: 'revoked', reason: 'server-disabled'}}],
+            [seatDefinition({mcpTarget: {kind: 'tenant', tenantId: 'other'}}), {state: 'revoked', reason: 'plan-changed'}],
+            [null, {state: 'revoked', reason: 'agent-removed'}],
+            [seatDefinition(), {state: 'reserved', github: {key: 'github-workflow', state: 'reserved', reason: null}}]
+        ]) {
+            const registry = makeRegistry();
+
+            registry.getDefinition = id => id === 'seat' ? current : null;
+
+            const reservation = await service.reserve({agent: seatDefinition(), registry}), status = service.statusOf('seat');
+
+            expect(status, JSON.stringify(current)).toMatchObject({state: expected.state, ...(expected.reason ? {reason: expected.reason} : {})});
+            expected.github && expect(status.servers).toContainEqual(expected.github);
+
+            service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
+            expect((await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).outcome, JSON.stringify(current))
+                .toBe(expected.github?.state === 'reserved' ? 'admitted' : 'refused')
+        }
+    });
+
+    test('a switch-off or a Stop while the reservation awaits its listener lands on it; a listener that fails revokes it', async () => {
+        const gate = deferred();
+
+        service.listen = () => gate.promise;
+
+        try {
+            const
+                registry = makeRegistry(),
+                switched = service.reserve({agent: seatDefinition(), registry});
+
+            registry.fire('definitionChange', {id: 'seat', previous: null, next: seatDefinition({mcpServers: {'github-workflow': false}})});
+            gate.resolve('http://127.0.0.1:1');
+
+            const reservation = await switched;
+
+            service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
+            expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'server-disabled'});
+
+            const stopped = service.reserve({agent: seatDefinition()});
+
+            expect(service.revoke('seat', 'stop-requested'), 'the reservation exists before the listener answers').toBe(true);
+
+            const second = await stopped;
+
+            service.activate({generation: second.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
+            expect(await redeem(second.grants['memory-core'], {server: 'memory-core'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+
+            service.listen = () => Promise.reject(new Error('listen EADDRINUSE'));
+            await expect(service.reserve({agent: seatDefinition()})).rejects.toThrow('EADDRINUSE');
+            expect(service.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'start-failed'})
+        } finally {
+            delete service.listen
+        }
+    });
+});
+
+test.describe('McpLaunchAdmissionService — seat credentials, redeemed from their owners', () => {
+    test('each redemption resolves the credential from its owner and proves it; a later child gets what the owner holds then', async () => {
+        const
+            owners      = makeOwners(),
+            reservation = await activeSeat({owners: owners.owners}),
+            github      = () => redeem(reservation.grants['github-workflow'], {server: 'github-workflow'});
+
+        expect((await github()).env).toEqual({GH_TOKEN: PAT});
+
+        owners.held.GH_TOKEN = 'ghp_fixture_rebound';
+        expect((await github()).env).toEqual({GH_TOKEN: 'ghp_fixture_rebound'});
+        expect(owners.proofs).toEqual([['GH_TOKEN', PAT], ['GH_TOKEN', 'ghp_fixture_rebound']]);
+
+        // the issuer keeps neither value
+        expect(JSON.stringify([...service.generations.get('seat').servers.values()])).not.toMatch(/ghp_fixture/)
+    });
+
+    test('an owner holding nothing refuses credential-missing and an unproved value credential-unproven; neither ends the generation or falls back', async () => {
+        const
+            owners      = makeOwners(),
+            reservation = await activeSeat({owners: owners.owners}),
+            redeemOn    = server => redeem(reservation.grants[server], {server});
+
+        owners.held.GH_TOKEN = null;
+        expect(await redeemOn('github-workflow')).toEqual({outcome: 'refused', code: 'credential-missing', reason: 'seat-pat'});
+
+        // a registry PAT B never stands in for the plane credential A the seat's plane owner holds
+        owners.held.GH_TOKEN = 'ghp_fixture_b';
+        owners.proves        = name => name !== 'GH_TOKEN';
+        expect(await redeemOn('github-workflow')).toEqual({outcome: 'refused', code: 'credential-unproven', reason: 'seat-pat'});
+        expect((await redeemOn('memory-core')).env).toEqual({NEO_MCP_REMOTE_TOKEN: BEARER});
+
+        owners.owners.GH_TOKEN.resolve = () => { throw new Error('store unreadable') };
+        expect((await redeemOn('github-workflow')).code).toBe('credential-missing');
+
+        owners.owners.NEO_MCP_REMOTE_TOKEN.prove = async () => { throw new Error('plane unreachable') };
+        expect(await redeemOn('knowledge-base')).toEqual({outcome: 'refused', code: 'credential-unproven', reason: 'plane-bearer'});
+
+        expect(service.statusOf('seat').state).toBe('active');
+        expect(service.statusOf('seat').recent.map(entry => [entry.server, entry.code, entry.reason])).toEqual([
+            ['github-workflow', 'credential-missing', 'seat-pat'],
+            ['github-workflow', 'credential-unproven', 'seat-pat'],
+            ['memory-core', null, null],
+            ['github-workflow', 'credential-missing', 'seat-pat'],
+            ['knowledge-base', 'credential-unproven', 'plane-bearer']
+        ])
+    });
+
+    test('the checks after the proof decide: a Stop, a switch-off or the process ending while it runs refuses', async () => {
+        for (const [interrupt, reason] of [
+            [() => service.revoke('seat', 'stop-requested'), 'stop-requested'],
+            [registry => registry.fire('definitionChange', {id: 'seat', previous: null, next: seatDefinition({mcpServers: {'github-workflow': false}})}), 'server-disabled'],
+            [(registry, seat) => seat.observed = 'gone', 'process-exited']
+        ]) {
+            const
+                registry    = makeRegistry(),
+                seat        = {observed: 'live'},
+                proof       = deferred(),
+                owners      = makeOwners({proves: () => proof.promise}),
+                reservation = await activeSeat({registry, owners: owners.owners, probe: () => seat.observed}),
+                answer      = redeem(reservation.grants['github-workflow'], {server: 'github-workflow'});
+
+            await expect.poll(() => owners.proofs.length).toBe(1);
+            interrupt(registry, seat);
+            proof.resolve(true);
+
+            expect(await answer, reason).toEqual({outcome: 'refused', code: 'revoked', reason})
+        }
+    });
+
+    test('the child gets exactly the value that proved, even when its owner changes while the proof runs', async () => {
+        const
+            proof       = deferred(),
+            owners      = makeOwners({proves: () => proof.promise}),
+            reservation = await activeSeat({owners: owners.owners}),
+            answer      = redeem(reservation.grants['github-workflow'], {server: 'github-workflow'});
+
+        await expect.poll(() => owners.proofs.length).toBe(1);
+        owners.held.GH_TOKEN = 'ghp_fixture_written_meanwhile';
+        proof.resolve(true);
+
+        expect((await answer).env).toEqual({GH_TOKEN: PAT})
+    });
+
+    test('concurrent redemptions of one value share its proof, the next one proves again, and a proof past its bound has not proved', async () => {
+        const
+            proof       = deferred(),
+            owners      = makeOwners({proves: () => proof.promise}),
+            reservation = await activeSeat({owners: owners.owners}),
+            answers     = Promise.all(['memory-core', 'knowledge-base', 'memory-core'].map(server => redeem(reservation.grants[server], {server})));
+
+        await expect.poll(() => owners.proofs.length).toBe(1);
+        proof.resolve(true);
+        expect((await answers).map(answer => answer.outcome)).toEqual(['admitted', 'admitted', 'admitted']);
+        expect(owners.proofs).toEqual([['NEO_MCP_REMOTE_TOKEN', BEARER]]);
+
+        owners.proves = () => true;
+        await redeem(reservation.grants['memory-core'], {server: 'memory-core'});
+        expect(owners.proofs).toHaveLength(2);
+
+        service.proofTimeoutMs = 20;
+        owners.proves          = () => new Promise(() => {});
+        expect(await redeem(reservation.grants['memory-core'], {server: 'memory-core'})).toEqual({outcome: 'refused', code: 'credential-unproven', reason: 'plane-bearer'})
     });
 });
 
@@ -412,7 +603,8 @@ test.describe('McpLaunchAdmissionService — a Desktop row launched for real', (
                 generation: reservation.generation,
                 agentId   : 'seat',
                 plan      : boundPlan({url: fixture.url, root: REPO_ROOT}),
-                env       : {...START_ENV, NEO_MCP_REMOTE_TOKEN: token},
+                env       : START_ENV,
+                owners    : makeOwners({held: {NEO_MCP_REMOTE_TOKEN: token}}).owners,
                 probe     : () => 'live'
             });
 

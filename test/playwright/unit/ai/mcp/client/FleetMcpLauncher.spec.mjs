@@ -93,6 +93,23 @@ test.describe('fleetMcpLauncher', () => {
             .rejects.toMatchObject({code: 'revoked', reason: 'stop-requested', message: expect.stringContaining('restart the seat there')})
     });
 
+    test('a credential refusal names the credential and asks for no restart; a reason outside the vocabularies is dropped', async () => {
+        const
+            grant  = mintLaunchGrant(),
+            refuse = payload => admitLaunch({
+                argv   : ['--server', 'github-workflow'],
+                env    : rowEnv(grant),
+                request: issuer(grant, (request, owned) => signLaunchResponse(owned.secret, request, {outcome: 'refused', ...payload}))
+            });
+
+        await expect(refuse({code: 'credential-unproven', reason: 'seat-pat'})).rejects.toMatchObject({
+            code   : 'credential-unproven',
+            reason : 'seat-pat',
+            message: "Neo MCP launch refused (credential-unproven, seat-pat). Fleet Manager shows this seat's admission."
+        });
+        await expect(refuse({code: 'revoked', reason: 'ghp_echoed_secret'})).rejects.toMatchObject({code: 'revoked', reason: null})
+    });
+
     test('a row without a well-formed grant, issuer or identity refuses before it asks anyone', async () => {
         const grant = mintLaunchGrant();
 

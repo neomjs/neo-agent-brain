@@ -6,8 +6,10 @@ import http                                     from 'node:http';
 import path                                     from 'node:path';
 import {fileURLToPath, pathToFileURL}           from 'node:url';
 import {
-    LAUNCH_ADMISSION_OUTCOMES as OUTCOMES,
-    LAUNCH_ADMISSION_REFUSALS as REFUSALS
+    LAUNCH_ADMISSION_CREDENTIALS as CREDENTIALS,
+    LAUNCH_ADMISSION_OUTCOMES    as OUTCOMES,
+    LAUNCH_ADMISSION_REASONS     as REASONS,
+    LAUNCH_ADMISSION_REFUSALS    as REFUSALS
 }                                               from '../../../src/fleet/contract/launchAdmission.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
@@ -24,22 +26,27 @@ import {
 const
     // The installation this launcher belongs to: an admitted target must be one of its files.
     INSTALL_ROOT      = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..'),
-    // Longer than the issuer's own bound for a Start still in progress.
+    // Longer than the issuer's own bounds together: a Start still in progress, then a credential proof.
     REQUEST_TIMEOUT_MS = 45000,
     FORWARDED_SIGNALS = ['SIGHUP', 'SIGINT', 'SIGTERM'],
-    REFUSAL_CODES     = new Set(Object.values(REFUSALS));
+    REFUSAL_CODES     = new Set(Object.values(REFUSALS)),
+    REFUSAL_REASONS   = new Set([...Object.values(REASONS), ...Object.values(CREDENTIALS)]);
 
 /**
- * @summary A refusal the launcher reports on its one stderr line: a code from the closed vocabulary and,
- * for `revoked`, the issuer's reason. Never a value from the environment or an answer body.
+ * @summary A refusal the launcher reports on its one stderr line: a code and the issuer's reason, each from
+ * its closed vocabulary. Never a value from the environment or other text an answer carries.
  */
 export class LaunchRefusal extends Error {
     /**
      * @param {String} code A `LAUNCH_ADMISSION_REFUSALS` value.
-     * @param {String|null} [reason=null] A `LAUNCH_ADMISSION_REASONS` value.
+     * @param {String|null} [reason=null] A `LAUNCH_ADMISSION_REASONS` value for `revoked`, a
+     *     `LAUNCH_ADMISSION_CREDENTIALS` value for a credential refusal.
      */
     constructor(code, reason = null) {
-        super(`Neo MCP launch refused (${code}${reason ? `, ${reason}` : ''}). Fleet Manager shows this seat's admission; restart the seat there.`);
+        // a restart does not mend a credential: its owner does, and the next child redeems it again
+        const restart = code !== REFUSALS.CREDENTIAL_MISSING && code !== REFUSALS.CREDENTIAL_UNPROVEN;
+
+        super(`Neo MCP launch refused (${code}${reason ? `, ${reason}` : ''}). Fleet Manager shows this seat's admission${restart ? '; restart the seat there' : ''}.`);
 
         this.name   = 'LaunchRefusal';
         this.code   = code;
@@ -154,7 +161,7 @@ export async function admitLaunch({argv, env, root = INSTALL_ROOT, request = pos
     }
 
     if (payload.outcome !== OUTCOMES.ADMITTED) {
-        throw new LaunchRefusal(REFUSAL_CODES.has(payload.code) ? payload.code : REFUSALS.UNAUTHENTICATED, typeof payload.reason === 'string' ? payload.reason : null)
+        throw new LaunchRefusal(REFUSAL_CODES.has(payload.code) ? payload.code : REFUSALS.UNAUTHENTICATED, REFUSAL_REASONS.has(payload.reason) ? payload.reason : null)
     }
 
     return {args: resolveTarget(payload.args, root), env: composeTargetEnv(env, payload.env)}

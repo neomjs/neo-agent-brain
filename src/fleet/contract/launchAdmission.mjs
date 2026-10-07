@@ -70,9 +70,23 @@ export const LAUNCH_ADMISSION_OUTCOMES = Object.freeze({
 });
 
 /**
- * @summary Why a redemption was refused. The issuer records the codes up to `process-unknown`. The
+ * @summary Which seat credential a `credential-missing` or `credential-unproven` refusal names as its reason.
+ * Each is resolved from its own owner at every redemption and proved there, never replaced by the other.
+ * - `seat-pat`: the seat's forge PAT, held by the registry. It must answer for the seat's own login.
+ * - `plane-bearer`: the seat's plane credential, held by its explicit tenant or its plane binding.
+ * @type {Readonly<{SEAT_PAT: String, PLANE_BEARER: String}>}
+ */
+export const LAUNCH_ADMISSION_CREDENTIALS = Object.freeze({
+    SEAT_PAT    : 'seat-pat',
+    PLANE_BEARER: 'plane-bearer'
+});
+
+/**
+ * @summary Why a redemption was refused. The issuer records the codes up to `credential-unproven`. The
  * launcher reports the last four itself, because they arise where no issuer answered or none can be
- * trusted. `revoked` carries the grant's revocation reason separately.
+ * trusted. `revoked` carries the grant's revocation reason separately, and the two credential codes a
+ * `LAUNCH_ADMISSION_CREDENTIALS` value. A credential refusal ends nothing: the next child is admitted once
+ * the credential's owner holds a value that proves.
  * @type {Readonly<Object<String, String>>}
  */
 export const LAUNCH_ADMISSION_REFUSALS = Object.freeze({
@@ -92,6 +106,10 @@ export const LAUNCH_ADMISSION_REFUSALS = Object.freeze({
     PENDING_TIMEOUT        : 'pending-timeout',
     /** The seat's Desktop process answers but cannot be identified, so no new child starts. */
     PROCESS_UNKNOWN        : 'process-unknown',
+    /** The credential's owner holds no value for the seat. */
+    CREDENTIAL_MISSING     : 'credential-missing',
+    /** The value the credential's owner holds did not prove: another account's, or no proof could be made. */
+    CREDENTIAL_UNPROVEN    : 'credential-unproven',
     /** The launcher could not reach an issuer, for example after a Fleet restart. */
     ISSUER_UNAVAILABLE     : 'issuer-unavailable',
     /** An answer carried no valid proof of the issuer that holds the grant. */

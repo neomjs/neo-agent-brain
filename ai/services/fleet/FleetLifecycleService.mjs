@@ -562,9 +562,11 @@ class FleetLifecycleService extends Base {
      *     snapshot instead of re-reading a mutable AiConfig path after preparation.
      * @param {Object} [opts.gitIdentity] `{name, email}` the seat commits as, injected as author and committer
      *     under the four reserved `GIT_AUTHOR_*` / `GIT_COMMITTER_*` slots.
-     * @param {Object} [opts.launchAdmission] `{generation, plan}`: a Claude Desktop seat's reserved launch
-     *     admission and its bound MCP plan. Once the seat is launched and leased, the generation is activated
-     *     with the environment injected here and bound to the launched process; a lease that fails revokes it.
+     * @param {Object} [opts.launchAdmission] `{generation, plan, owners}`: a Claude Desktop seat's reserved
+     *     launch admission, its bound MCP plan, and `owners.pat` / `owners.plane`, the owners Start selected for
+     *     the seat's PAT and plane credential. Once the seat is launched and leased, the generation is activated
+     *     and bound to the launched process. The credentials reach its children only through those owners,
+     *     never from the environment injected here; a lease that fails revokes it.
      * @returns {Object} status (see {@link status}).
      */
     start(id, opts = {}) {
@@ -946,12 +948,20 @@ class FleetLifecycleService extends Base {
 
             // the seat now runs and is leased: its profile rows' grants may admit its MCP children
             if (opts.launchAdmission) {
+                const
+                    owners = opts.launchAdmission.owners ?? {},
+                    slots  = {
+                        [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
+                        [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                       : owners.plane
+                    };
+
                 record.admissionGeneration = opts.launchAdmission.generation;
                 this.getLaunchAdmission().activate({
                     generation: opts.launchAdmission.generation,
                     agentId   : id,
                     plan      : opts.launchAdmission.plan,
-                    env,
+                    env       : Object.fromEntries(Object.entries(env).filter(([name]) => !Object.hasOwn(slots, name))),
+                    owners    : Object.fromEntries(Object.entries(slots).filter(([, owner]) => owner)),
                     probe     : () => this.probeSeat(record)
                 })
             }
