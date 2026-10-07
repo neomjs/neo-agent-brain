@@ -1196,8 +1196,8 @@ class FleetControlBridge extends Base {
 
     /**
      * @summary WRITE: move a Task the operator holds, under the TRANSPORT-STAMPED request identity.
-     * `MailboxService.transitionTask` decides which moves its recipient may make (neomjs/neo-agent-brain#860)
-     * and refuses the rest with its reason; this verb only routes.
+     * `MailboxService.transitionTask` decides which moves its recipient may make and refuses the
+     * rest with its reason; this verb only routes.
      * @param {Object} params
      * @param {String} params.messageId              The MESSAGE that carries the Task.
      * @param {String} params.newState
