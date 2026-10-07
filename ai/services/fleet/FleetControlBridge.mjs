@@ -95,6 +95,40 @@ function rejectionOf(error, callers) {
 }
 
 /**
+ * The Task moves `MailboxService.transitionTask` refuses by throwing, recognized by the fixed shape of its
+ * message. Only a code, a fixed reason, the caller's role and two state names cross the wire; the message
+ * never does. Its other throws are faults, which the dispatcher keeps generic. A spec pins each shape to the
+ * primitive's source.
+ * @type {Object[]}
+ */
+const TASK_REFUSALS = Object.freeze([
+    {code: 'invalid-state',      pattern: /^Invalid new task state: /,                                                      reason: () => 'that is not a Task state'},
+    {code: 'task-not-found',     pattern: /^Task not found: /,                                                              reason: () => 'no Task has that id'},
+    {code: 'not-a-task',         pattern: /^Message \S+ is not an A2A Task /,                                               reason: () => 'that message carries no Task'},
+    {code: 'not-a-participant',  pattern: /^Unauthorized: \S+ is neither originator nor assignee for task /,                reason: () => "only the Task's originator or assignee can move it"},
+    {code: 'transition-refused', pattern: /^Unauthorized: \S+ as (originator|assignee) cannot transition `(\w+) → (\w+)`$/, reason: ([, role, from, to]) => `the ${role} cannot move this Task from ${from} to ${to}`}
+]);
+
+/**
+ * @summary A Task move the primitive refused, as a domain outcome in its own refusal shape. A plane answers
+ * the same throw as its tool-error text (`Error executing transition_task: …`).
+ * @param {Error} error
+ * @returns {{success: false, rowsAffected: 0, code: String, reason: String}|null} `null` for any other failure.
+ * @private
+ */
+function taskRefusalOf(error) {
+    const message = String(error?.message ?? '').replace(/^Error executing transition_task: /, '');
+
+    for (const {code, pattern, reason} of TASK_REFUSALS) {
+        const match = pattern.exec(message);
+
+        if (match) return {success: false, rowsAffected: 0, code, reason: reason(match)}
+    }
+
+    return null
+}
+
+/**
  * @summary A provisioned start or restart as a domain outcome: the lifecycle record resolves, a refusal
  * its start path names is rejected, a workspace that could not be prepared answers its declared code
  * (never its message, which can carry local paths), and any other failure rethrows. The preparation
@@ -1196,13 +1230,14 @@ class FleetControlBridge extends Base {
 
     /**
      * @summary WRITE: move a Task the operator holds, under the TRANSPORT-STAMPED request identity.
-     * `MailboxService.transitionTask` decides which moves its recipient may make and refuses the
-     * rest with its reason; this verb only routes.
+     * `MailboxService.transitionTask` decides which moves its recipient may make; this verb only routes.
+     * A move it refuses comes back as `{success: false, reason}`: a lost race as the primitive returned
+     * it, a refused move with a typed `code` ({@link TASK_REFUSALS}).
      * @param {Object} params
      * @param {String} params.messageId              The MESSAGE that carries the Task.
      * @param {String} params.newState
      * @param {String} [params.expectedCurrentState] Optional guard against a concurrent move.
-     * @returns {Promise<Object>|Object} the primitive's answer, `not-wired`, or `rejected`.
+     * @returns {Promise<Object>|Object} the primitive's answer or refusal, `not-wired`, or `rejected`.
      */
     transitionOwnTask(params = {}) {
         const {messageId, newState, expectedCurrentState} = params ?? {};
@@ -1210,8 +1245,10 @@ class FleetControlBridge extends Base {
 
         if (expectedCurrentState !== undefined) args.expectedCurrentState = expectedCurrentState;
 
-        return callOwnInbox(this.composeWriter, 'transitionTask', messageId, args,
-            typeof newState === 'string' && newState ? null : 'newState must be a non-empty string')
+        const answer = callOwnInbox(this.composeWriter, 'transitionTask', messageId, args,
+            typeof newState === 'string' && newState ? null : 'newState must be a non-empty string');
+
+        return typeof answer?.then === 'function' ? answer.catch(error => taskRefusalOf(error) ?? Promise.reject(error)) : answer
     }
 
     /**

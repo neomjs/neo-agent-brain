@@ -1,9 +1,12 @@
 import {setup}                     from '../../../../setup.mjs';
 import {test, expect}              from '@playwright/test';
+import fs                          from 'fs';
 import Neo                         from 'neo.mjs/src/Neo.mjs';
 import * as core                   from 'neo.mjs/src/core/_export.mjs';
 import {wireOperatorComposeWriter} from '../../../../../../ai/services/fleet/wireOperatorComposeWriter.mjs';
 import FleetControlBridge          from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
+import {dispatchFleetRequest}      from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+import {createFleetWireOffer}      from '../../../../../../src/fleet/contract/wire.mjs';
 
 /**
  * @summary Contract of the compose-writer wiring + the composeOperatorMessage verb: the wire's
@@ -185,10 +188,44 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         expect(invoked).toBe(false)
     });
 
-    test('a refused transition comes back as the primitive answered it', async () => {
-        const refusal = {error: 'Unauthorized: only the originator may move InputRequired → Working'};
-        wireOperatorComposeWriter({addMessage: () => ({}), transitionTask: async () => refusal});
+    test('a refused move crosses the whole wire as its code and a fixed reason, in process and from a plane; a lost race as the primitive returned it', async () => {
+        const
+            move     = () => dispatchFleetRequest({method: 'transitionOwnTask', params: {messageId: 'MESSAGE:t', newState: 'Working'}, protocol: createFleetWireOffer()}),
+            throwing = message => async () => { throw new Error(message) },
+            denial   = 'Unauthorized: @tobiu as assignee cannot transition `Completed → Working`';
 
-        expect(await FleetControlBridge.transitionOwnTask({messageId: 'MESSAGE:t', newState: 'Working'})).toBe(refusal)
+        for (const message of [denial, `Error executing transition_task: ${denial}`]) {
+            wireOperatorComposeWriter({addMessage: () => ({}), transitionTask: throwing(message)});
+
+            expect(await move()).toMatchObject({ok: true, state: 'ok', result: {success: false, code: 'transition-refused', reason: 'the assignee cannot move this Task from Completed to Working'}})
+        }
+
+        wireOperatorComposeWriter({addMessage: () => ({}), transitionTask: throwing('Unauthorized: @tobiu is neither originator nor assignee for task MESSAGE:t')});
+        expect((await move()).result).toEqual({success: false, rowsAffected: 0, code: 'not-a-participant', reason: "only the Task's originator or assignee can move it"});
+
+        // control: a returned state conflict passes through unchanged
+        const conflict = {success: false, rowsAffected: 0, reason: 'State mismatch: expected Working, got Completed', task: {state: 'Completed'}};
+        wireOperatorComposeWriter({addMessage: () => ({}), transitionTask: async () => conflict});
+        expect((await move()).result).toEqual(conflict);
+
+        // a fault is no refusal: it stays generic, and its text never crosses
+        wireOperatorComposeWriter({addMessage: () => ({}), transitionTask: throwing('Task MESSAGE:t has ambiguous originators: expected 1 SENT_BY edge, got 2')});
+        const fault = await move();
+        expect(fault).toMatchObject({ok: false, state: 'operation-failed', error: "fleet: 'transitionOwnTask' failed"});
+        expect(JSON.stringify(fault)).not.toContain('SENT_BY')
+    });
+
+    test('each refusal shape the bridge recognizes is one the primitive throws', () => {
+        const source = fs.readFileSync(new URL('../../../../../../ai/services/memory-core/MailboxService.mjs', import.meta.url), 'utf8');
+
+        for (const template of [
+            'Invalid new task state: ${newState}',
+            'Task not found: ${taskId}',
+            'Message ${taskId} is not an A2A Task (missing task.state)',
+            'Unauthorized: ${me} is neither originator nor assignee for task ${taskId}',
+            'Unauthorized: ${me} as ${role} cannot transition \\`${currentState} → ${newState}\\`'
+        ]) {
+            expect(source, template).toContain(template)
+        }
     });
 });
