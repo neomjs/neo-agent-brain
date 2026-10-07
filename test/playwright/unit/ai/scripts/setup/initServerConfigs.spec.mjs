@@ -1382,6 +1382,25 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         return dir;
     };
 
+    // A repository root the materializer writes into: its package name is what tells an Engine
+    // checkout, which carries no `node_modules/neo.mjs`, from a consumer that does (#912).
+    const buildTargetRepo = (name, packageName, {settings} = {}) => {
+        const root = path.join(claudeRoot, name);
+        fs.mkdirSync(path.join(root, '.claude'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({name: packageName}));
+        fs.writeFileSync(path.join(root, 'settings.template.json'), JSON.stringify(TEMPLATE, null, 2));
+        if (settings !== undefined) fs.writeFileSync(path.join(root, '.claude/settings.json'), JSON.stringify(settings, null, 2));
+        return root;
+    };
+
+    const materializeInto = root => initClaudeSettings({
+        claudeDir   : path.join(root, '.claude'),
+        logger      : recordingLogger(),
+        templatePath: path.join(root, 'settings.template.json')
+    });
+
+    const readTargetSettings = root => JSON.parse(fs.readFileSync(path.join(root, '.claude/settings.json'), 'utf-8'));
+
     test.beforeAll(async () => {
         ({initClaudeSettings, mergeClaudeHooks, retargetClaudeHookCommands} =
             await import('../../../../../../ai/scripts/setup/initServerConfigs.mjs'));
@@ -1424,6 +1443,42 @@ test.describe('initClaudeSettings — Claude Stop-hook auto-wire (#13641)', () =
         expect(TEMPLATE.hooks.Stop[0].hooks[0].command)
             .toContain('/.claude/hooks/laneStateStopHook.mjs');
         expect(TEMPLATE.hooks.Stop[0].hooks[0].command).not.toContain('/node_modules/neo.mjs/')
+    });
+
+    test('the Engine package as target keeps its hook commands as authored, on a detached copy (#912)', () => {
+        const kept = retargetClaudeHookCommands(TEMPLATE, {targetPackageName: 'neo.mjs'});
+
+        expect(kept).toEqual(TEMPLATE);
+        expect(kept).not.toBe(TEMPLATE)
+    });
+
+    test('initClaudeSettings: an Engine checkout runs the guard it tracks, not one under node_modules/neo.mjs (#912)', async () => {
+        const root = buildTargetRepo('engine-target', 'neo.mjs');
+
+        expect((await materializeInto(root)).action).toBe('clone');
+        expect(readTargetSettings(root).hooks.PreToolUse).toEqual(TEMPLATE.hooks.PreToolUse)
+    });
+
+    test('initClaudeSettings: a consumer checkout still reaches the hooks through node_modules/neo.mjs (#912 control)', async () => {
+        const root = buildTargetRepo('consumer-target', 'neo-agent-brain');
+
+        expect((await materializeInto(root)).action).toBe('clone');
+        expect(readTargetSettings(root).hooks.PreToolUse[0].hooks[0].command)
+            .toContain('/node_modules/neo.mjs/.claude/hooks/rgReplaceGuardHook.mjs')
+    });
+
+    test('initClaudeSettings: an Engine seat holding the dead guard path is rewired to the live one (#912)', async () => {
+        // What every earlier hydration wrote into an Engine seat: the consumer retarget.
+        const
+            dead = retargetClaudeHookCommands(TEMPLATE).hooks,
+            root = buildTargetRepo('engine-seat', 'neo.mjs', {settings: {permissions: {allow: ['seat-perm']}, hooks: dead}});
+
+        expect((await materializeInto(root)).action).toBe('wired');
+
+        const written = readTargetSettings(root);
+
+        expect(written.hooks.PreToolUse).toEqual(TEMPLATE.hooks.PreToolUse);
+        expect(written.permissions.allow).toEqual(['seat-perm'])
     });
 
     test('initClaudeSettings: missing settings.json → clone (full template, enforce=1 command wired)', async () => {

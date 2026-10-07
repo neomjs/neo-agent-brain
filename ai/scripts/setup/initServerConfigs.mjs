@@ -36,7 +36,8 @@ const cwd                           = path.resolve(__dirname, '../../../');
 const serversDir                    = path.join(cwd, 'ai', 'mcp', 'server');
 const aiDir                         = path.join(cwd, 'ai');
 const require                       = createRequire(import.meta.url);
-const engineRoot                    = path.dirname(require.resolve('neo.mjs/package.json'));
+const ENGINE_PACKAGE_NAME           = 'neo.mjs';
+const engineRoot                    = path.dirname(require.resolve(`${ENGINE_PACKAGE_NAME}/package.json`));
 const defaultClaudeSettingsTemplate = path.join(engineRoot, '.claude/settings.template.json');
 
 const MIGRATE_FLAG                = '--migrate-config';
@@ -1139,11 +1140,23 @@ export function mergeClaudeHooks(activeSettings = {}, templateSettings = {}) {
  * template as an immutable dependency, so its generated settings must reach the same hooks through
  * `node_modules/neo.mjs` rather than a copied `.claude/hooks` tree.
  *
+ * The Engine itself is the one target left as authored: a package does not carry itself in its own
+ * `node_modules`, so a retargeted command in an Engine checkout names a file that cannot exist, and
+ * its hook fails without blocking anything (#912).
+ *
  * @param {Object} [templateSettings={}] Parsed Engine settings template.
- * @returns {Object} A detached settings object with package-qualified hook commands.
+ * @param {Object} [options]
+ * @param {String|null} [options.targetPackageName=null] `package.json` name of the repository the
+ *     settings are written into.
+ * @returns {Object} A detached settings object, its hook commands package-qualified unless the target
+ *     is the Engine.
  */
-export function retargetClaudeHookCommands(templateSettings = {}) {
+export function retargetClaudeHookCommands(templateSettings = {}, {targetPackageName = null} = {}) {
     const settings = structuredClone(templateSettings);
+
+    if (targetPackageName === ENGINE_PACKAGE_NAME) {
+        return settings
+    }
 
     Object.values(settings.hooks || {}).forEach(eventEntries => {
         eventEntries?.forEach(entry => {
@@ -1151,7 +1164,7 @@ export function retargetClaudeHookCommands(templateSettings = {}) {
                 if (typeof hook.command === 'string') {
                     hook.command = hook.command.replaceAll(
                         '$(git rev-parse --show-toplevel)/.claude/hooks/',
-                        '$(git rev-parse --show-toplevel)/node_modules/neo.mjs/.claude/hooks/'
+                        `$(git rev-parse --show-toplevel)/node_modules/${ENGINE_PACKAGE_NAME}/.claude/hooks/`
                     )
                 }
             })
@@ -1159,6 +1172,20 @@ export function retargetClaudeHookCommands(templateSettings = {}) {
     });
 
     return settings
+}
+
+/**
+ * @summary Reads the `name` a repository root's `package.json` declares.
+ * @param {String} repoRoot Repository root.
+ * @returns {Promise<String|null>} The name, or `null` when the manifest is absent, unreadable or nameless.
+ * @private
+ */
+async function readPackageName(repoRoot) {
+    try {
+        return (await fs.readJson(path.join(repoRoot, 'package.json'))).name ?? null
+    } catch {
+        return null
+    }
 }
 
 /**
@@ -1181,6 +1208,7 @@ export function retargetClaudeHookCommands(templateSettings = {}) {
  *
  * @param {Object} [options]
  * @param {String} [options.claudeDir] `.claude/` dir; defaults to `<repo>/.claude`. Override for tests.
+ *     Its parent is the target repository, whose package name decides {@link retargetClaudeHookCommands}.
  * @param {String} [options.templatePath] Installed Engine template; override for tests.
  * @param {Object} [options.logger=console] Log sink; injectable for tests.
  * @returns {Promise<{action: String}>} `action` is one of `clone` / `wired` / `silent` / `skip-no-template`.
@@ -1199,7 +1227,10 @@ export async function initClaudeSettings({
 
     await fs.mkdir(claudeDir, {recursive: true});
 
-    const templateSettings = retargetClaudeHookCommands(JSON.parse(await fs.readFile(templatePath, 'utf-8')));
+    const templateSettings = retargetClaudeHookCommands(
+        JSON.parse(await fs.readFile(templatePath, 'utf-8')),
+        {targetPackageName: await readPackageName(path.dirname(claudeDir))}
+    );
 
     if (!fs.existsSync(activePath)) {
         await fs.writeFile(activePath, JSON.stringify(templateSettings, null, 2) + '\n', 'utf-8');
