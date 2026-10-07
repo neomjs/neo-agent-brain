@@ -86,8 +86,8 @@ function connectionOf(connection) {
  * @param {Object} node A `PullRequest` node from the open-work search.
  * @param {{byName: Function, byLogin: Function}} identities Resolve a social name or a login to a seat.
  * @returns {Object} `{key, repo, number, title, head, ci, verdict, mergeable, draft, owner, requested,
- *     reviews, opinions, requestsComplete, partial}`. `title` is the forge's prose with its whitespace
- *     collapsed, or `null`; it names the PR and is never a transition.
+ *     reviews, opinions, requestsComplete, opinionsComplete, partial}`. `title` is the forge's prose with its
+ *     whitespace collapsed, or `null`; it names the PR and is never a transition.
  */
 export function normalizePullRequest(node, identities) {
     const
@@ -123,6 +123,7 @@ export function normalizePullRequest(node, identities) {
         reviews  : reviewed.filter(review => review.reviewer),
         opinions : opined.filter(opinion => opinion.reviewer),
         requestsComplete,
+        opinionsComplete,
         partial  : !requestsComplete || !reviewsComplete || !opinionsComplete
     }
 }
@@ -174,8 +175,9 @@ function transition(row, kind, from, to, pulse) {
 
 /**
  * @summary What a push or a verdict change carries beside from and to: the verdict a push landed on, and
- * the reviewers whose standing opinion became the new decision. A decision no opinion explains, such as a
- * dismissal or a branch rule, names no one.
+ * the reviewers observed moving the decision. A reviewer moved it when their standing opinion became the
+ * new decision, or the same opinion moved onto the current head (a re-approval). Both observations must
+ * hold every standing opinion; otherwise, like a dismissal or a branch rule, the change names no one.
  * @param {String} kind
  * @param {Object} before
  * @param {Object} after
@@ -187,9 +189,15 @@ function contextOf(kind, before, after) {
 
     if (kind !== 'verdict') return {};
 
-    const held = new Set((before.opinions ?? []).filter(({state}) => state === after.verdict).map(({reviewer}) => reviewer));
+    if (before.opinionsComplete !== true || after.opinionsComplete !== true) return {by: []};
 
-    return {by: (after.opinions ?? []).filter(({reviewer, state}) => state === after.verdict && !held.has(reviewer)).map(({reviewer}) => reviewer)}
+    const moved = ({reviewer, state, onHead}) => {
+        const was = before.opinions.find(opinion => opinion.reviewer === reviewer);
+
+        return state === after.verdict && (was?.state !== state || onHead && !(was.onHead && before.head === after.head))
+    };
+
+    return {by: after.opinions.filter(moved).map(({reviewer}) => reviewer)}
 }
 
 /**

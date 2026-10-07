@@ -158,6 +158,32 @@ test.describe('openWorkReducer — transitions, never a holder-only diff (#760)'
         ])
     });
 
+    test('a re-approval on the current head names its reviewer, and opinions a read did not cover name no one (#919)', () => {
+        const
+            approval = oid => [{state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid}}],
+            cut      = item => ({...item, latestOpinionatedReviews: {...item.latestOpinionatedReviews, pageInfo: {hasNextPage: true}}}),
+            verdicts = pulses => run(pulses).transitions.slice(1).map(list => list.filter(({kind}) => kind === 'verdict').map(({to, by}) => ({to, by}))),
+            reduce   = (previous, item, id) => reduceOpenWork({previous, observed: {rows: [normalizePullRequest(item, identities)], complete: true}, terminal: {rows: [], complete: true}, since: null, id});
+
+        // the standing approval judged an older commit, and the reviewer approves the current head again
+        expect(verdicts([[node({head: 'b2', verdict: 'REVIEW_REQUIRED', reviews: approval('a1')})], [node({head: 'b2', verdict: 'APPROVED', reviews: approval('b2')})]]))
+            .toEqual([[{to: 'APPROVED', by: ['@neo-gpt']}]]);
+        // the earlier read cut its opinions at the first page, so the approval may have stood unseen
+        expect(verdicts([[cut(node({verdict: 'REVIEW_REQUIRED'}))], [node({verdict: 'APPROVED', reviews: approval('a1')})]]))
+            .toEqual([[{to: 'APPROVED', by: []}]]);
+
+        // a row saved before opinions carried their coverage holds no such fact
+        const saved = reduce(null, node({verdict: 'REVIEW_REQUIRED'}), 'p0');
+
+        delete saved.rows['acme/app#7'].opinionsComplete;
+        expect(reduce(saved, node({verdict: 'APPROVED', reviews: approval('a1')}), 'p1').transitions.filter(({kind}) => kind === 'verdict').map(({by}) => by)).toEqual([[]]);
+
+        // control: a push and an approval in one pulse are both observed
+        expect(run([[node({verdict: 'CHANGES_REQUESTED', reviews: [{state: 'CHANGES_REQUESTED', author: {login: 'neo-gpt'}, commit: {oid: 'a1'}}]})], [node({head: 'b2', verdict: 'APPROVED', reviews: approval('b2')})]])
+            .transitions[1].filter(({kind}) => kind === 'head' || kind === 'verdict').map(({kind, verdict, by}) => kind === 'head' ? {kind, verdict} : {kind, by}))
+            .toEqual([{kind: 'head', verdict: 'CHANGES_REQUESTED'}, {kind: 'verdict', by: ['@neo-gpt']}])
+    });
+
     test('each reviewer\'s latest review is kept, and whether it judged the current head', () => {
         const row = normalizePullRequest(node({head: 'b2', reviews: [
             {state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: 'b2'}},

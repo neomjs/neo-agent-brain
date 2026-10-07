@@ -21,11 +21,12 @@ import {
     PR_LANE_TRANSITION_KINDS,
     withProducerPrLane
 } from '../../../../../../ai/services/fleet/producerPrLaneEvents.mjs'
-import {createFleetPrLaneActivitySnapshot}                    from '../../../../../../ai/services/fleet/fleetPrLaneActivityAdapter.mjs'
-import {createPlanePrLaneActivityReader}                      from '../../../../../../ai/services/fleet/planePrLaneActivityReader.mjs'
+import {createFleetPrLaneActivitySnapshot}                   from '../../../../../../ai/services/fleet/fleetPrLaneActivityAdapter.mjs'
+import {createPlanePrLaneActivityReader}                     from '../../../../../../ai/services/fleet/planePrLaneActivityReader.mjs'
 import {createFleetActivityReadSource, FLEET_ACTIVITY_SLOTS} from '../../../../../../ai/services/fleet/fleetActivityComposer.mjs'
-import {createOpenWorkProducer}                               from '../../../../../../ai/services/fleet/openWorkProducer.mjs'
-import {FLEET_COCKPIT_SOURCES}                                from '../../../../../../src/fleet/contract/cockpit.mjs'
+import {createOpenWorkProducer}                              from '../../../../../../ai/services/fleet/openWorkProducer.mjs'
+import {normalizePullRequest, reduceOpenWork}                from '../../../../../../ai/services/fleet/openWorkReducer.mjs'
+import {FLEET_COCKPIT_SOURCES}                               from '../../../../../../src/fleet/contract/cockpit.mjs'
 
 const
     T0    = '2026-10-02T12:00:00.000Z',
@@ -168,6 +169,23 @@ test.describe('producerPrLaneEvents — the PR lane over the open-work producer 
             ['verdict', 'APPROVED',          'neo-opus-vega', ['@neo-gpt', 'login:outsider']],
             ['verdict', 'REVIEW_REQUIRED',   'neo-opus-vega', null]
         ])
+    });
+
+    test('reducer to event: a re-approval on the current head is the reviewer\'s, and a read that cut its opinions keeps the author (#919)', () => {
+        const
+            identities = {byLogin: login => ({'neo-gpt': '@neo-gpt', 'neo-opus-vega': '@neo-opus-vega'})[login] ?? null, byName: name => name === 'Vega' ? '@neo-opus-vega' : null},
+            pr         = ({verdict, approvedOn = null, more = false}) => ({
+                number                  : 920, headRefOid: 'b2', reviewDecision: verdict, mergeable: 'MERGEABLE', isDraft: false,
+                body                    : 'Authored by Vega (Claude).', author: {login: 'neo-opus-vega'}, repository: {nameWithOwner: 'neomjs/neo-agent-brain'},
+                reviewRequests          : {pageInfo: {hasNextPage: false}, nodes: []}, latestReviews: {pageInfo: {hasNextPage: false}, nodes: []},
+                latestOpinionatedReviews: {pageInfo: {hasNextPage: more}, nodes: approvedOn ? [{state: 'APPROVED', author: {login: 'neo-gpt'}, commit: {oid: approvedOn}}] : []},
+                commits                 : {nodes: [{commit: {oid: 'b2', statusCheckRollup: {state: 'SUCCESS'}}}]}
+            }),
+            reduce     = (previous, item, id) => reduceOpenWork({previous, observed: {rows: [normalizePullRequest(item, identities)], complete: true}, terminal: {rows: [], complete: true}, since: null, id}),
+            actors     = (first, second) => createPrTransitionEvents(reduce(reduce(null, first, T0), second, T1).transitions).map(({agentId}) => agentId);
+
+        expect(actors(pr({verdict: 'REVIEW_REQUIRED', approvedOn: 'a1'}), pr({verdict: 'APPROVED', approvedOn: 'b2'}))).toEqual(['neo-gpt']);
+        expect(actors(pr({verdict: 'REVIEW_REQUIRED', more: true}), pr({verdict: 'APPROVED', approvedOn: 'b2'}))).toEqual(['neo-opus-vega'])
     });
 
     test('AC-2: the base slot keeps its issue, lane-claim and stall events; its corpus PR events are replaced, the merge is ranked and bounded', async () => {
