@@ -94,12 +94,22 @@ export const DEFAULT_CONTEXT_GATE = Object.freeze({
 export const DELIVERABLE_HARNESS_TARGET = 'a2a-webhook';
 
 /**
+ * The `harnessTarget` of a pull route (`armSeatWakePull`'s `PULL_ROUTE`): nothing pushes it, so the
+ * receiver never carries it, and its seat polls it through `poll-digest`.
+ * @type {String}
+ */
+export const PULL_HARNESS_TARGET = 'none';
+
+/**
  * @summary The one skip decision for a subscription row: why no route will be published for it,
  *     or null when the builder will publish one.
  *
  * Both the manifest build and the owner-facing `list` annotation call this, so the two surfaces
  * cannot disagree about a row — the defect class where a seat is told its route is fine at the
- * moment it was withdrawn. Absent `status` resolves through the shared status policy rather than
+ * moment it was withdrawn. The annotation reads one skip as delivery: an active pull route, which
+ * this builder never carries because its seat polls it.
+ *
+ * Absent `status` resolves through the shared status policy rather than
  * being compared here: the durable lister and hydrator preserve absence, while lifecycle and
  * fleet consumers default the same row to active — a strict comparison here once produced a row
  * counted as live elsewhere and silently dropped at publication.
@@ -115,6 +125,11 @@ export const DELIVERABLE_HARNESS_TARGET = 'a2a-webhook';
 export function wakeRouteWithdrawalReasonFor({status, harnessTarget} = {}) {
     if (!isActiveWakeSubscriptionStatus(status)) {
         return `status is '${status}', not '${WAKE_SUBSCRIPTION_DEFAULT_STATUS}'`;
+    }
+
+    if (harnessTarget === PULL_HARNESS_TARGET) {
+        return `harnessTarget '${PULL_HARNESS_TARGET}' is a pull route: its seat polls it through poll-digest, ` +
+            'so the receiver never carries it';
     }
 
     if (harnessTarget !== DELIVERABLE_HARNESS_TARGET) {

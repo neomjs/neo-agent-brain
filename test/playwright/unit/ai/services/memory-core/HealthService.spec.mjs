@@ -2792,6 +2792,23 @@ test.describe('HealthService #16310 — wake subscription arming verdict', () =>
         expect(await arming()).toEqual({armed: false, reason: 'unmigrated-target'});
     });
 
+    test('a seat holding an active pull route is armed by its own poll, whatever its push rows say', async () => {
+        const pull = deliverableRecord({id: 'WAKE_SUB:pull', harnessTarget: 'none', harnessTargetMetadata: {}});
+
+        WakeSubscriptionService.list = async () => ({subscriptions: [pull]});
+        expect(await arming()).toEqual({armed: true, reason: 'pull'});
+
+        // a keyless push row aborts the manifest build, which never carries the pull route anyway
+        WakeSubscriptionService.list = async () => ({
+            subscriptions: [pull, deliverableRecord({harnessTargetMetadata: {url: 'http://host.docker.internal:3199/wake'}})]
+        });
+        expect(await arming()).toEqual({armed: true, reason: 'pull'});
+
+        // a withdrawn pull route arms nothing
+        WakeSubscriptionService.list = async () => ({subscriptions: [{...pull, status: 'degraded'}]});
+        expect(await arming()).toEqual({armed: false, reason: 'withdrawn'});
+    });
+
     test('an explicitly disabled target is unarmed rather than silently fine', async () => {
         WakeSubscriptionService.list = async () => ({
             subscriptions: [deliverableRecord({harnessTarget: 'disabled'})]

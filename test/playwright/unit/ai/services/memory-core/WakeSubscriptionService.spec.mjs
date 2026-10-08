@@ -4177,9 +4177,40 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 const row             = subscriptions.find(entry => entry.id === res.subscriptionId);
 
                 expect(row.routeDeliverable).toBe(true);
+                expect(row.routeDelivery).toBe('push');
                 // Absence of the reason IS the deliverable signal — the annotation never carries
                 // a null placeholder that a consumer must know to ignore.
                 expect(row).not.toHaveProperty('routeWithdrawalReason');
+            });
+        });
+
+        test('an active pull row is delivered by its seat\'s poll, the receiver never carries it, and a degraded one keeps the status reason', async () => {
+            await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+                const pull = await WakeSubscriptionService.subscribe({trigger: 'SENT_TO_ME', harnessTarget: 'none'});
+                const read = async () => (await WakeSubscriptionService.list()).subscriptions.find(entry => entry.id === pull.subscriptionId);
+
+                expect(await read()).toMatchObject({status: 'active', routeDeliverable: true, routeDelivery: 'pull'});
+                expect(await read()).not.toHaveProperty('routeWithdrawalReason');
+
+                // the builder still skips it, naming the pull route; a published row keeps the build from refusing an empty set
+                const {manifest, skipped} = buildWakeReceiverManifest({
+                    subscriptions: [{
+                        id                   : 'WAKE_SUB:deliverable-pull-spec',
+                        agentIdentity        : '@alice',
+                        status               : 'active',
+                        harnessTarget        : 'a2a-webhook',
+                        harnessTargetMetadata: {url: 'https://example.com/wake', signingKey: 'a'.repeat(64)}
+                    }, {id: pull.subscriptionId, agentIdentity: '@alice', status: 'active', harnessTarget: 'none', harnessTargetMetadata: {}}],
+                    callerIdentity: '@alice'
+                });
+
+                expect(manifest.routes[pull.subscriptionId]).toBeUndefined();
+                expect(skipped.find(entry => entry.subscriptionId === pull.subscriptionId).reason).toContain('is a pull route');
+
+                GraphService.upsertNode({id: pull.subscriptionId, properties: {status: 'degraded'}});
+
+                expect(await read()).toMatchObject({routeDeliverable: false, routeWithdrawalReason: expect.stringContaining("status is 'degraded'")});
+                expect(await read()).not.toHaveProperty('routeDelivery');
             });
         });
 
