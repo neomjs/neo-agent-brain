@@ -2359,10 +2359,7 @@ class HealthService extends Base {
             advisories      : [],
             timestamp       : new Date().toISOString(),
             runtimeFreshness: await this.resolveRuntimeFreshness(),
-            session         : {
-                currentId: Neo.ns('Neo.ai.services.memory-core.SessionService', false)?.currentSessionId
-            },
-            database : {
+            database        : {
                 process   : ChromaLifecycleService.getDatabaseStatus(),
                 connection: {
                     connected  : false,
@@ -2466,6 +2463,21 @@ class HealthService extends Base {
     }
 
     /**
+     * @summary Hands a health payload to the calling request with that request's own session.
+     *
+     * A payload can serve many callers: a healthy one is cached for five minutes, and a caller that
+     * arrives during another caller's check joins its promise. So the payload never holds a session;
+     * this shallow copy adds the caller's, read through `SessionService.currentSessionId` (the
+     * request-bound `Mcp-Session-Id` first) in the caller's own request context.
+     * @param {Object} payload Health payload, possibly shared.
+     * @returns {Object} A copy carrying `session.currentId`; the shared payload is never mutated.
+     * @private
+     */
+    #forCaller(payload) {
+        return {...payload, session: {currentId: Neo.ns('Neo.ai.services.memory-core.SessionService', false)?.currentSessionId}}
+    }
+
+    /**
      * Public API: Checks the health of the Memory Core with intelligent caching.
      *
      * Intent: This is the primary entry point for all health checks. It uses a
@@ -2508,7 +2520,7 @@ class HealthService extends Base {
                     logger.fileDebug(`[HealthService] Using cached health status (age: ${Math.round(age / 1000)}s)`);
 
                     if (!freshObservability) {
-                        return this.#applyEmbeddingWriteCanary(this.#cachedHealth);
+                        return this.#forCaller(this.#applyEmbeddingWriteCanary(this.#cachedHealth));
                     }
 
                     const freshCachedHealth = await this.#buildRequestFreshCachedHealth(this.#cachedHealth, now, {
@@ -2516,7 +2528,7 @@ class HealthService extends Base {
                     });
 
                     if (freshCachedHealth) {
-                        return freshCachedHealth;
+                        return this.#forCaller(freshCachedHealth);
                     }
 
                     this.clearCache();
@@ -2526,7 +2538,7 @@ class HealthService extends Base {
             // Check for in-flight request (deduplication)
             if (this.#healthCheckPromise) {
                 logger.fileDebug('[HealthService] Joining in-flight health check...');
-                return await this.#healthCheckPromise;
+                return this.#forCaller(await this.#healthCheckPromise);
             }
 
             // Cache is stale, was unhealthy, or doesn't exist - perform a fresh check
@@ -2562,7 +2574,7 @@ class HealthService extends Base {
             this.#lastCheckTime  = now;
             this.#previousStatus = health.status;
 
-            return health;
+            return this.#forCaller(health);
         } catch (error) {
             logger.error('[HealthService] Unexpected error during health check:', error);
             return this.#applyEmbeddingWriteCanary({

@@ -4388,7 +4388,7 @@ components:
           properties:
             currentId:
               type: string
-              description: The ID of the current active session.
+              description: The calling client's Memory Core session, i.e. its request-bound Mcp-Session-Id, else the server's process session.
               example: "550e8400-e29b-41d4-a716-446655440000"
         database:
           type: object
