@@ -201,6 +201,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   `reason` is the failure's credential-redacted, bounded diagnostic. Stop returns a finite
  *   `{id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}` for this attempt;
  *   it never replaces a newer launch's record.
+ *   Claude preparation may also return `repoTrust`: per-assignment file-projection observations
+ *   (`projected`, `trusted`, `distrusted`, or `unverified`), not native-session acceptance receipts.
  * @throws {Error} when `lifecycleService` / `agentId` is missing, the agent is unknown or has no GitHub
  *   PAT stored (refused before any checkout), the seat cannot reach the Memory Core it must use (see
  *   above; refused before any checkout), `managedRoot`
@@ -555,13 +557,13 @@ async function provisionAgent({
     // dispatcher's sanitizer's reach, and a clone error can echo the PAT.
     const
         repos     = [],
-        checkouts = [targetRepoRoot];
+        checkouts = [{...repo, repoPath: targetRepoRoot}];
 
     for (const {repoSlug, cloneUrl} of agent.metadata?.repos ?? []) {
         try {
             const {repoPath} = await ensureRepo({managedRoot, agentId, repoSlug, cloneUrl, credential: resolvedCredential, credentialOrigin, cloneRepo});
 
-            checkouts.push(repoPath);
+            checkouts.push({repoSlug, cloneUrl, repoPath});
             repos.push({repoSlug, state: 'prepared'})
         } catch (error) {
             repos.push({repoSlug, state: 'failed', reason: redactReadFailure(error) ?? 'no legible error'})
@@ -571,7 +573,7 @@ async function provisionAgent({
 
     // Every checkout the seat commits in carries its identity before anything runs there. One that holds another
     // identity keeps it, and the start stops: a disagreement is never masked by the launch env.
-    for (const checkout of checkouts) {
+    for (const {repoPath: checkout} of checkouts) {
         const outcome = await convergeGitIdentity({repoPath: checkout, identity: commitIdentity});
         startSignal.throwIfAborted();
 
@@ -612,6 +614,7 @@ async function provisionAgent({
         prepared = await prepareWorkspace({
             agent,
             targetRepoRoot,
+            assignedRepos      : checkouts,
             instanceRoot       : seatInstanceRoot,
             previousInstanceRoot,
             agentosRuntimeRoot,
@@ -699,6 +702,7 @@ async function provisionAgent({
     return {
         ...status,
         ...(prepared.seatInstructions ? {seatInstructions: prepared.seatInstructions} : {}),
+        ...(prepared.repoTrust ? {repoTrust: prepared.repoTrust} : {}),
         ...(memory.state !== 'none' ? {memoryImport: memory} : {}),
         ...(repos.length ? {repos} : {})
     }

@@ -19,6 +19,7 @@ import * as core                  from 'neo.mjs/src/core/_export.mjs';
 import FleetLifecycleService      from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
 import FleetManager               from '../../../../../../ai/services/fleet/FleetManager.mjs';
 import FleetRegistryService       from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {armFleetSeatWake}         from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
 import {createFleetCockpitStatus} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
 import fs                         from 'fs';
 import os                         from 'os';
@@ -940,6 +941,7 @@ test.describe('Neo.ai.services.fleet.FleetManager — pending Start cancellation
         FleetManager.presenceStateOptions = null;
         FleetManager.planeBase = null;
         FleetManager.tenantService = null;
+        FleetManager.wakeStateOptions = null;
     });
 
     test('Stop cancels both queued Starts; another seat proceeds and a later fresh Start succeeds', async () => {
@@ -1020,6 +1022,84 @@ test.describe('Neo.ai.services.fleet.FleetManager — pending Start cancellation
         expect(calls.map(([kind]) => kind)).toEqual(['compose']);
         expect(lifecycle.pendingStarts.has('ada')).toBe(false)
     });
+
+    for (const phase of ['during-client-close', 'after-arming']) {
+        test(`Stop ${phase} preserves the real armer's unresolved route without reporting it ready`, async () => {
+            const
+                entered    = Promise.withResolvers(),
+                release    = Promise.withResolvers(),
+                plane      = 'http://127.0.0.1:32123',
+                calls      = [],
+                armResults = [],
+                persisted  = [],
+                agent      = {id: 'ada', githubUsername: 'ada', harnessType: 'codex-desktop', mcpTarget: {kind: 'tenant', tenantId: 'local'}},
+                lifecycle  = lifecycleWithStarts({
+                    getRegistry : () => ({getAgent: () => agent}),
+                    setWakeRoute: (id, route) => persisted.push({id, route})
+                });
+            let closes = 0;
+
+            FleetManager.lifecycleService = lifecycle;
+            FleetManager.planeBase = plane;
+            FleetManager.tenantService = {
+                resolveMcpResources : () => ({endpoint: plane, resources: {'memory-core': {url: `${plane}/mc/mcp`}}}),
+                resolveMcpCredential: () => 'fixture-credential'
+            };
+            FleetManager.wakeStateOptions = {wakeReceiverBase: 'http://127.0.0.1:32124', wakeReceiverManifestPath: '/fixture/routes.json'};
+            FleetManager.provisionAndStartFn = async () => ({id: 'ada', state: 'running', instanceHome: '/fixture/ada/harness/codex-desktop'});
+            FleetManager.wakeArmFn = async options => {
+                const route = await armFleetSeatWake({
+                    ...options,
+                    createClient: () => ({
+                        init    : async () => ({ok: true}),
+                        callTool: async (name, {action}) => {
+                            calls.push(action);
+                            return action === 'subscribe' ? {subscriptionId: 'WAKE_SUB:late'} : {subscriptions: [{id: 'WAKE_SUB:late'}]}
+                        },
+                        close: async () => {
+                            if (++closes === 1 && phase === 'during-client-close') {
+                                entered.resolve();
+                                await release.promise
+                            }
+                        }
+                    }),
+                    armRoute: async ({listSubscriptions}) => ({armed: true, subscriptionIds: (await listSubscriptions()).map(row => row.id)})
+                });
+
+                armResults.push(route);
+                if (armResults.length === 1 && phase === 'after-arming') {
+                    entered.resolve();
+                    await release.promise
+                }
+                return route
+            };
+
+            const starting = FleetManager.startAgent('ada');
+
+            await entered.promise;
+            const signal = [...lifecycle.pendingStarts.get('ada').keys()][0];
+
+            await FleetManager.stopAgent('ada');
+            expect(signal.aborted).toBe(true);
+            expect(lifecycle.pendingStarts.get('ada').has(signal)).toBe(true);
+            release.resolve();
+
+            expect(await starting).toMatchObject({
+                canceled : true,
+                state    : 'stopped',
+                wakeRoute: {state: 'unarmed', reason: 'start canceled by Stop', cleanupUnresolved: true, subscriptionId: 'WAKE_SUB:late'}
+            });
+            expect(armResults[0].state).toBe(phase === 'during-client-close' ? 'unarmed' : 'ready');
+            expect(calls).toEqual(['subscribe', 'list']);
+            expect(persisted).toEqual([]);
+            expect(lifecycle.pendingStarts.has('ada')).toBe(false);
+            expect(FleetManager.seatHomeHolds.has('ada')).toBe(false);
+
+            expect(await FleetManager.startAgent('ada')).toMatchObject({state: 'running', wakeRoute: {state: 'ready', subscriptionId: 'WAKE_SUB:late'}});
+            expect(persisted).toHaveLength(1);
+            expect(lifecycle.pendingStarts.has('ada')).toBe(false)
+        });
+    }
 });
 
 test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatGitIdentity (the identity Add reads after a define)', () => {

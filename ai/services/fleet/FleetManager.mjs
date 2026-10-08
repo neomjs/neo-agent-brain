@@ -400,6 +400,7 @@ class FleetManager extends Base {
      * starting seat ({@link launchRefusalOf}). The start holds the seat's home until its harness is
      * launched and armed or refused ({@link withSeatHome}). Stop cancels every already-pending attempt,
      * including one still queued for the home; a later explicit Start gets a fresh signal.
+     * A ready route returned after Stop is retained as unresolved cleanup, never as a ready wake.
      * @param {String} agentId Registry agent id.
      * @returns {Promise<Object>} the agent's lifecycle status.
      */
@@ -433,7 +434,15 @@ class FleetManager extends Base {
                 // Keep the home until a late subscription has been withdrawn after cancellation;
                 // otherwise that cleanup could remove the next Start's canonical subscription.
                 const armed = await this.armSeatWake(agentId, status, startSignal);
-                return startSignal.aborted ? {...lifecycle.canceledStart(agentId), ...(armed?.wakeRoute ? {wakeRoute: armed.wakeRoute} : {})} : armed
+
+                if (!startSignal.aborted) return armed;
+
+                let wakeRoute = armed?.wakeRoute;
+
+                if (wakeRoute?.state === 'ready') {
+                    wakeRoute = {...wakeRoute, state: 'unarmed', reason: 'start canceled by Stop', cleanupUnresolved: true}
+                }
+                return {...lifecycle.canceledStart(agentId), ...(wakeRoute ? {wakeRoute} : {})}
             })
         } catch (error) {
             if (startSignal.aborted) return lifecycle.canceledStart(agentId);

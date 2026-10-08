@@ -151,7 +151,7 @@ export async function armFleetSeatWake({
         tuple            : {identity, instanceAddress: address.instanceAddress, instanceType: address.addressType},
         logger
     });
-    let subscriptionId = null, subscriptionRequested = false;
+    let result, subscriptionId = null, subscriptionRequested = false;
 
     // Subscribe may have completed remotely while Stop arrived. Reconcile the exact route before
     // releasing the seat home; the publisher removes absent caller-owned IDs and preserves peers.
@@ -189,7 +189,7 @@ export async function armFleetSeatWake({
         if (!published.armed) return unarmed(published.reason);
 
         // `armed` speaks for every route the seat owns; `ready` is a claim about this one.
-        return published.subscriptionIds?.includes(subscriptionId)
+        result = published.subscriptionIds?.includes(subscriptionId)
             ? {state: 'ready', reason: null, ...route, subscriptionId}
             : unarmed(`the publish carried no route for ${subscriptionId}`)
     } catch (error) {
@@ -200,6 +200,12 @@ export async function armFleetSeatWake({
     } finally {
         await Promise.resolve(client.close?.()).catch(() => {})
     }
+
+    // Stop can arrive while session teardown is pending; the closed client cannot prove withdrawal.
+    if (startSignal?.aborted && result.state === 'ready') {
+        return {...result, state: 'unarmed', reason: 'start canceled by Stop', cleanupUnresolved: true}
+    }
+    return result
 }
 
 export default armFleetSeatWake;

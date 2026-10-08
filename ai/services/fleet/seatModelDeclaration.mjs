@@ -1,4 +1,4 @@
-import {resolveHarnessSeatSettings} from '../../../src/fleet/contract/harnessTypes.mjs';
+import {resolveHarnessSeatSetting} from '../../../src/fleet/contract/harnessTypes.mjs';
 
 /**
  * A model id as harnesses name one: an alias (`opus`), a full id (`claude-opus-5-5`) or a provider path
@@ -17,8 +17,8 @@ const EFFORT_LEVEL = /^[a-z][a-z0-9_-]{0,31}$/;
 /**
  * @summary Validates the model and reasoning effort an operator declares for a seat, which its harness reads at
  * the next Start. Each field is set, or handed back with `null`: Fleet stops setting it, and the harness keeps
- * whatever its own configuration says. A field the intent does not name stays as it is. A harness that chooses
- * both itself takes no declaration: the `claude-desktop` app passes its own on every session it starts.
+ * whatever its own configuration says. A field the intent does not name stays as it is. Capability is checked
+ * per field: Claude Desktop accepts an effort declaration while its model stays app-owned.
  * @param {String} harnessType The seat's harness family once the change applies.
  * @param {Object} fields      The intent, read for `model` and `reasoningEffort` only.
  * @returns {{model?: String|null, reasoningEffort?: String|null}} The fields the intent names, validated.
@@ -36,11 +36,11 @@ export function normalizeSeatModelDeclaration(harnessType, fields) {
             throw new TypeError(`'${key}' must be one id as the harness names it, such as ${example}, or null.`)
         }
 
-        declaration[key] = value
-    }
+        if (value !== null && !resolveHarnessSeatSetting(harnessType, key)) {
+            throw new TypeError(`a '${harnessType}' seat takes no declared ${key}: its harness chooses it itself.`)
+        }
 
-    if (!resolveHarnessSeatSettings(harnessType) && Object.values(declaration).some(value => value !== null)) {
-        throw new TypeError(`a '${harnessType}' seat takes no declared model or reasoning effort: its harness chooses them itself.`)
+        declaration[key] = value
     }
 
     return declaration

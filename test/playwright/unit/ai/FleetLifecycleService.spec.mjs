@@ -2553,6 +2553,34 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
     const ADMISSION = {generation: 'generation-1', plan: [{key: 'memory-core', enabled: true}]};
 
+    test('Desktop effort reaches the real lifecycle spawn envelope only on a new launch', async () => {
+        const {spawn} = installDesktopSeat(),
+              agent   = FleetLifecycleService.registry.getDefinition('seat');
+
+        try {
+            agent.reasoningEffort = 'max';
+            FleetLifecycleService.start('seat');
+            expect(spawn.calls[0].opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
+            expect(spawn.calls[0].args.some(arg => arg.startsWith('--effort'))).toBe(false);
+
+            agent.reasoningEffort = 'high';
+            FleetLifecycleService.start('seat');
+            expect(spawn.calls, 'an already-running Start keeps the launched environment').toHaveLength(1);
+            expect(spawn.calls[0].opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
+
+            await FleetLifecycleService.stop('seat');
+            FleetLifecycleService.start('seat');
+            expect(spawn.calls[1].opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high');
+
+            await FleetLifecycleService.stop('seat');
+            delete agent.reasoningEffort;
+            FleetLifecycleService.start('seat');
+            expect(spawn.calls[2].opts.env).not.toHaveProperty('CLAUDE_CODE_EFFORT_LEVEL');
+        } finally {
+            await FleetLifecycleService.stop('seat')
+        }
+    });
+
     test('PRODUCTION COMPOSER: Stop cancels a pending managed Start before or after reservation; a later Start is fresh', async () => {
         const
             root     = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-launch-attempt-')),

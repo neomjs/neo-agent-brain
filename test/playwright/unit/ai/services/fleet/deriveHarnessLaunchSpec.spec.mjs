@@ -1,4 +1,5 @@
 import {test, expect}                                                          from '@playwright/test';
+import * as harnessTypeContract                                                from '../../../../../../src/fleet/contract/harnessTypes.mjs';
 import {HARNESS_TYPES, resolveHarnessSeatSettings}                             from '../../../../../../src/fleet/contract/harnessTypes.mjs';
 import {LAUNCHABLE_HARNESS_TYPES, deriveHarnessLaunchSpec, getHarnessAuthMode} from '../../../../../../ai/services/fleet/deriveHarnessLaunchSpec.mjs';
 
@@ -80,11 +81,47 @@ test.describe('deriveHarnessLaunchSpec (per-family harness launch templates)', (
         ]);
         expect(deriveHarnessLaunchSpec({harnessType: 'claude-code', instanceHome: '/srv/i', binaryPath: '/opt/claude', reasoningEffort: 'high'}).args, 'one field alone')
             .toEqual(['--mcp-config', '/srv/i/mcp-config.json', '--strict-mcp-config', '--effort', 'high', '--input-format', 'stream-json', '--output-format', 'stream-json', '--print', '--verbose']);
-        // Codex reads its own from config.toml; the app families take no flag Fleet could set
+        // Codex reads its own from config.toml; Claude Desktop's effort travels in its environment, not flags.
         expect(args('codex')).toEqual(['app-server']);
         expect(args('claude-desktop').some(arg => arg.startsWith('--model') || arg.startsWith('--effort'))).toBe(false);
         expect(['claude-code', 'claude-desktop', 'codex', 'codex-desktop', 'opencode'].map(resolveHarnessSeatSettings))
             .toEqual(['args', null, 'codex-config', 'codex-config', null]);
+    });
+
+    test('the per-setting contract adds Desktop effort without widening the legacy paired resolver', () => {
+        const resolve = harnessTypeContract.resolveHarnessSeatSetting;
+
+        expect(typeof resolve, 'the shared contract exposes the per-setting resolver').toBe('function');
+        expect([
+            ['claude-code', resolve('claude-code', 'model'), resolve('claude-code', 'reasoningEffort')],
+            ['claude-desktop', resolve('claude-desktop', 'model'), resolve('claude-desktop', 'reasoningEffort')],
+            ['codex', resolve('codex', 'model'), resolve('codex', 'reasoningEffort')],
+            ['opencode', resolve('opencode', 'model'), resolve('opencode', 'reasoningEffort')]
+        ]).toEqual([
+            ['claude-code', 'args', 'args'],
+            ['claude-desktop', null, 'claude-env'],
+            ['codex', 'codex-config', 'codex-config'],
+            ['opencode', null, null]
+        ]);
+        expect(resolve('unknown-harness', 'reasoningEffort')).toBeNull();
+        expect(resolve('claude-desktop', 'unknown-setting')).toBeNull();
+        expect(resolveHarnessSeatSettings('claude-desktop'), 'legacy callers still see Desktop as unsupported as a pair').toBeNull()
+    });
+
+    test('nested per-setting capability records remain caller-owned copies', () => {
+        const
+            source   = HARNESS_TYPES.find(entry => entry.type === 'claude-desktop'),
+            resolved = harnessTypeContract.resolveHarnessType('claude-desktop'),
+            listed   = harnessTypeContract.listHarnessTypes().find(entry => entry.type === 'claude-desktop'),
+            product  = harnessTypeContract.listHarnessProducts().find(entry => entry.product === 'claude').types.find(entry => entry.type === 'claude-desktop');
+
+        expect(source.seatSettingOverrides).toEqual({reasoningEffort: 'claude-env'});
+        for (const copy of [resolved, listed, product]) {
+            expect(copy.seatSettingOverrides).not.toBe(source.seatSettingOverrides);
+            copy.seatSettingOverrides.reasoningEffort = 'args';
+        }
+
+        expect(harnessTypeContract.resolveHarnessSeatSetting('claude-desktop', 'reasoningEffort')).toBe('claude-env')
     });
 
     test('claude-desktop: argv isolation + exact contained CLAUDE_USER_DATA_DIR authority', () => {
@@ -100,6 +137,39 @@ test.describe('deriveHarnessLaunchSpec (per-family harness launch templates)', (
             env             : {CLAUDE_USER_DATA_DIR: '/srv/instances/a/claude-desktop'},
             versionProbeArgs: ['--user-data-dir=/srv/instances/a/claude-desktop', '--version']
         });
+    });
+
+    test('claude-desktop: declared effort is passed through its launch environment without changing profile argv', () => {
+        const spec = deriveHarnessLaunchSpec({
+            harnessType    : 'claude-desktop',
+            instanceHome   : '/srv/instances/a/claude-desktop',
+            binaryPath     : '/Applications/Claude.app/Contents/MacOS/Claude',
+            reasoningEffort: 'max'
+        });
+
+        expect(spec).toEqual({
+            command: '/Applications/Claude.app/Contents/MacOS/Claude',
+            args   : ['--user-data-dir=/srv/instances/a/claude-desktop'],
+            env    : {
+                CLAUDE_USER_DATA_DIR    : '/srv/instances/a/claude-desktop',
+                CLAUDE_CODE_EFFORT_LEVEL: 'max'
+            },
+            versionProbeArgs: ['--user-data-dir=/srv/instances/a/claude-desktop', '--version']
+        });
+    });
+
+    test('claude-desktop: absent or withdrawn effort leaves the vendor variable unset', () => {
+        for (const reasoningEffort of [undefined, null]) {
+            const spec = deriveHarnessLaunchSpec({
+                harnessType : 'claude-desktop',
+                instanceHome: '/srv/instances/a/claude-desktop',
+                binaryPath  : '/Applications/Claude.app/Contents/MacOS/Claude',
+                reasoningEffort
+            });
+
+            expect(spec.env).toEqual({CLAUDE_USER_DATA_DIR: '/srv/instances/a/claude-desktop'});
+            expect(spec.args).toEqual(['--user-data-dir=/srv/instances/a/claude-desktop']);
+        }
     });
 
     test('antigravity: same argv isolation contract; the version probe derives NULL (the binary boots the app instead of answering)', () => {
