@@ -45,7 +45,7 @@ function makeLifecycle({
     inspectionError = null,
     profileInUse = false
 } = {}) {
-    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], start: [], status: []};
+    const calls     = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], start: [], status: []};
     const admission = {
         revocationMark: id => {
             events?.push('mark');
@@ -66,9 +66,9 @@ function makeLifecycle({
         credentialEnvVar   : 'GH_TOKEN',
         desktopProfileInUse: agent => { calls.profile.push(agent.id); return profileInUse },
         getLaunchAdmission : () => admission,
-        isRunning       : id => !!running[id],
-        status          : id => { calls.status.push(id); return {id, running: !!running[id], state: running[id] ? 'running' : 'stopped'}; },
-        getRegistry     : () => ({
+        isRunning          : id => !!running[id],
+        status             : id => { calls.status.push(id); return {id, running: !!running[id], state: running[id] ? 'running' : 'stopped'}; },
+        getRegistry        : () => ({
             getAgent         : id => agents[id] || null,
             getDefinition    : id => definitions[id] || null,
             resolveCredential: id => {
@@ -307,6 +307,8 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(ensureRepo.calls.map(call => call.repoSlug)).toEqual(['neomjs/neo', 'neomjs/neo-agent-brain', 'neomjs/neo-agent-institution']);
         expect(ensureRepo.calls.every(call => call.managedRoot === '/managed' && call.agentId === 'a' && call.credential === FIXTURE_PAT)).toBe(true);
         expect(ensureRepo.calls[2].cloneUrl).toBe('https://github.com/neomjs/neo-agent-institution.git');
+        expect(prepareWorkspace.calls[0].assignedRepos).toEqual([REPO, ...agents.a.metadata.repos]
+            .map(repo => ({...repo, repoPath: '/managed/a/neomjs/neo'})));
         expect(events).toEqual(['credential', 'ensure', 'ensure', 'ensure', 'prepare', 'start']);
         expect(lifecycle.calls.start[0].opts.cwd).toBe('/managed/a/neomjs/neo');
         expect(status.repos).toEqual([
@@ -350,8 +352,9 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         agents.a.metadata.repos = [{repoSlug: 'neomjs/missing', cloneUrl: 'https://github.com/neomjs/missing.git'}];
 
-        const lifecycle  = makeLifecycle({agents}),
-              ensureRepo = async ({repoSlug}) => {
+        const lifecycle        = makeLifecycle({agents}),
+              prepareWorkspace = makePrepareWorkspace(),
+              ensureRepo       = async ({repoSlug}) => {
                   if (repoSlug === 'neomjs/missing') throw new Error('ensureAgentRepo: clone failed');
                   return {repoPath: '/managed/a/neomjs/neo'}
               },
@@ -360,12 +363,13 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                   agentId           : 'a',
                   managedRoot       : '/managed',
                   ensureRepo,
-                  prepareWorkspace  : makePrepareWorkspace(),
+                  prepareWorkspace,
                   agentosRuntimeRoot: '/installed/neo'
               });
 
         expect(lifecycle.calls.start).toHaveLength(1);
         expect(status.repos).toEqual([{repoSlug: 'neomjs/missing', state: 'failed', reason: 'ensureAgentRepo: clone failed'}]);
+        expect(prepareWorkspace.calls[0].assignedRepos).toEqual([{...REPO, repoPath: '/managed/a/neomjs/neo'}]);
     });
 
     test('a failed repository\'s reason carries no credential and stays bounded, for every family the redactor knows', async () => {
