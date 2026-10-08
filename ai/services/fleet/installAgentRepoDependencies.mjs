@@ -230,7 +230,8 @@ function readReceipt(receiptPath) {
  *
  * Each row is reported as it changes (`installing`, then its outcome), so a pending Start can show its install
  * phase. A Skip stops every running `npm` and waits for its exit: an install it interrupted reads `skipped`, one
- * that had already finished keeps its outcome, and the caller goes on to launch. A Stop wins over a Skip.
+ * that had already finished keeps its outcome, and the caller goes on to launch. A Stop wins over a Skip, and the
+ * installs it interrupted read `canceled`: an operator's act, not a failure.
  *
  * @param {Object}      options
  * @param {Object[]}    options.checkouts    `[{repoSlug, repoPath}]`, the seat's working checkout first.
@@ -281,9 +282,9 @@ export async function installSeatDependencies({
             }
         });
 
-        report(index, canceled && !signal?.aborted && skipSignal?.aborted
-            ? {repoSlug, state: 'skipped', reason: 'skipped during the install'}
-            : {repoSlug, ...outcome})
+        report(index, canceled && signal?.aborted     ? {repoSlug, state: 'canceled', reason: 'stopped during the install'}
+                    : canceled && skipSignal?.aborted ? {repoSlug, state: 'skipped',  reason: 'skipped during the install'}
+                    :                                   {repoSlug, ...outcome})
     }));
 
     await writes;

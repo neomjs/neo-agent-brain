@@ -2450,51 +2450,63 @@ test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-reposito
         expect(FleetLifecycleService.setRepoOutcomes('nobody', [], launch)).toBe(false);
         expect(FleetLifecycleService.status('seat').repos).toBeNull()
     });
+});
 
-    test("each checkout's dependency outcome rides the same launch record, beside the repositories' and bound the same way", () => {
-        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'running', ...launch});
+test.describe('FleetLifecycleService.setPendingDependencies — a Start\'s dependency rows, live while pending and final after', () => {
+    test.beforeEach(() => { FleetLifecycleService.leasesAdopted = true; FleetLifecycleService.processes.clear(); FleetLifecycleService.attemptDependencies.clear() });
+    test.afterEach(() => { FleetLifecycleService.attemptDependencies.clear(); FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false });
 
+    const live  = [{repoSlug: 'neomjs/neo', state: 'installing'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}],
+          final = [{repoSlug: 'neomjs/neo', state: 'canceled', reason: 'stopped during the install'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}];
+
+    test("a pending Start's rows read on the status as they change, only from that attempt and only the outcome fields", () => {
         expect(FleetLifecycleService.status('seat').dependencies).toBeNull();
-        expect(FleetLifecycleService.status('nobody').dependencies).toBeNull();
-        expect(FleetLifecycleService.setDependencyOutcomes('seat', [{repoSlug: 'x/y', state: 'installed'}], {pid: 4101, startedAt: launch.startedAt})).toBe(false);
 
-        expect(FleetLifecycleService.setDependencyOutcomes('seat', [
-            {repoSlug: 'neomjs/neo',             state: 'installed'},
-            {repoSlug: 'neomjs/neo-agent-brain', state: 'failed', reason: 'npm ci exited 1', repoPath: '/seat/neomjs/neo-agent-brain'}
-        ], launch)).toBe(true);
-
-        expect(FleetLifecycleService.status('seat').dependencies).toEqual([
-            {repoSlug: 'neomjs/neo',             state: 'installed'},
-            {repoSlug: 'neomjs/neo-agent-brain', state: 'failed', reason: 'npm ci exited 1'}
-        ]);
-        expect(FleetLifecycleService.status('seat').repos).toBeNull()
-    });
-
-    test("a pending Start's rows read on the status while it installs, bound to that attempt and gone when it finishes", () => {
-        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'exited', ...launch, dependencies: [{repoSlug: 'neomjs/neo', state: 'installed'}]});
-
-        const attempt = FleetLifecycleService.beginStart('seat'),
-              other   = new AbortController().signal;
+        const attempt = FleetLifecycleService.beginStart('seat');
 
         try {
-            expect(FleetLifecycleService.setPendingDependencies('seat', other, [{repoSlug: 'neomjs/neo', state: 'installing'}])).toBe(false);
-            expect(FleetLifecycleService.setPendingDependencies('seat', attempt, [{repoSlug: 'neomjs/neo', state: 'installing', repoPath: '/seat/neo'}])).toBe(true);
+            expect(FleetLifecycleService.setPendingDependencies('seat', new AbortController().signal, live)).toBe(false);
+            expect(FleetLifecycleService.status('seat').dependencies).toBeNull();
 
-            // the current attempt's phase, not the last launch's outcome
-            expect(FleetLifecycleService.status('seat').dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installing'}]);
+            expect(FleetLifecycleService.setPendingDependencies('seat', attempt, [{...live[0], repoPath: '/seat/neomjs/neo'}])).toBe(true);
+            expect(FleetLifecycleService.status('seat').dependencies).toEqual([live[0]])
         } finally {
             FleetLifecycleService.finishStart('seat', attempt)
         }
+    });
 
-        expect(FleetLifecycleService.status('seat').dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installed'}]);
+    test('an attempt that ends without a launch keeps its final rows, and no late report of it rewrites them', () => {
+        // a seat that ran before: its old process record holds no rows of this attempt
+        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'exited', pid: 4202, startedAt: '2026-10-01T20:00:05.000Z'});
 
-        // a seat with no process record reads its pending rows too
-        const fresh = FleetLifecycleService.beginStart('nobody');
+        const attempt = FleetLifecycleService.beginStart('seat');
 
-        FleetLifecycleService.setPendingDependencies('nobody', fresh, [{repoSlug: 'neomjs/neo', state: 'installing'}]);
-        expect(FleetLifecycleService.status('nobody').dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installing'}]);
-        FleetLifecycleService.finishStart('nobody', fresh);
-        expect(FleetLifecycleService.status('nobody').dependencies).toBeNull()
+        FleetLifecycleService.setPendingDependencies('seat', attempt, live);
+        FleetLifecycleService.setPendingDependencies('seat', attempt, final);
+        FleetLifecycleService.finishStart('seat', attempt);
+
+        expect(FleetLifecycleService.status('seat').dependencies).toEqual(final);
+        expect(FleetLifecycleService.setPendingDependencies('seat', attempt, live)).toBe(false);
+        expect(FleetLifecycleService.status('seat').dependencies).toEqual(final);
+
+        const next = FleetLifecycleService.beginStart('seat');
+
+        try {
+            // a later attempt's first report replaces them
+            FleetLifecycleService.setPendingDependencies('seat', next, [live[1]]);
+            expect(FleetLifecycleService.status('seat').dependencies).toEqual([live[1]])
+        } finally {
+            FleetLifecycleService.finishStart('seat', next)
+        }
+    });
+
+    test('a finished attempt leaves no row installing: a checkout it never decided reads as unknown', () => {
+        const attempt = FleetLifecycleService.beginStart('seat');
+
+        FleetLifecycleService.setPendingDependencies('seat', attempt, live);
+        FleetLifecycleService.finishStart('seat', attempt);
+
+        expect(FleetLifecycleService.status('seat').dependencies).toEqual([live[1]])
     });
 });
 

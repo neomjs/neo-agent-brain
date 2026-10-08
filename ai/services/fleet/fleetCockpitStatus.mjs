@@ -212,7 +212,8 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 repoStatus,
                 // the last start's per-repository outcome from the launch record; null before a start
                 repoOutcomes: runtime?.repos ?? null,
-                // what the last start did about each checkout's dependencies, the working one first; null before a start
+                // each checkout's dependency row from the latest start that reached its install, the working one first:
+                // live while that start is pending (`installing` only then), its final rows after; null before one
                 dependencyOutcomes: runtime?.dependencies ?? null,
                 // where a running Claude Desktop seat's session opened, against its checkout; null
                 // for every other family and every seat not running

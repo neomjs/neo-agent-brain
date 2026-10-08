@@ -527,12 +527,12 @@ class FleetLifecycleService extends Base {
     pendingStarts = new Map()
 
     /**
-     * Each pending Start's dependency rows as its install reports them, keyed by agent id and bound to that attempt's
-     * signal ({@link setPendingDependencies}).
-     * @member {Map<String, {signal: AbortSignal, rows: Object[]}>} pendingDependencies
+     * The dependency rows of each seat's latest Start that reached its install, keyed by agent id and bound to that
+     * attempt's signal ({@link setPendingDependencies}): live while the attempt is pending, its final rows after.
+     * @member {Map<String, {signal: AbortSignal, rows: Object[]}>} attemptDependencies
      * @private
      */
-    pendingDependencies = new Map()
+    attemptDependencies = new Map()
 
     /**
      * The Git identity each seat's last provisioned start resolved, keyed by agent id: what its commits carry, or why
@@ -574,16 +574,19 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * @summary Release exactly the completed attempt, preserving queued or newer Starts.
+     * @summary Release exactly the completed attempt, preserving queued or newer Starts. Its dependency rows stay
+     * readable as its final outcome, and its install phase ends with it.
      * @param {String} id Seat id.
      * @param {AbortSignal} signal The signal returned by {@link beginStart}.
      */
     finishStart(id, signal) {
-        const pending = this.pendingStarts.get(id);
+        const pending = this.pendingStarts.get(id),
+              attempt = this.attemptDependencies.get(id);
 
         pending?.delete(signal);
         if (pending?.size === 0) this.pendingStarts.delete(id);
-        if (this.pendingDependencies.get(id)?.signal === signal) this.pendingDependencies.delete(id)
+        // a checkout the attempt never decided reads as unknown, never as still installing
+        if (attempt?.signal === signal) attempt.rows = attempt.rows.filter(({state}) => state !== 'installing')
     }
 
     /**
@@ -1175,8 +1178,9 @@ class FleetLifecycleService extends Base {
      *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
      *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`). `repos` is the
      *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is;
-     *     `dependencies` is each checkout's dependency outcome ({@link setDependencyOutcomes}), likewise; while a Start
-     *     is pending, it is that attempt's rows so far ({@link setPendingDependencies}).
+     *     `dependencies` is each checkout's row from the seat's latest Start that reached its install
+     *     ({@link setPendingDependencies}): live while that Start is pending, its final rows once it ended, launched or
+     *     not; `null` before one.
      *     `sessionFolder` is where a running Claude Desktop seat's session opened ({@link sessionFolderFor}).
      *     `gitIdentity` is the identity the seat's last provisioned start resolved ({@link setGitIdentity}), also
      *     after a start it refused; `null` before the first. `seatModel` is what that start found of the seat's
@@ -1186,7 +1190,7 @@ class FleetLifecycleService extends Base {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, dependencies: this.dependenciesOf(id, null), sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
 
         this.refreshAdoptedSeat(record);
 
@@ -1223,7 +1227,7 @@ class FleetLifecycleService extends Base {
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
             } : null,
             repos          : record.repos ? record.repos.map(repo => ({...repo})) : null,
-            dependencies   : this.dependenciesOf(id, record),
+            dependencies   : this.dependenciesOf(id),
             sessionFolder  : this.sessionFolderFor(record),
             gitIdentity    : this.gitIdentityOf(id),
             seatModel      : this.seatModelOf(id),
@@ -1300,46 +1304,20 @@ class FleetLifecycleService extends Base {
      * @param {Object} launch `{pid, startedAt}` from the status of that start.
      * @returns {Boolean} `true` when recorded; `false` for an unknown seat or a launch it has since replaced.
      */
-    setRepoOutcomes(id, repos, launch) {
-        return this.recordStartOutcome(id, 'repos', repos, launch)
-    }
-
-    /**
-     * @summary Records what the provisioned start behind a launch did about each checkout's dependencies, so
-     * {@link status} still says whether the seat's skills were installed, already there, unverified, skipped, or why
-     * not. Bound to that launch like {@link setRepoOutcomes}.
-     * @param {String} id
-     * @param {Object[]} dependencies `[{repoSlug, state: 'installed' | 'present' | 'unverified' | 'not-applicable' |
-     *     'skipped' | 'failed', reason?}]`, reasons already redacted at the source.
-     * @param {Object} launch `{pid, startedAt}` from the status of that start.
-     * @returns {Boolean} `true` when recorded; `false` for an unknown seat or a launch it has since replaced.
-     */
-    setDependencyOutcomes(id, dependencies, launch) {
-        return this.recordStartOutcome(id, 'dependencies', dependencies, launch)
-    }
-
-    /**
-     * @summary Writes one per-repository outcome list onto the launch its start produced, never onto a later one.
-     * @param {String} id
-     * @param {'repos'|'dependencies'} field
-     * @param {Object[]} rows `[{repoSlug, state, reason?}]`; other fields are not recorded.
-     * @param {Object} launch `{pid, startedAt}`
-     * @returns {Boolean}
-     * @private
-     */
-    recordStartOutcome(id, field, rows, {pid, startedAt} = {}) {
+    setRepoOutcomes(id, repos, {pid, startedAt} = {}) {
         const record = this.processes.get(id);
 
         if (!record || record.pid !== pid || record.startedAt !== startedAt) return false;
 
-        record[field] = this.outcomeRows(rows);
+        record.repos = this.outcomeRows(repos);
         return true
     }
 
     /**
-     * @summary Records the dependency rows a pending Start has reached so far, so {@link status} reports the install
-     * phase before the launch exists. Bound to that attempt: a signal the seat no longer has pending is refused, and
-     * {@link finishStart} clears the rows of the attempt it releases.
+     * @summary Records the dependency rows a pending Start has reached, so {@link status} reports its install phase
+     * before any launch exists, and its final rows after it ends, launched or not. Bound to that attempt: a signal the
+     * seat no longer has pending is refused, so a finished attempt's late report never rewrites them; a later
+     * attempt's first report replaces them.
      * @param {String} id
      * @param {AbortSignal} signal The attempt's signal from {@link beginStart}.
      * @param {Object[]} rows `[{repoSlug, state, reason?}]`, `installing` included.
@@ -1348,21 +1326,18 @@ class FleetLifecycleService extends Base {
     setPendingDependencies(id, signal, rows) {
         if (!this.pendingStarts.get(id)?.has(signal)) return false;
 
-        this.pendingDependencies.set(id, {signal, rows: this.outcomeRows(rows)});
+        this.attemptDependencies.set(id, {signal, rows: this.outcomeRows(rows)});
         return true
     }
 
     /**
-     * @summary A seat's dependency rows for {@link status}: the pending attempt's while it runs, else its launch's.
+     * @summary A seat's dependency rows for {@link status}: its latest attempt's, `null` before one.
      * @param {String} id
-     * @param {Object|null} record The seat's process record.
      * @returns {Object[]|null}
      * @private
      */
-    dependenciesOf(id, record) {
-        const rows = this.pendingDependencies.get(id)?.rows ?? record?.dependencies;
-
-        return rows ? rows.map(row => ({...row})) : null
+    dependenciesOf(id) {
+        return this.attemptDependencies.get(id)?.rows.map(row => ({...row})) ?? null
     }
 
     /**

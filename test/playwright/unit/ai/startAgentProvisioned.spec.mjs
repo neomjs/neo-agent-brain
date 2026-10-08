@@ -47,7 +47,7 @@ function makeLifecycle({
     inspectionError = null,
     profileInUse = false
 } = {}) {
-    const calls     = {capability: [], credential: [], dependencyOutcomes: [], gitIdentity: [], inspection: [], mark: [], pendingDependencies: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], signals: [], start: [], status: []};
+    const calls     = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], pendingDependencies: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], signals: [], start: [], status: []};
     const admission = {
         revocationMark: id => {
             events?.push('mark');
@@ -114,7 +114,6 @@ function makeLifecycle({
         },
         resolveResidentMcpEnvironment: () => ({}),
         setRepoOutcomes              : (id, repos, launch) => { calls.repoOutcomes.push({id, repos, launch}); return true },
-        setDependencyOutcomes        : (id, dependencies, launch) => { calls.dependencyOutcomes.push({id, dependencies, launch}); return true },
         setPendingDependencies       : (id, signal, rows) => { calls.pendingDependencies.push({id, signal, rows}); return true },
         setGitIdentity               : (id, gitIdentity) => { calls.gitIdentity.push({id, gitIdentity}); return true },
         start                        : (id, opts) => { events?.push('start'); calls.start.push({id, opts}); return {id, running: true, state: 'running', cwd: opts?.cwd, pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}; }
@@ -463,7 +462,8 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             onRows    : expect.any(Function)
         }]);
         expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installed'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}]);
-        expect(lifecycle.calls.dependencyOutcomes).toEqual([{id: 'a', dependencies: status.dependencies, launch: {pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}}]);
+        // the install's answer is this attempt's outcome on the seat's status, also when its installer reported nothing
+        expect(lifecycle.calls.pendingDependencies).toEqual([{id: 'a', signal: lifecycle.calls.signals[0], rows: status.dependencies}]);
     });
 
     test('a failed install is reported on the status, and the seat still starts', async () => {
@@ -504,16 +504,20 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
 
         expect(installs[0].skipSignal).toBe(skip.signal);
         // bound to this attempt's own signal, so a newer Start's rows are never overwritten
-        expect(lifecycle.calls.pendingDependencies).toEqual([{id: 'a', signal: lifecycle.calls.signals[0], rows: [{repoSlug: 'neomjs/neo', state: 'installing'}]}]);
+        expect(lifecycle.calls.pendingDependencies).toEqual([
+            {id: 'a', signal: lifecycle.calls.signals[0], rows: [{repoSlug: 'neomjs/neo', state: 'installing'}]},
+            {id: 'a', signal: lifecycle.calls.signals[0], rows: status.dependencies}
+        ]);
         // a Skip is not a Stop: the seat launches, and its row says the install was skipped
         expect(lifecycle.calls.start).toHaveLength(1);
         expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'skipped', reason: 'skipped during the install'}]);
     });
 
-    test('a Stop during the install is a cancel, not a failed row: nothing is prepared or spawned', async () => {
+    test("a Stop during the install cancels the Start with nothing prepared or spawned, and the attempt keeps its rows", async () => {
         const lifecycle        = makeLifecycle({agents: repoAgent('a')}),
               controller       = new AbortController(),
               prepareWorkspace = makePrepareWorkspace(),
+              canceled         = [{repoSlug: 'neomjs/neo', state: 'canceled', reason: 'stopped during the install'}],
               status           = await startAgentProvisioned({
                   lifecycleService: lifecycle,
                   agentId         : 'a',
@@ -523,7 +527,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                   // the install answers only after its npm exited, which runToExit guarantees
                   installDependencies: async () => {
                       controller.abort();
-                      return [{repoSlug: 'neomjs/neo', state: 'failed', reason: 'npm ci canceled'}]
+                      return canceled
                   },
                   prepareWorkspace,
                   agentosRuntimeRoot : '/installed/neo'
@@ -532,7 +536,8 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(status).toEqual({id: 'a', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
         expect(prepareWorkspace.calls).toHaveLength(0);
         expect(lifecycle.calls.start).toHaveLength(0);
-        expect(lifecycle.calls.dependencyOutcomes).toHaveLength(0);
+        // the stopped attempt's last rows, still under its own signal, before the lifecycle finishes it
+        expect(lifecycle.calls.pendingDependencies).toEqual([{id: 'a', signal: controller.signal, rows: canceled}]);
     });
 
     test('a working checkout that cannot be cloned still refuses the start, and no other repository is tried', async () => {

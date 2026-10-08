@@ -379,14 +379,19 @@ test.describe('installSeatDependencies — live rows, and a Skip that drains npm
         expect(JSON.parse(fs.readFileSync(path.join(seatRoot, DEPENDENCY_RECEIPT), 'utf8'))['neomjs/neo'].state).toBe('failed');
     });
 
-    test('a Stop wins over a Skip: the interrupted install is not reported skipped', async () => {
+    test('a Stop wins over a Skip: the interrupted install reads canceled, never skipped or failed, and a finished one keeps its outcome', async () => {
         const start = new AbortController(),
               skip  = new AbortController(),
-              rows  = installSeatDependencies({checkouts: checkouts.slice(0, 1), seatRoot, signal: start.signal, skipSignal: skip.signal, install: installUntil(new Set())});
+              rows  = installSeatDependencies({checkouts, seatRoot, signal: start.signal, skipSignal: skip.signal, install: installUntil(new Set(['/seat/neomjs/neo-agent-brain']))});
 
         setTimeout(() => { skip.abort(); start.abort() }, 20);
 
-        expect(await rows).toEqual([{repoSlug: 'neomjs/neo', state: 'failed', reason: 'npm ci canceled'}]);
+        expect(await rows).toEqual([
+            {repoSlug: 'neomjs/neo',             state: 'canceled', reason: 'stopped during the install'},
+            {repoSlug: 'neomjs/neo-agent-brain', state: 'installed'}
+        ]);
+        // the receipt still has the next Start install it again
+        expect(JSON.parse(fs.readFileSync(path.join(seatRoot, DEPENDENCY_RECEIPT), 'utf8'))['neomjs/neo'].state).toBe('failed');
     });
 
     test('a stopped run reports canceled, so its caller can tell a Skip or a Stop from a failure', async () => {

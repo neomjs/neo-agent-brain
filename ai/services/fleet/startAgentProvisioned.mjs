@@ -600,7 +600,8 @@ async function provisionAgent({
 
     // Each checkout's locked dependencies go in before anything runs there, so the seat's first session finds the
     // skills its instructions name. Like an other repository's clone, no outcome stops the launch, and neither does a
-    // Skip; a Stop during the install does, after `npm` has exited. The rows reach the seat's status as they change.
+    // Skip; a Stop during the install does, after `npm` has exited. The rows reach the seat's status as they change,
+    // and the final ones stay there as this attempt's outcome, launched or not.
     const dependencyRows = await installDependencies({
         checkouts,
         seatRoot  : path.resolve(managedRoot, agentId),
@@ -608,6 +609,7 @@ async function provisionAgent({
         skipSignal: dependencySkipSignal,
         onRows    : rows => lifecycleService.setPendingDependencies(agentId, startSignal, rows)
     });
+    lifecycleService.setPendingDependencies(agentId, startSignal, dependencyRows);
     startSignal.throwIfAborted();
 
     // Preparation is a mandatory gate for repo-bearing agents. The lifecycle owns the resolved
@@ -716,13 +718,9 @@ async function provisionAgent({
     // the answer reaches whoever pressed Start; the launch record keeps it for every later read
     startSignal.throwIfAborted();
 
-    const launch = {pid: status?.pid, startedAt: status?.startedAt};
-
     if (repos.length) {
-        lifecycleService.setRepoOutcomes(agentId, repos, launch)
+        lifecycleService.setRepoOutcomes(agentId, repos, {pid: status?.pid, startedAt: status?.startedAt})
     }
-
-    lifecycleService.setDependencyOutcomes(agentId, dependencyRows, launch);
 
     return {
         ...status,
