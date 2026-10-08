@@ -24,18 +24,19 @@ import {resolveSeatPlaneTarget}     from './resolveSeatPlaneTarget.mjs';
  *
  * **Never fails a start.** Every refusal is a returned `{state: 'unarmed', reason}`; the seat keeps
  * running and its status says why it cannot be woken. `null` means "no GUI wake applies to this
- * family" — the Fleet records nothing, and a family with its own route (OpenCode) keeps it.
+ * family" — the Fleet records nothing, and a family with its own route keeps it: OpenCode's, and the
+ * pull route a Claude Desktop seat arms at its own SessionStart.
  */
 
 /**
- * The receiver dispatch per GUI family: the automation `appName` the `osascript` adapter targets,
- * plus a focus seed where the receiver has no default for the app — Codex requires one, Claude's
- * defaults live with the receiver (`ai/daemons/wake/hostHarnessMetadata.mjs`).
+ * The receiver dispatch per GUI family the Fleet arms: the automation `appName` the `osascript`
+ * adapter targets, plus the focus seed Codex requires. Claude Desktop has no entry: its seat retires
+ * every route that types into its window when it arms its pull route, so one armed here would only
+ * come back stale.
  * @type {Object}
  */
 export const GUI_WAKE_DISPATCH = Object.freeze({
-    'claude-desktop': Object.freeze({adapter: 'osascript', appName: 'Claude'}),
-    'codex-desktop' : Object.freeze({adapter: 'osascript', appName: 'Codex', focusSeedKey: 'r'})
+    'codex-desktop': Object.freeze({adapter: 'osascript', appName: 'Codex', focusSeedKey: 'r'})
 });
 
 /**

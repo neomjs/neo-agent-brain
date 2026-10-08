@@ -65,7 +65,7 @@ const
  *     reason, signals}]}`). Absent ⇒ the presence axis is a typed `unobserved`.
  * @param {Function|null} [options.readFleetArming] `(agentId) => {state, reason}|null` — the wake
  *     route the Fleet recorded when it started the seat. It only explains a seat the manifest does
- *     not carry; the manifest stays the authority for armed.
+ *     not carry; the manifest and the seat's own poll stay the authorities for armed.
  * @param {Function} [options.wakeIdentityFor] `(agent) => String` roster row → wake identity.
  *     Default: the exported presence canonicalizer — ONE registry→plane identity boundary for
  *     both live presence consumers, accepting the registry's full production spelling domain
@@ -142,13 +142,15 @@ export function createFleetWakeRoutesSource({
         for (const agent of agents) {
             if (!agent?.id) continue
 
-            const identity = wakeIdentityFor(agent)
+            const
+                identity   = wakeIdentityFor(agent),
+                subscribed = subscription.rowFor(identity)
 
             seats.push({
                 agentId      : agent.id,
                 agentIdentity: identity,
-                subscription : subscription.rowFor(identity),
-                armed        : explainUnarmed(arming.rowFor(identity), readFleetArming, agent.id),
+                subscription : subscribed,
+                armed        : explainUnarmed(withPullArming(arming.rowFor(identity), subscribed), readFleetArming, agent.id),
                 delivery     : {state: delivery.state, reason: delivery.reason},
                 lastFailure  : failures.rowFor(identity),
                 presence     : presence.rowFor(identity)
@@ -240,8 +242,9 @@ async function readSubscriptionAxis(listActiveSubscriptionObservations) {
 }
 
 /**
- * @summary Resolves the seat-arming axis: a seat is ARMED iff the published wake-receiver manifest
- * carries a loader-valid route for its identity (the `seatArmingReader` authority).
+ * @summary Resolves the receiver half of the seat-arming axis: a seat is ARMED here iff the published
+ * wake-receiver manifest carries a loader-valid route for its identity (the `seatArmingReader`
+ * authority). A pull seat's own poll arms it beside this ({@link withPullArming}).
  *
  * Absent resolver ⇒ every seat answers the typed `unobserved` — the no-local-wake-lane branch, the
  * same shape the axis carried while it was structurally silent, now scoped to deployments where
@@ -304,6 +307,25 @@ async function readArmingAxis(resolveSeatArming) {
             }
         }
     }
+}
+
+/**
+ * @summary A seat that pulls is armed by its own poll: it holds an active subscription that its own
+ * authenticated poll has stamped. Only a seat's listener polls, so the stamp is the seat's receipt,
+ * never one the Fleet wrote: a Claude seat arms its pull route at SessionStart and its Stop listener
+ * polls it. The stamp is observed whatever the manifest read answered, and it outranks a receiver
+ * route: arming the pull route unsubscribes every route that types into the seat's window, so a
+ * manifest entry beside a stamp names a route the seat already withdrew. A seat without a stamp keeps
+ * its row.
+ * @param {Object} row The arming axis row for the seat.
+ * @param {Object} subscribed The seat's subscription axis row.
+ * @returns {Object}
+ * @private
+ */
+function withPullArming(row, subscribed) {
+    if (subscribed.state !== 'active' || !subscribed.lastPollAt) return row;
+
+    return {state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: subscribed.lastPollAt}}
 }
 
 /**

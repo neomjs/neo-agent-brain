@@ -59,8 +59,8 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
                 state     : 'observed',
                 reason    : null,
                 byIdentity: new Map([[
-                    '@neo-fable-clio',
-                    {routeCount: 2, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'}
+                    '@neo-opus-ada',
+                    {routeCount: 2, adapter: 'osascript', appName: 'Codex', addressType: 'userDataDir'}
                 ]])
             })
         }).readWakeRoutes();
@@ -76,14 +76,13 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         const [ada, clio] = snapshot.seats;
 
         // The armed row carries the allowlisted route detail — and ONLY it.
-        expect(clio.armed).toEqual({
+        expect(ada.armed).toEqual({
             state : 'armed',
             reason: null,
-            route : {routeCount: 2, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'}
+            route : {routeCount: 2, adapter: 'osascript', appName: 'Codex', addressType: 'userDataDir'}
         });
-        // A seat absent from a healthy manifest answer is genuinely UNARMED — a first-class
-        // healthy answer, never collapsed into unknown.
-        expect(ada.armed).toEqual({state: 'none', reason: null});
+        // The seat that pulls is armed by its own poll's stamp.
+        expect(clio.armed).toEqual({state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: '2026-08-03T19:58:00.000Z'}});
 
         expect(ada.subscription).toEqual({state: 'none', reason: null});
         // The active row carries the redacted poll-recency observation — the route-health
@@ -96,7 +95,7 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         })
     });
 
-    test('a seat the manifest does not carry says why, when the Fleet\'s own arming reported unarmed — the manifest still decides armed', async () => {
+    test('a seat the manifest does not carry says why, when the Fleet\'s own arming reported unarmed — the Fleet\'s record never decides armed', async () => {
         const
             arming = () => ({state: 'observed', reason: null, byIdentity: new Map([['@neo-fable-clio', {routeCount: 1, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'}]])}),
             fleet  = {
@@ -122,6 +121,46 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         for (const readFleetArming of [() => null, () => ({state: 'ready', reason: null}), () => { throw new Error('lifecycle unreadable') }]) {
             expect((await harness({resolveSeatArming: empty, readFleetArming}).readWakeRoutes()).seats[0].armed).toEqual({state: 'none', reason: null});
         }
+    });
+
+    test('a seat no receiver route carries is armed when its own poll stamped its active subscription', async () => {
+        const
+            empty   = () => ({state: 'observed', reason: null, byIdentity: new Map()}),
+            unarmed = () => ({state: 'unarmed', reason: 'no wake receiver is declared'}),
+            pull    = {state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: '2026-08-03T19:58:00.000Z'}};
+
+        let [ada, clio] = (await harness({resolveSeatArming: empty, readFleetArming: unarmed}).readWakeRoutes()).seats;
+
+        expect(clio.armed).toEqual(pull);
+        // no subscription, no receipt: ada stays none, and the Fleet's reason still explains it
+        expect(ada.armed).toEqual({state: 'none', reason: 'no wake receiver is declared'});
+
+        // the stamp is observed with no manifest read at all
+        [ada, clio] = (await harness().readWakeRoutes()).seats;
+
+        expect(clio.armed).toEqual(pull);
+        expect(ada.armed.state).toBe('unobserved');
+    });
+
+    test('a seat\'s own poll outranks a receiver route it already withdrew; a seat that never polled keeps the manifest\'s detail', async () => {
+        const
+            route       = {routeCount: 1, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'},
+            [ada, clio] = (await harness({
+                resolveSeatArming                 : () => ({state: 'observed', reason: null, byIdentity: new Map([['@neo-opus-ada', route], ['@neo-fable-clio', route]])}),
+                listActiveSubscriptionObservations: () => [{identity: '@neo-opus-ada', lastPollAt: null}, {identity: '@neo-fable-clio', lastPollAt: '2026-08-03T19:58:00.000Z'}]
+            }).readWakeRoutes()).seats;
+
+        expect(clio.armed).toEqual({state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: '2026-08-03T19:58:00.000Z'}});
+        expect(ada.armed).toEqual({state: 'armed', reason: null, route});
+    });
+
+    test('a subscription no poll has stamped is no receipt yet: the seat stays unarmed', async () => {
+        const [, clio] = (await harness({
+            resolveSeatArming                 : () => ({state: 'observed', reason: null, byIdentity: new Map()}),
+            listActiveSubscriptionObservations: () => [{identity: '@neo-fable-clio', lastPollAt: null}]
+        }).readWakeRoutes()).seats;
+
+        expect(clio.armed).toEqual({state: 'none', reason: null});
     });
 
     test('the Fleet\'s reason is redacted and bounded like every other axis reason', async () => {
@@ -162,7 +201,11 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         await fs.chmod(manifestPath, 0o600);
 
         try {
-            const snapshot = await harness({wakeReceiverManifestPath: manifestPath}).readWakeRoutes();
+            // a push seat: subscribed and never polled, so the manifest decides its arming
+            const snapshot = await harness({
+                wakeReceiverManifestPath          : manifestPath,
+                listActiveSubscriptionObservations: () => [{identity: '@neo-fable-clio', lastPollAt: null}]
+            }).readWakeRoutes();
 
             expect(snapshot.capability).toEqual({
                 source    : 'fleet:wakeRoutes', state: 'wired', confidence: 'observed',
@@ -206,7 +249,7 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         expect(typeof ada.armed.reason).toBe('string')
     });
 
-    test('a throwing arming resolver degrades EVERY seat to unknown with the reason — never a fabricated none', async () => {
+    test('a throwing arming resolver degrades every seat without its own poll to unknown with the reason — never a fabricated none', async () => {
         const snapshot = await harness({
             resolveSeatArming: () => { throw new Error('receiver manifest walk exploded') }
         }).readWakeRoutes();
@@ -214,10 +257,12 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         expect(snapshot.capability.state).toBe('degraded');
         expect(snapshot.capability.reason).toContain('arming axis: receiver manifest walk exploded');
 
-        for (const seat of snapshot.seats) {
-            expect(seat.armed.state).toBe('unknown');
-            expect(seat.armed.reason).toContain('receiver manifest walk exploded')
-        }
+        const [ada, clio] = snapshot.seats;
+
+        expect(ada.armed.state).toBe('unknown');
+        expect(ada.armed.reason).toContain('receiver manifest walk exploded');
+        // a pull seat's own poll is evidence the broken manifest read cannot take away
+        expect(clio.armed).toMatchObject({state: 'armed', route: {adapter: 'pull'}})
     });
 
     test('a terminal receipt reaches its seat as a first-class row fact', async () => {

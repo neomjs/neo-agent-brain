@@ -346,21 +346,17 @@ test.describe('armFleetSeatWake — one route per seat, subscribed as the seat',
         });
     }
 
-    test('a Claude Desktop seat carries the Claude dispatch and its home as the address', async () => {
-        const plane    = fakePlane(),
-              {result} = arm({plane, agent: {...AGENT, harnessType: 'claude-desktop'}, instanceHome: '/agents/a/harness/claude-desktop'});
+});
 
-        expect(await result).toMatchObject({state: 'ready', instanceAddress: '/agents/a/harness/claude-desktop'});
+test.describe('armFleetSeatWake — a Claude Desktop seat arms its own pull route', () => {
+    test('the Fleet answers null for it: no client, no subscription, nothing published', async () => {
+        const {result, plane, armCalls} = arm({agent: {...AGENT, harnessType: 'claude-desktop'}, instanceHome: '/agents/a/harness/claude-desktop'});
 
-        const metadata = plane.subscribeCalls()[0].harnessTargetMetadata;
-
-        expect(metadata).toEqual({
-            ...GUI_WAKE_DISPATCH['claude-desktop'],
-            url            : `${RECEIVER}/wake`,
-            addressType    : 'userDataDir',
-            instanceAddress: '/agents/a/harness/claude-desktop'
-        });
-        expect(metadata).not.toHaveProperty('focusSeedKey');
+        // its SessionStart retires every route that types into its window, so one armed here would come back stale
+        expect(await result).toBeNull();
+        expect(plane.calls.created).toBeNull();
+        expect(armCalls).toHaveLength(0);
+        expect(GUI_WAKE_DISPATCH).not.toHaveProperty('claude-desktop')
     });
 });
 
