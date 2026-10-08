@@ -1,5 +1,6 @@
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                          from './mcpServers.mjs';
 import {ensureAgentRepo}                                        from './ensureAgentRepo.mjs';
+import {installSeatDependencies}                                from './installAgentRepoDependencies.mjs';
 import {LAUNCH_ADMISSION_CREDENTIALS, LAUNCH_ADMISSION_REASONS} from '../../../src/fleet/contract/launchAdmission.mjs';
 import {launchRefusalOf}                                        from '../../../src/fleet/contract/launchAuthority.mjs';
 import {prepareManagedAgentWorkspace}                           from './prepareManagedAgentWorkspace.mjs';
@@ -167,6 +168,11 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                              to {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}.
  * @param {Function} [options.importMemory]     The adopted seat's memory convergence before preparation;
  *                                              defaults to {@link module:ai/services/fleet/seatMemoryImport.importSeatMemory}.
+ * @param {Function} [options.installDependencies] `({checkouts, seatRoot, signal, skipSignal, onRows}) => Promise<Object[]>`,
+ *                                              each checkout's locked dependencies before the spawn; defaults to
+ *                                              {@link module:ai/services/fleet/installAgentRepoDependencies.installSeatDependencies}.
+ * @param {AbortSignal} [options.dependencySkipSignal] The operator's Skip of this Start's install: the interrupted
+ *                                              checkouts read `skipped` and the launch goes on.
  * @param {Function} [options.resolveGitIdentity]  `({agent, credential}) => Promise<Object>`, the identity the seat's
  *                                                 commits carry; defaults to `resolveSeatGitIdentity`.
  * @param {Function} [options.convergeGitIdentity] `({repoPath, identity}) => Promise<Object>`, one checkout brought to
@@ -198,7 +204,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   so whoever starts the seat sees why it got, kept or lost one, and an adopted seat `memoryImport`
  *   (`{state: 'copied' | 'present', source, destination, files}`). A seat with other repositories also
  *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, where a failed entry's
- *   `reason` is the failure's credential-redacted, bounded diagnostic. Stop returns a finite
+ *   `reason` is the failure's credential-redacted, bounded diagnostic. A repo-bearing seat's status carries
+ *   `dependencies`, one row per checkout it works in, the working one first:
+ *   `[{repoSlug, state: 'installed' | 'present' | 'unverified' | 'not-applicable' | 'skipped' | 'failed', reason?}]`. Stop returns a finite
  *   `{id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}` for this attempt;
  *   it never replaces a newer launch's record.
  *   Claude preparation may also return `repoTrust`: per-assignment file-projection observations
@@ -250,6 +258,8 @@ async function provisionAgent({
     ensureRepo = ensureAgentRepo,
     prepareWorkspace = prepareManagedAgentWorkspace,
     importMemory = importSeatMemory,
+    installDependencies = installSeatDependencies,
+    dependencySkipSignal,
     resolveGitIdentity = resolveSeatGitIdentity,
     convergeGitIdentity = convergeSeatGitIdentity,
     proveForgeAccount = proveSeatForgeAccount,
@@ -588,6 +598,20 @@ async function provisionAgent({
 
     lifecycleService.setGitIdentity?.(agentId, gitIdentity);
 
+    // Each checkout's locked dependencies go in before anything runs there, so the seat's first session finds the
+    // skills its instructions name. Like an other repository's clone, no outcome stops the launch, and neither does a
+    // Skip; a Stop during the install does, after `npm` has exited. The rows reach the seat's status as they change,
+    // and the final ones stay there as this attempt's outcome, launched or not.
+    const dependencyRows = await installDependencies({
+        checkouts,
+        seatRoot  : path.resolve(managedRoot, agentId),
+        signal    : startSignal,
+        skipSignal: dependencySkipSignal,
+        onRows    : rows => lifecycleService.setPendingDependencies(agentId, startSignal, rows)
+    });
+    lifecycleService.setPendingDependencies(agentId, startSignal, dependencyRows);
+    startSignal.throwIfAborted();
+
     // Preparation is a mandatory gate for repo-bearing agents. The lifecycle owns the resolved
     // instance-root SSOT; the explicit option is only a test/per-tenant seam. A preparation throw
     // propagates, so `start` is never called over divergent or unsupported resident state.
@@ -703,6 +727,7 @@ async function provisionAgent({
         ...(prepared.seatInstructions ? {seatInstructions: prepared.seatInstructions} : {}),
         ...(prepared.repoTrust ? {repoTrust: prepared.repoTrust} : {}),
         ...(memory.state !== 'none' ? {memoryImport: memory} : {}),
-        ...(repos.length ? {repos} : {})
+        ...(repos.length ? {repos} : {}),
+        dependencies: dependencyRows
     }
 }

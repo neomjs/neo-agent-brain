@@ -212,6 +212,9 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 repoStatus,
                 // the last start's per-repository outcome from the launch record; null before a start
                 repoOutcomes: runtime?.repos ?? null,
+                // each checkout's dependency row from the latest start that reached its install, the working one first:
+                // live while that start is pending (`installing` only then), its final rows after; null before one
+                dependencyOutcomes: runtime?.dependencies ?? null,
                 // where a running Claude Desktop seat's session opened, against its checkout; null
                 // for every other family and every seat not running
                 sessionFolder: runtime?.sessionFolder ?? null,
@@ -226,7 +229,7 @@ export function createFleetCockpitStatus({agents = [], fleetStatus = [], runtime
                 // whether a Claude Desktop seat's profile rows can start new MCP children (the
                 // `launchAdmission` contract); null for every other family and before a start
                 launchAdmission: runtime?.launchAdmission ?? null,
-                lifecycle   : supervised
+                lifecycle      : supervised
                     ? {
                         source    : FLEET_COCKPIT_SOURCES.runtime,
                         state     : runtime.state ?? 'unknown',
