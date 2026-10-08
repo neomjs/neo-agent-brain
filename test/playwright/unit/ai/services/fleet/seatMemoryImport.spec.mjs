@@ -52,12 +52,13 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
         }
     });
 
-    test('the destination is a function of the seat\'s family', () => {
+    test('every memory-capable family uses its seat-owned memory folder', () => {
         expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType: 'claude-desktop'})).toBe(path.join(agents, 'a', 'memory'));
         expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType: 'claude-code'})).toBe(path.join(agents, 'a', 'memory'));
-        expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType: 'codex'})).toBe(path.join(agents, 'a', 'harness', 'codex', 'memories'));
-        expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType: 'codex-desktop'})).toBe(path.join(agents, 'a', 'harness', 'codex-desktop', 'codex-home', 'memories'));
-        expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType: 'opencode'})).toBeNull()
+        for (const harnessType of ['codex', 'codex-desktop', 'opencode', 'kimi-code']) {
+            expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType})).toBe(path.join(agents, 'a', 'memory'))
+        }
+        expect(memoryDestination({instanceRoot: agents, agentId: 'a', harnessType: 'antigravity'})).toBeNull()
     });
 
     test('detection lists the memory folders that hold files, most first, by name, notes and newest change, and reads nothing else', async () => {
@@ -150,9 +151,9 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
         expect(fs.statSync(destination).mode & 0o777).toBe(0o700);
         expect(fs.readdirSync(claudeSource()).sort(), 'copied, never moved').toEqual(['MEMORY.md', 'feedback_x.md']);
 
-        const receipt = JSON.parse(fs.readFileSync(path.join(agents, 'neo-fable', 'harness', 'claude-desktop', MEMORY_IMPORT_RECEIPT), 'utf8'));
+        const receipt = JSON.parse(fs.readFileSync(path.join(agents, 'neo-fable', MEMORY_IMPORT_RECEIPT), 'utf8'));
 
-        expect(receipt).toEqual({source: claudeSource(), destination, files: 2, copiedAt: '2026-10-03T11:00:00.000Z'})
+        expect(receipt).toEqual({source: claudeSource(), destination: 'memory', files: 2, copiedAt: '2026-10-03T11:00:00.000Z'})
     });
 
     test('the receipt only guards a second copy; the seat\'s own later memory is never overwritten', async () => {
@@ -166,6 +167,151 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
 
         expect(await importFor(seat(claudeSource()))).toEqual({state: 'present', source: claudeSource(), destination, files: 1});
         expect(fs.readFileSync(path.join(destination, 'MEMORY.md'), 'utf8')).toBe('the seat wrote this')
+    });
+
+    test('the canonical seat receipt survives a harness switch and protects authored memory', async () => {
+        const
+            source      = claudeSource(),
+            destination = path.join(agents, 'neo-fable', 'memory');
+
+        write(source, {'MEMORY.md': 'source index'});
+        await importFor(seat(source, 'codex'));
+        fs.writeFileSync(path.join(destination, 'MEMORY.md'), 'seat-authored after import');
+
+        const result = await importFor(seat(source, 'codex-desktop'));
+
+        expect(result).toEqual({state: 'present', source, destination, files: 1});
+        expect(fs.readFileSync(path.join(destination, 'MEMORY.md'), 'utf8')).toBe('seat-authored after import')
+    });
+
+    test('a receipt survives a seat-root and home move when its destination is still the seat memory folder', async () => {
+        const
+            source            = claudeSource(),
+            oldSeatRoot       = path.join(agents, 'neo-fable'),
+            oldDestination    = path.join(oldSeatRoot, 'memory'),
+            canonicalPath     = path.join(oldSeatRoot, MEMORY_IMPORT_RECEIPT),
+            legacyReceiptPath = path.join(oldSeatRoot, 'harness', 'claude-desktop', MEMORY_IMPORT_RECEIPT),
+            movedAgents       = path.join(root, 'moved-agents'),
+            movedHome         = path.join(root, 'moved-home'),
+            movedSeatRoot     = path.join(movedAgents, 'neo-fable'),
+            movedDestination  = path.join(movedSeatRoot, 'memory');
+
+        write(source, {'MEMORY.md': 'source before import'});
+        await importFor(seat(source));
+        fs.writeFileSync(path.join(oldDestination, 'MEMORY.md'), 'seat-authored bytes');
+        const legacyReceipt = JSON.parse(fs.readFileSync(canonicalPath, 'utf8'));
+
+        legacyReceipt.destination = oldDestination;
+        fs.mkdirSync(path.dirname(legacyReceiptPath), {recursive: true});
+        fs.writeFileSync(legacyReceiptPath, JSON.stringify(legacyReceipt));
+        fs.rmSync(canonicalPath);
+        fs.mkdirSync(movedAgents);
+        fs.mkdirSync(movedHome);
+        fs.cpSync(oldSeatRoot, movedSeatRoot, {recursive: true});
+
+        const movedSeat = seat(source, 'codex-desktop'),
+              result    = await importSeatMemory({agent: movedSeat, instanceRoot: movedAgents, homeDir: movedHome});
+
+        expect(result).toEqual({state: 'present', source, destination: movedDestination, files: 1});
+        expect(await seatHoldsMemory({agent: movedSeat, instanceRoot: movedAgents})).toBe(true);
+        expect(fs.readFileSync(path.join(movedDestination, 'MEMORY.md'), 'utf8')).toBe('seat-authored bytes');
+        expect(fs.readFileSync(path.join(source, 'MEMORY.md'), 'utf8')).toBe('source before import');
+        expect(JSON.parse(fs.readFileSync(path.join(movedSeatRoot, MEMORY_IMPORT_RECEIPT), 'utf8')).destination).toBe('memory');
+        expect(fs.readFileSync(path.join(movedSeatRoot, 'harness', 'claude-desktop', MEMORY_IMPORT_RECEIPT), 'utf8'))
+            .toBe(JSON.stringify(legacyReceipt))
+    });
+
+    test('a legacy Codex vendor receipt does not block importing into the seat memory folder', async () => {
+        const
+            harnessType    = 'codex-desktop',
+            source         = path.join(home, '.codex', 'memories'),
+            instanceHome   = path.join(agents, 'neo-fable', 'harness', harnessType, 'codex-home'),
+            oldDestination = path.join(instanceHome, 'memories'),
+            destination    = path.join(agents, 'neo-fable', 'memory'),
+            receiptPath    = path.join(agents, 'neo-fable', 'harness', harnessType, MEMORY_IMPORT_RECEIPT),
+            agent          = seat(source, harnessType);
+
+        write(source, {'MEMORY.md': 'consented source'});
+        write(oldDestination, {'MEMORY.md': 'native vendor bytes'});
+        fs.writeFileSync(receiptPath, JSON.stringify({source, destination: oldDestination, files: 1, copiedAt: '2026-10-03T11:00:00.000Z'}));
+        const legacyContents = fs.readFileSync(receiptPath, 'utf8');
+        expect(await seatHoldsMemory({agent, instanceRoot: agents}), 'the old vendor receipt does not claim the empty seat destination').toBe(false);
+
+        const result = await importFor(agent);
+
+        expect(result).toEqual({state: 'copied', source, destination, files: 1});
+        expect(fs.readFileSync(path.join(destination, 'MEMORY.md'), 'utf8')).toBe('consented source');
+        expect(fs.readFileSync(path.join(oldDestination, 'MEMORY.md'), 'utf8')).toBe('native vendor bytes');
+        expect(fs.readFileSync(path.join(source, 'MEMORY.md'), 'utf8')).toBe('consented source');
+        expect(JSON.parse(fs.readFileSync(path.join(agents, 'neo-fable', MEMORY_IMPORT_RECEIPT), 'utf8')).destination).toBe('memory');
+        expect(fs.readFileSync(receiptPath, 'utf8')).toBe(legacyContents)
+    });
+
+    test('a mismatched legacy receipt cannot overwrite authored bytes at the new destination', async () => {
+        const
+            harnessType    = 'codex-desktop',
+            source         = path.join(home, '.codex', 'memories'),
+            instanceHome   = path.join(agents, 'neo-fable', 'harness', harnessType, 'codex-home'),
+            oldDestination = path.join(instanceHome, 'memories'),
+            destination    = path.join(agents, 'neo-fable', 'memory'),
+            receiptPath    = path.join(agents, 'neo-fable', 'harness', harnessType, MEMORY_IMPORT_RECEIPT),
+            agent          = seat(source, harnessType);
+
+        write(source, {'MEMORY.md': 'consented source'});
+        write(oldDestination, {'MEMORY.md': 'vendor bytes'});
+        write(destination, {'MEMORY.md': 'authored destination bytes'});
+        fs.writeFileSync(receiptPath, JSON.stringify({source, destination: oldDestination, files: 1, copiedAt: '2026-10-03T11:00:00.000Z'}));
+
+        const refusal = await importFor(agent).catch(error => error);
+
+        expect(refusal).toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source, destination, step: 'memory import'});
+        expect(refusal.message).toContain('the seat already holds a different MEMORY.md');
+        expect(await seatHoldsMemory({agent, instanceRoot: agents})).toBe(true);
+        expect(fs.readFileSync(path.join(destination, 'MEMORY.md'), 'utf8')).toBe('authored destination bytes');
+        expect(fs.readFileSync(path.join(source, 'MEMORY.md'), 'utf8')).toBe('consented source');
+        expect(fs.readFileSync(path.join(oldDestination, 'MEMORY.md'), 'utf8')).toBe('vendor bytes')
+    });
+
+    test('a valid mismatching canonical receipt blocks a matching legacy receipt and permits fresh import', async () => {
+        const
+            source        = claudeSource(),
+            seatRoot      = path.join(agents, 'neo-fable'),
+            destination   = path.join(seatRoot, 'memory'),
+            canonicalPath = path.join(seatRoot, MEMORY_IMPORT_RECEIPT),
+            legacyPath    = path.join(seatRoot, 'harness', 'codex', MEMORY_IMPORT_RECEIPT),
+            legacy        = {source, destination: path.join(seatRoot, 'memory'), files: 1, copiedAt: '2026-10-03T11:00:00.000Z'};
+
+        write(source, {'MEMORY.md': 'consented source'});
+        fs.mkdirSync(path.dirname(legacyPath), {recursive: true});
+        fs.writeFileSync(canonicalPath, JSON.stringify({source, destination: 'harness/codex/memories', files: 1, copiedAt: '2026-10-03T11:00:00.000Z'}));
+        fs.writeFileSync(legacyPath, JSON.stringify(legacy));
+
+        expect(await importFor(seat(source))).toEqual({state: 'copied', source, destination, files: 1});
+        expect(fs.readFileSync(path.join(destination, 'MEMORY.md'), 'utf8')).toBe('consented source');
+        expect(JSON.parse(fs.readFileSync(canonicalPath, 'utf8')).destination).toBe('memory');
+        expect(fs.readFileSync(legacyPath, 'utf8')).toBe(JSON.stringify(legacy))
+    });
+
+    test('a corrupt canonical receipt refuses without falling back to a matching legacy receipt', async () => {
+        const
+            source        = claudeSource(),
+            seatRoot      = path.join(agents, 'neo-fable'),
+            destination   = path.join(seatRoot, 'memory'),
+            canonicalPath = path.join(seatRoot, MEMORY_IMPORT_RECEIPT),
+            legacyPath    = path.join(seatRoot, 'harness', 'codex', MEMORY_IMPORT_RECEIPT),
+            legacy        = {source, destination: path.join(seatRoot, 'memory'), files: 1, copiedAt: '2026-10-03T11:00:00.000Z'};
+
+        write(source, {'MEMORY.md': 'consented source'});
+        fs.mkdirSync(path.dirname(legacyPath), {recursive: true});
+        fs.writeFileSync(canonicalPath, '{broken');
+        fs.writeFileSync(legacyPath, JSON.stringify(legacy));
+
+        const refusal = await importFor(seat(source)).catch(error => error);
+
+        expect(refusal).toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source, destination, step: 'memory import'});
+        expect(refusal.message).toContain('the seat memory receipt is invalid');
+        expect(fs.existsSync(destination)).toBe(false);
+        expect(fs.readFileSync(legacyPath, 'utf8')).toBe(JSON.stringify(legacy))
     });
 
     test('Start refuses a consented import that reads empty, naming the source, the destination and the step', async () => {
@@ -266,11 +412,77 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
         expect(await detectMemoryCandidates({homeDir: home})).toMatchObject([{family: 'claude', source: claudeSource(), notes: 1}])
     });
 
+    test('an import refuses symlinked seat, destination, nested directory, or destination file paths', async () => {
+        const
+            source       = claudeSource(),
+            outside      = path.join(root, 'outside'),
+            outsideFile  = path.join(outside, 'MEMORY.md'),
+            seatRoot     = path.join(agents, 'neo-fable'),
+            destination  = path.join(seatRoot, 'memory'),
+            receiptPath  = path.join(seatRoot, MEMORY_IMPORT_RECEIPT),
+            nestedSource = path.join(source, 'nested', 'MEMORY.md'),
+            cases        = [
+                ['seat', () => fs.symlinkSync(outside, seatRoot)],
+                ['destination', () => {fs.mkdirSync(seatRoot, {recursive: true}); fs.symlinkSync(outside, destination)}],
+                ['nested directory', () => {fs.mkdirSync(destination, {recursive: true}); fs.symlinkSync(outside, path.join(destination, 'nested'))}],
+                ['nested file', () => {fs.mkdirSync(path.join(destination, 'nested'), {recursive: true}); fs.symlinkSync(outsideFile, path.join(destination, 'nested', 'MEMORY.md'))}],
+                ['receipt file', () => {fs.mkdirSync(seatRoot, {recursive: true}); fs.symlinkSync(outsideFile, receiptPath)}]
+            ];
+
+        for (const [label, prepare] of cases) {
+            fs.rmSync(seatRoot, {recursive: true, force: true});
+            fs.rmSync(outside, {recursive: true, force: true});
+            fs.mkdirSync(outside, {recursive: true});
+            fs.writeFileSync(outsideFile, 'outside bytes');
+            write(path.dirname(nestedSource), {'MEMORY.md': 'consented source'});
+            prepare();
+
+            const refusal = await importFor(seat(source)).catch(error => error);
+
+            expect(refusal, label).toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source, step: 'memory import'});
+            expect(fs.readFileSync(outsideFile, 'utf8'), label).toBe('outside bytes');
+            expect(fs.existsSync(path.join(outside, 'nested', 'MEMORY.md')), label).toBe(false)
+        }
+    });
+
+    test('a root may sit below a symlinked ancestor, but the root itself must be a real directory', async () => {
+        const
+            physical          = path.join(root, 'physical'),
+            linked            = path.join(root, 'linked'),
+            linkedAgents      = path.join(linked, 'agents'),
+            linkedHome        = path.join(linked, 'home'),
+            source            = path.join(linkedHome, '.claude', 'projects', 'fixture', 'memory'),
+            linkedAgent       = {...seat(source), id: 'linked-root'},
+            linkedDestination = path.join(physical, 'agents', 'linked-root', 'memory'),
+            realAgents        = path.join(root, 'real-agents'),
+            rootLink          = path.join(root, 'agents-root-link'),
+            linkedRootAgent   = {...seat(source), id: 'linked-root-refused'};
+
+        fs.mkdirSync(physical, {recursive: true});
+        fs.symlinkSync(physical, linked);
+        fs.mkdirSync(linkedAgents, {recursive: true});
+        fs.mkdirSync(linkedHome, {recursive: true});
+        write(source, {'MEMORY.md': 'consented source'});
+
+        expect(await importSeatMemory({agent: linkedAgent, instanceRoot: linkedAgents, homeDir: linkedHome}))
+            .toMatchObject({state: 'copied', destination: path.join(linkedAgents, 'linked-root', 'memory')});
+        expect(fs.readFileSync(path.join(linkedDestination, 'MEMORY.md'), 'utf8')).toBe('consented source');
+
+        fs.mkdirSync(realAgents);
+        fs.symlinkSync(realAgents, rootLink);
+
+        const refusal = await importSeatMemory({agent: linkedRootAgent, instanceRoot: rootLink, homeDir: linkedHome}).catch(error => error);
+
+        expect(refusal).toMatchObject({code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED', source, step: 'memory import'});
+        expect(fs.existsSync(path.join(realAgents, 'linked-root-refused', 'memory'))).toBe(false);
+        expect(fs.readFileSync(path.join(source, 'MEMORY.md'), 'utf8')).toBe('consented source')
+    });
+
     test('a first import the seat contradicts is refused and changes nothing, until it is reconciled', async () => {
         write(claudeSource(), {'MEMORY.md': 'index', 'note.md': 'source note'});
 
         const destination = path.join(agents, 'neo-fable', 'memory'),
-              receipt     = path.join(agents, 'neo-fable', 'harness', 'claude-desktop', MEMORY_IMPORT_RECEIPT);
+              receipt     = path.join(agents, 'neo-fable', MEMORY_IMPORT_RECEIPT);
 
         write(destination, {'note.md': 'the seat already wrote this'});
 
@@ -294,9 +506,9 @@ test.describe('seatMemoryImport — an adopted seat keeps its memory', () => {
         expect(fs.existsSync(receipt)).toBe(true)
     });
 
-    test('a Codex seat imports into its own CODEX_HOME, and a folder its preparation made ends owner-only', async () => {
+    test('a Codex seat imports into its seat-owned memory folder and it ends owner-only', async () => {
         const source      = path.join(home, '.codex', 'memories'),
-              destination = path.join(agents, 'neo-fable', 'harness', 'codex-desktop', 'codex-home', 'memories');
+              destination = path.join(agents, 'neo-fable', 'memory');
 
         write(source, {'MEMORY.md': 'codex index', 'raw_memories.md': 'raw'});
 

@@ -22,8 +22,9 @@ const
  */
 function fakeFileSystem(entries = []) {
     const
-        kinds  = Array.isArray(entries) ? Object.fromEntries(entries.map(entry => [entry, 'file'])) : entries,
-        failed = (code, filePath) => Object.assign(new Error(`${code}: ${filePath}`), {code});
+        kinds    = Array.isArray(entries) ? Object.fromEntries(entries.map(entry => [entry, 'file'])) : entries,
+        contents = kinds.contents ?? {},
+        failed   = (code, filePath) => Object.assign(new Error(`${code}: ${filePath}`), {code});
 
     return {
         lstat : async filePath => {
@@ -32,10 +33,14 @@ function fakeFileSystem(entries = []) {
         },
         stat  : async filePath => {
             if (!kinds[filePath] || kinds[filePath] === 'dangling') throw failed('ENOENT', filePath);
-            return {isFile: () => kinds[filePath] !== 'directory'}
+            return {isFile: () => kinds[filePath] !== 'directory', size: kinds[filePath]?.size ?? 1}
         },
         access: async filePath => {
             if (kinds[filePath] === 'unreadable') throw failed('EACCES', filePath)
+        },
+        readFile: async filePath => {
+            if (!(filePath in contents)) throw failed('ENOENT', filePath);
+            return contents[filePath]
         }
     }
 }
@@ -137,5 +142,90 @@ test.describe('projectSeatInstructions (a seat\'s maintainer instructions in its
         const fileSystem = {stat: async () => {throw Object.assign(new Error('EACCES: denied'), {code: 'EACCES'})}};
 
         await expect(project({fileSystem})).rejects.toThrow('EACCES')
+    });
+
+    test('Codex gets exact boot-file contents in its home projection even when the repository supplies AGENTS.md', async () => {
+        const
+            memoryDir = path.join(HOME, 'memory'),
+            bootFiles = {
+                [path.join(memoryDir, 'MEMORY.md')]  : '# Seat memory\nexact bytes\n',
+                [path.join(memoryDir, 'identity.md')]: '# Identity\nbearer-authored\n'
+            },
+            fileSystem = fakeFileSystem({
+                contents                      : bootFiles,
+                [path.join(REPO, 'AGENTS.md')]: 'file'
+            }),
+            result = await project({harnessType: 'codex', memoryDir, fileSystem, repoSlug: 'neomjs/neo-agent-brain'});
+
+        expect(result).toMatchObject({state: PROJECTED, filePath: path.join(HOME, 'AGENTS.md')});
+        expect(result.reason).toContain('checkout carries AGENTS.md');
+        expect(result.content).toContain(`Source directory: \`${memoryDir}\``);
+        expect(result.content).toContain('Resolve relative file references against this directory.');
+        expect(result.content).toContain(bootFiles[path.join(memoryDir, 'MEMORY.md')]);
+        expect(result.content).toContain(bootFiles[path.join(memoryDir, 'identity.md')])
+    });
+
+    test('Codex gets a memory-only home projection for repository-supplied and unsupported Skills sources', async () => {
+        const memoryDir  = path.join(HOME, 'memory'),
+              fileSystem = fakeFileSystem({
+                  contents: {
+                      [path.join(memoryDir, 'MEMORY.md')]  : '# Seat memory\n',
+                      [path.join(memoryDir, 'identity.md')]: '# Identity\n'
+                  },
+                  [path.join(REPO, 'AGENTS.override.md')]: 'file'
+              });
+
+        for (const repoSlug of ['neomjs/neo-agent-brain', 'other/not-supported']) {
+            const result = await project({harnessType: 'codex', memoryDir, fileSystem, repoSlug});
+
+            expect(result.state).toBe(PROJECTED);
+            expect(result.content).toContain('# Seat memory');
+            expect(result.content).not.toContain(GATE.source);
+            expect(result.reason).toMatch(repoSlug === 'neomjs/neo-agent-brain'
+                ? /checkout carries AGENTS\.override\.md; Fleet projects seat memory only/
+                : /Skills source declares no repository/)
+        }
+    });
+
+    test('a non-empty home AGENTS.override.md refuses projection without taking ownership of that file', async () => {
+        const memoryDir  = path.join(HOME, 'memory'),
+              fileSystem = fakeFileSystem({
+                  contents: {
+                      [path.join(memoryDir, 'MEMORY.md')]  : '# Seat memory\n',
+                      [path.join(memoryDir, 'identity.md')]: '# Identity\n'
+                  },
+                  [path.join(HOME, 'AGENTS.override.md')]: {size: 12}
+              });
+
+        await expect(project({harnessType: 'codex', memoryDir, fileSystem}))
+            .rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT', artifact: {path: path.join(HOME, 'AGENTS.override.md')}})
+    });
+
+    test('an empty home override falls back to the existing AGENTS.md projection slot', async () => {
+        const memoryDir  = path.join(HOME, 'memory'),
+              fileSystem = fakeFileSystem({
+                  contents: {
+                      [path.join(memoryDir, 'MEMORY.md')]  : '# Seat memory\n',
+                      [path.join(memoryDir, 'identity.md')]: '# Identity\n'
+                  },
+                  [path.join(HOME, 'AGENTS.override.md')]: {size: 0}
+              }),
+              result = await project({harnessType: 'codex', memoryDir, fileSystem});
+
+        expect(result).toMatchObject({state: PROJECTED, filePath: path.join(HOME, 'AGENTS.md')});
+        expect(result.content).toContain('# Seat memory')
+    });
+
+    test('a supplied memory directory with a missing boot file fails closed instead of dropping the projection', async () => {
+        const memoryDir  = path.join(HOME, 'memory'),
+              fileSystem = fakeFileSystem({
+                  contents: {[path.join(memoryDir, 'MEMORY.md')]: '# Seat memory\n'}
+              });
+
+        await expect(project({harnessType: 'codex', memoryDir, fileSystem}))
+            .rejects.toMatchObject({
+                code    : 'FLEET_WORKSPACE_DIVERGENT',
+                artifact: {path: path.join(memoryDir, 'identity.md'), reason: 'seat memory boot file is missing'}
+            })
     })
 });
