@@ -2985,11 +2985,11 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
 
     test('a real composed start returns the instruction decision on the status it hands its caller, with no logger injected', async () => {
         const
-            started        = [],
+            started         = [],
             lifecycleEvents = [],
-            begunSignals   = [],
-            startSignals   = [],
-            lifecycle = agent => ({
+            begunSignals    = [],
+            startSignals    = [],
+            lifecycle       = agent => ({
                 beginStart: id => {
                     const signal = new AbortController().signal;
 
@@ -3002,7 +3002,7 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
                     lifecycleEvents.push(`finish:${id}`);
                     expect(signal).toBe(begunSignals.at(-1))
                 },
-                canceledStart: id => ({id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}),
+                canceledStart                : id => ({id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}),
                 isRunning                    : () => false,
                 status                       : id => ({id, running: false, state: 'stopped'}),
                 getInstanceRoot              : () => instanceRoot,
