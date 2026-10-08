@@ -1,5 +1,5 @@
-import {test, expect} from '@playwright/test';
-import path           from 'node:path';
+import {test, expect}                               from '@playwright/test';
+import path                                         from 'node:path';
 import {readSeatModelCatalog, unofferedDeclaration} from '../../../../../../ai/services/fleet/seatModelCatalog.mjs';
 
 // The help text claude CLI 2.1.212 printed for `--effort` on 2026-10-04, the part this read depends on.
@@ -29,10 +29,10 @@ test.describe('seatModelCatalog — what a seat\'s harness offers to declare', (
             lifecycle = makeLifecycle(),
             asked     = [],
             catalog   = await readSeatModelCatalog({
-                agent       : {id: 'sophie', harnessType: 'codex-desktop'},
-                instanceRoot: '/agents',
+                agent           : {id: 'sophie', harnessType: 'codex-desktop'},
+                instanceRoot    : '/agents',
                 lifecycleService: lifecycle,
-                readCodex   : options => { asked.push(options); return {state: 'complete', models: [], reason: null} }
+                readCodex       : options => { asked.push(options); return {state: 'complete', models: [], reason: null} }
             });
 
         expect(catalog.state).toBe('complete');
@@ -64,9 +64,12 @@ test.describe('seatModelCatalog — what a seat\'s harness offers to declare', (
         expect((await read(async () => { throw new Error('not found') })).reason).toBe('the CLI did not answer --help: not found');
     });
 
-    test('a family Fleet does not configure this way takes no declaration', async () => {
-        expect(await readSeatModelCatalog({agent: {id: 'ada', harnessType: 'claude-desktop'}, instanceRoot: '/agents', lifecycleService: makeLifecycle()}))
-            .toEqual({state: 'unsupported', models: [], reason: "a 'claude-desktop' seat takes no declared model or reasoning effort"});
+    test('Claude Desktop has no catalog reader; unsupported does not prove its allowed effort absent', async () => {
+        const unsupported = await readSeatModelCatalog({agent: {id: 'ada', harnessType: 'claude-desktop'}, instanceRoot: '/agents', lifecycleService: makeLifecycle()});
+
+        expect(unsupported)
+            .toEqual({state: 'unsupported', models: [], reason: "a 'claude-desktop' seat has no supported model/effort catalog reader"});
+        expect(unofferedDeclaration(unsupported, {reasoningEffort: 'max'}), 'no supported reader cannot claim max is unavailable').toBeNull()
     });
 
     test('only a complete catalog refuses, and only what it lacks: the model, or that model\'s effort', () => {
