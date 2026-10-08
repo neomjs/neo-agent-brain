@@ -1,12 +1,12 @@
-import {test, expect}                  from '@playwright/test';
-import {Client}                        from '@modelcontextprotocol/sdk/client/index.js';
-import {StdioClientTransport}          from '@modelcontextprotocol/sdk/client/stdio.js';
-import {spawnSync}                     from 'node:child_process';
-import crypto                          from 'node:crypto';
-import fs                              from 'node:fs/promises';
-import os                              from 'node:os';
-import path                            from 'node:path';
-import {fileURLToPath, pathToFileURL}  from 'node:url';
+import {test, expect}                 from '@playwright/test';
+import {Client}                       from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport}         from '@modelcontextprotocol/sdk/client/stdio.js';
+import {spawnSync}                    from 'node:child_process';
+import crypto                         from 'node:crypto';
+import fs                             from 'node:fs/promises';
+import os                             from 'node:os';
+import path                           from 'node:path';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {
     ManagedWorkspacePreparationError,
     WORKSPACE_ARTIFACT_STATES,
@@ -758,7 +758,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': true
         }}));
         const result = await prepareManagedAgentWorkspace(opts);
-        const text = await read(path.join(opts.targetRepoRoot, '.codex/config.toml'));
+        const text   = await read(path.join(opts.targetRepoRoot, '.codex/config.toml'));
         for (const key of ['neural-link', 'github-workflow']) {
             const row = result.mcpPlan.find(server => server.key === key);
             expect(row.runtimeEnv).toContain('NEO_PLANE_DATA_ROOT');
@@ -1465,18 +1465,18 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
     for (const harness of ['codex', 'codex-desktop']) {
         test(`${harness}: canonical trust migrates an exact lexical block once and preserves resident settings`, async () => {
-            const opts = await symlinkedCodexOptions(harness),
-                  first = await prepareManagedAgentWorkspace(opts),
-                  home = harness === 'codex' ? first.instanceHome : path.join(first.instanceHome, 'codex-home'),
-                  homePath = path.join(home, 'config.toml'),
-                  realPath = await fs.realpath(opts.targetRepoRoot),
+            const opts            = await symlinkedCodexOptions(harness),
+                  first           = await prepareManagedAgentWorkspace(opts),
+                  home            = harness === 'codex' ? first.instanceHome : path.join(first.instanceHome, 'codex-home'),
+                  homePath        = path.join(home, 'config.toml'),
+                  realPath        = await fs.realpath(opts.targetRepoRoot),
                   canonicalHeader = `[projects.${JSON.stringify(realPath)}]`,
-                  lexicalHeader = `[projects.${JSON.stringify(opts.targetRepoRoot)}]`,
-                  initial = await read(homePath),
-                  resident = 'model = "resident-model"\n' + initial,
-                  legacy = resident.replace(canonicalHeader, lexicalHeader),
-                  authPath = path.join(home, 'auth.json'),
-                  auth = '{"fixture":"preserve resident login"}\n';
+                  lexicalHeader   = `[projects.${JSON.stringify(opts.targetRepoRoot)}]`,
+                  initial         = await read(homePath),
+                  resident        = 'model = "resident-model"\n' + initial,
+                  legacy          = resident.replace(canonicalHeader, lexicalHeader),
+                  authPath        = path.join(home, 'auth.json'),
+                  auth            = '{"fixture":"preserve resident login"}\n';
 
             expect(initial).toContain(canonicalHeader);
             expect(initial).not.toContain(lexicalHeader);
@@ -1496,12 +1496,12 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
     for (const variant of ['untrusted', 'unexpected', 'mixed-legacy']) {
         test(`canonical trust refuses ${variant} without overwriting a legacy home`, async () => {
-            const opts = await symlinkedCodexOptions(),
-                  first = await prepareManagedAgentWorkspace(opts),
-                  homePath = path.join(first.instanceHome, 'config.toml'),
-                  realPath = await fs.realpath(opts.targetRepoRoot),
+            const opts            = await symlinkedCodexOptions(),
+                  first           = await prepareManagedAgentWorkspace(opts),
+                  homePath        = path.join(first.instanceHome, 'config.toml'),
+                  realPath        = await fs.realpath(opts.targetRepoRoot),
                   canonicalHeader = `[projects.${JSON.stringify(realPath)}]`,
-                  lexicalHeader = `[projects.${JSON.stringify(opts.targetRepoRoot)}]`;
+                  lexicalHeader   = `[projects.${JSON.stringify(opts.targetRepoRoot)}]`;
 
             let source = (await read(homePath)).replace(canonicalHeader, lexicalHeader);
             if (variant === 'mixed-legacy') {
@@ -1512,7 +1512,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             await fs.writeFile(homePath, source);
 
             await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({
-                code: 'FLEET_WORKSPACE_DIVERGENT',
+                code    : 'FLEET_WORKSPACE_DIVERGENT',
                 artifact: {ownedKeys: 'projects.<managed-repo>.trust_level'}
             });
             expect(await read(homePath)).toBe(source);
@@ -1520,15 +1520,15 @@ test.describe('prepareManagedAgentWorkspace', () => {
     }
 
     test('canonical trust preserves a resident grant instead of duplicating its table during migration', async () => {
-        const opts = await symlinkedCodexOptions(),
-              first = await prepareManagedAgentWorkspace(opts),
-              homePath = path.join(first.instanceHome, 'config.toml'),
-              realPath = await fs.realpath(opts.targetRepoRoot),
+        const opts            = await symlinkedCodexOptions(),
+              first           = await prepareManagedAgentWorkspace(opts),
+              homePath        = path.join(first.instanceHome, 'config.toml'),
+              realPath        = await fs.realpath(opts.targetRepoRoot),
               canonicalHeader = `[projects.${JSON.stringify(realPath)}]`,
-              lexicalHeader = `[projects.${JSON.stringify(opts.targetRepoRoot)}]`,
-              initial = await read(homePath),
-              source = initial.replace(canonicalHeader, lexicalHeader) + `\n${canonicalHeader}\ntrust_level = "trusted"\n`,
-              oldBlock = [
+              lexicalHeader   = `[projects.${JSON.stringify(opts.targetRepoRoot)}]`,
+              initial         = await read(homePath),
+              source          = initial.replace(canonicalHeader, lexicalHeader) + `\n${canonicalHeader}\ntrust_level = "trusted"\n`,
+              oldBlock        = [
                   '# Fleet-managed remote MCP project trust begin',
                   lexicalHeader,
                   'trust_level = "trusted"',
@@ -2645,8 +2645,8 @@ test.describe('prepareManagedAgentWorkspace', () => {
         };
 
         const
-            retiring       = options(makeAgent('claude-desktop')),
-            {configPath}   = await seedFormerLocalScope(retiring, {'neo-mjs-memory-core': {command: NODE_PATH, args: ['former']}});
+            retiring     = options(makeAgent('claude-desktop')),
+            {configPath} = await seedFormerLocalScope(retiring, {'neo-mjs-memory-core': {command: NODE_PATH, args: ['former']}});
 
         await expect(prepareManagedAgentWorkspace({...retiring, fileSystem: rewrittenOnSecondRead(configPath, '{"custom":2}')}))
             .rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT', artifact: {path: configPath}});
@@ -2839,12 +2839,14 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
         const
             started   = [],
             lifecycle = agent => ({
-                isRunning      : () => false,
-                status         : id => ({id, running: false, state: 'stopped'}),
-                getInstanceRoot: () => instanceRoot,
+                beginStart: () => new AbortController().signal,
+                finishStart() {},
+                isRunning                    : () => false,
+                status                       : id => ({id, running: false, state: 'stopped'}),
+                getInstanceRoot              : () => instanceRoot,
                 resolveResidentMcpEnvironment: () => options(makeAgent('claude-code')).residentMcpEnv,
-                getRegistry    : () => ({getAgent: () => agent, getDefinition: () => agent, resolveCredential: () => 'ghp_fixture_only'}),
-                start          : (id, opts) => { started.push(id); return {id, running: true, state: 'running', cwd: opts.cwd} }
+                getRegistry                  : () => ({getAgent: () => agent, getDefinition: () => agent, resolveCredential: () => 'ghp_fixture_only'}),
+                start                        : (id, opts) => { started.push(id); return {id, running: true, state: 'running', cwd: opts.cwd} }
             }),
             start = async (agent, repoRoot) => startAgentProvisioned({
                 lifecycleService: lifecycle(agent),
@@ -2856,7 +2858,7 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
                 resolveGitIdentity : async () => ({state: 'declared', source: 'declared', name: 'Composed Seat', email: 'composed@example.test'}),
                 convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
                 // and so is the harness's catalog
-                readModelCatalog   : async () => null,
+                readModelCatalog: async () => null,
                 agentosRuntimeRoot,
                 nodePath        : NODE_PATH
             }),
