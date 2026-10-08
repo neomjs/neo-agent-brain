@@ -19,8 +19,8 @@ import {reconcileClaudeEvents} from '../../../../../../../ai/scripts/lifecycle/h
 const
     HOOK       = fileURLToPath(new URL('../../../../../../../ai/scripts/lifecycle/hooks/claude/harnessIdGuardHook.mjs', import.meta.url)),
     MANIFEST   = fileURLToPath(new URL('../../../../../../../ai/scripts/lifecycle/hooks/claude/events.manifest.json', import.meta.url)),
-    SESSION_ID = '00000000-1111-4222-8333-444444444444',
-    OTHER_ID   = '99999999-8888-4777-8666-555555555555';
+    SESSION_ID = 'abcdef12-3456-4789-abcd-ef0123456789',
+    OTHER_ID   = 'fedcba98-7654-4321-8fed-cba987654321';
 
 const payload = toolInput => ({hook_event_name: 'PreToolUse', session_id: SESSION_ID, tool_name: 'Bash', tool_input: toolInput});
 
@@ -57,11 +57,11 @@ test('the entrypoint prints the block decision for a matching payload and nothin
     expect(run('{not json').stdout).toBe('')
 });
 
-test('the manifest registers the guard on PreToolUse for the publishing and writing tools only', () => {
+test('the published matcher, tested unanchored as Claude tests it, selects the publishing and writing tools only', () => {
     const
         buckets = JSON.parse(fs.readFileSync(MANIFEST, 'utf8')).events.PreToolUse,
         guarded = buckets.filter(bucket => bucket.hooks.some(hook => hook.command.endsWith(`/.claude/hooks/${path.basename(HOOK)}"`))),
-        matcher = new RegExp(`^(?:${guarded[0].matcher})$`);
+        matcher = new RegExp(guarded[0].matcher);
 
     expect(guarded.length).toBe(1);
 
@@ -69,7 +69,8 @@ test('the manifest registers the guard on PreToolUse for the publishing and writ
         'mcp__neo-mjs-memory-core__add_message', 'mcp__neo-mjs-memory-core__add_memory']
         .forEach(tool => expect(matcher.test(tool), tool).toBe(true));
 
-    ['Read', 'Grep', 'mcp__neo-mjs-memory-core__list_messages', 'mcp__neo-mjs-memory-core__query_raw_memories']
+    ['Read', 'Grep', 'mcp__neo-mjs-memory-core__list_messages', 'mcp__neo-mjs-memory-core__query_raw_memories',
+        'mcp__unrelated__BashHistory', 'mcp__neo-mjs-memory-core__add_memory_extra']
         .forEach(tool => expect(matcher.test(tool), tool).toBe(false))
 });
 

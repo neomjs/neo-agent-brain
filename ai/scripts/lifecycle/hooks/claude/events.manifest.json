@@ -21,13 +21,14 @@
     "bounds each run alone. Its start stays in the prompt's path: start opens the turn's interval, and one",
     "landing after the turn completed would open a fresh interval for a finished turn.",
     "PreToolUse -> harnessIdGuardHook IS ours: it refuses a publishing or writing call whose input carries",
-    "the seat's own harness session id. The matcher keeps it off every other tool, and it must stay sync,",
-    "because a pre-tool decision cannot run in the background; the 2 s timeout bounds it."
+    "the seat's own harness session id. The matcher keeps it off every other tool. It is anchored because",
+    "Claude tests a matcher regex against the tool name unanchored. The hook must stay sync, because a",
+    "pre-tool decision cannot run in the background; the 2 s timeout bounds it."
   ],
   "events": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Write|Edit|mcp__neo-mjs-github-workflow__.*|mcp__neo-mjs-memory-core__add_(message|memory)",
+        "matcher": "^(Bash|Write|Edit|mcp__neo-mjs-github-workflow__.*|mcp__neo-mjs-memory-core__add_(message|memory))$",
         "hooks": [
           {
             "type": "command",
