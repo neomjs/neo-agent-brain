@@ -161,6 +161,54 @@ test.describe('runToExit — a stopped install has exited before the Start goes 
         await expect(running).rejects.toMatchObject({canceled: false, message: expect.stringMatching(/timed out after 100 ms$/)});
     });
 
+    test('a process the command started ends with it: a child that ignores SIGTERM stops writing before the answer', async () => {
+        // the leader honours SIGTERM at once; its child, like an npm lifecycle script, ignores it and keeps writing
+        const pidFile    = path.join(root, 'pid'),
+              heartbeat  = path.join(root, 'heartbeat'),
+              writer     = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on('SIGTERM', () => {}); setInterval(() => require('fs').appendFileSync(${JSON.stringify(heartbeat)}, '.'), 20)`,
+              script     = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(writer)}], {stdio: 'ignore'}); process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)`,
+              controller = new AbortController(),
+              running    = runToExit(process.execPath, ['-e', script], {cwd: root, env: {}, signal: controller.signal, killGraceMs: 200});
+
+        await expect.poll(() => fs.existsSync(heartbeat)).toBe(true);
+        controller.abort();
+        await expect(running).rejects.toMatchObject({canceled: true});
+
+        const pid = Number(fs.readFileSync(pidFile, 'utf8')), written = fs.statSync(heartbeat).size;
+
+        await new Promise(resolve => setTimeout(resolve, 150));
+
+        expect(alive(pid)).toBe(false);
+        expect(fs.statSync(heartbeat).size).toBe(written);
+    });
+
+    test('a real npm run whose script ignores SIGTERM: a Stop ends the script before the answer, and nothing writes after it', async () => {
+        const npm = path.join(path.dirname(process.execPath), 'npm');
+
+        test.skip(!fs.existsSync(npm), `no npm beside ${process.execPath}`);
+
+        const heartbeat = path.join(root, 'heartbeat'),
+              pidFile   = path.join(root, 'pid');
+
+        fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({name: 'hold', version: '1.0.0', private: true, scripts: {hold: 'node hold.js'}}));
+        fs.writeFileSync(path.join(root, 'hold.js'), "require('fs').writeFileSync('pid', String(process.pid)); process.on('SIGTERM', () => {}); setInterval(() => require('fs').appendFileSync('heartbeat', '.'), 20)");
+
+        const controller = new AbortController(),
+              env        = {PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, npm_config_cache: path.join(root, '.npm'), npm_config_update_notifier: 'false'},
+              running    = runToExit(npm, ['run', 'hold'], {cwd: root, env, signal: controller.signal, killGraceMs: 300});
+
+        await expect.poll(() => fs.existsSync(heartbeat), {timeout: 15_000}).toBe(true);
+        controller.abort();
+        await expect(running).rejects.toMatchObject({canceled: true});
+
+        const pid = Number(fs.readFileSync(pidFile, 'utf8')), written = fs.statSync(heartbeat).size;
+
+        await new Promise(resolve => setTimeout(resolve, 150));
+
+        expect(alive(pid)).toBe(false);
+        expect(fs.statSync(heartbeat).size).toBe(written);
+    });
+
     test('an already-canceled Start starts nothing', async () => {
         const controller = new AbortController();
 
@@ -308,6 +356,71 @@ test.describe('installAgentRepoDependencies + installSeatDependencies — a fail
         expect(await start()).toEqual([{repoSlug: 'neomjs/neo', state: 'installed'}]);
         expect(await start()).toEqual([{repoSlug: 'neomjs/neo', state: 'present'}]);
         expect(attempt).toBe(2);
+    });
+
+    test('a receipt that cannot record the install keeps npm from running, so an old installed entry never vouches for a half-built tree', async () => {
+        const repoPath = path.join(root, 'neomjs', 'neo');
+
+        fs.mkdirSync(repoPath, {recursive: true});
+        fs.writeFileSync(path.join(repoPath, 'package-lock.json'), '{"lockfileVersion":3}');
+        // an earlier owned install finished, and its tree has since gone
+        fs.writeFileSync(path.join(root, DEPENDENCY_RECEIPT), JSON.stringify({'neomjs/neo': {state: 'installed', at: 'earlier'}}));
+
+        let attempts = 0;
+
+        const run = async () => {
+                  attempts++;
+                  fs.mkdirSync(path.join(repoPath, 'node_modules'), {recursive: true});
+                  throw new Error('npm ci exited 1: prepare failed')
+              },
+              start = write => installSeatDependencies({
+                  checkouts : [{repoSlug: 'neomjs/neo', repoPath}],
+                  seatRoot  : root,
+                  resolveNpm: async () => RESOLVED,
+                  install   : options => installAgentRepoDependencies({...options, env: FLEET_ENV, run}),
+                  ...(write ? {write} : {})
+              });
+
+        const [refused] = await start(async () => { throw new Error('EACCES: permission denied, rename') });
+
+        expect(refused).toEqual({repoSlug: 'neomjs/neo', state: 'failed', reason: expect.stringContaining('the seat receipt could not record the install, so npm did not run')});
+        expect(attempts).toBe(0);
+        expect(fs.existsSync(path.join(repoPath, 'node_modules'))).toBe(false);
+
+        // with writes back, each Start installs, and the half-built tree it leaves is never read as present
+        expect(await start()).toEqual([{repoSlug: 'neomjs/neo', state: 'failed', reason: 'npm ci exited 1: prepare failed'}]);
+        expect(await start()).toEqual([{repoSlug: 'neomjs/neo', state: 'failed', reason: 'npm ci exited 1: prepare failed'}]);
+        expect(attempts).toBe(2);
+    });
+
+    test('an install the receipt could not record reads installed with that reason, and the next Start installs again', async () => {
+        const repoPath = path.join(root, 'neomjs', 'neo');
+
+        fs.mkdirSync(repoPath, {recursive: true});
+        fs.writeFileSync(path.join(repoPath, 'package-lock.json'), '{"lockfileVersion":3}');
+
+        let attempts = 0;
+
+        const run   = async () => { attempts++; fs.mkdirSync(path.join(repoPath, 'node_modules'), {recursive: true}) },
+              start = write => installSeatDependencies({
+                  checkouts : [{repoSlug: 'neomjs/neo', repoPath}],
+                  seatRoot  : root,
+                  resolveNpm: async () => RESOLVED,
+                  install   : options => installAgentRepoDependencies({...options, env: FLEET_ENV, run}),
+                  ...(write ? {write} : {})
+              });
+
+        // `installing` lands, the outcome does not
+        const [unrecorded] = await start(async (file, text) => {
+            if (text.includes('"installed"')) throw new Error('EIO: i/o error, rename');
+            fs.writeFileSync(file, text)
+        });
+
+        expect(unrecorded).toEqual({repoSlug: 'neomjs/neo', state: 'installed', reason: expect.stringContaining('the seat receipt could not record it, so the next Start installs again')});
+        expect(JSON.parse(fs.readFileSync(path.join(root, DEPENDENCY_RECEIPT), 'utf8'))['neomjs/neo'].state).toBe('installing');
+
+        expect(await start()).toEqual([{repoSlug: 'neomjs/neo', state: 'installed'}]);
+        expect(attempts).toBe(2);
     });
 });
 

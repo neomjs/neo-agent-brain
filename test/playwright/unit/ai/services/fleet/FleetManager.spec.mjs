@@ -361,6 +361,36 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(Object.hasOwn(bob, 'repos')).toBe(false)
     });
 
+    test('a Start\'s dependency rows reach the cockpit row through the real lifecycle: live while it installs, final after, launched or not', () => {
+        const
+            registryStub = {listAgents: () => [{id: 'ada', launchOwner: 'fleet'}, {id: 'grace', launchOwner: 'fleet'}]},
+            lifecycle    = lifecycleWithStarts({
+                attemptDependencies: new Map(),
+                gitIdentities      : new Map(),
+                seatModels         : new Map(),
+                getRegistry        : () => registryStub,
+                getLaunchAdmission : () => ({revocationMark: () => null, revoke: () => null, holds: () => false}),
+                harnessSettingsFor : () => null
+            }),
+            cockpit      = () => createFleetCockpitStatus({agents: registryStub.listAgents(), runtimeStatus: FleetManager.fleetRuntimeStatus()})
+                .rows.map(row => row.dependencyOutcomes),
+            canceled     = [{repoSlug: 'neomjs/neo', state: 'canceled', reason: 'stopped during the install'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'installed'}];
+
+        FleetManager.lifecycleService = lifecycle;
+
+        expect(cockpit()).toEqual([null, null]);
+
+        const attempt = lifecycle.beginStart('ada');
+
+        lifecycle.setPendingDependencies('ada', attempt, [{repoSlug: 'neomjs/neo', state: 'installing'}]);
+        expect(cockpit()).toEqual([[{repoSlug: 'neomjs/neo', state: 'installing'}], null]);
+
+        // a Stop ends the attempt before any launch; its final rows stay readable
+        lifecycle.setPendingDependencies('ada', attempt, canceled);
+        lifecycle.finishStart('ada', attempt);
+        expect(cockpit()).toEqual([canceled, null]);
+    });
+
     test('where a desktop seat\'s session opened rides its runtime row, and a status without one adds nothing', () => {
         const
             registryStub  = {listAgents: () => [{id: 'alice'}, {id: 'bob'}]},

@@ -566,8 +566,9 @@ class FleetManager extends Base {
      * means it would behave identically either way. Widen it when a consumer actually needs to
      * distinguish "not running" from "we do not know" — and delete this paragraph when you do.
      * @returns {Object[]} one `{agentId, state, running, confidence, source}` entry per registered agent;
-     *     rows without a process record additionally carry `reason`, a running Claude Desktop seat
-     *     carries `sessionFolder`, where its session opened against its checkout, a seat with a
+     *     rows without a process record additionally carry `reason`, a seat whose latest Start reached
+     *     its install carries that attempt's `dependencies`, live or final, launched or not, a running
+     *     Claude Desktop seat carries `sessionFolder`, where its session opened against its checkout, a seat with a
      *     provisioned start carries the `gitIdentity` that start resolved, a refused start's included, and the
      *     `seatModel` it found of the declared model in the harness's catalog, and a Codex seat carries the
      *     `harnessSettings` its config is set to now ({@link FleetLifecycleService#harnessSettingsFor}).
@@ -600,6 +601,7 @@ class FleetManager extends Base {
 
             if (status.failureReason != null) row.failureReason   = status.failureReason;
             if (status.repos != null)         row.repos           = status.repos;
+            if (status.dependencies != null)  row.dependencies    = status.dependencies;
             if (status.sessionFolder != null) row.sessionFolder   = status.sessionFolder;
             if (status.gitIdentity != null)   row.gitIdentity     = status.gitIdentity;
             if (status.seatModel != null)     row.seatModel       = status.seatModel;

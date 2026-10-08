@@ -21,7 +21,7 @@ export const DEPENDENCY_RECEIPT = '.neo-fleet-seat-dependencies.json';
 export const INSTALL_TIMEOUT_MS = 600_000;
 
 /**
- * How long a stopped `npm` gets between `SIGTERM` and `SIGKILL`.
+ * How long a stopped command's process group gets between `SIGTERM` and `SIGKILL`.
  * @type {Number}
  */
 export const KILL_GRACE_MS = 5_000;
@@ -91,8 +91,17 @@ export async function resolveLoginShellNpm({env = process.env, execute = execFil
 }
 
 /**
- * @summary Runs one command to its exit. A stop, from the Start's signal or the timeout, terminates the command and
- * still waits for it to exit, so a canceled Start never spawns its harness beside a still-running install.
+ * How often a command whose leader has exited is checked for the rest of its process group.
+ * @type {Number}
+ */
+const GROUP_POLL_MS = 50;
+
+/**
+ * @summary Runs one command to its exit, the whole of it. The command leads its own process group, because `npm`
+ * runs lifecycle scripts as children that can outlive it: a stop, from the Start's signal or the timeout, signals
+ * the group, and the answer waits until no process of the group is left. So a canceled Start never spawns its
+ * harness beside a still-running install, and a Skip never launches beside one. A process that outlives a leader's
+ * ordinary exit is ended the same way.
  * @param {String}      file
  * @param {String[]}    args
  * @param {Object}      options
@@ -110,21 +119,35 @@ export function runToExit(file, args, {cwd, env, signal, timeout = INSTALL_TIMEO
     if (signal?.aborted) return Promise.reject(Object.assign(new Error(`${command} canceled before it started`), {canceled: true}));
 
     return new Promise((resolve, reject) => {
-        const child = spawn(file, args, {cwd, env, stdio: ['ignore', 'ignore', 'pipe']});
+        const child = spawn(file, args, {cwd, env, detached: true, stdio: ['ignore', 'ignore', 'pipe']});
 
         let stderr = '', stopped = null, escalation = null, settled = false;
 
         const
-            stop    = why => {
+            signalGroup = name => { try { process.kill(-child.pid, name) } catch {} },
+            groupAlive  = () => {
+                try {
+                    process.kill(-child.pid, 0);
+                    return true
+                } catch (error) {
+                    return error.code === 'EPERM'
+                }
+            },
+            terminate   = () => {
+                if (escalation) return;
+
+                escalation = setTimeout(() => signalGroup('SIGKILL'), killGraceMs);
+                signalGroup('SIGTERM')
+            },
+            stop        = why => {
                 if (stopped) return;
 
-                stopped    = why;
-                escalation = setTimeout(() => child.kill('SIGKILL'), killGraceMs);
-                child.kill('SIGTERM')
+                stopped = why;
+                terminate()
             },
-            onAbort = () => stop('canceled'),
-            timer   = setTimeout(() => stop(`timed out after ${timeout} ms`), timeout),
-            settle  = (fn, value) => {
+            onAbort     = () => stop('canceled'),
+            timer       = setTimeout(() => stop(`timed out after ${timeout} ms`), timeout),
+            settle      = (fn, value) => {
                 if (settled) return;
 
                 settled = true;
@@ -138,10 +161,14 @@ export function runToExit(file, args, {cwd, env, signal, timeout = INSTALL_TIMEO
         child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4096) });
         child.on('error', error => settle(reject, error));
         child.on('exit', (code, exitSignal) => {
-            if (stopped)    return settle(reject, Object.assign(new Error(`${command} ${stopped}`), {canceled: stopped === 'canceled'}));
-            if (code === 0) return settle(resolve);
+            const
+                [fn, value] = stopped    ? [reject, Object.assign(new Error(`${command} ${stopped}`), {canceled: stopped === 'canceled'})]
+                            : code === 0 ? [resolve]
+                            :              [reject, new Error(`${command} exited ${code ?? exitSignal}: ${stderr.trim()}`)],
+                drain       = () => groupAlive() ? setTimeout(drain, GROUP_POLL_MS) : settle(fn, value);
 
-            settle(reject, new Error(`${command} exited ${code ?? exitSignal}: ${stderr.trim()}`))
+            groupAlive() && terminate();
+            drain()
         })
     })
 }
@@ -169,7 +196,9 @@ export function runToExit(file, args, {cwd, env, signal, timeout = INSTALL_TIMEO
  * @param {Function}    [options.resolveNpm]           `() => Promise<{npm, PATH}|{reason}>`, called only when an install is
  *                                                     due; defaults to {@link resolveLoginShellNpm} over the same `env`.
  * @param {Function}    [options.record]               `entry => Promise<void>`, the receipt writer: `{state: 'installing'}`
- *                                                     before `npm` starts, then its outcome.
+ *                                                     before `npm` starts, then its outcome. A rejected `installing` write
+ *                                                     keeps `npm` from running; a rejected outcome write leaves the receipt at
+ *                                                     `installing`, so the next Start installs again.
  * @returns {Promise<{state: 'installed'|'present'|'unverified'|'not-applicable'|'failed', reason?: String, canceled?: Boolean}>}
  */
 export async function installAgentRepoDependencies({
@@ -192,20 +221,32 @@ export async function installAgentRepoDependencies({
 
     if (!resolution.npm) return {state: 'failed', reason: resolution.reason};
 
-    await record({state: 'installing'});
+    // `npm ci` rebuilds the tree, so the ownership must be on record first: a receipt still saying
+    // `installed` would vouch for whatever a failed install leaves behind.
+    try {
+        await record({state: 'installing'});
+    } catch (error) {
+        return {state: 'failed', reason: `the seat receipt could not record the install, so npm did not run: ${redactReadFailure(error) ?? 'no legible error'}`}
+    }
+
+    let outcome;
 
     try {
         await run(resolution.npm, NPM_ARGS, {cwd: repoPath, env: {...inheritedEnv(env), PATH: resolution.PATH}, signal});
-        await record({state: 'installed'});
-
-        return {state: 'installed'}
+        outcome = {state: 'installed'}
     } catch (error) {
-        const reason = redactReadFailure(error) ?? 'npm ci failed with no legible error';
-
-        await record({state: 'failed', reason});
-
-        return {state: 'failed', reason, ...(error?.canceled ? {canceled: true} : {})}
+        outcome = {state: 'failed', reason: redactReadFailure(error) ?? 'npm ci failed with no legible error', ...(error?.canceled ? {canceled: true} : {})}
     }
+
+    try {
+        await record(outcome.state === 'installed' ? {state: 'installed'} : {state: 'failed', reason: outcome.reason});
+    } catch (error) {
+        if (outcome.state === 'installed') {
+            return {state: 'installed', reason: `the seat receipt could not record it, so the next Start installs again: ${redactReadFailure(error) ?? 'no legible error'}`}
+        }
+    }
+
+    return outcome
 }
 
 /**
@@ -226,7 +267,8 @@ function readReceipt(receiptPath) {
 
 /**
  * @summary Installs every checkout of one seat in parallel, resolving `npm` at most once and keeping the seat's
- * {@link DEPENDENCY_RECEIPT}. Receipt writes are serialized; one that fails keeps the previous receipt in place.
+ * {@link DEPENDENCY_RECEIPT}. Receipt writes are serialized; one that fails keeps the previous receipt in place, and
+ * its failure reaches the install that asked for it ({@link installAgentRepoDependencies} `record`).
  *
  * Each row is reported as it changes (`installing`, then its outcome), so a pending Start can show its install
  * phase. A Skip stops every running `npm` and waits for its exit: an install it interrupted reads `skipped`, one
@@ -242,6 +284,7 @@ function readReceipt(receiptPath) {
  * @param {Function}    [options.install=installAgentRepoDependencies]
  * @param {Function}    [options.resolveNpm=resolveLoginShellNpm]
  * @param {Function}    [options.now]        ISO timestamp source for the receipt.
+ * @param {Function}    [options.write=writeFileAtomic] `(path, text) => Promise<void>`, the receipt's atomic write.
  * @returns {Promise<Object[]>} `[{repoSlug, state, reason?}]`, one row per checkout, in checkout order.
  */
 export async function installSeatDependencies({
@@ -252,7 +295,8 @@ export async function installSeatDependencies({
     onRows     = () => {},
     install    = installAgentRepoDependencies,
     resolveNpm = resolveLoginShellNpm,
-    now        = () => new Date().toISOString()
+    now        = () => new Date().toISOString(),
+    write      = writeFileAtomic
 }) {
     const
         receiptPath = path.join(seatRoot, DEPENDENCY_RECEIPT),
@@ -276,9 +320,11 @@ export async function installSeatDependencies({
             record    : entry => {
                 entry.state === 'installing' && report(index, {repoSlug, state: 'installing'});
                 receipt[repoSlug] = {...entry, at: now()};
-                writes = writes.then(() => writeFileAtomic(receiptPath, `${JSON.stringify(receipt, null, 4)}\n`)).catch(() => {});
 
-                return writes
+                const written = writes.then(() => write(receiptPath, `${JSON.stringify(receipt, null, 4)}\n`));
+
+                writes = written.catch(() => {});
+                return written
             }
         });
 
