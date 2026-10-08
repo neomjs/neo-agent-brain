@@ -1,19 +1,19 @@
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                   from './mcpServers.mjs';
-import {ensureAgentRepo}                                 from './ensureAgentRepo.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                          from './mcpServers.mjs';
+import {ensureAgentRepo}                                        from './ensureAgentRepo.mjs';
 import {LAUNCH_ADMISSION_CREDENTIALS, LAUNCH_ADMISSION_REASONS} from '../../../src/fleet/contract/launchAdmission.mjs';
-import {launchRefusalOf}                                 from '../../../src/fleet/contract/launchAuthority.mjs';
-import {prepareManagedAgentWorkspace}                    from './prepareManagedAgentWorkspace.mjs';
-import {redactReadFailure}                               from './redactReadFailure.mjs';
-import {resolveSeatPlaneTarget}                          from './resolveSeatPlaneTarget.mjs';
-import {importSeatMemory, MEMORY_IMPORT_NONE}            from './seatMemoryImport.mjs';
+import {launchRefusalOf}                                        from '../../../src/fleet/contract/launchAuthority.mjs';
+import {prepareManagedAgentWorkspace}                           from './prepareManagedAgentWorkspace.mjs';
+import {redactReadFailure}                                      from './redactReadFailure.mjs';
+import {resolveSeatPlaneTarget}                                 from './resolveSeatPlaneTarget.mjs';
+import {importSeatMemory, MEMORY_IMPORT_NONE}                   from './seatMemoryImport.mjs';
 import {
     convergeSeatGitIdentity,
     proveSeatForgeAccount,
     resolveSeatGitIdentity
 }                                                        from './seatGitIdentity.mjs';
-import {readSeatModelCatalog, unofferedDeclaration}      from './seatModelCatalog.mjs';
-import path                                              from 'node:path';
-import {fileURLToPath}                                   from 'node:url';
+import {readSeatModelCatalog, unofferedDeclaration} from './seatModelCatalog.mjs';
+import path                                         from 'node:path';
+import {fileURLToPath}                              from 'node:url';
 
 const DEFAULT_AGENTOS_RUNTIME_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -163,7 +163,7 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                             for tests.
  * @param {Function} [options.prepareWorkspace] The post-provisioning workspace/home composer; defaults
  *                                              to {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}.
- * @param {Function} [options.importMemory]     The adopted seat's memory convergence after preparation;
+ * @param {Function} [options.importMemory]     The adopted seat's memory convergence before preparation;
  *                                              defaults to {@link module:ai/services/fleet/seatMemoryImport.importSeatMemory}.
  * @param {Function} [options.resolveGitIdentity]  `({agent, credential}) => Promise<Object>`, the identity the seat's
  *                                                 commits carry; defaults to `resolveSeatGitIdentity`.
@@ -564,6 +564,9 @@ export async function startAgentProvisioned({
     let prepared, memory, status;
 
     try {
+        // Import before create-only birth files: the adopted seat's own notes take precedence.
+        memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
+
         prepared = await prepareWorkspace({
             agent,
             targetRepoRoot,
@@ -602,10 +605,6 @@ export async function startAgentProvisioned({
                 }
             })
         }
-
-        // an adopted seat starts with the memory it consented to import, never an empty folder that
-        // reads like a fresh seat's: converge the copy, then read the destination fresh
-        memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
 
         status = await spawnPermitted({
             lifecycleService,

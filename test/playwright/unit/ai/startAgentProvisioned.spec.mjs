@@ -45,7 +45,7 @@ function makeLifecycle({
     inspectionError = null,
     profileInUse = false
 } = {}) {
-    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], start: [], status: []};
+    const calls     = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], start: [], status: []};
     const admission = {
         revocationMark: id => {
             events?.push('mark');
@@ -66,9 +66,9 @@ function makeLifecycle({
         credentialEnvVar   : 'GH_TOKEN',
         desktopProfileInUse: agent => { calls.profile.push(agent.id); return profileInUse },
         getLaunchAdmission : () => admission,
-        isRunning       : id => !!running[id],
-        status          : id => { calls.status.push(id); return {id, running: !!running[id], state: running[id] ? 'running' : 'stopped'}; },
-        getRegistry     : () => ({
+        isRunning          : id => !!running[id],
+        status             : id => { calls.status.push(id); return {id, running: !!running[id], state: running[id] ? 'running' : 'stopped'}; },
+        getRegistry        : () => ({
             getAgent         : id => agents[id] || null,
             getDefinition    : id => definitions[id] || null,
             resolveCredential: id => {
@@ -1875,7 +1875,7 @@ test.describe('startAgentProvisioned — an adopted seat\'s memory import', () =
             ...(importMemory ? {importMemory} : {})
         });
 
-    test('the import runs after preparation and before the spawn, and its result rides the status', async () => {
+    test('the import precedes preparation so birth files cannot block it, and its result rides the status', async () => {
         const
             events       = [],
             calls        = [],
@@ -1884,21 +1884,23 @@ test.describe('startAgentProvisioned — an adopted seat\'s memory import', () =
                 events.push('import');
                 calls.push(args);
 
-                return {state: 'copied', source: SOURCE, destination: '/instances/a/harness/codex/memories', files: 33}
+                return {state: 'copied', source: SOURCE, destination: '/instances/a/memory', files: 33}
             },
             status = await start({lifecycle, events, importMemory});
 
-        expect(events).toEqual(['credential', 'ensure', 'prepare', 'import', 'start']);
+        expect(events).toEqual(['credential', 'ensure', 'import', 'prepare', 'start']);
         expect(calls).toEqual([{agent: adopted().a, instanceRoot: '/instances'}]);
-        expect(status.memoryImport).toEqual({state: 'copied', source: SOURCE, destination: '/instances/a/harness/codex/memories', files: 33})
+        expect(status.memoryImport).toEqual({state: 'copied', source: SOURCE, destination: '/instances/a/memory', files: 33})
     });
 
     test('a refused import stops the start: nothing is spawned', async () => {
         const
-            lifecycle = makeLifecycle({agents: adopted()}),
+            events    = [],
+            lifecycle = makeLifecycle({agents: adopted(), events}),
             refusal   = Object.assign(new Error("startAgentProvisioned: agent 'a' consented to import its memory, but its seat holds none."), {code: 'FLEET_SEAT_MEMORY_IMPORT_UNCONVERGED'});
 
-        await expect(start({lifecycle, importMemory: async () => {throw refusal}})).rejects.toBe(refusal);
+        await expect(start({lifecycle, events, importMemory: async () => {throw refusal}})).rejects.toBe(refusal);
+        expect(events).not.toContain('prepare');
         expect(lifecycle.calls.start).toHaveLength(0)
     });
 

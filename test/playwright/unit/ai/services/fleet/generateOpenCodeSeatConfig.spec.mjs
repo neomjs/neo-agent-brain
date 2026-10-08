@@ -117,9 +117,8 @@ test.describe('generateOpenCodeSeatConfig (OpenCode seat scaffold emission)', ()
         // file at a caller-resolved path. Sole differing artifact: `/seat/write-wake-envelope.mjs`.
         // Verified against `origin/dev` at `bea77518…` before rebasing, so this bump is attributable to
         // the hook and not to inherited drift.
-        // Bumped 2026-10-01: the identity.md naming gate ends at the peer-veto window (the bearer's
-        // assent is final); sole differing line, verified passing on origin/dev at 873608c first.
-        expect(digest).toBe('15e6863d368691f73baf5c3162d2589e00f9220050334cf539a2d16d92568d13')
+        // The explicit /seat/memory/** grant is the sole change from the prior artifact digest.
+        expect(digest).toBe('87e67f14ef11fe244ae514da6b427d4492ab0b552308eb85c2592c52341fe2d8')
     });
 
     test('remote map replaces only selected servers with the exact OpenCode HTTP adapter grammar', () => {
@@ -208,6 +207,7 @@ test.describe('generateOpenCodeSeatConfig (OpenCode seat scaffold emission)', ()
             derived  = parseJsonc(generateOpenCodeSeatConfig(PARAMS).files[0].content);
 
         expect(explicit.permission.external_directory).toHaveProperty('/fleet/seat-alpha/**', 'allow');
+        expect(explicit.permission.external_directory).toHaveProperty('/seat/memory/**', 'allow');
         expect(explicit.permission.external_directory).not.toHaveProperty('/seat/**');
         expect(derived.permission.external_directory).toHaveProperty('/seat/**', 'allow');
     });
