@@ -38,8 +38,7 @@ import path            from 'node:path';
 //   per-home auth step exists at all: no marker to check (`authRequired` stays `null`), no window
 //   to sign in through (the supervised mode is headless) — the handoff names the provisioning
 //   assumption instead of inventing a login.
-// Where a family reads a seat's declared model and effort is the shared catalog's `seatSettings`, so the
-// Body reads the same truth (`resolveHarnessSeatSettings`).
+// Per-field declaration support is shared with the Body through `resolveHarnessSeatSetting`.
 const HARNESS_LAUNCH_CONTRACTS = {
     'antigravity': {
         authMode        : 'in-app',
@@ -265,7 +264,8 @@ export function getHarnessAuthMode(harnessType) {
  * @param {String} [options.model]           The seat's declared model; `claude-code` takes it as
  *                                           `--model`. A Codex family reads its own from `config.toml`.
  * @param {String} [options.reasoningEffort] The seat's declared reasoning effort; `claude-code` takes it
- *                                           as `--effort`. Absent, the harness keeps its own configuration.
+ *                                           as `--effort`, Desktop through `CLAUDE_CODE_EFFORT_LEVEL`.
+ *                                           The environment outranks session choices; absent, Fleet sets no level.
  * @returns {{command: String, args: String[], env: Object, versionProbeArgs: String[]|null}} a
  * fresh spec per call — `args` / `env` / `versionProbeArgs` are caller-mutable without cross-call
  * bleed. `versionProbeArgs` is the argv for the supervisor's best-effort version capture
@@ -331,9 +331,12 @@ export function deriveHarnessLaunchSpec({harnessType, instanceHome, binaryPath, 
         const homeArg = `${contract.homeArgFlag}=${guiProfileDir(harnessType, instanceHome)}`;
 
         return {
-            command         : binaryPath,
-            args            : [homeArg],
-            env             : {CLAUDE_USER_DATA_DIR: instanceHome},
+            command: binaryPath,
+            args   : [homeArg],
+            env    : {
+                CLAUDE_USER_DATA_DIR: instanceHome,
+                ...(reasoningEffort ? {CLAUDE_CODE_EFFORT_LEVEL: reasoningEffort} : {})
+            },
             versionProbeArgs: [homeArg, ...contract.versionProbeArgs]
         };
     }

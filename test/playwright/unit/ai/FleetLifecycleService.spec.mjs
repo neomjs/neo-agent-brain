@@ -18,18 +18,18 @@ import fs                              from 'fs';
 import os                              from 'os';
 import path                            from 'path';
 
-import Neo                          from 'neo.mjs/src/Neo.mjs';
-import * as core                    from 'neo.mjs/src/core/_export.mjs';
-import AiConfig                     from '../../../../ai/config.template.mjs';
-import FleetControlBridge           from '../../../../ai/services/fleet/FleetControlBridge.mjs';
-import FleetLifecycleService        from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
-import FleetManager                 from '../../../../ai/services/fleet/FleetManager.mjs';
-import McpLaunchAdmissionService    from '../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
-import ToolService                  from '../../../../ai/mcp/ToolService.mjs';
-import {dispatchFleetRequest}       from '../../../../ai/services/fleet/dispatchFleetRequest.mjs';
-import {generateOpenCodeSeatConfig} from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
+import Neo                               from 'neo.mjs/src/Neo.mjs';
+import * as core                         from 'neo.mjs/src/core/_export.mjs';
+import AiConfig                          from '../../../../ai/config.template.mjs';
+import FleetControlBridge                from '../../../../ai/services/fleet/FleetControlBridge.mjs';
+import FleetLifecycleService             from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import FleetManager                      from '../../../../ai/services/fleet/FleetManager.mjs';
+import McpLaunchAdmissionService         from '../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
+import ToolService                       from '../../../../ai/mcp/ToolService.mjs';
+import {dispatchFleetRequest}            from '../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+import {generateOpenCodeSeatConfig}      from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
-import {startAgentProvisioned}      from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {startAgentProvisioned}           from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 import {
     createLaunchRequest,
     parseLaunchCapability,
@@ -2553,6 +2553,34 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
     const ADMISSION = {generation: 'generation-1', plan: [{key: 'memory-core', enabled: true}]};
 
+    test('Desktop effort reaches the real lifecycle spawn envelope only on a new launch', async () => {
+        const {spawn} = installDesktopSeat(),
+              agent   = FleetLifecycleService.registry.getDefinition('seat');
+
+        try {
+            agent.reasoningEffort = 'max';
+            FleetLifecycleService.start('seat');
+            expect(spawn.calls[0].opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
+            expect(spawn.calls[0].args.some(arg => arg.startsWith('--effort'))).toBe(false);
+
+            agent.reasoningEffort = 'high';
+            FleetLifecycleService.start('seat');
+            expect(spawn.calls, 'an already-running Start keeps the launched environment').toHaveLength(1);
+            expect(spawn.calls[0].opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
+
+            await FleetLifecycleService.stop('seat');
+            FleetLifecycleService.start('seat');
+            expect(spawn.calls[1].opts.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high');
+
+            await FleetLifecycleService.stop('seat');
+            delete agent.reasoningEffort;
+            FleetLifecycleService.start('seat');
+            expect(spawn.calls[2].opts.env).not.toHaveProperty('CLAUDE_CODE_EFFORT_LEVEL');
+        } finally {
+            await FleetLifecycleService.stop('seat')
+        }
+    });
+
     test('PRODUCTION COMPOSER: a Stop at any point of a managed Start is never undone by its reservation or activation; a later Start admits', async () => {
         const
             root     = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-launch-attempt-')),
@@ -2617,7 +2645,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
         // Stop while the checkout is still being prepared, before anything is reserved
         const checkoutGate = Promise.withResolvers(), inCheckout = Promise.withResolvers();
-        const early = start({ensureRepo: async () => { inCheckout.resolve(); await checkoutGate.promise; return {repoPath: checkout} }});
+        const early        = start({ensureRepo: async () => { inCheckout.resolve(); await checkoutGate.promise; return {repoPath: checkout} }});
 
         await inCheckout.promise;
         expect(await FleetLifecycleService.stop('seat'), 'nothing runs yet').toMatchObject({success: false, state: 'stopped'});
@@ -2630,7 +2658,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
         // Stop after the reservation, while the rows are being written
         const rowsGate = Promise.withResolvers(), inRows = Promise.withResolvers();
-        const late = start({beforePrepared: async () => { inRows.resolve(); await rowsGate.promise }});
+        const late     = start({beforePrepared: async () => { inRows.resolve(); await rowsGate.promise }});
 
         await inRows.promise;
         await FleetLifecycleService.stop('seat');

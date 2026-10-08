@@ -10,8 +10,8 @@ import {resolveHarnessSeatSettings}            from '../../../src/fleet/contract
  * @summary What a seat's harness offers to declare, asked of the harness itself and never kept as a Fleet list. A
  * Codex seat answers its app-server's `model/list` in its own logged-in home
  * ({@link module:ai/services/fleet/codexModelCatalog.readCodexModelCatalog}). `claude-code` answers the effort
- * levels its CLI names in `--help`, and takes any model id or alias it accepts. Every other family takes no
- * declaration.
+ * levels its CLI names in `--help`, and takes any model id or alias it accepts. Other families have no
+ * supported catalog reader; that does not decide whether an individual setting can be declared.
  */
 
 const execFileAsync = promisify(execFile);
@@ -84,7 +84,7 @@ export async function readSeatModelCatalog({agent, instanceRoot, lifecycleServic
     }
 
     if (via !== 'codex-config') {
-        return {state: 'unsupported', models: [], reason: `a '${agent?.harnessType}' seat takes no declared model or reasoning effort`}
+        return {state: 'unsupported', models: [], reason: `a '${agent?.harnessType}' seat has no supported model/effort catalog reader`}
     }
 
     const
