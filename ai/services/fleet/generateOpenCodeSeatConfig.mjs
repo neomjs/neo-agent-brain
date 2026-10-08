@@ -248,7 +248,7 @@ function renderOpencodeJsonc({runtimeRoot, targetRepoRoot, seatEnvFile, memoryDi
         // The seat home: explicit `seatHome` when given, else `memoryDir`'s parent — the
         // documented default derivation (the coupling is loud here, not latent).
         seatHomePath = seatHome ?? path.posix.dirname(path.posix.normalize(memoryDir)),
-        allowedPaths = [seatHomePath + '/**', targetRepoRoot + '/**', runtimeRoot + '/**', ...extraAllowedPaths],
+        allowedPaths = [seatHomePath + '/**', memoryDir + '/**', targetRepoRoot + '/**', runtimeRoot + '/**', ...extraAllowedPaths],
         externalDirectory = {'*': 'ask'};
 
     allowedPaths.forEach(allowedPath => {

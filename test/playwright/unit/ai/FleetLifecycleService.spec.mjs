@@ -2610,7 +2610,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
         // the actual composer and lifecycle; only the checkout, the files and the forge are stand-ins
         const
-            start = ({ensureRepo = async () => ({repoPath: checkout}), beforePrepared = async () => {}} = {}) => startAgentProvisioned({
+            start = ({ensureRepo = async () => ({repoPath: checkout}), beforeImport = async () => {}, beforePrepared = async () => {}} = {}) => startAgentProvisioned({
                 lifecycleService  : FleetLifecycleService,
                 agentId           : 'seat',
                 managedRoot       : root,
@@ -2632,7 +2632,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
                 resolveGitIdentity : async () => ({state: 'derived', source: 'public', name: 'Ada', email: 'ada@example.test'}),
                 convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
                 readModelCatalog   : async () => null,
-                importMemory       : async () => ({state: 'none'}),
+                importMemory       : async () => { await beforeImport(); return {state: 'none'} },
                 proveForgeAccount  : async () => ({ok: true})
             }),
             github = async capability => {
@@ -2656,6 +2656,22 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
         expect(spawn.calls, 'the canceled checkout attempt never reaches the lifecycle spawn').toEqual([]);
         expect(grants, 'no MCP reservation is created for a canceled pre-reservation attempt').toEqual([]);
         expect(issuer.statusOf('seat').state).toBe('none');
+        await FleetLifecycleService.stop('seat');
+
+        // Stop after reservation while memory import is pending: preparation must not start afterward.
+        const importGate = Promise.withResolvers(), inImport = Promise.withResolvers();
+        const importing  = start({beforeImport: async () => { inImport.resolve(); await importGate.promise }});
+
+        await inImport.promise;
+        expect(grants, 'pending memory import has not entered workspace preparation').toEqual([]);
+        expect(await FleetLifecycleService.stop('seat'), 'the reserved attempt is canceled').toMatchObject({success: true, state: 'stopped', canceledStarts: 1});
+        importGate.resolve();
+        const canceledDuringImport = await importing;
+
+        expect(canceledDuringImport).toMatchObject({id: 'seat', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
+        expect(spawn.calls, 'the canceled import attempt never reaches the lifecycle spawn').toEqual([]);
+        expect(grants, 'the canceled import attempt never reaches workspace preparation').toEqual([]);
+        expect(issuer.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'stop-requested'});
         await FleetLifecycleService.stop('seat');
 
         // Stop after reservation while the rows are being written: the grant remains refused, and the process never starts.

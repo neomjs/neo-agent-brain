@@ -718,15 +718,16 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
 
         await expect(applyManagedAgentWorkspacePlan({...applyOptions, fileSystem: failingFileSystem}))
             .rejects.toBeInstanceOf(ManagedWorkspacePreparationError);
-        expect(await read(path.join(targetRepoRoot, '.codex', 'config.toml'))).toContain('neo-mjs-memory-core');
+        const memoryDir = path.join(instanceRoot, 'agent-a', 'memory');
 
-        const retry = await applyManagedAgentWorkspacePlan(applyOptions);
+        expect(await read(path.join(memoryDir, 'MEMORY.md'))).toContain('Seat memory');
 
-        expect(retry.artifacts.map(item => item.status)).toEqual([
-            WORKSPACE_ARTIFACT_STATES.MATCH,
-            WORKSPACE_ARTIFACT_STATES.CREATED,
-            WORKSPACE_ARTIFACT_STATES.CREATED
-        ])
+        const retry    = await applyManagedAgentWorkspacePlan(applyOptions);
+        const statuses = new Map(retry.artifacts.map(({path: artifactPath, status}) => [artifactPath, status]));
+
+        expect(statuses.get(path.join(targetRepoRoot, '.codex', 'config.toml'))).toBe(WORKSPACE_ARTIFACT_STATES.CREATED);
+        expect(statuses.get(path.join(memoryDir, 'MEMORY.md'))).toBe(WORKSPACE_ARTIFACT_STATES.MATCH);
+        expect(statuses.get(path.join(memoryDir, 'identity.md'))).toBe(WORKSPACE_ARTIFACT_STATES.CREATED)
     });
 
     test('plan/apply composer resolves once before entering one host apply sequence', async () => {
@@ -1339,11 +1340,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
             server.target === 'resident' &&
             server.transport === 'stdio'
         )).toBe(true);
-        expect(result.artifacts.map(item => item.status)).toEqual([
-            WORKSPACE_ARTIFACT_STATES.CREATED,
-            WORKSPACE_ARTIFACT_STATES.CREATED,
-            WORKSPACE_ARTIFACT_STATES.CREATED
-        ]);
+        expect(result.artifacts.map(item => item.status)).toEqual(new Array(8).fill(WORKSPACE_ARTIFACT_STATES.CREATED));
 
         // Fresh target clones have no dependencies: every executable and Neural Link's package cwd
         // come from AgentOS, while project artifacts remain under the target repository.
@@ -1432,11 +1429,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
         const second = await prepareManagedAgentWorkspace(opts);
 
-        expect(second.artifacts.map(item => item.status)).toEqual([
-            WORKSPACE_ARTIFACT_STATES.MATCH,
-            WORKSPACE_ARTIFACT_STATES.MATCH,
-            WORKSPACE_ARTIFACT_STATES.MATCH
-        ]);
+        expect(second.artifacts.map(item => item.status)).toEqual(new Array(8).fill(WORKSPACE_ARTIFACT_STATES.MATCH));
         expect(await read(projectPath)).toBe(residentProject);
         expect(await read(homePath)).toContain('[operator]');
     });
@@ -1468,32 +1461,40 @@ test.describe('prepareManagedAgentWorkspace', () => {
         expect(await read(homePath)).toBe(divergent);
     });
 
-    test('two residents sharing one GitHub identity have disjoint Codex auth/memory homes', async () => {
+    test('two residents sharing one GitHub identity have disjoint Codex homes and seat memory roots', async () => {
         const
-            a = await prepareManagedAgentWorkspace(options(makeAgent('codex', {id: 'resident-a'}))),
-            b = await prepareManagedAgentWorkspace(options(makeAgent('codex', {id: 'resident-b'})));
+            a       = await prepareManagedAgentWorkspace(options(makeAgent('codex', {id: 'resident-a'}))),
+            b       = await prepareManagedAgentWorkspace(options(makeAgent('codex', {id: 'resident-b'}))),
+            memoryA = path.join(instanceRoot, 'resident-a', 'memory'),
+            memoryB = path.join(instanceRoot, 'resident-b', 'memory');
 
         expect(a.instanceHome).not.toBe(b.instanceHome);
         expect(path.join(a.instanceHome, 'config.toml')).not.toBe(path.join(b.instanceHome, 'config.toml'));
         expect(path.join(a.instanceHome, 'memories')).not.toBe(path.join(b.instanceHome, 'memories'));
         expect((await fs.stat(path.join(a.instanceHome, 'memories'))).isDirectory()).toBe(true);
         expect((await fs.stat(path.join(b.instanceHome, 'memories'))).isDirectory()).toBe(true);
+        expect(memoryA).not.toBe(memoryB);
+        expect((await fs.stat(memoryA)).isDirectory()).toBe(true);
+        expect((await fs.stat(memoryB)).isDirectory()).toBe(true);
     });
 
     for (const harness of ['codex', 'codex-desktop']) {
-        test(`${harness}: an import lands in the memories folder preparation made, and leaves it owner-only`, async () => {
+        test(`${harness}: an import lands in common seat memory before preparation, and leaves it owner-only`, async () => {
             const
                 agent    = makeAgent(harness),
-                prepared = await prepareManagedAgentWorkspace(options(agent)),
-                memories = prepared.artifacts.find(item => item.ownedKeys === 'directory' && path.basename(item.path) === 'memories').path,
                 home     = path.join(root, 'home'),
-                source   = path.join(home, '.codex', 'memories');
+                source   = path.join(home, '.codex', 'memories'),
+                memories = path.join(instanceRoot, agent.id, 'memory');
 
             await fs.mkdir(source, {recursive: true});
             await fs.writeFile(path.join(source, 'MEMORY.md'), 'codex index');
 
-            expect(await importSeatMemory({agent: {...agent, memoryImport: source}, instanceRoot, homeDir: home}))
+            expect(await importSeatMemory({agent: {...agent, memoryImport: source}, instanceRoot: path.resolve(instanceRoot), homeDir: home}))
                 .toEqual({state: 'copied', source, destination: memories, files: 1});
+
+            await prepareManagedAgentWorkspace(options(agent));
+
+            expect(await read(path.join(memories, 'MEMORY.md'))).toBe('codex index');
             expect((await fs.stat(memories)).mode & 0o777).toBe(0o700);
         });
     }
@@ -2203,14 +2204,20 @@ test.describe('prepareManagedAgentWorkspace', () => {
         }
     });
 
-    test('only the Claude families get a memory pin', async () => {
-        for (const harnessType of ['codex', 'codex-desktop', 'kimi-code', 'opencode']) {
-            const opts = options(makeAgent(harnessType, {id: harnessType}));
+    test('every family keeps common seat memory; only Claude families get an auto-memory pin', async () => {
+        for (const harnessType of ['claude-code', 'claude-desktop', 'codex', 'codex-desktop', 'kimi-code', 'opencode']) {
+            const
+                opts      = options(makeAgent(harnessType, {id: harnessType})),
+                memoryDir = path.join(instanceRoot, harnessType, 'memory');
 
             await prepareManagedAgentWorkspace(opts);
 
-            await expect(fs.stat(path.join(opts.targetRepoRoot, '.claude', 'settings.local.json'))).rejects.toMatchObject({code: 'ENOENT'});
-            await expect(fs.stat(path.join(instanceRoot, harnessType, 'memory'))).rejects.toMatchObject({code: 'ENOENT'});
+            expect((await fs.stat(memoryDir)).isDirectory(), harnessType).toBe(true);
+            if (harnessType.startsWith('claude-')) {
+                expect(await read(path.join(opts.targetRepoRoot, '.claude', 'settings.local.json'))).toContain(JSON.stringify(memoryDir))
+            } else {
+                await expect(fs.stat(path.join(opts.targetRepoRoot, '.claude', 'settings.local.json'))).rejects.toMatchObject({code: 'ENOENT'})
+            }
         }
     });
 
@@ -2242,10 +2249,10 @@ test.describe('prepareManagedAgentWorkspace', () => {
             config = await read(path.join(result.instanceHome, 'config.toml')),
             mcp    = JSON.parse(await read(path.join(opts.targetRepoRoot, '.kimi-code', 'mcp.json'))),
             hook   = await read(path.join(result.instanceHome, 'hooks', 'identityAnchorHook.mjs')),
-            memory = await read(path.join(result.instanceHome, 'memory', 'MEMORY.md'));
+            memory = await read(path.join(instanceRoot, 'agent-a', 'memory', 'MEMORY.md'));
 
-        // 7 artifacts: config.toml + mcp.json + 4 memory-layer files + the emitted hook.
-        expect(result.artifacts.map(item => item.status)).toEqual(new Array(7).fill(WORKSPACE_ARTIFACT_STATES.CREATED));
+        // 8 artifacts: common seat memory directory + config.toml + mcp.json + 4 memory-layer files + hook.
+        expect(result.artifacts.map(item => item.status)).toEqual(new Array(8).fill(WORKSPACE_ARTIFACT_STATES.CREATED));
 
         // The curated matrix narrows the wiring: gitlab stays OUT, the four enabled servers wire in.
         expect(Object.keys(mcp.mcpServers).sort()).toEqual(['neo-mjs-github-workflow', 'neo-mjs-knowledge-base', 'neo-mjs-memory-core', 'neo-mjs-neural-link']);
@@ -2259,20 +2266,20 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
         // The emitted hook is generated code with the seat memory dir baked in.
         expect(hook).toContain('GENERATED by ai/services/fleet/generateKimiSeatConfig.mjs');
-        expect(hook).toContain(`const MEMORY_DIR  = "${path.join(result.instanceHome, 'memory')}";`);
+        expect(hook).toContain(`const MEMORY_DIR  = "${path.join(instanceRoot, 'agent-a', 'memory')}";`);
 
         // The Grace-pattern layer lands capped + story-sovereign.
         expect(memory).toContain('<17KB');
         expect(memory).toContain('Weak-spots');
-        expect((await read(path.join(result.instanceHome, 'memory', 'identity.md'))).length).toBeLessThan(600);
+        expect((await read(path.join(instanceRoot, 'agent-a', 'memory', 'identity.md'))).length).toBeLessThan(600);
     });
 
     test('Kimi Code: re-entry is MATCH across all artifacts and bearer edits are never clobbered', async () => {
         const
             opts         = options(makeAgent('kimi-code')),
             first        = await prepareManagedAgentWorkspace(opts),
-            identityPath = path.join(first.instanceHome, 'memory', 'identity.md'),
-            indexPath    = path.join(first.instanceHome, 'memory', 'MEMORY.md');
+            identityPath = path.join(instanceRoot, 'agent-a', 'memory', 'identity.md'),
+            indexPath    = path.join(instanceRoot, 'agent-a', 'memory', 'MEMORY.md');
 
         // The bearer authors their layer after first boot — re-provisioning must not even flag it.
         await fs.writeFile(identityPath, '# Identity — MINE\n\nThe bearer wrote this.\n', 'utf8');
@@ -2280,7 +2287,7 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
         const second = await prepareManagedAgentWorkspace(opts);
 
-        expect(second.artifacts.map(item => item.status)).toEqual(new Array(7).fill(WORKSPACE_ARTIFACT_STATES.MATCH));
+        expect(second.artifacts.map(item => item.status)).toEqual(new Array(8).fill(WORKSPACE_ARTIFACT_STATES.MATCH));
         expect(await read(identityPath)).toBe('# Identity — MINE\n\nThe bearer wrote this.\n');
         expect(await read(indexPath)).toContain('bearer-accreted line');
     });
@@ -2307,16 +2314,16 @@ test.describe('prepareManagedAgentWorkspace', () => {
             jsoncSource = await read(path.join(opts.targetRepoRoot, 'opencode.jsonc')),
             config      = JSON.parse(jsoncSource.split('\n').filter(line => !line.trimStart().startsWith('//')).join('\n'));
 
-        // 7 artifacts: opencode.jsonc + 4 memory-layer files + the wake-envelope boot hook + the plant.
+        // 8 artifacts: common seat memory directory + opencode.jsonc + 4 memory-layer files + hook + plant.
         // The plant is a SIBLING artifact, not a payload inside the hook: the hook runs after the server
         // is listening, so a plant it installed could only be loaded by a later process. Converged here,
         // before spawn, at the seat's own plugins path.
-        expect(result.artifacts.map(item => item.status)).toEqual(new Array(7).fill(WORKSPACE_ARTIFACT_STATES.CREATED));
+        expect(result.artifacts.map(item => item.status)).toEqual(new Array(8).fill(WORKSPACE_ARTIFACT_STATES.CREATED));
 
         // The always-loaded slot carries the boot files ONLY; detail files load on demand by path.
         expect(config.instructions).toEqual([
-            path.join(result.instanceHome, 'memory', 'MEMORY.md'),
-            path.join(result.instanceHome, 'memory', 'identity.md')
+            path.join(instanceRoot, 'agent-a', 'memory', 'MEMORY.md'),
+            path.join(instanceRoot, 'agent-a', 'memory', 'identity.md')
         ]);
         expect(Object.keys(config.mcp).sort()).toEqual(['neo-mjs-github-workflow', 'neo-mjs-knowledge-base', 'neo-mjs-memory-core', 'neo-mjs-neural-link']);
         // Permission allow-list covers the seat home, the managed repo, and the canonical checkout.
@@ -2343,20 +2350,20 @@ test.describe('prepareManagedAgentWorkspace', () => {
         ).toBe(true);
         expect(hook, 'and the hook carries no plant payload').not.toMatch(/[A-Za-z0-9+/]{500,}={0,2}/);
 
-        expect(await read(path.join(result.instanceHome, 'memory', 'about-this-layer.md'))).toContain('Grace-pattern');
+        expect(await read(path.join(instanceRoot, 'agent-a', 'memory', 'about-this-layer.md'))).toContain('Grace-pattern');
     });
 
     test('OpenCode: re-entry is MATCH and bearer edits are never clobbered', async () => {
         const
             opts   = options(makeAgent('opencode')),
             first  = await prepareManagedAgentWorkspace(opts),
-            memory = path.join(first.instanceHome, 'memory', 'MEMORY.md');
+            memory = path.join(instanceRoot, 'agent-a', 'memory', 'MEMORY.md');
 
         await fs.writeFile(memory, '# bearer index\n', 'utf8');
 
         const second = await prepareManagedAgentWorkspace(opts);
 
-        expect(second.artifacts.map(item => item.status)).toEqual(new Array(7).fill(WORKSPACE_ARTIFACT_STATES.MATCH));
+        expect(second.artifacts.map(item => item.status)).toEqual(new Array(8).fill(WORKSPACE_ARTIFACT_STATES.MATCH));
         expect(await read(memory)).toBe('# bearer index\n');
     });
 
@@ -2789,12 +2796,24 @@ test.describe('prepareManagedAgentWorkspace', () => {
 
 test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its harness home', () => {
     const
-        GATE    = /No AiConfig work without reading ADR-0019/,
-        RECEIPT = '.neo-fleet-seat-instructions.json',
-        onRepo  = (agent, repoSlug) => ({...agent, metadata: {repo: {repoSlug}}}),
-        sha256  = content => crypto.createHash('sha256').update(content, 'utf8').digest('hex'),
-        homeOf  = (result, harnessType) => path.join(result.instanceHome, harnessType === 'codex-desktop' ? 'codex-home' : '', harnessType === 'claude-code' ? 'CLAUDE.md' : 'AGENTS.md'),
-        absent  = filePath => expect(fs.stat(filePath)).rejects.toMatchObject({code: 'ENOENT'});
+        GATE     = /No AiConfig work without reading ADR-0019/,
+        RECEIPT  = '.neo-fleet-seat-instructions.json',
+        onRepo   = (agent, repoSlug) => ({...agent, metadata: {repo: {repoSlug}}}),
+        sha256   = content => crypto.createHash('sha256').update(content, 'utf8').digest('hex'),
+        homeOf   = (result, harnessType) => path.join(result.instanceHome, harnessType === 'codex-desktop' ? 'codex-home' : '', harnessType === 'claude-code' ? 'CLAUDE.md' : 'AGENTS.md'),
+        memoryOf = (rootPath, agentId) => path.join(rootPath, agentId, 'memory'),
+        absent   = filePath => expect(fs.stat(filePath)).rejects.toMatchObject({code: 'ENOENT'});
+
+    async function importCodexBootFiles(agent, bootFiles) {
+        const
+            home   = path.join(root, `import-home-${agent.id}`),
+            source = path.join(home, '.codex', 'memories');
+
+        await fs.mkdir(source, {recursive: true});
+        for (const [name, content] of Object.entries(bootFiles)) await fs.writeFile(path.join(source, name), content);
+
+        return importSeatMemory({agent: {...agent, memoryImport: source}, instanceRoot: path.resolve(instanceRoot), homeDir: home})
+    }
 
     test('a Claude seat on the Brain gets the composition as <home>/CLAUDE.md with a receipt, and re-entry is MATCH', async () => {
         const
@@ -2849,21 +2868,27 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
         expect(result.seatInstructions).toEqual({state: 'repository-supplied', reason: `the checkout carries ${path.join('.claude', 'CLAUDE.md')}`})
     });
 
-    test('a checkout carrying AGENTS.md supplies a Codex seat\'s instructions: Codex reads its home file whole, beside the project budget', async () => {
+    test('Codex home AGENTS includes seat memory even when the checkout carries project AGENTS.md', async () => {
         const opts = options(onRepo(makeAgent('codex'), 'neomjs/neo'));
 
         await fs.mkdir(opts.targetRepoRoot, {recursive: true});
         await fs.writeFile(path.join(opts.targetRepoRoot, 'AGENTS.md'), '# The repository\'s own\n');
 
-        const result = await prepareManagedAgentWorkspace(opts);
+        const
+            result    = await prepareManagedAgentWorkspace(opts),
+            homeFile  = homeOf(result, 'codex'),
+            memoryDir = path.join(instanceRoot, 'agent-a', 'memory'),
+            homeText  = await read(homeFile);
 
-        expect(result.artifacts.map(artifact => artifact.ownedKeys)).not.toContain('seat instructions');
-        await absent(path.join(result.instanceHome, 'AGENTS.md'));
-        expect(result.seatInstructions).toEqual({state: 'repository-supplied', reason: 'the checkout carries AGENTS.md'})
+        expect(result.artifacts.at(-1)).toMatchObject({path: homeFile, status: WORKSPACE_ARTIFACT_STATES.CREATED});
+        expect(result.seatInstructions.state).toBe('projected');
+        expect(homeText).toContain(await read(path.join(memoryDir, 'MEMORY.md')));
+        expect(homeText).toContain(await read(path.join(memoryDir, 'identity.md')));
+        expect(await read(path.join(opts.targetRepoRoot, 'AGENTS.md'))).toBe('# The repository\'s own\n')
     });
 
-    test('once the checkout supplies the instructions, the home file Fleet wrote is retired with its receipt, for every harness', async () => {
-        for (const [harnessType, repoFile] of [['claude-code', 'CLAUDE.md'], ['codex', 'AGENTS.md'], ['codex-desktop', 'AGENTS.md']]) {
+    test('once a Claude checkout supplies instructions, the Fleet-written home file is retired with its receipt', async () => {
+        for (const [harnessType, repoFile] of [['claude-code', 'CLAUDE.md']]) {
             const
                 opts     = options(onRepo(makeAgent(harnessType, {id: `retire-${harnessType}`}), 'neomjs/neo')),
                 first    = await prepareManagedAgentWorkspace(opts),
@@ -2882,15 +2907,15 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
         }
     });
 
-    test('a seat moved to a repository the Skills source does not declare loses the file Fleet wrote', async () => {
+    test('a Codex seat moved to an unsupported repository keeps its seat-memory home instructions', async () => {
         const
             first    = await prepareManagedAgentWorkspace(options(onRepo(makeAgent('codex'), 'neomjs/neo-agent-brain'))),
             homeFile = homeOf(first, 'codex'),
             moved    = await prepareManagedAgentWorkspace(options(onRepo(makeAgent('codex'), 'acme/app')));
 
-        expect(moved.seatInstructions).toMatchObject({state: 'not-applicable'});
-        expect(moved.artifacts.at(-1)).toMatchObject({path: homeFile, ownedKeys: 'seat instructions retired'});
-        await absent(homeFile)
+        expect(moved.seatInstructions.state).toBe('projected');
+        expect(moved.artifacts.at(-1)).toMatchObject({path: homeFile});
+        expect(await read(homeFile)).toContain(await read(path.join(instanceRoot, 'agent-a', 'memory', 'MEMORY.md')))
     });
 
     test('a home file edited after Fleet wrote it refuses the start once the seat no longer takes it, and keeps the edit', async () => {
@@ -2951,10 +2976,11 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
         await fs.writeFile(path.join(root, 'shared-agents.md'), '# Shared\n');
         await fs.symlink(path.join(root, 'shared-agents.md'), path.join(linked.targetRepoRoot, 'AGENTS.md'));
 
-        const supplied = await prepareManagedAgentWorkspace(linked);
+        const supplied   = await prepareManagedAgentWorkspace(linked),
+              linkedHome = homeOf(supplied, 'codex');
 
-        expect(supplied.seatInstructions).toEqual({state: 'repository-supplied', reason: 'the checkout carries AGENTS.md'});
-        await absent(homeOf(supplied, 'codex'))
+        expect(supplied.seatInstructions.state).toBe('projected');
+        expect(await read(linkedHome)).toContain(await read(path.join(instanceRoot, 'entry-linked', 'memory', 'MEMORY.md')))
     });
 
     test('a real composed start returns the instruction decision on the status it hands its caller, with no logger injected', async () => {
@@ -3012,11 +3038,193 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
         })
     });
 
-    test('a seat on a repository the Skills source does not declare starts without the file, and the result says why', async () => {
+    for (const harnessType of ['codex', 'codex-desktop']) {
+        test(`${harnessType} imports common seat boot files into home AGENTS.md without moving its native memory folder`, async () => {
+            const
+                agent     = onRepo(makeAgent(harnessType, {id: `${harnessType}-memory`}), 'acme/app'),
+                memory    = memoryOf(instanceRoot, agent.id),
+                bootFiles = {
+                    'MEMORY.md'  : '# Imported seat memory\nA durable fact from the seat.\n',
+                    'identity.md': '# Imported seat identity\nThe seat owns this voice.\n'
+                },
+                imported   = await importCodexBootFiles(agent, bootFiles);
+
+            await fs.mkdir(path.join(repoRoot, agent.id), {recursive: true});
+            await fs.writeFile(path.join(repoRoot, agent.id, 'AGENTS.md'), '# Checkout project instructions\n');
+
+            const
+                opts         = options(agent),
+                result       = await prepareManagedAgentWorkspace(opts),
+                homeFile     = homeOf(result, harnessType),
+                nativeHome   = harnessType === 'codex-desktop' ? path.join(result.instanceHome, 'codex-home') : result.instanceHome,
+                nativeMemory = path.join(nativeHome, 'memories'),
+                config       = await read(path.join(nativeHome, 'config.toml')),
+                homeText     = await read(homeFile);
+
+            expect(imported.destination).toBe(memory);
+            expect(await read(path.join(memory, 'MEMORY.md'))).toBe(bootFiles['MEMORY.md']);
+            expect(await read(path.join(memory, 'identity.md'))).toBe(bootFiles['identity.md']);
+            expect(homeText).toContain(bootFiles['MEMORY.md'].trim());
+            expect(homeText).toContain(bootFiles['identity.md'].trim());
+            expect(result.seatInstructions.state).toBe('projected');
+            expect(await read(path.join(repoRoot, agent.id, 'AGENTS.md'))).toBe('# Checkout project instructions\n');
+
+            // Codex's vendor-owned loader remains enabled and separate from the shared Fleet seat memory.
+            expect(config).toContain('memories = true');
+            expect((await fs.readdir(nativeMemory)).sort()).toEqual([]);
+            await expect(fs.stat(path.join(nativeMemory, 'MEMORY.md'))).rejects.toMatchObject({code: 'ENOENT'});
+        })
+    }
+
+    test('the next prepare reflects seat-authored boot memory in home AGENTS.md', async () => {
+        const
+            agent  = onRepo(makeAgent('codex', {id: 'codex-memory-update'}), 'acme/app'),
+            memory = memoryOf(instanceRoot, agent.id),
+            home   = await importCodexBootFiles(agent, {'MEMORY.md': '# Initial memory\n', 'identity.md': '# Initial identity\n'});
+
+        expect(home.destination).toBe(memory);
+
+        const
+            opts     = options(agent),
+            first    = await prepareManagedAgentWorkspace(opts),
+            homeFile = homeOf(first, 'codex'),
+            before   = await read(homeFile);
+
+        await fs.appendFile(path.join(memory, 'MEMORY.md'), '\nA new fact authored by this seat.\n');
+
+        const second = await prepareManagedAgentWorkspace(opts),
+              after  = await read(homeFile);
+
+        expect(after).not.toBe(before);
+        expect(after).toContain('A new fact authored by this seat.');
+        expect(second.artifacts.find(artifact => artifact.path === homeFile).status).toBe(WORKSPACE_ARTIFACT_STATES.UPDATED)
+    });
+
+    test('an unowned home AGENTS.md that matched before a memory change is preserved and refuses the update', async () => {
+        const
+            agent  = onRepo(makeAgent('codex', {id: 'codex-unowned-instructions'}), 'acme/app'),
+            memory = memoryOf(instanceRoot, agent.id);
+
+        await importCodexBootFiles(agent, {'MEMORY.md': '# Original boot memory\n', 'identity.md': '# Original identity\n'});
+
+        const
+            opts     = options(agent),
+            first    = await prepareManagedAgentWorkspace(opts),
+            homeFile = homeOf(first, 'codex'),
+            receipt  = path.join(first.instanceHome, RECEIPT),
+            matching = await read(homeFile);
+
+        // Matching generated bytes alone are not proof that Fleet owns a home instruction file.
+        await fs.unlink(receipt);
+
+        const matchedAgain = await prepareManagedAgentWorkspace(opts);
+
+        expect(matchedAgain.artifacts.find(artifact => artifact.path === homeFile).status).toBe(WORKSPACE_ARTIFACT_STATES.MATCH);
+        expect(await read(homeFile)).toBe(matching);
+        await absent(receipt);
+
+        await fs.appendFile(path.join(memory, 'MEMORY.md'), '\nA later seat-owned change.\n');
+
+        await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({
+            code    : 'FLEET_WORKSPACE_DIVERGENT',
+            artifact: {path: homeFile, ownedKeys: 'seat instructions'}
+        });
+        expect(await read(homeFile)).toBe(matching);
+        await absent(receipt)
+    });
+
+    test('Kimi and OpenCode loaders and OpenCode grants follow common seat memory across an agents-root move', async () => {
+        const movedRoot = path.join(root, 'agents-root-moved');
+
+        for (const harnessType of ['kimi-code', 'opencode']) {
+            const
+                id        = `memory-root-${harnessType}`,
+                opts      = options(makeAgent(harnessType, {id})),
+                first     = await prepareManagedAgentWorkspace(opts),
+                oldSeat   = path.join(instanceRoot, id),
+                oldMemory = path.join(oldSeat, 'memory'),
+                newOpts   = {...opts, instanceRoot: movedRoot, previousInstanceRoot: instanceRoot},
+                moved     = await prepareManagedAgentWorkspace(newOpts),
+                newSeat   = path.join(movedRoot, id),
+                newMemory = path.join(newSeat, 'memory');
+
+            expect(first.instanceHome).toBe(path.join(oldSeat, 'harness', harnessType));
+            expect(await fs.stat(path.join(newMemory, 'MEMORY.md'))).toBeTruthy();
+            expect(await fs.stat(path.join(newMemory, 'identity.md'))).toBeTruthy();
+            await absent(path.join(first.instanceHome, 'memory', 'MEMORY.md'));
+
+            if (harnessType === 'kimi-code') {
+                const hook = await read(path.join(moved.instanceHome, 'hooks', 'identityAnchorHook.mjs'));
+
+                expect(hook).toContain(`const MEMORY_DIR  = "${newMemory}";`);
+                expect(hook).not.toContain(oldMemory)
+            } else {
+                const
+                    jsonc  = await read(path.join(opts.targetRepoRoot, 'opencode.jsonc')),
+                    config = JSON.parse(jsonc.split('\n').filter(line => !line.trimStart().startsWith('//')).join('\n'));
+
+                expect(config.instructions).toEqual([path.join(newMemory, 'MEMORY.md'), path.join(newMemory, 'identity.md')]);
+                expect(config.instructions.join('\n')).not.toContain(oldMemory);
+                expect(config.permission.external_directory[newMemory + '/**']).toBe('allow');
+                expect(config.permission.external_directory[oldMemory + '/**']).not.toBe('allow')
+            }
+        }
+    });
+
+    test('a Codex seat on an unsupported repository still gets its seat-memory home file', async () => {
         const result = await prepareManagedAgentWorkspace(options(onRepo(makeAgent('codex'), 'acme/app')));
 
-        expect(result.artifacts.map(artifact => artifact.ownedKeys)).not.toContain('seat instructions');
-        await absent(path.join(result.instanceHome, 'AGENTS.md'));
-        expect(result.seatInstructions).toEqual({state: 'not-applicable', reason: 'the Skills source declares no repository \'acme/app\''})
+        expect(result.artifacts.at(-1)).toMatchObject({path: homeOf(result, 'codex'), status: WORKSPACE_ARTIFACT_STATES.CREATED});
+        expect(result.seatInstructions.state).toBe('projected');
+        expect(await read(homeOf(result, 'codex'))).toContain(await read(path.join(instanceRoot, 'agent-a', 'memory', 'MEMORY.md')))
+    });
+
+    test('populated legacy Kimi/OpenCode memory is preserved and refuses before writing a new seat-memory scaffold', async () => {
+        const observedNewFiles = {};
+
+        for (const harnessType of ['kimi-code', 'opencode']) {
+            const
+                agent       = makeAgent(harnessType, {id: `legacy-${harnessType}`}),
+                opts        = options(agent),
+                first       = await prepareManagedAgentWorkspace(opts),
+                oldMemory   = path.join(first.instanceHome, 'memory'),
+                seatMemory  = memoryOf(instanceRoot, agent.id),
+                legacyFiles = {
+                    'MEMORY.md'          : `# Existing ${harnessType} memory\nBearer-authored notes.\n`,
+                    'identity.md'        : '# Existing identity\n',
+                    'seat-pointers.md'   : '# Existing pointers\n',
+                    'about-this-layer.md': '# Existing layer notes\n'
+                };
+
+            await fs.mkdir(oldMemory, {recursive: true});
+            for (const [name, contents] of Object.entries(legacyFiles)) await fs.writeFile(path.join(oldMemory, name), contents);
+
+            if (harnessType === 'kimi-code') {
+                const hookPath = path.join(first.instanceHome, 'hooks', 'identityAnchorHook.mjs'),
+                      hook     = (await read(hookPath)).split(seatMemory).join(oldMemory);
+
+                await fs.writeFile(hookPath, hook)
+            } else {
+                const configPath = path.join(opts.targetRepoRoot, 'opencode.jsonc'),
+                      config     = (await read(configPath)).split(seatMemory).join(oldMemory);
+
+                await fs.writeFile(configPath, config)
+            }
+
+            await fs.rm(seatMemory, {recursive: true, force: true});
+
+            await expect(prepareManagedAgentWorkspace(opts)).rejects.toMatchObject({code: 'FLEET_WORKSPACE_DIVERGENT'});
+
+            for (const [name, contents] of Object.entries(legacyFiles)) {
+                expect(await read(path.join(oldMemory, name)), `${harnessType} ${name}`).toBe(contents)
+            }
+
+            observedNewFiles[harnessType] = await fs.readdir(seatMemory).catch(error => {
+                if (error.code === 'ENOENT') return [];
+                throw error
+            })
+        }
+
+        expect(observedNewFiles).toEqual({'kimi-code': [], opencode: []})
     })
 });

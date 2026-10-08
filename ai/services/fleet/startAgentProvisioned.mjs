@@ -165,7 +165,7 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                             for tests.
  * @param {Function} [options.prepareWorkspace] The post-provisioning workspace/home composer; defaults
  *                                              to {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}.
- * @param {Function} [options.importMemory]     The adopted seat's memory convergence after preparation;
+ * @param {Function} [options.importMemory]     The adopted seat's memory convergence before preparation;
  *                                              defaults to {@link module:ai/services/fleet/seatMemoryImport.importSeatMemory}.
  * @param {Function} [options.resolveGitIdentity]  `({agent, credential}) => Promise<Object>`, the identity the seat's
  *                                                 commits carry; defaults to `resolveSeatGitIdentity`.
@@ -611,6 +611,10 @@ async function provisionAgent({
 
     try {
         startSignal.throwIfAborted();
+        // Import before create-only birth files: the adopted seat's own notes take precedence.
+        memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
+        startSignal.throwIfAborted();
+
         prepared = await prepareWorkspace({
             agent,
             targetRepoRoot,
@@ -653,11 +657,6 @@ async function provisionAgent({
             })
             startSignal.throwIfAborted();
         }
-
-        // an adopted seat starts with the memory it consented to import, never an empty folder that
-        // reads like a fresh seat's: converge the copy, then read the destination fresh
-        memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
-        startSignal.throwIfAborted();
 
         status = await spawnPermitted({
             lifecycleService,
