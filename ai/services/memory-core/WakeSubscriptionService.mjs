@@ -1866,16 +1866,17 @@ class WakeSubscriptionService extends Base {
      * disclosure contract is deliberately the `whoIsOnline` class (any authenticated caller,
      * fleet-scoped operational telemetry), NOT the caller-owner `list` class: owner rows carry
      * endpoint/filter/key-adjacent material a roster read has no business seeing, so this action
-     * never returns row properties beyond the observation pair. `lastPollAt` is the most recent
+     * never returns row properties beyond the observation. `lastPollAt` is the most recent
      * observational stamp across the identity's active subscriptions — a timestamp only, never
      * the client-held watermark — and null until an authenticated poll has landed, so absence of
-     * polls stays absence-of-signal for the route-health consumer. The scan itself is the shared
-     * `readActiveWakeSubscriptionObservations` — the same one query the fleet dev-server runs
-     * in-process against a host plane — with the absent-status meaning owned by
+     * polls stays absence-of-signal for the route-health consumer. `pullRoute` names the
+     * identity's active message pull route with that route's own stamp, or is null. The scan
+     * itself is the shared `readActiveWakeSubscriptionObservations` — the same one query the fleet
+     * dev-server runs in-process against a host plane — with the absent-status meaning owned by
      * `wakeSubscriptionStatusPolicy` in both.
      *
      * @returns {Promise<{identities: String[], observations: Object[]}>} Both sorted by identity
-     *     for deterministic wire output; `observations` rows are `{identity, lastPollAt}`.
+     *     for deterministic wire output; `observations` rows are `{identity, lastPollAt, pullRoute}`.
      */
     async fleetIdentities() {
         const caller = RequestContextService.getAgentIdentityNodeId();

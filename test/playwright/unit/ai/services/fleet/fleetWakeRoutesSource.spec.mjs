@@ -33,7 +33,7 @@ function harness(overrides = {}) {
     return createFleetWakeRoutesSource({
         listAgents                        : () => ROSTER,
         resolveViewerIdentity             : () => '@e2e-operator',
-        listActiveSubscriptionObservations: () => [{identity: '@neo-fable-clio', lastPollAt: '2026-08-03T19:58:00.000Z'}],
+        listActiveSubscriptionObservations: () => [{identity: '@neo-fable-clio', lastPollAt: '2026-08-03T19:58:00.000Z', pullRoute: {lastPollAt: '2026-08-03T19:58:00.000Z'}}],
         resolveDeliveryLiveness           : () => ({alive: true, reason: null}),
         resolveTerminalDeliveryFailures   : () => ({state: 'observed', reason: null, byIdentity: new Map()}),
         readPresence                      : () => PRESENCE_PAYLOAD,
@@ -59,8 +59,8 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
                 state     : 'observed',
                 reason    : null,
                 byIdentity: new Map([[
-                    '@neo-opus-ada',
-                    {routeCount: 2, adapter: 'osascript', appName: 'Codex', addressType: 'userDataDir'}
+                    '@neo-fable-clio',
+                    {routeCount: 2, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'}
                 ]])
             })
         }).readWakeRoutes();
@@ -76,13 +76,14 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         const [ada, clio] = snapshot.seats;
 
         // The armed row carries the allowlisted route detail — and ONLY it.
-        expect(ada.armed).toEqual({
+        expect(clio.armed).toEqual({
             state : 'armed',
             reason: null,
-            route : {routeCount: 2, adapter: 'osascript', appName: 'Codex', addressType: 'userDataDir'}
+            route : {routeCount: 2, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'}
         });
-        // The seat that pulls is armed by its own poll's stamp.
-        expect(clio.armed).toEqual({state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: '2026-08-03T19:58:00.000Z'}});
+        // A seat absent from a healthy manifest answer is genuinely UNARMED — a first-class
+        // healthy answer, never collapsed into unknown.
+        expect(ada.armed).toEqual({state: 'none', reason: null});
 
         expect(ada.subscription).toEqual({state: 'none', reason: null});
         // The active row carries the redacted poll-recency observation — the route-health
@@ -123,7 +124,7 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         }
     });
 
-    test('a seat no receiver route carries is armed when its own poll stamped its active subscription', async () => {
+    test('a seat no receiver route carries is armed by its own pull route, carrying that route\'s stamp', async () => {
         const
             empty   = () => ({state: 'observed', reason: null, byIdentity: new Map()}),
             unarmed = () => ({state: 'unarmed', reason: 'no wake receiver is declared'}),
@@ -132,35 +133,48 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         let [ada, clio] = (await harness({resolveSeatArming: empty, readFleetArming: unarmed}).readWakeRoutes()).seats;
 
         expect(clio.armed).toEqual(pull);
-        // no subscription, no receipt: ada stays none, and the Fleet's reason still explains it
+        // no pull route: ada stays none, and the Fleet's reason still explains it
         expect(ada.armed).toEqual({state: 'none', reason: 'no wake receiver is declared'});
 
-        // the stamp is observed with no manifest read at all
+        // the pull route is observed with no manifest read at all
         [ada, clio] = (await harness().readWakeRoutes()).seats;
 
         expect(clio.armed).toEqual(pull);
         expect(ada.armed.state).toBe('unobserved');
     });
 
-    test('a seat\'s own poll outranks a receiver route it already withdrew; a seat that never polled keeps the manifest\'s detail', async () => {
+    test('a receiver route keeps its own detail beside a pull route, and a Codex seat polling its push route stays on its manifest route', async () => {
         const
-            route       = {routeCount: 1, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'},
-            [ada, clio] = (await harness({
-                resolveSeatArming                 : () => ({state: 'observed', reason: null, byIdentity: new Map([['@neo-opus-ada', route], ['@neo-fable-clio', route]])}),
-                listActiveSubscriptionObservations: () => [{identity: '@neo-opus-ada', lastPollAt: null}, {identity: '@neo-fable-clio', lastPollAt: '2026-08-03T19:58:00.000Z'}]
+            codex        = {routeCount: 1, adapter: 'osascript', appName: 'Codex',  addressType: 'userDataDir'},
+            claude       = {routeCount: 1, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'},
+            [emmy, clio] = (await harness({
+                listAgents                        : () => [
+                    {id: 'emmy', githubUsername: 'neo-gpt-emmy',   harnessType: 'codex-desktop'},
+                    {id: 'clio', githubUsername: 'neo-fable-clio', harnessType: 'claude-desktop'}
+                ],
+                resolveSeatArming                 : () => ({state: 'observed', reason: null, byIdentity: new Map([['@neo-gpt-emmy', codex], ['@neo-fable-clio', claude]])}),
+                listActiveSubscriptionObservations: () => [
+                    {identity: '@neo-gpt-emmy',   lastPollAt: '2026-08-03T19:58:00.000Z', pullRoute: null},
+                    {identity: '@neo-fable-clio', lastPollAt: '2026-08-03T19:58:00.000Z', pullRoute: {lastPollAt: '2026-08-03T19:58:00.000Z'}}
+                ]
             }).readWakeRoutes()).seats;
 
-        expect(clio.armed).toEqual({state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: '2026-08-03T19:58:00.000Z'}});
-        expect(ada.armed).toEqual({state: 'armed', reason: null, route});
+        expect(emmy.armed).toEqual({state: 'armed', reason: null, route: codex});
+        // a poll proves nothing about whether the seat retired its window route
+        expect(clio.armed).toEqual({state: 'armed', reason: null, route: claude});
     });
 
-    test('a subscription no poll has stamped is no receipt yet: the seat stays unarmed', async () => {
-        const [, clio] = (await harness({
+    test('a pull route no poll has stamped yet arms its seat with a null stamp; a stamp with no pull route arms nothing', async () => {
+        const [ada, clio] = (await harness({
             resolveSeatArming                 : () => ({state: 'observed', reason: null, byIdentity: new Map()}),
-            listActiveSubscriptionObservations: () => [{identity: '@neo-fable-clio', lastPollAt: null}]
+            listActiveSubscriptionObservations: () => [
+                {identity: '@neo-opus-ada',   lastPollAt: '2026-08-03T19:58:00.000Z', pullRoute: null},
+                {identity: '@neo-fable-clio', lastPollAt: '2026-08-03T19:58:00.000Z', pullRoute: {lastPollAt: null}}
+            ]
         }).readWakeRoutes()).seats;
 
-        expect(clio.armed).toEqual({state: 'none', reason: null});
+        expect(ada.armed).toEqual({state: 'none', reason: null});
+        expect(clio.armed).toEqual({state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: null}});
     });
 
     test('the Fleet\'s reason is redacted and bounded like every other axis reason', async () => {
@@ -201,11 +215,7 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         await fs.chmod(manifestPath, 0o600);
 
         try {
-            // a push seat: subscribed and never polled, so the manifest decides its arming
-            const snapshot = await harness({
-                wakeReceiverManifestPath          : manifestPath,
-                listActiveSubscriptionObservations: () => [{identity: '@neo-fable-clio', lastPollAt: null}]
-            }).readWakeRoutes();
+            const snapshot = await harness({wakeReceiverManifestPath: manifestPath}).readWakeRoutes();
 
             expect(snapshot.capability).toEqual({
                 source    : 'fleet:wakeRoutes', state: 'wired', confidence: 'observed',
@@ -249,7 +259,7 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
         expect(typeof ada.armed.reason).toBe('string')
     });
 
-    test('a throwing arming resolver degrades every seat without its own poll to unknown with the reason — never a fabricated none', async () => {
+    test('a throwing arming resolver degrades every seat without its own pull route to unknown with the reason — never a fabricated none', async () => {
         const snapshot = await harness({
             resolveSeatArming: () => { throw new Error('receiver manifest walk exploded') }
         }).readWakeRoutes();
@@ -261,7 +271,7 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
 
         expect(ada.armed.state).toBe('unknown');
         expect(ada.armed.reason).toContain('receiver manifest walk exploded');
-        // a pull seat's own poll is evidence the broken manifest read cannot take away
+        // a pull seat's own route is evidence the broken manifest read cannot take away
         expect(clio.armed).toMatchObject({state: 'armed', route: {adapter: 'pull'}})
     });
 
@@ -334,8 +344,8 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
                 return {
                     identities  : ['@neo-fable-clio', '@neo-opus-ada'],
                     observations: [
-                        {identity: '@neo-fable-clio', lastPollAt: '2026-08-03T19:59:30.000Z'},
-                        {identity: '@neo-opus-ada',   lastPollAt: null}
+                        {identity: '@neo-fable-clio', lastPollAt: '2026-08-03T19:59:30.000Z', pullRoute: {lastPollAt: '2026-08-03T19:59:30.000Z'}},
+                        {identity: '@neo-opus-ada',   lastPollAt: null,                       pullRoute: null}
                     ]
                 }
             }
@@ -350,21 +360,29 @@ test.describe('fleetWakeRoutesSource — the decomposed per-seat wake-route read
             ada  = snapshot.seats.find(seat => seat.agentIdentity === '@neo-opus-ada');
 
         expect(clio.subscription).toEqual({state: 'active', reason: null, lastPollAt: '2026-08-03T19:59:30.000Z'});
-        expect(ada.subscription).toEqual({state: 'active', reason: null, lastPollAt: null})
+        expect(ada.subscription).toEqual({state: 'active', reason: null, lastPollAt: null});
+        expect(clio.armed).toEqual({state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: '2026-08-03T19:59:30.000Z'}});
+        expect(ada.armed.state).toBe('unobserved')
     });
 
-    test('a plane predating the recency disclosure (identities only) degrades to null recency — never a broken axis', async () => {
-        const snapshot = await harness({
-            listActiveSubscriptionObservations: createPlaneWakeObservationsReader({
-                async callTool() {
-                    return {identities: ['@neo-fable-clio']}
-                }
-            })
-        }).readWakeRoutes();
+    test('a plane predating the recency or pull disclosure degrades to null recency and no pull route — never a broken axis', async () => {
+        const read = async payload => (await harness({
+            listActiveSubscriptionObservations: createPlaneWakeObservationsReader({callTool: async () => payload})
+        }).readWakeRoutes()).seats.find(seat => seat.agentIdentity === '@neo-fable-clio');
 
-        const clio = snapshot.seats.find(seat => seat.agentIdentity === '@neo-fable-clio');
+        const identitiesOnly = await read({identities: ['@neo-fable-clio']});
 
-        expect(clio.subscription).toEqual({state: 'active', reason: null, lastPollAt: null})
+        expect(identitiesOnly.subscription).toEqual({state: 'active', reason: null, lastPollAt: null});
+        expect(identitiesOnly.armed.state).toBe('unobserved');
+
+        // a recency-era plane: its stamp is no pull evidence, so the arming row stays what the manifest read answered
+        const recencyOnly = await read({
+            identities  : ['@neo-fable-clio'],
+            observations: [{identity: '@neo-fable-clio', lastPollAt: '2026-08-03T19:59:30.000Z'}]
+        });
+
+        expect(recencyOnly.subscription).toEqual({state: 'active', reason: null, lastPollAt: '2026-08-03T19:59:30.000Z'});
+        expect(recencyOnly.armed.state).toBe('unobserved')
     });
 
     test('typed-unknown delivery axes (the plane mode reality) degrade honestly and name themselves', async () => {

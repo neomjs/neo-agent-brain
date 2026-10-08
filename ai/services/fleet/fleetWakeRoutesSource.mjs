@@ -42,9 +42,10 @@ const
  * @param {Function} options.listAgents `() => Object[]` registry roster rows (each needs an `id`).
  * @param {Function} options.resolveViewerIdentity `() => String|null` — the authenticated viewer.
  * @param {Function|null} [options.listActiveSubscriptionObservations] `() =>
- *     Iterable<{identity: String, lastPollAt: String|null}>` (sync or async) yielding one redacted
- *     observation per wake identity holding an ACTIVE subscription — membership plus the most
- *     recent authenticated-poll stamp (null until one lands: absence-of-signal, never a verdict).
+ *     Iterable<{identity: String, lastPollAt: String|null, pullRoute: {lastPollAt}|null}>` (sync or
+ *     async) yielding one redacted observation per wake identity holding an ACTIVE subscription —
+ *     membership, the most recent authenticated-poll stamp (null until one lands: absence-of-signal,
+ *     never a verdict), and the identity's message pull route with that route's own stamp.
  *     Absent ⇒ the subscription axis is honestly unreadable for every seat.
  * @param {Function|null} [options.resolveDeliveryLiveness] `() => {alive: Boolean|'unknown',
  *     reason}` (sync or async) — the delivery-lane authority. Absent ⇒ axis unknown with reason.
@@ -65,7 +66,7 @@ const
  *     reason, signals}]}`). Absent ⇒ the presence axis is a typed `unobserved`.
  * @param {Function|null} [options.readFleetArming] `(agentId) => {state, reason}|null` — the wake
  *     route the Fleet recorded when it started the seat. It only explains a seat the manifest does
- *     not carry; the manifest and the seat's own poll stay the authorities for armed.
+ *     not carry; the manifest and the seat's own pull route stay the authorities for armed.
  * @param {Function} [options.wakeIdentityFor] `(agent) => String` roster row → wake identity.
  *     Default: the exported presence canonicalizer — ONE registry→plane identity boundary for
  *     both live presence consumers, accepting the registry's full production spelling domain
@@ -150,7 +151,7 @@ export function createFleetWakeRoutesSource({
                 agentId      : agent.id,
                 agentIdentity: identity,
                 subscription : subscribed,
-                armed        : explainUnarmed(withPullArming(arming.rowFor(identity), subscribed), readFleetArming, agent.id),
+                armed        : explainUnarmed(withPullArming(arming.rowFor(identity), subscription.pullRouteFor(identity)), readFleetArming, agent.id),
                 delivery     : {state: delivery.state, reason: delivery.reason},
                 lastFailure  : failures.rowFor(identity),
                 presence     : presence.rowFor(identity)
@@ -198,16 +199,17 @@ export function createFleetWakeRoutesSource({
  * derivation input for poll-only routes ("healthy, polls elsewhere" vs "nobody ever polls") —
  * with null staying null: absence of polls renders absence-of-signal, never a verdict. A missing
  * reader or a failed scan degrades EVERY seat's axis with the same reason — never a fabricated
- * `none`.
+ * `none`. The seat's pull route feeds the arming axis through `pullRouteFor`, never this row: an
+ * unreadable axis observes none.
  * @param {Function|null} listActiveSubscriptionObservations
- * @returns {Promise<{ok: Boolean, reason: String|null, rowFor: Function}>}
+ * @returns {Promise<{ok: Boolean, reason: String|null, rowFor: Function, pullRouteFor: Function}>}
  * @private
  */
 async function readSubscriptionAxis(listActiveSubscriptionObservations) {
-    if (typeof listActiveSubscriptionObservations !== 'function') {
-        const reason = 'subscription read path unavailable'
+    const unreadable = reason => ({ok: false, reason, rowFor: () => ({state: 'unknown', reason}), pullRouteFor: () => null})
 
-        return {ok: false, reason, rowFor: () => ({state: 'unknown', reason})}
+    if (typeof listActiveSubscriptionObservations !== 'function') {
+        return unreadable('subscription read path unavailable')
     }
 
     try {
@@ -221,30 +223,31 @@ async function readSubscriptionAxis(listActiveSubscriptionObservations) {
                 throw new Error('subscription observations unreadable')
             }
 
-            observations.set(
-                observation.identity,
-                typeof observation.lastPollAt === 'string' && observation.lastPollAt !== '' ? observation.lastPollAt : null
-            )
+            observations.set(observation.identity, {
+                lastPollAt: stampOf(observation.lastPollAt),
+                pullRoute : observation.pullRoute !== null && typeof observation.pullRoute === 'object'
+                    ? {lastPollAt: stampOf(observation.pullRoute.lastPollAt)}
+                    : null
+            })
         }
 
         return {
-            ok    : true,
-            reason: null,
-            rowFor: identity => observations.has(identity)
-                ? {state: 'active', reason: null, lastPollAt: observations.get(identity)}
+            ok          : true,
+            reason      : null,
+            pullRouteFor: identity => observations.get(identity)?.pullRoute ?? null,
+            rowFor      : identity => observations.has(identity)
+                ? {state: 'active', reason: null, lastPollAt: observations.get(identity).lastPollAt}
                 : {state: 'none', reason: null}
         }
     } catch (error) {
-        const reason = redactReason(error) || 'subscription scan failed'
-
-        return {ok: false, reason, rowFor: () => ({state: 'unknown', reason})}
+        return unreadable(redactReason(error) || 'subscription scan failed')
     }
 }
 
 /**
  * @summary Resolves the receiver half of the seat-arming axis: a seat is ARMED here iff the published
  * wake-receiver manifest carries a loader-valid route for its identity (the `seatArmingReader`
- * authority). A pull seat's own poll arms it beside this ({@link withPullArming}).
+ * authority). A seat's own pull route arms it beside this ({@link withPullArming}).
  *
  * Absent resolver ⇒ every seat answers the typed `unobserved` — the no-local-wake-lane branch, the
  * same shape the axis carried while it was structurally silent, now scoped to deployments where
@@ -310,22 +313,20 @@ async function readArmingAxis(resolveSeatArming) {
 }
 
 /**
- * @summary A seat that pulls is armed by its own poll: it holds an active subscription that its own
- * authenticated poll has stamped. Only a seat's listener polls, so the stamp is the seat's receipt,
- * never one the Fleet wrote: a Claude seat arms its pull route at SessionStart and its Stop listener
- * polls it. The stamp is observed whatever the manifest read answered, and it outranks a receiver
- * route: arming the pull route unsubscribes every route that types into the seat's window, so a
- * manifest entry beside a stamp names a route the seat already withdrew. A seat without a stamp keeps
- * its row.
+ * @summary A seat that pulls is armed by its own pull route: an active `SENT_TO_ME` subscription on
+ * the pull transport, which no receiver carries because its seat polls it. The route's own
+ * `lastPollAt` rides along, null until its first poll; a stamp on any other subscription is no
+ * evidence of one. The route is observed whatever the manifest read answered, but a receiver route
+ * the manifest carries keeps its own detail: a poll proves nothing about whether the seat retired it.
  * @param {Object} row The arming axis row for the seat.
- * @param {Object} subscribed The seat's subscription axis row.
+ * @param {Object|null} pullRoute The seat's pull route, `{lastPollAt}`, or null.
  * @returns {Object}
  * @private
  */
-function withPullArming(row, subscribed) {
-    if (subscribed.state !== 'active' || !subscribed.lastPollAt) return row;
+function withPullArming(row, pullRoute) {
+    if (!pullRoute || row.state === 'armed') return row;
 
-    return {state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: subscribed.lastPollAt}}
+    return {state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: pullRoute.lastPollAt}}
 }
 
 /**
@@ -497,6 +498,10 @@ function safeViewer(resolveViewerIdentity) {
     } catch {
         return null
     }
+}
+
+function stampOf(value) {
+    return typeof value === 'string' && value !== '' ? value : null
 }
 
 function redactReason(value) {

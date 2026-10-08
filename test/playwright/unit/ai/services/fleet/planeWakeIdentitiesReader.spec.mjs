@@ -92,16 +92,17 @@ test.describe('planeWakeIdentitiesReader — the plane-mode client→adapter com
 })
 
 test.describe('planeWakeObservationsReader — the redacted recency projection over the same read', () => {
-    test('observations rows pass through normalized: identity + lastPollAt only, empty stamps become null, junk rows are dropped', async () => {
+    test('observations rows pass through normalized: identity, lastPollAt and pullRoute only, empty stamps become null, junk rows are dropped', async () => {
         const reader = createPlaneWakeObservationsReader({
             callTool: async (name, args) => {
                 expect([name, args]).toEqual(['manage_wake_subscription', {action: 'fleet-identities'}])
 
                 return {
-                    identities  : ['@neo-gpt', '@neo-opus-vega'],
+                    identities  : ['@neo-gpt', '@neo-opus-vega', '@neo-opus-ada'],
                     observations: [
-                        {identity: '@neo-gpt',       lastPollAt: '2026-08-14T15:00:00.000Z'},
-                        {identity: '@neo-opus-vega', lastPollAt: ''},
+                        {identity: '@neo-gpt',       lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: null},
+                        {identity: '@neo-opus-vega', lastPollAt: '',                         pullRoute: {lastPollAt: '', endpoint: 'never forwarded'}},
+                        {identity: '@neo-opus-ada',  lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: 1},
                         {identity: '',               lastPollAt: '2026-08-14T15:00:00.000Z'},
                         {lastPollAt: '2026-08-14T15:00:00.000Z'}
                     ]
@@ -110,17 +111,19 @@ test.describe('planeWakeObservationsReader — the redacted recency projection o
         })
 
         expect(await reader()).toEqual([
-            {identity: '@neo-gpt',       lastPollAt: '2026-08-14T15:00:00.000Z'},
-            {identity: '@neo-opus-vega', lastPollAt: null}
+            {identity: '@neo-gpt',       lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: null},
+            {identity: '@neo-opus-vega', lastPollAt: null,                       pullRoute: {lastPollAt: null}},
+            // a bare flag is out of contract: no pull route, never one
+            {identity: '@neo-opus-ada',  lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: null}
         ])
     })
 
-    test('the deployment-lag fallback: an identities-only plane answers null recency per identity — honest absence, never a broken read', async () => {
-        const reader = createPlaneWakeObservationsReader({
-            callTool: async () => ({identities: ['@neo-gpt']})
-        })
+    test('the deployment-lag fallback: an identities-only or recency-only plane answers no pull route — honest absence, never a broken read', async () => {
+        const read = payload => createPlaneWakeObservationsReader({callTool: async () => payload})()
 
-        expect(await reader()).toEqual([{identity: '@neo-gpt', lastPollAt: null}])
+        expect(await read({identities: ['@neo-gpt']})).toEqual([{identity: '@neo-gpt', lastPollAt: null, pullRoute: null}])
+        expect(await read({identities: ['@neo-gpt'], observations: [{identity: '@neo-gpt', lastPollAt: '2026-08-14T15:00:00.000Z'}]}))
+            .toEqual([{identity: '@neo-gpt', lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: null}])
     })
 
     test('a payload with neither observations nor identities throws the same named contract error as the sibling', async () => {
