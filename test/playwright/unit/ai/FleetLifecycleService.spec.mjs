@@ -2510,6 +2510,46 @@ test.describe('FleetLifecycleService.setPendingDependencies — a Start\'s depen
     });
 });
 
+test.describe('FleetLifecycleService.skipDependencies — the operator\'s Skip of a pending Start\'s install', () => {
+    test('a Skip aborts each pending attempt\'s skip fence once, never its Stop fence, and answers how many it reached', () => {
+        const first  = FleetLifecycleService.beginStart('seat'),
+              second = FleetLifecycleService.beginStart('seat'),
+              skip   = FleetLifecycleService.dependencySkipSignal('seat', first);
+
+        try {
+            expect(skip.aborted).toBe(false);
+            expect(FleetLifecycleService.skipDependencies('seat')).toEqual({id: 'seat', skippedStarts: 2});
+            expect(skip.aborted).toBe(true);
+            expect(FleetLifecycleService.dependencySkipSignal('seat', second).aborted).toBe(true);
+            // the Starts go on
+            expect(first.aborted).toBe(false);
+            expect(second.aborted).toBe(false);
+            expect(FleetLifecycleService.skipDependencies('seat')).toEqual({id: 'seat', skippedStarts: 0})
+        } finally {
+            FleetLifecycleService.finishStart('seat', first);
+            FleetLifecycleService.finishStart('seat', second)
+        }
+    });
+
+    test('a seat with no pending Start answers zero; a finished attempt has no skip fence, and the next Start gets a fresh one', () => {
+        expect(FleetLifecycleService.skipDependencies('seat')).toEqual({id: 'seat', skippedStarts: 0});
+
+        const attempt = FleetLifecycleService.beginStart('seat');
+
+        FleetLifecycleService.skipDependencies('seat');
+        FleetLifecycleService.finishStart('seat', attempt);
+        expect(FleetLifecycleService.dependencySkipSignal('seat', attempt)).toBeNull();
+
+        const next = FleetLifecycleService.beginStart('seat');
+
+        try {
+            expect(FleetLifecycleService.dependencySkipSignal('seat', next).aborted).toBe(false)
+        } finally {
+            FleetLifecycleService.finishStart('seat', next)
+        }
+    });
+});
+
 test.describe('FleetLifecycleService.status — where a running Claude Desktop seat\'s session opened', () => {
     let root;
 

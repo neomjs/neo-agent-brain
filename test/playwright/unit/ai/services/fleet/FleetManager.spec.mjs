@@ -21,6 +21,7 @@ import FleetManager               from '../../../../../../ai/services/fleet/Flee
 import FleetRegistryService       from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
 import {armFleetSeatWake}         from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
 import {createFleetCockpitStatus} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
+import {installSeatDependencies}  from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
 import fs                         from 'fs';
 import os                         from 'os';
 import path                       from 'path';
@@ -1051,6 +1052,69 @@ test.describe('Neo.ai.services.fleet.FleetManager — pending Start cancellation
         expect(await starting).toEqual({id: 'ada', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
         expect(calls.map(([kind]) => kind)).toEqual(['compose']);
         expect(lifecycle.pendingStarts.has('ada')).toBe(false)
+    });
+
+    /**
+     * A Start whose provisioning runs the real `installSeatDependencies`: the seat's first checkout installs at once,
+     * and the second keeps `npm` running until its signal aborts and `exit()` lets it end.
+     * @returns {{installing: Promise, exit: Function, rows: Function}}
+     */
+    function startInstalling() {
+        const
+            installing = Promise.withResolvers(),
+            exited     = Promise.withResolvers(),
+            checkouts  = [{repoSlug: 'neomjs/neo', repoPath: '/managed/ada/neomjs/neo'}, {repoSlug: 'neomjs/neo-agent-brain', repoPath: '/managed/ada/neomjs/neo-agent-brain'}];
+        let rows = null;
+
+        FleetManager.provisionAndStartFn = async ({agentId, startSignal, dependencySkipSignal}) => {
+            rows = await installSeatDependencies({
+                checkouts,
+                seatRoot  : '/managed/ada',
+                signal    : startSignal,
+                skipSignal: dependencySkipSignal,
+                write     : async () => {},
+                install   : ({repoPath, signal}) => repoPath === checkouts[0].repoPath ? Promise.resolve({state: 'installed'}) : new Promise(resolve => {
+                    installing.resolve();
+                    signal.addEventListener('abort', () => exited.promise.then(() => resolve({canceled: true, state: 'failed', reason: 'npm ci canceled'})), {once: true})
+                })
+            });
+            startSignal.throwIfAborted();
+            return {id: agentId, state: 'running'}
+        };
+        FleetManager.wakeArmFn = async () => ({state: 'ready'});
+
+        return {installing: installing.promise, exit: () => exited.resolve(), rows: () => rows}
+    }
+
+    test('Skip ends a pending Start\'s install and the Start launches: the interrupted checkout reads skipped, the finished one keeps its outcome', async () => {
+        const seat     = startInstalling(),
+              starting = FleetManager.startAgent('ada');
+
+        await seat.installing;
+        expect(FleetManager.skipAgentDependencies('ada')).toEqual({id: 'ada', skippedStarts: 1});
+        seat.exit();
+
+        expect(await starting).toMatchObject({id: 'ada', state: 'running', wakeRoute: {state: 'ready'}});
+        expect(seat.rows()).toEqual([
+            {repoSlug: 'neomjs/neo', state: 'installed'},
+            {repoSlug: 'neomjs/neo-agent-brain', state: 'skipped', reason: 'skipped during the install'}
+        ]);
+        // the attempt is over, so there is nothing left to skip
+        expect(FleetManager.skipAgentDependencies('ada')).toEqual({id: 'ada', skippedStarts: 0})
+    });
+
+    test('a Stop after a Skip still cancels the Start, and the install it interrupted reads canceled', async () => {
+        const seat     = startInstalling(),
+              starting = FleetManager.startAgent('ada');
+
+        await seat.installing;
+        FleetManager.skipAgentDependencies('ada');
+        // npm has not exited from the Skip yet
+        expect((await FleetManager.stopAgent('ada')).canceledStarts).toBe(1);
+        seat.exit();
+
+        expect(await starting).toEqual({id: 'ada', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
+        expect(seat.rows()[1]).toEqual({repoSlug: 'neomjs/neo-agent-brain', state: 'canceled', reason: 'stopped during the install'})
     });
 
     for (const phase of ['during-client-close', 'after-arming']) {

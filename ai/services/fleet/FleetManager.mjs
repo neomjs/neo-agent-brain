@@ -399,7 +399,8 @@ class FleetManager extends Base {
      * answers; it is read again just before the spawn, and a bench recorded after that read lands on a
      * starting seat ({@link launchRefusalOf}). The start holds the seat's home until its harness is
      * launched and armed or refused ({@link withSeatHome}). Stop cancels every already-pending attempt,
-     * including one still queued for the home; a later explicit Start gets a fresh signal.
+     * including one still queued for the home; a later explicit Start gets a fresh signal. The
+     * operator's Skip ({@link skipAgentDependencies}) ends only the attempt's dependency install.
      * A ready route returned after Stop is retained as unresolved cleanup, never as a ready wake.
      * @param {String} agentId Registry agent id.
      * @returns {Promise<Object>} the agent's lifecycle status.
@@ -419,10 +420,11 @@ class FleetManager extends Base {
                 this.assertStartPermitted('startAgent', agentId, participation);
 
                 const status = await this.getProvisionAndStartFn()({
-                    lifecycleService : lifecycle,
-                    managedRoot      : this.getManagedRoot(),
-                    planeBase        : this.planeBase,
-                    readParticipation: () => this.seatParticipation(agentId),
+                    lifecycleService    : lifecycle,
+                    managedRoot         : this.getManagedRoot(),
+                    planeBase           : this.planeBase,
+                    readParticipation   : () => this.seatParticipation(agentId),
+                    dependencySkipSignal: lifecycle.dependencySkipSignal(agentId, startSignal),
                     admissionMark,
                     startSignal,
                     agentId
@@ -647,6 +649,17 @@ class FleetManager extends Base {
      */
     stopAgent(agentId) {
         return this.getLifecycleService().stop(agentId);
+    }
+
+    /**
+     * @summary The operator's Skip of a starting seat's dependency install: the checkouts it interrupts
+     * read `skipped`, and the Start launches. A thin delegation to `FleetLifecycleService.skipDependencies`,
+     * like {@link stopAgent}.
+     * @param {String} agentId Registry agent id.
+     * @returns {{id: String, skippedStarts: Number}} how many pending Starts the Skip reached.
+     */
+    skipAgentDependencies(agentId) {
+        return this.getLifecycleService().skipDependencies(agentId);
     }
 
     /**

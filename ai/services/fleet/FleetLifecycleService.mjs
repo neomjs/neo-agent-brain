@@ -519,9 +519,10 @@ class FleetLifecycleService extends Base {
     processes = new Map()
 
     /**
-     * Starts still preparing or arming, including those queued for a seat's home. Stop aborts these
-     * signals synchronously; finishing one attempt cannot remove another attempt's cancellation.
-     * @member {Map<String, Map<AbortSignal, AbortController>>} pendingStarts
+     * Starts still preparing or arming, including those queued for a seat's home, keyed by each attempt's Stop signal.
+     * Every attempt owns two fences: Stop aborts its `stop` controller synchronously, and the operator's Skip its `skip`
+     * controller ({@link skipDependencies}). Finishing one attempt cannot remove another attempt's cancellation.
+     * @member {Map<String, Map<AbortSignal, {stop: AbortController, skip: AbortController}>>} pendingStarts
      * @private
      */
     pendingStarts = new Map()
@@ -565,12 +566,44 @@ class FleetLifecycleService extends Base {
      * @returns {AbortSignal} This attempt's Stop fence, shared by preparation, admission and arming.
      */
     beginStart(id) {
-        const controller = new AbortController();
-        let   pending    = this.pendingStarts.get(id);
+        const attempt = {stop: new AbortController(), skip: new AbortController()};
+        let   pending = this.pendingStarts.get(id);
 
         if (!pending) this.pendingStarts.set(id, pending = new Map());
-        pending.set(controller.signal, controller);
-        return controller.signal
+        pending.set(attempt.stop.signal, attempt);
+        return attempt.stop.signal
+    }
+
+    /**
+     * @summary One pending Start's Skip fence: {@link skipDependencies} aborts it, which ends that attempt's dependency
+     * install and lets its launch go on.
+     * @param {String} id Seat id.
+     * @param {AbortSignal} signal The signal returned by {@link beginStart}.
+     * @returns {AbortSignal|null} `null` once the attempt has finished.
+     */
+    dependencySkipSignal(id, signal) {
+        return this.pendingStarts.get(id)?.get(signal)?.skip.signal ?? null
+    }
+
+    /**
+     * @summary The operator's Skip: ends the dependency install of every pending Start of the seat. The checkouts it
+     * interrupts read `skipped`, and each attempt launches. A Start already past its install goes on unchanged, and a
+     * Stop still wins.
+     * @param {String} id Seat id.
+     * @returns {{id: String, skippedStarts: Number}} How many pending Starts this Skip reached; a repeated Skip does not
+     * count them again.
+     */
+    skipDependencies(id) {
+        let skippedStarts = 0;
+
+        for (const {skip} of this.pendingStarts.get(id)?.values() ?? []) {
+            if (!skip.signal.aborted) {
+                skip.abort();
+                skippedStarts++
+            }
+        }
+
+        return {id, skippedStarts}
     }
 
     /**
@@ -1048,7 +1081,7 @@ class FleetLifecycleService extends Base {
     stop(id, {cancelPending = true} = {}) {
         let canceledStarts = 0;
 
-        for (const controller of cancelPending ? this.pendingStarts.get(id)?.values() ?? [] : []) {
+        for (const {stop: controller} of cancelPending ? this.pendingStarts.get(id)?.values() ?? [] : []) {
             if (!controller.signal.aborted) {
                 controller.abort(LAUNCH_ADMISSION_REASONS.STOP_REQUESTED);
                 canceledStarts++
