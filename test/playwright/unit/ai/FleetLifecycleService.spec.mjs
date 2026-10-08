@@ -2452,6 +2452,64 @@ test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-reposito
     });
 });
 
+test.describe('FleetLifecycleService.setPendingDependencies — a Start\'s dependency rows, live while pending and final after', () => {
+    test.beforeEach(() => { FleetLifecycleService.leasesAdopted = true; FleetLifecycleService.processes.clear(); FleetLifecycleService.attemptDependencies.clear() });
+    test.afterEach(() => { FleetLifecycleService.attemptDependencies.clear(); FleetLifecycleService.processes.clear(); FleetLifecycleService.leasesAdopted = false });
+
+    const live  = [{repoSlug: 'neomjs/neo', state: 'installing'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}],
+          final = [{repoSlug: 'neomjs/neo', state: 'canceled', reason: 'stopped during the install'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}];
+
+    test("a pending Start's rows read on the status as they change, only from that attempt and only the outcome fields", () => {
+        expect(FleetLifecycleService.status('seat').dependencies).toBeNull();
+
+        const attempt = FleetLifecycleService.beginStart('seat');
+
+        try {
+            expect(FleetLifecycleService.setPendingDependencies('seat', new AbortController().signal, live)).toBe(false);
+            expect(FleetLifecycleService.status('seat').dependencies).toBeNull();
+
+            expect(FleetLifecycleService.setPendingDependencies('seat', attempt, [{...live[0], repoPath: '/seat/neomjs/neo'}])).toBe(true);
+            expect(FleetLifecycleService.status('seat').dependencies).toEqual([live[0]])
+        } finally {
+            FleetLifecycleService.finishStart('seat', attempt)
+        }
+    });
+
+    test('an attempt that ends without a launch keeps its final rows, and no late report of it rewrites them', () => {
+        // a seat that ran before: its old process record holds no rows of this attempt
+        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'exited', pid: 4202, startedAt: '2026-10-01T20:00:05.000Z'});
+
+        const attempt = FleetLifecycleService.beginStart('seat');
+
+        FleetLifecycleService.setPendingDependencies('seat', attempt, live);
+        FleetLifecycleService.setPendingDependencies('seat', attempt, final);
+        FleetLifecycleService.finishStart('seat', attempt);
+
+        expect(FleetLifecycleService.status('seat').dependencies).toEqual(final);
+        expect(FleetLifecycleService.setPendingDependencies('seat', attempt, live)).toBe(false);
+        expect(FleetLifecycleService.status('seat').dependencies).toEqual(final);
+
+        const next = FleetLifecycleService.beginStart('seat');
+
+        try {
+            // a later attempt's first report replaces them
+            FleetLifecycleService.setPendingDependencies('seat', next, [live[1]]);
+            expect(FleetLifecycleService.status('seat').dependencies).toEqual([live[1]])
+        } finally {
+            FleetLifecycleService.finishStart('seat', next)
+        }
+    });
+
+    test('a finished attempt leaves no row installing: a checkout it never decided reads as unknown', () => {
+        const attempt = FleetLifecycleService.beginStart('seat');
+
+        FleetLifecycleService.setPendingDependencies('seat', attempt, live);
+        FleetLifecycleService.finishStart('seat', attempt);
+
+        expect(FleetLifecycleService.status('seat').dependencies).toEqual([live[1]])
+    });
+});
+
 test.describe('FleetLifecycleService.status — where a running Claude Desktop seat\'s session opened', () => {
     let root;
 
