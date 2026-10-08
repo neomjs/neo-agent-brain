@@ -157,8 +157,8 @@ export function runToExit(file, args, {cwd, env, signal, timeout = INSTALL_TIMEO
  * in the receipt) is the Fleet's own, so it installs again rather than reading a half-built tree as ready.
  *
  * The outcome is data, never a throw, and a failure's reason is credential-redacted and bounded
- * ({@link module:ai/services/fleet/redactReadFailure}). A canceled install reads `failed`; its caller checks the
- * Start's signal and stops before the spawn.
+ * ({@link module:ai/services/fleet/redactReadFailure}). An install its signal stopped reads `failed` with
+ * `canceled: true`, and the caller decides what the stop meant.
  *
  * @param {Object}      options
  * @param {String}      options.repoPath               The checkout's absolute path.
@@ -170,7 +170,7 @@ export function runToExit(file, args, {cwd, env, signal, timeout = INSTALL_TIMEO
  *                                                     due; defaults to {@link resolveLoginShellNpm} over the same `env`.
  * @param {Function}    [options.record]               `entry => Promise<void>`, the receipt writer: `{state: 'installing'}`
  *                                                     before `npm` starts, then its outcome.
- * @returns {Promise<{state: 'installed'|'present'|'unverified'|'not-applicable'|'failed', reason?: String}>}
+ * @returns {Promise<{state: 'installed'|'present'|'unverified'|'not-applicable'|'failed', reason?: String, canceled?: Boolean}>}
  */
 export async function installAgentRepoDependencies({
     repoPath,
@@ -204,7 +204,7 @@ export async function installAgentRepoDependencies({
 
         await record({state: 'failed', reason});
 
-        return {state: 'failed', reason}
+        return {state: 'failed', reason, ...(error?.canceled ? {canceled: true} : {})}
     }
 }
 
@@ -227,45 +227,64 @@ function readReceipt(receiptPath) {
 /**
  * @summary Installs every checkout of one seat in parallel, resolving `npm` at most once and keeping the seat's
  * {@link DEPENDENCY_RECEIPT}. Receipt writes are serialized; one that fails keeps the previous receipt in place.
+ *
+ * Each row is reported as it changes (`installing`, then its outcome), so a pending Start can show its install
+ * phase. A Skip stops every running `npm` and waits for its exit: an install it interrupted reads `skipped`, one
+ * that had already finished keeps its outcome, and the caller goes on to launch. A Stop wins over a Skip.
+ *
  * @param {Object}      options
- * @param {Object[]}    options.checkouts `[{repoSlug, repoPath}]`, the seat's working checkout first.
- * @param {String}      options.seatRoot  The seat's folder, which holds the receipt.
- * @param {AbortSignal} [options.signal]  The Start's signal.
+ * @param {Object[]}    options.checkouts    `[{repoSlug, repoPath}]`, the seat's working checkout first.
+ * @param {String}      options.seatRoot     The seat's folder, which holds the receipt.
+ * @param {AbortSignal} [options.signal]     The Start's signal.
+ * @param {AbortSignal} [options.skipSignal] The operator's Skip: stops the installs, never the Start.
+ * @param {Function}    [options.onRows]     `rows => void`, each change's rows in checkout order, undecided ones left out.
  * @param {Function}    [options.install=installAgentRepoDependencies]
  * @param {Function}    [options.resolveNpm=resolveLoginShellNpm]
- * @param {Function}    [options.now]     ISO timestamp source for the receipt.
+ * @param {Function}    [options.now]        ISO timestamp source for the receipt.
  * @returns {Promise<Object[]>} `[{repoSlug, state, reason?}]`, one row per checkout, in checkout order.
  */
 export async function installSeatDependencies({
     checkouts,
     seatRoot,
     signal,
+    skipSignal,
+    onRows     = () => {},
     install    = installAgentRepoDependencies,
     resolveNpm = resolveLoginShellNpm,
     now        = () => new Date().toISOString()
 }) {
     const
         receiptPath = path.join(seatRoot, DEPENDENCY_RECEIPT),
-        receipt     = readReceipt(receiptPath);
+        receipt     = readReceipt(receiptPath),
+        stops       = [signal, skipSignal].filter(Boolean),
+        rows        = checkouts.map(() => null),
+        report      = (index, row) => {
+            rows[index] = row;
+            onRows(rows.filter(Boolean).map(entry => ({...entry})))
+        };
 
     let resolution,
         writes = Promise.resolve();
 
-    const rows = await Promise.all(checkouts.map(async ({repoSlug, repoPath}) => ({
-        repoSlug,
-        ...await install({
+    await Promise.all(checkouts.map(async ({repoSlug, repoPath}, index) => {
+        const {canceled, ...outcome} = await install({
             repoPath,
             prior     : receipt[repoSlug] ?? null,
-            signal,
+            signal    : stops.length > 1 ? AbortSignal.any(stops) : stops[0],
             resolveNpm: () => resolution ??= resolveNpm(),
             record    : entry => {
+                entry.state === 'installing' && report(index, {repoSlug, state: 'installing'});
                 receipt[repoSlug] = {...entry, at: now()};
                 writes = writes.then(() => writeFileAtomic(receiptPath, `${JSON.stringify(receipt, null, 4)}\n`)).catch(() => {});
 
                 return writes
             }
-        })
-    })));
+        });
+
+        report(index, canceled && !signal?.aborted && skipSignal?.aborted
+            ? {repoSlug, state: 'skipped', reason: 'skipped during the install'}
+            : {repoSlug, ...outcome})
+    }));
 
     await writes;
 

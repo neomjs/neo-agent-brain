@@ -47,7 +47,7 @@ function makeLifecycle({
     inspectionError = null,
     profileInUse = false
 } = {}) {
-    const calls     = {capability: [], credential: [], dependencyOutcomes: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], signals: [], start: [], status: []};
+    const calls     = {capability: [], credential: [], dependencyOutcomes: [], gitIdentity: [], inspection: [], mark: [], pendingDependencies: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], signals: [], start: [], status: []};
     const admission = {
         revocationMark: id => {
             events?.push('mark');
@@ -115,6 +115,7 @@ function makeLifecycle({
         resolveResidentMcpEnvironment: () => ({}),
         setRepoOutcomes              : (id, repos, launch) => { calls.repoOutcomes.push({id, repos, launch}); return true },
         setDependencyOutcomes        : (id, dependencies, launch) => { calls.dependencyOutcomes.push({id, dependencies, launch}); return true },
+        setPendingDependencies       : (id, signal, rows) => { calls.pendingDependencies.push({id, signal, rows}); return true },
         setGitIdentity               : (id, gitIdentity) => { calls.gitIdentity.push({id, gitIdentity}); return true },
         start                        : (id, opts) => { events?.push('start'); calls.start.push({id, opts}); return {id, running: true, state: 'running', cwd: opts?.cwd, pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}; }
     };
@@ -456,8 +457,10 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
                 {repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git', repoPath: '/managed/a/neomjs/neo-agent-brain'}
             ],
             // the receipt lives in the seat's folder, outside every checkout
-            seatRoot: '/managed/a',
-            signal  : lifecycle.calls.signals[0]
+            seatRoot  : '/managed/a',
+            signal    : lifecycle.calls.signals[0],
+            skipSignal: undefined,
+            onRows    : expect.any(Function)
         }]);
         expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installed'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}]);
         expect(lifecycle.calls.dependencyOutcomes).toEqual([{id: 'a', dependencies: status.dependencies, launch: {pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}}]);
@@ -478,6 +481,33 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.start).toHaveLength(1);
         expect(status.state).toBe('running');
         expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'failed', reason: 'npm is not on the PATH of the login shell /bin/zsh'}]);
+    });
+
+    test("the install's rows reach the pending attempt as they change, and the operator's Skip reaches the install", async () => {
+        const lifecycle = makeLifecycle({agents: repoAgent('a')}),
+              skip      = new AbortController(),
+              installs  = [],
+              status    = await startAgentProvisioned({
+                  lifecycleService    : lifecycle,
+                  agentId             : 'a',
+                  managedRoot         : '/managed',
+                  ensureRepo          : makeEnsureRepo('/managed/a/neomjs/neo'),
+                  dependencySkipSignal: skip.signal,
+                  installDependencies : async args => {
+                      installs.push(args);
+                      args.onRows([{repoSlug: 'neomjs/neo', state: 'installing'}]);
+                      return [{repoSlug: 'neomjs/neo', state: 'skipped', reason: 'skipped during the install'}]
+                  },
+                  prepareWorkspace  : makePrepareWorkspace(),
+                  agentosRuntimeRoot: '/installed/neo'
+              });
+
+        expect(installs[0].skipSignal).toBe(skip.signal);
+        // bound to this attempt's own signal, so a newer Start's rows are never overwritten
+        expect(lifecycle.calls.pendingDependencies).toEqual([{id: 'a', signal: lifecycle.calls.signals[0], rows: [{repoSlug: 'neomjs/neo', state: 'installing'}]}]);
+        // a Skip is not a Stop: the seat launches, and its row says the install was skipped
+        expect(lifecycle.calls.start).toHaveLength(1);
+        expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'skipped', reason: 'skipped during the install'}]);
     });
 
     test('a Stop during the install is a cancel, not a failed row: nothing is prepared or spawned', async () => {

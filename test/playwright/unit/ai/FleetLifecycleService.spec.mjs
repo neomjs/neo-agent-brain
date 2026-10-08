@@ -2469,6 +2469,33 @@ test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-reposito
         ]);
         expect(FleetLifecycleService.status('seat').repos).toBeNull()
     });
+
+    test("a pending Start's rows read on the status while it installs, bound to that attempt and gone when it finishes", () => {
+        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'exited', ...launch, dependencies: [{repoSlug: 'neomjs/neo', state: 'installed'}]});
+
+        const attempt = FleetLifecycleService.beginStart('seat'),
+              other   = new AbortController().signal;
+
+        try {
+            expect(FleetLifecycleService.setPendingDependencies('seat', other, [{repoSlug: 'neomjs/neo', state: 'installing'}])).toBe(false);
+            expect(FleetLifecycleService.setPendingDependencies('seat', attempt, [{repoSlug: 'neomjs/neo', state: 'installing', repoPath: '/seat/neo'}])).toBe(true);
+
+            // the current attempt's phase, not the last launch's outcome
+            expect(FleetLifecycleService.status('seat').dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installing'}]);
+        } finally {
+            FleetLifecycleService.finishStart('seat', attempt)
+        }
+
+        expect(FleetLifecycleService.status('seat').dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installed'}]);
+
+        // a seat with no process record reads its pending rows too
+        const fresh = FleetLifecycleService.beginStart('nobody');
+
+        FleetLifecycleService.setPendingDependencies('nobody', fresh, [{repoSlug: 'neomjs/neo', state: 'installing'}]);
+        expect(FleetLifecycleService.status('nobody').dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installing'}]);
+        FleetLifecycleService.finishStart('nobody', fresh);
+        expect(FleetLifecycleService.status('nobody').dependencies).toBeNull()
+    });
 });
 
 test.describe('FleetLifecycleService.status — where a running Claude Desktop seat\'s session opened', () => {

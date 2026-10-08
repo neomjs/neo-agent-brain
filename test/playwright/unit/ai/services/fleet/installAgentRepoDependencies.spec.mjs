@@ -310,3 +310,99 @@ test.describe('installAgentRepoDependencies + installSeatDependencies — a fail
         expect(attempt).toBe(2);
     });
 });
+
+test.describe('installSeatDependencies — live rows, and a Skip that drains npm without stopping the Start', () => {
+    let seatRoot;
+
+    test.beforeEach(() => { seatRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-skip-')) });
+    test.afterEach(() => { fs.rmSync(seatRoot, {recursive: true, force: true}) });
+
+    const checkouts = [
+        {repoSlug: 'neomjs/neo',             repoPath: '/seat/neomjs/neo'},
+        {repoSlug: 'neomjs/neo-agent-brain', repoPath: '/seat/neomjs/neo-agent-brain'}
+    ];
+
+    /** An install that runs until its signal stops it, unless it is told to finish first. */
+    const installUntil = finishes => async ({repoPath, signal, record}) => {
+        await record({state: 'installing'});
+
+        if (finishes.has(repoPath)) {
+            await record({state: 'installed'});
+            return {state: 'installed'}
+        }
+
+        await new Promise(resolve => signal.aborted ? resolve() : signal.addEventListener('abort', resolve, {once: true}));
+        await record({state: 'failed', reason: 'npm ci canceled'});
+
+        return {state: 'failed', reason: 'npm ci canceled', canceled: true}
+    };
+
+    test('each row reaches onRows as it changes, the working checkout first', async () => {
+        const seen    = [],
+              install = async ({repoPath, record}) => {
+                  if (repoPath.endsWith('brain')) return {state: 'present'};
+
+                  await record({state: 'installing'});
+                  await record({state: 'installed'});
+
+                  return {state: 'installed'}
+              };
+
+        await installSeatDependencies({checkouts, seatRoot, install, onRows: rows => seen.push(rows)});
+
+        expect(seen).toEqual([
+            [{repoSlug: 'neomjs/neo', state: 'installing'}],
+            [{repoSlug: 'neomjs/neo', state: 'installing'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}],
+            [{repoSlug: 'neomjs/neo', state: 'installed'},  {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}]
+        ]);
+    });
+
+    test('a Skip marks only the interrupted install skipped, keeps a finished one, and the receipt has it redo', async () => {
+        const start = new AbortController(),
+              skip  = new AbortController(),
+              rows  = installSeatDependencies({
+                  checkouts,
+                  seatRoot,
+                  signal    : start.signal,
+                  skipSignal: skip.signal,
+                  install   : installUntil(new Set(['/seat/neomjs/neo-agent-brain']))
+              });
+
+        setTimeout(() => skip.abort(), 20);
+
+        expect(await rows).toEqual([
+            {repoSlug: 'neomjs/neo',             state: 'skipped', reason: 'skipped during the install'},
+            {repoSlug: 'neomjs/neo-agent-brain', state: 'installed'}
+        ]);
+        expect(start.signal.aborted).toBe(false);
+        // the interrupted tree is the Fleet's own unfinished attempt: the next Start installs it again
+        expect(JSON.parse(fs.readFileSync(path.join(seatRoot, DEPENDENCY_RECEIPT), 'utf8'))['neomjs/neo'].state).toBe('failed');
+    });
+
+    test('a Stop wins over a Skip: the interrupted install is not reported skipped', async () => {
+        const start = new AbortController(),
+              skip  = new AbortController(),
+              rows  = installSeatDependencies({checkouts: checkouts.slice(0, 1), seatRoot, signal: start.signal, skipSignal: skip.signal, install: installUntil(new Set())});
+
+        setTimeout(() => { skip.abort(); start.abort() }, 20);
+
+        expect(await rows).toEqual([{repoSlug: 'neomjs/neo', state: 'failed', reason: 'npm ci canceled'}]);
+    });
+
+    test('a stopped run reports canceled, so its caller can tell a Skip or a Stop from a failure', async () => {
+        const root     = fs.mkdtempSync(path.join(os.tmpdir(), 'seat-cancel-')),
+              repoPath = path.join(root, 'neo');
+
+        try {
+            fs.mkdirSync(repoPath);
+            fs.writeFileSync(path.join(repoPath, 'package-lock.json'), '{"lockfileVersion":3}');
+
+            const run = async () => { throw Object.assign(new Error('npm ci canceled'), {canceled: true}) };
+
+            expect(await installAgentRepoDependencies({repoPath, env: FLEET_ENV, run, resolveNpm: async () => RESOLVED}))
+                .toEqual({state: 'failed', reason: 'npm ci canceled', canceled: true});
+        } finally {
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+});
