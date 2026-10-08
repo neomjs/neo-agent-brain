@@ -306,8 +306,8 @@ families, four homes (`ai/services/fleet/deriveHarnessLaunchSpec.mjs`):
 |---|---|---|---|
 | `claude-desktop` | `<seat>/harness/claude-desktop` as `--user-data-dir` (and `CLAUDE_USER_DATA_DIR`) — the app profile only; the Claude Code inside keeps the default config root `~/.claude` | `<seat>/memory/` — Fleet pins it (below) | the app window; sign in there |
 | `claude-code` | `<seat>/harness/claude-code` as `CLAUDE_CONFIG_DIR` — the whole config root moves with the seat, its `.claude.json` included (`<CLAUDE_CONFIG_DIR>/.claude.json`, as Fleet's launch contract documents and an isolated CLI run confirmed) | `<seat>/memory/` — Fleet pins it (below) | none (a supervised stream); the login is a command against that config root |
-| `codex-desktop` | `<seat>/harness/codex-desktop` — `codex-home/` inside it is `CODEX_HOME`, `electron-profile/` is `--user-data-dir` | `<seat>/harness/codex-desktop/codex-home/memories/` | the app window; sign in there |
-| `codex` | `<seat>/harness/codex` as `CODEX_HOME` | `<CODEX_HOME>/memories/` | none; the login is a command against that home |
+| `codex-desktop` | `<seat>/harness/codex-desktop` — `codex-home/` inside it is `CODEX_HOME`, `electron-profile/` is `--user-data-dir` | `<seat>/memory/` — imported boot files are projected through the home `AGENTS.md` | the app window; sign in there |
+| `codex` | `<seat>/harness/codex` as `CODEX_HOME` | `<seat>/memory/` — imported boot files are projected through the home `AGENTS.md` | none; the login is a command against that home |
 
 What Claude Code keys by the project — measured on the Desktop family with the default
 config root:
@@ -331,20 +331,21 @@ seat keeps one memory whichever checkout it opens and wherever a checkout moves
 honours the setting once the folder is trusted. The derivation still names the *old* directory,
 the source of the copy.
 
-Codex keys differently, and the move is simpler for it. Read off a live Codex seat by a Codex
-maintainer (`CODEX_HOME` is one instance directory, not a per-project one):
+Codex keeps its native memory under one instance directory, `CODEX_HOME`, rather than a
+per-project directory. A live Codex seat exposes these surfaces:
 
 | Surface | Where | In the move? |
 |---|---|---|
-| Markdown memory (the index and its files) | `$CODEX_HOME/memories/` — `MEMORY.md`, `memory_summary.md`, `raw_memories.md`, `rollout_summaries/`, with `skills/` and `extensions/` beside them | Copy the directory into the seat's `CODEX_HOME` from the table above — `<seat>/harness/codex/` for the CLI family, `<seat>/harness/codex-desktop/codex-home/` for the Desktop family — before the first Start |
+| Markdown memory (the index and its files) | `$CODEX_HOME/memories/` — `MEMORY.md`, `memory_summary.md`, `raw_memories.md`, `rollout_summaries/`, with `skills/` and `extensions/` beside them | Copy its contents into `<seat>/memory/` for both Codex families, before the first Start |
 | Project trust | `$CODEX_HOME/config.toml`, a table per checkout: `[projects."<absolute checkout path>"]` with `trust_level = "trusted"` | Add a table for the new clone's path in the seat's `config.toml`; the key is the path itself, no derivation |
 | Login, sessions, the rest of the home | `$CODEX_HOME/…` | Not part of this recipe — sign in again in the window (Desktop) or run the login against the new home (CLI); what else Codex persists there is not enumerated here |
 
-Codex memory is per instance, not per project, so a seat that keeps its `CODEX_HOME` keeps its
-memory; only a seat that moves to a Fleet-provisioned home copies `memories/` across. Preparing
-the harness home before the first Start is safe: that Start inspects only the checkout path
-`<seat>/<owner>/<repo>` and refuses a foreign occupant there; the harness home beside it is
-the seat's to prepare.
+Codex's native `memories/` is per instance, not per project, and is output derived from its own
+database. Codex can rebuild that folder on the first turn, removing notes copied into it.
+Fleet therefore keeps imported markdown in `<seat>/memory/` and projects its `MEMORY.md` and
+`identity.md` boot files through the seat's home `AGENTS.md`. Native `CODEX_HOME/memories/`
+remains separate; it is not the destination of the migration copy. Preparing the seat's memory
+before the first Start leaves the checkout path `<seat>/<owner>/<repo>` free for cloning.
 
 The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that family only:
 
@@ -368,8 +369,9 @@ The recipe, in order. A step marked *(Claude)* or *(Codex)* applies to that fami
    ls -ld "$ROOT" "$NEW"                 # both drwx------
    ```
 
-   *(Codex)* the destination is `memories/` under the seat's `CODEX_HOME` from the table —
-   the same owner-only root, `rsync` and `diff -rq`, before the first Start.
+   *(Codex)* use the same `<seat>/memory/` destination, owner-only root, `rsync` and `diff -rq`,
+   with `OLD` set to the existing agent's `$CODEX_HOME/memories`. Copy before the first Start;
+   copying into the new native `memories/` would let Codex's first-turn rebuild replace the import.
 4. *(Claude)* Clone the project entry from the old agent's config file into the seat's. The
    source is wherever the old agent's config root was (`~/.claude.json` on the default root).
    The destination is the branch's own file — `~/.claude.json` for the Desktop family, where
