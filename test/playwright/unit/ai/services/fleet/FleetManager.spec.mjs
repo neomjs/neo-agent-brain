@@ -16,11 +16,14 @@ setup({
 import {test, expect}             from '@playwright/test';
 import Neo                        from 'neo.mjs/src/Neo.mjs';
 import * as core                  from 'neo.mjs/src/core/_export.mjs';
+import FleetControlBridge         from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
 import FleetLifecycleService      from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
 import FleetManager               from '../../../../../../ai/services/fleet/FleetManager.mjs';
 import FleetRegistryService       from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
 import {armFleetSeatWake}         from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
 import {createFleetCockpitStatus} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
+import {createFleetWireRequest}   from '../../../../../../src/fleet/contract/wire.mjs';
+import {dispatchFleetRequest}     from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
 import {installSeatDependencies}  from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
 import fs                         from 'fs';
 import os                         from 'os';
@@ -1091,7 +1094,9 @@ test.describe('Neo.ai.services.fleet.FleetManager — pending Start cancellation
               starting = FleetManager.startAgent('ada');
 
         await seat.installing;
-        expect(FleetManager.skipAgentDependencies('ada')).toEqual({id: 'ada', skippedStarts: 1});
+        // the operator's Skip arrives as a wire verb, through the real bridge to this manager
+        expect(await dispatchFleetRequest(createFleetWireRequest('skipAgentDependencies', 'ada'), FleetControlBridge))
+            .toMatchObject({ok: true, result: {id: 'ada', skippedStarts: 1}});
         seat.exit();
 
         expect(await starting).toMatchObject({id: 'ada', state: 'running', wakeRoute: {state: 'ready'}});
