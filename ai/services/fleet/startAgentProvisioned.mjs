@@ -1,19 +1,19 @@
-import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                   from './mcpServers.mjs';
-import {ensureAgentRepo}                                 from './ensureAgentRepo.mjs';
+import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                          from './mcpServers.mjs';
+import {ensureAgentRepo}                                        from './ensureAgentRepo.mjs';
 import {LAUNCH_ADMISSION_CREDENTIALS, LAUNCH_ADMISSION_REASONS} from '../../../src/fleet/contract/launchAdmission.mjs';
-import {launchRefusalOf}                                 from '../../../src/fleet/contract/launchAuthority.mjs';
-import {prepareManagedAgentWorkspace}                    from './prepareManagedAgentWorkspace.mjs';
-import {redactReadFailure}                               from './redactReadFailure.mjs';
-import {resolveSeatPlaneTarget}                          from './resolveSeatPlaneTarget.mjs';
-import {importSeatMemory, MEMORY_IMPORT_NONE}            from './seatMemoryImport.mjs';
+import {launchRefusalOf}                                        from '../../../src/fleet/contract/launchAuthority.mjs';
+import {prepareManagedAgentWorkspace}                           from './prepareManagedAgentWorkspace.mjs';
+import {redactReadFailure}                                      from './redactReadFailure.mjs';
+import {resolveSeatPlaneTarget}                                 from './resolveSeatPlaneTarget.mjs';
+import {importSeatMemory, MEMORY_IMPORT_NONE}                   from './seatMemoryImport.mjs';
 import {
     convergeSeatGitIdentity,
     proveSeatForgeAccount,
     resolveSeatGitIdentity
 }                                                        from './seatGitIdentity.mjs';
-import {readSeatModelCatalog, unofferedDeclaration}      from './seatModelCatalog.mjs';
-import path                                              from 'node:path';
-import {fileURLToPath}                                   from 'node:url';
+import {readSeatModelCatalog, unofferedDeclaration} from './seatModelCatalog.mjs';
+import path                                         from 'node:path';
+import {fileURLToPath}                              from 'node:url';
 
 const DEFAULT_AGENTOS_RUNTIME_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -195,6 +195,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   (`{state: 'copied' | 'present', source, destination, files}`). A seat with other repositories also
  *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, where a failed entry's
  *   `reason` is the failure's credential-redacted, bounded diagnostic.
+ *   Claude preparation may also return `repoTrust`: per-assignment file-projection observations
+ *   (`projected`, `trusted`, `distrusted`, or `unverified`), not native-session acceptance receipts.
  * @throws {Error} when `lifecycleService` / `agentId` is missing, the agent is unknown or has no GitHub
  *   PAT stored (refused before any checkout), the seat cannot reach the Memory Core it must use (see
  *   above; refused before any checkout), `managedRoot`
@@ -513,13 +515,13 @@ export async function startAgentProvisioned({
     // dispatcher's sanitizer's reach, and a clone error can echo the PAT.
     const
         repos     = [],
-        checkouts = [targetRepoRoot];
+        checkouts = [{...repo, repoPath: targetRepoRoot}];
 
     for (const {repoSlug, cloneUrl} of agent.metadata?.repos ?? []) {
         try {
             const {repoPath} = await ensureRepo({managedRoot, agentId, repoSlug, cloneUrl, credential: resolvedCredential, credentialOrigin, cloneRepo});
 
-            checkouts.push(repoPath);
+            checkouts.push({repoSlug, cloneUrl, repoPath});
             repos.push({repoSlug, state: 'prepared'})
         } catch (error) {
             repos.push({repoSlug, state: 'failed', reason: redactReadFailure(error) ?? 'no legible error'})
@@ -528,7 +530,7 @@ export async function startAgentProvisioned({
 
     // Every checkout the seat commits in carries its identity before anything runs there. One that holds another
     // identity keeps it, and the start stops: a disagreement is never masked by the launch env.
-    for (const checkout of checkouts) {
+    for (const {repoPath: checkout} of checkouts) {
         const outcome = await convergeGitIdentity({repoPath: checkout, identity: commitIdentity});
 
         if (outcome.state !== 'converged') {
@@ -567,6 +569,7 @@ export async function startAgentProvisioned({
         prepared = await prepareWorkspace({
             agent,
             targetRepoRoot,
+            assignedRepos      : checkouts,
             instanceRoot       : seatInstanceRoot,
             previousInstanceRoot,
             agentosRuntimeRoot,
@@ -647,6 +650,7 @@ export async function startAgentProvisioned({
     return {
         ...status,
         ...(prepared.seatInstructions ? {seatInstructions: prepared.seatInstructions} : {}),
+        ...(prepared.repoTrust ? {repoTrust: prepared.repoTrust} : {}),
         ...(memory.state !== 'none' ? {memoryImport: memory} : {}),
         ...(repos.length ? {repos} : {})
     }

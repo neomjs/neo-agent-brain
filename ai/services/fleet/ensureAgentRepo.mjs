@@ -1,7 +1,13 @@
 import {assertRoot, deriveAgentRepoPath} from './deriveAgentRepoPath.mjs';
 import {ensureSeatRoot}                  from './ensureSeatRoot.mjs';
-import {inspectAgentRepo}    from './inspectAgentRepo.mjs';
-import {provisionAgentRepo}  from './provisionAgentRepo.mjs';
+import {inspectAgentRepo}                from './inspectAgentRepo.mjs';
+import {provisionAgentRepo}              from './provisionAgentRepo.mjs';
+import {execFile}                        from 'node:child_process';
+import fs                                from 'node:fs/promises';
+import path                              from 'node:path';
+import {promisify}                       from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 /**
  * @summary Ensure an agent's managed repo checkout exists — the single Fleet Manager entry point that
@@ -60,4 +66,67 @@ export async function ensureAgentRepo({managedRoot, agentId, repoSlug, cloneUrl,
         });
 
     return {repoPath, state: inspection.state, action: result.action, cloned: result.cloned};
+}
+
+/**
+ * @summary Verify the origin and persisted trust root of an assigned checkout without changing it.
+ * Provisioning may reuse a checkout by presence alone; a native trust grant needs this stronger proof.
+ * A linked worktree is not allowed to grant trust to its unassigned main checkout. Git overrides are
+ * excluded, and failures never echo a remote URL or Git stderr, either of which may contain credentials.
+ * @param {Object} options
+ * @param {String} options.repoPath The assigned checkout's absolute path.
+ * @param {String} options.cloneUrl Its declared clone remote.
+ * @param {Function} [options.execute=execFileAsync] Node's promisified subprocess boundary; used only for Git reads.
+ * @returns {Promise<{state: String, root?: String, reason?: String}>}
+ */
+export async function verifyAgentRepoTrust({repoPath, cloneUrl, execute = execFileAsync}) {
+    const refused = reason => ({state: 'unverified', reason});
+
+    if (!path.isAbsolute(repoPath || '') || !remoteIdentity(cloneUrl)) {
+        return refused('the assignment has no verifiable checkout and remote')
+    }
+
+    try {
+        const root = await fs.realpath(repoPath);
+
+        if (root !== path.resolve(repoPath)) return refused('the checkout path crosses a symlink');
+
+        const
+            env                      = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
+            git                      = async args => (await execute('git', args, {cwd: root, env, timeout: 10000, maxBuffer: 65536})).stdout,
+            [top, origin, worktrees] = await Promise.all([
+                git(['rev-parse', '--show-toplevel']),
+                git(['remote', 'get-url', 'origin']),
+                git(['worktree', 'list', '--porcelain', '-z'])
+            ]),
+            main = worktrees.split('\0')[0];
+
+        if (await fs.realpath(top.trim()) !== root) return refused('the assigned path is not a repository root');
+        if (remoteIdentity(origin.trim()) !== remoteIdentity(cloneUrl)) return refused('the checkout origin differs from the assignment');
+        if (!main.startsWith('worktree ') || await fs.realpath(main.slice(9)) !== root) {
+            return refused('the worktree would grant trust to a different main checkout')
+        }
+
+        return {state: 'verified', root}
+    } catch {
+        return refused('the checkout identity could not be verified')
+    }
+}
+
+/** @summary Normalize a credential-free forge remote without guessing cross-transport equivalence. @private */
+function remoteIdentity(value) {
+    if (typeof value !== 'string' || /[\s?#]/.test(value)) return null;
+
+    const scp = /^git@([^/:]+):(.+)$/.exec(value);
+
+    try {
+        const url = new URL(scp ? `ssh://git@${scp[1]}/${scp[2]}` : value);
+
+        if (!['https:', 'ssh:'].includes(url.protocol) || url.password ||
+            (url.username && (url.protocol !== 'ssh:' || url.username !== 'git'))) return null;
+
+        return `${url.protocol}//${url.host}${url.pathname.replace(/\/$/, '').replace(/\.git$/, '')}`
+    } catch {
+        return null
+    }
 }

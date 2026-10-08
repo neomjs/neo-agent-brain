@@ -1,17 +1,21 @@
-import {test, expect}        from '@playwright/test';
-import fs                    from 'fs';
-import os                    from 'os';
-import path                  from 'path';
-import {deriveAgentRepoPath} from '../../../../ai/services/fleet/deriveAgentRepoPath.mjs';
-import {ensureAgentRepo}     from '../../../../ai/services/fleet/ensureAgentRepo.mjs';
+import {test, expect}                          from '@playwright/test';
+import {execFileSync}                          from 'node:child_process';
+import fs                                      from 'fs';
+import os                                      from 'os';
+import path                                    from 'path';
+import {deriveAgentRepoPath}                   from '../../../../ai/services/fleet/deriveAgentRepoPath.mjs';
+import {ensureAgentRepo, verifyAgentRepoTrust} from '../../../../ai/services/fleet/ensureAgentRepo.mjs';
 
 // Integration of the provisioning trio (derive → inspect → provision) over real temp-dir fixtures, with
 // the clone executor injected as a recording stub (no git binary) — inspectAgentRepo.spec's temp-dir
 // pattern + provisionAgentRepo.spec's clone stub, composed.
 
-let suiteRoot;
+let suiteRoot, gitConfigFile;
 
-test.beforeAll(() => { suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ensure-agent-repo-')); });
+test.beforeAll(() => {
+    suiteRoot     = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ensure-agent-repo-')));
+    gitConfigFile = path.join(suiteRoot, 'absent-global-git-config')
+});
 test.afterAll(()  => { fs.rmSync(suiteRoot, {recursive: true, force: true}); });
 
 const makeCloneStub = () => {
@@ -26,7 +30,91 @@ const pathFor = (managedRoot, agentId, repoSlug) => deriveAgentRepoPath({managed
 
 const URL = 'https://example.test/neomjs/neo.git';
 
+/** @private */
+function runFixtureGit(cwd, args) {
+    return execFileSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        stdio   : ['ignore', 'pipe', 'pipe'],
+        env     : {
+            PATH               : process.env.PATH,
+            GIT_CONFIG_GLOBAL  : gitConfigFile,
+            GIT_CONFIG_NOSYSTEM: '1',
+            GIT_TERMINAL_PROMPT: '0'
+        }
+    })
+}
+
+/** @private */
+function createTrustRepo(name, origin) {
+    const repoPath = path.join(suiteRoot, name);
+
+    fs.mkdirSync(repoPath);
+    runFixtureGit(repoPath, ['-c', 'init.defaultBranch=main', 'init', '--quiet']);
+    runFixtureGit(repoPath, ['remote', 'add', 'origin', origin]);
+
+    return repoPath
+}
+
+/** @summary Real fixture Git reads with an isolated Git config, without mutating the worker environment. */
+async function fixtureExecute(command, args, options) {
+    expect(command).toBe('git');
+    return {stdout: runFixtureGit(options.cwd, args)}
+}
+
 test.describe('ensureAgentRepo (Fleet Manager derive → inspect → provision orchestrator)', () => {
+    test('trust verifies an assigned repository root whose origin matches', async () => {
+        const repoPath = createTrustRepo('trust-matching-origin', URL),
+              result   = await verifyAgentRepoTrust({repoPath, cloneUrl: URL, execute: fixtureExecute});
+
+        expect(result).toEqual({state: 'verified', root: fs.realpathSync(repoPath)})
+    });
+
+    test('trust refuses wrong and credential-bearing origins without echoing remote values', async () => {
+        const
+            wrongOriginPath      = createTrustRepo('trust-wrong-origin', 'https://other.example/team/neo.git'),
+            credentialRemote     = 'https://x-access-token:fixture-secret-not-for-output@example.test/neomjs/neo.git',
+            credentialOriginPath = createTrustRepo('trust-credential-origin', credentialRemote),
+            results              = {
+                wrong     : await verifyAgentRepoTrust({repoPath: wrongOriginPath, cloneUrl: URL, execute: fixtureExecute}),
+                credential: await verifyAgentRepoTrust({repoPath: credentialOriginPath, cloneUrl: URL, execute: fixtureExecute})
+            };
+
+        expect(results.wrong).toEqual({state: 'unverified', reason: 'the checkout origin differs from the assignment'});
+        expect(results.credential).toEqual({state: 'unverified', reason: 'the checkout origin differs from the assignment'});
+        expect(JSON.stringify(results)).not.toContain('fixture-secret-not-for-output');
+        expect(JSON.stringify(results)).not.toContain(credentialRemote)
+    });
+
+    test('trust refuses a subdirectory or symlink instead of trusting a broader or redirected path', async () => {
+        const
+            repoPath     = createTrustRepo('trust-non-root', URL),
+            subdirectory = path.join(repoPath, 'nested'),
+            linkPath     = path.join(suiteRoot, 'trust-symlink');
+
+        fs.mkdirSync(subdirectory);
+        fs.symlinkSync(repoPath, linkPath, 'dir');
+
+        const [subdirectoryResult, symlinkResult] = await Promise.all([
+            verifyAgentRepoTrust({repoPath: subdirectory, cloneUrl: URL, execute: fixtureExecute}),
+            verifyAgentRepoTrust({repoPath: linkPath, cloneUrl: URL, execute: fixtureExecute})
+        ]);
+
+        expect(subdirectoryResult).toEqual({state: 'unverified', reason: 'the assigned path is not a repository root'});
+        expect(symlinkResult).toEqual({state: 'unverified', reason: 'the checkout path crosses a symlink'})
+    });
+
+    test('trust refuses a main-checkout root outside the assigned worktree', async () => {
+        const repoPath = createTrustRepo('trust-worktree-view', URL),
+              mainPath = createTrustRepo('trust-main-checkout', URL),
+              execute  = (command, args, options) => args[0] === 'worktree'
+                  ? Promise.resolve({stdout: `worktree ${mainPath}\0HEAD ${'0'.repeat(40)}\0\0worktree ${repoPath}\0\0`})
+                  : fixtureExecute(command, args, options);
+
+        const result = await verifyAgentRepoTrust({repoPath, cloneUrl: URL, execute});
+        expect(result).toEqual({state: 'unverified', reason: 'the worktree would grant trust to a different main checkout'});
+    });
+
     test('absent path → clones into the derived path and reports cloned', async () => {
         const clone = makeCloneStub(),
               args  = {managedRoot: suiteRoot, agentId: 'agent-absent', repoSlug: 'neomjs/neo'},
@@ -78,11 +166,11 @@ test.describe('ensureAgentRepo (Fleet Manager derive → inspect → provision o
 
     test('a missing managed root is created owner-only before the clone; its new ancestors keep the default mode', async () => {
         const
-            parent  = path.join(suiteRoot, 'fresh'),
-            root    = path.join(parent, 'agents'),
-            probe   = path.join(suiteRoot, 'default-mode-probe'),
-            modes   = [],
-            clone   = async () => { modes.push(fs.statSync(root).mode & 0o777) };
+            parent = path.join(suiteRoot, 'fresh'),
+            root   = path.join(parent, 'agents'),
+            probe  = path.join(suiteRoot, 'default-mode-probe'),
+            modes  = [],
+            clone  = async () => { modes.push(fs.statSync(root).mode & 0o777) };
 
         fs.mkdirSync(probe);
 
