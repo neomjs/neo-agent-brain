@@ -331,6 +331,22 @@ seat keeps one memory whichever checkout it opens and wherever a checkout moves
 honours the setting once the folder is trusted. The derivation still names the *old* directory,
 the source of the copy.
 
+Fleet also carries an assigned Claude repository's workspace-trust intent into its native
+project entry. It checks the checkout's actual origin and canonical Git root first, for the
+working repository and each successfully prepared secondary repository. A sibling directory
+is not an assignment, and a linked worktree cannot grant trust to a different main checkout.
+An existing explicit `false` stays false. Permission modes, hook approvals, MCP approvals and
+unrelated projects are preserved. Native trust enables the repository's existing trust-gated
+allow rules and additional directories; it does not replace those rules
+([Claude workspace trust](https://code.claude.com/docs/en/permissions#project-allow-rules-and-workspace-trust)).
+
+The Start result's `repoTrust` entries distinguish a file projection from existing trust,
+explicit distrust and an unverified checkout. They do not prove a native session consumed
+the file: retain the first-use check when qualifying an installed harness version. Fleet
+leaves legacy `.config.json` storage untouched, and a different native storage backend still
+needs its own consumption witness. The documented file recipient is `~/.claude.json` for
+Desktop and `<CLAUDE_CONFIG_DIR>/.claude.json` for the isolated CLI family.
+
 Codex keeps its native memory under one instance directory, `CODEX_HOME`, rather than a
 per-project directory. A live Codex seat exposes these surfaces:
 

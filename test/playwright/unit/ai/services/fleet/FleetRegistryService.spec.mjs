@@ -234,8 +234,8 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
             changes  = [],
             listener = FleetRegistryService.on('definitionChange', ({id, previous, next}) => changes.push({
                 id,
-                previous: previous && {harnessType: previous.harnessType, launchOwner: previous.launchOwner ?? null},
-                next    : next && {harnessType: next.harnessType, launchOwner: next.launchOwner ?? null},
+                previous : previous && {harnessType: previous.harnessType, launchOwner: previous.launchOwner ?? null},
+                next     : next && {harnessType: next.harnessType, launchOwner: next.launchOwner ?? null},
                 persisted: FleetRegistryService.readRegistry().has?.(id) ?? Boolean(FleetRegistryService.readRegistry()[id])
             }));
 
@@ -427,6 +427,27 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents['gpt-seat'].reasoningEffort, 'persisted').toBe('max');
     });
 
+    test('a Claude Desktop seat can declare and withdraw its effort without declaring a model', () => {
+        FleetRegistryService.defineAgent({githubUsername: 'desktop-effort', harnessType: 'claude-desktop', credential: PAT});
+
+        const declared = FleetRegistryService.configureAgent({id: 'desktop-effort', reasoningEffort: 'max'});
+
+        expect(declared).toMatchObject({harnessType: 'claude-desktop', reasoningEffort: 'max'});
+        expect(declared).not.toHaveProperty('model');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents['desktop-effort'].reasoningEffort).toBe('max');
+
+        const withdrawn = FleetRegistryService.configureAgent({id: 'desktop-effort', reasoningEffort: null});
+
+        expect(withdrawn).not.toHaveProperty('reasoningEffort');
+        expect(withdrawn).not.toHaveProperty('model');
+
+        const noModel = FleetRegistryService.configureAgent({id: 'desktop-effort', model: null});
+
+        expect(noModel).not.toHaveProperty('model');
+        expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).agents['desktop-effort'])
+            .not.toHaveProperty('model')
+    });
+
     test('a declaration the harness cannot read, or a value no harness names, refuses before writing', () => {
         FleetRegistryService.defineAgent({githubUsername: 'app-seat', harnessType: 'claude-desktop', credential: PAT});
         FleetRegistryService.defineAgent({githubUsername: 'cli-seat', harnessType: 'claude-code', credential: PAT});
@@ -434,7 +455,9 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         const before = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');
 
         expect(() => FleetRegistryService.configureAgent({id: 'app-seat', model: 'claude-opus-5-5'}))
-            .toThrow("FleetRegistryService.configureAgent: a 'claude-desktop' seat takes no declared model or reasoning effort: its harness chooses them itself.");
+            .toThrow("FleetRegistryService.configureAgent: a 'claude-desktop' seat takes no declared model: its harness chooses it itself.");
+        expect(() => FleetRegistryService.configureAgent({id: 'app-seat', model: 'claude-opus-5-5', reasoningEffort: 'max'}))
+            .toThrow("FleetRegistryService.configureAgent: a 'claude-desktop' seat takes no declared model: its harness chooses it itself.");
         expect(() => FleetRegistryService.configureAgent({id: 'cli-seat', model: 'opus" --dangerously'})).toThrow(/'model' must be one id/);
         expect(() => FleetRegistryService.configureAgent({id: 'cli-seat', reasoningEffort: 'Max Effort'})).toThrow(/'reasoningEffort' must be one id/);
         expect(() => FleetRegistryService.configureAgent({id: 'cli-seat', model: 5})).toThrow(/'model' must be one id/);
@@ -454,7 +477,17 @@ test.describe('Neo.ai.services.fleet.FleetRegistryService.configureAgent — the
         expect(FleetRegistryService.configureAgent({id: 'mover', harnessType: 'claude-code', model: 'opus', reasoningEffort: 'xhigh'}))
             .toMatchObject({harnessType: 'claude-code', model: 'opus', reasoningEffort: 'xhigh'});
         expect(FleetRegistryService.configureAgent({id: 'mover', mcpServers: null}), 'any other change keeps it').toMatchObject({model: 'opus', reasoningEffort: 'xhigh'});
-        expect(() => FleetRegistryService.configureAgent({id: 'mover', harnessType: 'claude-desktop', model: 'opus'})).toThrow(/takes no declared model/);
+
+        const desktop = FleetRegistryService.configureAgent({id: 'mover', harnessType: 'claude-desktop', reasoningEffort: 'max'});
+
+        expect(desktop).toMatchObject({harnessType: 'claude-desktop', reasoningEffort: 'max'});
+        expect(desktop).not.toHaveProperty('model');
+
+        const beforeRefusal = fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8');
+
+        expect(() => FleetRegistryService.configureAgent({id: 'mover', model: 'opus'}))
+            .toThrow("FleetRegistryService.configureAgent: a 'claude-desktop' seat takes no declared model: its harness chooses it itself.");
+        expect(fs.readFileSync(path.join(tmpDir, 'registry.json'), 'utf8')).toBe(beforeRefusal)
     });
 
     test('target grammar rejects every transport, secret, or authority-bearing shape without a write', () => {

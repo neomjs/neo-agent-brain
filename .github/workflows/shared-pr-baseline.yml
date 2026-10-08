@@ -21,7 +21,7 @@ jobs:
   baseline:
     name: Shared PR Baseline
     # A published Skills release, named by its tag and never by a commit SHA; dependabot moves the tag.
-    uses: neomjs/neo-agent-skills/.github/workflows/reusable-pr-baseline.yml@v0.1.29
+    uses: neomjs/neo-agent-skills/.github/workflows/reusable-pr-baseline.yml@v0.1.30
     # The roster tells the commit-authorship job whose commits are an agent's. The callee reads it at the
     # roster repository's `dev` (its `team_roster_ref` default), never from the pull request under review.
     with:
