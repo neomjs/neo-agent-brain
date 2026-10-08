@@ -18,18 +18,18 @@ import fs                              from 'fs';
 import os                              from 'os';
 import path                            from 'path';
 
-import Neo                          from 'neo.mjs/src/Neo.mjs';
-import * as core                    from 'neo.mjs/src/core/_export.mjs';
-import AiConfig                     from '../../../../ai/config.template.mjs';
-import FleetControlBridge           from '../../../../ai/services/fleet/FleetControlBridge.mjs';
-import FleetLifecycleService        from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
-import FleetManager                 from '../../../../ai/services/fleet/FleetManager.mjs';
-import McpLaunchAdmissionService    from '../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
-import ToolService                  from '../../../../ai/mcp/ToolService.mjs';
-import {dispatchFleetRequest}       from '../../../../ai/services/fleet/dispatchFleetRequest.mjs';
-import {generateOpenCodeSeatConfig} from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
+import Neo                               from 'neo.mjs/src/Neo.mjs';
+import * as core                         from 'neo.mjs/src/core/_export.mjs';
+import AiConfig                          from '../../../../ai/config.template.mjs';
+import FleetControlBridge                from '../../../../ai/services/fleet/FleetControlBridge.mjs';
+import FleetLifecycleService             from '../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import FleetManager                      from '../../../../ai/services/fleet/FleetManager.mjs';
+import McpLaunchAdmissionService         from '../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
+import ToolService                       from '../../../../ai/mcp/ToolService.mjs';
+import {dispatchFleetRequest}            from '../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+import {generateOpenCodeSeatConfig}      from '../../../../ai/services/fleet/generateOpenCodeSeatConfig.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
-import {startAgentProvisioned}      from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
+import {startAgentProvisioned}           from '../../../../ai/services/fleet/startAgentProvisioned.mjs';
 import {
     createLaunchRequest,
     parseLaunchCapability,
@@ -2553,7 +2553,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
     const ADMISSION = {generation: 'generation-1', plan: [{key: 'memory-core', enabled: true}]};
 
-    test('PRODUCTION COMPOSER: a Stop at any point of a managed Start is never undone by its reservation or activation; a later Start admits', async () => {
+    test('PRODUCTION COMPOSER: Stop cancels a pending managed Start before or after reservation; a later Start is fresh', async () => {
         const
             root     = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-launch-attempt-')),
             home     = path.join(root, 'seat', 'harness', 'claude-desktop'),
@@ -2562,7 +2562,7 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
             grants   = [],
             matrix   = {'memory-core': true, 'knowledge-base': true, 'neural-link': true, 'github-workflow': true, 'gitlab-workflow': false};
 
-        install({agents: {seat: {
+        const spawn = install({agents: {seat: {
             id            : 'seat',
             githubUsername: 'neo-opus-ada',
             harnessType   : 'claude-desktop',
@@ -2617,33 +2617,212 @@ test.describe('Neo.ai.services.fleet.FleetLifecycleService — native MCP launch
 
         // Stop while the checkout is still being prepared, before anything is reserved
         const checkoutGate = Promise.withResolvers(), inCheckout = Promise.withResolvers();
-        const early = start({ensureRepo: async () => { inCheckout.resolve(); await checkoutGate.promise; return {repoPath: checkout} }});
+        const early        = start({ensureRepo: async () => { inCheckout.resolve(); await checkoutGate.promise; return {repoPath: checkout} }});
 
         await inCheckout.promise;
-        expect(await FleetLifecycleService.stop('seat'), 'nothing runs yet').toMatchObject({success: false, state: 'stopped'});
+        expect(await FleetLifecycleService.stop('seat'), 'nothing runs yet').toMatchObject({success: true, state: 'stopped', canceledStarts: 1});
         checkoutGate.resolve();
-        await early;
+        const canceledBeforeReservation = await early;
 
-        expect(issuer.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'stop-requested'});
-        expect(await github(grants[0]['github-workflow'])).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+        expect(canceledBeforeReservation).toMatchObject({id: 'seat', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
+        expect(spawn.calls, 'the canceled checkout attempt never reaches the lifecycle spawn').toEqual([]);
+        expect(grants, 'no MCP reservation is created for a canceled pre-reservation attempt').toEqual([]);
+        expect(issuer.statusOf('seat').state).toBe('none');
         await FleetLifecycleService.stop('seat');
 
-        // Stop after the reservation, while the rows are being written
+        // Stop after reservation while the rows are being written: the grant remains refused, and the process never starts.
         const rowsGate = Promise.withResolvers(), inRows = Promise.withResolvers();
-        const late = start({beforePrepared: async () => { inRows.resolve(); await rowsGate.promise }});
+        const late     = start({beforePrepared: async () => { inRows.resolve(); await rowsGate.promise }});
 
         await inRows.promise;
         await FleetLifecycleService.stop('seat');
         rowsGate.resolve();
-        await late;
+        const canceledAfterReservation = await late;
 
-        expect(await github(grants[1]['github-workflow'])).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+        expect(canceledAfterReservation).toMatchObject({id: 'seat', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
+        expect(spawn.calls, 'the reserved but canceled attempt never reaches the lifecycle spawn').toEqual([]);
+        expect(issuer.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'stop-requested'});
+        expect(grants).toHaveLength(1);
+        expect(await github(grants[0]['github-workflow'])).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
         await FleetLifecycleService.stop('seat');
 
         // an explicit later Start is a fresh attempt
         await start();
-        expect(await github(grants[2]['github-workflow'])).toMatchObject({outcome: 'admitted', env: {GH_TOKEN: FIXTURE_PAT}});
+        expect(spawn.calls).toHaveLength(1);
+        expect(await github(grants[1]['github-workflow'])).toMatchObject({outcome: 'admitted', env: {GH_TOKEN: FIXTURE_PAT}});
         await FleetLifecycleService.stop('seat')
+    });
+
+    test('the seat-home queue cancels only its own non-Desktop Start before preparation or wake arming', async () => {
+        const
+            root      = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-queued-start-')),
+            ids       = ['seat-a', 'seat-b'],
+            repoPaths = Object.fromEntries(ids.map(id => [id, path.join(root, id, 'neomjs-neo')])),
+            agents    = Object.fromEntries(ids.map(id => [id, {
+                id,
+                githubUsername: id,
+                harnessType   : 'codex',
+                launchOwner   : 'fleet',
+                metadata      : {repo: {cloneUrl: `https://github.com/neomjs/${id}.git`, repoSlug: `neomjs/${id}`}},
+                seatHome      : path.join(root, id)
+            }])),
+            spawn        = install({agents}),
+            previous     = {
+                lifecycleService    : FleetManager.lifecycleService,
+                managedRoot         : FleetManager.managedRoot,
+                provisionAndStartFn : FleetManager.provisionAndStartFn,
+                wakeArmFn           : FleetManager.wakeArmFn,
+                presenceStateOptions: FleetManager.presenceStateOptions,
+                planeBase           : FleetManager.planeBase
+            },
+            barriers     = Object.fromEntries(ids.map(id => [id, {entered: Promise.withResolvers(), release: Promise.withResolvers()}])),
+            holds        = [],
+            starts       = [],
+            repoCalls    = [],
+            wakeCalls    = [];
+
+        Object.assign(FleetLifecycleService, {instanceRoot: root, harnessBinaryPaths: {codex: process.execPath}});
+        Object.assign(FleetManager, {
+            lifecycleService    : FleetLifecycleService,
+            managedRoot         : root,
+            presenceStateOptions: null,
+            planeBase           : null,
+            provisionAndStartFn : options => startAgentProvisioned({
+                ...options,
+                ensureRepo: async ({agentId}) => {
+                    repoCalls.push(agentId);
+                    return {repoPath: repoPaths[agentId]}
+                },
+                prepareWorkspace: async ({agent, targetRepoRoot, agentosRuntimeRoot}) => ({
+                    agentosRuntimeRoot: path.resolve(agentosRuntimeRoot),
+                    targetRepoRoot,
+                    instanceHome      : path.join(root, agent.id, 'harness', agent.harnessType),
+                    mcpMatrix         : {},
+                    mcpPlan           : []
+                }),
+                readModelCatalog   : async () => null,
+                resolveGitIdentity : async ({agent}) => ({state: 'derived', source: 'test', name: agent.id, email: `${agent.id}@example.test`}),
+                convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
+                importMemory       : async () => ({state: 'none'}),
+                proveForgeAccount  : async () => ({ok: true})
+            }),
+            wakeArmFn: async ({agent}) => { wakeCalls.push(agent.id); return null }
+        });
+
+        FleetManager.seatHomeHolds.clear();
+
+        try {
+            for (const id of ids) {
+                holds.push(FleetManager.withSeatHome(id, async () => {
+                    barriers[id].entered.resolve();
+                    await barriers[id].release.promise
+                }))
+            }
+            await Promise.all(ids.map(id => barriers[id].entered.promise));
+
+            starts.push(...ids.map(id => FleetManager.startAgent(id)));
+
+            const stop = await FleetManager.stopAgent('seat-a');
+
+            expect(stop).toMatchObject({success: true, id: 'seat-a', state: 'stopped', canceledStarts: 1});
+
+            ids.forEach(id => barriers[id].release.resolve());
+            const [canceled, unaffected] = await Promise.all(starts);
+            await Promise.all(holds);
+
+            expect(canceled).toMatchObject({id: 'seat-a', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
+            expect(unaffected).toMatchObject({id: 'seat-b', state: 'running'});
+            expect(repoCalls, 'the canceled queued attempt never begins checkout preparation').toEqual(['seat-b']);
+            expect(spawn.calls).toHaveLength(1);
+            expect(spawn.calls[0].opts.cwd).toBe(repoPaths['seat-b']);
+            expect(wakeCalls, 'only the unaffected launch reaches wake arming').toEqual(['seat-b']);
+        } finally {
+            ids.forEach(id => barriers[id].release.resolve());
+            await Promise.all(holds);
+            await Promise.allSettled(starts);
+            for (const id of ids) await FleetLifecycleService.stop(id);
+            FleetManager.seatHomeHolds.clear();
+            Object.assign(FleetManager, previous);
+            fs.rmSync(root, {recursive: true, force: true})
+        }
+    });
+
+    test('cancellation at the final spawn boundary leaves no child or process record', async () => {
+        const spawn    = install({agents: {seat: agentDef('seat')}}),
+              signal   = FleetLifecycleService.beginStart('seat'),
+              original = FleetLifecycleService.getSpawnFn;
+        let stopped;
+
+        FleetLifecycleService.getSpawnFn = () => {
+            stopped = FleetLifecycleService.stop('seat');
+            return spawn
+        };
+
+        try {
+            expect(FleetLifecycleService.start('seat', {startSignal: signal})).toMatchObject({canceled: true, pid: null});
+            await stopped;
+            expect(spawn.calls).toEqual([]);
+            expect(FleetLifecycleService.processes.has('seat')).toBe(false);
+        } finally {
+            FleetLifecycleService.getSpawnFn = original;
+            FleetLifecycleService.finishStart('seat', signal)
+        }
+    });
+
+    test('a canceled spawn cleanup cannot revoke the fresh Start that follows it', async () => {
+        const
+            spawn       = install({agents: {seat: agentDef('seat')}}),
+            revocations = [],
+            admission   = {
+                generation: 'generation-a',
+                holds     : () => false,
+                revoke(id, reason, {generation = null} = {}) {
+                    revocations.push({id, reason, ...(generation ? {generation} : {})});
+                    if (!generation || generation === this.generation) this.generation = null;
+                    return true
+                }
+            },
+            firstSignal = FleetLifecycleService.beginStart('seat');
+        let freshSignal = null,
+            stopRequest = null,
+            reentered   = false;
+
+        FleetLifecycleService.launchAdmission = admission;
+        FleetLifecycleService.spawnFn = (command, args, options) => {
+            const child = spawn(command, args, options);
+
+            if (!reentered) {
+                reentered   = true;
+                stopRequest = FleetLifecycleService.stop('seat');
+                freshSignal = FleetLifecycleService.beginStart('seat');
+                admission.generation = 'generation-b';
+            }
+
+            return child
+        };
+
+        try {
+            const canceled = FleetLifecycleService.start('seat', {startSignal: firstSignal});
+
+            expect(canceled).toMatchObject({id: 'seat', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
+            await stopRequest;
+            await new Promise(resolve => setImmediate(resolve));
+
+            expect(firstSignal.aborted).toBe(true);
+            expect(freshSignal.aborted, 'old-attempt cleanup must not cancel a later Start').toBe(false);
+            expect(admission.generation, 'old-attempt cleanup must not revoke a newer generation').toBe('generation-b');
+            expect(revocations).toEqual([{id: 'seat', reason: 'stop-requested'}]);
+
+            const later = FleetLifecycleService.start('seat', {startSignal: freshSignal});
+
+            expect(later).toMatchObject({id: 'seat', state: 'running'});
+            expect(spawn.calls).toHaveLength(2)
+        } finally {
+            FleetLifecycleService.finishStart('seat', firstSignal);
+            freshSignal && FleetLifecycleService.finishStart('seat', freshSignal);
+            await FleetLifecycleService.stop('seat');
+            FleetLifecycleService.launchAdmission = null
+        }
     });
 
     test('a Start activates its reserved generation once the seat runs and is leased: its credentials by their owners, the rest as injected, and a proof of the process', () => {

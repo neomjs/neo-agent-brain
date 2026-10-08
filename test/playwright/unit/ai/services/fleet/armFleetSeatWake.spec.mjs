@@ -171,6 +171,88 @@ test.describe('armFleetSeatWake — the address is the launch profile', () => {
 });
 
 test.describe('armFleetSeatWake — one route per seat, subscribed as the seat', () => {
+    test('Stop while the credential proof is pending prevents subscription and publication', async () => {
+        const controller = new AbortController();
+        let release;
+        const proof              = new Promise(resolve => { release = resolve }), calls = [];
+        const {result, armCalls} = arm({
+            startSignal : controller.signal,
+            createClient: () => ({
+                init    : () => proof,
+                callTool: async () => { calls.push('subscribe'); return {subscriptionId: 'WAKE_SUB:late'} },
+                close   : async () => { calls.push('close') }
+            })
+        });
+
+        controller.abort();
+        release({ok: true});
+
+        expect(await result).toMatchObject({state: 'unarmed', reason: 'start canceled by Stop'});
+        expect(calls).toEqual(['close']);
+        expect(armCalls).toEqual([]);
+    });
+
+    for (const phase of ['subscribe', 'publish']) {
+        test(`Stop during ${phase} withdraws only this attempt's route before arming settles`, async () => {
+            const controller = new AbortController(), calls = [], published = [];
+            let   subscribed = false;
+            const {result}   = arm({
+                startSignal : controller.signal,
+                createClient: () => ({
+                    init    : async () => ({ok: true}),
+                    callTool: async (name, args) => {
+                        calls.push(args);
+                        if (args.action === 'subscribe') {
+                            subscribed = true;
+                            if (phase === 'subscribe') controller.abort();
+                            return {subscriptionId: 'WAKE_SUB:late'}
+                        }
+                        if (args.action === 'unsubscribe') subscribed = false;
+                        return {subscriptions: subscribed ? [row({id: 'WAKE_SUB:late'})] : []}
+                    },
+                    close: async () => {}
+                }),
+                publish: async ({listSubscriptions}) => {
+                    const rows = await listSubscriptions();
+                    published.push(rows.map(row => row.id));
+                    if (phase === 'publish' && published.length === 1) controller.abort();
+                    return {armed: rows.length > 0, subscriptionIds: rows.map(row => row.id)}
+                }
+            });
+
+            expect(await result).toMatchObject({state: 'unarmed', reason: 'start canceled by Stop'});
+            expect(calls.filter(call => call.action === 'unsubscribe')).toEqual([
+                {action: 'unsubscribe', subscriptionId: 'WAKE_SUB:late'}
+            ]);
+            expect(published).toEqual(phase === 'publish' ? [['WAKE_SUB:late'], []] : [[]]);
+            expect(subscribed).toBe(false);
+        });
+    }
+
+    test('failed withdrawal retains the route id and an unresolved cleanup receipt', async () => {
+        const controller         = new AbortController();
+        const {result, armCalls} = arm({
+            startSignal : controller.signal,
+            createClient: () => ({
+                init    : async () => ({ok: true}),
+                callTool: async (name, args) => {
+                    if (args.action === 'subscribe') {
+                        controller.abort();
+                        return {subscriptionId: 'WAKE_SUB:uncertain'}
+                    }
+                    throw new Error('withdrawal unavailable')
+                },
+                close: async () => {}
+            })
+        });
+
+        expect(await result).toMatchObject({
+            state : 'unarmed', subscriptionId: 'WAKE_SUB:uncertain', cleanupUnresolved: true,
+            reason: 'wake arming failed: withdrawal unavailable'
+        });
+        expect(armCalls).toEqual([]);
+    });
+
     test('a seat is proven, subscribed to its own window, and published', async () => {
         const {result, plane, armCalls} = arm();
 

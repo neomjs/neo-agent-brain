@@ -1,8 +1,8 @@
-import crypto                     from 'node:crypto';
-import http                       from 'node:http';
-import path                       from 'node:path';
-import {isDeepStrictEqual}        from 'node:util';
-import Base                       from 'neo.mjs/src/core/Base.mjs';
+import crypto              from 'node:crypto';
+import http                from 'node:http';
+import path                from 'node:path';
+import {isDeepStrictEqual} from 'node:util';
+import Base                from 'neo.mjs/src/core/Base.mjs';
 import {
     LAUNCH_ADMISSION_OUTCOMES as OUTCOMES,
     LAUNCH_ADMISSION_REASONS  as REASONS,
@@ -10,7 +10,7 @@ import {
     LAUNCH_ADMISSION_STATES   as STATES
 }                                 from '../../../src/fleet/contract/launchAdmission.mjs';
 import {mcpCatalogFor, resolveMcpMatrix} from '../../../src/fleet/contract/mcpServers.mjs';
-import {launchRowEnvNames}        from './managedAgentWorkspacePlan.mjs';
+import {launchRowEnvNames}               from './managedAgentWorkspacePlan.mjs';
 import {
     LAUNCH_ADMISSION_MAX_BYTES,
     LAUNCH_ADMISSION_PATH,
@@ -113,8 +113,9 @@ class McpLaunchAdmissionService extends Base {
     grants = new Map()
 
     /**
-     * Per agent id, the seat-wide revocations asked for, whether or not a generation existed to take them:
-     * `{count, reason}` of the last one. A Start reads the count as it begins ({@link revocationMark}).
+     * Per agent id, the non-Stop seat-wide revocations asked for, whether or not a generation existed to take them:
+     * `{count, reason}` of the last one. A Start reads the count as it begins ({@link revocationMark}); Stop
+     * cancellation is carried by that Start's AbortSignal instead.
      * @member {Map<String, Object>} revocations
      * @private
      */
@@ -153,19 +154,28 @@ class McpLaunchAdmissionService extends Base {
      * generation. The registry the definition came from is followed from here on.
      *
      * The generation is published before anything is awaited, so every revocation from then on reaches it.
-     * What came before is caught up at once. A Stop asked for since the Start's `since` mark revokes it,
-     * and so does a definition write since the caller's read. A Start therefore answers for its whole
-     * attempt, not just the part after it reserved.
+     * What came before is caught up at once. Non-Stop seat-wide revocations since the caller's `since` mark
+     * revoke it; a `startSignal` also revokes this exact generation when its managed Start is canceled. A
+     * Start therefore answers for its whole attempt, not just the part after it reserved.
      * @param {Object} options
      * @param {Object} options.agent The raw registry definition.
      * @param {Object} [options.registry] Its registry, an Observable firing `definitionChange` that reads
      *     raw definitions through `getDefinition`.
      * @param {Number} [options.since] The {@link revocationMark} the Start read as it began.
+     * @param {AbortSignal} [options.startSignal] The owning managed Start's cancellation signal.
      * @returns {Promise<{generation: String, issuer: String, identity: String, grants: Object<String, String>}>}
      *     `grants` maps each enabled server to the capability its profile row carries; `identity` is the
      *     validated login the rows must name.
      */
-    async reserve({agent, registry = null, since = null}) {
+    async reserve({agent, registry = null, since = null, startSignal = null}) {
+        if (startSignal && (
+            typeof startSignal.aborted !== 'boolean' ||
+            typeof startSignal.addEventListener !== 'function' ||
+            typeof startSignal.removeEventListener !== 'function'
+        )) {
+            throw new TypeError('McpLaunchAdmissionService.reserve: startSignal must be an AbortSignal.')
+        }
+
         const identity = loginOf(agent);
 
         if (!isLaunchIdentity(identity)) {
@@ -214,15 +224,16 @@ class McpLaunchAdmissionService extends Base {
         // Published before anything is awaited, then caught up with what fired before it could hear it
         this.generations.set(agent.id, generation);
 
-        if (since !== null && this.revocationMark(agent.id) !== since) {
-            this.revoke(agent.id, this.revocations.get(agent.id).reason, {generation: generation.id})
-        }
-
-        registry?.getDefinition && this.onDefinitionChange({id: agent.id, next: registry.getDefinition(agent.id)});
-
         let issuer;
 
         try {
+            this.bindStartSignal(generation, startSignal);
+
+            if (since !== null && this.revocationMark(agent.id) !== since) {
+                this.revoke(agent.id, this.revocations.get(agent.id).reason, {generation: generation.id})
+            }
+
+            registry?.getDefinition && this.onDefinitionChange({id: agent.id, next: registry.getDefinition(agent.id)});
             issuer = await this.listen()
         } catch (error) {
             this.revoke(agent.id, REASONS.START_FAILED, {generation: generation.id});
@@ -286,6 +297,7 @@ class McpLaunchAdmissionService extends Base {
         }
 
         Object.assign(generation, {state: STATES.ACTIVE, activatedAt: new Date().toISOString(), owners: {...owners}, probe});
+        this.releaseStartSignal(generation);
         this.settle(generation);
 
         return this.statusOf(agentId)
@@ -293,9 +305,9 @@ class McpLaunchAdmissionService extends Base {
 
     /**
      * @summary End a seat's generation for good: no grant of it admits again, and the values and owners it
-     * held are dropped. Waiting redemptions are answered with the refusal. A revocation of the seat rather
-     * than of one generation is also counted when no generation takes it, so the reservation of a Start
-     * already under way catches it up ({@link reserve}).
+     * held are dropped. Waiting redemptions are answered with the refusal. A non-Stop seat-wide revocation
+     * is also counted when no generation takes it ({@link reserve}); Stop intent cancels through the
+     * managed Start's signal and does not advance that shared mark.
      * @param {String} agentId
      * @param {String} reason A `LAUNCH_ADMISSION_REASONS` value.
      * @param {Object} [options]
@@ -305,10 +317,13 @@ class McpLaunchAdmissionService extends Base {
     revoke(agentId, reason, {generation: id = null} = {}) {
         const generation = this.generations.get(agentId);
 
-        if (!id) this.revocations.set(agentId, {count: this.revocationMark(agentId) + 1, reason});
+        // Pending Starts carry their own signal. STOP_REQUESTED still revokes the active generation but
+        // does not advance the shared mark, which is reserved for non-Stop invalidations before reserve.
+        if (!id && reason !== REASONS.STOP_REQUESTED) this.revocations.set(agentId, {count: this.revocationMark(agentId) + 1, reason});
 
         if (!generation || (id && generation.id !== id) || generation.state === STATES.REVOKED) return false;
 
+        this.releaseStartSignal(generation);
         Object.assign(generation, {state: STATES.REVOKED, reason, revokedAt: new Date().toISOString(), probe: null, owners: {}});
         generation.proofs.clear();
         generation.servers.forEach(server => revokeServer(server, server.state === STATES.REVOKED ? server.reason : reason));
@@ -318,9 +333,49 @@ class McpLaunchAdmissionService extends Base {
     }
 
     /**
-     * @summary How many seat-wide revocations the seat has been asked for. A Start reads it as it begins and
-     * hands it to {@link reserve}, so a Stop asked for while the Start provisions, before any generation
-     * exists to take it, still ends that Start's admission.
+     * @summary Attach cancellation to this exact reserved generation before `reserve` yields.
+     * An already-aborted signal revokes synchronously; checking again after registration closes the
+     * edge where an abort lands as the listener is installed.
+     * @param {Object} generation The newly published reservation.
+     * @param {AbortSignal|null} signal The owning Start's signal, if managed by Fleet.
+     * @private
+     */
+    bindStartSignal(generation, signal) {
+        if (!signal) return;
+
+        const onAbort = () => this.revoke(generation.agentId, REASONS.STOP_REQUESTED, {generation: generation.id});
+
+        generation.startSignal        = signal;
+        generation.startAbortListener = onAbort;
+
+        if (signal.aborted) {
+            onAbort();
+            return
+        }
+
+        signal.addEventListener('abort', onAbort, {once: true});
+
+        if (signal.aborted) onAbort()
+    }
+
+    /**
+     * @summary Detach and forget the pending-Start signal once this generation activates or ends.
+     * @param {Object} generation A generation that no longer needs pending-Start cancellation.
+     * @private
+     */
+    releaseStartSignal(generation) {
+        if (generation.startSignal && generation.startAbortListener) {
+            generation.startSignal.removeEventListener('abort', generation.startAbortListener)
+        }
+
+        delete generation.startSignal;
+        delete generation.startAbortListener
+    }
+
+    /**
+     * @summary How many non-Stop seat-wide revocations the seat has been asked for. A Start reads it as it
+     * begins and hands it to {@link reserve}, so a plan or identity invalidation before a generation exists
+     * still ends that Start's admission. Stop cancellation travels on that Start's signal.
      * @param {String} agentId
      * @returns {Number}
      */
@@ -692,7 +747,7 @@ function record(ring, entry, limit) {
 function readBody(req) {
     return new Promise((resolve, reject) => {
         const chunks = [];
-        let size = 0;
+        let   size   = 0;
 
         req.on('data', chunk => {
             size += chunk.length;

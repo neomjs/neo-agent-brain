@@ -45,7 +45,7 @@ function makeLifecycle({
     inspectionError = null,
     profileInUse = false
 } = {}) {
-    const calls = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], start: [], status: []};
+    const calls     = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], signals: [], start: [], status: []};
     const admission = {
         revocationMark: id => {
             events?.push('mark');
@@ -63,12 +63,19 @@ function makeLifecycle({
     };
     return {
         calls,
+        beginStart: () => {
+            const signal = new AbortController().signal;
+            calls.signals.push(signal);
+            return signal
+        },
+        finishStart() {},
+        canceledStart      : id => ({id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}),
         credentialEnvVar   : 'GH_TOKEN',
         desktopProfileInUse: agent => { calls.profile.push(agent.id); return profileInUse },
         getLaunchAdmission : () => admission,
-        isRunning       : id => !!running[id],
-        status          : id => { calls.status.push(id); return {id, running: !!running[id], state: running[id] ? 'running' : 'stopped'}; },
-        getRegistry     : () => ({
+        isRunning          : id => !!running[id],
+        status             : id => { calls.status.push(id); return {id, running: !!running[id], state: running[id] ? 'running' : 'stopped'}; },
+        getRegistry        : () => ({
             getAgent         : id => agents[id] || null,
             getDefinition    : id => definitions[id] || null,
             resolveCredential: id => {
@@ -277,7 +284,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(events).toEqual(['credential', 'ensure', 'prepare', 'start']);
         // Runtime authority stays AgentOS-owned; the harness cwd stays the provisioned target root.
         expect(lifecycle.calls.start).toHaveLength(1);
-        expect(lifecycle.calls.start[0]).toEqual({id: 'a', opts: {cwd: '/managed/a/neomjs-neo', resolvedCredential: FIXTURE_PAT, resolvedResidentMcpEnv: {}, gitIdentity: {name: 'Seat Agent', email: 'seat@example.test'}}});
+        expect(lifecycle.calls.start[0]).toEqual({id: 'a', opts: {cwd: '/managed/a/neomjs-neo', resolvedCredential: FIXTURE_PAT, resolvedResidentMcpEnv: {}, gitIdentity: {name: 'Seat Agent', email: 'seat@example.test'}, startSignal: lifecycle.calls.signals[0]}});
         expect(status.state).toBe('running');
         expect(status.cwd).toBe('/managed/a/neomjs-neo');
         expect(status).not.toHaveProperty('repos');
@@ -435,7 +442,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(prepareWorkspace.calls).toHaveLength(0);
         expect(lifecycle.calls.start).toHaveLength(1);
         expect(lifecycle.calls.start[0].id).toBe('a');
-        expect(lifecycle.calls.start[0].opts).toEqual({resolvedCredential: FIXTURE_PAT});
+        expect(lifecycle.calls.start[0].opts).toEqual({resolvedCredential: FIXTURE_PAT, startSignal: lifecycle.calls.signals[0]});
     });
 
     test('an agent without a GitHub PAT is refused before any checkout, preparation or spawn', async () => {
@@ -550,6 +557,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.start).toEqual([{
             id  : 'a',
             opts: {
+                startSignal           : lifecycle.calls.signals[0],
                 cwd                   : '/managed/a/neomjs-neo',
                 resolvedCredential    : repositoryPat,
                 resolvedResidentMcpEnv: {},
@@ -613,6 +621,7 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
         expect(lifecycle.calls.start).toEqual([{
             id  : 'a',
             opts: {
+                startSignal           : lifecycle.calls.signals[0],
                 cwd                   : '/managed/a/neomjs-neo',
                 resolvedCredential    : 'ghp_seat_only',
                 resolvedResidentMcpEnv: {},
@@ -1573,6 +1582,7 @@ test.describe('startAgentProvisioned — a seat\'s Memory Core is the plane the 
         expect(lifecycle.calls.inspection[0].mcpTarget).toEqual({kind: 'tenant', resources: RESOURCES});
         // An existing explicit plane binding remains separate and is only re-proven.
         expect(lifecycle.calls.start[0].opts).toEqual({
+            startSignal           : lifecycle.calls.signals[0],
             cwd                   : '/managed/a/neomjs-neo',
             resolvedCredential    : 'ghp_seat_checkout',
             resolvedResidentMcpEnv: {},
