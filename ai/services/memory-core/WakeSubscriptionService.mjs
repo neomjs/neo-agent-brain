@@ -10,7 +10,7 @@ import logger                                                                   
 import CoalescingEngineService                                                                  from './CoalescingEngineService.mjs';
 import TurnPresenceService                                                                      from './TurnPresenceService.mjs';
 import WebhookDeliveryService                                                                   from './WebhookDeliveryService.mjs';
-import {DELIVERABLE_HARNESS_TARGET, wakeRouteWithdrawalReasonFor}                               from '../../daemons/wake/buildReceiverManifest.mjs';
+import {DELIVERABLE_HARNESS_TARGET, PULL_HARNESS_TARGET, wakeRouteWithdrawalReasonFor}          from '../../daemons/wake/buildReceiverManifest.mjs';
 import {buildWakeDigest, getHighestWakePriority}                                                from '../../daemons/wake/wakeDigestBuilder.mjs';
 import {HEARTBEAT_PULSE_ENTITY_PREFIX, HEARTBEAT_PULSE_ENTITY_TYPE, match, matchHeartbeatPulse} from './heartbeatPulseEvaluator.mjs';
 import {resolveResidentFamilyById}                                                              from '../graph/agentFamilyResolution.mjs';
@@ -1811,12 +1811,15 @@ class WakeSubscriptionService extends Base {
     }
 
     /**
-     * @summary Delivery truth for one subscription row: whether it survives receiver manifest
-     *     build, and the builder's own named reason when it does not.
+     * @summary Delivery truth for one subscription row: how it is delivered (`push`, through the
+     *     receiver manifest, or `pull`, by its seat's own poll), or the builder's named reason when
+     *     it is neither.
      *
      * This is a PROJECTION of the builder's skip decision, not a second authority: both surfaces
      * call `wakeRouteWithdrawalReasonFor`, so they cannot drift apart when a new skip condition is
-     * added. The row's `status` field describes the subscription lifecycle (active/degraded) and
+     * added. The one skip that still delivers is an active pull route: the builder never carries it
+     * because its seat polls it through `poll-digest`, and the row's `lastPollAt` is that route's
+     * evidence. The row's `status` field describes the subscription lifecycle (active/degraded) and
      * IS one of the axes — a degraded row is withdrawn at build time even on the deliverable
      * transport, which is exactly the state a seat is likeliest to be in when it goes looking for
      * why nothing arrives. Fields are additive: `routeDeliverable` is always present;
@@ -1826,13 +1829,18 @@ class WakeSubscriptionService extends Base {
      * @param {Object} opts
      * @param {String} [opts.status] The row's lifecycle status.
      * @param {String} opts.harnessTarget The row's transport value.
-     * @returns {Object} `{routeDeliverable: Boolean, routeWithdrawalReason: String?}`
+     * @returns {Object} `{routeDeliverable: Boolean, routeDelivery: 'push'|'pull'?, routeWithdrawalReason: String?}`
      */
     static routeDeliveryAnnotationFor({status, harnessTarget} = {}) {
         const withdrawalReason = wakeRouteWithdrawalReasonFor({status, harnessTarget});
 
-        if (withdrawalReason) return {routeDeliverable: false, routeWithdrawalReason: withdrawalReason};
-        return {routeDeliverable: true};
+        if (!withdrawalReason) return {routeDeliverable: true, routeDelivery: 'push'};
+
+        if (harnessTarget === PULL_HARNESS_TARGET && isActiveWakeSubscriptionStatus(status)) {
+            return {routeDeliverable: true, routeDelivery: 'pull'}
+        }
+
+        return {routeDeliverable: false, routeWithdrawalReason: withdrawalReason};
     }
 
     /**
