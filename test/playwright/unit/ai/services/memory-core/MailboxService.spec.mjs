@@ -7099,12 +7099,12 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         await seedHumanRecipients();
 
         const
-            low      = await ask('@operator', {priority: 'low'}),
-            normal   = await ask('@operator', {priority: 'normal'}),
-            highOld  = await ask('@operator', {priority: 'high'}),
-            unset    = await ask('@operator'),
-            highNew  = await ask('@operator', {priority: 'high'}),
-            sentAt   = {[low]: '2026-10-04T10:00:00.000Z', [normal]: '2026-10-04T10:01:00.000Z', [highOld]: '2026-10-04T10:02:00.000Z', [unset]: '2026-10-04T10:03:00.000Z', [highNew]: '2026-10-04T10:04:00.000Z'},
+            low       = await ask('@operator', {priority: 'low'}),
+            normal    = await ask('@operator', {priority: 'normal'}),
+            highOld   = await ask('@operator', {priority: 'high'}),
+            unset     = await ask('@operator'),
+            highNew   = await ask('@operator', {priority: 'high'}),
+            sentAt    = {[low]: '2026-10-04T10:00:00.000Z', [normal]: '2026-10-04T10:01:00.000Z', [highOld]: '2026-10-04T10:02:00.000Z', [unset]: '2026-10-04T10:03:00.000Z', [highNew]: '2026-10-04T10:04:00.000Z'},
             setSentAt = GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.sentAt', ?) WHERE id = ?`);
 
         for (const [id, at] of Object.entries(sentAt)) setSentAt.run(at, id);
@@ -7167,6 +7167,32 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         expect((await actAs('@operator', () => MailboxService.getMessage({messageId: taskId}))).body).toBe('which one?');
         await expect(actAs('@guest', () => MailboxService.getMessage({messageId: taskId})))
             .rejects.toThrow(/Unauthorized: message .* was not sent to or from @guest/);
+    });
+
+    test('#922 AC-1/AC-3: the open-questions read lists and counts an archived open Task, never a terminal one or another recipient\'s', async () => {
+        await seedHumanRecipients();
+
+        const
+            archived  = await ask('@operator'),
+            answered  = await ask('@operator'),
+            submitted = await ask('@operator', {task: {state: 'Submitted'}});
+
+        await ask('@guest');
+        await actAs('@operator', async () => {
+            await MailboxService.archiveMessage({messageId: archived});
+            await MailboxService.transitionTask({taskId: answered, newState: 'Completed'})
+        });
+
+        // the exact query `FleetControlBridge.fleetOwnQuestions` sends, one row per page
+        const
+            query = {box: 'inbox', status: 'all', includeArchived: true, taskStates: ['InputRequired', 'Submitted', 'Working'], taskOrder: 'priority-age', limit: 1},
+            first = await actAs('@operator', () => MailboxService.listMessages({...query, offset: 0})),
+            next  = await actAs('@operator', () => MailboxService.listMessages({...query, offset: 1}));
+
+        expect(first.totalCount).toBe(2);
+        expect([...first.messages, ...next.messages].map(row => row.messageId).sort()).toEqual([archived, submitted].sort());
+        // the archived one only reads through the archive opt-in
+        expect((await actAs('@operator', () => MailboxService.listMessages({...query, includeArchived: false}))).totalCount).toBe(1)
     });
 });
 

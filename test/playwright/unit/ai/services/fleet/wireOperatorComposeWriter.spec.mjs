@@ -141,6 +141,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         expect(bridge.composeWriter.getMessage).toBe(getMessage);
         expect(Object.hasOwn(bridge.composeWriter, 'markRead')).toBe(false);
         expect(Object.hasOwn(bridge.composeWriter, 'transitionTask')).toBe(false);
+        expect(Object.hasOwn(bridge.composeWriter, 'listMessages')).toBe(false);
 
         wireOperatorComposeWriter({addMessage: () => ({}), getMessage});
         expect(await FleetControlBridge.fleetOwnMessage({messageId: 'MESSAGE:m'})).toEqual({id: 'MESSAGE:m'});
@@ -171,7 +172,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
     });
 
     test('the own-inbox verbs reject a missing message id or a missing newState before the primitive runs', () => {
-        let invoked = false;
+        let   invoked   = false;
         const primitive = () => { invoked = true; return {} };
         wireOperatorComposeWriter({addMessage: () => ({}), getMessage: primitive, markRead: primitive, transitionTask: primitive});
 
@@ -186,6 +187,66 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         }
 
         expect(invoked).toBe(false)
+    });
+
+    test('the open questions read the viewer\'s own non-terminal Tasks, archived ones included, priority then age, as body-free rows with the complete count', async () => {
+        const calls = [];
+        wireOperatorComposeWriter({
+            addMessage  : () => ({}),
+            listMessages: args => {
+                calls.push(args);
+                return {totalCount: 3, messages: [{messageId: 'MESSAGE:q', subject: 'which way?', from: '@neo-gpt', to: '@tobiu', priority: 'high', task: {state: 'InputRequired'}, sentAt: '2026-10-08T22:00:00.000Z', bodyText: 'never on the wire'}]}
+            }
+        });
+
+        const answer = await FleetControlBridge.fleetOwnQuestions({limit: 1, to: '@mallory'});
+
+        // no identity-shaped field crosses: the seam reads under the transport-stamped viewer
+        expect(calls).toEqual([{box: 'inbox', status: 'all', includeArchived: true, taskStates: ['InputRequired', 'Submitted', 'Working'], taskOrder: 'priority-age', limit: 1, offset: 0}]);
+        expect(answer).toMatchObject({state: 'ok', reason: null, count: 3, page: {limit: 1, offset: 0, count: 1, hasMore: true}});
+        expect(answer.rows).toEqual([expect.objectContaining({messageId: 'MESSAGE:q', taskState: 'InputRequired', priority: 'high', from: '@neo-gpt'})]);
+        expect(JSON.stringify(answer)).not.toContain('never on the wire');
+
+        // the page is bounded like the mailbox mirror's
+        for (const [params, page] of [[{limit: 0}, {limit: 1, offset: 0}], [{limit: 999, offset: -4}, {limit: 200, offset: 0}], [{limit: '9'}, {limit: 50, offset: 0}]]) {
+            await FleetControlBridge.fleetOwnQuestions(params);
+            expect(calls.at(-1)).toMatchObject(page)
+        }
+
+        expect(await dispatchFleetRequest({method: 'fleetOwnQuestions', params: {limit: 1}, protocol: createFleetWireOffer()}))
+            .toMatchObject({ok: true, state: 'ok', result: {state: 'ok', count: 3}})
+    });
+
+    test('an unwired, failed or countless questions read answers unavailable with its reason, never an empty list or a zero', async () => {
+        expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'unavailable', reason: 'fleet: operator inbox listMessages not wired', count: null, rows: []});
+
+        wireOperatorComposeWriter({addMessage: () => ({}), listMessages: async () => { throw new Error('sqlite at /private/plane is locked') }});
+        const failed = await FleetControlBridge.fleetOwnQuestions();
+
+        expect(failed).toMatchObject({state: 'unavailable', reason: 'fleet: the open-questions read failed', count: null, rows: []});
+        expect(JSON.stringify(failed)).not.toContain('/private/plane');
+
+        wireOperatorComposeWriter({addMessage: () => ({}), listMessages: async () => ({messages: []})});
+        expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'unavailable', count: null})
+    });
+
+    test('open work carries the questions count from a one-row page of the same read, beside its source envelope untouched', async () => {
+        const original = FleetControlBridge.openWorkSource, calls = [];
+
+        try {
+            FleetControlBridge.openWorkSource = null;
+            expect((await FleetControlBridge.fleetOpenWork()).questions).toEqual({state: 'unavailable', count: null, reason: 'fleet: operator inbox listMessages not wired'});
+
+            wireOperatorComposeWriter({addMessage: () => ({}), listMessages: args => { calls.push(args); return {totalCount: 7, messages: [{messageId: 'MESSAGE:q'}]} }});
+            FleetControlBridge.openWorkSource = {readOpenWork: params => ({state: 'ok', coverage: 'complete', seats: {ada: {}}, params})};
+
+            expect(await FleetControlBridge.fleetOpenWork({seat: 'ada'})).toEqual({
+                state: 'ok', coverage: 'complete', seats: {ada: {}}, params: {seat: 'ada'}, questions: {state: 'ok', count: 7, reason: null}
+            });
+            expect(calls).toEqual([expect.objectContaining({limit: 1, offset: 0})])
+        } finally {
+            FleetControlBridge.openWorkSource = original
+        }
     });
 
     test('a refused move crosses the whole wire as its code and a fixed reason, in process and from a plane; a lost race as the primitive returned it', async () => {

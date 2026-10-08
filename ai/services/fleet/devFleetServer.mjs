@@ -358,7 +358,8 @@ async function boot() {
             addMessage    : args => planeClient.addMessage(args),
             getMessage    : args => planeClient.getMessage(args),
             markRead      : args => planeClient.markRead(args),
-            transitionTask: args => planeClient.transitionTask(args)
+            transitionTask: args => planeClient.transitionTask(args),
+            listMessages  : args => planeClient.listMessages(args)
         })
     } else {
         Promise.all([
@@ -383,7 +384,8 @@ async function boot() {
                 addMessage    : MailboxService.addMessage.bind(MailboxService),
                 getMessage    : MailboxService.getMessage.bind(MailboxService),
                 markRead      : MailboxService.markRead.bind(MailboxService),
-                transitionTask: MailboxService.transitionTask.bind(MailboxService)
+                transitionTask: MailboxService.transitionTask.bind(MailboxService),
+                listMessages  : MailboxService.listMessages.bind(MailboxService)
             })
         }).catch(error => console.warn('[fleet] activity source not wired:', error?.message ?? error))
     }

@@ -217,7 +217,7 @@ export function createFleetMailboxMirrorSnapshot({
         })
     }
 
-    const rows = Object.freeze(asArray(messages).filter(Boolean).map(message => createMirrorRow(message, observedAt)))
+    const rows = Object.freeze(asArray(messages).filter(Boolean).map(message => createFleetMailboxMirrorRow(message, observedAt)))
 
     return Object.freeze({
         capability: createMirrorCapability({
@@ -237,12 +237,13 @@ export function createFleetMailboxMirrorSnapshot({
 }
 
 /**
- * @summary Project one mailbox summary into a frozen, body-free mirror row (timestamped fact).
+ * @summary Project one mailbox summary into a frozen, body-free mirror row (timestamped fact). The
+ * operator's own open-questions read lists its Tasks in this same row.
  * @param {Object} message Mailbox summary from `MailboxService.listMessages()`.
  * @param {String} observedAt Fallback ISO timestamp.
  * @returns {Object}
  */
-function createMirrorRow(message, observedAt) {
+export function createFleetMailboxMirrorRow(message, observedAt) {
     return Object.freeze({
         messageId     : typeof message.messageId === 'string' ? message.messageId : null,
         subject       : normalizeSubject(message.subject),

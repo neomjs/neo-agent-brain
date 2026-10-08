@@ -9,8 +9,10 @@ import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from './deriveHarnessLaunc
 import {launchRefusalOf}                              from '../../../src/fleet/contract/launchAuthority.mjs';
 
 import {
+    createFleetMailboxMirrorRow,
     createFleetMailboxMirrorSnapshot,
-    DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT
+    DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT,
+    MAX_FLEET_MAILBOX_MIRROR_LIMIT
 } from './fleetMailboxMirrorAdapter.mjs';
 
 import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpitStatus.mjs';
@@ -58,6 +60,62 @@ function callOwnInbox(seam, primitive, messageId, args, invalid = null) {
     }
 
     return invalid ? {status: 'rejected', reason: `${primitive}: ${invalid}`} : seam[primitive](args)
+}
+
+/**
+ * The Task states that still wait for their recipient: an open question.
+ * @type {String[]}
+ */
+const OPEN_TASK_STATES = Object.freeze(['InputRequired', 'Submitted', 'Working']);
+
+/**
+ * @summary Reads the viewer's open questions through the operator-mailbox seam: its non-terminal A2A Tasks,
+ * archived ones included, highest priority then oldest first, with the complete count. The seam reads under
+ * the transport-stamped identity, so no identity crosses here. An unwired or failed read answers `unavailable`
+ * with its reason, never an empty list or a zero.
+ * @param {Object|null} seam The bridge's `composeWriter`.
+ * @param {{limit: Number, offset: Number}} page
+ * @returns {Promise<Object>} `{state, reason, count, rows, page}`.
+ */
+async function readOwnQuestions(seam, page) {
+    const unavailable = reason => ({state: 'unavailable', reason, count: null, rows: [], page: {...page, count: 0, hasMore: false}});
+
+    if (typeof seam?.listMessages !== 'function') {
+        return unavailable('fleet: operator inbox listMessages not wired')
+    }
+
+    let answer;
+
+    try {
+        answer = await seam.listMessages({
+            box            : 'inbox',
+            status         : 'all',
+            includeArchived: true,
+            taskStates     : OPEN_TASK_STATES,
+            taskOrder      : 'priority-age',
+            limit          : page.limit,
+            offset         : page.offset
+        })
+    } catch (error) {
+        console.error('[fleet] the open-questions read failed:', error);
+        return unavailable('fleet: the open-questions read failed')
+    }
+
+    if (!Number.isInteger(answer?.totalCount) || !Array.isArray(answer?.messages)) {
+        return unavailable('fleet: the open-questions read answered without a complete count')
+    }
+
+    const
+        observedAt = new Date().toISOString(),
+        rows       = answer.messages.filter(Boolean).map(message => createFleetMailboxMirrorRow(message, observedAt));
+
+    return {
+        state : 'ok',
+        reason: null,
+        count : answer.totalCount,
+        rows,
+        page  : {...page, count: rows.length, hasMore: page.offset + rows.length < answer.totalCount}
+    }
 }
 
 /**
@@ -1067,14 +1125,39 @@ class FleetControlBridge extends Base {
     /**
      * @summary READ-OBSERVE: each seat's open work as the open-work producer last observed it: the
      * pull requests it owns and the reviews requested of it. The source envelope passes through
-     * untouched; an unwired source is named as unavailable, never as no open work.
+     * untouched; an unwired source is named as unavailable, never as no open work. Beside it,
+     * `questions` counts the viewer's open questions from the same read {@link fleetOwnQuestions}
+     * lists, so the count and the list cannot disagree.
      * @param {Object} [params] `{seat}` narrows the answer to one seat.
-     * @returns {Object}
+     * @returns {Promise<Object>} the source envelope plus `questions: {state, count, reason}`.
      */
-    fleetOpenWork(params = {}) {
-        return typeof this.openWorkSource?.readOpenWork === 'function'
-            ? this.openWorkSource.readOpenWork(params)
-            : {state: 'unavailable', observedAt: null, coverage: 'unavailable', reason: 'fleet open-work source not wired', seats: {}};
+    async fleetOpenWork(params = {}) {
+        const
+            openWork = typeof this.openWorkSource?.readOpenWork === 'function'
+                ? await this.openWorkSource.readOpenWork(params)
+                : {state: 'unavailable', observedAt: null, coverage: 'unavailable', reason: 'fleet open-work source not wired', seats: {}},
+            // the count is complete on any page, so one row reads it
+            {state, count, reason} = await readOwnQuestions(this.composeWriter, {limit: 1, offset: 0});
+
+        return {...openWork, questions: {state, count, reason}}
+    }
+
+    /**
+     * @summary READ-OBSERVE: the operator's open questions, the viewer's own non-terminal A2A Tasks, highest
+     * priority then oldest first, with their complete count. Read under the TRANSPORT-STAMPED request identity
+     * through the operator-mailbox seam: `MailboxService.listMessages` decides whose inbox it reads, and an
+     * archived but open Task still counts. Rows are the mailbox mirror's body-free rows.
+     * @param {Object} [params] `{limit, offset}`, bounded like the mailbox mirror's page.
+     * @returns {Promise<Object>} `{state: 'ok', reason: null, count, rows, page}`, or `unavailable` with its
+     *     reason, `count: null` and no rows.
+     */
+    fleetOwnQuestions(params = {}) {
+        const {limit, offset} = params ?? {};
+
+        return readOwnQuestions(this.composeWriter, {
+            limit : Number.isInteger(limit) ? Math.min(Math.max(limit, 1), MAX_FLEET_MAILBOX_MIRROR_LIMIT) : DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT,
+            offset: Number.isInteger(offset) && offset > 0 ? offset : 0
+        })
     }
 
     /**
