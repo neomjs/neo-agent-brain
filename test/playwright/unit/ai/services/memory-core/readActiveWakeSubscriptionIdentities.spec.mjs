@@ -138,35 +138,49 @@ test.describe('readActiveWakeSubscriptionObservations — the redacted poll-rece
 
         expect(sql).toContain("MAX(json_extract(data, '$.properties.lastPollAt')) AS lastPollAt")
         expect(sql).toContain('GROUP BY agentIdentity')
+        // the pull columns read the route's trigger AND transport, never the stamp alone
+        expect(sql).toContain("(json_extract(data, '$.properties.trigger') = 'SENT_TO_ME' AND json_extract(data, '$.properties.harnessTarget') = 'none')")
+        expect(sql).toContain('AS pullRoute,')
+        expect(sql).toContain('AS pullRouteLastPollAt')
     })
 
     test('durable rows carry the stamp when present and null when no poll ever landed — absence stays absence', async () => {
         const service = graphServiceDouble({
             rows: [
-                {agentIdentity: '@neo-fable-clio', lastPollAt: '2026-08-14T15:00:00.000Z'},
-                {agentIdentity: '@neo-opus-ada',   lastPollAt: null}
+                {agentIdentity: '@neo-fable-clio', lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: 1,    pullRouteLastPollAt: '2026-08-14T15:00:00.000Z'},
+                {agentIdentity: '@neo-opus-vega',  lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: 1,    pullRouteLastPollAt: null},
+                {agentIdentity: '@neo-gpt-emmy',   lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: 0,    pullRouteLastPollAt: null},
+                {agentIdentity: '@neo-opus-ada',   lastPollAt: null,                       pullRoute: null, pullRouteLastPollAt: null}
             ]
         })
 
         expect(await readActiveWakeSubscriptionObservations({graphService: service})).toEqual([
-            {identity: '@neo-fable-clio', lastPollAt: '2026-08-14T15:00:00.000Z'},
-            {identity: '@neo-opus-ada',   lastPollAt: null}
+            {identity: '@neo-fable-clio', lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: {lastPollAt: '2026-08-14T15:00:00.000Z'}},
+            {identity: '@neo-opus-vega',  lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: {lastPollAt: null}},
+            {identity: '@neo-gpt-emmy',   lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: null},
+            {identity: '@neo-opus-ada',   lastPollAt: null,                       pullRoute: null}
         ])
     })
 
-    test('the cache-seam fallback aggregates like the SQL: the most recent stamp across an identity wins, and null never overwrites it', async () => {
-        const service = graphServiceDouble({
-            items: [
-                {label: 'WAKE_SUBSCRIPTION', properties: {status: 'active', agentIdentity: '@two-routes', lastPollAt: '2026-08-14T09:00:00.000Z'}},
-                {label: 'WAKE_SUBSCRIPTION', properties: {status: 'active', agentIdentity: '@two-routes', lastPollAt: '2026-08-14T15:00:00.000Z'}},
-                {label: 'WAKE_SUBSCRIPTION', properties: {status: 'active', agentIdentity: '@two-routes'}},
-                {label: 'WAKE_SUBSCRIPTION', properties: {status: 'active', agentIdentity: '@never-polled'}}
-            ]
-        })
+    test('the cache-seam fallback aggregates like the SQL: the most recent stamp across an identity wins, null never overwrites it, and the pull stamp reads pull routes only', async () => {
+        const
+            push    = {trigger: 'SENT_TO_ME',         harnessTarget: 'a2a-webhook'},
+            pull    = {trigger: 'SENT_TO_ME',         harnessTarget: 'none'},
+            task    = {trigger: 'TASK_STATE_CHANGED', harnessTarget: 'none'},
+            service = graphServiceDouble({
+                items: [
+                    {label: 'WAKE_SUBSCRIPTION', properties: {...pull, status: 'active', agentIdentity: '@two-routes', lastPollAt: '2026-08-14T09:00:00.000Z'}},
+                    {label: 'WAKE_SUBSCRIPTION', properties: {...push, status: 'active', agentIdentity: '@two-routes', lastPollAt: '2026-08-14T15:00:00.000Z'}},
+                    {label: 'WAKE_SUBSCRIPTION', properties: {...pull, status: 'active', agentIdentity: '@two-routes'}},
+                    {label: 'WAKE_SUBSCRIPTION', properties: {...task, status: 'active', agentIdentity: '@task-poller', lastPollAt: '2026-08-14T15:00:00.000Z'}},
+                    {label: 'WAKE_SUBSCRIPTION', properties: {...pull, status: 'active', agentIdentity: '@never-polled'}}
+                ]
+            })
 
         expect(await readActiveWakeSubscriptionObservations({graphService: service})).toEqual([
-            {identity: '@two-routes',   lastPollAt: '2026-08-14T15:00:00.000Z'},
-            {identity: '@never-polled', lastPollAt: null}
+            {identity: '@two-routes',   lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: {lastPollAt: '2026-08-14T09:00:00.000Z'}},
+            {identity: '@task-poller',  lastPollAt: '2026-08-14T15:00:00.000Z', pullRoute: null},
+            {identity: '@never-polled', lastPollAt: null,                       pullRoute: {lastPollAt: null}}
         ])
     })
 
