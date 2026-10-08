@@ -147,14 +147,14 @@ test.afterAll(() => {
 });
 
 test.describe('projectSeatHooks — the census of the real population', () => {
-    test('enumerates exactly the eight Agent-OS-owned hooks, split 4/2/2', () => {
+    test('enumerates exactly the nine Agent-OS-owned hooks, split 5/2/2', () => {
         const hooks = enumerateHooks(REPO_ROOT);
 
         // The count is asserted so a future re-read cannot silently re-conflate the executables with
-        // the config artifacts that leaf 6 also removed. The fourth Claude hook is the wake listener.
-        expect(hooks.length).toBe(8);
+        // the config artifacts that leaf 6 also removed. The fifth Claude hook is the harness-id guard.
+        expect(hooks.length).toBe(9);
 
-        expect(hooks.filter(hook => hook.harness === 'claude').length).toBe(4);
+        expect(hooks.filter(hook => hook.harness === 'claude').length).toBe(5);
         expect(hooks.filter(hook => hook.harness === 'codex').length).toBe(2);
         expect(hooks.filter(hook => hook.harness === 'kimi-code').length).toBe(2);
 
@@ -603,15 +603,15 @@ const KIMI_CONFIG = '[[hooks]]\nevent = "Stop"\ncommand = \'node ' +
     '"$(git rev-parse --show-toplevel)/.kimi-code/hooks/turnPresenceHook.mjs"\'\ntimeout = 5\n';
 
 test.describe('projectSeatHooks — the deleted config artifacts (#250 census kind 2)', () => {
-    test('the real census is 8 executables + 2 config artifacts, and never re-conflates them', () => {
+    test('the real census is 9 executables + 2 config artifacts, and never re-conflates them', () => {
         const
             configs    = enumerateConfigs(REPO_ROOT),
             projection = enumerateProjection(REPO_ROOT);
 
         // The counts are the ticket's own, asserted so a re-read cannot silently merge the kinds.
-        expect(enumerateHooks(REPO_ROOT).length).toBe(8);
+        expect(enumerateHooks(REPO_ROOT).length).toBe(9);
         expect(configs.length).toBe(2);
-        expect(projection.length).toBe(10);
+        expect(projection.length).toBe(11);
 
         expect(configs.map(entry => entry.target).sort())
             .toEqual(['.codex/hooks.json', '.kimi-code/hooks/turn-presence.example.toml']);
@@ -1367,8 +1367,14 @@ test.describe('the real Claude manifest — contract properties of the shipped f
     test('does NOT declare the Engine-owned PreToolUse guard', () => {
         // The custody line, asserted rather than trusted to a comment. Restating the Engine's tracked
         // entry here would make this repository the second author of it, and the two would drift with
-        // no arbiter — the reversal @neo-gpt-emmy rejected when deciding this fork.
-        expect('PreToolUse' in manifest.events).toBe(false);
-        expect(JSON.stringify(manifest.events)).not.toContain('rgReplaceGuardHook')
+        // no arbiter — the reversal @neo-gpt-emmy rejected when deciding this fork. The event itself is
+        // shared: a PreToolUse entry the Brain declares must run one of its own projected hook sources.
+        const sources = fs.readdirSync(path.join(REPO_ROOT, 'ai/scripts/lifecycle/hooks/claude'));
+
+        expect(JSON.stringify(manifest.events)).not.toContain('rgReplaceGuardHook');
+
+        (manifest.events.PreToolUse || []).flatMap(bucket => bucket.hooks).forEach(hook => {
+            expect(sources, hook.command).toContain(/\/\.claude\/hooks\/([^/"]+\.mjs)"/.exec(hook.command)?.[1])
+        })
     })
 });
