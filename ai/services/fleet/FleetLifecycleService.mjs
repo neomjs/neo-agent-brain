@@ -1148,7 +1148,7 @@ class FleetLifecycleService extends Base {
      * @param {String} id
      * @returns {Object} `{id, state, running, adopted, pid, startedAt, uptimeMs, exitCode, exitedAt,
      *     stderrBytes, authRequired, instanceHome, authHome, launchCommand, authCommand,
-     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, repos, sessionFolder}` — `authRequired`
+     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, repos, dependencies, sessionFolder}` — `authRequired`
      *     is the LIVE per-home
      *     auth-marker heuristic for curated launches (`true` = the operator-owned per-home login has
      *     not happened yet; recomputed each read so a completed login flips it without a restart);
@@ -1165,7 +1165,8 @@ class FleetLifecycleService extends Base {
      *     projection. `adopted` marks a
      *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
      *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`). `repos` is the
-     *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is.
+     *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is;
+     *     `dependencies` is each checkout's dependency outcome ({@link setDependencyOutcomes}), likewise.
      *     `sessionFolder` is where a running Claude Desktop seat's session opened ({@link sessionFolderFor}).
      *     `gitIdentity` is the identity the seat's last provisioned start resolved ({@link setGitIdentity}), also
      *     after a start it refused; `null` before the first. `seatModel` is what that start found of the seat's
@@ -1175,7 +1176,7 @@ class FleetLifecycleService extends Base {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, dependencies: null, sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
 
         this.refreshAdoptedSeat(record);
 
@@ -1212,6 +1213,7 @@ class FleetLifecycleService extends Base {
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
             } : null,
             repos          : record.repos ? record.repos.map(repo => ({...repo})) : null,
+            dependencies   : record.dependencies ? record.dependencies.map(row => ({...row})) : null,
             sessionFolder  : this.sessionFolderFor(record),
             gitIdentity    : this.gitIdentityOf(id),
             seatModel      : this.seatModelOf(id),
@@ -1288,12 +1290,39 @@ class FleetLifecycleService extends Base {
      * @param {Object} launch `{pid, startedAt}` from the status of that start.
      * @returns {Boolean} `true` when recorded; `false` for an unknown seat or a launch it has since replaced.
      */
-    setRepoOutcomes(id, repos, {pid, startedAt} = {}) {
+    setRepoOutcomes(id, repos, launch) {
+        return this.recordStartOutcome(id, 'repos', repos, launch)
+    }
+
+    /**
+     * @summary Records what the provisioned start behind a launch did about each checkout's dependencies, so
+     * {@link status} still says whether the seat's skills were installed, already there, unverified, or why not.
+     * Bound to that launch like {@link setRepoOutcomes}.
+     * @param {String} id
+     * @param {Object[]} dependencies `[{repoSlug, state: 'installed' | 'present' | 'unverified' | 'not-applicable' |
+     *     'failed', reason?}]`, reasons already redacted at the source.
+     * @param {Object} launch `{pid, startedAt}` from the status of that start.
+     * @returns {Boolean} `true` when recorded; `false` for an unknown seat or a launch it has since replaced.
+     */
+    setDependencyOutcomes(id, dependencies, launch) {
+        return this.recordStartOutcome(id, 'dependencies', dependencies, launch)
+    }
+
+    /**
+     * @summary Writes one per-repository outcome list onto the launch its start produced, never onto a later one.
+     * @param {String} id
+     * @param {'repos'|'dependencies'} field
+     * @param {Object[]} rows `[{repoSlug, state, reason?}]`; other fields are not recorded.
+     * @param {Object} launch `{pid, startedAt}`
+     * @returns {Boolean}
+     * @private
+     */
+    recordStartOutcome(id, field, rows, {pid, startedAt} = {}) {
         const record = this.processes.get(id);
 
         if (!record || record.pid !== pid || record.startedAt !== startedAt) return false;
 
-        record.repos = repos.map(({reason, repoSlug, state}) => ({repoSlug, state, ...(reason != null ? {reason} : {})}));
+        record[field] = rows.map(({reason, repoSlug, state}) => ({repoSlug, state, ...(reason != null ? {reason} : {})}));
         return true
     }
 

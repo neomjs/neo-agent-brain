@@ -2994,6 +2994,7 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
                 getInstanceRoot              : () => instanceRoot,
                 resolveResidentMcpEnvironment: () => options(makeAgent('claude-code')).residentMcpEnv,
                 getRegistry                  : () => ({getAgent: () => agent, getDefinition: () => agent, resolveCredential: () => 'ghp_fixture_only'}),
+                setDependencyOutcomes        : () => true,
                 start                        : (id, opts) => { started.push(id); return {id, running: true, state: 'running', cwd: opts.cwd} }
             }),
             start = async (agent, repoRoot) => startAgentProvisioned({

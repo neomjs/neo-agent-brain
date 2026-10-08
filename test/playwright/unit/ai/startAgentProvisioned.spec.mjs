@@ -12,13 +12,15 @@ import {supportsTenantMcpTarget}                   from '../../../../src/fleet/c
 const SEAT_GIT_IDENTITY = {state: 'derived', source: 'verified-primary', name: 'Seat Agent', email: 'seat@example.test'};
 
 /**
- * Every repo-bearing start resolves and converges the seat's Git identity. Cases about anything else get a resolved
- * identity and converged checkouts, so no case reads a forge or runs git.
+ * Every repo-bearing start resolves and converges the seat's Git identity and installs its checkouts' dependencies.
+ * Cases about anything else get a resolved identity, converged checkouts and installed dependencies, so no case reads
+ * a forge, runs git or runs npm.
  */
 function startAgentProvisioned(options) {
     return startProvisioned({
         resolveGitIdentity : async () => SEAT_GIT_IDENTITY,
         convergeGitIdentity: async () => ({state: 'converged', scope: 'local', action: 'kept'}),
+        installDependencies: async ({checkouts}) => checkouts.map(({repoSlug}) => ({repoSlug, state: 'present'})),
         ...options
     })
 }
@@ -45,7 +47,7 @@ function makeLifecycle({
     inspectionError = null,
     profileInUse = false
 } = {}) {
-    const calls     = {capability: [], credential: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], signals: [], start: [], status: []};
+    const calls     = {capability: [], credential: [], dependencyOutcomes: [], gitIdentity: [], inspection: [], mark: [], profile: [], repoOutcomes: [], reserve: [], revoke: [], signals: [], start: [], status: []};
     const admission = {
         revocationMark: id => {
             events?.push('mark');
@@ -112,6 +114,7 @@ function makeLifecycle({
         },
         resolveResidentMcpEnvironment: () => ({}),
         setRepoOutcomes              : (id, repos, launch) => { calls.repoOutcomes.push({id, repos, launch}); return true },
+        setDependencyOutcomes        : (id, dependencies, launch) => { calls.dependencyOutcomes.push({id, dependencies, launch}); return true },
         setGitIdentity               : (id, gitIdentity) => { calls.gitIdentity.push({id, gitIdentity}); return true },
         start                        : (id, opts) => { events?.push('start'); calls.start.push({id, opts}); return {id, running: true, state: 'running', cwd: opts?.cwd, pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}; }
     };
@@ -411,6 +414,95 @@ test.describe('startAgentProvisioned (Fleet Manager spawn-time repo provisioning
             expect(reason).not.toContain(secret);
             expect(reason.length).toBeLessThanOrEqual(240)
         })
+    });
+
+    test("every checkout's dependencies go in after its identity and before the preparation and spawn, and the rows stay readable", async () => {
+        const events = [],
+              agents = repoAgent('a');
+
+        agents.a.metadata.repos = [
+            {repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git'},
+            {repoSlug: 'neomjs/missing',         cloneUrl: 'https://github.com/neomjs/missing.git'}
+        ];
+
+        const lifecycle           = makeLifecycle({agents, events}),
+              installs            = [],
+              installDependencies = async args => {
+                  events.push('install');
+                  installs.push(args);
+
+                  return [{repoSlug: 'neomjs/neo', state: 'installed'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}]
+              },
+              status              = await startAgentProvisioned({
+                  lifecycleService: lifecycle,
+                  agentId         : 'a',
+                  managedRoot     : '/managed',
+                  ensureRepo      : async ({repoSlug}) => {
+                      events.push('ensure');
+                      if (repoSlug === 'neomjs/missing') throw new Error('ensureAgentRepo: clone failed');
+                      return {repoPath: `/managed/a/${repoSlug}`}
+                  },
+                  convergeGitIdentity: async () => { events.push('identity'); return {state: 'converged', scope: 'local', action: 'kept'} },
+                  installDependencies,
+                  prepareWorkspace   : makePrepareWorkspace(events),
+                  agentosRuntimeRoot : '/installed/neo'
+              });
+
+        expect(events).toEqual(['credential', 'ensure', 'ensure', 'ensure', 'identity', 'identity', 'install', 'prepare', 'start']);
+        // only the checkouts that exist, the working one first, under the Start's own signal
+        expect(installs).toEqual([{
+            checkouts: [
+                {...REPO, repoPath: '/managed/a/neomjs/neo'},
+                {repoSlug: 'neomjs/neo-agent-brain', cloneUrl: 'https://github.com/neomjs/neo-agent-brain.git', repoPath: '/managed/a/neomjs/neo-agent-brain'}
+            ],
+            // the receipt lives in the seat's folder, outside every checkout
+            seatRoot: '/managed/a',
+            signal  : lifecycle.calls.signals[0]
+        }]);
+        expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'installed'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'present'}]);
+        expect(lifecycle.calls.dependencyOutcomes).toEqual([{id: 'a', dependencies: status.dependencies, launch: {pid: 4242, startedAt: '2026-10-01T20:00:00.000Z'}}]);
+    });
+
+    test('a failed install is reported on the status, and the seat still starts', async () => {
+        const lifecycle = makeLifecycle({agents: repoAgent('a')}),
+              status    = await startAgentProvisioned({
+                  lifecycleService   : lifecycle,
+                  agentId            : 'a',
+                  managedRoot        : '/managed',
+                  ensureRepo         : makeEnsureRepo('/managed/a/neomjs/neo'),
+                  installDependencies: async () => [{repoSlug: 'neomjs/neo', state: 'failed', reason: 'npm is not on the PATH of the login shell /bin/zsh'}],
+                  prepareWorkspace   : makePrepareWorkspace(),
+                  agentosRuntimeRoot : '/installed/neo'
+              });
+
+        expect(lifecycle.calls.start).toHaveLength(1);
+        expect(status.state).toBe('running');
+        expect(status.dependencies).toEqual([{repoSlug: 'neomjs/neo', state: 'failed', reason: 'npm is not on the PATH of the login shell /bin/zsh'}]);
+    });
+
+    test('a Stop during the install is a cancel, not a failed row: nothing is prepared or spawned', async () => {
+        const lifecycle        = makeLifecycle({agents: repoAgent('a')}),
+              controller       = new AbortController(),
+              prepareWorkspace = makePrepareWorkspace(),
+              status           = await startAgentProvisioned({
+                  lifecycleService: lifecycle,
+                  agentId         : 'a',
+                  managedRoot     : '/managed',
+                  startSignal     : controller.signal,
+                  ensureRepo      : makeEnsureRepo('/managed/a/neomjs/neo'),
+                  // the install answers only after its npm exited, which runToExit guarantees
+                  installDependencies: async () => {
+                      controller.abort();
+                      return [{repoSlug: 'neomjs/neo', state: 'failed', reason: 'npm ci canceled'}]
+                  },
+                  prepareWorkspace,
+                  agentosRuntimeRoot : '/installed/neo'
+              });
+
+        expect(status).toEqual({id: 'a', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
+        expect(prepareWorkspace.calls).toHaveLength(0);
+        expect(lifecycle.calls.start).toHaveLength(0);
+        expect(lifecycle.calls.dependencyOutcomes).toHaveLength(0);
     });
 
     test('a working checkout that cannot be cloned still refuses the start, and no other repository is tried', async () => {

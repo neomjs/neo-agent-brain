@@ -1,5 +1,6 @@
 import {REMOTE_MCP_CREDENTIAL_ENV_VAR}                          from './mcpServers.mjs';
 import {ensureAgentRepo}                                        from './ensureAgentRepo.mjs';
+import {installSeatDependencies}                                from './installAgentRepoDependencies.mjs';
 import {LAUNCH_ADMISSION_CREDENTIALS, LAUNCH_ADMISSION_REASONS} from '../../../src/fleet/contract/launchAdmission.mjs';
 import {launchRefusalOf}                                        from '../../../src/fleet/contract/launchAuthority.mjs';
 import {prepareManagedAgentWorkspace}                           from './prepareManagedAgentWorkspace.mjs';
@@ -167,6 +168,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                              to {@link Neo.ai.services.fleet.prepareManagedAgentWorkspace}.
  * @param {Function} [options.importMemory]     The adopted seat's memory convergence before preparation;
  *                                              defaults to {@link module:ai/services/fleet/seatMemoryImport.importSeatMemory}.
+ * @param {Function} [options.installDependencies] `({checkouts, seatRoot, signal}) => Promise<Object[]>`, each checkout's
+ *                                              locked dependencies before the spawn; defaults to
+ *                                              {@link module:ai/services/fleet/installAgentRepoDependencies.installSeatDependencies}.
  * @param {Function} [options.resolveGitIdentity]  `({agent, credential}) => Promise<Object>`, the identity the seat's
  *                                                 commits carry; defaults to `resolveSeatGitIdentity`.
  * @param {Function} [options.convergeGitIdentity] `({repoPath, identity}) => Promise<Object>`, one checkout brought to
@@ -198,7 +202,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   so whoever starts the seat sees why it got, kept or lost one, and an adopted seat `memoryImport`
  *   (`{state: 'copied' | 'present', source, destination, files}`). A seat with other repositories also
  *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, where a failed entry's
- *   `reason` is the failure's credential-redacted, bounded diagnostic. Stop returns a finite
+ *   `reason` is the failure's credential-redacted, bounded diagnostic. A repo-bearing seat's status carries
+ *   `dependencies`, one row per checkout it works in, the working one first:
+ *   `[{repoSlug, state: 'installed' | 'present' | 'unverified' | 'not-applicable' | 'failed', reason?}]`. Stop returns a finite
  *   `{id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}` for this attempt;
  *   it never replaces a newer launch's record.
  *   Claude preparation may also return `repoTrust`: per-assignment file-projection observations
@@ -250,6 +256,7 @@ async function provisionAgent({
     ensureRepo = ensureAgentRepo,
     prepareWorkspace = prepareManagedAgentWorkspace,
     importMemory = importSeatMemory,
+    installDependencies = installSeatDependencies,
     resolveGitIdentity = resolveSeatGitIdentity,
     convergeGitIdentity = convergeSeatGitIdentity,
     proveForgeAccount = proveSeatForgeAccount,
@@ -588,6 +595,12 @@ async function provisionAgent({
 
     lifecycleService.setGitIdentity?.(agentId, gitIdentity);
 
+    // Each checkout's locked dependencies go in before anything runs there, so the seat's first session finds the
+    // skills its instructions name. Like an other repository's clone, no outcome stops the launch; a Stop during
+    // the install does, after `npm` has exited.
+    const dependencyRows = await installDependencies({checkouts, seatRoot: path.resolve(managedRoot, agentId), signal: startSignal});
+    startSignal.throwIfAborted();
+
     // Preparation is a mandatory gate for repo-bearing agents. The lifecycle owns the resolved
     // instance-root SSOT; the explicit option is only a test/per-tenant seam. A preparation throw
     // propagates, so `start` is never called over divergent or unsupported resident state.
@@ -694,15 +707,20 @@ async function provisionAgent({
     // the answer reaches whoever pressed Start; the launch record keeps it for every later read
     startSignal.throwIfAborted();
 
+    const launch = {pid: status?.pid, startedAt: status?.startedAt};
+
     if (repos.length) {
-        lifecycleService.setRepoOutcomes(agentId, repos, {pid: status?.pid, startedAt: status?.startedAt})
+        lifecycleService.setRepoOutcomes(agentId, repos, launch)
     }
+
+    lifecycleService.setDependencyOutcomes(agentId, dependencyRows, launch);
 
     return {
         ...status,
         ...(prepared.seatInstructions ? {seatInstructions: prepared.seatInstructions} : {}),
         ...(prepared.repoTrust ? {repoTrust: prepared.repoTrust} : {}),
         ...(memory.state !== 'none' ? {memoryImport: memory} : {}),
-        ...(repos.length ? {repos} : {})
+        ...(repos.length ? {repos} : {}),
+        dependencies: dependencyRows
     }
 }

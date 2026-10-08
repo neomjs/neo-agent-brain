@@ -2450,6 +2450,25 @@ test.describe('FleetLifecycleService.setRepoOutcomes — a start\'s per-reposito
         expect(FleetLifecycleService.setRepoOutcomes('nobody', [], launch)).toBe(false);
         expect(FleetLifecycleService.status('seat').repos).toBeNull()
     });
+
+    test("each checkout's dependency outcome rides the same launch record, beside the repositories' and bound the same way", () => {
+        FleetLifecycleService.processes.set('seat', {id: 'seat', state: 'running', ...launch});
+
+        expect(FleetLifecycleService.status('seat').dependencies).toBeNull();
+        expect(FleetLifecycleService.status('nobody').dependencies).toBeNull();
+        expect(FleetLifecycleService.setDependencyOutcomes('seat', [{repoSlug: 'x/y', state: 'installed'}], {pid: 4101, startedAt: launch.startedAt})).toBe(false);
+
+        expect(FleetLifecycleService.setDependencyOutcomes('seat', [
+            {repoSlug: 'neomjs/neo',             state: 'installed'},
+            {repoSlug: 'neomjs/neo-agent-brain', state: 'failed', reason: 'npm ci exited 1', repoPath: '/seat/neomjs/neo-agent-brain'}
+        ], launch)).toBe(true);
+
+        expect(FleetLifecycleService.status('seat').dependencies).toEqual([
+            {repoSlug: 'neomjs/neo',             state: 'installed'},
+            {repoSlug: 'neomjs/neo-agent-brain', state: 'failed', reason: 'npm ci exited 1'}
+        ]);
+        expect(FleetLifecycleService.status('seat').repos).toBeNull()
+    });
 });
 
 test.describe('FleetLifecycleService.status — where a running Claude Desktop seat\'s session opened', () => {
