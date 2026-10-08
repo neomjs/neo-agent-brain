@@ -593,9 +593,13 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         let refusal;
 
         // the real manager's own start gate, then the provisioned start behind it
-        FleetManager.lifecycleService = {getRegistry: () => ({
-            getAgent: id => id === 'released' ? {id, launchOwner: 'external', launchOwnerSince: '2026-10-02T00:00:00.000Z'} : {id}
-        })};
+        FleetManager.lifecycleService = {
+            beginStart: () => new AbortController().signal,
+            finishStart() {},
+            getRegistry: () => ({
+                getAgent: id => id === 'released' ? {id, launchOwner: 'external', launchOwnerSince: '2026-10-02T00:00:00.000Z'} : {id}
+            })
+        };
         FleetManager.managedRoot         = '/managed';
         FleetManager.provisionAndStartFn = async () => { throw refusal };
         FleetControlBridge.manager       = FleetManager;

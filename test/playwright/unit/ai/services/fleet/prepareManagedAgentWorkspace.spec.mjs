@@ -2985,14 +2985,36 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
 
     test('a real composed start returns the instruction decision on the status it hands its caller, with no logger injected', async () => {
         const
-            started   = [],
+            started        = [],
+            lifecycleEvents = [],
+            begunSignals   = [],
+            startSignals   = [],
             lifecycle = agent => ({
+                beginStart: id => {
+                    const signal = new AbortController().signal;
+
+                    lifecycleEvents.push(`begin:${id}`);
+                    begunSignals.push(signal);
+
+                    return signal
+                },
+                finishStart: (id, signal) => {
+                    lifecycleEvents.push(`finish:${id}`);
+                    expect(signal).toBe(begunSignals.at(-1))
+                },
+                canceledStart: id => ({id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}),
                 isRunning                    : () => false,
                 status                       : id => ({id, running: false, state: 'stopped'}),
                 getInstanceRoot              : () => instanceRoot,
                 resolveResidentMcpEnvironment: () => options(makeAgent('claude-code')).residentMcpEnv,
                 getRegistry                  : () => ({getAgent: () => agent, getDefinition: () => agent, resolveCredential: () => 'ghp_fixture_only'}),
-                start                        : (id, opts) => { started.push(id); return {id, running: true, state: 'running', cwd: opts.cwd} }
+                start                        : (id, opts) => {
+                    started.push(id);
+                    lifecycleEvents.push(`start:${id}`);
+                    startSignals.push(opts.startSignal);
+
+                    return {id, running: true, state: 'running', cwd: opts.cwd}
+                }
             }),
             start = async (agent, repoRoot) => startAgentProvisioned({
                 lifecycleService: lifecycle(agent),
@@ -3025,6 +3047,13 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
             seatInstructions: {state: 'not-applicable', reason: 'the Skills source declares no repository \'acme/app\''}
         });
         expect(started).toEqual(['composed-a', 'composed-b'])
+        expect(lifecycleEvents).toEqual([
+            'begin:composed-a', 'start:composed-a', 'finish:composed-a',
+            'begin:composed-b', 'start:composed-b', 'finish:composed-b'
+        ]);
+        expect(startSignals).toHaveLength(2);
+        expect(startSignals[0]).toBe(begunSignals[0]);
+        expect(startSignals[1]).toBe(begunSignals[1])
     });
 
     test('Codex Desktop gets AGENTS.md inside its nested Codex home', async () => {

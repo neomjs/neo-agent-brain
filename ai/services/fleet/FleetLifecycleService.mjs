@@ -519,6 +519,14 @@ class FleetLifecycleService extends Base {
     processes = new Map()
 
     /**
+     * Starts still preparing or arming, including those queued for a seat's home. Stop aborts these
+     * signals synchronously; finishing one attempt cannot remove another attempt's cancellation.
+     * @member {Map<String, Map<AbortSignal, AbortController>>} pendingStarts
+     * @private
+     */
+    pendingStarts = new Map()
+
+    /**
      * The Git identity each seat's last provisioned start resolved, keyed by agent id: what its commits carry, or why
      * the start refused. Kept apart from {@link processes} because a refused start leaves no launch record.
      * @member {Map<String,Object>} gitIdentities
@@ -544,7 +552,42 @@ class FleetLifecycleService extends Base {
     // ---- public API ---------------------------------------------------------
 
     /**
-     * Start an agent's harness process. Idempotent while running (returns current status).
+     * @summary Register a Start before its first asynchronous operation or queue wait.
+     * @param {String} id Seat id.
+     * @returns {AbortSignal} This attempt's Stop fence, shared by preparation, admission and arming.
+     */
+    beginStart(id) {
+        const controller = new AbortController();
+        let   pending    = this.pendingStarts.get(id);
+
+        if (!pending) this.pendingStarts.set(id, pending = new Map());
+        pending.set(controller.signal, controller);
+        return controller.signal
+    }
+
+    /**
+     * @summary Release exactly the completed attempt, preserving queued or newer Starts.
+     * @param {String} id Seat id.
+     * @param {AbortSignal} signal The signal returned by {@link beginStart}.
+     */
+    finishStart(id, signal) {
+        const pending = this.pendingStarts.get(id);
+
+        pending?.delete(signal);
+        if (pending?.size === 0) this.pendingStarts.delete(id)
+    }
+
+    /**
+     * @summary Answer for a canceled attempt without overwriting a newer launch's process record.
+     * @param {String} id Seat id.
+     * @returns {Object} Finite Start result; `canceled` distinguishes it from a stopped process.
+     */
+    canceledStart(id) {
+        return {id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}
+    }
+
+    /**
+     * @summary Start an agent's harness process. Idempotent while running (returns current status).
      * @param {String}  id          Registry agent id.
      * @param {Object} [opts={}]    Spawn options.
      * @param {String} [opts.cwd]   The child's working directory — the agent's provisioned repo
@@ -562,6 +605,7 @@ class FleetLifecycleService extends Base {
      *     snapshot instead of re-reading a mutable AiConfig path after preparation.
      * @param {Object} [opts.gitIdentity] `{name, email}` the seat commits as, injected as author and committer
      *     under the four reserved `GIT_AUTHOR_*` / `GIT_COMMITTER_*` slots.
+     * @param {AbortSignal} [opts.startSignal] The pending managed attempt's lifecycle-owned Stop fence.
      * @param {Object} [opts.launchAdmission] `{generation, plan, owners}`: a Claude Desktop seat's reserved
      *     launch admission, its bound MCP plan, and `owners.pat` / `owners.plane`, the owners Start selected for
      *     the seat's PAT and plane credential. Once the seat is launched and leased, the generation is activated
@@ -570,6 +614,7 @@ class FleetLifecycleService extends Base {
      * @returns {Object} status (see {@link status}).
      */
     start(id, opts = {}) {
+        if (opts.startSignal?.aborted) return this.canceledStart(id);
         if (this.isRunning(id)) return this.status(id);
 
         const priorRecord = this.processes.get(id);
@@ -826,7 +871,10 @@ class FleetLifecycleService extends Base {
 
         let child;
         try {
-            child = this.getSpawnFn()(resolvedCommand, args, spawnOptions);
+            const spawn = this.getSpawnFn();
+
+            if (opts.startSignal?.aborted) return this.canceledStart(id);
+            child = spawn(resolvedCommand, args, spawnOptions);
         } catch (error) {
             this.processes.set(id, {id, cwd: cwd ?? null, state: 'failed', pid: null, startedAt: null, exitCode: null, exitedAt: new Date().toISOString(), error: error.message});
             throw error;
@@ -868,10 +916,6 @@ class FleetLifecycleService extends Base {
             admissionGeneration: null
         };
         this.processes.set(id, record);
-
-        if (openCodeWakeRoute) {
-            this.observeOpenCodeWakeBootstrap(record, {env});
-        }
 
         // Best-effort version surface (the pin/verify half of the executable preflight): capture
         // the template-owned version-probe argv async onto the record — the status read surfaces
@@ -932,6 +976,14 @@ class FleetLifecycleService extends Base {
             }
         });
 
+        if (opts.startSignal?.aborted) {
+            opts.launchAdmission && this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.STOP_REQUESTED, {generation: opts.launchAdmission.generation});
+            void this.stop(id, {cancelPending: false});
+            return this.canceledStart(id)
+        }
+
+        if (openCodeWakeRoute) this.observeOpenCodeWakeBootstrap(record, {env});
+
         // A survivor no later server could re-adopt is not a launch: while this server still holds
         // its handle, it is stopped through the ordinary Stop, and the start fails with the reason.
         if (survivesFleetExit) {
@@ -942,7 +994,7 @@ class FleetLifecycleService extends Base {
             if (leaseFailure) {
                 record.failureReason = `the seat could not be leased (${leaseFailure}), so it was stopped`;
                 opts.launchAdmission && this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.LEASE_FAILED, {generation: opts.launchAdmission.generation});
-                void this.stop(id);
+                void this.stop(id, {cancelPending: false});
                 throw new Error(`FleetLifecycleService.start: ${record.failureReason} — agent '${id}'.`)
             }
 
@@ -952,7 +1004,7 @@ class FleetLifecycleService extends Base {
                     owners = opts.launchAdmission.owners ?? {},
                     slots  = {
                         [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
-                        [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                       : owners.plane
+                        [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
                     };
 
                 record.admissionGeneration = opts.launchAdmission.generation;
@@ -971,16 +1023,30 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * Gracefully stop an agent's process: `SIGTERM`, then `SIGKILL` after `sigkillTimeoutMs`.
+     * @summary Cancel pending Starts immediately, then gracefully stop an existing process:
+     * `SIGTERM`, then `SIGKILL` after `sigkillTimeoutMs`.
      * @param {String} id
+     * @param {Object} [options]
+     * @param {Boolean} [options.cancelPending=true] Internal cleanup stops the tracked process
+     *     without issuing another Stop intent against pending Starts or a newer admission.
      * @returns {Promise<Object>} `{success, id, state, cleanupUnresolved}`; the final field is true
-     * only when exact-profile Codex Desktop helper ownership remains unresolved.
+     * only when exact-profile Codex Desktop helper ownership remains unresolved. With no process,
+     * `canceledStarts` counts newly canceled attempts; a repeated Stop does not count them again.
      */
-    stop(id) {
+    stop(id, {cancelPending = true} = {}) {
+        let canceledStarts = 0;
+
+        for (const controller of cancelPending ? this.pendingStarts.get(id)?.values() ?? [] : []) {
+            if (!controller.signal.aborted) {
+                controller.abort(LAUNCH_ADMISSION_REASONS.STOP_REQUESTED);
+                canceledStarts++
+            }
+        }
+
         this.adoptLeasedSeats();
 
         // Stop intent ends the seat's launch admission before any signal, and a Stop that fails keeps it ended.
-        this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.STOP_REQUESTED);
+        if (cancelPending) this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.STOP_REQUESTED);
 
         const record = this.processes.get(id);
 
@@ -1020,7 +1086,7 @@ class FleetLifecycleService extends Base {
         }
 
         if (!record || !record.child || (record.state !== 'running' && !record.cleanupUnresolved)) {
-            return Promise.resolve({success: false, id, state: record?.state ?? 'stopped', cleanupUnresolved: Boolean(record?.cleanupUnresolved)});
+            return Promise.resolve({success: canceledStarts > 0, id, state: record?.state ?? 'stopped', cleanupUnresolved: Boolean(record?.cleanupUnresolved), ...(canceledStarts ? {canceledStarts} : {})});
         }
 
         const child = record.child;
