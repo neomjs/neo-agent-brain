@@ -126,6 +126,19 @@ function options(agent, repoName = agent.id) {
     return result
 }
 
+/** @summary A real assigned checkout, with Git's inherited configuration overrides excluded. */
+async function trustCheckout(repo, repoPath) {
+    await fs.mkdir(repoPath, {recursive: true});
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+
+    for (const args of [['init', '--quiet'], ['remote', 'add', 'origin', repo.cloneUrl]]) {
+        const result = spawnSync('git', args, {cwd: repoPath, env, encoding: 'utf8'});
+        expect(result.status, result.stderr).toBe(0);
+    }
+
+    return {...repo, repoPath}
+}
+
 /**
  * @summary A real checkout directory reached through a symlinked parent, leaving home containment intact.
  */
@@ -754,6 +767,115 @@ test.describe('managed workspace logical plan → host apply boundary', () => {
 });
 
 test.describe('prepareManagedAgentWorkspace', () => {
+    test('Claude repository trust follows the verified assigned checkout', async () => {
+        const repo  = {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'},
+              agent = {...makeAgent('claude-desktop'), metadata: {repo}},
+              opts  = options(agent);
+
+        const assigned = await trustCheckout(repo, opts.targetRepoRoot);
+        await prepareManagedAgentWorkspace({...opts, assignedRepos: [assigned]});
+
+        const config = await fs.readFile(path.join(opts.claudeConfigRoot, '.claude.json'), 'utf8')
+            .then(JSON.parse, error => {
+                if (error.code === 'ENOENT') return {};
+                throw error;
+            });
+
+        expect(config.projects?.[await fs.realpath(opts.targetRepoRoot)]?.hasTrustDialogAccepted).toBe(true);
+    });
+
+    for (const harnessType of ['claude-code', 'claude-desktop']) {
+        test(`Claude repository trust preserves distrust and grants only assigned roots (${harnessType})`, async () => {
+            const repo       = {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'},
+                  secondary  = {repoSlug: 'neomjs/brain', cloneUrl: 'https://github.com/neomjs/brain.git'},
+                  foreign    = {repoSlug: 'other/private', cloneUrl: 'https://github.com/other/private.git'},
+                  agent      = {...makeAgent(harnessType), metadata: {repo, repos: [secondary]}},
+                  opts       = options(agent),
+                  home       = path.join(instanceRoot, agent.id, 'harness', harnessType),
+                  configRoot = harnessType === 'claude-code' ? home : opts.claudeConfigRoot,
+                  configPath = path.join(configRoot, '.claude.json'),
+                  primary    = await trustCheckout(repo, opts.targetRepoRoot),
+                  other      = await trustCheckout(secondary, path.join(repoRoot, 'secondary')),
+                  unassigned = await trustCheckout(foreign, path.join(repoRoot, 'unassigned')),
+                  original   = {theme: 'dark', projects: {
+                      [primary.repoPath]: {hasTrustDialogAccepted: false, allowedTools: ['existing']},
+                      '/unrelated'      : {hasTrustDialogAccepted: true}
+                  }};
+
+            await fs.mkdir(configRoot, {recursive: true});
+            await fs.writeFile(configPath, JSON.stringify(original));
+
+            const input   = {...opts, assignedRepos: [primary, other, unassigned]},
+                  result  = await prepareManagedAgentWorkspace(input),
+                  content = await read(configPath),
+                  config  = JSON.parse(content),
+                  inode   = (await fs.stat(configPath)).ino;
+
+            expect(config).toEqual({...original, projects: {
+                ...original.projects, [other.repoPath]: {hasTrustDialogAccepted: true}
+            }});
+            expect(result.repoTrust.map(record => record.state)).toEqual(['distrusted', 'projected', 'unverified']);
+            expect(result.repoTrust[2].reason).toContain('not a current repository assignment');
+
+            await prepareManagedAgentWorkspace(input);
+            expect(await read(configPath)).toBe(content);
+            expect((await fs.stat(configPath)).ino).toBe(inode);
+        });
+    }
+
+    test('Claude repository trust refuses a mismatched origin without creating a grant', async () => {
+        const repo  = {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'},
+              agent = {...makeAgent('claude-desktop'), metadata: {repo}},
+              opts  = options(agent);
+
+        await trustCheckout({...repo, cloneUrl: 'https://github.com/other/checkout.git'}, opts.targetRepoRoot);
+        const result = await prepareManagedAgentWorkspace({...opts, assignedRepos: [{...repo, repoPath: opts.targetRepoRoot}]});
+
+        expect(result.repoTrust[0]).toMatchObject({state: 'unverified', reason: 'the checkout origin differs from the assignment'});
+        await expect(fs.access(path.join(opts.claudeConfigRoot, '.claude.json'))).rejects.toMatchObject({code: 'ENOENT'});
+    });
+
+    test('Claude repository trust preserves a concurrent native config write', async () => {
+        const repo       = {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'},
+              agent      = {...makeAgent('claude-desktop'), metadata: {repo}},
+              opts       = options(agent),
+              assigned   = await trustCheckout(repo, opts.targetRepoRoot),
+              configPath = path.join(opts.claudeConfigRoot, '.claude.json'),
+              newer      = JSON.stringify({projects: {[opts.targetRepoRoot]: {hasTrustDialogAccepted: false}}, theme: 'newer'});
+        let injected = false;
+
+        await fs.mkdir(opts.claudeConfigRoot, {recursive: true});
+        await fs.writeFile(configPath, JSON.stringify({theme: 'original'}));
+        const fileSystem = {...fs, writeFile: async (file, ...args) => {
+            if (!injected && String(file).includes('.neo-fleet-claude-trust-backup.json')) {
+                injected = true;
+                await fs.writeFile(configPath, newer);
+            }
+            return fs.writeFile(file, ...args)
+        }};
+
+        await expect(prepareManagedAgentWorkspace({...opts, assignedRepos: [assigned], fileSystem}))
+            .rejects.toThrow('changed during trust preparation');
+        expect(injected).toBe(true);
+        expect(await read(configPath)).toBe(newer);
+    });
+
+    test('Claude repository trust does not guess a legacy config storage target', async () => {
+        const repo     = {repoSlug: 'neomjs/neo', cloneUrl: 'https://github.com/neomjs/neo.git'},
+              agent    = {...makeAgent('claude-desktop'), metadata: {repo}},
+              opts     = options(agent),
+              assigned = await trustCheckout(repo, opts.targetRepoRoot),
+              legacy   = path.join(opts.claudeConfigRoot, '.claude', '.config.json');
+
+        await fs.mkdir(path.dirname(legacy), {recursive: true});
+        await fs.writeFile(legacy, '{"preserved":true}');
+        const result = await prepareManagedAgentWorkspace({...opts, assignedRepos: [assigned]});
+
+        expect(result.repoTrust[0].state).toBe('unverified');
+        expect(await read(legacy)).toBe('{"preserved":true}');
+        await expect(fs.access(path.join(opts.claudeConfigRoot, '.claude.json'))).rejects.toMatchObject({code: 'ENOENT'});
+    });
+
     test('codex-desktop NL/GW rows forward placement names without storing values', async () => {
         const opts = options(makeAgent('codex-desktop', {mcpServers: {
             'memory-core': false, 'knowledge-base': false, 'neural-link': true, 'github-workflow': true

@@ -1,6 +1,7 @@
 import {constants as fsConstants}                     from 'node:fs';
 import fs                                             from 'node:fs/promises';
 import {writeFileAtomic}                              from '../shared/atomicFileWrite.mjs';
+import {verifyAgentRepoTrust}                         from './ensureAgentRepo.mjs';
 import path                                           from 'node:path';
 import os                                             from 'node:os';
 import crypto                                         from 'node:crypto';
@@ -271,6 +272,7 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {String} [options.nodePath] Node executable used for installed MCP entrypoints.
  * @param {Object} [options.runtime=process] Host runtime facts for child execution mode.
  * @param {String} [options.claudeConfigRoot] Claude Desktop's shared Code-tab config root (host home by default).
+ * @param {Object[]} [options.repoTrust=[]] Assignment proofs resolved by the host composer, not by the portable plan.
  * @param {Object} [options.residentMcpEnv] Per-server resolved child environment supplied at Start.
  * @param {Object} [options.remoteMcpCapability] Existing non-secret installed-adapter proof.
  * @param {Object} [options.launchAdmission] `{issuer, identity, grants}`: a Claude Desktop seat's reserved
@@ -282,6 +284,7 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {Function} [options.log] Hydration logger.
  * @returns {Promise<{agentosRuntimeRoot: String, targetRepoRoot: String, instanceHome: String, mcpMatrix: Object, mcpPlan: Object[], hydration: Object, artifacts: Object[], seatInstructions: Object}>}
  *     `seatInstructions` is the decision about the seat's instruction file: `{state, reason, ignored?, homeFile?}`.
+ *     Optional `repoTrust` records report file projection outcomes, never native-session acceptance.
  * @throws {ManagedWorkspacePreparationError} For invalid plans/bindings, unsafe paths, unsupported
  *     capabilities, divergent content, or effect failures.
  */
@@ -314,6 +317,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
     nodePath = process.execPath,
     runtime = process,
     claudeConfigRoot = os.homedir(),
+    repoTrust = [],
     residentMcpEnv = {},
     remoteMcpCapability = null,
     launchAdmission = null,
@@ -406,6 +410,9 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         fileSystem
     });
 
+    const trust = await convergeClaudeRepositoryTrust({agent, instanceHome, claudeConfigRoot, repoTrust, fileSystem});
+    trust.artifact && artifacts.push(trust.artifact);
+
     // the seat's own .env, in its seat folder beside the clones, where the operator adds keys
     await ensureSeatEnvFile({seatHome: path.join(canonicalInstanceRoot, agent.id), fileSystem});
 
@@ -438,7 +445,8 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         })),
         hydration,
         artifacts,
-        seatInstructions  : seatInstructions.observation
+        seatInstructions  : seatInstructions.observation,
+        ...(trust.records.length ? {repoTrust: trust.records} : {})
     }
 }
 
@@ -480,10 +488,13 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * @param {String}  [options.claudeConfigRoot]    Claude Desktop's shared Code-tab config root.
  * @param {Object}  [options.residentMcpEnv]      Per-server resolved child environment supplied at Start.
  * @param {Object}  [options.launchAdmission]     A Claude Desktop seat's reserved launch admission.
+ * @param {Object[]} [options.assignedRepos=[]] Successfully prepared `{repoSlug, cloneUrl, repoPath}` entries;
+ *                                              only current assignments with independently verified roots may gain trust.
  * @param {Object}  [options.fileSystem]          Promise filesystem seam.
  * @param {Function}[options.log]                 Hydration logger.
  * @returns {Promise<{agentosRuntimeRoot: String, targetRepoRoot: String, instanceHome: String, mcpMatrix: Object, mcpPlan: Object[], hydration: Object, artifacts: Object[], seatInstructions: Object}>}
  *     `seatInstructions` is the decision about the seat's instruction file: `{state, reason, ignored?, homeFile?}`.
+ *     Optional `repoTrust` records report the verified assignment's file projection or refusal.
  * @throws {ManagedWorkspacePreparationError} for unsupported adapters or divergent owned content.
  * @see createManagedAgentWorkspacePlan
  * @see applyManagedAgentWorkspacePlan
@@ -504,6 +515,7 @@ export async function prepareManagedAgentWorkspace({
     mcpTarget = null,
     remoteMcpCapability = null,
     launchAdmission = null,
+    assignedRepos = [],
     fileSystem = fs,
     log = () => {}
 } = {}) {
@@ -535,6 +547,23 @@ export async function prepareManagedAgentWorkspace({
         throw unsupported(error.message)
     }
 
+    if (!Array.isArray(assignedRepos)) throw unsupported('assignedRepos must be an array of prepared checkouts');
+
+    const assignments = new Map([agent.metadata?.repo, ...(agent.metadata?.repos || [])]
+        .filter(Boolean).map(repo => [repo.repoSlug, repo])),
+          repoTrust = [];
+
+    if (['claude-code', 'claude-desktop'].includes(agent.harnessType)) {
+        for (const candidate of assignedRepos) {
+            const declared = assignments.get(candidate.repoSlug),
+                  proof    = declared && declared.cloneUrl === candidate.cloneUrl
+                      ? await verifyAgentRepoTrust(candidate)
+                      : {state: 'unverified', reason: 'the checkout is not a current repository assignment'};
+
+            repoTrust.push({repoSlug: candidate.repoSlug, repoPath: candidate.repoPath, ...proof})
+        }
+    }
+
     return applyManagedAgentWorkspacePlan({
         plan,
         targetRepoRoot,
@@ -545,6 +574,7 @@ export async function prepareManagedAgentWorkspace({
         nodePath,
         runtime,
         claudeConfigRoot,
+        repoTrust,
         residentMcpEnv,
         remoteMcpCapability,
         launchAdmission,
@@ -1566,6 +1596,97 @@ async function retireClaudeLocalScope({targetRepoRoot, instanceHome, claudeConfi
     await removeContentReceipt({receiptPath, trustedRoot: instanceHome, fileSystem});
 
     return retired
+}
+
+/**
+ * @summary Project verified repository assignments into Claude's documented project-trust file.
+ * This owns only absent `hasTrustDialogAccepted` values; explicit distrust and all other fields stay
+ * resident-owned. A projection is file evidence, never proof that a native session consumed it. Legacy
+ * `.config.json` storage is left untouched until its native import contract is established.
+ * @param {Object} options
+ * @param {Object} options.agent The prepared harness classification.
+ * @param {String} options.instanceHome The isolated harness home.
+ * @param {String} options.claudeConfigRoot Desktop's host config root.
+ * @param {Object[]} options.repoTrust Current assignment proofs, computed before host apply.
+ * @param {Object} options.fileSystem Promise filesystem seam.
+ * @returns {Promise<{artifact: Object|null, records: Object[]}>} Per-repository projection observations.
+ * @private
+ */
+async function convergeClaudeRepositoryTrust({agent, instanceHome, claudeConfigRoot, repoTrust, fileSystem}) {
+    if (!['claude-code', 'claude-desktop'].includes(agent.harnessType)) return {artifact: null, records: []};
+
+    const records  = repoTrust.map(record => ({...record})),
+          verified = records.filter(record => record.state === 'verified');
+
+    if (!verified.length) return {artifact: null, records};
+
+    const cli        = agent.harnessType === 'claude-code',
+          configRoot = cli ? instanceHome : claudeConfigRoot,
+          filePath   = path.join(configRoot, '.claude.json'),
+          legacyPath = path.join(configRoot, ...(cli ? [] : ['.claude']), '.config.json'),
+          ownedLabel = 'assigned repository workspace trust';
+
+    const legacy = await fileSystem.lstat(legacyPath).catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+    });
+
+    if (legacy) {
+        verified.forEach(record => Object.assign(record, {state: 'unverified', reason: 'legacy Claude config storage requires a native trust witness'}));
+        return {artifact: null, records}
+    }
+
+    await assertNoSymlinkSegments({rootPath: configRoot, targetPath: filePath, fileSystem, label: ownedLabel});
+    const source = await readOptionalText(filePath, fileSystem);
+    let parsed;
+
+    try {
+        parsed = source === null ? {} : JSON.parse(source);
+        for (const value of [parsed, parsed.projects]) {
+            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError()
+        }
+        for (const {root} of verified) {
+            const value = parsed.projects?.[root];
+            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError()
+        }
+    } catch {
+        throw divergentArtifact(filePath, ownedLabel, 'invalid Claude project config')
+    }
+
+    let changed = false;
+
+    for (const record of verified) {
+        const value = parsed.projects?.[record.root]?.hasTrustDialogAccepted;
+
+        if (value === undefined) {
+            parsed.projects ||= {};
+            parsed.projects[record.root] ||= {};
+            parsed.projects[record.root].hasTrustDialogAccepted = true;
+            record.state = 'projected';
+            changed = true
+        } else if (value === true || value === false) {
+            record.state = value ? 'trusted' : 'distrusted'
+        } else {
+            Object.assign(record, {state: 'unverified', reason: 'the existing trust value is not a boolean'})
+        }
+    }
+
+    if (changed) {
+        const backup = path.join(instanceHome, '.neo-fleet-claude-trust-backup.json');
+        await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: backup, fileSystem, label: ownedLabel});
+        await fileSystem.mkdir(instanceHome, {recursive: true, mode: 0o700});
+        if (source !== null) await publishTextAtomically({filePath: backup, content: source, fileSystem});
+        if (await readOptionalText(filePath, fileSystem) !== source) {
+            throw divergentArtifact(filePath, ownedLabel, 'changed during trust preparation; retry after the config writer settles')
+        }
+        await fileSystem.mkdir(configRoot, {recursive: true, mode: 0o700});
+        await publishTextAtomically({filePath, content: JSON.stringify(parsed, null, 2) + '\n', fileSystem})
+    }
+
+    return {
+        artifact: {path: filePath, status: changed ? WORKSPACE_ARTIFACT_STATES.UPDATED : WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: ownedLabel},
+        records
+    }
 }
 
 /** @private */
