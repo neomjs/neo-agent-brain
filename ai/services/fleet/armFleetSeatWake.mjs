@@ -48,11 +48,15 @@ export const GUI_WAKE_DISPATCH = Object.freeze({
  * @param {String} options.receiverBase The receiver's plane-facing base (`fleet.wakeReceiverBase`).
  * @param {String} options.manifestPath The receiver's route manifest (`fleet.wakeReceiverManifestPath`).
  * @param {Object} options.tenantService Resolves the seat's plane resources and credential.
+ * @param {AbortSignal} [options.startSignal] Pending Start fence. The caller holds the seat home
+ *     through this operation, so cancellation cleanup cannot withdraw a newer Start's subscription.
  * @param {Function} [options.createClient=createPlaneMailboxClient] Plane MCP client seam.
  * @param {Function} [options.armRoute=armSeatWakeRoute] Publish seam.
  * @param {Object} [options.logger=console]
  * @returns {Promise<Object|null>} `{state: 'ready'|'unarmed', reason, adapter, addressType,
  *     instanceAddress, subscriptionId}`, or `null` when no GUI wake applies to the family.
+ *     A canceled attempt whose withdrawal cannot be confirmed also returns `cleanupUnresolved: true`
+ *     and the candidate `subscriptionId` when known; it never reports that route ready or removed.
  */
 export async function armFleetSeatWake({
     agent,
@@ -61,6 +65,7 @@ export async function armFleetSeatWake({
     receiverBase,
     manifestPath,
     tenantService,
+    startSignal,
     createClient = createPlaneMailboxClient,
     armRoute     = armSeatWakeRoute,
     logger       = console
@@ -81,6 +86,8 @@ export async function armFleetSeatWake({
           unarmed = reason => ({state: 'unarmed', reason: redactReadFailure(reason), ...route}),
           login   = typeof agent.githubUsername === 'string' ? agent.githubUsername.trim().replace(/^@/, '') : '',
           target  = agent.mcpTarget;
+
+    if (startSignal?.aborted) return unarmed('start canceled by Stop');
 
     if (!login) return unarmed('the seat has no GitHub identity to subscribe as');
 
@@ -132,44 +139,73 @@ export async function armFleetSeatWake({
             expectedPlane   : stored.plane
         });
 
+        if (startSignal?.aborted) return unarmed('start canceled by Stop');
+
         if (!binding?.ok) return unarmed(`the seat's plane credential is not proven on this plane: ${binding?.reason ?? 'no reason given'}`);
     }
 
-    const client = createClient({baseUrl: plan.resources['memory-core'].url, credential});
+    const client  = createClient({baseUrl: plan.resources['memory-core'].url, credential});
+    const publish = () => armRoute({
+        listSubscriptions: async () => (await client.callTool('manage_wake_subscription', {action: 'list'}))?.subscriptions,
+        manifestPath,
+        tuple            : {identity, instanceAddress: address.instanceAddress, instanceType: address.addressType},
+        logger
+    });
+    let result, subscriptionId = null, subscriptionRequested = false;
+
+    // Subscribe may have completed remotely while Stop arrived. Reconcile the exact route before
+    // releasing the seat home; the publisher removes absent caller-owned IDs and preserves peers.
+    const withdrawCanceled = async () => {
+        if (subscriptionId) {
+            await client.callTool('manage_wake_subscription', {action: 'unsubscribe', subscriptionId});
+            await publish()
+        }
+        return unarmed('start canceled by Stop')
+    };
 
     try {
         const proof = await client.init({expectedIdentity: identity});
 
+        if (startSignal?.aborted) return unarmed('start canceled by Stop');
+
         if (!proof?.ok) return unarmed(`the seat credential did not prove ${identity}: ${proof?.reason ?? 'no reason given'}`);
 
-        const {subscriptionId} = await client.callTool('manage_wake_subscription', {
+        subscriptionRequested = true;
+        ({subscriptionId} = await client.callTool('manage_wake_subscription', {
             action               : 'subscribe',
             trigger              : 'SENT_TO_ME',
             filters              : {},
             harnessTarget        : 'a2a-webhook',
             harnessTargetMetadata: {...dispatch, url, ...address}
-        }) ?? {};
+        }) ?? {});
 
         if (!subscriptionId) return unarmed('the plane accepted the subscription without naming it');
+        if (startSignal?.aborted) return await withdrawCanceled();
 
-        const published = await armRoute({
-            listSubscriptions: async () => (await client.callTool('manage_wake_subscription', {action: 'list'}))?.subscriptions,
-            manifestPath,
-            tuple            : {identity, instanceAddress: address.instanceAddress, instanceType: address.addressType},
-            logger
-        });
+        const published = await publish();
+
+        if (startSignal?.aborted) return await withdrawCanceled();
 
         if (!published.armed) return unarmed(published.reason);
 
         // `armed` speaks for every route the seat owns; `ready` is a claim about this one.
-        return published.subscriptionIds?.includes(subscriptionId)
+        result = published.subscriptionIds?.includes(subscriptionId)
             ? {state: 'ready', reason: null, ...route, subscriptionId}
             : unarmed(`the publish carried no route for ${subscriptionId}`)
     } catch (error) {
-        return unarmed(`wake arming failed: ${error?.message ?? error}`)
+        return {
+            ...unarmed(`wake arming failed: ${error?.message ?? error}`),
+            ...(startSignal?.aborted && subscriptionRequested ? {cleanupUnresolved: true, subscriptionId} : {})
+        }
     } finally {
         await Promise.resolve(client.close?.()).catch(() => {})
     }
+
+    // Stop can arrive while session teardown is pending; the closed client cannot prove withdrawal.
+    if (startSignal?.aborted && result.state === 'ready') {
+        return {...result, state: 'unarmed', reason: 'start canceled by Stop', cleanupUnresolved: true}
+    }
+    return result
 }
 
 export default armFleetSeatWake;

@@ -1,17 +1,17 @@
-import Base                             from 'neo.mjs/src/core/Base.mjs';
-import FleetLifecycleService            from './FleetLifecycleService.mjs';
-import {armFleetSeatWake}               from './armFleetSeatWake.mjs';
-import {isOnInstance}                   from './provisionAgentRepo.mjs';
+import Base                                                     from 'neo.mjs/src/core/Base.mjs';
+import FleetLifecycleService                                    from './FleetLifecycleService.mjs';
+import {armFleetSeatWake}                                       from './armFleetSeatWake.mjs';
+import {isOnInstance}                                           from './provisionAgentRepo.mjs';
 import {REPO_FORGES, assertNoCheckoutCollision, assertRepoSlug} from './deriveAgentRepoPath.mjs';
-import {inspectFleetRepos}              from './inspectFleetRepos.mjs';
-import {launchRefusalOf}                from '../../../src/fleet/contract/launchAuthority.mjs';
-import {readFleetPresenceSnapshot}      from './fleetPresenceStateAdapter.mjs';
-import {readFleetThrottleStateSnapshot} from './fleetThrottleStateAdapter.mjs';
-import {readFleetWakeStateSnapshot}     from './fleetWakeStateAdapter.mjs';
-import {redactReadFailure}              from './redactReadFailure.mjs';
-import {resolveSeatGitIdentity}         from './seatGitIdentity.mjs';
-import {readSeatModelCatalog}           from './seatModelCatalog.mjs';
-import {startAgentProvisioned}          from './startAgentProvisioned.mjs';
+import {inspectFleetRepos}                                      from './inspectFleetRepos.mjs';
+import {launchRefusalOf}                                        from '../../../src/fleet/contract/launchAuthority.mjs';
+import {readFleetPresenceSnapshot}                              from './fleetPresenceStateAdapter.mjs';
+import {readFleetThrottleStateSnapshot}                         from './fleetThrottleStateAdapter.mjs';
+import {readFleetWakeStateSnapshot}                             from './fleetWakeStateAdapter.mjs';
+import {redactReadFailure}                                      from './redactReadFailure.mjs';
+import {resolveSeatGitIdentity}                                 from './seatGitIdentity.mjs';
+import {readSeatModelCatalog}                                   from './seatModelCatalog.mjs';
+import {startAgentProvisioned}                                  from './startAgentProvisioned.mjs';
 
 /**
  * @summary The one rule for a repository a seat clones: a slug that passes the checkout path's own rule
@@ -398,31 +398,58 @@ class FleetManager extends Base {
      * before anything runs. So is one whose identity the operator benched, when the participation read
      * answers; it is read again just before the spawn, and a bench recorded after that read lands on a
      * starting seat ({@link launchRefusalOf}). The start holds the seat's home until its harness is
-     * launched or refused ({@link withSeatHome}). A Stop asked for once it began, even while it waits for
-     * the seat's home, ends the launch admission it reserves.
+     * launched and armed or refused ({@link withSeatHome}). Stop cancels every already-pending attempt,
+     * including one still queued for the home; a later explicit Start gets a fresh signal.
+     * A ready route returned after Stop is retained as unresolved cleanup, never as a ready wake.
      * @param {String} agentId Registry agent id.
      * @returns {Promise<Object>} the agent's lifecycle status.
      */
     async startAgent(agentId) {
         this.assertStartPermitted('startAgent', agentId);
 
-        const admissionMark = this.getLifecycleService().getLaunchAdmission?.()?.revocationMark(agentId) ?? null;
+        const lifecycle     = this.getLifecycleService(),
+              startSignal   = lifecycle.beginStart(agentId),
+              admissionMark = lifecycle.getLaunchAdmission?.()?.revocationMark(agentId) ?? null;
 
-        const status = await this.withSeatHome(agentId, async () => {
-            // the bench is read inside the seat's home, so this start keeps its place in the seat's queue
-            this.assertStartPermitted('startAgent', agentId, await this.seatParticipation(agentId));
+        try {
+            return await this.withSeatHome(agentId, async () => {
+                startSignal.throwIfAborted();
+                const participation = await this.seatParticipation(agentId);
+                startSignal.throwIfAborted();
+                this.assertStartPermitted('startAgent', agentId, participation);
 
-            return this.getProvisionAndStartFn()({
-                lifecycleService : this.getLifecycleService(),
-                managedRoot      : this.getManagedRoot(),
-                planeBase        : this.planeBase,
-                readParticipation: () => this.seatParticipation(agentId),
-                admissionMark,
-                agentId
+                const status = await this.getProvisionAndStartFn()({
+                    lifecycleService : lifecycle,
+                    managedRoot      : this.getManagedRoot(),
+                    planeBase        : this.planeBase,
+                    readParticipation: () => this.seatParticipation(agentId),
+                    admissionMark,
+                    startSignal,
+                    agentId
+                });
+
+                startSignal.throwIfAborted();
+                if (status?.canceled) return status;
+
+                // Keep the home until a late subscription has been withdrawn after cancellation;
+                // otherwise that cleanup could remove the next Start's canonical subscription.
+                const armed = await this.armSeatWake(agentId, status, startSignal);
+
+                if (!startSignal.aborted) return armed;
+
+                let wakeRoute = armed?.wakeRoute;
+
+                if (wakeRoute?.state === 'ready') {
+                    wakeRoute = {...wakeRoute, state: 'unarmed', reason: 'start canceled by Stop', cleanupUnresolved: true}
+                }
+                return {...lifecycle.canceledStart(agentId), ...(wakeRoute ? {wakeRoute} : {})}
             })
-        });
-
-        return this.armSeatWake(agentId, status)
+        } catch (error) {
+            if (startSignal.aborted) return lifecycle.canceledStart(agentId);
+            throw error
+        } finally {
+            lifecycle.finishStart(agentId, startSignal)
+        }
     }
 
     /**
@@ -442,9 +469,10 @@ class FleetManager extends Base {
      * and the attached plane through {@link planeBase}, both injected by the composing entrypoint.
      * @param {String} agentId Registry agent id.
      * @param {Object} status The lifecycle status `startAgent` produced.
+     * @param {AbortSignal} [startSignal] The same lifecycle-owned pending attempt.
      * @returns {Promise<Object>} `status`, plus `wakeRoute` when a GUI wake applies to the seat.
      */
-    async armSeatWake(agentId, status) {
+    async armSeatWake(agentId, status, startSignal) {
         const
             lifecycle = this.getLifecycleService(),
             registry  = lifecycle.getRegistry(),
@@ -454,15 +482,18 @@ class FleetManager extends Base {
         let wakeRoute;
 
         try {
+            const tenantService = agent?.mcpTarget?.kind === 'tenant' || this.planeBase
+                ? await this.getTenantService() : null;
+
+            startSignal?.throwIfAborted();
             wakeRoute = await this.getWakeArmFn()({
                 agent,
-                instanceHome : status?.instanceHome,
-                planeBase    : this.planeBase,
-                receiverBase : options.wakeReceiverBase,
-                manifestPath : options.wakeReceiverManifestPath,
-                tenantService: agent?.mcpTarget?.kind === 'tenant' || this.planeBase
-                    ? await this.getTenantService()
-                    : null
+                startSignal,
+                instanceHome: status?.instanceHome,
+                planeBase   : this.planeBase,
+                receiverBase: options.wakeReceiverBase,
+                manifestPath: options.wakeReceiverManifestPath,
+                tenantService
             })
         } catch (error) {
             wakeRoute = {state: 'unarmed', reason: redactReadFailure(`wake arming failed: ${error?.message ?? error}`)}
@@ -471,7 +502,7 @@ class FleetManager extends Base {
         if (!wakeRoute) return status;
 
         // Arming can outlive the launch it was started for; the record takes it only from that launch.
-        lifecycle.setWakeRoute?.(agentId, wakeRoute, {pid: status?.pid, startedAt: status?.startedAt});
+        if (!startSignal?.aborted) lifecycle.setWakeRoute?.(agentId, wakeRoute, {pid: status?.pid, startedAt: status?.startedAt});
 
         return {...status, wakeRoute}
     }

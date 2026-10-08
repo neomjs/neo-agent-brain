@@ -2987,6 +2987,8 @@ test.describe('prepareManagedAgentWorkspace: the seat\'s instructions in its har
         const
             started   = [],
             lifecycle = agent => ({
+                beginStart: () => new AbortController().signal,
+                finishStart() {},
                 isRunning                    : () => false,
                 status                       : id => ({id, running: false, state: 'stopped'}),
                 getInstanceRoot              : () => instanceRoot,

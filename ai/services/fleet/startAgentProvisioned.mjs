@@ -78,6 +78,8 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
           released      = launchRefusalOf(definition),
           refusal       = released ?? launchRefusalOf(definition, participation);
 
+    startOptions?.startSignal?.throwIfAborted();
+
     if (refusal) {
         throw new Error(`startAgentProvisioned: agent '${agentId}' was ${refusal}; it was ${released ? 'released' : 'benched'} while its start was being prepared, so the harness is not spawned.`)
     }
@@ -181,9 +183,11 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *                                                 spawn checks the registry alone.
  * @param {Object}   [options.tenantService]     Remote tenant authority. Lazily imports the real
  *                                              singleton only for an opted-in remote seat.
- * @param {Number}   [options.admissionMark]    The launch admission's revocation mark, read where the managed
+ * @param {Number}   [options.admissionMark]    The non-Stop admission revocation mark, read where the managed
  *                                              Start began; omitted, this composer reads it before its first
  *                                              await.
+ * @param {AbortSignal} [options.startSignal] The lifecycle-owned pending attempt. Omitted, this
+ *                                              direct composer registers and finishes its own attempt.
  * @param {String}   [options.instanceRoot]     Explicit harness-home root; omitted ⇒ the lifecycle
  *                                              service's config-resolved `getInstanceRoot()` value.
  * @param {String}   [options.agentosRuntimeRoot] Installed AgentOS runtime root; defaults to the
@@ -194,7 +198,9 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   so whoever starts the seat sees why it got, kept or lost one, and an adopted seat `memoryImport`
  *   (`{state: 'copied' | 'present', source, destination, files}`). A seat with other repositories also
  *   carries `repos`: `[{repoSlug, state: 'prepared' | 'failed', reason?}]`, where a failed entry's
- *   `reason` is the failure's credential-redacted, bounded diagnostic.
+ *   `reason` is the failure's credential-redacted, bounded diagnostic. Stop returns a finite
+ *   `{id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}` for this attempt;
+ *   it never replaces a newer launch's record.
  *   Claude preparation may also return `repoTrust`: per-assignment file-projection observations
  *   (`projected`, `trusted`, `distrusted`, or `unverified`), not native-session acceptance receipts.
  * @throws {Error} when `lifecycleService` / `agentId` is missing, the agent is unknown or has no GitHub
@@ -208,7 +214,34 @@ async function spawnPermitted({lifecycleService, registry, agentId, startOptions
  *   or a checkout holds another (`FLEET_SEAT_GIT_IDENTITY_MISSING` / `_UNKNOWN` / `_MISMATCH`, no spawn), or the
  *   seat's launch authority was released, or its identity benched, while preparation ran ({@link spawnPermitted}).
  */
-export async function startAgentProvisioned({
+export async function startAgentProvisioned(options = {}) {
+    const {lifecycleService, agentId} = options;
+
+    if (!lifecycleService) throw new Error("startAgentProvisioned: 'lifecycleService' is required.");
+    if (!agentId)          throw new Error("startAgentProvisioned: 'agentId' is required.");
+
+    const ownAttempt  = !options.startSignal,
+          startSignal = options.startSignal ?? lifecycleService.beginStart(agentId);
+
+    try {
+        startSignal.throwIfAborted();
+        const status = await provisionAgent({...options, startSignal});
+        return startSignal.aborted ? lifecycleService.canceledStart(agentId) : status
+    } catch (error) {
+        if (startSignal.aborted) return lifecycleService.canceledStart(agentId);
+        throw error
+    } finally {
+        if (ownAttempt) lifecycleService.finishStart(agentId, startSignal)
+    }
+}
+
+/**
+ * @summary Prepare and launch under the caller's lifecycle-owned pending attempt.
+ * @param {Object} options The public composer's options plus its registered `startSignal`.
+ * @returns {Promise<Object>} The prepared seat's status.
+ * @private
+ */
+async function provisionAgent({
     lifecycleService,
     agentId,
     managedRoot,
@@ -224,6 +257,7 @@ export async function startAgentProvisioned({
     readParticipation = null,
     tenantService = null,
     admissionMark = null,
+    startSignal,
     instanceRoot,
     agentosRuntimeRoot = DEFAULT_AGENTOS_RUNTIME_ROOT,
     nodePath
@@ -303,12 +337,11 @@ export async function startAgentProvisioned({
         throw new Error(`startAgentProvisioned: 'agentosRuntimeRoot' must be an absolute path for agent '${agentId}'.`)
     }
 
-    // A Claude Desktop seat's launch admission answers for this whole attempt. Its mark is read before
-    // anything is awaited, so a Stop while the seat is still provisioning ends the admission reserved below.
+    // Non-Stop admission invalidations retain their mark; Stop is owned by the lifecycle signal.
     const
-        desktopRows = Boolean(repo) && agent.harnessType === 'claude-desktop',
-        admission   = desktopRows ? lifecycleService.getLaunchAdmission() : null,
-        stopMark    = admission ? admissionMark ?? admission.revocationMark(agentId) : null;
+        desktopRows    = Boolean(repo) && agent.harnessType === 'claude-desktop',
+        admission      = desktopRows ? lifecycleService.getLaunchAdmission() : null,
+        admissionSince = admission ? admissionMark ?? admission.revocationMark(agentId) : null;
 
     // Resolve the resident child envelope and seat PAT before any checkout/config mutation.
     // The same resolved envelope names the rendered slots and supplies the eventual spawn.
@@ -330,6 +363,7 @@ export async function startAgentProvisioned({
             catalog     = await readModelCatalog({agent, instanceRoot: instanceRoot ?? lifecycleService.getInstanceRoot?.(), lifecycleService}),
             unavailable = unofferedDeclaration(catalog, agent);
 
+        startSignal.throwIfAborted();
         if (catalog?.stillRunning) {
             throw Object.assign(new Error(`startAgentProvisioned: agent '${agentId}' cannot start: ${catalog.reason}. Nothing was cloned or configured and the harness did not start; start it again once that process has ended.`), {code: 'FLEET_SEAT_HOME_IN_USE'})
         }
@@ -355,12 +389,13 @@ export async function startAgentProvisioned({
 
         await readOffered();
 
-        return spawnPermitted({lifecycleService, registry, agentId, readParticipation, startOptions: {resolvedCredential}});
+        return spawnPermitted({lifecycleService, registry, agentId, readParticipation, startOptions: {resolvedCredential, startSignal}});
     }
 
     // The identity the seat's commits carry, resolved before anything is cloned or bound: without one, every commit
     // would name whoever the host's Git config names.
     const gitIdentity = await resolveGitIdentity({agent, credential: resolvedCredential});
+    startSignal.throwIfAborted();
 
     if (gitIdentity.state === 'missing' || gitIdentity.state === 'unknown' || gitIdentity.state === 'mismatch') {
         lifecycleService.setGitIdentity?.(agentId, gitIdentity);
@@ -399,6 +434,7 @@ export async function startAgentProvisioned({
         planeOwner                   = null;
 
     const activeTenantService = remote ? tenantService ?? (await import('./FleetTenantService.mjs')).default : null;
+    startSignal.throwIfAborted();
 
     if (target?.kind === 'tenant') {
         remotePlan = activeTenantService.resolveMcpResources(target.tenantId);
@@ -417,6 +453,7 @@ export async function startAgentProvisioned({
             mainCheckout: agentosRuntimeRoot,
             nodePath
         });
+        startSignal.throwIfAborted();
 
         const expectedIdentity = expectedAgentIdentity(agent);
         const readiness        = await activeTenantService.probeSeatCredential({
@@ -424,6 +461,7 @@ export async function startAgentProvisioned({
             credential: resolvedMcpCredential,
             expectedIdentity
         });
+        startSignal.throwIfAborted();
 
         if (!tenantProvesSeat(readiness, expectedIdentity)) {
             throw new Error(`startAgentProvisioned: remote MCP credential readiness failed for agent '${agentId}'.`)
@@ -448,6 +486,7 @@ export async function startAgentProvisioned({
             mainCheckout: agentosRuntimeRoot,
             nodePath
         });
+        startSignal.throwIfAborted();
 
         if (!stored) {
             const binding = await activeTenantService.storeSeatPlaneCredential({
@@ -456,6 +495,7 @@ export async function startAgentProvisioned({
                 credential: resolvedCredential,
                 ifAbsent  : true
             });
+            startSignal.throwIfAborted();
 
             stored = activeTenantService.resolveSeatPlaneCredential(storedArgs);
 
@@ -476,6 +516,7 @@ export async function startAgentProvisioned({
             expectedIdentity,
             expectedPlane: stored.plane
         });
+        startSignal.throwIfAborted();
 
         if (!readiness?.ok) {
             throw new Error(`startAgentProvisioned: agent '${agentId}' cannot use its plane at ${placement.endpoint}: ${readiness?.reason ?? 'the readiness probe failed'}.`)
@@ -508,6 +549,7 @@ export async function startAgentProvisioned({
             credentialOrigin,
             cloneRepo
         });
+    startSignal.throwIfAborted();
 
     // The seat's other repositories go beside the working checkout, with the same PAT. One that fails is
     // reported on the status and the launch goes on: the working checkout is the seat's cwd and its gate,
@@ -526,12 +568,14 @@ export async function startAgentProvisioned({
         } catch (error) {
             repos.push({repoSlug, state: 'failed', reason: redactReadFailure(error) ?? 'no legible error'})
         }
+        startSignal.throwIfAborted();
     }
 
     // Every checkout the seat commits in carries its identity before anything runs there. One that holds another
     // identity keeps it, and the start stops: a disagreement is never masked by the launch env.
     for (const {repoPath: checkout} of checkouts) {
         const outcome = await convergeGitIdentity({repoPath: checkout, identity: commitIdentity});
+        startSignal.throwIfAborted();
 
         if (outcome.state !== 'converged') {
             lifecycleService.setGitIdentity?.(agentId, {...gitIdentity, state: 'mismatch'});
@@ -561,13 +605,15 @@ export async function startAgentProvisioned({
     // A Claude Desktop seat's profile rows carry one launch grant per enabled server, reserved before the rows
     // are written. The lifecycle activates them once the seat runs and is leased; a Start that fails before
     // that revokes them, so a row written here never admits a child of a seat this Start did not launch.
-    const reservation = admission && await admission.reserve({agent, registry, since: stopMark});
+    const reservation = admission && await admission.reserve({agent, registry, since: admissionSince, startSignal});
 
     let prepared, memory, status;
 
     try {
+        startSignal.throwIfAborted();
         // Import before create-only birth files: the adopted seat's own notes take precedence.
         memory = await importMemory({agent, instanceRoot: seatInstanceRoot});
+        startSignal.throwIfAborted();
 
         prepared = await prepareWorkspace({
             agent,
@@ -588,6 +634,8 @@ export async function startAgentProvisioned({
             ...(reservation ? {launchAdmission: {issuer: reservation.issuer, identity: reservation.identity, grants: reservation.grants}} : {})
         });
 
+        startSignal.throwIfAborted();
+
         if (!prepared ||
             prepared.targetRepoRoot !== targetRepoRoot ||
             prepared.agentosRuntimeRoot !== path.resolve(agentosRuntimeRoot)) {
@@ -607,6 +655,7 @@ export async function startAgentProvisioned({
                     resources: remotePlan.resources
                 }
             })
+            startSignal.throwIfAborted();
         }
 
         status = await spawnPermitted({
@@ -615,6 +664,7 @@ export async function startAgentProvisioned({
             agentId,
             readParticipation,
             startOptions: {
+                startSignal,
                 cwd        : prepared.targetRepoRoot,
                 resolvedCredential,
                 resolvedResidentMcpEnv,
@@ -642,6 +692,8 @@ export async function startAgentProvisioned({
     }
 
     // the answer reaches whoever pressed Start; the launch record keeps it for every later read
+    startSignal.throwIfAborted();
+
     if (repos.length) {
         lifecycleService.setRepoOutcomes(agentId, repos, {pid: status?.pid, startedAt: status?.startedAt})
     }

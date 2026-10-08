@@ -11,20 +11,20 @@ setup({
     }
 });
 
-import {test, expect}                  from '@playwright/test';
-import {Client}                        from '@modelcontextprotocol/sdk/client/index.js';
+import {test, expect}                                from '@playwright/test';
+import {Client}                                      from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport, getDefaultEnvironment} from '@modelcontextprotocol/sdk/client/stdio.js';
-import {createMcpExpressApp}           from '@modelcontextprotocol/sdk/server/express.js';
-import {McpServer}                     from '@modelcontextprotocol/sdk/server/mcp.js';
-import {StreamableHTTPServerTransport} from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import crypto                          from 'node:crypto';
-import http                            from 'node:http';
-import path                            from 'node:path';
-import {fileURLToPath}                 from 'node:url';
-import Neo                             from 'neo.mjs/src/Neo.mjs';
-import * as core                       from 'neo.mjs/src/core/_export.mjs';
+import {createMcpExpressApp}                         from '@modelcontextprotocol/sdk/server/express.js';
+import {McpServer}                                   from '@modelcontextprotocol/sdk/server/mcp.js';
+import {StreamableHTTPServerTransport}               from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import crypto                                        from 'node:crypto';
+import http                                          from 'node:http';
+import path                                          from 'node:path';
+import {fileURLToPath}                               from 'node:url';
+import Neo                                           from 'neo.mjs/src/Neo.mjs';
+import * as core                                     from 'neo.mjs/src/core/_export.mjs';
 
-import McpLaunchAdmissionService  from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
+import McpLaunchAdmissionService         from '../../../../../../ai/services/fleet/McpLaunchAdmissionService.mjs';
 import {createManagedAgentWorkspacePlan} from '../../../../../../ai/services/fleet/managedAgentWorkspacePlan.mjs';
 import {
     LAUNCH_ADMISSION_PATH,
@@ -54,8 +54,8 @@ const
  */
 function makeOwners({held = {GH_TOKEN: PAT, NEO_MCP_REMOTE_TOKEN: BEARER}, proves = () => true} = {}) {
     const
-        state  = {held: {...held}, proves, proofs: []},
-        owner  = (name, credential) => ({
+        state = {held: {...held}, proves, proofs: []},
+        owner = (name, credential) => ({
             credential,
             resolve: () => state.held[name] ?? null,
             prove  : async value => { state.proofs.push([name, value]); return {ok: await state.proves(name, value)} }
@@ -348,30 +348,58 @@ test.describe('McpLaunchAdmissionService — committed registry changes', () => 
         }
     });
 
-    test('a Stop asked for before any generation exists ends the reservation of the Start already under way; a later Start begins fresh', async () => {
+    test('a non-Stop seat-wide revocation before reservation invalidates the caller mark; a later Start begins fresh', async () => {
         const mark = service.revocationMark('seat');
 
-        expect(service.revoke('seat', 'stop-requested'), 'nothing to revoke yet').toBe(false);
+        expect(service.revoke('seat', 'plan-changed'), 'nothing to revoke yet').toBe(false);
         expect(service.revocationMark('seat')).toBe(mark + 1);
 
-        const stopped = await service.reserve({agent: seatDefinition(), since: mark});
+        const invalidated = await service.reserve({agent: seatDefinition(), since: mark});
 
-        expect(service.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'stop-requested', generation: stopped.generation});
-        service.activate({generation: stopped.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
-        expect(await redeem(stopped.grants['github-workflow'], {server: 'github-workflow'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+        expect(service.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'plan-changed', generation: invalidated.generation});
+        service.activate({generation: invalidated.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
+        expect(await redeem(invalidated.grants['github-workflow'], {server: 'github-workflow'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'plan-changed'});
 
-        // a Start that read the mark after that Stop reserves fresh authority
+        // A Start that reads after the non-Stop revocation reserves fresh authority.
         const fresh = await service.reserve({agent: seatDefinition(), since: service.revocationMark('seat')});
 
-        service.revoke('seat', 'start-failed', {generation: stopped.generation});
-        expect(service.revocationMark('seat'), 'neither replacing a generation nor revoking one counts as a Stop').toBe(mark + 1);
+        service.revoke('seat', 'start-failed', {generation: invalidated.generation});
+        expect(service.revocationMark('seat'), 'replacing a generation or revoking one does not add another seat-wide mark').toBe(mark + 1);
 
         service.activate({generation: fresh.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
         expect((await redeem(fresh.grants['github-workflow'], {server: 'github-workflow'})).outcome).toBe('admitted')
     });
 
+    test('an already-aborted Start signal yields revoked admission without advancing the non-Stop mark; a later Start is fresh', async () => {
+        const
+            mark       = service.revocationMark('seat'),
+            controller = new AbortController();
+
+        controller.abort();
+
+        const cancelled = await service.reserve({agent: seatDefinition(), since: mark, startSignal: controller.signal});
+
+        expect(service.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'stop-requested', generation: cancelled.generation});
+        expect(service.revocationMark('seat')).toBe(mark);
+        expect(await redeem(cancelled.grants['github-workflow'], {server: 'github-workflow'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+        expect(service.generations.get('seat').startSignal).toBeUndefined();
+
+        const freshController = new AbortController(),
+              fresh           = await service.reserve({agent: seatDefinition(), since: mark, startSignal: freshController.signal});
+
+        service.activate({generation: fresh.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
+        expect(service.generations.get('seat').startSignal, 'activation releases the signal listener').toBeUndefined();
+        freshController.abort();
+        expect(service.statusOf('seat')).toMatchObject({state: 'active', generation: fresh.generation});
+        expect((await redeem(fresh.grants['github-workflow'], {server: 'github-workflow'})).outcome).toBe('admitted');
+        expect(service.revocationMark('seat')).toBe(mark)
+    });
+
     test('a switch-off or a Stop while the reservation awaits its listener lands on it; a listener that fails revokes it', async () => {
-        const gate = deferred();
+        const
+            gate       = deferred(),
+            controller = new AbortController(),
+            mark       = service.revocationMark('seat');
 
         service.listen = () => gate.promise;
 
@@ -388,18 +416,23 @@ test.describe('McpLaunchAdmissionService — committed registry changes', () => 
             service.activate({generation: reservation.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
             expect(await redeem(reservation.grants['github-workflow'], {server: 'github-workflow'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'server-disabled'});
 
-            const stopped = service.reserve({agent: seatDefinition()});
+            const stopped = service.reserve({agent: seatDefinition(), startSignal: controller.signal});
 
-            expect(service.revoke('seat', 'stop-requested'), 'the reservation exists before the listener answers').toBe(true);
+            controller.abort();
+            expect(service.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'stop-requested'});
+            expect(service.revocationMark('seat'), 'Stop cancellation is carried by the attempt signal').toBe(mark);
 
             const second = await stopped;
 
             service.activate({generation: second.generation, agentId: 'seat', plan: boundPlan(), env: START_ENV, owners: makeOwners().owners, probe: () => 'live'});
             expect(await redeem(second.grants['memory-core'], {server: 'memory-core'})).toEqual({outcome: 'refused', code: 'revoked', reason: 'stop-requested'});
+            expect(service.generations.get('seat').startSignal).toBeUndefined();
 
             service.listen = () => Promise.reject(new Error('listen EADDRINUSE'));
-            await expect(service.reserve({agent: seatDefinition()})).rejects.toThrow('EADDRINUSE');
-            expect(service.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'start-failed'})
+            const failingController = new AbortController();
+            await expect(service.reserve({agent: seatDefinition(), startSignal: failingController.signal})).rejects.toThrow('EADDRINUSE');
+            expect(service.statusOf('seat')).toMatchObject({state: 'revoked', reason: 'start-failed'});
+            expect(service.generations.get('seat').startSignal).toBeUndefined()
         } finally {
             delete service.listen
         }
@@ -549,10 +582,10 @@ test.describe('McpLaunchAdmissionService — a Desktop row launched for real', (
     /** @summary An authenticated Streamable-HTTP MCP endpoint per resource, counting the sessions each opened. */
     async function startPlaneFixture(token) {
         const
-            app        = createMcpExpressApp({allowedHosts: ['127.0.0.1']}),
-            sessions   = new Map(),
-            opened     = [],
-            closers    = new Set();
+            app      = createMcpExpressApp({allowedHosts: ['127.0.0.1']}),
+            sessions = new Map(),
+            opened   = [],
+            closers  = new Set();
 
         app.use((request, response, next) => {
             if (request.headers.authorization !== `Bearer ${token}`) {
@@ -591,9 +624,9 @@ test.describe('McpLaunchAdmissionService — a Desktop row launched for real', (
         });
 
         return {
-            url   : `http://127.0.0.1:${listener.address().port}`,
+            url  : `http://127.0.0.1:${listener.address().port}`,
             opened,
-            close : async () => {
+            close: async () => {
                 await Promise.allSettled([...closers].map(close => close()));
                 await new Promise(resolve => listener.close(resolve))
             }
