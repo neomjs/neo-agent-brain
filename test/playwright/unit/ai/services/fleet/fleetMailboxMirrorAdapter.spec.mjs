@@ -389,7 +389,7 @@ test.describe('fleetMailboxMirrorAdapter — viewer-admitted per-agent mailbox m
 })
 
 /**
- * RA-1's producer-contract witness. The suite above proves the MAPPER; a synthetic
+ * The producer-contract witness. The suite above proves the MAPPER; a synthetic
  * MailboxService-shaped callback can hand it any field, including one production never emits —
  * which is exactly how `partOfThread` shipped green while always projecting null. These specs drive
  * the adapter through the REAL MailboxService read path under a REAL RequestContextService binding,
