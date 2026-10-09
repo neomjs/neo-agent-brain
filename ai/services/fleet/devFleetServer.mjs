@@ -354,6 +354,8 @@ async function boot() {
             laneClaimSource
         });
 
+        // No observeMessages: the plane's only list is the model-visible `list_messages`, which records
+        // `seenAt`, so the open questions answer unavailable here rather than mark them seen.
         wireOperatorComposeWriter({
             addMessage    : args => planeClient.addMessage(args),
             getMessage    : args => planeClient.getMessage(args),
@@ -380,10 +382,11 @@ async function boot() {
             // the request context the authenticated ingress stamped; the seam carries payload, never
             // identity. Fail-soft: an unavailable singleton leaves the compose seam honestly unwired.
             wireOperatorComposeWriter({
-                addMessage    : MailboxService.addMessage.bind(MailboxService),
-                getMessage    : MailboxService.getMessage.bind(MailboxService),
-                markRead      : MailboxService.markRead.bind(MailboxService),
-                transitionTask: MailboxService.transitionTask.bind(MailboxService)
+                addMessage     : MailboxService.addMessage.bind(MailboxService),
+                getMessage     : MailboxService.getMessage.bind(MailboxService),
+                markRead       : MailboxService.markRead.bind(MailboxService),
+                transitionTask : MailboxService.transitionTask.bind(MailboxService),
+                observeMessages: MailboxService.listMessages.bind(MailboxService)
             })
         }).catch(error => console.warn('[fleet] activity source not wired:', error?.message ?? error))
     }

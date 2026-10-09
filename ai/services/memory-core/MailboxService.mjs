@@ -1,13 +1,13 @@
-import {resolveTicketReference} from '../graph/ticketReferences.mjs';
-import Base                                     from 'neo.mjs/src/core/Base.mjs';
-import aiConfig                                 from '../../mcp/server/memory-core/config.mjs';
-import logger                                   from '../../mcp/server/memory-core/logger.mjs';
-import RequestContextService, {normalizeUserId} from '../../mcp/server/shared/services/RequestContextService.mjs';
-import {canonicalizeTaggedConceptIds}           from '../graph/conceptSpineCanonicalization.mjs';
+import {resolveTicketReference}                       from '../graph/ticketReferences.mjs';
+import Base                                           from 'neo.mjs/src/core/Base.mjs';
+import aiConfig                                       from '../../mcp/server/memory-core/config.mjs';
+import logger                                         from '../../mcp/server/memory-core/logger.mjs';
+import RequestContextService, {normalizeUserId}       from '../../mcp/server/shared/services/RequestContextService.mjs';
+import {canonicalizeTaggedConceptIds}                 from '../graph/conceptSpineCanonicalization.mjs';
 import GraphService, {isRlsVisible, resolveRlsUserId} from './GraphService.mjs';
-import PermissionService                        from './PermissionService.mjs';
-import WakeSubscriptionService                  from './WakeSubscriptionService.mjs';
-import {inspectDefectNoteCapture}               from './helpers/defectObservationFold.mjs';
+import PermissionService                              from './PermissionService.mjs';
+import WakeSubscriptionService                        from './WakeSubscriptionService.mjs';
+import {inspectDefectNoteCapture}                     from './helpers/defectObservationFold.mjs';
 import {
     TASK_ASSIGNMENT_AUTHORITY,
     TASK_STATES,
@@ -2647,6 +2647,12 @@ class MailboxService extends Base {
     static VALID_TASK_STATES = TASK_STATES;
 
     /**
+     * The longest `task.fallback` a sender may state: a plan for an unanswered Task in a sentence or two.
+     * @type {Number}
+     */
+    static MAX_TASK_FALLBACK_LENGTH = 1000;
+
+    /**
      * @summary Non-throwing check of whether a raw `to` target would resolve to a
      * deliverable mailbox recipient — without sending anything.
      *
@@ -2907,6 +2913,11 @@ class MailboxService extends Base {
 
         if (task?.state && !MailboxService.VALID_TASK_STATES.includes(task.state)) {
             throw new Error(`Invalid task state: ${task.state}. Must be one of: ${MailboxService.VALID_TASK_STATES.join(', ')}`);
+        }
+
+        // The sender's stated plan if the Task expires unanswered: text a reader is shown, never a step anything runs.
+        if (task?.fallback !== undefined && (typeof task.fallback !== 'string' || !task.fallback.trim() || task.fallback.length > MailboxService.MAX_TASK_FALLBACK_LENGTH)) {
+            throw new Error(`Invalid task fallback: a non-empty string of at most ${MailboxService.MAX_TASK_FALLBACK_LENGTH} characters`);
         }
 
         taggedConcepts = canonicalizeTaggedConceptIds(taggedConcepts);
@@ -3689,8 +3700,8 @@ class MailboxService extends Base {
         // page read one snapshot: a write landing between them would otherwise count a row the page
         // no longer serves, and hand back a continuation that never advances.
         const
-            taskView      = taskStates !== undefined,
-            viewSql       = taskView ? `${matchesSql}, tasks AS (
+            taskView = taskStates !== undefined,
+            viewSql  = taskView ? `${matchesSql}, tasks AS (
                 SELECT m.messageId, m.sentAt, json_extract(n.data, '$.properties.task') AS task,
                        CASE COALESCE(json_extract(n.data, '$.properties.priority'), 'normal') WHEN 'high' THEN 0 WHEN 'low' THEN 2 ELSE 1 END AS priorityRank
                 FROM matches m JOIN Nodes n ON n.id = m.messageId

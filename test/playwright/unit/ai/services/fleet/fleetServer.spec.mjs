@@ -1059,6 +1059,7 @@ test.describe('Fleet S1 wire policy', () => {
             resolveViewerIdentity : 'awaiting-s4',
             composeOperatorMessage: 'awaiting-s4',
             fleetOwnMessage       : 'awaiting-s4',
+            fleetOwnQuestions     : 'awaiting-s4',
             markOwnMessageRead    : 'awaiting-s4',
             transitionOwnTask     : 'awaiting-s4',
             listTenants           : 'awaiting-s4',

@@ -141,6 +141,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         expect(bridge.composeWriter.getMessage).toBe(getMessage);
         expect(Object.hasOwn(bridge.composeWriter, 'markRead')).toBe(false);
         expect(Object.hasOwn(bridge.composeWriter, 'transitionTask')).toBe(false);
+        expect(Object.hasOwn(bridge.composeWriter, 'observeMessages')).toBe(false);
 
         wireOperatorComposeWriter({addMessage: () => ({}), getMessage});
         expect(await FleetControlBridge.fleetOwnMessage({messageId: 'MESSAGE:m'})).toEqual({id: 'MESSAGE:m'});
@@ -171,7 +172,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
     });
 
     test('the own-inbox verbs reject a missing message id or a missing newState before the primitive runs', () => {
-        let invoked = false;
+        let   invoked   = false;
         const primitive = () => { invoked = true; return {} };
         wireOperatorComposeWriter({addMessage: () => ({}), getMessage: primitive, markRead: primitive, transitionTask: primitive});
 
@@ -186,6 +187,101 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         }
 
         expect(invoked).toBe(false)
+    });
+
+    test('the open questions read the viewer\'s own non-terminal Tasks, archived ones included, priority then age, as body-free rows with the complete count', async () => {
+        const calls = [];
+        wireOperatorComposeWriter({
+            addMessage     : () => ({}),
+            observeMessages: args => {
+                calls.push(args);
+                return {totalCount: 3, truncated: true, nextOffset: 1, limit: 1, offset: 0, messages: [{messageId: 'MESSAGE:q', subject: 'which way?', from: '@neo-gpt', to: '@tobiu', priority: 'high', task: {state: 'InputRequired'}, sentAt: '2026-10-08T22:00:00.000Z', archivedAt: '2026-10-08T23:00:00.000Z', bodyText: 'never on the wire'}]}
+            }
+        });
+
+        const answer = await FleetControlBridge.fleetOwnQuestions({limit: 1, to: '@mallory'});
+
+        // no identity-shaped field crosses: the seam reads under the transport-stamped viewer
+        expect(calls).toEqual([{box: 'inbox', status: 'all', includeArchived: true, taskStates: ['InputRequired', 'Submitted', 'Working'], taskOrder: 'priority-age', limit: 1, offset: 0}]);
+        expect(answer).toMatchObject({state: 'ok', reason: null, count: 3, page: {limit: 1, offset: 0, count: 1, hasMore: true}});
+        expect(Date.parse(answer.capturedAt)).not.toBeNaN();
+        // an archived question is still open: its row says it was archived
+        expect(answer.rows).toEqual([expect.objectContaining({messageId: 'MESSAGE:q', taskState: 'InputRequired', priority: 'high', from: '@neo-gpt', archivedAt: '2026-10-08T23:00:00.000Z'})]);
+        expect(JSON.stringify(answer)).not.toContain('never on the wire');
+
+        // the page is bounded like the mailbox mirror's
+        for (const [params, page] of [[{limit: 0}, {limit: 1, offset: 0}], [{limit: 999, offset: -4}, {limit: 200, offset: 0}], [{limit: '9'}, {limit: 50, offset: 0}]]) {
+            await FleetControlBridge.fleetOwnQuestions(params);
+            expect(calls.at(-1)).toMatchObject(page)
+        }
+
+        expect(await dispatchFleetRequest({method: 'fleetOwnQuestions', params: {limit: 1}, protocol: createFleetWireOffer()}))
+            .toMatchObject({ok: true, state: 'ok', result: {state: 'ok', count: 3}})
+    });
+
+    test('an unwired, failed or countless questions read answers unavailable with its reason, never an empty list or a zero', async () => {
+        expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'unavailable', reason: 'fleet: no read here lists the open questions without marking them seen', count: null, rows: []});
+
+        wireOperatorComposeWriter({addMessage: () => ({}), observeMessages: async () => { throw new Error('sqlite at /private/plane is locked') }});
+        const failed = await FleetControlBridge.fleetOwnQuestions();
+
+        expect(failed).toMatchObject({state: 'unavailable', reason: 'fleet: the open-questions read failed', count: null, rows: []});
+        expect(Date.parse(failed.capturedAt)).not.toBeNaN();
+        expect(JSON.stringify(failed)).not.toContain('/private/plane');
+
+        wireOperatorComposeWriter({addMessage: () => ({}), observeMessages: async () => ({messages: []})});
+        expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'unavailable', count: null});
+
+        wireOperatorComposeWriter({addMessage: () => ({}), observeMessages: async () => ({totalCount: 1, messages: []})});
+        expect(await FleetControlBridge.fleetOwnQuestions(), 'a page without its continuation cannot say whether more remain')
+            .toMatchObject({state: 'unavailable', reason: 'fleet: the open-questions read answered without its continuation', count: null})
+    });
+
+    test('a list that marks what it lists as seen never serves the open questions, nor their count', async () => {
+        const seen = [], stamping = args => { seen.push(args); return {totalCount: 1, truncated: false, messages: []} };
+
+        // the plane's binding: its one list is the model-visible tool, which records seenAt
+        wireOperatorComposeWriter({addMessage: () => ({}), listMessages: stamping});
+        expect(Object.hasOwn(FleetControlBridge.composeWriter, 'listMessages'), 'the seam takes no other list').toBe(false);
+
+        FleetControlBridge.composeWriter.listMessages = stamping;
+        expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'unavailable', reason: 'fleet: no read here lists the open questions without marking them seen', count: null});
+        expect((await FleetControlBridge.fleetOpenWork()).questions).toMatchObject({state: 'unavailable', count: null});
+        expect(seen, 'the seen-marking list never ran').toEqual([])
+    });
+
+    test('the page continues as the mailbox served it: a projection hole neither ends a middle page nor extends a final one', async () => {
+        const question = id => ({messageId: id, from: '@neo-gpt', to: '@tobiu', task: {state: 'InputRequired'}, sentAt: '2026-10-08T22:00:00.000Z'});
+
+        // the final page served one row the graph could not project
+        wireOperatorComposeWriter({addMessage: () => ({}), observeMessages: async () => ({totalCount: 1, messages: [], truncated: false, nextOffset: null, limit: 50, offset: 0})});
+        expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'ok', count: 1, rows: [], page: {limit: 50, offset: 0, count: 0, hasMore: false}});
+
+        // a middle page served two rows, one of them a hole: the next window starts after both
+        wireOperatorComposeWriter({addMessage: () => ({}), observeMessages: async () => ({totalCount: 3, messages: [question('MESSAGE:a')], truncated: true, nextOffset: 2, limit: 2, offset: 0})});
+        const middle = await FleetControlBridge.fleetOwnQuestions({limit: 2});
+
+        expect(middle).toMatchObject({state: 'ok', count: 3, page: {limit: 2, offset: 0, count: 1, hasMore: true}});
+        expect(middle.page.offset + middle.page.limit, 'the consumer\'s next offset is the mailbox\'s nextOffset').toBe(2)
+    });
+
+    test('open work carries the questions count from a one-row page of the same read, beside its source envelope untouched', async () => {
+        const original = FleetControlBridge.openWorkSource, calls = [];
+
+        try {
+            FleetControlBridge.openWorkSource = null;
+            expect((await FleetControlBridge.fleetOpenWork()).questions).toEqual({state: 'unavailable', count: null, reason: 'fleet: no read here lists the open questions without marking them seen'});
+
+            wireOperatorComposeWriter({addMessage: () => ({}), observeMessages: args => { calls.push(args); return {totalCount: 7, truncated: true, nextOffset: 1, messages: [{messageId: 'MESSAGE:q'}]} }});
+            FleetControlBridge.openWorkSource = {readOpenWork: params => ({state: 'ok', coverage: 'complete', seats: {ada: {}}, params})};
+
+            expect(await FleetControlBridge.fleetOpenWork({seat: 'ada'})).toEqual({
+                state: 'ok', coverage: 'complete', seats: {ada: {}}, params: {seat: 'ada'}, questions: {state: 'ok', count: 7, reason: null}
+            });
+            expect(calls).toEqual([expect.objectContaining({limit: 1, offset: 0})])
+        } finally {
+            FleetControlBridge.openWorkSource = original
+        }
     });
 
     test('a refused move crosses the whole wire as its code and a fixed reason, in process and from a plane; a lost race as the primitive returned it', async () => {

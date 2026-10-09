@@ -7099,12 +7099,12 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         await seedHumanRecipients();
 
         const
-            low      = await ask('@operator', {priority: 'low'}),
-            normal   = await ask('@operator', {priority: 'normal'}),
-            highOld  = await ask('@operator', {priority: 'high'}),
-            unset    = await ask('@operator'),
-            highNew  = await ask('@operator', {priority: 'high'}),
-            sentAt   = {[low]: '2026-10-04T10:00:00.000Z', [normal]: '2026-10-04T10:01:00.000Z', [highOld]: '2026-10-04T10:02:00.000Z', [unset]: '2026-10-04T10:03:00.000Z', [highNew]: '2026-10-04T10:04:00.000Z'},
+            low       = await ask('@operator', {priority: 'low'}),
+            normal    = await ask('@operator', {priority: 'normal'}),
+            highOld   = await ask('@operator', {priority: 'high'}),
+            unset     = await ask('@operator'),
+            highNew   = await ask('@operator', {priority: 'high'}),
+            sentAt    = {[low]: '2026-10-04T10:00:00.000Z', [normal]: '2026-10-04T10:01:00.000Z', [highOld]: '2026-10-04T10:02:00.000Z', [unset]: '2026-10-04T10:03:00.000Z', [highNew]: '2026-10-04T10:04:00.000Z'},
             setSentAt = GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.sentAt', ?) WHERE id = ?`);
 
         for (const [id, at] of Object.entries(sentAt)) setSentAt.run(at, id);
@@ -7167,6 +7167,80 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         expect((await actAs('@operator', () => MailboxService.getMessage({messageId: taskId}))).body).toBe('which one?');
         await expect(actAs('@guest', () => MailboxService.getMessage({messageId: taskId})))
             .rejects.toThrow(/Unauthorized: message .* was not sent to or from @guest/);
+    });
+
+    test('#922 AC-1/AC-3: the open-questions read lists and counts an archived open Task, never a terminal one or another recipient\'s', async () => {
+        await seedHumanRecipients();
+
+        const
+            archived  = await ask('@operator'),
+            answered  = await ask('@operator'),
+            submitted = await ask('@operator', {task: {state: 'Submitted'}});
+
+        await ask('@guest');
+        await actAs('@operator', async () => {
+            await MailboxService.archiveMessage({messageId: archived});
+            await MailboxService.transitionTask({taskId: answered, newState: 'Completed'})
+        });
+
+        // the exact query `FleetControlBridge.fleetOwnQuestions` sends, one row per page
+        const
+            query = {box: 'inbox', status: 'all', includeArchived: true, taskStates: ['InputRequired', 'Submitted', 'Working'], taskOrder: 'priority-age', limit: 1},
+            first = await actAs('@operator', () => MailboxService.listMessages({...query, offset: 0})),
+            next  = await actAs('@operator', () => MailboxService.listMessages({...query, offset: 1}));
+
+        expect(first.totalCount).toBe(2);
+        expect([...first.messages, ...next.messages].map(row => row.messageId).sort()).toEqual([archived, submitted].sort());
+        // the archived one only reads through the archive opt-in
+        expect((await actAs('@operator', () => MailboxService.listMessages({...query, includeArchived: false}))).totalCount).toBe(1)
+    });
+
+    test('#922 AC-4: a stated fallback is stored as written and read back by the recipient; an absent one is never inferred, and a malformed one never lands', async () => {
+        await seedHumanRecipients();
+
+        const
+            plan   = 'If nobody answers by Friday I ship the default layout.',
+            stated = await ask('@operator', {task: {state: 'InputRequired', fallback: plan}}),
+            legacy = await ask('@operator');
+
+        expect((await actAs('@operator', () => MailboxService.getMessage({messageId: stated}))).task.fallback).toBe(plan);
+        expect((await actAs('@operator', () => MailboxService.getMessage({messageId: legacy}))).task).not.toHaveProperty('fallback');
+        await expect(actAs('@guest', () => MailboxService.getMessage({messageId: stated}))).rejects.toThrow(/Unauthorized/);
+
+        const before = (await openTasks('@operator')).totalCount;
+
+        for (const fallback of [42, '', '   ', 'x'.repeat(MailboxService.MAX_TASK_FALLBACK_LENGTH + 1), {plan}]) {
+            await expect(ask('@operator', {task: {state: 'InputRequired', fallback}}), JSON.stringify(fallback).slice(0, 40))
+                .rejects.toThrow(/Invalid task fallback/)
+        }
+
+        expect((await openTasks('@operator')).totalCount).toBe(before)
+    });
+
+    test('#922 AC-4: the fallback survives transitions, replies and expiry; an expired Task keeps its plan while it leaves the open list, and nothing runs it', async () => {
+        await seedHumanRecipients();
+
+        const
+            plan     = 'Unanswered by Friday: I pick the narrower scope.',
+            moved    = await ask('@operator', {task: {state: 'InputRequired', fallback: plan}}),
+            expiring = await ask('@operator', {task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z', fallback: plan}});
+
+        await actAs('@operator', async () => {
+            await MailboxService.transitionTask({taskId: moved, newState: 'Working'});
+            await MailboxService.addMessage({to: '@alice', subject: 'Re: a question', body: 'on it', inReplyTo: moved})
+        });
+
+        expect(readStoredTask(moved).task).toMatchObject({state: 'Working', fallback: plan});
+
+        const assigneeBefore = readStoredTask(expiring).task.assignee;
+
+        await MailboxService.sweepExpiredTasks();
+
+        // expired: out of the open list and count, the plan still on the persisted Task, the assignee untouched
+        expect((await openTasks('@operator', {taskStates: ['InputRequired', 'Submitted', 'Working']})).messages.map(row => row.messageId)).toEqual([moved]);
+        expect((await actAs('@operator', () => MailboxService.getMessage({messageId: expiring}))).task).toMatchObject({state: 'Expired', fallback: plan, assignee: assigneeBefore});
+        // nothing executed it: @alice received only the one reply
+        expect((await actAs('@alice', () => MailboxService.listMessages({}))).messages.map(row => row.subject)).toEqual(['Re: a question'])
     });
 });
 

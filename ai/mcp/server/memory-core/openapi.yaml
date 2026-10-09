@@ -2511,6 +2511,11 @@ paths:
                       type: string
                       format: date-time
                       description: Optional expiry time consumed by the Task TTL sweeper.
+                    fallback:
+                      type: string
+                      minLength: 1
+                      maxLength: 1000
+                      description: "Optional sender-authored plain text: what the sender plans if the Task expires unanswered. It carries no execution or authorization semantics; expiry never runs it, and an absent field means no plan was stated. It survives transitions and expiry, and the recipient reads it through `get_message`."
       responses:
         '200':
           description: Message accepted durably in the WAL; projectionStatus may remain pending while derived graph projection completes.
