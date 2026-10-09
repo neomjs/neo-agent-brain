@@ -470,24 +470,24 @@ test.describe('probePlacement — the reader-facing verdict: unobserved is told 
         expect(describeUncertainty('vmReservation', `host reservation unobservable; ${VM_RESERVATION_POLICY} applied`).class).toBe('vm-reservation-policy')
     });
 
-    test('independent negative evidence survives the unknown-data path: a negative balance and observed swap are observed refusals, never unverified (review RA-1 / RA-2)', async () => {
+    test('independent negative evidence survives the unknown-data path: a negative balance and observed swap are observed refusals, never unverified', async () => {
         const
             HOSTED_PLANE = {planeIdleBytes: 0.4 * GiB, planePeakBytes: 2.5 * GiB, modelsBytes: 0},
-            // RA-1a: every reader answers; the consumers exceed the total — a measured −4 GiB balance, complete
+            // every reader answers; the consumers exceed the total — a measured −4 GiB balance, complete
             overdrawn = await probePlacement({readers: fixtureReaders({
                 totalmem: () => 16 * GiB, hostUse: () => [{name: 'everything', bytes: 20 * GiB, source: 'fixture'}],
                 loadedModels: () => ({inventories: ['lms'], models: []}), vmInfo: () => null, containerStats: () => []
             })}),
-            // RA-1b: the same balance with the VM reader missing — the observed consumers alone are overdrawn
+            // the same balance with the VM reader missing — the observed consumers alone are overdrawn
             overdrawnUnread = await probePlacement({readers: fixtureReaders({
                 totalmem: () => 16 * GiB, hostUse: () => [{name: 'everything', bytes: 20 * GiB, source: 'fixture'}],
                 loadedModels: () => ({inventories: ['lms'], models: []}), vmInfo: () => { throw new Error('docker info failed') }
             })}),
-            // RA-1c: the guest's residency exceeds its cap — a measured −2 GiB guest balance while the host has room
+            // the guest's residency exceeds its cap — a measured −2 GiB guest balance while the host has room
             guestOverdrawn = await probePlacement({readers: fixtureReaders({
                 vmInfo: () => ({backend: 'docker-desktop', capBytes: 4 * GiB, cores: 4, guestOs: 'Ubuntu'}), containerStats: () => [{name: 'big', bytes: 6 * GiB}]
             })}),
-            // RA-2: the total-memory reader fails, the swap reader reports swap in use — swapping is its own evidence
+            // the total-memory reader fails, the swap reader reports swap in use — swapping is its own evidence
             swappingUnread = await probePlacement({readers: fixtureReaders({
                 totalmem: () => { throw new Error('sysctl refused') }, swap: () => ({swapUsedBytes: 1 * GiB, compressedBytes: 0})
             })});
