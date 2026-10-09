@@ -245,6 +245,37 @@ test.describe('Bridge — an Agent that joins later learns what connected Apps a
             .toEqual(['after', 'w-after'])
     });
 
+    test('a replaced socket\'s late messages reach neither the replay nor the Agents; the successor\'s still do', () => {
+        const
+            replaced   = makeWs(),
+            successor  = makeWs(),
+            earlyAgent = makeWs(),
+            // through the handler each socket installed, the path a late frame takes
+            say        = (ws, method, params) => ws.handlers.message(Buffer.from(JSON.stringify({jsonrpc: '2.0', method, params})));
+
+        Bridge.registerAgent('agent-early', earlyAgent);
+        Bridge.registerApp('app-1', replaced, 'agentos');
+        Bridge.registerApp('app-1', successor, 'agentos');
+        say(successor, 'register',         {environment: 'after'});
+        say(successor, 'window_connected', {windowId: 'w-after'});
+
+        const relayed = earlyAgent.sent.length;
+
+        say(replaced, 'register',            {environment: 'stale'});
+        say(replaced, 'window_connected',    {windowId: 'w-stale'});
+        say(replaced, 'window_disconnected', {windowId: 'w-after'});
+
+        expect(earlyAgent.sent.length, 'nothing the replaced socket said was relayed').toBe(relayed);
+
+        say(successor, 'window_connected', {windowId: 'w-after-2'}); // the positive control: the successor still speaks
+
+        const lateAgent = makeWs();
+        Bridge.registerAgent('agent-late', lateAgent);
+
+        expect(replayOf(lateAgent, 'app-1').map(message => message.params.environment ?? message.params.windowId))
+            .toEqual(['after', 'w-after', 'w-after-2'])
+    });
+
     test('the App leaving drops what it announced', () => {
         const appWs = makeWs();
 

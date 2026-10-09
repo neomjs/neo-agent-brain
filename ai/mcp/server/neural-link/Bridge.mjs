@@ -341,10 +341,10 @@ class Bridge extends Base {
         // A new socket announces itself anew: nothing the replaced one said carries over
         this.appState.set(id, {register: null, windows: new Map()});
 
-        ws.on('message', (data) => this.handleAppMessage(id, data));
+        // Only the socket registered under an id speaks for that App. A socket replaced by a reconnect can still
+        // deliver a message or its close after its successor registered: neither may overwrite or evict the successor
+        ws.on('message', (data) => this.apps.get(id) === ws && this.handleAppMessage(id, data));
         ws.on('close',   ()     => {
-            // A socket replaced by a reconnect under the same id closes after its successor registered:
-            // that is not the App leaving, so it must not evict the successor
             if (this.apps.get(id) !== ws) return;
 
             logger.info(`Bridge: App disconnected [${id}] (${appName})`);
