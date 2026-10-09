@@ -147,14 +147,14 @@ test.describe('firstRunRecipe', () => {
 
     test('the forge row: an unreadable registry is unknown even behind an accepted receipt, an unbound endpoint is pending in the observer\'s words, a refusal fails through its receipt, an interrupted registration is reconcile-required', async () => {
         const
-            unreadable = async () => { throw new Error('the plane is not running, so its forge registry cannot be read') },
-            refusal    = 'https://api.github.com was detached from the plane, and never binds again',
+            unreadable = async () => { throw new Error('the plane is not running, so its GitHub or GitLab connection cannot be read') },
+            refusal    = 'https://api.github.com was detached from the plane, and never binds again — only a fresh plane recovers it',
             row        = async (record, forgeConnection) => byId((await evaluateRecipe({target: targetA, record, observers: {...greenObservers(), forgeConnection}, presets, now: () => NOW})).steps)['register-forge'];
 
         // unavailable evidence is neither an absence nor a result gone: an accepted receipt never turns it failed
-        expect(await row(fullRecord(targetA), unreadable)).toMatchObject({status: STEP_STATUSES.unknown, reason: 'the plane is not running, so its forge registry cannot be read', receipt: RECEIPT_OUTCOMES.accepted});
-        expect(await row(null, async () => ({present: false, reason: 'no github connection binds https://api.github.com yet'})))
-            .toMatchObject({status: STEP_STATUSES.pending, reason: 'no github connection binds https://api.github.com yet', receipt: null});
+        expect(await row(fullRecord(targetA), unreadable)).toMatchObject({status: STEP_STATUSES.unknown, reason: 'the plane is not running, so its GitHub or GitLab connection cannot be read', receipt: RECEIPT_OUTCOMES.accepted});
+        expect(await row(null, async () => ({present: false, reason: 'nothing binds https://api.github.com yet'})))
+            .toMatchObject({status: STEP_STATUSES.pending, reason: 'nothing binds https://api.github.com yet', receipt: null});
 
         // a refused registration fails by its receipt's reason; the observation never claims presence to get there
         const refused = withReceipt(fullRecord(targetA), {effectId: 'register-forge', outcome: RECEIPT_OUTCOMES.failed, inputDigest: 'i', failedAt: 't', reason: refusal});
@@ -344,7 +344,7 @@ test.describe('firstRunRecipe', () => {
         expect(await waits(consented, {...unbuilt, secretFiles: greenObservers().secretFiles})).toEqual({'write-secrets': null, 'write-env': null, 'compose-up': 'write-env', 'register-forge': 'write-env', verify: 'write-env'});
 
         // the host files written, the plane down: its registry cannot be read, and the forge row waits for compose-up
-        const down = {...greenObservers(), runningPlane: absent, forgeConnection: async () => { throw new Error('the plane is not running, so its forge registry cannot be read') }, verification: absent};
+        const down = {...greenObservers(), runningPlane: absent, forgeConnection: async () => { throw new Error('the plane is not running, so its GitHub or GitLab connection cannot be read') }, verification: absent};
 
         expect(await waits(consented, down)).toEqual({'write-secrets': null, 'write-env': null, 'compose-up': null, 'register-forge': 'compose-up', verify: 'compose-up'});
 

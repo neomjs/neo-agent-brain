@@ -325,7 +325,7 @@ test.describe('hostEffects', () => {
         }
         expect(plane.cli()).toEqual([['status'], ['init', '--apply'], ['register', '--provider', 'github', '--endpoint', 'https://api.github.com', '--apply'], ['status']]);
         expect(first.receipt).toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, digest: contentDigest(`github https://api.github.com ${connectionId}`), references: [`forge-connection:${connectionId}`]});
-        expect(hostEffectHandlers[EFFECT_IDS.registerForge].describe(input)).toBe('register the plane\'s github forge connection at https://api.github.com');
+        expect(hostEffectHandlers[EFFECT_IDS.registerForge].describe(input)).toBe('register the plane\'s GitHub connection at https://api.github.com');
 
         // the same input never runs again; a new run over the bound endpoint reads once and adopts it
         expect((await applyEffect({effectId: EFFECT_IDS.registerForge, input, record: first.record, recordPath, host: plane.host})).applied).toBe(false);
@@ -372,24 +372,24 @@ test.describe('hostEffects', () => {
 
         gitlab.admin('init', '--apply');
         gitlab.admin('register', '--provider', 'gitlab', '--endpoint', 'https://api.github.com', '--apply');
-        expect(await refusal(gitlab)).toBe('https://api.github.com is bound to a gitlab connection, not github');
+        expect(await refusal(gitlab)).toBe('https://api.github.com is bound to a GitLab connection, not GitHub — only a fresh plane recovers it');
 
         const detached = await forgePlane();
 
         detached.admin('init', '--apply');
         detached.admin('register', '--provider', 'github', '--endpoint', 'https://api.github.com', '--apply');
         detached.admin('detach', '--endpoint', 'https://api.github.com', '--apply');
-        expect(await refusal(detached)).toBe('https://api.github.com was detached from the plane, and never binds again');
+        expect(await refusal(detached)).toBe('https://api.github.com was detached from the plane, and never binds again — only a fresh plane recovers it');
 
         const corrupt = await forgePlane();
 
         await fs.writeFile(path.join(corrupt.dataDir, 'forge-connections.json'), '{"schema":1');
-        expect(await refusal(corrupt)).toBe('the plane\'s forge-connection registry cannot be used, and is never replaced: it is not valid JSON');
+        expect(await refusal(corrupt)).toBe('the plane\'s connection registry cannot be used, and is never replaced: it is not valid JSON — only a fresh plane recovers it');
 
         expect(await refusal(await forgePlane({NEO_AUTH_MODE: 'oidc'}), {...forgeContext, declared: null, declaredReason: null}))
-            .toBe('the plane\'s auth mode \'oidc\' admits no forge PAT, so no seat can be owned on it');
+            .toBe('the plane\'s auth mode \'oidc\' admits no GitHub or GitLab PAT, so no seat can be owned on it — choose a profile that admits one');
         expect(await refusal(await forgePlane({NEO_AUTH_MODE: 'github-pat', NEO_AUTH_GITHUB_API_BASE_URL: 'https://ghe.example.com/api/v3'})))
-            .toBe('the plane now declares github at https://ghe.example.com/api/v3: a new run registers it');
+            .toBe('the plane now declares GitHub at https://ghe.example.com/api/v3: a new run registers it');
 
         const
             answers = [{ok: true, declared, declaredReason: null, state: 'absent', reason: null, binding: null, tombstoned: false}, {ok: false, refused: 'already-initialized', reason: 'the store exists'}],
@@ -404,8 +404,8 @@ test.describe('hostEffects', () => {
             }}),
             silent  = createHost({now: () => NOW, run: async () => { throw new Error('service "fleet-server" is not running') }});
 
-        expect((await applyEffect({effectId: EFFECT_IDS.registerForge, input, record, recordPath, host: racing})).receipt.reason).toBe('the plane refused \'init\': the store exists');
-        expect((await applyEffect({effectId: EFFECT_IDS.registerForge, input, record, recordPath, host: silent})).receipt.reason).toBe('the plane\'s forge-connection CLI did not answer: service "fleet-server" is not running');
+        expect((await applyEffect({effectId: EFFECT_IDS.registerForge, input, record, recordPath, host: racing})).receipt.reason).toBe('the plane refused \'init\': the store exists — a new run reads the registry first');
+        expect((await applyEffect({effectId: EFFECT_IDS.registerForge, input, record, recordPath, host: silent})).receipt.reason).toBe('the plane\'s connection registry did not answer: service "fleet-server" is not running — a new run asks again');
     });
 
     test('forgeObservation: the declared endpoint bound to its forge is present with the binding\'s digest; anything else is absent in the row\'s words, a refusal in the words the effect refuses with', () => {
@@ -414,11 +414,14 @@ test.describe('hostEffects', () => {
             status   = fields => ({ok: true, declared, declaredReason: null, state: 'ok', reason: null, binding: null, tombstoned: false, ...fields});
 
         expect(forgeObservation(status({binding: {connectionId: 'c1', authProvider: 'github'}}))).toEqual({present: true, digest: contentDigest('github https://api.github.com c1'), problem: null});
-        expect(forgeObservation(status({state: 'absent'}))).toEqual({present: false, reason: 'the plane\'s forge-connection registry is not initialized yet'});
-        expect(forgeObservation(status())).toEqual({present: false, reason: 'no github connection binds https://api.github.com yet'});
-        expect(forgeObservation(status({binding: {connectionId: 'c2', authProvider: 'gitlab'}}))).toEqual({present: false, reason: 'https://api.github.com is bound to a gitlab connection, not github'});
-        expect(forgeObservation(status({state: 'corrupt', reason: 'it is not valid JSON'})).reason).toBe('the plane\'s forge-connection registry cannot be used, and is never replaced: it is not valid JSON');
+        expect(forgeObservation(status({state: 'absent'}))).toEqual({present: false, reason: 'the plane\'s GitHub connection is not registered yet'});
+        expect(forgeObservation(status())).toEqual({present: false, reason: 'nothing binds https://api.github.com yet'});
+        expect(forgeObservation(status({binding: {connectionId: 'c2', authProvider: 'gitlab'}}))).toEqual({present: false, reason: 'https://api.github.com is bound to a GitLab connection, not GitHub — only a fresh plane recovers it'});
+        expect(forgeObservation(status({state: 'corrupt', reason: 'it is not valid JSON'})).reason).toBe('the plane\'s connection registry cannot be used, and is never replaced: it is not valid JSON — only a fresh plane recovers it');
         expect(forgeObservation(status({declared: null, declaredReason: 'no forge here'}))).toEqual({present: false, reason: 'no forge here'});
+        expect(forgeObservation(status({declared: null}))).toEqual({present: false, reason: 'the plane declares no GitHub or GitLab PAT, so no seat can be owned on it — choose a profile that admits one'});
+        // an id outside the display map prints as it is, never silently as GitHub
+        expect(forgeObservation(status({declared: {authProvider: 'gitea', endpoint: 'https://git.example.com/api/v1'}, state: 'absent'})).reason).toBe('the plane\'s gitea connection is not registered yet');
     });
 
     test('renderEnvFile sorts by key and refuses a non-env name or a multi-line value; probePort reads a listener and a closed port', async () => {

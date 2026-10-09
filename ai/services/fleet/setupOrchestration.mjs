@@ -238,7 +238,7 @@ async function registerForgeInput(layout, host, report) {
 
         return {...context, declared, declaredReason};
     } catch (error) {
-        report(`'register-forge' could not read the forge the plane declares: ${error.message}`);
+        report(`'register-forge' could not read which connection the plane declares: ${error.message}`);
 
         return null;
     }

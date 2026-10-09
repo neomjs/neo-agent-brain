@@ -780,7 +780,7 @@ test.describe('composed Fleet S1 server', () => {
             const refused = await post('stopAgent');
 
             expect(refused.state).toBe(FLEET_WIRE_RESPONSE_STATES.refused);
-            expect(refused.error).toContain('the owner is uninitialized: the forge-connection registry is not initialized');
+            expect(refused.error).toContain('the owner is uninitialized: the plane\'s connection registry is not initialized');
             expect(warns).toEqual([`[FleetServer] 'stopAgent' refused: the owner is uninitialized: ${ForgeConnectionRegistryService.resolveOwner({}).reason}`]);
 
             // a read is still served to the same caller, and logs nothing

@@ -179,7 +179,7 @@ test.describe('setupOrchestration', () => {
             mute    = await consentedRun({forge: () => { throw Object.assign(new Error('service "fleet-server" is not running'), {stdout: ''}) }}),
             refused = await perform(mute, {evaluation: await evaluate(mute.record, {...hostFiles, [EFFECT_IDS.composeUp]: true}), effectIds: [EFFECT_IDS.registerForge]});
 
-        expect(refused.reports).toEqual(['\'register-forge\' could not read the forge the plane declares: the plane\'s forge-connection CLI did not answer: service "fleet-server" is not running']);
+        expect(refused.reports).toEqual(['\'register-forge\' could not read which connection the plane declares: the plane\'s connection registry did not answer: service "fleet-server" is not running — a new run asks again']);
         expect(findReceipt(refused.record, EFFECT_IDS.registerForge)).toBeNull();
         expect(forgeCommands(mute.calls)).toEqual([['status']]);
     });

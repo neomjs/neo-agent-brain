@@ -118,7 +118,7 @@ test.describe('forgeConnections — the plane-local administrative path', () => 
             .toMatchObject({declared: {authProvider: 'gitlab', endpoint: 'https://gitlab.example.com'}, binding: null});
 
         // a mode that admits no forge PAT declares nothing, and says why
-        expect(status({NEO_AUTH_MODE: 'oidc'}).json).toMatchObject({declared: null, declaredReason: 'the plane\'s auth mode \'oidc\' admits no forge PAT, so no seat can be owned on it'});
+        expect(status({NEO_AUTH_MODE: 'oidc'}).json).toMatchObject({declared: null, declaredReason: 'the plane\'s auth mode \'oidc\' admits no GitHub or GitLab PAT, so no seat can be owned on it — choose a profile that admits one'});
 
         // a detached endpoint is tombstoned; a corrupt store is the answer, never a failure
         run('detach', '--endpoint', 'https://api.github.com', '--apply');

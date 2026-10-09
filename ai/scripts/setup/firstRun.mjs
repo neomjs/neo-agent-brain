@@ -25,6 +25,7 @@ import {fileURLToPath} from 'node:url';
 
 import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe, exitCodeFor} from '../../services/fleet/firstRunRecipe.mjs';
 import {secretFileNames}                                                                      from '../../services/fleet/credentialStep.mjs';
+import {ANY_FORGE_NAME}                                                                       from '../../services/fleet/forgeProviders.mjs';
 import {
     admitCredentialReference, createHost, forgeObservation, persistSetupRecord, recordConsent, runForgeConnections
 } from '../../services/fleet/hostEffects.mjs';
@@ -240,7 +241,7 @@ export function productionObservers({layout, host, probe = probePlacement, healt
             const result = probed ?? await placement();
 
             if (result.runningPlane?.project !== layout.composeProject) {
-                throw new Error('the plane is not running, so its forge registry cannot be read');
+                throw new Error(`the plane is not running, so its ${ANY_FORGE_NAME} connection cannot be read`);
             }
 
             return forgeObservation(await runForgeConnections(composeContextOf(layout), ['status'], host));

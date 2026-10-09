@@ -515,7 +515,7 @@ test.describe('firstRun CLI', () => {
             }}),
             observers = productionObservers({layout, host, probe: async () => ({host: {complete: true}, guest: null, observed: {}, runningPlane: running.plane})});
 
-        await expect(observers.forgeConnection()).rejects.toThrow('the plane is not running, so its forge registry cannot be read');
+        await expect(observers.forgeConnection()).rejects.toThrow('the plane is not running, so its GitHub or GitLab connection cannot be read');
         expect(calls).toEqual([]);
 
         // the next evaluation's placement read finds the plane up: the registry is read through compose-up's own context

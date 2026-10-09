@@ -18,6 +18,7 @@ import net               from 'node:net';
 import path              from 'node:path';
 import {promisify}       from 'node:util';
 import {writeFileAtomic} from '../shared/atomicFileWrite.mjs';
+import {ANY_FORGE_NAME, forgeProviderName} from './forgeProviders.mjs';
 import {
     RECEIPT_OUTCOMES,
     contentDigest,
@@ -68,22 +69,23 @@ export async function runForgeConnections({project, cwd, envFile, composeFiles, 
         stdout = error?.stdout;
 
         if (!stdout) {
-            throw new Error(`the plane's forge-connection CLI did not answer: ${error?.message ?? error}`);
+            throw new Error(`the plane's connection registry did not answer: ${error?.message ?? error} — a new run asks again`);
         }
     }
 
     try {
         return JSON.parse(stdout);
     } catch {
-        throw new Error('the plane\'s forge-connection CLI answered no JSON');
+        throw new Error('the plane\'s connection registry answered no JSON — a new run asks again');
     }
 }
 
 /**
  * @summary What a forge-connection `status` answer means for the plane's owners, as an effect observation: the
  * declared endpoint bound to its forge is present (its digest names the binding); anything else is not, with the
- * reason in the row's words. A store that cannot be used, a tombstone or another forge's binding is a reason no
- * run can fix, and the register effect refuses it with the same words.
+ * reason in the row's words, naming the forge as a stranger reads it ({@link forgeProviderName}). A store that
+ * cannot be used, a tombstone or another forge's binding is a reason no run can fix, and the register effect
+ * refuses it with the same words.
  * @param {Object} status The CLI's `status` answer.
  * @returns {{present: Boolean, digest?: String, problem?: null, reason?: String}}
  */
@@ -95,12 +97,13 @@ export function forgeObservation(status) {
     }
 
     return {present: false, reason: forgeRefusal(status) ?? (status.state === 'absent'
-        ? 'the plane\'s forge-connection registry is not initialized yet'
-        : `no ${declared.authProvider} connection binds ${declared.endpoint} yet`)};
+        ? `the plane's ${forgeProviderName(declared.authProvider)} connection is not registered yet`
+        : `nothing binds ${declared.endpoint} yet`)};
 }
 
 /**
- * @summary Why the plane's forge connection cannot be registered by a run, or `null` when a run can do it.
+ * @summary Why the plane's forge connection cannot be registered by a run, or `null` when a run can do it. Every
+ * reason ends with the way out, or says that only a fresh plane is one.
  * @param {Object} status The CLI's `status` answer.
  * @returns {String|null}
  */
@@ -108,18 +111,20 @@ function forgeRefusal(status) {
     const {binding, declared, declaredReason, reason, state, tombstoned} = status ?? {};
 
     if (!declared) {
-        return declaredReason ?? 'the plane declares no forge';
+        return declaredReason ?? `the plane declares no ${ANY_FORGE_NAME} PAT, so no seat can be owned on it — choose a profile that admits one`;
     }
 
     if (state === 'corrupt') {
-        return `the plane's forge-connection registry cannot be used, and is never replaced: ${reason}`;
+        return `the plane's connection registry cannot be used, and is never replaced: ${reason} — only a fresh plane recovers it`;
     }
 
     if (tombstoned) {
-        return `${declared.endpoint} was detached from the plane, and never binds again`;
+        return `${declared.endpoint} was detached from the plane, and never binds again — only a fresh plane recovers it`;
     }
 
-    return binding && binding.authProvider !== declared.authProvider ? `${declared.endpoint} is bound to a ${binding.authProvider} connection, not ${declared.authProvider}` : null;
+    return binding && binding.authProvider !== declared.authProvider
+        ? `${declared.endpoint} is bound to a ${forgeProviderName(binding.authProvider)} connection, not ${forgeProviderName(declared.authProvider)} — only a fresh plane recovers it`
+        : null;
 }
 
 /**
@@ -133,7 +138,7 @@ async function mutateForgeConnections(context, args, host) {
     const answer = await runForgeConnections(context, args, host);
 
     if (answer?.ok !== true) {
-        throw new Error(`the plane refused '${args[0]}': ${answer?.reason ?? 'no reason given'}`);
+        throw new Error(`the plane refused '${args[0]}': ${answer?.reason ?? 'no reason given'} — a new run reads the registry first`);
     }
 
     return answer;
@@ -269,8 +274,8 @@ export const hostEffectHandlers = Object.freeze({
     [EFFECT_IDS.registerForge]: Object.freeze({
         id      : EFFECT_IDS.registerForge,
         describe: input => input?.declared
-            ? `register the plane's ${input.declared.authProvider} forge connection at ${input.declared.endpoint}`
-            : 'register the plane\'s forge connection',
+            ? `register the plane's ${forgeProviderName(input.declared.authProvider)} connection at ${input.declared.endpoint}`
+            : `register the plane's ${ANY_FORGE_NAME} connection`,
         /**
          * Observe first: an endpoint already bound to the declared forge is adopted as it is. Otherwise an absent
          * store is initialized and the endpoint registered, and a fresh read must show the binding. Neither
@@ -285,7 +290,7 @@ export const hostEffectHandlers = Object.freeze({
             let status = await runForgeConnections(input, ['status'], host);
 
             const refusal = forgeRefusal(status) ?? (declared?.endpoint !== status.declared.endpoint || declared?.authProvider !== status.declared.authProvider
-                ? `the plane now declares ${status.declared.authProvider} at ${status.declared.endpoint}: a new run registers it`
+                ? `the plane now declares ${forgeProviderName(status.declared.authProvider)} at ${status.declared.endpoint}: a new run registers it`
                 : null);
 
             if (refusal) {
@@ -305,7 +310,7 @@ export const hostEffectHandlers = Object.freeze({
             const observed = forgeObservation(status);
 
             if (!observed.present) {
-                throw new Error(`the registration did not show in the plane's registry: ${observed.reason}`);
+                throw new Error(`the registration did not show in the plane's registry: ${observed.reason}${forgeRefusal(status) ? '' : ' — a new run reads it again'}`);
             }
 
             return {digest: observed.digest, references: [`forge-connection:${status.binding.connectionId}`]};

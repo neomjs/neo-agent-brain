@@ -5,12 +5,13 @@ import aiConfig              from '../../config.mjs';
 import Base                  from 'neo.mjs/src/core/Base.mjs';
 import {forgeAdmissionFacts} from '../../mcp/server/shared/services/AuthService.mjs';
 import {writeFileAtomicSync} from '../shared/atomicFileWrite.mjs';
+import {ANY_FORGE_NAME, FORGE_PROVIDER_NAMES, forgeProviderName} from './forgeProviders.mjs';
 
 /**
  * @summary The forges an admission can resolve, as AuthService names them.
  * @type {ReadonlyArray<String>}
  */
-export const FORGE_AUTH_PROVIDERS = Object.freeze(['github', 'gitlab']);
+export const FORGE_AUTH_PROVIDERS = Object.freeze(Object.keys(FORGE_PROVIDER_NAMES));
 
 const
     LOCK_FILE    = 'forge-connections.lock',
@@ -227,7 +228,7 @@ class ForgeConnectionRegistryService extends Base {
         return this.withLock(apply, () => {
             const {state, store, reason} = this.read();
 
-            if (state === 'absent')  return refusal('store-uninitialized', 'the forge-connection registry is not initialized');
+            if (state === 'absent')  return refusal('store-uninitialized', 'the plane\'s connection registry is not initialized');
             if (state === 'corrupt') return refusal('store-unavailable', `the store is never replaced: ${reason}`);
 
             const next   = structuredClone(store),
@@ -315,11 +316,11 @@ class ForgeConnectionRegistryService extends Base {
         const {state, store, reason} = this.read();
 
         if (state === 'absent') {
-            return {state: 'uninitialized', reason: 'the forge-connection registry is not initialized: the plane\'s setup step \'register-forge\' initializes it'}
+            return {state: 'uninitialized', reason: 'the plane\'s connection registry is not initialized: the plane\'s setup step \'register-forge\' initializes it'}
         }
 
         if (state === 'corrupt') {
-            return {state: 'unavailable', reason: `the forge-connection registry is unavailable: ${reason}`}
+            return {state: 'unavailable', reason: `the plane's connection registry is unavailable: ${reason} — only a fresh plane recovers it`}
         }
 
         if (typeof providerUserId !== 'string' || providerUserId === '') {
@@ -331,9 +332,11 @@ class ForgeConnectionRegistryService extends Base {
 
         if (!connectionId || store.connections[connectionId].authProvider !== authProvider) {
             // the setup row registers an unbound endpoint; it never rebinds a bound or detached one
-            const remedy = !connectionId && endpoint && !Object.hasOwn(store.tombstones, endpoint) ? ': the plane\'s setup step \'register-forge\' registers it' : '';
+            const remedy = !connectionId && !Object.hasOwn(store.tombstones, endpoint ?? '') ? 'the plane\'s setup step \'register-forge\' registers it' : 'only a fresh plane recovers it';
 
-            return {state: 'unregistered', reason: endpoint ? `no ${authProvider} connection binds ${endpoint}${remedy}` : 'the forge base URL is not an endpoint'}
+            return {state: 'unregistered', reason: endpoint
+                ? `no ${forgeProviderName(authProvider)} connection binds ${endpoint}: ${remedy}`
+                : `the ${forgeProviderName(authProvider)} API base is not an endpoint — correct it in the plane's configuration`}
         }
 
         return {state: 'admitted', principal: `owner:${connectionId}:${providerUserId}`}
@@ -358,8 +361,8 @@ class ForgeConnectionRegistryService extends Base {
         return {
             declared      : endpoint ? {authProvider: facts.authProvider, endpoint} : null,
             declaredReason: endpoint ? null : facts
-                ? `the plane's ${facts.authProvider} API base ${facts.providerBaseUrl} is not an endpoint`
-                : `the plane's auth mode '${auth.mode}' admits no forge PAT, so no seat can be owned on it`,
+                ? `the plane's ${forgeProviderName(facts.authProvider)} API base ${facts.providerBaseUrl} is not an endpoint — correct it in the plane's configuration, then run again`
+                : `the plane's auth mode '${auth.mode}' admits no ${ANY_FORGE_NAME} PAT, so no seat can be owned on it — choose a profile that admits one`,
             state,
             reason,
             binding   : connectionId ? {connectionId, authProvider: store.connections[connectionId].authProvider} : null,
