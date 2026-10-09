@@ -27,7 +27,7 @@ import {RECIPE_STEPS, RECIPE_VERSION, STEP_KINDS, STEP_STATUSES, evaluateRecipe,
 import {secretFileNames}                                                                      from '../../services/fleet/credentialStep.mjs';
 import {ANY_FORGE_NAME}                                                                       from '../../services/fleet/forgeProviders.mjs';
 import {
-    admitCredentialReference, createHost, forgeObservation, persistSetupRecord, recordConsent, runForgeConnections
+    admitCredentialReference, createHost, forgeObservation, persistSetupRecord, readForgeStatus, recordConsent
 } from '../../services/fleet/hostEffects.mjs';
 import {PLANE_MEMORY_CORE_PATH}               from '../../services/fleet/mcpWireParsing.mjs';
 import {presets}                              from '../../services/fleet/placementPresets.mjs';
@@ -244,7 +244,7 @@ export function productionObservers({layout, host, probe = probePlacement, healt
                 throw new Error(`the plane is not running, so its ${ANY_FORGE_NAME} connection cannot be read`);
             }
 
-            return forgeObservation(await runForgeConnections(composeContextOf(layout), ['status'], host));
+            return forgeObservation(await readForgeStatus(composeContextOf(layout), host));
         },
         servedPlane : async (target, {record = null} = {}) => {
             const health = await healthcheck({

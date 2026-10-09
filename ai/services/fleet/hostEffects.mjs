@@ -81,16 +81,47 @@ export async function runForgeConnections({project, cwd, envFile, composeFiles, 
 }
 
 /**
+ * @summary The CLI's `status` answer when it is the canonical one, or a throw with the reason it is not. A refusal
+ * or an envelope without the store state, the declaration and the binding is no evidence about the plane's
+ * configuration: read as a no-PAT plane or an empty registry it would be an invented fact, so its reason surfaces
+ * instead and the row reads unknown.
+ * @param {Object} answer
+ * @returns {Object}
+ */
+function canonicalForgeStatus(answer) {
+    if (answer?.ok === false) {
+        throw new Error(`the plane's connection registry refused 'status': ${answer.reason ?? answer.refused ?? 'no reason given'} — a new run asks again`);
+    }
+
+    if (answer?.ok !== true || !['absent', 'ok', 'corrupt'].includes(answer.state) || !Object.hasOwn(answer, 'declared') || !Object.hasOwn(answer, 'binding')) {
+        throw new Error('the plane\'s connection registry answered an incomplete status — a new run asks again');
+    }
+
+    return answer;
+}
+
+/**
+ * @summary Reads the plane's registry `status` through {@link runForgeConnections}, admitting only its canonical
+ * answer ({@link canonicalForgeStatus}).
+ * @param {Object} context `{project, cwd, envFile, composeFiles, profiles}`
+ * @param {Object} host
+ * @returns {Promise<Object>}
+ */
+export async function readForgeStatus(context, host) {
+    return canonicalForgeStatus(await runForgeConnections(context, ['status'], host));
+}
+
+/**
  * @summary What a forge-connection `status` answer means for the plane's owners, as an effect observation: the
  * declared endpoint bound to its forge is present (its digest names the binding); anything else is not, with the
  * reason in the row's words, naming the forge as a stranger reads it ({@link forgeProviderName}). A store that
  * cannot be used, a tombstone or another forge's binding is a reason no run can fix, and the register effect
- * refuses it with the same words.
+ * refuses it with the same words. An answer that is not the canonical `status` throws its own reason.
  * @param {Object} status The CLI's `status` answer.
  * @returns {{present: Boolean, digest?: String, problem?: null, reason?: String}}
  */
 export function forgeObservation(status) {
-    const {binding, declared} = status ?? {};
+    const {binding, declared} = canonicalForgeStatus(status);
 
     if (declared && binding?.authProvider === declared.authProvider) {
         return {present: true, digest: contentDigest(`${declared.authProvider} ${declared.endpoint} ${binding.connectionId}`), problem: null};
@@ -125,6 +156,20 @@ function forgeRefusal(status) {
     return binding && binding.authProvider !== declared.authProvider
         ? `${declared.endpoint} is bound to a ${forgeProviderName(binding.authProvider)} connection, not ${forgeProviderName(declared.authProvider)} — only a fresh plane recovers it`
         : null;
+}
+
+/**
+ * @summary Why a run cannot accept this `status` for the declaration it set out to register: a reason no run can
+ * fix ({@link forgeRefusal}), or a plane that now declares another provider or endpoint, whose binding must never
+ * be accepted under this request's input digest. `null` when the status speaks for the request's own declaration.
+ * @param {Object} declared The request's `{authProvider, endpoint}`.
+ * @param {Object} status   A canonical `status` answer.
+ * @returns {String|null}
+ */
+function declarationRefusal(declared, status) {
+    return forgeRefusal(status) ?? (declared?.endpoint !== status.declared.endpoint || declared?.authProvider !== status.declared.authProvider
+        ? `the plane now declares ${forgeProviderName(status.declared.authProvider)} at ${status.declared.endpoint}: a new run registers it`
+        : null);
 }
 
 /**
@@ -279,7 +324,9 @@ export const hostEffectHandlers = Object.freeze({
         /**
          * Observe first: an endpoint already bound to the declared forge is adopted as it is. Otherwise an absent
          * store is initialized and the endpoint registered, and a fresh read must show the binding. Neither
-         * mutation is replayed: both refuse a repeat, so a resumed run observes instead.
+         * mutation is replayed: both refuse a repeat, so a resumed run observes instead. Both reads are fenced to
+         * the request's own declaration ({@link declarationRefusal}): a plane that changed its declaration between
+         * them refuses, so another forge's binding is never accepted under this input digest.
          * @param {Object} input The compose context plus `{declared, declaredReason}`, from the plane's own `status`.
          * @param {Object} host
          * @returns {Promise<{digest: String, references: String[]}>}
@@ -287,11 +334,8 @@ export const hostEffectHandlers = Object.freeze({
         async handler(input, host) {
             const {declared} = input ?? {};
 
-            let status = await runForgeConnections(input, ['status'], host);
-
-            const refusal = forgeRefusal(status) ?? (declared?.endpoint !== status.declared.endpoint || declared?.authProvider !== status.declared.authProvider
-                ? `the plane now declares ${forgeProviderName(status.declared.authProvider)} at ${status.declared.endpoint}: a new run registers it`
-                : null);
+            let status  = await readForgeStatus(input, host),
+                refusal = declarationRefusal(declared, status);
 
             if (refusal) {
                 throw new Error(refusal);
@@ -304,7 +348,12 @@ export const hostEffectHandlers = Object.freeze({
 
                 await mutateForgeConnections(input, ['register', '--provider', declared.authProvider, '--endpoint', declared.endpoint, '--apply'], host);
 
-                status = await runForgeConnections(input, ['status'], host);
+                status  = await readForgeStatus(input, host);
+                refusal = declarationRefusal(declared, status);
+
+                if (refusal) {
+                    throw new Error(refusal);
+                }
             }
 
             const observed = forgeObservation(status);

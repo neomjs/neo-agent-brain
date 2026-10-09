@@ -19,7 +19,7 @@
 import path                                                          from 'node:path';
 import {composeCredentialEffects, presetEnvRefusals}                 from './credentialStep.mjs';
 import {RECIPE_STEPS, STEP_KINDS, STEP_STATUSES}                     from './firstRunRecipe.mjs';
-import {EFFECT_IDS, applyEffect, runForgeConnections, settleReceipt} from './hostEffects.mjs';
+import {EFFECT_IDS, applyEffect, readForgeStatus, settleReceipt} from './hostEffects.mjs';
 import {presets}                                                     from './placementPresets.mjs';
 import {createPlaneWitnessClient}                                    from './planeWitnessClient.mjs';
 import {RECEIPT_OUTCOMES, findReceipt}                               from './setupRunRecord.mjs';
@@ -234,7 +234,7 @@ async function registerForgeInput(layout, host, report) {
     const context = composeContextOf(layout);
 
     try {
-        const {declared, declaredReason} = await runForgeConnections(context, ['status'], host);
+        const {declared, declaredReason} = await readForgeStatus(context, host);
 
         return {...context, declared, declaredReason};
     } catch (error) {

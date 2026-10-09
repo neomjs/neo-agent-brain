@@ -422,6 +422,50 @@ test.describe('hostEffects', () => {
         expect(forgeObservation(status({declared: null}))).toEqual({present: false, reason: 'the plane declares no GitHub or GitLab PAT, so no seat can be owned on it — choose a profile that admits one'});
         // an id outside the display map prints as it is, never silently as GitHub
         expect(forgeObservation(status({declared: {authProvider: 'gitea', endpoint: 'https://git.example.com/api/v1'}, state: 'absent'})).reason).toBe('the plane\'s gitea connection is not registered yet');
+
+        // a refusal or an incomplete envelope is no evidence about the plane: its own reason, never a no-PAT claim
+        expect(() => forgeObservation({ok: false, refused: 'unknown-command', reason: 'status is not supported'}))
+            .toThrow('the plane\'s connection registry refused \'status\': status is not supported — a new run asks again');
+        expect(() => forgeObservation({})).toThrow('the plane\'s connection registry answered an incomplete status — a new run asks again');
+        expect(() => forgeObservation({ok: true, declared})).toThrow('the plane\'s connection registry answered an incomplete status — a new run asks again');
+    });
+
+    test('register-forge accepts only the binding of the declaration it set out to register: a declaration changed at the final read refuses, an unchanged one is accepted, an unreadable status mutates nothing', async () => {
+        const
+            {recordPath, record} = await scratch(),
+            declared             = {authProvider: 'github', endpoint: 'https://api.github.com'},
+            input                = {...forgeContext, declared, declaredReason: null},
+            statusOf             = fields => ({ok: true, declared, declaredReason: null, state: 'ok', reason: null, binding: null, tombstoned: false, ...fields}),
+            scripted             = finalStatus => {
+                const answers = [statusOf({state: 'absent'}), {ok: true}, {ok: true, connectionId: 'c1'}, finalStatus];
+
+                return {
+                    calls: answers,
+                    host : createHost({now: () => NOW, run: async () => ({stdout: JSON.stringify(answers.shift()), stderr: ''})})
+                };
+            };
+
+        const changed = scripted(statusOf({declared: {authProvider: 'gitlab', endpoint: 'https://api.github.com'}, binding: {connectionId: 'c9', authProvider: 'gitlab'}}));
+
+        expect((await applyEffect({effectId: EFFECT_IDS.registerForge, input, record, recordPath, host: changed.host})).receipt)
+            .toMatchObject({outcome: RECEIPT_OUTCOMES.failed, reason: 'the plane now declares GitLab at https://api.github.com: a new run registers it'});
+        expect(changed.calls, 'the final read was taken').toHaveLength(0);
+
+        const same = scripted(statusOf({binding: {connectionId: 'c1', authProvider: 'github'}}));
+
+        expect((await applyEffect({effectId: EFFECT_IDS.registerForge, input, record, recordPath, host: same.host})).receipt)
+            .toMatchObject({outcome: RECEIPT_OUTCOMES.accepted, digest: contentDigest('github https://api.github.com c1'), references: ['forge-connection:c1']});
+
+        const
+            commands = [],
+            refusing = createHost({now: () => NOW, run: async (bin, args) => {
+                commands.push(args.slice(args.indexOf('node') + 2));
+                throw Object.assign(new Error('Command failed'), {stdout: JSON.stringify({ok: false, refused: 'unknown-command', reason: 'status is not supported'})});
+            }});
+
+        expect((await applyEffect({effectId: EFFECT_IDS.registerForge, input, record, recordPath, host: refusing})).receipt)
+            .toMatchObject({outcome: RECEIPT_OUTCOMES.failed, reason: 'the plane\'s connection registry refused \'status\': status is not supported — a new run asks again'});
+        expect(commands, 'nothing mutates behind an unreadable status').toEqual([['status']]);
     });
 
     test('renderEnvFile sorts by key and refuses a non-env name or a multi-line value; probePort reads a listener and a closed port', async () => {
