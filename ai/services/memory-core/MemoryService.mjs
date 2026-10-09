@@ -500,7 +500,13 @@ class MemoryService extends Base {
     }
 
     /**
-     * Adds a new memory to the collection — the protocol-mandated per-turn save, engineered to
+     * @summary Persists an authored diary entry for future sessions with the existing per-turn save protocol.
+     *
+     * The caller summarizes context, explains consequential choices using their deciding evidence
+     * or tradeoffs, and records lessons, uncertainty, outcomes and continuation. Detailed receipts
+     * stay in referenced artifacts; a simple turn can have a short entry.
+     *
+     * The protocol-mandated per-turn save is engineered to
      * never fail or stall **on the embed**, once the `memoryWal` config block is present
      * (an absent block — a stale materialized overlay — returns a caught, actionable envelope).
      *
@@ -526,9 +532,9 @@ class MemoryService extends Base {
      * that do not exist.
      *
      * @param {Object} options
-     * @param {String} options.prompt    The user's prompt.
-     * @param {String} options.response  The agent's response.
-     * @param {String} options.thought   The agent's internal thought process.
+     * @param {String} options.prompt    Summarized task context, intended outcome and constraints.
+     * @param {String} options.response  Outcomes, artifact references and continuation.
+     * @param {String} options.thought   Authored retrospective of decisions, rationale, lessons and uncertainty.
      * @param {String} [options.sessionId] The ID of the session this memory belongs to. If omitted, resolves from the request-bound `Mcp-Session-Id` header when present.
      * @param {String} [options.agent]   The agent profile (e.g. 'antigravity').
      * @param {String} [options.model]   The model name (e.g. 'gemini-3.1-pro').

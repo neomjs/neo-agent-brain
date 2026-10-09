@@ -840,13 +840,26 @@ paths:
 
   /memories:
     post:
-      summary: Add New Memory
+      summary: Write a Diary for Future Sessions
       operationId: add_memory
       x-neo-tool-tier: write
       x-pass-as-object: true
-      x-neo-tool-summary: Persist one turn memory. Durable on return; recency reads see it now, semantic recall waits for the embed drain.
+      x-neo-tool-summary: Write a diary for future sessions. Durable on return; recency reads it now, semantic recall waits for embedding.
       description: |
-        Stores a new agent interaction (prompt, thought, response) as a memory.
+        Write a newly authored diary entry for future sessions. Give a later reader enough context
+        to understand what mattered, why a consequential choice was sensible, and how to continue.
+
+        Summarize the task and constraints in `prompt`; use `thought` for your retrospective of
+        decisions, decisive evidence or tradeoffs, lessons and uncertainty; put outcomes and
+        continuation in `response`. Preserve meaningful alternatives and conditions for revisiting
+        a choice when they matter. Write in your own words and link detailed artifacts by stable
+        references. A simple turn can have a short entry; select what is useful rather than inventing
+        alternatives or filling a fixed checklist.
+
+        Example: a release-policy entry explains choosing the PR author because a human can merge
+        a bot PR, links the policy and tests, distinguishes passing source checks from an unobserved
+        deployed publish gate, and names the next post-merge check. A routine reroute can simply
+        record who released the review seat, who now owns it, and the unchanged PR head.
 
         **MANDATORY FINAL STEP:** You MUST call this tool at the end of every turn, *before* generating your final response to the user.
         **CRITICAL:** This is the primary endpoint for making agents stateful. Forgetting to call this results in permanent data loss for the session.
@@ -4700,16 +4713,16 @@ components:
       properties:
         prompt:
           type: string
-          description: The user's verbatim prompt to the agent
-          example: "How do I create a new Neo.mjs component?"
+          description: Summarized task context, intended outcome and constraints for a future reader.
+          example: "Separate maintainer releases from Dependabot maintenance while retaining all validation and the human merge gate."
         thought:
           type: string
-          description: The agent's internal reasoning process
-          example: "The user needs guidance on component creation. I should reference the createComponent script and provide a step-by-step explanation."
+          description: An authored retrospective of consequential decisions, their deciding evidence or tradeoffs, lessons and uncertainty. Preserve relevant alternatives and conditions for revisiting the choice; use stable references for detailed receipts.
+          example: "I chose the exact merged PR's author for release classification: a human can merge Dependabot, so the workflow actor is not the author. Exempting only the pre-merge version check would leave post-merge publication wrong. Source checks pass in neomjs/neo-agent-skills PR149 at 03e403d; the deployed skip remains unobserved. Revisit if GitHub's author or commit-association contract changes."
         response:
           type: string
-          description: The agent's final, user-facing response
-          example: "To create a new Neo.mjs component, you can use the createComponent script..."
+          description: "Outcomes, supporting artifact references and continuation: next actions, open owners or conditions that reopen the decision."
+          example: "Policy PR: https://github.com/neomjs/neo-agent-skills/pull/149. It has green CI and awaits cross-family review. After human merge, rebase PR147, run fresh CI and observe that its merge skips publication and tagging."
         sessionId:
           type: string
           description: Session ID for grouping related memories. Optional; if omitted, defaults to the request-bound Mcp-Session-Id header (when present) or the process-global currentSessionId.
