@@ -67,8 +67,7 @@ export const READER_FACTS = Object.freeze({
 
 /**
  * @summary The reader-facing vocabulary of a failed read: one `cause` and one `nextStep` sentence per
- * failure class, the words the card renders verbatim (Institution #351's first card leaf) and never
- * re-words. `<fact>` is the reader's entry in {@link READER_FACTS}; `<fact>` is the only variable part.
+ * failure class, the words the Create door's card renders verbatim and never re-words. `<fact>` is the reader's entry in {@link READER_FACTS}; `<fact>` is the only variable part.
  *
  * | class | cause | nextStep |
  * |---|---|---|
