@@ -813,6 +813,16 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @summary Skip a starting agent's dependency install: the interrupted checkouts read `skipped`, and the
+     * Start launches. A Stop still cancels it.
+     * @param {String} id Registry agent id.
+     * @returns {{id: String, skippedStarts: Number}} how many pending Starts the Skip reached.
+     */
+    skipAgentDependencies(id) {
+        return this.getManager().skipAgentDependencies(id);
+    }
+
+    /**
      * @summary Restart a running agent through the provisioned path (repo re-ensured, harness runs in
      * ITS checkout). Restarting a non-running agent is just a provisioned start, with its refusals.
      * @param {String} id Registry agent id.

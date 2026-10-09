@@ -55,16 +55,17 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         };
 
         managerStub = {
-            startAgent     : async id => { calls.push(['startAgent', id]);   return {id, state: 'running'}; },
-            stopAgent      : async id => { calls.push(['stopAgent', id]);    return {success: true, id, state: 'stopped'}; },
-            restartAgent   : async id => { calls.push(['restartAgent', id]); return {id, state: 'running'}; },
-            removeAgent    : async id => { calls.push(['removeAgent', id]);  return {success: true, id}; },
-            fleetRepoStatus: ()       => { calls.push(['fleetRepoStatus']);  return [{id: 'alice', repo: 'clean'}]; },
-            setRepo        : payload  => { calls.push(['setRepo', payload]);   return {id: payload.id, metadata: {repo: payload}}; },
-            setRepos       : payload  => { calls.push(['setRepos', payload]);  return {id: payload.id, metadata: {repos: payload.repos}}; },
-            setAvatar      : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
-            adoptAgent     : payload  => { calls.push(['adoptAgent', payload]);   return {id: payload.id, launchOwner: 'fleet'}; },
-            releaseAgent   : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; }
+            startAgent           : async id => { calls.push(['startAgent', id]);   return {id, state: 'running'}; },
+            stopAgent            : async id => { calls.push(['stopAgent', id]);    return {success: true, id, state: 'stopped'}; },
+            restartAgent         : async id => { calls.push(['restartAgent', id]); return {id, state: 'running'}; },
+            skipAgentDependencies: id => { calls.push(['skipAgentDependencies', id]); return {id, skippedStarts: 1}; },
+            removeAgent          : async id => { calls.push(['removeAgent', id]);  return {success: true, id}; },
+            fleetRepoStatus      : ()       => { calls.push(['fleetRepoStatus']);  return [{id: 'alice', repo: 'clean'}]; },
+            setRepo              : payload  => { calls.push(['setRepo', payload]);   return {id: payload.id, metadata: {repo: payload}}; },
+            setRepos             : payload  => { calls.push(['setRepos', payload]);  return {id: payload.id, metadata: {repos: payload.repos}}; },
+            setAvatar            : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
+            adoptAgent           : payload  => { calls.push(['adoptAgent', payload]);   return {id: payload.id, launchOwner: 'fleet'}; },
+            releaseAgent         : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; }
         };
 
         tenantServiceStub = {
@@ -527,6 +528,13 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(calls).toEqual([['restartAgent', 'alice']]);
     });
 
+    test('skipAgentDependencies delegates to the manager, and the wire routes it', async () => {
+        expect(FleetControlBridge.skipAgentDependencies('alice')).toEqual({id: 'alice', skippedStarts: 1});
+        await expect(dispatchFleetRequest(createFleetWireRequest('skipAgentDependencies', 'alice'), FleetControlBridge))
+            .resolves.toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok, result: {id: 'alice', skippedStarts: 1}});
+        expect(calls).toEqual([['skipAgentDependencies', 'alice'], ['skipAgentDependencies', 'alice']]);
+    });
+
     test('removeAgent delegates to the manager compose (stop + deregister)', async () => {
         await expect(FleetControlBridge.removeAgent('alice')).resolves.toEqual({success: true, id: 'alice'});
         expect(calls).toEqual([['removeAgent', 'alice']]);
@@ -594,7 +602,8 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
 
         // the real manager's own start gate, then the provisioned start behind it
         FleetManager.lifecycleService = {
-            beginStart: () => new AbortController().signal,
+            beginStart          : () => new AbortController().signal,
+            dependencySkipSignal: () => new AbortController().signal,
             finishStart() {},
             getRegistry: () => ({
                 getAgent: id => id === 'released' ? {id, launchOwner: 'external', launchOwnerSince: '2026-10-02T00:00:00.000Z'} : {id}

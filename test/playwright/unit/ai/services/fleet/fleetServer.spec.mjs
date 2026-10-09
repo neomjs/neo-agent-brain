@@ -1065,6 +1065,7 @@ test.describe('Fleet S1 wire policy', () => {
             listTenants           : 'awaiting-s4',
             startAgent            : 'awaiting-s5',
             stopAgent             : 'awaiting-s5',
+            skipAgentDependencies : 'awaiting-s5',
             restartAgent          : 'awaiting-s5',
             removeAgent           : 'awaiting-s5',
             fleetMemories         : 'awaiting-s5',
