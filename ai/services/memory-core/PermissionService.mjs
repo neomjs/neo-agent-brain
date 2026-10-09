@@ -120,12 +120,27 @@ class PermissionService extends Base {
     }
 
     /**
-     * Lists permissions for an identity. Defaults to the caller.
+     * @summary Lists permissions for an identity. Defaults to the caller.
+     * Ordinary cached reads retain the separately recorded delegated-inbox stale-grant window;
+     * out of scope here (Memory Core defect-note MESSAGE:9cf6556e-5458-4e87-8b0c-3bdf4616950a).
      * @param {Object} opts
      * @param {String} [opts.forIdentity] The identity to list permissions for.
      * @returns {Promise<Object>}
      */
-    async listPermissions({ forIdentity } = {}) {
+    async listPermissions(args = {}) {
+        return this.readPermissions(args);
+    }
+
+    /**
+     * @summary Applies the same own-identity permission projection synchronously within a caller's read snapshot.
+     * @param {Object} [args] Existing permission-list arguments; only the bound caller is admissible.
+     * @param {Object} [options] Internal service options, never exposed on the MCP request.
+     * @param {Boolean} [options.fromStorage=false] Read persisted capabilities instead of the graph cache.
+     * Observer admission uses this inside its SQLite transaction so another process's revoke cannot
+     * survive in cached capabilities or split permission admission from the message population.
+     * @returns {Object} The canonical permission-list projection.
+     */
+    readPermissions({forIdentity} = {}, {fromStorage = false} = {}) {
         const boundCaller = RequestContextService.getAgentIdentityNodeId();
         if (!boundCaller) throw RequestContextService.unboundIdentityError('list permissions');
 
@@ -141,7 +156,13 @@ class PermissionService extends Base {
         const capabilities    = [];     // Things targetId can do to others
         const grantedToOthers = [];  // Things others can do to targetId
 
-        for (const edge of db.edges.items) {
+        const edges = fromStorage
+            ? db.storage.db.prepare(`SELECT source, target, type, data FROM Edges
+                WHERE type IN (SELECT value FROM json_each(?))`).all(JSON.stringify(this.validScopes))
+                .map(row => ({...row, properties: JSON.parse(row.data).properties}))
+            : db.edges.items;
+
+        for (const edge of edges) {
             if (this.validScopes.includes(edge.type)) {
                 if (normalizeAgentIdentityNodeId(edge.source) === targetId) {
                     capabilities.push({

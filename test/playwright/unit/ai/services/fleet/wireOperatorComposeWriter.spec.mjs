@@ -135,12 +135,18 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
     });
 
     test('the own-inbox primitives are installed only when given, and each missing one leaves only its verb not-wired', async () => {
-        const bridge = stubBridge(), getMessage = () => ({id: 'MESSAGE:m'});
+        const
+            bridge         = stubBridge(),
+            getMessage     = () => ({id: 'MESSAGE:m'}),
+            observeMessages = () => ({messages: []});
 
-        wireOperatorComposeWriter({bridge, addMessage: () => ({}), getMessage, markRead: 'not-a-function'});
+        wireOperatorComposeWriter({bridge, addMessage: () => ({}), getMessage, observeMessages, markRead: 'not-a-function'});
         expect(bridge.composeWriter.getMessage).toBe(getMessage);
+        expect(bridge.composeWriter.observeMessages).toBe(observeMessages);
         expect(Object.hasOwn(bridge.composeWriter, 'markRead')).toBe(false);
         expect(Object.hasOwn(bridge.composeWriter, 'transitionTask')).toBe(false);
+
+        wireOperatorComposeWriter({bridge, addMessage: () => ({}), getMessage});
         expect(Object.hasOwn(bridge.composeWriter, 'observeMessages')).toBe(false);
 
         wireOperatorComposeWriter({addMessage: () => ({}), getMessage});
@@ -169,6 +175,39 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             ['transitionTask', {taskId: 'MESSAGE:t', newState: 'Working'}],
             ['transitionTask', {taskId: 'MESSAGE:t', newState: 'Completed', expectedCurrentState: 'Working'}]
         ])
+    });
+
+    test('fleetOwnMessage forwards its optional closed observer and leaves the omitted body-read route unchanged', async () => {
+        const
+            oldWriter = FleetControlBridge.composeWriter,
+            calls     = [];
+
+        try {
+            wireOperatorComposeWriter({
+                addMessage: () => ({}),
+                getMessage: args => { calls.push(args); return {messageId: args.messageId, observer: args.observer ?? null} }
+            });
+
+            expect(await FleetControlBridge.fleetOwnMessage({messageId: 'MESSAGE:ordinary', from: '@mallory'})).toEqual({
+                messageId: 'MESSAGE:ordinary', observer: null
+            });
+            expect(await FleetControlBridge.fleetOwnMessage({
+                messageId: 'MESSAGE:observed',
+                observer : {scope: 'own', memorySharing: 'private'},
+                from     : '@mallory',
+                userId   : 'mallory'
+            })).toEqual({messageId: 'MESSAGE:observed', observer: {scope: 'own', memorySharing: 'private'}});
+
+            expect(await FleetControlBridge.fleetOwnMessage({
+                messageId: 'MESSAGE:invalid', observer: {scope: 'own', userId: 'mallory'}
+            })).toEqual({status: 'rejected', reason: 'getMessage: mailbox observer has unsupported field(s): userId'});
+            expect(calls).toEqual([
+                {messageId: 'MESSAGE:ordinary'},
+                {messageId: 'MESSAGE:observed', observer: {scope: 'own', memorySharing: 'private'}}
+            ])
+        } finally {
+            FleetControlBridge.composeWriter = oldWriter
+        }
     });
 
     test('the own-inbox verbs reject a missing message id or a missing newState before the primitive runs', () => {

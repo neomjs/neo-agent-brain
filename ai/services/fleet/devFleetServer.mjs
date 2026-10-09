@@ -354,13 +354,15 @@ async function boot() {
             laneClaimSource
         });
 
-        // No observeMessages: the plane's only list is the model-visible `list_messages`, which records
-        // `seenAt`, so the open questions answer unavailable here rather than mark them seen.
+        // Explicit observation preserves receipts; older planes refuse it before dispatch.
         wireOperatorComposeWriter({
             addMessage    : args => planeClient.addMessage(args),
             getMessage    : args => planeClient.getMessage(args),
             markRead      : args => planeClient.markRead(args),
-            transitionTask: args => planeClient.transitionTask(args)
+            transitionTask: args => planeClient.transitionTask(args),
+            // Observer mode is explicit and non-stamping. A Fleet mirror invocation without a scope
+            // is this process's own inbox, never an implicit broad read on the plane.
+            observeMessages: args => planeClient.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
         })
     } else {
         Promise.all([
@@ -382,11 +384,11 @@ async function boot() {
             // the request context the authenticated ingress stamped; the seam carries payload, never
             // identity. Fail-soft: an unavailable singleton leaves the compose seam honestly unwired.
             wireOperatorComposeWriter({
-                addMessage     : MailboxService.addMessage.bind(MailboxService),
-                getMessage     : MailboxService.getMessage.bind(MailboxService),
-                markRead       : MailboxService.markRead.bind(MailboxService),
-                transitionTask : MailboxService.transitionTask.bind(MailboxService),
-                observeMessages: MailboxService.listMessages.bind(MailboxService)
+                addMessage    : MailboxService.addMessage.bind(MailboxService),
+                getMessage    : MailboxService.getMessage.bind(MailboxService),
+                markRead      : MailboxService.markRead.bind(MailboxService),
+                transitionTask: MailboxService.transitionTask.bind(MailboxService),
+                observeMessages: args => MailboxService.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
             })
         }).catch(error => console.warn('[fleet] activity source not wired:', error?.message ?? error))
     }

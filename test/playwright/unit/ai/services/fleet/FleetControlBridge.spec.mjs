@@ -511,6 +511,71 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(Object.keys(result).sort()).toEqual(['admission', 'capability', 'page', 'rows'])
     });
 
+    test('fleetMailboxMirror observer mode returns the canonical answer and forwards only its scope, bounded filters and page', async () => {
+        const
+            oldSource = FleetControlBridge.mailboxMirrorSource,
+            oldWriter = FleetControlBridge.composeWriter,
+            answer    = {messages: [{messageId: 'MESSAGE:1'}], nextOffset: null, totalCount: 1},
+            observed  = [];
+
+        try {
+            FleetControlBridge.mailboxMirrorSource = {readMailboxMirror: () => { throw new Error('observer must not enter the mirror adapter') }};
+            FleetControlBridge.composeWriter = {observeMessages: args => { observed.push(args); return answer }};
+
+            const result = await FleetControlBridge.fleetMailboxMirror({
+                observer      : {scope: 'involves-me', memorySharing: 'team'},
+                status        : 'all',
+                threadId      : 'thread-1',
+                taggedConcepts: ['concept-1'],
+                taskStates    : ['InputRequired'],
+                taskOrder     : 'priority-age',
+                includeArchived: true,
+                box           : 'all',
+                fromIdentity  : '@author',
+                limit         : 999,
+                offset        : -4,
+                agentIdentityNodeId: '@mallory'
+            });
+
+            expect(result).toBe(answer);
+            expect(observed).toEqual([{
+                observer       : {scope: 'involves-me', memorySharing: 'team'},
+                box            : 'all',
+                status         : 'all',
+                fromIdentity  : '@author',
+                threadId       : 'thread-1',
+                taggedConcepts : ['concept-1'],
+                taskStates     : ['InputRequired'],
+                taskOrder      : 'priority-age',
+                includeArchived: true,
+                limit          : 999,
+                offset         : -4
+            }]);
+
+            expect(FleetControlBridge.fleetMailboxMirror({observer: {scope: 'own', viewerIdentity: '@mallory'}}))
+                .toEqual({status: 'rejected', reason: 'fleet: mailbox observer has unsupported field(s): viewerIdentity'});
+            expect(FleetControlBridge.fleetMailboxMirror({observer: {scope: 'own'}, to: '@mallory'}))
+                .toEqual({status: 'rejected', reason: 'fleet: observer reads do not accept caller identity selectors'});
+            expect(observed).toHaveLength(1)
+        } finally {
+            FleetControlBridge.mailboxMirrorSource = oldSource;
+            FleetControlBridge.composeWriter = oldWriter
+        }
+    });
+
+    test('an unwired observer read is not answered as an empty mailbox', () => {
+        const oldWriter = FleetControlBridge.composeWriter;
+
+        try {
+            FleetControlBridge.composeWriter = null;
+            expect(FleetControlBridge.fleetMailboxMirror({observer: {scope: 'own'}})).toEqual({
+                status: 'not-wired', reason: 'fleet: operator inbox observer read not wired'
+            })
+        } finally {
+            FleetControlBridge.composeWriter = oldWriter
+        }
+    });
+
     // ---- delegation: the lifecycle (start / stop / restart / remove / status) half ----
 
     test('startAgent delegates to the manager and resolves its lifecycle status', async () => {

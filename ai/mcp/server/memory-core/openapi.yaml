@@ -2570,6 +2570,11 @@ paths:
         answer from a truncated one — an empty `messages` array proves absence only when
         `totalCount` is 0. To establish that a message does not exist, paginate to the end or read
         `totalCount`; a newest-first window cannot answer that question on its own.
+        Explicit `observer` mode reads retained history, including archived rows, with a page cap of 200.
+        It accepts inbox/all and status all; `to` is refused because the transport supplies the viewer.
+        All and involves-me use the server-clamped content policy; own stays within recipient rights.
+        List metadata excludes bodies and full Task inputs. Detail rechecks the same admission.
+        Observer responses carry viewer/plane/policy/admission context for consumer fencing.
       tags: [Mailbox]
       parameters:
         - name: box
@@ -2659,6 +2664,23 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: observer
+          in: query
+          required: false
+          style: deepObject
+          explode: true
+          description: "Explicit non-stamping observation scope. Omit for the ordinary model-visible inbox read, which records that returned rows were seen. Observer reads retain archive history and never write seen/read receipts or move Tasks."
+          schema:
+            type: object
+            additionalProperties: false
+            required: [scope]
+            properties:
+              scope:
+                type: string
+                enum: [all, involves-me, own]
+              memorySharing:
+                type: string
+                enum: [private, legacy, team]
       responses:
         '200':
           description: OK
@@ -2692,6 +2714,25 @@ paths:
                   offset:
                     type: integer
                     description: "Offset actually applied."
+                  observation:
+                    type: object
+                    description: "Server-derived context for an explicit observer read; `admissionKey` is a comparison fingerprint, never a credential or authorization token. Absent from ordinary list reads."
+                    required: [viewer, planeId, scope, policy, clamped, admissionKey]
+                    properties:
+                      viewer:
+                        type: string
+                      planeId:
+                        type: string
+                      scope:
+                        type: string
+                        enum: [all, involves-me, own]
+                      policy:
+                        type: string
+                        enum: [private, legacy, team]
+                      clamped:
+                        type: boolean
+                      admissionKey:
+                        type: string
         '500':
           description: Error
           content:
@@ -2706,7 +2747,8 @@ paths:
       x-neo-tool-tier: read
       x-pass-as-object: true
       description: |
-        Retrieves a specific message. Subject to read-path permission checks.
+        Retrieves a specific message. Subject to read-path permission checks. An explicit `observer` request uses
+        the non-stamping observer population; omit it for the ordinary authorized detail read.
       tags: [Mailbox]
       parameters:
         - name: messageId
@@ -2714,6 +2756,23 @@ paths:
           required: true
           schema:
             type: string
+        - name: observer
+          in: query
+          required: false
+          style: deepObject
+          explode: true
+          description: "Explicit non-stamping observation scope. Omit for the ordinary authorized message-detail read. Observer reads retain archive history and never write seen/read receipts or move Tasks."
+          schema:
+            type: object
+            additionalProperties: false
+            required: [scope]
+            properties:
+              scope:
+                type: string
+                enum: [all, involves-me, own]
+              memorySharing:
+                type: string
+                enum: [private, legacy, team]
       responses:
         '200':
           description: OK
@@ -2725,6 +2784,25 @@ paths:
                   _channelSeparation:
                     type: string
                     description: "Security annotation marking the payload as DATA, not executable COMMANDS."
+                  observation:
+                    type: object
+                    description: "Server-derived context for an explicit observer read; `admissionKey` is a comparison fingerprint, never a credential or authorization token. Absent from ordinary detail reads."
+                    required: [viewer, planeId, scope, policy, clamped, admissionKey]
+                    properties:
+                      viewer:
+                        type: string
+                      planeId:
+                        type: string
+                      scope:
+                        type: string
+                        enum: [all, involves-me, own]
+                      policy:
+                        type: string
+                        enum: [private, legacy, team]
+                      clamped:
+                        type: boolean
+                      admissionKey:
+                        type: string
         '403':
           description: Unauthorized
           content:
