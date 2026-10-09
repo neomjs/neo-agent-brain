@@ -10,7 +10,7 @@ import {
     recommendPlacement
 } from '../../../../../../ai/services/fleet/firstRunRecipe.mjs';
 import {presets} from '../../../../../../ai/services/fleet/placementPresets.mjs';
-import {GiB}     from '../../../../../../ai/services/fleet/probePlacement.mjs';
+import {GiB, probePlacement} from '../../../../../../ai/services/fleet/probePlacement.mjs';
 import {
     RECEIPT_OUTCOMES,
     RETIRE_REASONS,
@@ -300,6 +300,99 @@ test.describe('firstRunRecipe', () => {
         expect(byId(possible.steps).placement.summary).toBe('the presets this host bears, each with its reason');
         expect(byId(nothing.steps).placement.status).toBe(STEP_STATUSES.failed);
         expect(byId(nothing.steps).placement.placement.refused).toHaveLength(2);
+    });
+
+    test('AC-3 (#956): a host whose VM reader did not answer reads ok · unverified with the cause and the next step; only observed refusals that leave no preset read failed', async () => {
+        const
+            unverifiedProbe = {
+                host       : {complete: false, availableBytes: null, observedAvailableBytes: 40 * GiB, missingReaders: ['vmInfo'], pressure: 'ok'},
+                guest      : null,
+                observed   : {totalmem: true, hostUse: true, vmInfo: false, loadedModels: true, swap: true},
+                uncertainty: [{reader: 'vmInfo', reason: 'Is the docker daemon running?', cause: 'Docker Desktop is not running', nextStep: 'start Docker Desktop, then re-read'}]
+            },
+            unverified = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => unverifiedProbe}, presets, now: () => NOW}),
+            step       = byId(unverified.steps).placement,
+            rows       = recommendPlacement({probe: unverifiedProbe, presets});
+
+        expect(step.status).toBe(STEP_STATUSES.ok);
+        expect(step.verdict).toBe('unverified');
+        expect(step.reason).toBe(`unverified: ${presets.map(row => row.id).join(', ')} (Docker Desktop is not running; next: start Docker Desktop, then re-read)`);
+        expect(rows.unverified.map(row => row.id)).toEqual(presets.map(row => row.id));
+        expect(rows.refused).toEqual([]);
+        expect(rows.unverified.every(row => row.kind === 'unverified' && row.cause === 'Docker Desktop is not running' && row.nextStep === 'start Docker Desktop, then re-read')).toBe(true);
+
+        // the same reader missing on a host whose observed consumers alone fall short: a measured refusal, failed
+        const
+            shortProbe = {...unverifiedProbe, host: {...unverifiedProbe.host, observedAvailableBytes: 1 * GiB}},
+            failed     = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => shortProbe}, presets: presets.filter(row => row.id !== 'hosted'), now: () => NOW}),
+            failedRows = recommendPlacement({probe: shortProbe, presets: presets.filter(row => row.id !== 'hosted')});
+
+        expect(byId(failed.steps).placement.status).toBe(STEP_STATUSES.failed);
+        expect(failedRows.unverified).toEqual([]);
+        expect(failedRows.refused.every(row => row.kind === 'observed' && /on the observed consumers alone$/.test(row.cause) && /^free [\d.]+ GiB of memory/.test(row.nextStep))).toBe(true)
+    });
+
+    test('negative evidence reaches the placement step through the probe: overdrawn, overdrawn-unread and guest-over-cap hosts read failed with observed refusals, swap with the total unread refuses the local presets and leaves hosted unverified, unknown-only reads ok · unverified, ample reads recommended', async () => {
+        // the probe spec's fixture host, injected readers only: a 64 GiB host, 14 GiB other use, 20 GiB of
+        // resident models, a 32 GiB VM at 2.5 GiB residency and a 2.5 GiB observed reservation
+        const
+            readers  = (overrides = {}) => ({
+                totalmem      : () => 64 * GiB,
+                cores         : () => 16,
+                hostUse       : () => [{name: 'os-and-harnesses', bytes: 14 * GiB, source: 'fixture'}],
+                vmInfo        : () => ({backend: 'docker-desktop', capBytes: 32 * GiB, cores: 8, guestOs: 'Ubuntu'}),
+                containerStats: () => [{name: 'chroma', bytes: 2 * GiB}, {name: 'mc-server', bytes: 0.5 * GiB}],
+                vmReservation : () => 2.5 * GiB,
+                loadedModels  : () => ({inventories: ['lms'], models: [{name: 'gemma', bytes: 15 * GiB, state: 'idle'}, {name: 'embed', bytes: 5 * GiB, state: 'loaded'}]}),
+                swap          : () => ({swapUsedBytes: 0, compressedBytes: 1 * GiB}),
+                statfs        : () => ({rootFreeBytes: 300 * GiB}),
+                accelerator   : () => null,
+                composeLs     : () => [],
+                composePorts  : () => [],
+                ...overrides
+            }),
+            placementOf = async overrides => {
+                const
+                    probe  = await probePlacement({readers: readers(overrides)}),
+                    result = await evaluateRecipe({target: targetA, record: null, observers: {...greenObservers(), placement: async () => probe}, presets, now: () => NOW});
+
+                return byId(result.steps).placement;
+            },
+            overdrawn       = await placementOf({totalmem: () => 16 * GiB, hostUse: () => [{name: 'everything', bytes: 20 * GiB, source: 'fixture'}], loadedModels: () => ({inventories: ['lms'], models: []}), vmInfo: () => null, containerStats: () => []}),
+            overdrawnUnread = await placementOf({totalmem: () => 16 * GiB, hostUse: () => [{name: 'everything', bytes: 20 * GiB, source: 'fixture'}], loadedModels: () => ({inventories: ['lms'], models: []}), vmInfo: () => { throw new Error('docker info failed') }}),
+            guestOverCap    = await placementOf({vmInfo: () => ({backend: 'docker-desktop', capBytes: 4 * GiB, cores: 4, guestOs: 'Ubuntu'}), containerStats: () => [{name: 'big', bytes: 6 * GiB}]}),
+            swappingUnread  = await placementOf({totalmem: () => { throw new Error('sysctl refused') }, swap: () => ({swapUsedBytes: 1 * GiB, compressedBytes: 0})}),
+            unknownOnly     = await placementOf({vmInfo: () => { throw new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?') }}),
+            ample           = await placementOf(),
+            observedRefusals = step => step.placement.refused.length > 0 && step.placement.refused.every(row => row.kind === 'observed' && row.cause && row.nextStep);
+
+        // measured shortfalls on every preset: failed, every refusal observed, nothing unverified
+        for (const step of [overdrawn, overdrawnUnread, guestOverCap]) {
+            expect(step.status).toBe(STEP_STATUSES.failed);
+            expect(step.reason).toBe('no supported preset fits this host');
+            expect(step.placement.unverified).toEqual([]);
+            expect(observedRefusals(step)).toBe(true)
+        }
+        expect(overdrawn.placement.refused.map(row => row.cause)).toEqual(presets.map(() => expect.stringMatching(/^the host budget falls [\d.]+ GiB short$/)));
+        expect(overdrawnUnread.placement.refused.map(row => row.cause)).toEqual(presets.map(() => expect.stringMatching(/on the observed consumers alone$/)));
+        expect(guestOverCap.placement.refused.map(row => row.cause)).toEqual(presets.map(() => expect.stringMatching(/^the guest budget falls [\d.]+ GiB short$/)));
+
+        // swap in use with the total unread: the local presets are observed refusals (swapping), hosted is
+        // unverified on the unread total — so the door continues on hosted, and the locals stay refused
+        const locals = presets.filter(row => row.workload.modelsBytes > 0).map(row => row.id);
+
+        expect(swappingUnread.status).toBe(STEP_STATUSES.ok);
+        expect(swappingUnread.verdict).toBe('unverified');
+        expect(swappingUnread.placement.unverified.map(row => row.id)).toEqual(['hosted']);
+        expect(swappingUnread.placement.refused.map(row => row.id)).toEqual(locals);
+        expect(swappingUnread.placement.refused.every(row => row.kind === 'observed' && row.cause === 'the host is swapping: no local preset fits, whatever the arithmetic says')).toBe(true);
+
+        // the controls: unknown-only continues unverified with the Docker words; ample recommends
+        expect(unknownOnly.status).toBe(STEP_STATUSES.ok);
+        expect(unknownOnly.reason).toBe(`unverified: ${presets.map(row => row.id).join(', ')} (Docker Desktop is not running; next: start Docker Desktop, then re-read)`);
+        expect(ample.status).toBe(STEP_STATUSES.ok);
+        expect(ample.reason).toMatch(/^recommended: /);
+        expect(ample.placement.unverified).toEqual([])
     });
 
     test('a missing observer is unknown, never green, and the step order and kinds are the recipe\'s', async () => {

@@ -97,19 +97,31 @@ const GIB_TEXT = bytes => `${(bytes / GiB).toFixed(1)} GiB`;
  * @param {Object}   options.probe   A `probePlacement()` result.
  * @param {Object[]} options.presets The preset table (`placementPresets.presets`).
  * @param {Number}   [options.headroomBytes=HEADROOM_BYTES]
- * @returns {{recommended: Object[], possible: Object[], refused: Object[], headroomBytes: Number}} each entry `{id, margins, reason}`.
+ * @returns {{recommended: Object[], possible: Object[], unverified: Object[], refused: Object[], headroomBytes: Number}}
+ *   each entry `{id, kind, margins, reason, cause, nextStep}`; `unverified` holds the presets whose verdict the
+ *   host did not answer (`kind: 'unverified'` — the preset's fit on the observed facts, with the missing reader's
+ *   cause and next step), `refused` only the observed refusals.
  */
 export function recommendPlacement({probe, presets, headroomBytes = HEADROOM_BYTES}) {
-    const result = {recommended: [], possible: [], refused: [], headroomBytes};
+    const result = {recommended: [], possible: [], unverified: [], refused: [], headroomBytes};
 
     for (const preset of presets) {
         const
             fit = fitsPreset(probe, preset.workload),
-            row = {id: preset.id, margins: fit?.margins ?? {host: null, guest: null}, reason: null};
+            row = {
+                id      : preset.id,
+                kind    : fit?.kind ?? 'observed',
+                margins : fit?.margins ?? {host: null, guest: null},
+                reason  : null,
+                cause   : fit?.cause ?? null,
+                nextStep: fit?.nextStep ?? null
+            };
 
         if (!fit?.fits) {
             row.reason = (fit?.reasons ?? ['no workload declared']).join('; ');
-            result.refused.push(row);
+            // a verdict the host did not answer is unverified, never a refusal: the preset's fit on the
+            // observed facts stands as a recommendation the reader can act on, with its cause and next step
+            result[row.kind === 'unverified' ? 'unverified' : 'refused'].push(row);
             continue;
         }
 
@@ -267,6 +279,14 @@ function evaluatePlacement(step, read, presets, observedAt) {
         const named = rows => rows.map(row => `${row.id} (${row.reason})`).join(', ');
 
         return status(step, STEP_STATUSES.ok, `nothing recommended; possible: ${named(placement.possible)}${placement.refused.length > 0 ? `; refused: ${named(placement.refused)}` : ''}`, {placement, observedAt});
+    }
+
+    if (placement.unverified.length > 0) {
+        // the host did not answer every reader: the door continues on an unverified recommendation
+        // that names what was not read and the one thing to do — never a dead end, never a fit
+        const lead = placement.unverified[0];
+
+        return status(step, STEP_STATUSES.ok, `unverified: ${placement.unverified.map(row => row.id).join(', ')} (${lead.cause}; next: ${lead.nextStep})`, {placement, observedAt, verdict: 'unverified'});
     }
 
     return status(step, STEP_STATUSES.failed, 'no supported preset fits this host', {placement, observedAt});
