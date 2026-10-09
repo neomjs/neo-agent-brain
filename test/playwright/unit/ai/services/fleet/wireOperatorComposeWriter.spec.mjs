@@ -195,7 +195,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             addMessage  : () => ({}),
             listMessages: args => {
                 calls.push(args);
-                return {totalCount: 3, messages: [{messageId: 'MESSAGE:q', subject: 'which way?', from: '@neo-gpt', to: '@tobiu', priority: 'high', task: {state: 'InputRequired'}, sentAt: '2026-10-08T22:00:00.000Z', archivedAt: '2026-10-08T23:00:00.000Z', bodyText: 'never on the wire'}]}
+                return {totalCount: 3, truncated: true, nextOffset: 1, limit: 1, offset: 0, messages: [{messageId: 'MESSAGE:q', subject: 'which way?', from: '@neo-gpt', to: '@tobiu', priority: 'high', task: {state: 'InputRequired'}, sentAt: '2026-10-08T22:00:00.000Z', archivedAt: '2026-10-08T23:00:00.000Z', bodyText: 'never on the wire'}]}
             }
         });
 
@@ -230,7 +230,26 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
         expect(JSON.stringify(failed)).not.toContain('/private/plane');
 
         wireOperatorComposeWriter({addMessage: () => ({}), listMessages: async () => ({messages: []})});
-        expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'unavailable', count: null})
+        expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'unavailable', count: null});
+
+        wireOperatorComposeWriter({addMessage: () => ({}), listMessages: async () => ({totalCount: 1, messages: []})});
+        expect(await FleetControlBridge.fleetOwnQuestions(), 'a page without its continuation cannot say whether more remain')
+            .toMatchObject({state: 'unavailable', reason: 'fleet: the open-questions read answered without its continuation', count: null})
+    });
+
+    test('the page continues as the mailbox served it: a projection hole neither ends a middle page nor extends a final one', async () => {
+        const question = id => ({messageId: id, from: '@neo-gpt', to: '@tobiu', task: {state: 'InputRequired'}, sentAt: '2026-10-08T22:00:00.000Z'});
+
+        // the final page served one row the graph could not project
+        wireOperatorComposeWriter({addMessage: () => ({}), listMessages: async () => ({totalCount: 1, messages: [], truncated: false, nextOffset: null, limit: 50, offset: 0})});
+        expect(await FleetControlBridge.fleetOwnQuestions()).toMatchObject({state: 'ok', count: 1, rows: [], page: {limit: 50, offset: 0, count: 0, hasMore: false}});
+
+        // a middle page served two rows, one of them a hole: the next window starts after both
+        wireOperatorComposeWriter({addMessage: () => ({}), listMessages: async () => ({totalCount: 3, messages: [question('MESSAGE:a')], truncated: true, nextOffset: 2, limit: 2, offset: 0})});
+        const middle = await FleetControlBridge.fleetOwnQuestions({limit: 2});
+
+        expect(middle).toMatchObject({state: 'ok', count: 3, page: {limit: 2, offset: 0, count: 1, hasMore: true}});
+        expect(middle.page.offset + middle.page.limit, 'the consumer\'s next offset is the mailbox\'s nextOffset').toBe(2)
     });
 
     test('open work carries the questions count from a one-row page of the same read, beside its source envelope untouched', async () => {
@@ -240,7 +259,7 @@ test.describe('Neo.ai.services.fleet.wireOperatorComposeWriter', () => {
             FleetControlBridge.openWorkSource = null;
             expect((await FleetControlBridge.fleetOpenWork()).questions).toEqual({state: 'unavailable', count: null, reason: 'fleet: operator inbox listMessages not wired'});
 
-            wireOperatorComposeWriter({addMessage: () => ({}), listMessages: args => { calls.push(args); return {totalCount: 7, messages: [{messageId: 'MESSAGE:q'}]} }});
+            wireOperatorComposeWriter({addMessage: () => ({}), listMessages: args => { calls.push(args); return {totalCount: 7, truncated: true, nextOffset: 1, messages: [{messageId: 'MESSAGE:q'}]} }});
             FleetControlBridge.openWorkSource = {readOpenWork: params => ({state: 'ok', coverage: 'complete', seats: {ada: {}}, params})};
 
             expect(await FleetControlBridge.fleetOpenWork({seat: 'ada'})).toEqual({

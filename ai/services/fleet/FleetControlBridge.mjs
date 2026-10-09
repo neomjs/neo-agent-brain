@@ -72,8 +72,10 @@ const OPEN_TASK_STATES = Object.freeze(['InputRequired', 'Submitted', 'Working']
  * @summary Reads the viewer's open questions through the operator-mailbox seam: its non-terminal A2A Tasks,
  * archived ones included, highest priority then oldest first, with the complete count. The seam reads under
  * the transport-stamped identity, so no identity crosses here. An unwired or failed read answers `unavailable`
- * with its reason, never an empty list or a zero. `capturedAt` is when the read answered: the age a view
- * judges the list's freshness by.
+ * with its reason, never an empty list or a zero. The page is the mailbox's own window (its applied `limit` and
+ * `offset`, and `hasMore` from its `truncated`): it advances by the rows storage served, so a row the graph could
+ * not project never ends a middle page or extends a final one. `capturedAt` is when the read answered: the age a
+ * view judges the list's freshness by.
  * @param {Object|null} seam The bridge's `composeWriter`.
  * @param {{limit: Number, offset: Number}} page
  * @returns {Promise<Object>} `{state, reason, count, rows, page, capturedAt}`.
@@ -108,16 +110,24 @@ async function readOwnQuestions(seam, page) {
         return unavailable('fleet: the open-questions read answered without a complete count')
     }
 
+    if (typeof answer.truncated !== 'boolean') {
+        return unavailable('fleet: the open-questions read answered without its continuation')
+    }
+
     const
         observedAt = new Date().toISOString(),
-        rows       = answer.messages.filter(Boolean).map(message => createFleetMailboxMirrorRow(message, observedAt));
+        rows       = answer.messages.filter(Boolean).map(message => createFleetMailboxMirrorRow(message, observedAt)),
+        window     = {
+            limit : Number.isInteger(answer.limit)  ? answer.limit  : page.limit,
+            offset: Number.isInteger(answer.offset) ? answer.offset : page.offset
+        };
 
     return {
         state     : 'ok',
         reason    : null,
         count     : answer.totalCount,
         rows,
-        page      : {...page, count: rows.length, hasMore: page.offset + rows.length < answer.totalCount},
+        page      : {...window, count: rows.length, hasMore: answer.truncated},
         capturedAt: observedAt
     }
 }
