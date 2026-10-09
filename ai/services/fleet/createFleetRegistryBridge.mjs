@@ -17,8 +17,8 @@ import {
  * The NODE-side client factory (CLI tools like `ai/scripts/fleet/onboardPeer.mjs`, integration
  * specs), binding the same {@link FLEET_WIRE_METHODS} authority `dispatchFleetRequest` validates
  * against — a client built here cannot call a method the server won't route. The BROWSER does not
- * import this module: the product-side bridge generates its own proxy map over
- * the app's wire-method twin, and the vocabulary-parity lint keeps the two lists identical
+ * import this module: the product-side bridge builds its own proxy map over the same list, which it
+ * imports from this package's `src/fleet/contract`, so a new wire verb reaches it with the pin.
  * **Dependency-light by design** — it imports only the dep-free wire-method list, never
  * the Node-only FleetControlBridge / crypto / fs chain.
  *
