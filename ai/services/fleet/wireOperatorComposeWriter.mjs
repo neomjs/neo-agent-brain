@@ -2,10 +2,9 @@ import FleetControlBridge from './FleetControlBridge.mjs';
 
 /**
  * @module ai/services/fleet/wireOperatorComposeWriter
- * @summary Installs the operator-compose WRITE seam onto {@link Neo.ai.services.fleet.FleetControlBridge#composeWriter},
- * so the `composeOperatorMessage` wire verb can persist a mailbox message under the transport-stamped
- * request identity — the write-side sibling of `wireFleetActivityReadSource`, and the first write
- * seam on the fleet wire.
+ * @summary Installs the operator mailbox seam onto {@link Neo.ai.services.fleet.FleetControlBridge#composeWriter}:
+ * `composeOperatorMessage` persists under the transport-stamped request identity, while own-message and explicit
+ * observer reads use the same request-bound MailboxService primitives.
  *
  * **Read-at-use-site, mirroring the read-source wirings.** The caller (the fleet-server process
  * entry) lazily imports the MailboxService singleton at the boot use site and injects the bound
@@ -29,17 +28,18 @@ import FleetControlBridge from './FleetControlBridge.mjs';
  * @param {Function} [options.getMessage]     The own-inbox body read; absent → only its verb is `not-wired`.
  * @param {Function} [options.markRead]       The own-inbox receipt write; same rule.
  * @param {Function} [options.transitionTask] The own-Task move; same rule.
+ * @param {Function} [options.observeMessages] Explicit observer listing; it does not request a seen receipt.
  * @param {Object}   [options.bridge=FleetControlBridge] The control bridge to wire (a stub in specs).
  * @returns {Object|null} the installed writer, or `null` when no writer is available (left unwired).
  */
-export function wireOperatorComposeWriter({addMessage, getMessage, markRead, transitionTask, bridge = FleetControlBridge} = {}) {
+export function wireOperatorComposeWriter({addMessage, getMessage, markRead, transitionTask, observeMessages, bridge = FleetControlBridge} = {}) {
     if (typeof addMessage !== 'function') {
         return null
     }
 
     const writer = {addMessage};
 
-    Object.entries({getMessage, markRead, transitionTask}).forEach(([name, primitive]) => {
+    Object.entries({getMessage, markRead, transitionTask, observeMessages}).forEach(([name, primitive]) => {
         if (typeof primitive === 'function') writer[name] = primitive
     });
 

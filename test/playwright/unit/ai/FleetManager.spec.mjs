@@ -24,6 +24,23 @@ import {startAgentProvisioned} from '../../../../ai/services/fleet/startAgentPro
 const ENV_KEY = 'NEO_FLEET_MANAGED_ROOT';
 let savedEnv;
 
+/** Borrow the real lifecycle cancellation methods with per-test pending/process state. */
+function lifecycleWithStart(overrides = {}) {
+    const lifecycle = Object.create(FleetLifecycleService);
+
+    Object.assign(lifecycle, {
+        pendingStarts     : new Map(),
+        processes         : new Map(),
+        leasesAdopted     : true,
+        getLaunchAdmission: () => ({revocationMark: () => null, revoke: () => null}),
+        adoptLeasedSeats  : () => {},
+        refreshAdoptedSeat: () => {},
+        ...overrides
+    });
+
+    return lifecycle
+}
+
 /** Reset the singleton's injectable plain fields between serial cases. */
 function reset() {
     FleetManager.managedRoot         = null;
@@ -34,6 +51,7 @@ function reset() {
     FleetManager.tenantService       = null;
     FleetManager.wakeStateOptions    = null;
     FleetManager.planeBase           = null;
+    FleetManager.seatHomeHolds.clear()
 }
 
 // Singleton-stateful service → serial, with env + injected-field reset per case.
@@ -63,7 +81,12 @@ test.describe('Neo.ai.services.fleet.FleetManager', () => {
     });
 
     test('startAgent provisions+starts via the composer with the resolved root + lifecycle service', async () => {
-        const lifecycle = {getRegistry: () => ({getAgent: () => null}), isRunning: () => false, status: () => ({}), start: () => ({})},
+        const lifecycle = lifecycleWithStart({
+                  getRegistry: () => ({getAgent: () => null}),
+                  isRunning  : () => false,
+                  status     : () => ({}),
+                  start      : () => ({})
+              }),
               calls     = [];
 
         FleetManager.managedRoot         = '/managed/root';
@@ -107,10 +130,10 @@ test.describe('Neo.ai.services.fleet.FleetManager', () => {
 
     test('restartAgent stops then re-starts via the PROVISIONED path (preserving the repo cwd)', async () => {
         const order     = [],
-              lifecycle = {
+              lifecycle = lifecycleWithStart({
                   getRegistry: () => ({getAgent: () => null}),
                   stop       : id => { order.push(`stop:${id}`); return Promise.resolve({success: true, id, state: 'stopped'}); }
-              };
+              });
 
         FleetManager.managedRoot         = '/managed/root';
         FleetManager.lifecycleService    = lifecycle;
@@ -190,12 +213,12 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
         FleetManager.planeBase           = planeBase;
         FleetManager.wakeStateOptions    = {wakeReceiverBase: 'http://host.docker.internal:3199', wakeReceiverManifestPath: '/host/wake/routes.json'};
         FleetManager.wakeArmFn           = async args => { armCalls.push(args); return arm(args) };
-        FleetManager.lifecycleService    = {
+        FleetManager.lifecycleService    = lifecycleWithStart({
             getRegistry : () => ({getAgent: () => agent}),
             setWakeRoute: real
                 ? (...args) => FleetLifecycleService.setWakeRoute(...args)
                 : (id, route, launch) => { recorded.push({id, route, launch}); return true }
-        };
+        });
 
         return {recorded, armCalls, tenants}
     }
@@ -213,7 +236,8 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
             planeBase    : 'http://127.0.0.1:3102',
             receiverBase : 'http://host.docker.internal:3199',
             manifestPath : '/host/wake/routes.json',
-            tenantService: tenants
+            tenantService: tenants,
+            startSignal  : expect.any(AbortSignal)
         });
         expect(recorded).toEqual([{id: 'agent-a', route: READY, launch: LAUNCH}]);
     });
@@ -241,13 +265,13 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
         }
     });
 
-    test('a slow arm for an earlier launch never overwrites the route of the restart that replaced it', async () => {
-        // Both launches run at the same profile path; only the launch identity tells them apart.
+    test('a queued same-seat Start waits for a slow arm, then records its own route', async () => {
+        // The profile remains held through cleanup of its earlier subscription before a new Start enters.
         let   launches = 0;
         const slow     = Promise.withResolvers(),
               arms     = [() => slow.promise, () => READY];
 
-        configure({
+        const {armCalls} = configure({
             real     : true,
             arm      : () => arms.shift()(),
             provision: async () => {
@@ -259,12 +283,17 @@ test.describe('Neo.ai.services.fleet.FleetManager — wake arming after start', 
         });
 
         const earlier = FleetManager.startAgent('agent-a'),
-              current = await FleetManager.startAgent('agent-a');
+              current = FleetManager.startAgent('agent-a');
+
+        await expect.poll(() => FleetManager.lifecycleService.pendingStarts.get('agent-a')?.size).toBe(2);
+        await expect.poll(() => launches).toBe(1);
+        expect(armCalls).toHaveLength(1);
 
         slow.resolve({...READY, state: 'unarmed', reason: 'the earlier launch failed late', subscriptionId: null});
 
-        expect(current.wakeRoute).toEqual(READY);
         expect((await earlier).wakeRoute.reason).toBe('the earlier launch failed late');
+        expect((await current).wakeRoute).toEqual(READY);
+        expect(launches).toBe(2);
         expect(FleetLifecycleService.status('agent-a')).toMatchObject({pid: 4102, wakeRoute: {state: 'ready', subscriptionId: 'WAKE_SUB:x'}});
     });
 

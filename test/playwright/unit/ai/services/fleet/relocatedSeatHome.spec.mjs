@@ -110,6 +110,11 @@ async function preparedAndCopied({harnessType, remote, copies}) {
 
     await prepare({agent, agentsRoot: rootA, remote});
 
+    if (harnessType.startsWith('codex')) {
+        await fs.appendFile(path.join(rootA, agent.id, 'memory', 'MEMORY.md'), '\nBearer-authored relocation note.\n');
+        await prepare({agent, agentsRoot: rootA, remote})
+    }
+
     for (const copy of copies) {
         await fs.cp(path.join(rootA, agent.id), path.join(copy, agent.id), {recursive: true, verbatimSymlinks: true})
     }
@@ -121,9 +126,9 @@ const outcomeOf = promise => promise.then(() => 'converged', error => error.code
 
 for (const harnessType of PREPARED_HARNESS_TYPES) {
     for (const remote of [false, true]) {
-        // a local Codex seat renders no path of its seat into a Fleet-owned file
-        const pinsItsHome = !(harnessType.startsWith('codex') && !remote);
-        const label       = `${harnessType} seat (${remote ? 'remote' : 'resident'} MCP)`;
+        // A resident Codex seat can re-render its receipt-owned home instructions without an old-root hint.
+        const requiresPreviousRoot = !(harnessType.startsWith('codex') && !remote);
+        const label                = `${harnessType} seat (${remote ? 'remote' : 'resident'} MCP)`;
 
         test(`a copied ${label} converges at its new root when told the previous one, and only then`, async () => {
             const
@@ -131,20 +136,27 @@ for (const harnessType of PREPARED_HARNESS_TYPES) {
                 rootUntold     = path.join(root, 'untold'),
                 {agent, rootA} = await preparedAndCopied({harnessType, remote, copies: [rootB, rootUntold]});
 
-            expect(await outcomeOf(prepare({agent, agentsRoot: rootUntold, remote})), 'untold, a pinned old path is still a divergence').toBe(pinsItsHome ? 'FLEET_WORKSPACE_DIVERGENT' : 'converged');
+            const memoryBefore = harnessType.startsWith('codex')
+                ? await fs.readFile(path.join(rootB, agent.id, 'memory', 'MEMORY.md'))
+                : null;
+
+            expect(await outcomeOf(prepare({agent, agentsRoot: rootUntold, remote})), 'untold, a pinned old path is still a divergence').toBe(requiresPreviousRoot ? 'FLEET_WORKSPACE_DIVERGENT' : 'converged');
 
             const first = await prepare({agent, agentsRoot: rootB, remote, previousInstanceRoot: rootA});
 
             expect(first.instanceHome.startsWith(path.join(rootB, agent.id) + path.sep)).toBe(true);
             expect(await filesNaming(path.join(rootB, agent.id), rootA), 'no Fleet-owned file names the old root').toEqual([]);
-            expect(first.artifacts.some(artifact => artifact.status === 'UPDATED'), 'the move is reported as Fleet moving its own files').toBe(pinsItsHome);
+            expect(first.artifacts.some(artifact => artifact.status === 'UPDATED'), 'the move is reported as Fleet moving its own files').toBe(true);
 
             const second = await prepare({agent, agentsRoot: rootB, remote, previousInstanceRoot: rootA});
 
-            expect(second.artifacts.filter(artifact => artifact.status !== 'MATCH'), 'a second Start converges as a match').toEqual([])
-        });
+            expect(second.artifacts.filter(artifact => artifact.status !== 'MATCH'), 'a second Start converges as a match').toEqual([]);
 
-        if (!pinsItsHome) continue;
+            if (memoryBefore) {
+                expect(await fs.readFile(path.join(rootB, agent.id, 'memory', 'MEMORY.md'))).toEqual(memoryBefore);
+                expect(await fs.readFile(path.join(rootA, agent.id, 'memory', 'MEMORY.md'))).toEqual(memoryBefore)
+            }
+        });
 
         test(`a copied ${label} whose pinned file names neither home still refuses when told the previous root`, async () => {
             const

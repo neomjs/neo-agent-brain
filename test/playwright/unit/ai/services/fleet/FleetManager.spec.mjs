@@ -13,15 +13,34 @@ setup({
     }
 });
 
-import {test, expect}       from '@playwright/test';
-import Neo                  from 'neo.mjs/src/Neo.mjs';
-import * as core            from 'neo.mjs/src/core/_export.mjs';
-import FleetManager         from '../../../../../../ai/services/fleet/FleetManager.mjs';
-import FleetRegistryService from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {test, expect}             from '@playwright/test';
+import Neo                        from 'neo.mjs/src/Neo.mjs';
+import * as core                  from 'neo.mjs/src/core/_export.mjs';
+import FleetControlBridge         from '../../../../../../ai/services/fleet/FleetControlBridge.mjs';
+import FleetLifecycleService      from '../../../../../../ai/services/fleet/FleetLifecycleService.mjs';
+import FleetManager               from '../../../../../../ai/services/fleet/FleetManager.mjs';
+import FleetRegistryService       from '../../../../../../ai/services/fleet/FleetRegistryService.mjs';
+import {armFleetSeatWake}         from '../../../../../../ai/services/fleet/armFleetSeatWake.mjs';
 import {createFleetCockpitStatus} from '../../../../../../ai/services/fleet/fleetCockpitStatus.mjs';
-import fs                   from 'fs';
-import os                   from 'os';
-import path                 from 'path';
+import {createFleetWireRequest}   from '../../../../../../src/fleet/contract/wire.mjs';
+import {dispatchFleetRequest}     from '../../../../../../ai/services/fleet/dispatchFleetRequest.mjs';
+import {installSeatDependencies}  from '../../../../../../ai/services/fleet/installAgentRepoDependencies.mjs';
+import fs                         from 'fs';
+import os                         from 'os';
+import path                       from 'path';
+
+/** Borrow real Start cancellation methods while isolating mutable lifecycle state per test. */
+function lifecycleWithStarts(overrides = {}) {
+    return Object.assign(Object.create(FleetLifecycleService), {
+        pendingStarts     : new Map(),
+        processes         : new Map(),
+        getRegistry       : () => ({getAgent: () => null}),
+        getLaunchAdmission: () => ({revocationMark: () => null, revoke: () => null}),
+        adoptLeasedSeats  : () => {},
+        refreshAdoptedSeat: () => {},
+        ...overrides
+    })
+}
 
 // FleetManager is a singleton; `lifecycleService` is a plain injectable seam (default =
 // FleetLifecycleService). Each test swaps in a stub whose getRegistry() returns a recording registry
@@ -346,6 +365,36 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetRuntimeStatus (roster
         expect(Object.hasOwn(bob, 'repos')).toBe(false)
     });
 
+    test('a Start\'s dependency rows reach the cockpit row through the real lifecycle: live while it installs, final after, launched or not', () => {
+        const
+            registryStub = {listAgents: () => [{id: 'ada', launchOwner: 'fleet'}, {id: 'grace', launchOwner: 'fleet'}]},
+            lifecycle    = lifecycleWithStarts({
+                attemptDependencies: new Map(),
+                gitIdentities      : new Map(),
+                seatModels         : new Map(),
+                getRegistry        : () => registryStub,
+                getLaunchAdmission : () => ({revocationMark: () => null, revoke: () => null, holds: () => false}),
+                harnessSettingsFor : () => null
+            }),
+            cockpit      = () => createFleetCockpitStatus({agents: registryStub.listAgents(), runtimeStatus: FleetManager.fleetRuntimeStatus()})
+                .rows.map(row => row.dependencyOutcomes),
+            canceled     = [{repoSlug: 'neomjs/neo', state: 'canceled', reason: 'stopped during the install'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'installed'}];
+
+        FleetManager.lifecycleService = lifecycle;
+
+        expect(cockpit()).toEqual([null, null]);
+
+        const attempt = lifecycle.beginStart('ada');
+
+        lifecycle.setPendingDependencies('ada', attempt, [{repoSlug: 'neomjs/neo', state: 'installing'}]);
+        expect(cockpit()).toEqual([[{repoSlug: 'neomjs/neo', state: 'installing'}], null]);
+
+        // a Stop ends the attempt before any launch; its final rows stay readable
+        lifecycle.setPendingDependencies('ada', attempt, canceled);
+        lifecycle.finishStart('ada', attempt);
+        expect(cockpit()).toEqual([canceled, null]);
+    });
+
     test('where a desktop seat\'s session opened rides its runtime row, and a status without one adds nothing', () => {
         const
             registryStub  = {listAgents: () => [{id: 'alice'}, {id: 'bob'}]},
@@ -541,10 +590,10 @@ test.describe('Neo.ai.services.fleet.FleetManager — Codex Desktop cleanup fail
             removeAgent: id => { calls.push(['removeAgent', id]); return {success: true, id}; }
         };
 
-        FleetManager.lifecycleService = {
+        FleetManager.lifecycleService = lifecycleWithStarts({
             getRegistry: () => registryStub,
             stop       : async id => ({success: false, id, state: 'failed', cleanupUnresolved: true})
-        };
+        });
         FleetManager.managedRoot        = '/managed/root';
         FleetManager.provisionAndStartFn = async options => {
             calls.push(['start', options.agentId]);
@@ -591,10 +640,10 @@ test.describe('Neo.ai.services.fleet.FleetManager — an explicit release is sta
             released: {id: 'released', launchOwner: 'external', launchOwnerSince: '2026-09-19T17:05:00.000Z'}
         };
 
-        FleetManager.lifecycleService = {
+        FleetManager.lifecycleService = lifecycleWithStarts({
             getRegistry: () => ({getAgent: id => definitions[id] ?? null}),
             stop       : async id => { calls.push(['stop', id]); return {success: true, id, state: 'stopped'}; }
-        };
+        });
         FleetManager.managedRoot         = '/managed/root';
         FleetManager.provisionAndStartFn = async options => {
             calls.push(['start', options.agentId]);
@@ -654,10 +703,10 @@ test.describe('Neo.ai.services.fleet.FleetManager — an explicit release is sta
         try {
             FleetRegistryService.dataDir = tmpDir;
             FleetRegistryService.defineAgent({githubUsername: 'born-external', harnessType: 'codex', credential: 'ghp_fixture_only', launchOwner: 'external'});
-            FleetManager.lifecycleService = {
+            FleetManager.lifecycleService = lifecycleWithStarts({
                 getRegistry: () => FleetRegistryService,
                 stop       : async id => { calls.push(['stop', id]); return {success: true, id, state: 'stopped'}; }
-            };
+            });
 
             await expect(FleetManager.startAgent('born-external'))
                 .rejects.toThrow("FleetManager.startAgent: agent 'born-external' was released to its own harness: adopt it to start it here.");
@@ -694,10 +743,10 @@ test.describe('Neo.ai.services.fleet.FleetManager — a benched identity is star
             gpt : {id: 'gpt',  githubUsername: 'neo-gpt'}
         };
 
-        FleetManager.lifecycleService = {
+        FleetManager.lifecycleService = lifecycleWithStarts({
             getRegistry: () => ({getAgent: id => definitions[id] ?? null}),
             stop       : async id => { calls.push(['stop', id]); return {success: true, id, state: 'stopped'}; }
-        };
+        });
         FleetManager.managedRoot          = '/managed/root';
         FleetManager.presenceStateOptions = {readPresence: () => readPresence()};
         FleetManager.provisionAndStartFn  = async options => {
@@ -820,7 +869,7 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatModelCatalog (wha
         FleetManager.wakeArmFn           = null;
     });
 
-    const lifecycle = ({running = false, kept = null} = {}) => ({
+    const lifecycle = ({running = false, kept = null} = {}) => lifecycleWithStarts({
         getRegistry    : () => ({getDefinition: id => (id === 'sophie' ? SEAT : null), getAgent: () => null}),
         getInstanceRoot: () => '/agents',
         isRunning      : () => running,
@@ -860,7 +909,7 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatModelCatalog (wha
                 gates.shift()()
             };
 
-        FleetManager.lifecycleService    = {...lifecycle({kept: {state: 'complete', models: [], reason: null, observedAt: 'at the start'}}), isRunning: () => seat.running};
+        FleetManager.lifecycleService    = Object.assign(lifecycle({kept: {state: 'complete', models: [], reason: null, observedAt: 'at the start'}}), {isRunning: () => seat.running});
         FleetManager.managedRoot         = '/managed';
         FleetManager.wakeArmFn           = async () => null;
         FleetManager.modelCatalogFn      = async () => { entered.push('read'); await gate(); return {state: 'complete', models: [], reason: null} };
@@ -903,6 +952,253 @@ test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatModelCatalog (wha
         FleetManager.modelCatalogFn = async () => { throw new Error('spawn EACCES') };
         expect(await FleetManager.fleetSeatModelCatalog({id: 'sophie'})).toMatchObject({state: 'unavailable', models: [], reason: expect.stringContaining('the catalog read failed')});
     });
+});
+
+test.describe('Neo.ai.services.fleet.FleetManager — pending Start cancellation across the seat-home queue', () => {
+    const SEATS = {
+        ada  : {id: 'ada',  harnessType: 'codex'},
+        grace: {id: 'grace', harnessType: 'codex'}
+    };
+
+    test.beforeEach(() => {
+        FleetManager.seatHomeHolds.clear();
+        FleetManager.lifecycleService = lifecycleWithStarts({getRegistry: () => ({getAgent: id => SEATS[id] ?? null})});
+        FleetManager.managedRoot = '/managed';
+    });
+
+    test.afterEach(() => {
+        FleetManager.seatHomeHolds.clear();
+        FleetManager.lifecycleService = null;
+        FleetManager.managedRoot = null;
+        FleetManager.provisionAndStartFn = null;
+        FleetManager.wakeArmFn = null;
+        FleetManager.presenceStateOptions = null;
+        FleetManager.planeBase = null;
+        FleetManager.tenantService = null;
+        FleetManager.wakeStateOptions = null;
+    });
+
+    test('Stop cancels both queued Starts; another seat proceeds and a later fresh Start succeeds', async () => {
+        const
+            lifecycle = FleetManager.lifecycleService,
+            calls     = [],
+            home      = Promise.withResolvers();
+
+        FleetManager.provisionAndStartFn = async ({agentId, startSignal}) => {
+            calls.push(['compose', agentId, startSignal]);
+            return {id: agentId, state: 'running'}
+        };
+        FleetManager.wakeArmFn = async ({agent, startSignal}) => {
+            calls.push(['wake', agent.id, startSignal]);
+            return {state: 'ready'}
+        };
+
+        const blocker = FleetManager.withSeatHome('ada', () => home.promise);
+
+        await expect.poll(() => FleetManager.seatHomeHolds.has('ada')).toBe(true);
+
+        const first  = FleetManager.startAgent('ada'),
+              second = FleetManager.startAgent('ada');
+
+        await expect.poll(() => lifecycle.pendingStarts.get('ada')?.size).toBe(2);
+
+        const otherSeat = await FleetManager.startAgent('grace');
+        const stopped   = await FleetManager.stopAgent('ada');
+
+        expect(stopped.canceledStarts).toBe(2);
+        expect(calls.map(([kind, id]) => [kind, id])).toEqual([['compose', 'grace'], ['wake', 'grace']]);
+        expect(otherSeat).toMatchObject({id: 'grace', state: 'running', wakeRoute: {state: 'ready'}});
+
+        home.resolve();
+        await blocker;
+
+        const canceled = await Promise.all([first, second]);
+
+        expect(canceled).toEqual([
+            {id: 'ada', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'},
+            {id: 'ada', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}
+        ]);
+        expect(lifecycle.pendingStarts.has('ada')).toBe(false);
+        expect(calls.map(([kind, id]) => [kind, id])).toEqual([['compose', 'grace'], ['wake', 'grace']]);
+
+        const fresh = await FleetManager.startAgent('ada');
+
+        expect(fresh).toMatchObject({id: 'ada', state: 'running', wakeRoute: {state: 'ready'}});
+        expect(calls.map(([kind, id]) => [kind, id])).toEqual([
+            ['compose', 'grace'], ['wake', 'grace'], ['compose', 'ada'], ['wake', 'ada']
+        ])
+    });
+
+    test('Stop after composition but before wake arming leaves the pending signal registered until cleanup', async () => {
+        const
+            lifecycle = FleetManager.lifecycleService,
+            calls     = [],
+            composed  = Promise.withResolvers(),
+            release   = Promise.withResolvers();
+
+        FleetManager.provisionAndStartFn = async ({startSignal}) => {
+            calls.push(['compose', startSignal]);
+            composed.resolve(startSignal);
+            await release.promise;
+            return {id: 'ada', state: 'running'}
+        };
+        FleetManager.wakeArmFn = async () => { calls.push(['wake']); return {state: 'ready'} };
+
+        const starting = FleetManager.startAgent('ada'),
+              signal   = await composed.promise;
+
+        await FleetManager.stopAgent('ada');
+        expect(signal.aborted).toBe(true);
+        expect(lifecycle.pendingStarts.get('ada')?.has(signal)).toBe(true);
+
+        release.resolve();
+        expect(await starting).toEqual({id: 'ada', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
+        expect(calls.map(([kind]) => kind)).toEqual(['compose']);
+        expect(lifecycle.pendingStarts.has('ada')).toBe(false)
+    });
+
+    /**
+     * A Start whose provisioning runs the real `installSeatDependencies`: the seat's first checkout installs at once,
+     * and the second keeps `npm` running until its signal aborts and `exit()` lets it end.
+     * @returns {{installing: Promise, exit: Function, rows: Function}}
+     */
+    function startInstalling() {
+        const
+            installing = Promise.withResolvers(),
+            exited     = Promise.withResolvers(),
+            checkouts  = [{repoSlug: 'neomjs/neo', repoPath: '/managed/ada/neomjs/neo'}, {repoSlug: 'neomjs/neo-agent-brain', repoPath: '/managed/ada/neomjs/neo-agent-brain'}];
+        let rows = null;
+
+        FleetManager.provisionAndStartFn = async ({agentId, startSignal, dependencySkipSignal}) => {
+            rows = await installSeatDependencies({
+                checkouts,
+                seatRoot  : '/managed/ada',
+                signal    : startSignal,
+                skipSignal: dependencySkipSignal,
+                write     : async () => {},
+                install   : ({repoPath, signal}) => repoPath === checkouts[0].repoPath ? Promise.resolve({state: 'installed'}) : new Promise(resolve => {
+                    installing.resolve();
+                    signal.addEventListener('abort', () => exited.promise.then(() => resolve({canceled: true, state: 'failed', reason: 'npm ci canceled'})), {once: true})
+                })
+            });
+            startSignal.throwIfAborted();
+            return {id: agentId, state: 'running'}
+        };
+        FleetManager.wakeArmFn = async () => ({state: 'ready'});
+
+        return {installing: installing.promise, exit: () => exited.resolve(), rows: () => rows}
+    }
+
+    test('Skip ends a pending Start\'s install and the Start launches: the interrupted checkout reads skipped, the finished one keeps its outcome', async () => {
+        const seat     = startInstalling(),
+              starting = FleetManager.startAgent('ada');
+
+        await seat.installing;
+        // the operator's Skip arrives as a wire verb, through the real bridge to this manager
+        expect(await dispatchFleetRequest(createFleetWireRequest('skipAgentDependencies', 'ada'), FleetControlBridge))
+            .toMatchObject({ok: true, result: {id: 'ada', skippedStarts: 1}});
+        seat.exit();
+
+        expect(await starting).toMatchObject({id: 'ada', state: 'running', wakeRoute: {state: 'ready'}});
+        expect(seat.rows()).toEqual([
+            {repoSlug: 'neomjs/neo', state: 'installed'},
+            {repoSlug: 'neomjs/neo-agent-brain', state: 'skipped', reason: 'skipped during the install'}
+        ]);
+        // the attempt is over, so there is nothing left to skip
+        expect(FleetManager.skipAgentDependencies('ada')).toEqual({id: 'ada', skippedStarts: 0})
+    });
+
+    test('a Stop after a Skip still cancels the Start, and the install it interrupted reads canceled', async () => {
+        const seat     = startInstalling(),
+              starting = FleetManager.startAgent('ada');
+
+        await seat.installing;
+        FleetManager.skipAgentDependencies('ada');
+        // npm has not exited from the Skip yet
+        expect((await FleetManager.stopAgent('ada')).canceledStarts).toBe(1);
+        seat.exit();
+
+        expect(await starting).toEqual({id: 'ada', state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'});
+        expect(seat.rows()[1]).toEqual({repoSlug: 'neomjs/neo-agent-brain', state: 'canceled', reason: 'stopped during the install'})
+    });
+
+    for (const phase of ['during-client-close', 'after-arming']) {
+        test(`Stop ${phase} preserves the real armer's unresolved route without reporting it ready`, async () => {
+            const
+                entered    = Promise.withResolvers(),
+                release    = Promise.withResolvers(),
+                plane      = 'http://127.0.0.1:32123',
+                calls      = [],
+                armResults = [],
+                persisted  = [],
+                agent      = {id: 'ada', githubUsername: 'ada', harnessType: 'codex-desktop', mcpTarget: {kind: 'tenant', tenantId: 'local'}},
+                lifecycle  = lifecycleWithStarts({
+                    getRegistry : () => ({getAgent: () => agent}),
+                    setWakeRoute: (id, route) => persisted.push({id, route})
+                });
+            let closes = 0;
+
+            FleetManager.lifecycleService = lifecycle;
+            FleetManager.planeBase = plane;
+            FleetManager.tenantService = {
+                resolveMcpResources : () => ({endpoint: plane, resources: {'memory-core': {url: `${plane}/mc/mcp`}}}),
+                resolveMcpCredential: () => 'fixture-credential'
+            };
+            FleetManager.wakeStateOptions = {wakeReceiverBase: 'http://127.0.0.1:32124', wakeReceiverManifestPath: '/fixture/routes.json'};
+            FleetManager.provisionAndStartFn = async () => ({id: 'ada', state: 'running', instanceHome: '/fixture/ada/harness/codex-desktop'});
+            FleetManager.wakeArmFn = async options => {
+                const route = await armFleetSeatWake({
+                    ...options,
+                    createClient: () => ({
+                        init    : async () => ({ok: true}),
+                        callTool: async (name, {action}) => {
+                            calls.push(action);
+                            return action === 'subscribe' ? {subscriptionId: 'WAKE_SUB:late'} : {subscriptions: [{id: 'WAKE_SUB:late'}]}
+                        },
+                        close: async () => {
+                            if (++closes === 1 && phase === 'during-client-close') {
+                                entered.resolve();
+                                await release.promise
+                            }
+                        }
+                    }),
+                    armRoute: async ({listSubscriptions}) => ({armed: true, subscriptionIds: (await listSubscriptions()).map(row => row.id)})
+                });
+
+                armResults.push(route);
+                if (armResults.length === 1 && phase === 'after-arming') {
+                    entered.resolve();
+                    await release.promise
+                }
+                return route
+            };
+
+            const starting = FleetManager.startAgent('ada');
+
+            await entered.promise;
+            const signal = [...lifecycle.pendingStarts.get('ada').keys()][0];
+
+            await FleetManager.stopAgent('ada');
+            expect(signal.aborted).toBe(true);
+            expect(lifecycle.pendingStarts.get('ada').has(signal)).toBe(true);
+            release.resolve();
+
+            expect(await starting).toMatchObject({
+                canceled : true,
+                state    : 'stopped',
+                wakeRoute: {state: 'unarmed', reason: 'start canceled by Stop', cleanupUnresolved: true, subscriptionId: 'WAKE_SUB:late'}
+            });
+            expect(armResults[0].state).toBe(phase === 'during-client-close' ? 'unarmed' : 'ready');
+            expect(calls).toEqual(['subscribe', 'list']);
+            expect(persisted).toEqual([]);
+            expect(lifecycle.pendingStarts.has('ada')).toBe(false);
+            expect(FleetManager.seatHomeHolds.has('ada')).toBe(false);
+
+            expect(await FleetManager.startAgent('ada')).toMatchObject({state: 'running', wakeRoute: {state: 'ready', subscriptionId: 'WAKE_SUB:late'}});
+            expect(persisted).toHaveLength(1);
+            expect(lifecycle.pendingStarts.has('ada')).toBe(false)
+        });
+    }
 });
 
 test.describe('Neo.ai.services.fleet.FleetManager — fleetSeatGitIdentity (the identity Add reads after a define)', () => {

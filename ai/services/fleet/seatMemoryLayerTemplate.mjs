@@ -1,14 +1,12 @@
+import path from 'node:path';
+
 /**
- * The seat memory-layer SSOT: every markdown scaffold (and the Kimi-side loading hook) a seat's
- * persistent memory layer boots from, shared by `generateKimiSeatConfig.mjs` and
- * `generateOpenCodeSeatConfig.mjs` so both harnesses scaffold the SAME layer shape. The pattern
- * is the Grace-pattern (the Claude Code auto-memory shape, validated on the first Kimi seat
- * 2026-07-19 → 07-22): ONE capped hot index (`MEMORY.md`) loaded every session boot +
- * post-compact; detail files on demand in the same directory; cold storage in `ARCHIVE.md`;
- * the Memory Core as the semantically-queried deep archive. Map-vs-world-atlas: the hot index
- * stays under its byte cap and POINTS; depth lives in detail files and the Memory Core.
+ * The seat memory-layer SSOT: markdown scaffolds and supported loading descriptions. Kimi Code and
+ * OpenCode use the Grace-pattern hot index and harness-specific loading mechanisms. Codex uses the
+ * same seat-owned files, but Fleet projects the two boot files inline into home `AGENTS.md`; no
+ * Codex-specific byte cap or post-compaction reload is claimed here.
  *
- * Two harness load mechanisms, one layer:
+ * Harness loading mechanisms:
  *
  * - **Kimi Code** has no per-seat `instructions` slot (`SessionStart` is observation-only), but
  *   its hook contract appends `UserPromptSubmit` stdout to context — so the layer loads via the
@@ -38,20 +36,37 @@ export const MEMORY_LAYER_BOOT_FILES = Object.freeze(['MEMORY.md', 'identity.md'
  * The harnesses this template knows how to describe a load mechanism for.
  * @type {ReadonlyArray<String>}
  */
-const HARNESSES = Object.freeze(['kimi-code', 'opencode']);
+const HARNESSES = Object.freeze(['codex', 'codex-desktop', 'kimi-code', 'opencode']);
 
 /**
- * Render the seat's `MEMORY.md`: the capped hot-index skeleton. Sections are deliberately
+ * Render the seat's `MEMORY.md`. Kimi/OpenCode receive the capped hot-index skeleton; Codex gets a
+ * small seat-owned index without unsupported size or post-compaction claims. Sections are deliberately
  * near-empty at birth — the index ACCRETES from the seat's own public record (weak-spots are
- * per-seat: another seat's mistakes are not this seat's content). The cap header carries the
- * measurement discipline (`wc -c`, the two thresholds, the three levers) so the rule travels
- * with the file it governs.
+ * per-seat: another seat's mistakes are not this seat's content).
  * @param {Object} options
- * @param {String} options.harness 'kimi-code' | 'opencode' — selects the load-mechanism line.
+ * @param {String} options.harness 'codex' | 'codex-desktop' | 'kimi-code' | 'opencode'
  * @returns {String}
  */
 export function renderMemoryIndexMd({harness} = {}) {
     assertHarness(harness);
+
+    if (harness === 'codex' || harness === 'codex-desktop') {
+        return [
+            '# Seat memory index',
+            '',
+            '> This is the bearer-authored working memory for this seat. Keep durable details here and in nearby',
+            '> files; Fleet projects the two boot files into this seat\'s home `AGENTS.md` for Codex context.',
+            '> The Memory Core remains the provenance-bearing archive for turn records and deeper retrieval.',
+            '',
+            '## Identity & loading',
+            '- [Identity](identity.md) — the self-story; filled at the naming gate, bearer-authored only.',
+            '- [About this layer](about-this-layer.md) — how the home instruction projection loads these files.',
+            '',
+            '## Working memory',
+            '- (append durable, record-backed lessons and current lane anchors as they become useful)',
+            ''
+        ].join('\n')
+    }
 
     const loadLine = harness === 'kimi-code'
         ? 'Loaded at session boot + post-compact by the identity-anchor hook (`hooks/identityAnchorHook.mjs`, wired as UserPromptSubmit + PostCompact in `config.toml`).'
@@ -96,11 +111,34 @@ export function renderMemoryIndexMd({harness} = {}) {
  * HOW it loads in this harness (the mechanism, so a recovering agent can diagnose a broken load
  * instead of re-learning the lesson), and the discipline that keeps the layer cheap.
  * @param {Object} options
- * @param {String} options.harness 'kimi-code' | 'opencode' — selects the mechanism paragraph.
+ * @param {String} options.harness 'codex' | 'codex-desktop' | 'kimi-code' | 'opencode' — selects the mechanism paragraph.
  * @returns {String}
  */
 export function renderAboutThisLayerMd({harness} = {}) {
     assertHarness(harness);
+
+    if (harness === 'codex' || harness === 'codex-desktop') {
+        return [
+            '# About this layer',
+            '',
+            '**What this is:** the seat\'s persistent markdown memory. `MEMORY.md` is the working index,',
+            '`identity.md` is the bearer-authored self-story, and nearby files may hold durable details.',
+            'The Memory Core remains the provenance-bearing archive for turn records and deeper retrieval.',
+            '',
+            '**How it loads (codex):** Fleet reads the two boot files from this seat\'s memory directory and',
+            'projects their complete contents inline into the seat\'s home `AGENTS.md`. Codex loads that',
+            'home instruction file for sessions. A non-empty home `AGENTS.override.md` shadows `AGENTS.md`,',
+            'so Fleet refuses to claim a memory projection while that override is present. Fleet refreshes',
+            'the projection during Start; an already-running session is not updated, and post-compaction',
+            'reload has not been verified.',
+            '',
+            '**Rules of the layer:**',
+            '- `identity.md` is the bearer\'s self-story; nobody else writes it.',
+            '- Keep useful working knowledge in these files and cite durable claims to their source record.',
+            '- Use the Memory Core for provenance-bearing turn records and deeper retrieval.',
+            ''
+        ].join('\n')
+    }
 
     const mechanism = harness === 'kimi-code'
         ? [
@@ -150,6 +188,42 @@ export function renderAboutThisLayerMd({harness} = {}) {
         'loader is wired by the seat config, not by discipline.',
         ''
     ].join('\n');
+}
+
+/**
+ * @summary Projects Codex's boot files as one inline home-instruction section. Codex does not load a
+ * separate seat memory directory, so the effective AGENTS.md must carry the complete contents.
+ * @param {Object} options
+ * @param {Object} options.bootFiles Full UTF-8 contents keyed by each name in MEMORY_LAYER_BOOT_FILES
+ * @param {String} options.memoryDir Absolute source directory for relative references in the files
+ * @returns {String}
+ */
+export function renderCodexMemoryBootSection({bootFiles, memoryDir} = {}) {
+    const missing = MEMORY_LAYER_BOOT_FILES.filter(file => typeof bootFiles?.[file] !== 'string');
+
+    if (missing.length) {
+        throw new Error(`renderCodexMemoryBootSection: missing boot file contents for ${missing.join(', ')}`)
+    }
+
+    if (typeof memoryDir !== 'string' || !path.isAbsolute(memoryDir)) {
+        throw new Error("renderCodexMemoryBootSection: 'memoryDir' must be an absolute path.")
+    }
+
+    return [
+        '## Seat memory',
+        '',
+        'The following files are projected in full from this seat\'s memory directory.',
+        '',
+        `Source directory: \`${memoryDir}\`. Resolve relative file references against this directory.`,
+        '',
+        ...MEMORY_LAYER_BOOT_FILES.flatMap((file, index) => [
+            ...(index ? [''] : []),
+            `### ${file}`,
+            '',
+            bootFiles[file]
+        ]),
+        ''
+    ].join('\n')
 }
 
 /**

@@ -150,6 +150,17 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
         expect(snapshot.rows.map(row => row.repoOutcomes)).toEqual([repos, null, null])
     })
 
+    test("carries what the last start did about each checkout's dependencies from the runtime row — null before a start", () => {
+        const
+            dependencies = [{repoSlug: 'neomjs/neo', state: 'installed'}, {repoSlug: 'neomjs/neo-agent-brain', state: 'unverified'}],
+            snapshot     = createFleetCockpitStatus({
+                agents       : [{id: 'alice'}, {id: 'bob'}],
+                runtimeStatus: [{agentId: 'alice', state: 'running', running: true, confidence: 'observed', dependencies}]
+            })
+
+        expect(snapshot.rows.map(row => row.dependencyOutcomes)).toEqual([dependencies, null])
+    })
+
     test('carries where a desktop seat\'s session opened from the runtime row — null for every other row', () => {
         const
             sessionFolder = {state: 'wrong', expected: '/agents/alice/neomjs/neo', observed: '/old/neo'},
@@ -706,7 +717,7 @@ test.describe('fleetCockpitStatus - Body-side cockpit DTO contract', () => {
 
         // The composer's per-seat record, not the page, is the seat's lane
         test('the per-seat record reaches the row when the page no longer holds the claim; a degraded page still withholds it', () => {
-            const kept  = claim('neo-gpt', '2026-10-02T08:00:00.000Z', '[lane-claim] kept off the page'),
+            const kept   = claim('neo-gpt', '2026-10-02T08:00:00.000Z', '[lane-claim] kept off the page'),
                   agents = [{id: 'seat', githubUsername: 'neo-gpt'}],
                   rowOf  = laneStatus => createFleetCockpitStatus({agents, laneStatus}).rows[0];
 

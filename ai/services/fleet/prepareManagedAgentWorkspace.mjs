@@ -1,6 +1,7 @@
 import {constants as fsConstants}                     from 'node:fs';
 import fs                                             from 'node:fs/promises';
 import {writeFileAtomic}                              from '../shared/atomicFileWrite.mjs';
+import {verifyAgentRepoTrust}                         from './ensureAgentRepo.mjs';
 import path                                           from 'node:path';
 import os                                             from 'node:os';
 import crypto                                         from 'node:crypto';
@@ -20,10 +21,11 @@ import {
     createManagedAgentWorkspacePlan,
     launchRowEnvNames
 } from './managedAgentWorkspacePlan.mjs';
-import {LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR, isLaunchIdentity} from './mcpLaunchAdmission.mjs';
+import {LAUNCH_GRANT_ENV_VAR, LAUNCH_ISSUER_ENV_VAR, isLaunchIdentity}                                            from './mcpLaunchAdmission.mjs';
 import {OPENCODE_SEAT_SERVERS, WAKE_ENVELOPE_PLANT_FILE_NAME, generateOpenCodeSeatConfig, isUnmodifiedGeneration} from './generateOpenCodeSeatConfig.mjs';
 import {SEAT_INSTRUCTION_STATES, projectSeatInstructions}                                                         from './projectSeatInstructions.mjs';
 import {ensureSeatEnvFile}                                                                                        from './seatEnvFile.mjs';
+import {renderAboutThisLayerMd, renderIdentityMd, renderMemoryIndexMd}                                            from './seatMemoryLayerTemplate.mjs';
 
 export {createManagedAgentWorkspacePlan} from './managedAgentWorkspacePlan.mjs';
 
@@ -270,6 +272,7 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {String} [options.nodePath] Node executable used for installed MCP entrypoints.
  * @param {Object} [options.runtime=process] Host runtime facts for child execution mode.
  * @param {String} [options.claudeConfigRoot] Claude Desktop's shared Code-tab config root (host home by default).
+ * @param {Object[]} [options.repoTrust=[]] Assignment proofs resolved by the host composer, not by the portable plan.
  * @param {Object} [options.residentMcpEnv] Per-server resolved child environment supplied at Start.
  * @param {Object} [options.remoteMcpCapability] Existing non-secret installed-adapter proof.
  * @param {Object} [options.launchAdmission] `{issuer, identity, grants}`: a Claude Desktop seat's reserved
@@ -281,6 +284,7 @@ function bindManagedAgentWorkspacePlan({logicalPlan, agentosRuntimeRoot, nodePat
  * @param {Function} [options.log] Hydration logger.
  * @returns {Promise<{agentosRuntimeRoot: String, targetRepoRoot: String, instanceHome: String, mcpMatrix: Object, mcpPlan: Object[], hydration: Object, artifacts: Object[], seatInstructions: Object}>}
  *     `seatInstructions` is the decision about the seat's instruction file: `{state, reason, ignored?, homeFile?}`.
+ *     Optional `repoTrust` records report file projection outcomes, never native-session acceptance.
  * @throws {ManagedWorkspacePreparationError} For invalid plans/bindings, unsafe paths, unsupported
  *     capabilities, divergent content, or effect failures.
  */
@@ -313,6 +317,7 @@ async function applyManagedAgentWorkspacePlanUnchecked({
     nodePath = process.execPath,
     runtime = process,
     claudeConfigRoot = os.homedir(),
+    repoTrust = [],
     residentMcpEnv = {},
     remoteMcpCapability = null,
     launchAdmission = null,
@@ -382,9 +387,18 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         label     : 'resident home'
     });
 
+    const memoryArtifacts = await convergeSeatMemory({
+        agent,
+        targetRepoRoot: canonicalTargetRepoRoot,
+        instanceRoot  : canonicalInstanceRoot,
+        previous,
+        fileSystem
+    });
+
     const artifacts = await prepareHarnessArtifacts({
         agent,
         targetRepoRoot    : canonicalTargetRepoRoot,
+        instanceRoot      : canonicalInstanceRoot,
         instanceHome,
         agentosRuntimeRoot: canonicalAgentosRuntimeRoot,
         plan,
@@ -396,21 +410,19 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         fileSystem
     });
 
+    const trust = await convergeClaudeRepositoryTrust({agent, instanceHome, claudeConfigRoot, repoTrust, fileSystem});
+    trust.artifact && artifacts.push(trust.artifact);
+
     // the seat's own .env, in its seat folder beside the clones, where the operator adds keys
     await ensureSeatEnvFile({seatHome: path.join(canonicalInstanceRoot, agent.id), fileSystem});
 
-    artifacts.push(...await convergeSeatMemory({
-        agent,
-        targetRepoRoot: canonicalTargetRepoRoot,
-        instanceRoot  : canonicalInstanceRoot,
-        previous,
-        fileSystem
-    }));
+    artifacts.push(...memoryArtifacts);
 
     const seatInstructions = await convergeSeatInstructions({
         harnessType   : agent.harnessType,
         targetRepoRoot: canonicalTargetRepoRoot,
         instanceHome,
+        memoryDir     : deriveAgentMemoryDir({instanceRoot: canonicalInstanceRoot, agentId: agent.id}),
         repoSlug,
         fileSystem,
         log
@@ -433,7 +445,8 @@ async function applyManagedAgentWorkspacePlanUnchecked({
         })),
         hydration,
         artifacts,
-        seatInstructions  : seatInstructions.observation
+        seatInstructions  : seatInstructions.observation,
+        ...(trust.records.length ? {repoTrust: trust.records} : {})
     }
 }
 
@@ -475,10 +488,13 @@ async function applyManagedAgentWorkspacePlanUnchecked({
  * @param {String}  [options.claudeConfigRoot]    Claude Desktop's shared Code-tab config root.
  * @param {Object}  [options.residentMcpEnv]      Per-server resolved child environment supplied at Start.
  * @param {Object}  [options.launchAdmission]     A Claude Desktop seat's reserved launch admission.
+ * @param {Object[]} [options.assignedRepos=[]] Successfully prepared `{repoSlug, cloneUrl, repoPath}` entries;
+ *                                              only current assignments with independently verified roots may gain trust.
  * @param {Object}  [options.fileSystem]          Promise filesystem seam.
  * @param {Function}[options.log]                 Hydration logger.
  * @returns {Promise<{agentosRuntimeRoot: String, targetRepoRoot: String, instanceHome: String, mcpMatrix: Object, mcpPlan: Object[], hydration: Object, artifacts: Object[], seatInstructions: Object}>}
  *     `seatInstructions` is the decision about the seat's instruction file: `{state, reason, ignored?, homeFile?}`.
+ *     Optional `repoTrust` records report the verified assignment's file projection or refusal.
  * @throws {ManagedWorkspacePreparationError} for unsupported adapters or divergent owned content.
  * @see createManagedAgentWorkspacePlan
  * @see applyManagedAgentWorkspacePlan
@@ -499,6 +515,7 @@ export async function prepareManagedAgentWorkspace({
     mcpTarget = null,
     remoteMcpCapability = null,
     launchAdmission = null,
+    assignedRepos = [],
     fileSystem = fs,
     log = () => {}
 } = {}) {
@@ -530,6 +547,23 @@ export async function prepareManagedAgentWorkspace({
         throw unsupported(error.message)
     }
 
+    if (!Array.isArray(assignedRepos)) throw unsupported('assignedRepos must be an array of prepared checkouts');
+
+    const assignments = new Map([agent.metadata?.repo, ...(agent.metadata?.repos || [])]
+        .filter(Boolean).map(repo => [repo.repoSlug, repo])),
+          repoTrust = [];
+
+    if (['claude-code', 'claude-desktop'].includes(agent.harnessType)) {
+        for (const candidate of assignedRepos) {
+            const declared = assignments.get(candidate.repoSlug),
+                  proof    = declared && declared.cloneUrl === candidate.cloneUrl
+                      ? await verifyAgentRepoTrust(candidate)
+                      : {state: 'unverified', reason: 'the checkout is not a current repository assignment'};
+
+            repoTrust.push({repoSlug: candidate.repoSlug, repoPath: candidate.repoPath, ...proof})
+        }
+    }
+
     return applyManagedAgentWorkspacePlan({
         plan,
         targetRepoRoot,
@@ -540,6 +574,7 @@ export async function prepareManagedAgentWorkspace({
         nodePath,
         runtime,
         claudeConfigRoot,
+        repoTrust,
         residentMcpEnv,
         remoteMcpCapability,
         launchAdmission,
@@ -712,6 +747,7 @@ async function assertNoSymlinkSegments({rootPath, targetPath, fileSystem, label}
 async function prepareHarnessArtifacts({
     agent,
     targetRepoRoot,
+    instanceRoot,
     instanceHome,
     agentosRuntimeRoot,
     plan,
@@ -727,9 +763,9 @@ async function prepareHarnessArtifacts({
         case 'codex-desktop':
             return prepareCodexArtifacts({agent, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
         case 'kimi-code':
-            return prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
+            return prepareKimiArtifacts({agent, instanceRoot, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
         case 'opencode':
-            return prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
+            return prepareOpenCodeArtifacts({agent, instanceRoot, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem});
         case 'claude-code':
             return prepareClaudeJsonArtifact({
                 agent,
@@ -769,7 +805,7 @@ function harnessHomeRoot(harnessType, instanceHome) {
  * @returns {Promise<{artifact: Object|null, observation: Object}>}
  * @private
  */
-async function convergeSeatInstructions({harnessType, targetRepoRoot, instanceHome, repoSlug, fileSystem, log}) {
+async function convergeSeatInstructions({harnessType, targetRepoRoot, instanceHome, memoryDir, repoSlug, fileSystem, log}) {
     const
         ownedLabel  = 'seat instructions',
         receiptPath = path.join(instanceHome, '.neo-fleet-seat-instructions.json'),
@@ -778,6 +814,7 @@ async function convergeSeatInstructions({harnessType, targetRepoRoot, instanceHo
             homeRoot: harnessHomeRoot(harnessType, instanceHome),
             repoSlug,
             targetRepoRoot,
+            memoryDir,
             fileSystem
         }),
         observation = {
@@ -853,37 +890,61 @@ async function retireSeatInstructions({filePath, receiptPath, trustedRoot, fileS
 }
 
 /**
- * @summary Pins a Claude seat's auto memory to its seat folder. Claude Code keys auto memory by the
- * checkout unless `autoMemoryDirectory` names a directory, so the checkout's local settings name
- * `<agentsRoot>/<agentId>/memory`: the seat keeps one memory whichever checkout it opens and wherever a
- * checkout moves. The directory is created owner-only, because it holds the seat's notes. The setting is
- * Claude Code's, so the other families get nothing here. A relocated seat's pin still naming the previous
- * home's directory moves with it.
+ * @summary Creates the seat-owned memory folder and fills only missing Codex birth files. Claude's
+ * `autoMemoryDirectory` pins the same folder; Kimi and OpenCode scaffold through their generators.
+ * Imported and bearer-authored files stay untouched. A relocated Claude pin follows the seat.
  * @param {Object}      options
  * @param {Object}      options.agent          Fleet registry agent definition.
  * @param {String}      options.targetRepoRoot Absolute provisioned target checkout path.
  * @param {String}      options.instanceRoot   Absolute Fleet agents root.
  * @param {Object|null} options.previous       The relocated seat's previous placement ({@link previousSeatPlacement}).
  * @param {Object}      options.fileSystem     Promise filesystem seam.
- * @returns {Promise<Object[]>} The directory and settings artifacts, or none for another family.
+ * @returns {Promise<Object[]>} The directory, birth files or Claude settings artifacts.
  * @private
  */
 async function convergeSeatMemory({agent, targetRepoRoot, instanceRoot, previous, fileSystem}) {
-    if (!CLAUDE_HARNESS_TYPES.has(agent.harnessType)) return [];
+    if (agent.harnessType === 'kimi-code' || agent.harnessType === 'opencode') {
+        const legacyDir = path.join(deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}), 'memory');
 
-    const memoryDir = deriveAgentMemoryDir({instanceRoot, agentId: agent.id});
+        await assertNoSymlinkSegments({rootPath: instanceRoot, targetPath: legacyDir, fileSystem, label: 'legacy seat memory'});
 
-    return [
-        await ensureDirectoryArtifact(memoryDir, instanceRoot, fileSystem, {mode: 0o700}),
-        await convergeJsonSetting({
+        const entries = await fileSystem.readdir(legacyDir).catch(error => {
+            if (error?.code === 'ENOENT') return [];
+            throw error
+        });
+
+        if (entries.length) {
+            throw divergentArtifact(legacyDir, 'seat memory', 'legacy harness memory must be moved into the seat memory folder before preparation')
+        }
+    }
+
+    const memoryDir = deriveAgentMemoryDir({instanceRoot, agentId: agent.id}),
+          artifacts = [await ensureDirectoryArtifact(memoryDir, instanceRoot, fileSystem, {mode: 0o700})];
+
+    if (CLAUDE_HARNESS_TYPES.has(agent.harnessType)) {
+        artifacts.push(await convergeJsonSetting({
             filePath     : path.join(targetRepoRoot, '.claude', 'settings.local.json'),
             key          : CLAUDE_MEMORY_SETTING,
             value        : memoryDir,
             previousValue: previous && deriveAgentMemoryDir({instanceRoot: previous.instanceRoot, agentId: agent.id}),
             trustedRoot  : targetRepoRoot,
             fileSystem
-        })
-    ]
+        }));
+    } else if (agent.harnessType === 'codex' || agent.harnessType === 'codex-desktop') {
+        for (const [name, content] of [
+            ['MEMORY.md', renderMemoryIndexMd({harness: agent.harnessType})],
+            ['identity.md', renderIdentityMd()],
+            ['about-this-layer.md', renderAboutThisLayerMd({harness: agent.harnessType})]
+        ]) {
+            artifacts.push(await convergeTextArtifact({
+                filePath       : path.join(memoryDir, name), desiredContent: content,
+                ownedProjection: createOnlyOwnedProjection, ownedLabel: 'create-only bearer memory layer',
+                trustedRoot    : memoryDir, fileSystem
+            }));
+        }
+    }
+
+    return artifacts
 }
 
 /**
@@ -1537,6 +1598,97 @@ async function retireClaudeLocalScope({targetRepoRoot, instanceHome, claudeConfi
     return retired
 }
 
+/**
+ * @summary Project verified repository assignments into Claude's documented project-trust file.
+ * This owns only absent `hasTrustDialogAccepted` values; explicit distrust and all other fields stay
+ * resident-owned. A projection is file evidence, never proof that a native session consumed it. Legacy
+ * `.config.json` storage is left untouched until its native import contract is established.
+ * @param {Object} options
+ * @param {Object} options.agent The prepared harness classification.
+ * @param {String} options.instanceHome The isolated harness home.
+ * @param {String} options.claudeConfigRoot Desktop's host config root.
+ * @param {Object[]} options.repoTrust Current assignment proofs, computed before host apply.
+ * @param {Object} options.fileSystem Promise filesystem seam.
+ * @returns {Promise<{artifact: Object|null, records: Object[]}>} Per-repository projection observations.
+ * @private
+ */
+async function convergeClaudeRepositoryTrust({agent, instanceHome, claudeConfigRoot, repoTrust, fileSystem}) {
+    if (!['claude-code', 'claude-desktop'].includes(agent.harnessType)) return {artifact: null, records: []};
+
+    const records  = repoTrust.map(record => ({...record})),
+          verified = records.filter(record => record.state === 'verified');
+
+    if (!verified.length) return {artifact: null, records};
+
+    const cli        = agent.harnessType === 'claude-code',
+          configRoot = cli ? instanceHome : claudeConfigRoot,
+          filePath   = path.join(configRoot, '.claude.json'),
+          legacyPath = path.join(configRoot, ...(cli ? [] : ['.claude']), '.config.json'),
+          ownedLabel = 'assigned repository workspace trust';
+
+    const legacy = await fileSystem.lstat(legacyPath).catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+    });
+
+    if (legacy) {
+        verified.forEach(record => Object.assign(record, {state: 'unverified', reason: 'legacy Claude config storage requires a native trust witness'}));
+        return {artifact: null, records}
+    }
+
+    await assertNoSymlinkSegments({rootPath: configRoot, targetPath: filePath, fileSystem, label: ownedLabel});
+    const source = await readOptionalText(filePath, fileSystem);
+    let parsed;
+
+    try {
+        parsed = source === null ? {} : JSON.parse(source);
+        for (const value of [parsed, parsed.projects]) {
+            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError()
+        }
+        for (const {root} of verified) {
+            const value = parsed.projects?.[root];
+            if (value !== undefined && (!value || typeof value !== 'object' || Array.isArray(value))) throw new TypeError()
+        }
+    } catch {
+        throw divergentArtifact(filePath, ownedLabel, 'invalid Claude project config')
+    }
+
+    let changed = false;
+
+    for (const record of verified) {
+        const value = parsed.projects?.[record.root]?.hasTrustDialogAccepted;
+
+        if (value === undefined) {
+            parsed.projects ||= {};
+            parsed.projects[record.root] ||= {};
+            parsed.projects[record.root].hasTrustDialogAccepted = true;
+            record.state = 'projected';
+            changed = true
+        } else if (value === true || value === false) {
+            record.state = value ? 'trusted' : 'distrusted'
+        } else {
+            Object.assign(record, {state: 'unverified', reason: 'the existing trust value is not a boolean'})
+        }
+    }
+
+    if (changed) {
+        const backup = path.join(instanceHome, '.neo-fleet-claude-trust-backup.json');
+        await assertNoSymlinkSegments({rootPath: instanceHome, targetPath: backup, fileSystem, label: ownedLabel});
+        await fileSystem.mkdir(instanceHome, {recursive: true, mode: 0o700});
+        if (source !== null) await publishTextAtomically({filePath: backup, content: source, fileSystem});
+        if (await readOptionalText(filePath, fileSystem) !== source) {
+            throw divergentArtifact(filePath, ownedLabel, 'changed during trust preparation; retry after the config writer settles')
+        }
+        await fileSystem.mkdir(configRoot, {recursive: true, mode: 0o700});
+        await publishTextAtomically({filePath, content: JSON.stringify(parsed, null, 2) + '\n', fileSystem})
+    }
+
+    return {
+        artifact: {path: filePath, status: changed ? WORKSPACE_ARTIFACT_STATES.UPDATED : WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: ownedLabel},
+        records
+    }
+}
+
 /** @private */
 async function readOptionalText(filePath, fileSystem) {
     return fileSystem.readFile(filePath, 'utf8').catch(error => {
@@ -1553,7 +1705,7 @@ async function readOptionalText(filePath, fileSystem) {
  * clobber or even flag them); the config/hook surfaces converge on their Fleet-owned projections.
  * @private
  */
-async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem}) {
+async function prepareKimiArtifacts({agent, instanceRoot, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem}) {
     const
         enabledKeys = new Set(plan.filter(server => server.enabled).map(server => server.key)),
         servers     = KIMI_SEAT_SERVERS.filter(server => enabledKeys.has(server.name.slice(NEO_MCP_NAME_PREFIX.length)));
@@ -1569,11 +1721,11 @@ async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntim
             targetRepoRoot: placement.targetRepoRoot,
             seatEnvFile   : path.join(placement.targetRepoRoot, '.env'),
             kimiHome      : placement.instanceHome,
-            memoryDir     : path.join(placement.instanceHome, 'memory'),
+            memoryDir     : deriveAgentMemoryDir({instanceRoot: placement.instanceRoot, agentId: agent.id}),
             nodeBinary    : plan[0].command,
             servers
         }),
-        options     = optionsAt({targetRepoRoot, instanceHome}),
+        options     = optionsAt({targetRepoRoot, instanceHome, instanceRoot}),
         environment = plan[0].environment,
         {files} = generateKimiSeatConfig({...options, environment, remoteServers}),
         {files: legacyFiles} = generateKimiSeatConfig({...options, environment}),
@@ -1581,7 +1733,7 @@ async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntim
         runtimeLegacyStdioFiles = environment && generateKimiSeatConfig(options).files,
         previousFiles = previous && rehomeFiles(generateKimiSeatConfig({...optionsAt(previous), environment, remoteServers}).files, previous, {targetRepoRoot, instanceHome});
 
-    return convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, fileSystem, policies: [
+    return convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, memoryDir: options.memoryDir, fileSystem, policies: [
         {
             match           : /config\.toml$/,
             ownedProjection : kimiConfigTomlOwnedProjection,
@@ -1607,7 +1759,7 @@ async function prepareKimiArtifacts({targetRepoRoot, instanceHome, agentosRuntim
  * Fleet-owned; divergence fails closed per the generated-artifact posture).
  * @private
  */
-async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem}) {
+async function prepareOpenCodeArtifacts({agent, instanceRoot, targetRepoRoot, instanceHome, agentosRuntimeRoot, plan, previous, fileSystem}) {
     const
         enabledKeys = new Set(plan.filter(server => server.enabled).map(server => server.key)),
         servers     = OPENCODE_SEAT_SERVERS.filter(server => enabledKeys.has(server.name.slice(NEO_MCP_NAME_PREFIX.length)));
@@ -1622,7 +1774,7 @@ async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRu
             agentosRuntimeRoot,
             targetRepoRoot: placement.targetRepoRoot,
             seatEnvFile   : path.join(placement.targetRepoRoot, '.env'),
-            memoryDir     : path.join(placement.instanceHome, 'memory'),
+            memoryDir     : deriveAgentMemoryDir({instanceRoot: placement.instanceRoot, agentId: agent.id}),
             nodeBinary    : plan[0].command,
             environment   : plan[0].environment,
             seatHome      : placement.instanceHome,
@@ -1635,7 +1787,7 @@ async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRu
             wakePlantPath : path.join(placement.instanceHome, 'opencode', 'plugins', WAKE_ENVELOPE_PLANT_FILE_NAME),
             servers
         }),
-        options       = optionsAt({targetRepoRoot, instanceHome}),
+        options       = optionsAt({targetRepoRoot, instanceHome, instanceRoot}),
         {files}       = generateOpenCodeSeatConfig({...options, remoteServers}),
         {files: legacyFiles} = generateOpenCodeSeatConfig(options),
         runtimeLegacyFiles = plan[0].environment && generateOpenCodeSeatConfig({...options, environment: {}, remoteServers}).files,
@@ -1653,7 +1805,7 @@ async function prepareOpenCodeArtifacts({targetRepoRoot, instanceHome, agentosRu
 
     return [
         ...await convergeSeatConfigFiles({
-            files   : rest, legacyFiles: legacyRest, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, fileSystem,
+            files   : rest, legacyFiles: legacyRest, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath: targetRepoRoot, instanceHome, memoryDir: options.memoryDir, fileSystem,
             policies: [
                 {
                     match           : /opencode\.jsonc$/,
@@ -1741,7 +1893,7 @@ async function convergeWakeEnvelopePlant({plantFile, instanceHome, fileSystem}) 
  * A relocated seat's `previousFiles` (the generator's rendering at its previous home) move first.
  * @private
  */
-async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath, instanceHome, fileSystem, policies}) {
+async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, runtimeLegacyStdioFiles, previousFiles, repoPath, instanceHome, memoryDir, fileSystem, policies}) {
     const artifacts = [];
 
     for (const file of files) {
@@ -1754,7 +1906,8 @@ async function convergeSeatConfigFiles({files, legacyFiles, runtimeLegacyFiles, 
             desiredContent : file.content,
             ownedProjection: policy ? policy.ownedProjection : createOnlyOwnedProjection,
             ownedLabel     : policy ? policy.ownedLabel      : 'create-only bearer memory layer',
-            trustedRoot    : file.path.startsWith(repoPath + path.sep) ? repoPath : instanceHome,
+            trustedRoot    : file.path.startsWith(memoryDir + path.sep) ? memoryDir
+                : file.path.startsWith(repoPath + path.sep) ? repoPath : instanceHome,
             fileSystem
         };
         const moved     = previousFile && await relocateGeneratedText({...common, previousContent: previousFile.content, relocatableLines: policy.relocatableLines});
@@ -3177,7 +3330,8 @@ function transportDivergence(filePath, ownedKeys, reason) {
  * @summary Converges one Fleet-owned text file: create it when absent, match it when its owned
  * projection agrees, refuse the start otherwise. With a `receiptPath`, a file that still hashes to
  * Fleet's last write is Fleet's to replace, so generated content can follow its source; a person's
- * edit, or a missing or malformed receipt, still refuses.
+ * edit, or a missing or malformed receipt, still refuses. Matching bytes do not establish authorship:
+ * only an actual Fleet create/update records a write.
  * @private
  */
 async function convergeTextArtifact({filePath, desiredContent, ownedProjection, ownedLabel, trustedRoot, fileSystem, receiptPath = null}) {
@@ -3208,7 +3362,6 @@ async function convergeTextArtifact({filePath, desiredContent, ownedProjection, 
         desired = ownedProjection(desiredContent);
 
     if (JSON.stringify(actual) === JSON.stringify(desired)) {
-        await recordWrite(desiredContent);
         return {path: filePath, status: WORKSPACE_ARTIFACT_STATES.MATCH, ownedKeys: ownedLabel};
     }
 

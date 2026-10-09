@@ -2511,6 +2511,11 @@ paths:
                       type: string
                       format: date-time
                       description: Optional expiry time consumed by the Task TTL sweeper.
+                    fallback:
+                      type: string
+                      minLength: 1
+                      maxLength: 1000
+                      description: "Optional sender-authored plain text: what the sender plans if the Task expires unanswered. It carries no execution or authorization semantics; expiry never runs it, and an absent field means no plan was stated. It survives transitions and expiry, and the recipient reads it through `get_message`."
       responses:
         '200':
           description: Message accepted durably in the WAL; projectionStatus may remain pending while derived graph projection completes.
@@ -2565,6 +2570,11 @@ paths:
         answer from a truncated one — an empty `messages` array proves absence only when
         `totalCount` is 0. To establish that a message does not exist, paginate to the end or read
         `totalCount`; a newest-first window cannot answer that question on its own.
+        Explicit `observer` mode reads retained history, including archived rows, with a page cap of 200.
+        It accepts inbox/all and status all; `to` is refused because the transport supplies the viewer.
+        All and involves-me use the server-clamped content policy; own stays within recipient rights.
+        List metadata excludes bodies and full Task inputs. Detail rechecks the same admission.
+        Observer responses carry viewer/plane/policy/admission context for consumer fencing.
       tags: [Mailbox]
       parameters:
         - name: box
@@ -2654,6 +2664,23 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: observer
+          in: query
+          required: false
+          style: deepObject
+          explode: true
+          description: "Explicit non-stamping observation scope. Omit for the ordinary model-visible inbox read, which records that returned rows were seen. Observer reads retain archive history and never write seen/read receipts or move Tasks."
+          schema:
+            type: object
+            additionalProperties: false
+            required: [scope]
+            properties:
+              scope:
+                type: string
+                enum: [all, involves-me, own]
+              memorySharing:
+                type: string
+                enum: [private, legacy, team]
       responses:
         '200':
           description: OK
@@ -2687,6 +2714,25 @@ paths:
                   offset:
                     type: integer
                     description: "Offset actually applied."
+                  observation:
+                    type: object
+                    description: "Server-derived context for an explicit observer read; `admissionKey` is a comparison fingerprint, never a credential or authorization token. Absent from ordinary list reads."
+                    required: [viewer, planeId, scope, policy, clamped, admissionKey]
+                    properties:
+                      viewer:
+                        type: string
+                      planeId:
+                        type: string
+                      scope:
+                        type: string
+                        enum: [all, involves-me, own]
+                      policy:
+                        type: string
+                        enum: [private, legacy, team]
+                      clamped:
+                        type: boolean
+                      admissionKey:
+                        type: string
         '500':
           description: Error
           content:
@@ -2701,7 +2747,8 @@ paths:
       x-neo-tool-tier: read
       x-pass-as-object: true
       description: |
-        Retrieves a specific message. Subject to read-path permission checks.
+        Retrieves a specific message. Subject to read-path permission checks. An explicit `observer` request uses
+        the non-stamping observer population; omit it for the ordinary authorized detail read.
       tags: [Mailbox]
       parameters:
         - name: messageId
@@ -2709,6 +2756,23 @@ paths:
           required: true
           schema:
             type: string
+        - name: observer
+          in: query
+          required: false
+          style: deepObject
+          explode: true
+          description: "Explicit non-stamping observation scope. Omit for the ordinary authorized message-detail read. Observer reads retain archive history and never write seen/read receipts or move Tasks."
+          schema:
+            type: object
+            additionalProperties: false
+            required: [scope]
+            properties:
+              scope:
+                type: string
+                enum: [all, involves-me, own]
+              memorySharing:
+                type: string
+                enum: [private, legacy, team]
       responses:
         '200':
           description: OK
@@ -2720,6 +2784,25 @@ paths:
                   _channelSeparation:
                     type: string
                     description: "Security annotation marking the payload as DATA, not executable COMMANDS."
+                  observation:
+                    type: object
+                    description: "Server-derived context for an explicit observer read; `admissionKey` is a comparison fingerprint, never a credential or authorization token. Absent from ordinary detail reads."
+                    required: [viewer, planeId, scope, policy, clamped, admissionKey]
+                    properties:
+                      viewer:
+                        type: string
+                      planeId:
+                        type: string
+                      scope:
+                        type: string
+                        enum: [all, involves-me, own]
+                      policy:
+                        type: string
+                        enum: [private, legacy, team]
+                      clamped:
+                        type: boolean
+                      admissionKey:
+                        type: string
         '403':
           description: Unauthorized
           content:
@@ -2969,7 +3052,7 @@ paths:
       operationId: manage_wake_subscription
       x-neo-tool-tier: extended
       x-pass-as-object: true
-      description: Subscribe / unsubscribe / update / list / resync / resume / rotate-key agent wake-event subscriptions with trigger types (SENT_TO_ME, TASK_STATE_CHANGED, PERMISSION_GRANTED), optional AND-conjunctive filters, and harness target routing. `fleet-identities` is the fleet-telemetry read — the deduplicated identities holding an ACTIVE subscription for any authenticated caller (the `who_is_online` disclosure class), answering `identities` plus redacted per-identity `observations` rows of `identity` and `lastPollAt` (the most recent authenticated-poll stamp, null until one lands) — never owner-only endpoint, filter, or key material. `poll-digest` derives the caller's wake digest at read time over the same trigger/filter evaluation — the pull half of wake delivery for clients without host-reachable listeners; an empty answer is a closed state carrying its reason, never a verdict. Every authenticated poll additionally stamps observational `lastPollAt` on the subscription row (surfaced owner-side by `list`, fleet-wide by `fleet-identities`), so pull-route health can derive recency — a timestamp only, never the client-held watermark, and the plane stays cursor-stateless. `list` rows additionally carry route-delivery truth — `routeDeliverable` is always present, and `routeWithdrawalReason` names why a stored transport builds no receiver route (only `a2a-webhook` does) — a row's `status` describes its lifecycle, never its delivery.
+      description: Subscribe / unsubscribe / update / list / resync / resume / rotate-key agent wake-event subscriptions with trigger types (SENT_TO_ME, TASK_STATE_CHANGED, PERMISSION_GRANTED), optional AND-conjunctive filters, and harness target routing. `fleet-identities` is the fleet-telemetry read — the deduplicated identities holding an ACTIVE subscription for any authenticated caller (the `who_is_online` disclosure class), answering `identities` plus redacted per-identity `observations` rows of `identity`, `lastPollAt` (the most recent authenticated-poll stamp, null until one lands) and `pullRoute` (`{lastPollAt}` over the identity's active `SENT_TO_ME` routes on `none`, null when it holds none) — never owner-only endpoint, filter, or key material. `poll-digest` derives the caller's wake digest at read time over the same trigger/filter evaluation — the pull half of wake delivery for clients without host-reachable listeners; an empty answer is a closed state carrying its reason, never a verdict. Every authenticated poll additionally stamps observational `lastPollAt` on the subscription row (surfaced owner-side by `list`, fleet-wide by `fleet-identities`), so pull-route health can derive recency — a timestamp only, never the client-held watermark, and the plane stays cursor-stateless. `list` rows additionally carry route-delivery truth — `routeDeliverable` is always present; a deliverable row names its `routeDelivery`, `push` (the receiver carries it; only `a2a-webhook` builds one) or `pull` (an active `none` route its seat polls through `poll-digest`), and `routeWithdrawalReason` names why any other row delivers nothing — a row's `status` describes its lifecycle, never its delivery.
       tags: [WakeSubscriptions]
       requestBody:
         required: true
@@ -4388,7 +4471,7 @@ components:
           properties:
             currentId:
               type: string
-              description: The ID of the current active session.
+              description: The calling client's Memory Core session, i.e. its request-bound Mcp-Session-Id, else the server's process session.
               example: "550e8400-e29b-41d4-a716-446655440000"
         database:
           type: object

@@ -1,6 +1,6 @@
 import {setup} from '../../../../setup.mjs';
-import os     from 'os';
-import path   from 'path';
+import os      from 'os';
+import path    from 'path';
 
 const appName = 'HealthServiceTest';
 
@@ -25,6 +25,7 @@ import {LOOPBACK_PROBE_HEALTH_KEY} from '../../../../../../ai/services/memory-co
 import StorageRouter               from '../../../../../../ai/services/memory-core/managers/StorageRouter.mjs';
 import ChromaLifecycleService      from '../../../../../../ai/services/memory-core/lifecycle/ChromaLifecycleService.mjs';
 import logger                      from '../../../../../../ai/mcp/server/memory-core/logger.mjs';
+import RequestContextService       from '../../../../../../ai/mcp/server/shared/services/RequestContextService.mjs';
 
 /**
  * @summary Coverage for the identity observability block in the healthcheck payload.
@@ -599,9 +600,45 @@ test.describe('HealthService #12382 — cached healthcheck freshness', () => {
         expect(cached.database.connection.collections.memories.count).toBe(10);
         expect(cached.database.connection.collections.summaries.count).toBe(20);
 
+        // The fast path serves the cached snapshot itself, in a per-caller copy that carries the session.
         const ensureHealthyFastPath = await HealthService.healthcheck({freshObservability: false});
-        expect(ensureHealthyFastPath).toBe(cached);
+        expect(ensureHealthyFastPath).toEqual(cached);
         expect(ensureHealthyFastPath.database.connection.collections.memories.count).toBe(10);
+    });
+
+    test('every return path reports the calling request\'s own session, never the cache filler\'s (#931)', async () => {
+        const
+            namespace = Neo.ns('Neo.ai.services.memory-core', true),
+            previous  = namespace.SessionService,
+            asCaller  = (sessionId, run) => RequestContextService.run({sessionId}, run),
+            sessionOf = health => health.session.currentId;
+
+        // Stands in for SessionService's getter: the request-bound id first, then the process session.
+        namespace.SessionService = {get currentSessionId() {return RequestContextService.getSessionId() || 'process-session'}};
+
+        try {
+            // B arrives while A's full check is in flight, and joins it.
+            const [fullA, joinedB] = await Promise.all([
+                asCaller('session-a', () => HealthService.healthcheck()),
+                asCaller('session-b', () => HealthService.healthcheck())
+            ]);
+
+            expect(sessionOf(fullA)).toBe('session-a');
+            expect(sessionOf(joinedB)).toBe('session-b');
+
+            // Cache hits: the request-fresh path, then the fast path for the filler and for another caller.
+            expect(sessionOf(await asCaller('session-c', () => HealthService.healthcheck()))).toBe('session-c');
+
+            const fastA = await asCaller('session-a', () => HealthService.healthcheck({freshObservability: false}));
+
+            expect(fastA).toEqual(fullA);
+            expect(sessionOf(await asCaller('session-d', () => HealthService.healthcheck({freshObservability: false})))).toBe('session-d');
+
+            // Outside any request, the process session.
+            expect(sessionOf(await HealthService.healthcheck({freshObservability: false}))).toBe('process-session')
+        } finally {
+            namespace.SessionService = previous
+        }
     });
 
     test('direct healthcheck refreshes runtime freshness while reusing cached dependency status', async () => {
@@ -2753,6 +2790,23 @@ test.describe('HealthService #16310 — wake subscription arming verdict', () =>
         });
 
         expect(await arming()).toEqual({armed: false, reason: 'unmigrated-target'});
+    });
+
+    test('a seat holding an active pull route is armed by its own poll, whatever its push rows say', async () => {
+        const pull = deliverableRecord({id: 'WAKE_SUB:pull', harnessTarget: 'none', harnessTargetMetadata: {}});
+
+        WakeSubscriptionService.list = async () => ({subscriptions: [pull]});
+        expect(await arming()).toEqual({armed: true, reason: 'pull'});
+
+        // a keyless push row aborts the manifest build, which never carries the pull route anyway
+        WakeSubscriptionService.list = async () => ({
+            subscriptions: [pull, deliverableRecord({harnessTargetMetadata: {url: 'http://host.docker.internal:3199/wake'}})]
+        });
+        expect(await arming()).toEqual({armed: true, reason: 'pull'});
+
+        // a withdrawn pull route arms nothing
+        WakeSubscriptionService.list = async () => ({subscriptions: [{...pull, status: 'degraded'}]});
+        expect(await arming()).toEqual({armed: false, reason: 'withdrawn'});
     });
 
     test('an explicitly disabled target is unarmed rather than silently fine', async () => {

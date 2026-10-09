@@ -29,8 +29,10 @@ import RequestContextService       from '../../../../../../ai/mcp/server/shared/
 import {buildWakeReceiverManifest} from '../../../../../../ai/daemons/wake/buildReceiverManifest.mjs';
 import {readWakeDelivery}          from '../../../../../../ai/services/memory-core/wakeDeliveryReader.mjs';
 
-import {createHostWhoIsOnlineReader} from '../../../../../../ai/services/fleet/hostWhoIsOnlineReader.mjs';
-import {readFleetPresenceSnapshot}   from '../../../../../../ai/services/fleet/fleetPresenceStateAdapter.mjs';
+import {createHostWhoIsOnlineReader}       from '../../../../../../ai/services/fleet/hostWhoIsOnlineReader.mjs';
+import {readFleetPresenceSnapshot}         from '../../../../../../ai/services/fleet/fleetPresenceStateAdapter.mjs';
+import {createFleetWakeRoutesSource}       from '../../../../../../ai/services/fleet/fleetWakeRoutesSource.mjs';
+import {createPlaneWakeObservationsReader} from '../../../../../../ai/services/fleet/planeWakeIdentitiesReader.mjs';
 
 // The per-machine receiver address a real boot envelope supplies. No committed file can hold it,
 // which is why bootstrap derives the transport but must be GIVEN the address.
@@ -1881,7 +1883,7 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
               trigger      : 'TASK_STATE_CHANGED',
               harnessTarget: 'mcp-notifications'
           });
-          const sqlite     = GraphService.db.storage.db;
+          const sqlite      = GraphService.db.storage.db;
           const insertPulse = (logId, id) => sqlite
               .prepare('INSERT INTO GraphLog (log_id, entity_id, entity_type) VALUES (?, ?, ?)')
               .run(logId, id, WakeSubscriptionService.heartbeatPulseEntityType);
@@ -1916,7 +1918,7 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
           insertPulse(afterFirstPage, pulseId);
 
           const seen = [];
-          const real  = WakeSubscriptionService._evaluateHeartbeatPulseAgainstSubscription
+          const real = WakeSubscriptionService._evaluateHeartbeatPulseAgainstSubscription
               .bind(WakeSubscriptionService);
           WakeSubscriptionService._evaluateHeartbeatPulseAgainstSubscription = (pulse, sub) => {
               seen.push(pulse.entity_id);
@@ -4098,7 +4100,7 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
             expect(identities).toEqual([...identities].sort());
         });
 
-        test('the fleet-wide recency disclosure: another caller reads an identity\'s poll stamp as the REDACTED observation pair — never owner row material', async () => {
+        test('the fleet-wide recency disclosure: another caller reads an identity\'s poll stamp as the REDACTED observation — never owner row material', async () => {
             GraphService.upsertNode({id: '@fleet-poller', type: 'AGENT', name: 'Poller', properties: {}});
             GraphService.upsertNode({id: '@fleet-silent', type: 'AGENT', name: 'Silent', properties: {}});
 
@@ -4123,20 +4125,82 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 poller = observations.find(row => row.identity === '@fleet-poller'),
                 silent = observations.find(row => row.identity === '@fleet-silent');
 
-            // Every observation row is EXACTLY the redacted pair — endpoint, filter, and
+            // Every observation row is EXACTLY the redacted observation — endpoint, filter, and
             // key-adjacent owner material must never ride the roster read.
             for (const row of observations) {
-                expect(Object.keys(row).sort()).toEqual(['identity', 'lastPollAt'])
+                expect(Object.keys(row).sort()).toEqual(['identity', 'lastPollAt', 'pullRoute'])
             }
 
             expect(typeof poller.lastPollAt).toBe('string');
             expect(Number.isNaN(Date.parse(poller.lastPollAt))).toBe(false);
+            // its polled route types into a window: no pull route
+            expect(poller.pullRoute).toBeNull();
 
             // Absence of polls stays absence-of-signal for the route-health consumer.
             expect(silent.lastPollAt).toBeNull();
 
             // Sorted by identity, and the identities projection is the observations projection.
             expect(observations.map(row => row.identity)).toEqual(observations.map(row => row.identity).sort())
+        });
+
+        test('a seat\'s own pull route arms it from the production stamp through the routes projection; a poll on any other route arms nothing (#768)', async () => {
+            const
+                pull   = {action: 'subscribe', trigger: 'SENT_TO_ME',         filters: {}, harnessTarget: 'none', harnessTargetMetadata: {}},
+                task   = {action: 'subscribe', trigger: 'TASK_STATE_CHANGED', filters: {}, harnessTarget: 'none', harnessTargetMetadata: {}},
+                window = appName => ({action: 'subscribe', trigger: 'SENT_TO_ME', filters: {}, harnessTarget: 'a2a-webhook', harnessTargetMetadata: {adapter: 'osascript', appName, url: BOOT_URL}}),
+                // the seat subscribes its routes and polls the ones at `polled`, through the production tool path
+                arm    = (identity, routes, polled) => {
+                    GraphService.upsertNode({id: identity, type: 'AGENT', name: identity, properties: {}});
+
+                    return RequestContextService.run({agentIdentityNodeId: identity}, async () => {
+                        const ids = [];
+
+                        for (const route of routes) ids.push((await callTool('manage_wake_subscription', route)).subscriptionId);
+                        for (const index of polled) await callTool('manage_wake_subscription', {action: 'poll-digest', subscriptionId: ids[index]});
+
+                        return ids
+                    })
+                };
+
+            await arm('@fleet-codex-push',   [window('Codex')],        [0]); // push-only owner poll
+            await arm('@fleet-codex-task',   [window('Codex'), task],  [1]); // a different trigger's poll
+            await arm('@fleet-claude-both',  [window('Claude'), pull], [1]); // coexistence
+            await arm('@fleet-claude-fresh', [pull, task],             [1]); // a pull route not polled yet
+
+            const [pullId] = await arm('@fleet-claude-pull', [pull], [0]);   // the positive control
+
+            const
+                codex   = {routeCount: 1, adapter: 'osascript', appName: 'Codex',  addressType: 'userDataDir'},
+                claude  = {routeCount: 1, adapter: 'osascript', appName: 'Claude', addressType: 'userDataDir'},
+                seat    = (id, harnessType) => ({id, githubUsername: `fleet-${id}`, harnessType}),
+                {seats} = await createFleetWakeRoutesSource({
+                    listAgents                        : () => [
+                        seat('codex-push', 'codex-desktop'), seat('codex-task', 'codex-desktop'),
+                        seat('claude-both', 'claude-desktop'), seat('claude-fresh', 'claude-desktop'), seat('claude-pull', 'claude-desktop')
+                    ],
+                    resolveViewerIdentity             : () => '@alice',
+                    // the fleet-identities wire a third party reads, through the production plane reader
+                    listActiveSubscriptionObservations: createPlaneWakeObservationsReader({
+                        callTool: (name, args) => RequestContextService.run({agentIdentityNodeId: '@alice'}, () => callTool(name, args))
+                    }),
+                    // the receiver manifest carries the window routes
+                    resolveSeatArming                 : () => ({state: 'observed', reason: null, byIdentity: new Map([
+                        ['@fleet-codex-push', codex], ['@fleet-codex-task', codex], ['@fleet-claude-both', claude]
+                    ])})
+                }).readWakeRoutes(),
+                byId    = Object.fromEntries(seats.map(row => [row.agentId, row]));
+
+            expect(byId['codex-push'].armed).toEqual({state: 'armed', reason: null, route: codex});
+            expect(byId['codex-task'].armed).toEqual({state: 'armed', reason: null, route: codex});
+            expect(byId['claude-both'].armed).toEqual({state: 'armed', reason: null, route: claude});
+
+            const stamp = GraphService.db.nodes.get(pullId).properties.lastPollAt;
+
+            expect(typeof stamp).toBe('string');
+            expect(byId['claude-pull'].armed).toEqual({state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: stamp}});
+            // armed by its route; the identity's own stamp came from the other trigger's poll
+            expect(byId['claude-fresh'].armed).toEqual({state: 'armed', reason: null, route: {adapter: 'pull', lastPollAt: null}});
+            expect(typeof byId['claude-fresh'].subscription.lastPollAt).toBe('string');
         });
 
         test('an unbound caller is refused — authenticated-caller telemetry, not an open scan', async () => {
@@ -4177,9 +4241,40 @@ test.describe('Neo.ai.services.memory-core.WakeSubscriptionService', () => {
                 const row             = subscriptions.find(entry => entry.id === res.subscriptionId);
 
                 expect(row.routeDeliverable).toBe(true);
+                expect(row.routeDelivery).toBe('push');
                 // Absence of the reason IS the deliverable signal — the annotation never carries
                 // a null placeholder that a consumer must know to ignore.
                 expect(row).not.toHaveProperty('routeWithdrawalReason');
+            });
+        });
+
+        test('an active pull row is delivered by its seat\'s poll, the receiver never carries it, and a degraded one keeps the status reason', async () => {
+            await RequestContextService.run({agentIdentityNodeId: '@alice'}, async () => {
+                const pull = await WakeSubscriptionService.subscribe({trigger: 'SENT_TO_ME', harnessTarget: 'none'});
+                const read = async () => (await WakeSubscriptionService.list()).subscriptions.find(entry => entry.id === pull.subscriptionId);
+
+                expect(await read()).toMatchObject({status: 'active', routeDeliverable: true, routeDelivery: 'pull'});
+                expect(await read()).not.toHaveProperty('routeWithdrawalReason');
+
+                // the builder still skips it, naming the pull route; a published row keeps the build from refusing an empty set
+                const {manifest, skipped} = buildWakeReceiverManifest({
+                    subscriptions: [{
+                        id                   : 'WAKE_SUB:deliverable-pull-spec',
+                        agentIdentity        : '@alice',
+                        status               : 'active',
+                        harnessTarget        : 'a2a-webhook',
+                        harnessTargetMetadata: {url: 'https://example.com/wake', signingKey: 'a'.repeat(64)}
+                    }, {id: pull.subscriptionId, agentIdentity: '@alice', status: 'active', harnessTarget: 'none', harnessTargetMetadata: {}}],
+                    callerIdentity: '@alice'
+                });
+
+                expect(manifest.routes[pull.subscriptionId]).toBeUndefined();
+                expect(skipped.find(entry => entry.subscriptionId === pull.subscriptionId).reason).toContain('is a pull route');
+
+                GraphService.upsertNode({id: pull.subscriptionId, properties: {status: 'degraded'}});
+
+                expect(await read()).toMatchObject({routeDeliverable: false, routeWithdrawalReason: expect.stringContaining("status is 'degraded'")});
+                expect(await read()).not.toHaveProperty('routeDelivery');
             });
         });
 

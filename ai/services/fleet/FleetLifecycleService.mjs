@@ -519,6 +519,23 @@ class FleetLifecycleService extends Base {
     processes = new Map()
 
     /**
+     * Starts still preparing or arming, including those queued for a seat's home, keyed by each attempt's Stop signal.
+     * Every attempt owns two fences: Stop aborts its `stop` controller synchronously, and the operator's Skip its `skip`
+     * controller ({@link skipDependencies}). Finishing one attempt cannot remove another attempt's cancellation.
+     * @member {Map<String, Map<AbortSignal, {stop: AbortController, skip: AbortController}>>} pendingStarts
+     * @private
+     */
+    pendingStarts = new Map()
+
+    /**
+     * The dependency rows of each seat's latest Start that reached its install, keyed by agent id and bound to that
+     * attempt's signal ({@link setPendingDependencies}): live while the attempt is pending, its final rows after.
+     * @member {Map<String, {signal: AbortSignal, rows: Object[]}>} attemptDependencies
+     * @private
+     */
+    attemptDependencies = new Map()
+
+    /**
      * The Git identity each seat's last provisioned start resolved, keyed by agent id: what its commits carry, or why
      * the start refused. Kept apart from {@link processes} because a refused start leaves no launch record.
      * @member {Map<String,Object>} gitIdentities
@@ -544,7 +561,78 @@ class FleetLifecycleService extends Base {
     // ---- public API ---------------------------------------------------------
 
     /**
-     * Start an agent's harness process. Idempotent while running (returns current status).
+     * @summary Register a Start before its first asynchronous operation or queue wait.
+     * @param {String} id Seat id.
+     * @returns {AbortSignal} This attempt's Stop fence, shared by preparation, admission and arming.
+     */
+    beginStart(id) {
+        const attempt = {stop: new AbortController(), skip: new AbortController()};
+        let   pending = this.pendingStarts.get(id);
+
+        if (!pending) this.pendingStarts.set(id, pending = new Map());
+        pending.set(attempt.stop.signal, attempt);
+        return attempt.stop.signal
+    }
+
+    /**
+     * @summary One pending Start's Skip fence: {@link skipDependencies} aborts it, which ends that attempt's dependency
+     * install and lets its launch go on.
+     * @param {String} id Seat id.
+     * @param {AbortSignal} signal The signal returned by {@link beginStart}.
+     * @returns {AbortSignal|null} `null` once the attempt has finished.
+     */
+    dependencySkipSignal(id, signal) {
+        return this.pendingStarts.get(id)?.get(signal)?.skip.signal ?? null
+    }
+
+    /**
+     * @summary The operator's Skip: ends the dependency install of every pending Start of the seat. The checkouts it
+     * interrupts read `skipped`, and each attempt launches. A Start already past its install goes on unchanged, and a
+     * Stop still wins.
+     * @param {String} id Seat id.
+     * @returns {{id: String, skippedStarts: Number}} How many pending Starts this Skip reached; a repeated Skip does not
+     * count them again.
+     */
+    skipDependencies(id) {
+        let skippedStarts = 0;
+
+        for (const {skip} of this.pendingStarts.get(id)?.values() ?? []) {
+            if (!skip.signal.aborted) {
+                skip.abort();
+                skippedStarts++
+            }
+        }
+
+        return {id, skippedStarts}
+    }
+
+    /**
+     * @summary Release exactly the completed attempt, preserving queued or newer Starts. Its dependency rows stay
+     * readable as its final outcome, and its install phase ends with it.
+     * @param {String} id Seat id.
+     * @param {AbortSignal} signal The signal returned by {@link beginStart}.
+     */
+    finishStart(id, signal) {
+        const pending = this.pendingStarts.get(id),
+              attempt = this.attemptDependencies.get(id);
+
+        pending?.delete(signal);
+        if (pending?.size === 0) this.pendingStarts.delete(id);
+        // a checkout the attempt never decided reads as unknown, never as still installing
+        if (attempt?.signal === signal) attempt.rows = attempt.rows.filter(({state}) => state !== 'installing')
+    }
+
+    /**
+     * @summary Answer for a canceled attempt without overwriting a newer launch's process record.
+     * @param {String} id Seat id.
+     * @returns {Object} Finite Start result; `canceled` distinguishes it from a stopped process.
+     */
+    canceledStart(id) {
+        return {id, state: 'stopped', pid: null, canceled: true, reason: 'stop-requested'}
+    }
+
+    /**
+     * @summary Start an agent's harness process. Idempotent while running (returns current status).
      * @param {String}  id          Registry agent id.
      * @param {Object} [opts={}]    Spawn options.
      * @param {String} [opts.cwd]   The child's working directory — the agent's provisioned repo
@@ -562,6 +650,7 @@ class FleetLifecycleService extends Base {
      *     snapshot instead of re-reading a mutable AiConfig path after preparation.
      * @param {Object} [opts.gitIdentity] `{name, email}` the seat commits as, injected as author and committer
      *     under the four reserved `GIT_AUTHOR_*` / `GIT_COMMITTER_*` slots.
+     * @param {AbortSignal} [opts.startSignal] The pending managed attempt's lifecycle-owned Stop fence.
      * @param {Object} [opts.launchAdmission] `{generation, plan, owners}`: a Claude Desktop seat's reserved
      *     launch admission, its bound MCP plan, and `owners.pat` / `owners.plane`, the owners Start selected for
      *     the seat's PAT and plane credential. Once the seat is launched and leased, the generation is activated
@@ -570,6 +659,7 @@ class FleetLifecycleService extends Base {
      * @returns {Object} status (see {@link status}).
      */
     start(id, opts = {}) {
+        if (opts.startSignal?.aborted) return this.canceledStart(id);
         if (this.isRunning(id)) return this.status(id);
 
         const priorRecord = this.processes.get(id);
@@ -826,7 +916,10 @@ class FleetLifecycleService extends Base {
 
         let child;
         try {
-            child = this.getSpawnFn()(resolvedCommand, args, spawnOptions);
+            const spawn = this.getSpawnFn();
+
+            if (opts.startSignal?.aborted) return this.canceledStart(id);
+            child = spawn(resolvedCommand, args, spawnOptions);
         } catch (error) {
             this.processes.set(id, {id, cwd: cwd ?? null, state: 'failed', pid: null, startedAt: null, exitCode: null, exitedAt: new Date().toISOString(), error: error.message});
             throw error;
@@ -868,10 +961,6 @@ class FleetLifecycleService extends Base {
             admissionGeneration: null
         };
         this.processes.set(id, record);
-
-        if (openCodeWakeRoute) {
-            this.observeOpenCodeWakeBootstrap(record, {env});
-        }
 
         // Best-effort version surface (the pin/verify half of the executable preflight): capture
         // the template-owned version-probe argv async onto the record — the status read surfaces
@@ -932,6 +1021,14 @@ class FleetLifecycleService extends Base {
             }
         });
 
+        if (opts.startSignal?.aborted) {
+            opts.launchAdmission && this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.STOP_REQUESTED, {generation: opts.launchAdmission.generation});
+            void this.stop(id, {cancelPending: false});
+            return this.canceledStart(id)
+        }
+
+        if (openCodeWakeRoute) this.observeOpenCodeWakeBootstrap(record, {env});
+
         // A survivor no later server could re-adopt is not a launch: while this server still holds
         // its handle, it is stopped through the ordinary Stop, and the start fails with the reason.
         if (survivesFleetExit) {
@@ -942,7 +1039,7 @@ class FleetLifecycleService extends Base {
             if (leaseFailure) {
                 record.failureReason = `the seat could not be leased (${leaseFailure}), so it was stopped`;
                 opts.launchAdmission && this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.LEASE_FAILED, {generation: opts.launchAdmission.generation});
-                void this.stop(id);
+                void this.stop(id, {cancelPending: false});
                 throw new Error(`FleetLifecycleService.start: ${record.failureReason} — agent '${id}'.`)
             }
 
@@ -952,7 +1049,7 @@ class FleetLifecycleService extends Base {
                     owners = opts.launchAdmission.owners ?? {},
                     slots  = {
                         [agent.forge === 'gitlab' ? 'NEO_GITLAB_PAT' : this.credentialEnvVar]: owners.pat,
-                        [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                       : owners.plane
+                        [REMOTE_MCP_CREDENTIAL_ENV_VAR]                                      : owners.plane
                     };
 
                 record.admissionGeneration = opts.launchAdmission.generation;
@@ -971,16 +1068,30 @@ class FleetLifecycleService extends Base {
     }
 
     /**
-     * Gracefully stop an agent's process: `SIGTERM`, then `SIGKILL` after `sigkillTimeoutMs`.
+     * @summary Cancel pending Starts immediately, then gracefully stop an existing process:
+     * `SIGTERM`, then `SIGKILL` after `sigkillTimeoutMs`.
      * @param {String} id
+     * @param {Object} [options]
+     * @param {Boolean} [options.cancelPending=true] Internal cleanup stops the tracked process
+     *     without issuing another Stop intent against pending Starts or a newer admission.
      * @returns {Promise<Object>} `{success, id, state, cleanupUnresolved}`; the final field is true
-     * only when exact-profile Codex Desktop helper ownership remains unresolved.
+     * only when exact-profile Codex Desktop helper ownership remains unresolved. With no process,
+     * `canceledStarts` counts newly canceled attempts; a repeated Stop does not count them again.
      */
-    stop(id) {
+    stop(id, {cancelPending = true} = {}) {
+        let canceledStarts = 0;
+
+        for (const {stop: controller} of cancelPending ? this.pendingStarts.get(id)?.values() ?? [] : []) {
+            if (!controller.signal.aborted) {
+                controller.abort(LAUNCH_ADMISSION_REASONS.STOP_REQUESTED);
+                canceledStarts++
+            }
+        }
+
         this.adoptLeasedSeats();
 
         // Stop intent ends the seat's launch admission before any signal, and a Stop that fails keeps it ended.
-        this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.STOP_REQUESTED);
+        if (cancelPending) this.getLaunchAdmission().revoke(id, LAUNCH_ADMISSION_REASONS.STOP_REQUESTED);
 
         const record = this.processes.get(id);
 
@@ -1020,7 +1131,7 @@ class FleetLifecycleService extends Base {
         }
 
         if (!record || !record.child || (record.state !== 'running' && !record.cleanupUnresolved)) {
-            return Promise.resolve({success: false, id, state: record?.state ?? 'stopped', cleanupUnresolved: Boolean(record?.cleanupUnresolved)});
+            return Promise.resolve({success: canceledStarts > 0, id, state: record?.state ?? 'stopped', cleanupUnresolved: Boolean(record?.cleanupUnresolved), ...(canceledStarts ? {canceledStarts} : {})});
         }
 
         const child = record.child;
@@ -1082,7 +1193,7 @@ class FleetLifecycleService extends Base {
      * @param {String} id
      * @returns {Object} `{id, state, running, adopted, pid, startedAt, uptimeMs, exitCode, exitedAt,
      *     stderrBytes, authRequired, instanceHome, authHome, launchCommand, authCommand,
-     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, repos, sessionFolder}` — `authRequired`
+     *     binaryVersion, failureReason, cleanupUnresolved, wakeRoute, repos, dependencies, sessionFolder}` — `authRequired`
      *     is the LIVE per-home
      *     auth-marker heuristic for curated launches (`true` = the operator-owned per-home login has
      *     not happened yet; recomputed each read so a completed login flips it without a restart);
@@ -1099,7 +1210,10 @@ class FleetLifecycleService extends Base {
      *     projection. `adopted` marks a
      *     seat this server re-adopted from its lease rather than spawned; such a seat holds no pipe,
      *     so its `stderrBytes` stays `0` and its `exitCode` is unknown (`null`). `repos` is the
-     *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is.
+     *     per-repository outcome {@link setRepoOutcomes} recorded for this launch, `null` until one is;
+     *     `dependencies` is each checkout's row from the seat's latest Start that reached its install
+     *     ({@link setPendingDependencies}): live while that Start is pending, its final rows once it ended, launched or
+     *     not; `null` before one.
      *     `sessionFolder` is where a running Claude Desktop seat's session opened ({@link sessionFolderFor}).
      *     `gitIdentity` is the identity the seat's last provisioned start resolved ({@link setGitIdentity}), also
      *     after a start it refused; `null` before the first. `seatModel` is what that start found of the seat's
@@ -1109,7 +1223,7 @@ class FleetLifecycleService extends Base {
         this.adoptLeasedSeats();
 
         const record = this.processes.get(id);
-        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
+        if (!record) return {id, state: 'stopped', running: false, adopted: false, pid: null, startedAt: null, uptimeMs: null, exitCode: null, exitedAt: null, stderrBytes: 0, authRequired: null, instanceHome: null, authHome: null, launchCommand: null, authCommand: null, binaryVersion: null, failureReason: null, cleanupUnresolved: false, wakeRoute: null, repos: null, dependencies: this.dependenciesOf(id), sessionFolder: null, gitIdentity: this.gitIdentityOf(id), seatModel: this.seatModelOf(id), launchAdmission: this.launchAdmissionOf(id, null)};
 
         this.refreshAdoptedSeat(record);
 
@@ -1146,6 +1260,7 @@ class FleetLifecycleService extends Base {
                 subscriptionId : record.wakeRoute.subscriptionId ?? null
             } : null,
             repos          : record.repos ? record.repos.map(repo => ({...repo})) : null,
+            dependencies   : this.dependenciesOf(id),
             sessionFolder  : this.sessionFolderFor(record),
             gitIdentity    : this.gitIdentityOf(id),
             seatModel      : this.seatModelOf(id),
@@ -1227,8 +1342,45 @@ class FleetLifecycleService extends Base {
 
         if (!record || record.pid !== pid || record.startedAt !== startedAt) return false;
 
-        record.repos = repos.map(({reason, repoSlug, state}) => ({repoSlug, state, ...(reason != null ? {reason} : {})}));
+        record.repos = this.outcomeRows(repos);
         return true
+    }
+
+    /**
+     * @summary Records the dependency rows a pending Start has reached, so {@link status} reports its install phase
+     * before any launch exists, and its final rows after it ends, launched or not. Bound to that attempt: a signal the
+     * seat no longer has pending is refused, so a finished attempt's late report never rewrites them; a later
+     * attempt's first report replaces them.
+     * @param {String} id
+     * @param {AbortSignal} signal The attempt's signal from {@link beginStart}.
+     * @param {Object[]} rows `[{repoSlug, state, reason?}]`, `installing` included.
+     * @returns {Boolean} `true` when recorded.
+     */
+    setPendingDependencies(id, signal, rows) {
+        if (!this.pendingStarts.get(id)?.has(signal)) return false;
+
+        this.attemptDependencies.set(id, {signal, rows: this.outcomeRows(rows)});
+        return true
+    }
+
+    /**
+     * @summary A seat's dependency rows for {@link status}: its latest attempt's, `null` before one.
+     * @param {String} id
+     * @returns {Object[]|null}
+     * @private
+     */
+    dependenciesOf(id) {
+        return this.attemptDependencies.get(id)?.rows.map(row => ({...row})) ?? null
+    }
+
+    /**
+     * @summary Copies `[{repoSlug, state, reason?}]` rows, keeping only those fields.
+     * @param {Object[]} rows
+     * @returns {Object[]}
+     * @private
+     */
+    outcomeRows(rows) {
+        return rows.map(({reason, repoSlug, state}) => ({repoSlug, state, ...(reason != null ? {reason} : {})}))
     }
 
     /**

@@ -2,7 +2,6 @@ import fs                                              from 'fs/promises';
 import os                                              from 'os';
 import path                                            from 'path';
 import {deriveAgentInstanceHome, deriveAgentMemoryDir} from './deriveAgentInstanceHome.mjs';
-import {deriveCodexHome}                               from './deriveHarnessLaunchSpec.mjs';
 import {writeFileAtomic}                               from '../shared/atomicFileWrite.mjs';
 
 /**
@@ -14,8 +13,8 @@ import {writeFileAtomic}                               from '../shared/atomicFil
  * The consent is the registry row's `memoryImport`: a source path or `'none'`, recorded at birth by
  * `defineAgent`, or later through `configureAgent` while the seat neither runs nor holds its memory
  * ({@link seatHoldsMemory}). A seat with no consent is a fresh one and starts empty by design. The destination is
- * never a field: it is a function of the seat's family ({@link memoryDestination}). The copy never moves
- * the source, which stays the rollback. Its receipt beside the seat's other convergence receipts is
+ * never a field: supported families share the seat-owned folder ({@link memoryDestination}). The copy never moves
+ * the source, which stays the rollback. Its receipt beside that folder is
  * provenance only: it keeps a later Start from copying again over memory the seat has written since.
  * Whether the seat HAS its memory is always a fresh read of the destination.
  */
@@ -27,14 +26,12 @@ import {writeFileAtomic}                               from '../shared/atomicFil
 export const MEMORY_IMPORT_NONE = 'none';
 
 /**
- * @summary The import receipt's file name, in the seat's harness home.
+ * @summary The receipt beside `<seat>/memory`; legacy harness-home receipts remain readable.
  * @type {String}
  */
 export const MEMORY_IMPORT_RECEIPT = '.neo-fleet-seat-memory-import.json';
 
-const
-    CLAUDE_FAMILIES = new Set(['claude-code', 'claude-desktop']),
-    CODEX_FAMILIES  = new Set(['codex', 'codex-desktop']);
+const MEMORY_FAMILIES = new Set(['claude-code', 'claude-desktop', 'codex', 'codex-desktop', 'kimi-code', 'opencode']);
 
 /**
  * @summary Whether `source` is an agent's memory folder under `homeDir`: a Claude project's `memory`,
@@ -76,8 +73,7 @@ export function normalizeMemoryImport(value, {homeDir = os.homedir()} = {}) {
 }
 
 /**
- * @summary The folder a seat's family loads its markdown memory from: `<agentsRoot>/<id>/memory` for a
- * Claude seat (its pinned `autoMemoryDirectory`), `<CODEX_HOME>/memories` for a Codex seat.
+ * @summary The seat-owned folder a memory-capable family loads its markdown memory from.
  * @param {Object} options
  * @param {String} options.instanceRoot The absolute agents root.
  * @param {String} options.agentId
@@ -85,11 +81,7 @@ export function normalizeMemoryImport(value, {homeDir = os.homedir()} = {}) {
  * @returns {String|null} `null` for a family that keeps no markdown memory.
  */
 export function memoryDestination({instanceRoot, agentId, harnessType}) {
-    if (CLAUDE_FAMILIES.has(harnessType)) return deriveAgentMemoryDir({instanceRoot, agentId});
-
-    if (CODEX_FAMILIES.has(harnessType)) {
-        return path.join(deriveCodexHome({harnessType, instanceHome: deriveAgentInstanceHome({instanceRoot, agentId, harnessType})}), 'memories')
-    }
+    if (MEMORY_FAMILIES.has(harnessType)) return deriveAgentMemoryDir({instanceRoot, agentId});
 
     return null
 }
@@ -157,6 +149,237 @@ async function firstNonFolder(homeDir, dir, fileSystem) {
     }
 
     return null
+}
+
+/**
+ * @summary Finds the first existing symlink or non-directory on a path, or a non-file at a file leaf.
+ * @param {String} pathname
+ * @param {String} instanceRoot Trusted agents-root anchor; ancestors above it may be symlinks.
+ * @param {Object} fileSystem
+ * @param {'directory'|'file'} [leafType='directory']
+ * @returns {Promise<String|null>}
+ */
+async function firstUnsafePathEntry(pathname, instanceRoot, fileSystem, leafType = 'directory') {
+    const
+        absolute = path.resolve(pathname),
+        anchor   = path.resolve(instanceRoot),
+        relative = path.relative(anchor, absolute);
+
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return absolute;
+
+    const anchorEntry = await fileSystem.lstat(anchor).catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error
+    });
+
+    if (!anchorEntry) return null;
+    if (anchorEntry.isSymbolicLink() || !anchorEntry.isDirectory()) return anchor;
+    if (!relative) return leafType === 'directory' ? null : anchor;
+
+    const segments = relative.split(path.sep).filter(Boolean);
+
+    let current = anchor;
+
+    for (let index = 0; index < segments.length; index++) {
+        current = path.join(current, segments[index]);
+
+        const entry = await fileSystem.lstat(current).catch(error => {
+            if (error.code === 'ENOENT') return null;
+            throw error
+        });
+
+        if (!entry) return null;
+        if (entry.isSymbolicLink()) return current;
+
+        const isLeaf = index === segments.length - 1;
+
+        if (isLeaf ? (leafType === 'directory' ? !entry.isDirectory() : !entry.isFile()) : !entry.isDirectory()) {
+            return current
+        }
+    }
+
+    return null
+}
+
+/**
+ * @summary Finds symlinks and special files inside an existing destination tree without following them.
+ * @param {String} dir
+ * @param {Object} fileSystem
+ * @returns {Promise<String|null>}
+ */
+async function firstUnsafeTreeEntry(dir, fileSystem) {
+    let entries;
+
+    try {
+        entries = await fileSystem.readdir(dir, {withFileTypes: true})
+    } catch (error) {
+        if (error.code === 'ENOENT') return null;
+        throw error
+    }
+
+    for (const entry of entries) {
+        const child = path.join(dir, entry.name);
+
+        if (entry.isSymbolicLink() || (!entry.isDirectory() && !entry.isFile())) return child;
+        if (entry.isDirectory()) {
+            const nested = await firstUnsafeTreeEntry(child, fileSystem);
+
+            if (nested) return nested
+        }
+    }
+
+    return null
+}
+
+/**
+ * @summary Refuses a destination or receipt path that leaves the seat tree or crosses a symlink/non-folder.
+ * @param {Object} options
+ * @param {String} options.instanceRoot
+ * @param {String} options.agentId
+ * @param {String} options.destination
+ * @param {Object} options.fileSystem
+ * @returns {Promise<Boolean>}
+ */
+async function hasUnsafeImportPath({instanceRoot, agentId, destination, fileSystem}) {
+    const seatRoot            = path.resolve(instanceRoot, agentId),
+          destinationRelative = path.relative(seatRoot, path.resolve(destination));
+
+    if (!destinationRelative || destinationRelative === '..' || destinationRelative.startsWith(`..${path.sep}`) || path.isAbsolute(destinationRelative)) {
+        return true
+    }
+
+    if (await firstUnsafePathEntry(destination, instanceRoot, fileSystem) || await firstUnsafeTreeEntry(destination, fileSystem)) {
+        return true
+    }
+
+    return false
+}
+
+/**
+ * @summary A receipt's destination relative to its seat root, including legacy absolute receipt paths.
+ * @param {*} recordedDestination
+ * @param {String} seatRoot
+ * @param {String} agentId
+ * @returns {String|null}
+ */
+function receiptDestinationRelative(recordedDestination, seatRoot, agentId) {
+    if (typeof recordedDestination !== 'string' || !recordedDestination) return null;
+
+    if (!path.isAbsolute(recordedDestination)) {
+        const relative = path.normalize(recordedDestination);
+
+        return relative !== '.' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+            ? relative
+            : null
+    }
+
+    const absolute = path.resolve(recordedDestination),
+          current  = path.relative(seatRoot, absolute);
+
+    if (current && current !== '..' && !current.startsWith(`..${path.sep}`) && !path.isAbsolute(current)) return current;
+
+    // Legacy receipts only stored an absolute destination. After a seat-root move, the old root is
+    // unknown, so recognize the exact seat-relative shapes Fleet has previously produced.
+    const segments  = absolute.split(path.sep).filter(Boolean),
+          seatIndex = segments.lastIndexOf(agentId),
+          legacy    = seatIndex < 0 ? null : segments.slice(seatIndex + 1).join(path.sep);
+
+    return legacy === 'memory' ? legacy : null
+}
+
+/**
+ * @summary Whether a receipt names the current destination relative to this seat, independent of its root.
+ * @param {Object|null} receipt
+ * @param {String} destination
+ * @param {String} seatRoot
+ * @param {String} agentId
+ * @returns {Boolean}
+ */
+function receiptMatchesDestination(receipt, destination, seatRoot, agentId) {
+    const current = path.relative(seatRoot, path.resolve(destination));
+
+    if (!current || current === '..' || current.startsWith(`..${path.sep}`) || path.isAbsolute(current)) return false;
+
+    return receiptDestinationRelative(receipt?.destination, seatRoot, agentId) === current
+}
+
+/**
+ * @summary Reads one receipt without following links and validates its stable envelope.
+ * @param {String} receiptPath
+ * @param {String} instanceRoot Trusted agents-root anchor.
+ * @param {Object} fileSystem
+ * @returns {Promise<{exists: Boolean, receipt?: Object, invalid?: Boolean}>}
+ */
+async function readMemoryImportReceipt(receiptPath, instanceRoot, fileSystem) {
+    if (await firstUnsafePathEntry(receiptPath, instanceRoot, fileSystem, 'file')) {
+        return {exists: true, invalid: true}
+    }
+
+    const raw = await fileSystem.readFile(receiptPath, 'utf8').catch(error => {
+        if (error.code === 'ENOENT') return null;
+        throw error
+    });
+
+    if (raw === null) return {exists: false};
+
+    let receipt;
+
+    try {
+        receipt = JSON.parse(raw)
+    } catch {
+        return {exists: true, invalid: true}
+    }
+
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) ||
+        typeof receipt.source !== 'string' || typeof receipt.destination !== 'string' ||
+        !Number.isInteger(receipt.files) || typeof receipt.copiedAt !== 'string') {
+        return {exists: true, invalid: true}
+    }
+
+    return {exists: true, receipt}
+}
+
+/**
+ * @summary Reads the canonical receipt first, then searches legacy harness homes only when it is absent.
+ * @param {Object} options
+ * @param {Object} options.agent
+ * @param {String} options.instanceRoot
+ * @param {String} options.destination
+ * @param {String} options.canonicalPath
+ * @param {Object} options.fileSystem
+ * @returns {Promise<{receipt: Object|null, legacy: Boolean, invalid: Boolean}>}
+ */
+async function findMemoryImportReceipt({agent, instanceRoot, destination, canonicalPath, fileSystem}) {
+    const canonical = await readMemoryImportReceipt(canonicalPath, instanceRoot, fileSystem);
+
+    if (canonical.exists) {
+        return {
+            receipt: canonical.receipt ?? null,
+            legacy : false,
+            invalid: !!canonical.invalid
+        }
+    }
+
+    const harnessTypes = [agent.harnessType, ...[...MEMORY_FAMILIES].filter(type => type !== agent.harnessType)];
+
+    for (const harnessType of harnessTypes) {
+        const legacyPath = path.join(
+            deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType}),
+            MEMORY_IMPORT_RECEIPT
+        );
+
+        if (legacyPath === canonicalPath) continue;
+
+        const candidate = await readMemoryImportReceipt(legacyPath, instanceRoot, fileSystem);
+
+        if (!candidate.exists || candidate.invalid || !receiptMatchesDestination(candidate.receipt, destination, path.resolve(instanceRoot, agent.id), agent.id)) {
+            continue
+        }
+
+        return {receipt: candidate.receipt, legacy: true, invalid: false}
+    }
+
+    return {receipt: null, legacy: false, invalid: false}
 }
 
 /**
@@ -247,9 +470,9 @@ export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem
 }
 
 /**
- * @summary Whether a seat already holds its memory: an import receipt in its harness home, or any file in
- * its family's destination. A consent can still be given or withdrawn only while this reads `false`; from
- * then on the memory is the seat's own, and an import would copy over what it has written.
+ * @summary Whether a seat already holds its memory: a receipt for its current destination, or any file in
+ * that destination. A consent can still be given or withdrawn only while this reads `false`; from then on
+ * the memory is the seat's own, and an import would copy over what it has written.
  * @param {Object} options
  * @param {Object} options.agent        The registry row (`id`, `harnessType`).
  * @param {String} options.instanceRoot The absolute agents root.
@@ -258,23 +481,31 @@ export async function detectMemoryCandidates({homeDir = os.homedir(), fileSystem
  */
 export async function seatHoldsMemory({agent, instanceRoot, fileSystem = fs}) {
     const
-        instanceHome = deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}),
-        destination  = memoryDestination({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}),
-        receipted    = await fileSystem.access(path.join(instanceHome, MEMORY_IMPORT_RECEIPT)).then(() => true, error => {
-            if (error.code === 'ENOENT') return false;
-            throw error
-        });
+        destination = memoryDestination({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}),
+        seatRoot    = path.resolve(instanceRoot, agent.id),
+        receiptPath = path.join(seatRoot, MEMORY_IMPORT_RECEIPT);
 
-    return receipted || !!(destination && (await regularFiles(destination, fileSystem))?.length)
+    if (!destination) return false;
+
+    if (await hasUnsafeImportPath({instanceRoot, agentId: agent.id, destination, fileSystem})) {
+        throw unconverged(agent.memoryImport ?? MEMORY_IMPORT_NONE, destination, 'the seat memory path contains a link or a non-folder')
+    }
+
+    const {receipt, invalid} = await findMemoryImportReceipt({agent, instanceRoot, destination, canonicalPath: receiptPath, fileSystem});
+
+    if (invalid) throw unconverged(agent.memoryImport ?? MEMORY_IMPORT_NONE, destination, 'the seat memory receipt is invalid');
+
+    return receiptMatchesDestination(receipt, destination, seatRoot, agent.id) || !!(await regularFiles(destination, fileSystem))?.length
 }
 
 /**
  * @summary Converges an adopted seat's memory at Start, then reads it fresh. With a source consented
- * and no receipt, the first import must complete: the source is copied into the family's destination
+ * and no matching receipt, the first import must complete: the source is copied into the seat's destination
  * (never moved, links skipped, the folder owner-only), proven identical and receipted. A source that
  * holds nothing, or a file the seat already holds with other bytes, refuses before anything is copied.
- * Once receipted, the destination must hold memory. Every refusal names the source, the destination
- * and the step.
+ * A matching receipt survives root, home and harness changes without re-reading the old source.
+ * Legacy harness-home receipts are retained and normalized beside memory. The destination must
+ * still hold memory. Every refusal names the source, the destination and the step.
  * @param {Object} options
  * @param {Object} options.agent        The registry row (`id`, `harnessType`, `memoryImport`).
  * @param {String} options.instanceRoot The absolute agents root.
@@ -293,27 +524,39 @@ export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedi
 
     if (!destination) throw unconverged(source, null, `the '${agent.harnessType}' family keeps no markdown memory`);
 
-    try {
-        normalizeMemoryImport(source, {homeDir})
-    } catch {
-        throw unconverged(source, destination, 'the consent names no agent memory folder')
-    }
-
-    if (await firstNonFolder(homeDir, source, fileSystem)) {
-        throw unconverged(source, destination, 'a part of the source path is a link or a file, not a real folder')
-    }
-
     const
-        instanceHome = deriveAgentInstanceHome({instanceRoot, agentId: agent.id, harnessType: agent.harnessType}),
-        receiptPath  = path.join(instanceHome, MEMORY_IMPORT_RECEIPT),
-        receipt      = await fileSystem.readFile(receiptPath, 'utf8').then(JSON.parse, error => {
-            if (error.code === 'ENOENT') return null;
-            throw error
-        });
+        seatRoot    = path.resolve(instanceRoot, agent.id),
+        receiptPath = path.join(seatRoot, MEMORY_IMPORT_RECEIPT);
+
+    if (await hasUnsafeImportPath({instanceRoot, agentId: agent.id, destination, fileSystem})) {
+        throw unconverged(source, destination, 'the seat memory path contains a link or a non-folder')
+    }
+
+    const {receipt, legacy, invalid} = await findMemoryImportReceipt({agent, instanceRoot, destination, canonicalPath: receiptPath, fileSystem});
+
+    if (invalid) throw unconverged(source, destination, 'the seat memory receipt is invalid');
+
+    const receiptMatches = receiptMatchesDestination(receipt, destination, seatRoot, agent.id);
+
+    if (receiptMatches && legacy) {
+        await writeFileAtomic(receiptPath, `${JSON.stringify({...receipt, destination: path.relative(seatRoot, destination)}, null, 2)}\n`, {mode: 0o600})
+    }
+
+    if (!receiptMatches) {
+        try {
+            normalizeMemoryImport(source, {homeDir})
+        } catch {
+            throw unconverged(source, destination, 'the consent names no agent memory folder')
+        }
+
+        if (await firstNonFolder(homeDir, source, fileSystem)) {
+            throw unconverged(source, destination, 'a part of the source path is a link or a file, not a real folder')
+        }
+    }
 
     let copied = false;
 
-    if (!receipt && path.resolve(source) !== destination) {
+    if (!receiptMatches && path.resolve(source) !== destination) {
         const sourceFiles = await regularFiles(source, fileSystem);
 
         if (!sourceFiles?.length) throw unconverged(source, destination, 'the source holds no memory to copy');
@@ -341,15 +584,14 @@ export async function importSeatMemory({agent, instanceRoot, homeDir = os.homedi
 
         if (unverified.length) throw unconverged(source, destination, `the copy did not arrive identical: ${unverified.join(', ')}`);
 
-        await fileSystem.mkdir(instanceHome, {recursive: true});
-        await writeFileAtomic(receiptPath, `${JSON.stringify({source, destination, files: sourceFiles.length, copiedAt: now()}, null, 2)}\n`, {mode: 0o600});
+        await writeFileAtomic(receiptPath, `${JSON.stringify({source, destination: path.relative(seatRoot, destination), files: sourceFiles.length, copiedAt: now()}, null, 2)}\n`, {mode: 0o600});
         copied = true
     }
 
     const present = await regularFiles(destination, fileSystem);
 
     if (!present?.length) {
-        throw unconverged(source, destination, receipt ? "the seat's memory folder holds none (it was imported once and is empty now)" : "the seat's memory folder holds none")
+        throw unconverged(source, destination, receiptMatches ? "the seat's memory folder holds none (it was imported once and is empty now)" : "the seat's memory folder holds none")
     }
 
     return {state: copied ? 'copied' : 'present', source, destination, files: present.length}

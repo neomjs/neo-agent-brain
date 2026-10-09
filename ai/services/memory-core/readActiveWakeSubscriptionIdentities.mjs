@@ -11,10 +11,11 @@
  * containerized plane, serving the same scan over MCP). One query, two processes, no second copy
  * free to drift.
  *
- * The observation is deliberately REDACTED to the fleet-disclosure class: the holder identity plus
- * the most recent observational `lastPollAt` across that identity's active subscriptions — a
- * timestamp only, never the client-held watermark, never endpoint/filter/key-adjacent row
- * properties. Owner-only material stays behind the caller-owner `list` action.
+ * The observation is deliberately REDACTED to the fleet-disclosure class: the holder identity, the
+ * most recent observational `lastPollAt` across that identity's active subscriptions, and its
+ * message pull route when it holds one, with that route's own stamp — timestamps and a transport
+ * fact only, never the client-held watermark, never endpoint/filter/key-adjacent row properties.
+ * Owner-only material stays behind the caller-owner `list` action.
  *
  * The graph service loads lazily per call: the fleet server pays the memory-core import cost only
  * when a roster read actually needs wake truth, and a fresh scan per snapshot means no long-lived
@@ -30,6 +31,7 @@
  * injected-double seam for tests.
  */
 
+import {PULL_HARNESS_TARGET} from '../../daemons/wake/buildReceiverManifest.mjs';
 import {
     activeWakeSubscriptionStatusSql,
     isActiveWakeSubscriptionStatus,
@@ -44,6 +46,13 @@ import {
 const WITHDRAWN_STATUS = 'degraded'
 
 /**
+ * A message pull route: a `SENT_TO_ME` subscription on the pull transport, the route
+ * `armSeatWakePull` arms and its seat polls through `poll-digest`. A poll stamps whatever row it
+ * names, so a stamp on a push route or another trigger is no evidence of one.
+ */
+const PULL_ROUTE_SQL = `(json_extract(data, '$.properties.trigger') = 'SENT_TO_ME' AND json_extract(data, '$.properties.harnessTarget') = '${PULL_HARNESS_TARGET}')`
+
+/**
  * The durable fleet-wide ACTIVE-subscription query. Mirrors the established WAKE_SUBSCRIPTION
  * durable read (`WakeSubscriptionService#_reconcileDuplicateSubscriptions`) minus its owner
  * predicate — this reader is fleet-wide by design. The status predicate is derived from the shared
@@ -51,11 +60,14 @@ const WITHDRAWN_STATUS = 'degraded'
  * different meanings for a missing `status`.
  *
  * `MAX(lastPollAt)` aggregates the ISO-8601 stamp lexicographically — correct for UTC ISO strings
- * — and yields NULL for identities no poll has ever touched: absence stays absence.
+ * — and yields NULL for identities no poll has ever touched: absence stays absence. The pull
+ * columns aggregate over the identity's pull routes only.
  */
 const ACTIVE_OBSERVATIONS_SQL = `
     SELECT json_extract(data, '$.properties.agentIdentity') AS agentIdentity,
-           MAX(json_extract(data, '$.properties.lastPollAt')) AS lastPollAt
+           MAX(json_extract(data, '$.properties.lastPollAt')) AS lastPollAt,
+           MAX(${PULL_ROUTE_SQL}) AS pullRoute,
+           MAX(CASE WHEN ${PULL_ROUTE_SQL} THEN json_extract(data, '$.properties.lastPollAt') END) AS pullRouteLastPollAt
     FROM Nodes
     WHERE json_extract(data, '$.label') = 'WAKE_SUBSCRIPTION'
       AND ${activeWakeSubscriptionStatusSql()}
@@ -99,12 +111,14 @@ async function graphReadSurfaces(graphService) {
 
 /**
  * @summary Scan the graph for ACTIVE wake subscriptions and return one redacted observation per
- * holder identity: `{identity, lastPollAt}` with `lastPollAt` null until an authenticated poll has
- * stamped one of that identity's subscriptions.
+ * holder identity: `{identity, lastPollAt, pullRoute}`. `lastPollAt` is null until an authenticated
+ * poll has stamped one of that identity's subscriptions; `pullRoute` is `{lastPollAt}` over its
+ * message pull routes only, or null when it holds none.
  * @param {Object} [options]
  * @param {Object} [options.graphService] Injectable service exposing `ready()` + `db`; defaults to
  *     the memory-core `GraphService` singleton, imported lazily.
- * @returns {Promise<Object[]>} `[{identity: String, lastPollAt: String|null}]` (deduplicated).
+ * @returns {Promise<Object[]>} `[{identity: String, lastPollAt: String|null, pullRoute:
+ *     {lastPollAt: String|null}|null}]` (deduplicated).
  * @throws {Error} When no read surface is reachable — the adapter maps this to honest `unknown`.
  */
 export async function readActiveWakeSubscriptionObservations({graphService = null} = {}) {
@@ -116,7 +130,8 @@ export async function readActiveWakeSubscriptionObservations({graphService = nul
             .filter(row => typeof row.agentIdentity === 'string' && row.agentIdentity !== '')
             .map(row => ({
                 identity  : row.agentIdentity,
-                lastPollAt: typeof row.lastPollAt === 'string' && row.lastPollAt !== '' ? row.lastPollAt : null
+                lastPollAt: stampOf(row.lastPollAt),
+                pullRoute : row.pullRoute === 1 ? {lastPollAt: stampOf(row.pullRouteLastPollAt)} : null
             }))
     }
 
@@ -135,19 +150,40 @@ export async function readActiveWakeSubscriptionObservations({graphService = nul
 
         if (isActiveWakeSubscriptionStatus(props.status) && typeof props.agentIdentity === 'string' && props.agentIdentity !== '') {
             const
-                held    = observations.get(props.agentIdentity) ?? null,
-                stamped = typeof props.lastPollAt === 'string' && props.lastPollAt !== '' ? props.lastPollAt : null
+                held    = observations.get(props.agentIdentity) ?? {lastPollAt: null, pullRoute: null},
+                stamped = stampOf(props.lastPollAt),
+                isPull  = props.trigger === 'SENT_TO_ME' && props.harnessTarget === PULL_HARNESS_TARGET
 
-            // The same MAX aggregation as the durable query: the most recent stamp across the
-            // identity's active subscriptions wins; null never overwrites an observed stamp.
-            observations.set(
-                props.agentIdentity,
-                held !== null && (stamped === null || held >= stamped) ? held : stamped
-            )
+            // The same MAX aggregation as the durable query, the pull stamp over pull routes only.
+            observations.set(props.agentIdentity, {
+                lastPollAt: latestStamp(held.lastPollAt, stamped),
+                pullRoute : isPull ? {lastPollAt: latestStamp(held.pullRoute?.lastPollAt ?? null, stamped)} : held.pullRoute
+            })
         }
     }
 
-    return [...observations].map(([identity, lastPollAt]) => ({identity, lastPollAt}))
+    return [...observations].map(([identity, observation]) => ({identity, ...observation}))
+}
+
+/**
+ * @summary A row's stamp, or null when it carries none.
+ * @param {*} value
+ * @returns {String|null}
+ * @private
+ */
+function stampOf(value) {
+    return typeof value === 'string' && value !== '' ? value : null
+}
+
+/**
+ * @summary The later of two ISO-8601 stamps, as SQL's `MAX` orders them: null never overwrites one.
+ * @param {String|null} held
+ * @param {String|null} stamped
+ * @returns {String|null}
+ * @private
+ */
+function latestStamp(held, stamped) {
+    return held !== null && (stamped === null || held >= stamped) ? held : stamped
 }
 
 /**

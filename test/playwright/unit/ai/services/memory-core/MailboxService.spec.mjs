@@ -315,6 +315,293 @@ test.describe('Neo.ai.services.memory-core.MailboxService', () => {
         expect(pending).toHaveLength(0);
     });
 
+    /**
+     * @summary Seeds a stored observer witness without invoking message delivery or a wake.
+     * @param {String} id Message id.
+     * @param {Object} [properties] Stored metadata overrides.
+     * @returns {void}
+     */
+    function seedObserverMessage(id, properties = {}) {
+        GraphService.upsertNode({id, type: 'MESSAGE', name: 'observer witness', properties: {
+            subject: 'observer witness', bodyText: 'which option?', sentAt: '2026-10-09T07:00:00.000Z',
+            priority: 'high', readAt: null, seenAt: null,
+            task: {state: 'InputRequired', assignee: '@bob', inputs: {privatePayload: 'do not project'}},
+            ...properties
+        }});
+        GraphService.linkNodes(id, '@alice', 'SENT_BY');
+        GraphService.linkNodes(id, '@bob', 'SENT_TO');
+    }
+
+    test('#921: actual MCP observer list/detail leave receipts and Tasks unchanged; ordinary list records seen', async () => {
+        const id = 'MESSAGE:observer-mcp-boundary';
+        seedObserverMessage(id);
+        const sqlite = GraphService.db.storage.db,
+            before = sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data;
+
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
+            const page = await callMemoryCoreTool('list_messages', {
+                observer: {scope: 'own'}, box: 'inbox', status: 'all', includeArchived: true,
+                taskStates: ['InputRequired', 'Submitted', 'Working'], taskOrder: 'priority-age', limit: 1
+            });
+            expect(page).toMatchObject({totalCount: 1, truncated: false, nextOffset: null, limit: 1, offset: 0,
+                observation: {viewer: '@bob', scope: 'own'}});
+            expect(page.messages[0]).toMatchObject({messageId: id, task: {state: 'InputRequired'}});
+            expect(page.messages[0]).not.toHaveProperty('body');
+            expect(page.messages[0].task).not.toHaveProperty('inputs');
+            const detail = await callMemoryCoreTool('get_message', {messageId: id, observer: {scope: 'own'}});
+            expect(detail.body).toBe('which option?');
+            expect(detail.task).toEqual({state: 'InputRequired'});
+            expect(detail.observation.admissionKey).toBe(page.observation.admissionKey);
+            expect(sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data).toBe(before);
+
+            await callMemoryCoreTool('list_messages', {box: 'inbox', limit: 1});
+            const after = JSON.parse(sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data).properties;
+            expect(after.seenAt).toEqual(expect.any(String));
+            expect(after.readAt).toBeNull();
+            expect(after.task).toEqual(JSON.parse(before).properties.task);
+        });
+    });
+
+    test('#921: deployment policy admits or clamps operator and agent expansion; private grants fence reads', async () => {
+        const id = 'MESSAGE:observer-admission';
+        seedObserverMessage(id, {archivedAt: '2026-10-09T06:00:00.000Z'});
+        for (const [viewer, accountType] of [['@outside-operator', 'human'], ['@observer-agent', 'agent']]) {
+            GraphService.upsertNode({id: viewer, type: 'AgentIdentity', name: viewer, properties: {accountType}});
+            await RequestContextService.run({agentIdentityNodeId: viewer}, async () => {
+                const ordinary = await callMemoryCoreTool('list_messages', {});
+                expect(ordinary.totalCount).toBe(0);
+                const team = await callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'team'}}),
+                    configuredPolicy = mailboxAiConfig.memorySharing.defaultPolicy;
+                expect(team.totalCount).toBe(configuredPolicy === 'team' ? 1 : 0);
+                expect(team.observation).toMatchObject({viewer, policy: configuredPolicy, clamped: configuredPolicy !== 'team'});
+                if (configuredPolicy === 'team') {
+                    const detail = await callMemoryCoreTool('get_message', {messageId: id, observer: {scope: 'all', memorySharing: 'team'}});
+                    expect(detail.body).toBe('which option?');
+                } else {
+                    await expect(callMemoryCoreTool('get_message', {messageId: id, observer: {scope: 'all', memorySharing: 'team'}})).rejects.toThrow(/not admitted/);
+                }
+                const privatePage = await callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}});
+                expect(privatePage.totalCount).toBe(0);
+                expect(privatePage.observation.admissionKey).not.toBe(team.observation.admissionKey);
+                await expect(callMemoryCoreTool('get_message', {messageId: id, observer: {scope: 'all', memorySharing: 'private'}})).rejects.toThrow(/not admitted/);
+            });
+        }
+        const asObserver = fn => RequestContextService.run({agentIdentityNodeId: '@observer-agent'}, fn);
+        const before = await asObserver(() => callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}}));
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => PermissionService.grantPermission({to: '@observer-agent', scope: 'CAN_READ_INBOX_OF'}));
+        const granted = await asObserver(() => callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}}));
+        expect(granted.totalCount).toBe(1);
+        expect(granted.observation.admissionKey).not.toBe(before.observation.admissionKey);
+        expect((await asObserver(() => callMemoryCoreTool('list_messages', {observer: {scope: 'own'}}))).totalCount).toBe(0);
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => PermissionService.revokePermission({to: '@observer-agent', scope: 'CAN_READ_INBOX_OF'}));
+        const revoked = await asObserver(() => callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}}));
+        expect(revoked.totalCount).toBe(0);
+        expect(revoked.observation.admissionKey).toBe(before.observation.admissionKey);
+    });
+
+    test('#921: a remote grant revocation defeats cached rights and shares the content snapshot', async () => {
+        const id = 'MESSAGE:observer-remote-revoke', viewer = '@observer-agent';
+        seedObserverMessage(id);
+        GraphService.upsertNode({id: viewer, type: 'AgentIdentity', name: viewer, properties: {accountType: 'agent'}});
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, () => PermissionService.grantPermission({to: viewer, scope: 'CAN_READ_INBOX_OF'}));
+        const memory = GraphService.db.storage.db,
+            file = path.join(os.tmpdir(), `observer-revoke-${process.pid}-${Date.now()}.sqlite`);
+        fs.writeFileSync(file, memory.serialize());
+        const reader = new Database(file);
+        reader.pragma('journal_mode = WAL');
+        const writer = new Database(file), prepare = reader.prepare,
+            asViewer = fn => RequestContextService.run({agentIdentityNodeId: viewer}, fn),
+            read = () => asViewer(() => callMemoryCoreTool('list_messages', {observer: {scope: 'all', memorySharing: 'private'}})),
+            grant = writer.prepare("SELECT * FROM Edges WHERE source = ? AND type = 'CAN_READ_INBOX_OF'").get(viewer),
+            revoke = () => writer.prepare('DELETE FROM Edges WHERE id = ?').run(grant.id);
+        GraphService.db.storage.db = reader;
+        try {
+            const admitted = await read();
+            expect(admitted.totalCount).toBe(1);
+            revoke();
+            // Positive stale-cache control: the pre-fix permission-list path still sees the grant.
+            expect(PermissionService.hasPermission(viewer, '@bob', 'CAN_READ_INBOX_OF')).toBe(true);
+            const denied = await read();
+            expect(denied.totalCount).toBe(0);
+            expect(denied.observation.admissionKey).not.toBe(admitted.observation.admissionKey);
+            await expect(asViewer(() => callMemoryCoreTool('get_message', {messageId: id, observer: {scope: 'all', memorySharing: 'private'}})))
+                .rejects.toThrow(/not admitted/);
+
+            writer.prepare('INSERT INTO Edges (id, user_id, source, target, type, data) VALUES (@id, @user_id, @source, @target, @type, @data)').run(grant);
+            let revokedDuringRead = false;
+            reader.prepare = function (sql) {
+                if (!revokedDuringRead && /eligible AS/.test(sql)) {
+                    revokedDuringRead = true;
+                    revoke();
+                }
+                return prepare.call(this, sql);
+            };
+            const snapshot = await read();
+            expect(revokedDuringRead).toBe(true);
+            expect(snapshot.totalCount).toBe(1);
+            expect(snapshot.messages.map(row => row.messageId)).toEqual([id]);
+            expect(snapshot.observation.admissionKey).toBe(admitted.observation.admissionKey);
+            reader.prepare = prepare;
+            expect((await read()).totalCount).toBe(0);
+        } finally {
+            reader.prepare = prepare;
+            GraphService.db.storage.db = memory;
+            reader.close(); writer.close();
+            for (const suffix of ['', '-wal', '-shm']) fs.removeSync(file + suffix);
+        }
+    });
+
+    test('#921: composed Fleet host and plane SDK observer reads do not stamp the admitted mailbox', async () => {
+        const {default: bridge} = await import('../../../../../../ai/services/fleet/FleetControlBridge.mjs'),
+            {wireOperatorComposeWriter} = await import('../../../../../../ai/services/fleet/wireOperatorComposeWriter.mjs'),
+            {createPlaneMailboxClient} = await import('../../../../../../ai/services/fleet/planeMailboxClient.mjs'),
+            {listTools: listMemoryCoreTools} = await import('../../../../../../ai/mcp/server/memory-core/toolService.mjs'),
+            id = 'MESSAGE:observer-fleet-composition';
+        let oldPlane = false, contentCalls = 0;
+        const archivedOpenId = 'MESSAGE:observer-fleet-archived-open',
+            workingOpenId = 'MESSAGE:observer-fleet-working-open',
+            terminalId = 'MESSAGE:observer-fleet-terminal',
+            foreignOpenId = 'MESSAGE:observer-fleet-foreign-open',
+            seedQuestion = (messageId, {to = '@bob', state, priority, sentAt, archivedAt = null}) => {
+                GraphService.upsertNode({id: messageId, type: 'MESSAGE', name: 'question fixture', properties: {
+                    subject: 'question fixture', bodyText: 'private Task input must not cross', from: '@alice', to,
+                    sentAt, priority, archivedAt, seenAt: null, readAt: null,
+                    task: {state, assignee: to, inputs: {secret: 'private Task input must not cross'}}
+                }});
+                GraphService.linkNodes(messageId, '@alice', 'SENT_BY');
+                GraphService.linkNodes(messageId, to, 'SENT_TO')
+            };
+        seedObserverMessage(id, {priority: 'normal', sentAt: '2026-10-09T07:00:00.000Z'});
+        seedQuestion(archivedOpenId, {
+            state: 'Submitted', priority: 'high', sentAt: '2026-10-09T06:00:00.000Z',
+            archivedAt: '2026-10-09T07:30:00.000Z'
+        });
+        seedQuestion(workingOpenId, {state: 'Working', priority: 'low', sentAt: '2026-10-09T05:00:00.000Z'});
+        seedQuestion(terminalId, {state: 'Completed', priority: 'high', sentAt: '2026-10-09T04:00:00.000Z'});
+        GraphService.upsertNode({id: '@carol', type: 'AgentIdentity', name: 'Carol', properties: {accountType: 'agent'}});
+        seedQuestion(foreignOpenId, {to: '@carol', state: 'InputRequired', priority: 'high', sentAt: '2026-10-09T03:00:00.000Z'});
+        const sqlite = GraphService.db.storage.db,
+            snapshot = () => JSON.stringify({
+                nodes   : sqlite.prepare('SELECT * FROM Nodes ORDER BY id').all(),
+                edges   : sqlite.prepare('SELECT * FROM Edges ORDER BY id').all(),
+                graphLog: sqlite.prepare('SELECT * FROM GraphLog ORDER BY log_id').all()
+            }),
+            before = snapshot(),
+            rpcReply = (request, result) => new Response(JSON.stringify({jsonrpc: '2.0', id: request.id, result}), {
+                status: 200, headers: {'content-type': 'application/json', 'mcp-session-id': 'observer-fixture'}
+            }),
+            plane = createPlaneMailboxClient({
+                baseUrl: 'http://127.0.0.1:3102/mc/mcp',
+                fetchImpl: async (url, init = {}) => {
+                    if (init.method === 'GET') return new Response(null, {status: 405});
+                    if (init.method === 'DELETE') return new Response(null, {status: 200});
+                    const request = JSON.parse(init.body);
+                    if (request.method === 'initialize') return rpcReply(request, {
+                        protocolVersion: request.params.protocolVersion, capabilities: {tools: {}},
+                        serverInfo: {name: 'observer-fixture', version: '1'}
+                    });
+                    if (request.method === 'notifications/initialized') return new Response(null, {status: 202});
+                    if (request.method === 'tools/list') {
+                        const result = structuredClone(await listMemoryCoreTools(request.params));
+                        if (oldPlane) for (const tool of result.tools) delete tool.inputSchema.properties?.observer;
+                        return rpcReply(request, result);
+                    }
+                    const {name} = request.params;
+                    if (['list_messages', 'get_message'].includes(name)) contentCalls++;
+                    const args = {...request.params.arguments};
+                    // The old facade silently strips the unknown field; a late response check would
+                    // already be too late to prevent an ordinary list from recording seenAt.
+                    if (oldPlane) delete args.observer;
+                    const result = await RequestContextService.run({agentIdentityNodeId: '@bob'}, () =>
+                        callMemoryCoreTool(name, args));
+                    return rpcReply(request, BaseServer.prototype.formatToolResult.call({}, result));
+                }
+            });
+        const seams = {};
+        try {
+            expect(await plane.init({expectedIdentity: '@bob'})).toMatchObject({ok: true});
+            for (const mode of ['host', 'plane']) {
+                const seam = {};
+                wireOperatorComposeWriter({
+                    bridge: seam, addMessage: () => {throw new Error('observation must never send')},
+                    getMessage: mode === 'host' ? args => MailboxService.getMessage(args) : args => plane.getMessage(args),
+                    observeMessages: mode === 'host'
+                        ? args => MailboxService.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
+                        : args => plane.listMessages({...args, observer: args.observer ?? {scope: 'own'}})
+                });
+                seams[mode] = seam;
+                await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
+                    const page = await bridge.fleetMailboxMirror.call(seam, {
+                        observer: {scope: 'own'}, taskStates: ['InputRequired'], taskOrder: 'priority-age',
+                        limit: 1, includeArchived: true
+                    });
+                    expect(page.totalCount, mode).toBe(1);
+                    const detail = await bridge.fleetOwnMessage.call(seam, {messageId: id, observer: {scope: 'own'}});
+                    expect(detail.body, mode).toBe('which option?');
+                    expect(detail.observation.admissionKey).toBe(page.observation.admissionKey);
+
+                    const questions = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 0}),
+                        nextQuestions = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 1}),
+                        finalQuestions = await bridge.fleetOwnQuestions.call(seam, {limit: 1, offset: 2}),
+                        home = await bridge.fleetOpenWork.call(seam);
+
+                    expect(questions, `${mode}: first open-question page`).toMatchObject({
+                        state: 'ok', reason: null, count: 3, page: {limit: 1, offset: 0, count: 1, hasMore: true}
+                    });
+                    expect(questions.rows).toHaveLength(1);
+                    expect(questions.rows[0]).toMatchObject({messageId: archivedOpenId, taskState: 'Submitted', archivedAt: '2026-10-09T07:30:00.000Z'});
+                    expect(questions.rows[0]).not.toHaveProperty('body');
+                    expect(questions.rows[0]).not.toHaveProperty('inputs');
+                    expect(nextQuestions).toMatchObject({
+                        state: 'ok', count: 3, rows: [{messageId: id}], page: {limit: 1, offset: 1, count: 1, hasMore: true}
+                    });
+                    expect(finalQuestions).toMatchObject({
+                        state: 'ok', count: 3, rows: [{messageId: workingOpenId}], page: {limit: 1, offset: 2, count: 1, hasMore: false}
+                    });
+                    expect(home.questions).toMatchObject({state: 'ok', reason: null, count: 3});
+                    expect(snapshot(), mode).toBe(before);
+                });
+            }
+            await plane.close();
+            oldPlane = true;
+            expect(await plane.init({expectedIdentity: '@bob'})).toMatchObject({ok: true});
+            const priorCalls = contentCalls;
+            const unavailableQuestions = await bridge.fleetOwnQuestions.call(seams.plane, {limit: 1, offset: 0}),
+                unavailableHome = await bridge.fleetOpenWork.call(seams.plane);
+
+            expect(unavailableQuestions).toMatchObject({
+                state: 'unavailable', count: null, rows: [], page: {limit: 1, offset: 0, count: 0, hasMore: false}
+            });
+            expect(unavailableHome.questions).toMatchObject({
+                state: 'unavailable', count: null, reason: expect.any(String)
+            });
+            await expect(plane.listMessages({observer: {scope: 'own'}})).rejects.toMatchObject({code: 'MAILBOX_OBSERVER_UNAVAILABLE'});
+            await expect(plane.getMessage({messageId: id, observer: {scope: 'own'}})).rejects.toMatchObject({code: 'MAILBOX_OBSERVER_UNAVAILABLE'});
+            expect(contentCalls).toBe(priorCalls);
+            expect(snapshot()).toBe(before);
+            await plane.listMessages({limit: 1});
+            expect(JSON.parse(sqlite.prepare('SELECT data FROM Nodes WHERE id = ?').get(id).data).properties.seenAt)
+                .toEqual(expect.any(String));
+        } finally {
+            await plane.close();
+        }
+    });
+
+    test('#921: detail shares scope admission; retraction never exposes retained old text or full Task inputs', async () => {
+        const id = 'MESSAGE:observer-retracted';
+        seedObserverMessage(id, {retracted: true, bodyText: 'old text must stay hidden'});
+        await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
+            const list = await callMemoryCoreTool('list_messages', {observer: {scope: 'own'}});
+            const detail = await callMemoryCoreTool('get_message', {messageId: id, observer: {scope: 'own'}});
+            expect(list.totalCount).toBe(1);
+            expect(detail).toMatchObject({subject: '[retracted by sender]', body: '[retracted by sender]', retracted: true});
+            expect(detail.task).toEqual({state: 'InputRequired'});
+            await expect(MailboxService.listMessages({observer: {scope: 'own'}, to: '@alice'})).rejects.toThrow(/stamped viewer/);
+            await expect(MailboxService.listMessages({observer: {scope: 'all', viewer: '@alice'}})).rejects.toThrow(/unsupported field/);
+        });
+        await expect(callMemoryCoreTool('list_messages', {observer: {scope: 'all'}})).rejects.toThrow();
+    });
+
     test('#16677: add_message returns its durable WAL receipt before graph projection', async () => {
         await RequestContextService.run({agentIdentityNodeId: '@bob'}, async () => {
             await PermissionService.grantPermission({to: '@alice', scope: 'CAN_REPLY_TO'});
@@ -7099,12 +7386,12 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         await seedHumanRecipients();
 
         const
-            low      = await ask('@operator', {priority: 'low'}),
-            normal   = await ask('@operator', {priority: 'normal'}),
-            highOld  = await ask('@operator', {priority: 'high'}),
-            unset    = await ask('@operator'),
-            highNew  = await ask('@operator', {priority: 'high'}),
-            sentAt   = {[low]: '2026-10-04T10:00:00.000Z', [normal]: '2026-10-04T10:01:00.000Z', [highOld]: '2026-10-04T10:02:00.000Z', [unset]: '2026-10-04T10:03:00.000Z', [highNew]: '2026-10-04T10:04:00.000Z'},
+            low       = await ask('@operator', {priority: 'low'}),
+            normal    = await ask('@operator', {priority: 'normal'}),
+            highOld   = await ask('@operator', {priority: 'high'}),
+            unset     = await ask('@operator'),
+            highNew   = await ask('@operator', {priority: 'high'}),
+            sentAt    = {[low]: '2026-10-04T10:00:00.000Z', [normal]: '2026-10-04T10:01:00.000Z', [highOld]: '2026-10-04T10:02:00.000Z', [unset]: '2026-10-04T10:03:00.000Z', [highNew]: '2026-10-04T10:04:00.000Z'},
             setSentAt = GraphService.db.storage.db.prepare(`UPDATE Nodes SET data = json_set(data, '$.properties.sentAt', ?) WHERE id = ?`);
 
         for (const [id, at] of Object.entries(sentAt)) setSentAt.run(at, id);
@@ -7167,6 +7454,80 @@ test.describe('Neo.ai.services.memory-core.MailboxService — A2A_TASK (#10338)'
         expect((await actAs('@operator', () => MailboxService.getMessage({messageId: taskId}))).body).toBe('which one?');
         await expect(actAs('@guest', () => MailboxService.getMessage({messageId: taskId})))
             .rejects.toThrow(/Unauthorized: message .* was not sent to or from @guest/);
+    });
+
+    test('#922 AC-1/AC-3: the open-questions read lists and counts an archived open Task, never a terminal one or another recipient\'s', async () => {
+        await seedHumanRecipients();
+
+        const
+            archived  = await ask('@operator'),
+            answered  = await ask('@operator'),
+            submitted = await ask('@operator', {task: {state: 'Submitted'}});
+
+        await ask('@guest');
+        await actAs('@operator', async () => {
+            await MailboxService.archiveMessage({messageId: archived});
+            await MailboxService.transitionTask({taskId: answered, newState: 'Completed'})
+        });
+
+        // the exact query `FleetControlBridge.fleetOwnQuestions` sends, one row per page
+        const
+            query = {box: 'inbox', status: 'all', includeArchived: true, taskStates: ['InputRequired', 'Submitted', 'Working'], taskOrder: 'priority-age', limit: 1},
+            first = await actAs('@operator', () => MailboxService.listMessages({...query, offset: 0})),
+            next  = await actAs('@operator', () => MailboxService.listMessages({...query, offset: 1}));
+
+        expect(first.totalCount).toBe(2);
+        expect([...first.messages, ...next.messages].map(row => row.messageId).sort()).toEqual([archived, submitted].sort());
+        // the archived one only reads through the archive opt-in
+        expect((await actAs('@operator', () => MailboxService.listMessages({...query, includeArchived: false}))).totalCount).toBe(1)
+    });
+
+    test('#922 AC-4: a stated fallback is stored as written and read back by the recipient; an absent one is never inferred, and a malformed one never lands', async () => {
+        await seedHumanRecipients();
+
+        const
+            plan   = 'If nobody answers by Friday I ship the default layout.',
+            stated = await ask('@operator', {task: {state: 'InputRequired', fallback: plan}}),
+            legacy = await ask('@operator');
+
+        expect((await actAs('@operator', () => MailboxService.getMessage({messageId: stated}))).task.fallback).toBe(plan);
+        expect((await actAs('@operator', () => MailboxService.getMessage({messageId: legacy}))).task).not.toHaveProperty('fallback');
+        await expect(actAs('@guest', () => MailboxService.getMessage({messageId: stated}))).rejects.toThrow(/Unauthorized/);
+
+        const before = (await openTasks('@operator')).totalCount;
+
+        for (const fallback of [42, '', '   ', 'x'.repeat(MailboxService.MAX_TASK_FALLBACK_LENGTH + 1), {plan}]) {
+            await expect(ask('@operator', {task: {state: 'InputRequired', fallback}}), JSON.stringify(fallback).slice(0, 40))
+                .rejects.toThrow(/Invalid task fallback/)
+        }
+
+        expect((await openTasks('@operator')).totalCount).toBe(before)
+    });
+
+    test('#922 AC-4: the fallback survives transitions, replies and expiry; an expired Task keeps its plan while it leaves the open list, and nothing runs it', async () => {
+        await seedHumanRecipients();
+
+        const
+            plan     = 'Unanswered by Friday: I pick the narrower scope.',
+            moved    = await ask('@operator', {task: {state: 'InputRequired', fallback: plan}}),
+            expiring = await ask('@operator', {task: {state: 'InputRequired', expiresAt: '2020-01-01T00:00:00.000Z', fallback: plan}});
+
+        await actAs('@operator', async () => {
+            await MailboxService.transitionTask({taskId: moved, newState: 'Working'});
+            await MailboxService.addMessage({to: '@alice', subject: 'Re: a question', body: 'on it', inReplyTo: moved})
+        });
+
+        expect(readStoredTask(moved).task).toMatchObject({state: 'Working', fallback: plan});
+
+        const assigneeBefore = readStoredTask(expiring).task.assignee;
+
+        await MailboxService.sweepExpiredTasks();
+
+        // expired: out of the open list and count, the plan still on the persisted Task, the assignee untouched
+        expect((await openTasks('@operator', {taskStates: ['InputRequired', 'Submitted', 'Working']})).messages.map(row => row.messageId)).toEqual([moved]);
+        expect((await actAs('@operator', () => MailboxService.getMessage({messageId: expiring}))).task).toMatchObject({state: 'Expired', fallback: plan, assignee: assigneeBefore});
+        // nothing executed it: @alice received only the one reply
+        expect((await actAs('@alice', () => MailboxService.listMessages({}))).messages.map(row => row.subject)).toEqual(['Re: a question'])
     });
 });
 

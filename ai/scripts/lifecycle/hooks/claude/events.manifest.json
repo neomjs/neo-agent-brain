@@ -19,9 +19,26 @@
     "turnPresenceHook's progress beacon runs async, so no tool call waits on it; the harness enforces no",
     "timeout on an async hook, and the writer's async MCP deadline (turnPresence.asyncHookWriteTimeoutMs)",
     "bounds each run alone. Its start stays in the prompt's path: start opens the turn's interval, and one",
-    "landing after the turn completed would open a fresh interval for a finished turn."
+    "landing after the turn completed would open a fresh interval for a finished turn.",
+    "PreToolUse -> harnessIdGuardHook IS ours: it refuses a call on a way into an artifact (the GitHub tools,",
+    "the shell, a written file) whose input carries the seat's own harness session id. Memory Core is our",
+    "own store and may hold that id, so its tools stay off the matcher. It is anchored because Claude tests",
+    "a matcher regex against the tool name unanchored. The hook must stay sync, because a pre-tool",
+    "decision cannot run in the background; the 2 s timeout bounds it."
   ],
   "events": {
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|Write|Edit|mcp__neo-mjs-github-workflow__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env node \"$(git rev-parse --show-toplevel)/.claude/hooks/harnessIdGuardHook.mjs\"",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [

@@ -55,16 +55,17 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         };
 
         managerStub = {
-            startAgent     : async id => { calls.push(['startAgent', id]);   return {id, state: 'running'}; },
-            stopAgent      : async id => { calls.push(['stopAgent', id]);    return {success: true, id, state: 'stopped'}; },
-            restartAgent   : async id => { calls.push(['restartAgent', id]); return {id, state: 'running'}; },
-            removeAgent    : async id => { calls.push(['removeAgent', id]);  return {success: true, id}; },
-            fleetRepoStatus: ()       => { calls.push(['fleetRepoStatus']);  return [{id: 'alice', repo: 'clean'}]; },
-            setRepo        : payload  => { calls.push(['setRepo', payload]);   return {id: payload.id, metadata: {repo: payload}}; },
-            setRepos       : payload  => { calls.push(['setRepos', payload]);  return {id: payload.id, metadata: {repos: payload.repos}}; },
-            setAvatar      : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
-            adoptAgent     : payload  => { calls.push(['adoptAgent', payload]);   return {id: payload.id, launchOwner: 'fleet'}; },
-            releaseAgent   : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; }
+            startAgent           : async id => { calls.push(['startAgent', id]);   return {id, state: 'running'}; },
+            stopAgent            : async id => { calls.push(['stopAgent', id]);    return {success: true, id, state: 'stopped'}; },
+            restartAgent         : async id => { calls.push(['restartAgent', id]); return {id, state: 'running'}; },
+            skipAgentDependencies: id => { calls.push(['skipAgentDependencies', id]); return {id, skippedStarts: 1}; },
+            removeAgent          : async id => { calls.push(['removeAgent', id]);  return {success: true, id}; },
+            fleetRepoStatus      : ()       => { calls.push(['fleetRepoStatus']);  return [{id: 'alice', repo: 'clean'}]; },
+            setRepo              : payload  => { calls.push(['setRepo', payload]);   return {id: payload.id, metadata: {repo: payload}}; },
+            setRepos             : payload  => { calls.push(['setRepos', payload]);  return {id: payload.id, metadata: {repos: payload.repos}}; },
+            setAvatar            : payload  => { calls.push(['setAvatar', payload]); return {id: payload.id, metadata: {avatarUrl: payload.avatarUrl}}; },
+            adoptAgent           : payload  => { calls.push(['adoptAgent', payload]);   return {id: payload.id, launchOwner: 'fleet'}; },
+            releaseAgent         : payload  => { calls.push(['releaseAgent', payload]); return {id: payload.id, launchOwner: 'external'}; }
         };
 
         tenantServiceStub = {
@@ -510,6 +511,71 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         expect(Object.keys(result).sort()).toEqual(['admission', 'capability', 'page', 'rows'])
     });
 
+    test('fleetMailboxMirror observer mode returns the canonical answer and forwards only its scope, bounded filters and page', async () => {
+        const
+            oldSource = FleetControlBridge.mailboxMirrorSource,
+            oldWriter = FleetControlBridge.composeWriter,
+            answer    = {messages: [{messageId: 'MESSAGE:1'}], nextOffset: null, totalCount: 1},
+            observed  = [];
+
+        try {
+            FleetControlBridge.mailboxMirrorSource = {readMailboxMirror: () => { throw new Error('observer must not enter the mirror adapter') }};
+            FleetControlBridge.composeWriter = {observeMessages: args => { observed.push(args); return answer }};
+
+            const result = await FleetControlBridge.fleetMailboxMirror({
+                observer      : {scope: 'involves-me', memorySharing: 'team'},
+                status        : 'all',
+                threadId      : 'thread-1',
+                taggedConcepts: ['concept-1'],
+                taskStates    : ['InputRequired'],
+                taskOrder     : 'priority-age',
+                includeArchived: true,
+                box           : 'all',
+                fromIdentity  : '@author',
+                limit         : 999,
+                offset        : -4,
+                agentIdentityNodeId: '@mallory'
+            });
+
+            expect(result).toBe(answer);
+            expect(observed).toEqual([{
+                observer       : {scope: 'involves-me', memorySharing: 'team'},
+                box            : 'all',
+                status         : 'all',
+                fromIdentity  : '@author',
+                threadId       : 'thread-1',
+                taggedConcepts : ['concept-1'],
+                taskStates     : ['InputRequired'],
+                taskOrder      : 'priority-age',
+                includeArchived: true,
+                limit          : 999,
+                offset         : -4
+            }]);
+
+            expect(FleetControlBridge.fleetMailboxMirror({observer: {scope: 'own', viewerIdentity: '@mallory'}}))
+                .toEqual({status: 'rejected', reason: 'fleet: mailbox observer has unsupported field(s): viewerIdentity'});
+            expect(FleetControlBridge.fleetMailboxMirror({observer: {scope: 'own'}, to: '@mallory'}))
+                .toEqual({status: 'rejected', reason: 'fleet: observer reads do not accept caller identity selectors'});
+            expect(observed).toHaveLength(1)
+        } finally {
+            FleetControlBridge.mailboxMirrorSource = oldSource;
+            FleetControlBridge.composeWriter = oldWriter
+        }
+    });
+
+    test('an unwired observer read is not answered as an empty mailbox', () => {
+        const oldWriter = FleetControlBridge.composeWriter;
+
+        try {
+            FleetControlBridge.composeWriter = null;
+            expect(FleetControlBridge.fleetMailboxMirror({observer: {scope: 'own'}})).toEqual({
+                status: 'not-wired', reason: 'fleet: operator inbox observer read not wired'
+            })
+        } finally {
+            FleetControlBridge.composeWriter = oldWriter
+        }
+    });
+
     // ---- delegation: the lifecycle (start / stop / restart / remove / status) half ----
 
     test('startAgent delegates to the manager and resolves its lifecycle status', async () => {
@@ -525,6 +591,13 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
     test('restartAgent delegates to the manager', async () => {
         await expect(FleetControlBridge.restartAgent('alice')).resolves.toEqual({id: 'alice', state: 'running'});
         expect(calls).toEqual([['restartAgent', 'alice']]);
+    });
+
+    test('skipAgentDependencies delegates to the manager, and the wire routes it', async () => {
+        expect(FleetControlBridge.skipAgentDependencies('alice')).toEqual({id: 'alice', skippedStarts: 1});
+        await expect(dispatchFleetRequest(createFleetWireRequest('skipAgentDependencies', 'alice'), FleetControlBridge))
+            .resolves.toMatchObject({ok: true, state: FLEET_WIRE_RESPONSE_STATES.ok, result: {id: 'alice', skippedStarts: 1}});
+        expect(calls).toEqual([['skipAgentDependencies', 'alice'], ['skipAgentDependencies', 'alice']]);
     });
 
     test('removeAgent delegates to the manager compose (stop + deregister)', async () => {
@@ -593,9 +666,14 @@ test.describe('Neo.ai.services.fleet.FleetControlBridge — capability allowlist
         let refusal;
 
         // the real manager's own start gate, then the provisioned start behind it
-        FleetManager.lifecycleService = {getRegistry: () => ({
-            getAgent: id => id === 'released' ? {id, launchOwner: 'external', launchOwnerSince: '2026-10-02T00:00:00.000Z'} : {id}
-        })};
+        FleetManager.lifecycleService = {
+            beginStart          : () => new AbortController().signal,
+            dependencySkipSignal: () => new AbortController().signal,
+            finishStart() {},
+            getRegistry: () => ({
+                getAgent: id => id === 'released' ? {id, launchOwner: 'external', launchOwnerSince: '2026-10-02T00:00:00.000Z'} : {id}
+            })
+        };
         FleetManager.managedRoot         = '/managed';
         FleetManager.provisionAndStartFn = async () => { throw refusal };
         FleetControlBridge.manager       = FleetManager;

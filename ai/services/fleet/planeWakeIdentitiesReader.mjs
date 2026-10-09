@@ -35,18 +35,25 @@ export function createPlaneWakeIdentitiesReader(planeClient) {
 
 /**
  * @summary Builds the observation-carrying bulk reader over a proven plane client — the redacted
- * `{identity, lastPollAt}` rows the route-health axis derives poll recency from.
+ * `{identity, lastPollAt, pullRoute}` rows the route-health axis derives poll recency and pull
+ * arming from.
  *
  * Deployment-lag tolerant by design: a plane that answers identities without `observations` rows
- * (an image predating the recency disclosure) degrades to `lastPollAt: null` per identity —
- * honest absence-of-signal, never a fabricated recency and never a broken subscription axis. A
+ * (an image predating the recency disclosure) degrades to `lastPollAt: null` per identity, and one
+ * without `pullRoute` (predating the pull disclosure) to `pullRoute: null` — honest
+ * absence-of-signal, never a fabricated recency or route and never a broken subscription axis. A
  * payload without even an identities array still throws, exactly like the sibling reader.
  * @param {Object} planeClient A `planeMailboxClient`-contract client: `callTool(name, args)`
  *     resolving to the parsed tool payload (never the wire envelope).
- * @returns {Function} `() => Promise<Object[]>` yielding `[{identity, lastPollAt}]`, matching the
- *     wake adapter's `listActiveSubscriptionObservations` bulk-reader seam.
+ * @returns {Function} `() => Promise<Object[]>` yielding `[{identity, lastPollAt, pullRoute}]`,
+ *     matching the wake adapter's `listActiveSubscriptionObservations` bulk-reader seam.
  */
 export function createPlaneWakeObservationsReader(planeClient) {
+    const
+        stampOf = value => typeof value === 'string' && value !== '' ? value : null,
+        // out of contract (a bare flag included) reads as no pull route, never as one
+        routeOf = value => value !== null && typeof value === 'object' ? {lastPollAt: stampOf(value.lastPollAt)} : null;
+
     return async () => {
         const payload = await planeClient.callTool('manage_wake_subscription', {action: 'fleet-identities'});
 
@@ -55,7 +62,8 @@ export function createPlaneWakeObservationsReader(planeClient) {
                 .filter(row => typeof row?.identity === 'string' && row.identity !== '')
                 .map(row => ({
                     identity  : row.identity,
-                    lastPollAt: typeof row.lastPollAt === 'string' && row.lastPollAt !== '' ? row.lastPollAt : null
+                    lastPollAt: stampOf(row.lastPollAt),
+                    pullRoute : routeOf(row.pullRoute)
                 }))
         }
 
@@ -63,6 +71,6 @@ export function createPlaneWakeObservationsReader(planeClient) {
             throw new Error('plane wake fleet-identities answer unreadable')
         }
 
-        return payload.identities.map(identity => ({identity, lastPollAt: null}))
+        return payload.identities.map(identity => ({identity, lastPollAt: null, pullRoute: null}))
     }
 }

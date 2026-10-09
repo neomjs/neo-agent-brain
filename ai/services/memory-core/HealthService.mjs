@@ -22,6 +22,7 @@ import RequestContextService   from '../../mcp/server/shared/services/RequestCon
 import WakeSubscriptionService from './WakeSubscriptionService.mjs';
 import {
     DELIVERABLE_HARNESS_TARGET,
+    PULL_HARNESS_TARGET,
     isServerIssuedSigningKey
 } from '../../daemons/wake/buildReceiverManifest.mjs';
 import {
@@ -450,9 +451,10 @@ export function buildProviderPrerequisiteBlock(cfg, env = process.env) {
  * default that reads identically to a real reading obscures precisely when it matters most.
  *
  * - `subscription`: the caller-scoped arming verdict — whether THIS identity holds a wake
- *   subscription the receiver-manifest build would accept. `armed` is tri-state: `null` means the
+ *   subscription the receiver-manifest build would accept, or a pull route its own poll delivers.
+ *   `armed` is tri-state: `null` means the
  *   question could not be answered (unbound identity, unreadable graph), never "not armed".
- *   `reason` is one of `deliverable` | `no-active-subscription` | `withdrawn` | `unmigrated-target` |
+ *   `reason` is one of `deliverable` | `pull` | `no-active-subscription` | `withdrawn` | `unmigrated-target` |
  *   `missing-signing-key` | `not-in-receiver-manifest` | `unbound-identity` | `unreadable`. It
  *   reports the Memory-Core leg, plus the receiver's last refusal the sender recorded, and does NOT
  *   claim a wake will arrive — see {@link buildSubscriptionArmingBlock}.
@@ -595,6 +597,10 @@ async function buildWakeDeliveryBlock() {
  * this block treated any non-`a2a-webhook` target as fine, exactly inverting the gate, so a seat
  * that the manifest refuses to publish would have read `armed: true`.
  *
+ * **A pull route is the one route that gate never sees.** An active `none` route is delivered by the
+ * seat's own poll through `poll-digest`, so a seat holding one reads `{armed: true, reason: 'pull'}`
+ * whatever its push rows say: the manifest build cannot affect a route it never carries.
+ *
  * `reason` names the furthest gate the seat reached, so it points at the next repair rather than the
  * first failure: `unmigrated-target` outranks `no-active-subscription`, and `missing-signing-key`
  * outranks both. All three were live on this plane. `withdrawn` narrows `no-active-subscription`
@@ -635,6 +641,10 @@ async function buildSubscriptionArmingBlock() {
             const withdrawn = subscriptions.filter(entry => entry.status === 'degraded');
 
             return {armed: false, reason: withdrawn.length === 0 ? 'no-active-subscription' : refusal(withdrawn) ?? 'withdrawn'};
+        }
+
+        if (active.some(entry => entry.harnessTarget === PULL_HARNESS_TARGET)) {
+            return {armed: true, reason: 'pull'};
         }
 
         const onDeliverablePath = active.filter(entry => entry.harnessTarget === DELIVERABLE_HARNESS_TARGET);
@@ -2359,10 +2369,7 @@ class HealthService extends Base {
             advisories      : [],
             timestamp       : new Date().toISOString(),
             runtimeFreshness: await this.resolveRuntimeFreshness(),
-            session         : {
-                currentId: Neo.ns('Neo.ai.services.memory-core.SessionService', false)?.currentSessionId
-            },
-            database : {
+            database        : {
                 process   : ChromaLifecycleService.getDatabaseStatus(),
                 connection: {
                     connected  : false,
@@ -2466,6 +2473,21 @@ class HealthService extends Base {
     }
 
     /**
+     * @summary Hands a health payload to the calling request with that request's own session.
+     *
+     * A payload can serve many callers: a healthy one is cached for five minutes, and a caller that
+     * arrives during another caller's check joins its promise. So the payload never holds a session;
+     * this shallow copy adds the caller's, read through `SessionService.currentSessionId` (the
+     * request-bound `Mcp-Session-Id` first) in the caller's own request context.
+     * @param {Object} payload Health payload, possibly shared.
+     * @returns {Object} A copy carrying `session.currentId`; the shared payload is never mutated.
+     * @private
+     */
+    #forCaller(payload) {
+        return {...payload, session: {currentId: Neo.ns('Neo.ai.services.memory-core.SessionService', false)?.currentSessionId}}
+    }
+
+    /**
      * Public API: Checks the health of the Memory Core with intelligent caching.
      *
      * Intent: This is the primary entry point for all health checks. It uses a
@@ -2508,7 +2530,7 @@ class HealthService extends Base {
                     logger.fileDebug(`[HealthService] Using cached health status (age: ${Math.round(age / 1000)}s)`);
 
                     if (!freshObservability) {
-                        return this.#applyEmbeddingWriteCanary(this.#cachedHealth);
+                        return this.#forCaller(this.#applyEmbeddingWriteCanary(this.#cachedHealth));
                     }
 
                     const freshCachedHealth = await this.#buildRequestFreshCachedHealth(this.#cachedHealth, now, {
@@ -2516,7 +2538,7 @@ class HealthService extends Base {
                     });
 
                     if (freshCachedHealth) {
-                        return freshCachedHealth;
+                        return this.#forCaller(freshCachedHealth);
                     }
 
                     this.clearCache();
@@ -2526,7 +2548,7 @@ class HealthService extends Base {
             // Check for in-flight request (deduplication)
             if (this.#healthCheckPromise) {
                 logger.fileDebug('[HealthService] Joining in-flight health check...');
-                return await this.#healthCheckPromise;
+                return this.#forCaller(await this.#healthCheckPromise);
             }
 
             // Cache is stale, was unhealthy, or doesn't exist - perform a fresh check
@@ -2562,7 +2584,7 @@ class HealthService extends Base {
             this.#lastCheckTime  = now;
             this.#previousStatus = health.status;
 
-            return health;
+            return this.#forCaller(health);
         } catch (error) {
             logger.error('[HealthService] Unexpected error during health check:', error);
             return this.#applyEmbeddingWriteCanary({

@@ -9,9 +9,12 @@ import {LAUNCHABLE_HARNESS_TYPES, getHarnessAuthMode} from './deriveHarnessLaunc
 import {launchRefusalOf}                              from '../../../src/fleet/contract/launchAuthority.mjs';
 
 import {
+    createFleetMailboxMirrorRow,
     createFleetMailboxMirrorSnapshot,
-    DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT
+    DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT,
+    MAX_FLEET_MAILBOX_MIRROR_LIMIT
 } from './fleetMailboxMirrorAdapter.mjs';
+import {normalizeMailboxObserver} from '../memory-core/helpers/mailboxObservation.mjs';
 
 import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpitStatus.mjs';
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
@@ -58,6 +61,112 @@ function callOwnInbox(seam, primitive, messageId, args, invalid = null) {
     }
 
     return invalid ? {status: 'rejected', reason: `${primitive}: ${invalid}`} : seam[primitive](args)
+}
+
+/**
+ * The Task states that still wait for their recipient: an open question.
+ * @type {String[]}
+ */
+const OPEN_TASK_STATES = Object.freeze(['InputRequired', 'Submitted', 'Working']);
+
+/**
+ * @summary Reads the viewer's open questions through the operator-mailbox seam: its non-terminal A2A Tasks,
+ * archived ones included, highest priority then oldest first, with the complete count. The seam reads under
+ * the transport-stamped identity, so no identity crosses here. Only its `observeMessages` serves, a read that
+ * never records `seenAt`: a Fleet read is an observation, and a seen mark it left would let a mark-all-read drain
+ * a question the operator never displayed. A seam without one, or a failed read, answers `unavailable` with its
+ * reason, never an empty list or a zero. The page is the mailbox's own window (its applied `limit` and
+ * `offset`, and `hasMore` from its `truncated`): it advances by the rows storage served, so a row the graph could
+ * not project never ends a middle page or extends a final one. `capturedAt` is when the read answered: the age a
+ * view judges the list's freshness by.
+ * @param {Object|null} seam The bridge's `composeWriter`.
+ * @param {{limit: Number, offset: Number}} page
+ * @returns {Promise<Object>} `{state, reason, count, rows, page, capturedAt}`.
+ */
+async function readOwnQuestions(seam, page) {
+    const unavailable = reason => ({
+        state: 'unavailable', reason, count: null, rows: [], page: {...page, count: 0, hasMore: false}, capturedAt: new Date().toISOString()
+    });
+
+    if (typeof seam?.observeMessages !== 'function') {
+        return unavailable('fleet: no read here lists the open questions without marking them seen')
+    }
+
+    let answer;
+
+    try {
+        answer = await seam.observeMessages({
+            box            : 'inbox',
+            status         : 'all',
+            includeArchived: true,
+            taskStates     : OPEN_TASK_STATES,
+            taskOrder      : 'priority-age',
+            limit          : page.limit,
+            offset         : page.offset
+        })
+    } catch (error) {
+        console.error('[fleet] the open-questions read failed:', error);
+        return unavailable('fleet: the open-questions read failed')
+    }
+
+    if (!Number.isInteger(answer?.totalCount) || !Array.isArray(answer?.messages)) {
+        return unavailable('fleet: the open-questions read answered without a complete count')
+    }
+
+    if (typeof answer.truncated !== 'boolean') {
+        return unavailable('fleet: the open-questions read answered without its continuation')
+    }
+
+    const
+        observedAt = new Date().toISOString(),
+        rows       = answer.messages.filter(Boolean).map(message => createFleetMailboxMirrorRow(message, observedAt)),
+        window     = {
+            limit : Number.isInteger(answer.limit)  ? answer.limit  : page.limit,
+            offset: Number.isInteger(answer.offset) ? answer.offset : page.offset
+        };
+
+    return {
+        state     : 'ok',
+        reason    : null,
+        count     : answer.totalCount,
+        rows,
+        page      : {...window, count: rows.length, hasMore: answer.truncated},
+        capturedAt: observedAt
+    }
+}
+
+/**
+ * The list filters an observer may apply without choosing a viewer or subject identity. `fromIdentity` only
+ * narrows the admitted observer population; it never changes who is admitted.
+ * @type {Readonly<String[]>}
+ */
+const MAILBOX_OBSERVER_LIST_FILTERS = Object.freeze([
+    'box', 'status', 'fromIdentity', 'threadId', 'taggedConcepts', 'taskStates', 'taskOrder', 'includeArchived'
+]);
+
+/** Caller identity selectors are not part of observer filtering or admission. */
+const MAILBOX_OBSERVER_IDENTITY_FIELDS = Object.freeze([
+    'to', 'subjectAgentId', 'viewerIdentity'
+]);
+
+/**
+ * @summary Whitelist one observer page and its read filters; no viewer or subject claim crosses the writer seam.
+ * @param {Object} params Fleet bridge params.
+ * @param {Object} observer The validated observer scope.
+ * @returns {Object}
+ */
+function mailboxObserverListArgs(params, observer) {
+    const args = {
+        observer,
+        limit : params.limit === undefined ? DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT : params.limit,
+        offset: params.offset === undefined ? 0 : params.offset
+    };
+
+    MAILBOX_OBSERVER_LIST_FILTERS.forEach(field => {
+        if (params[field] !== undefined) args[field] = params[field]
+    });
+
+    return args
 }
 
 /**
@@ -394,8 +503,9 @@ class FleetControlBridge extends Base {
      * an honest `not-wired` refusal, never a fabricated acceptance.
      *
      * Named for its first verb, the seam also carries the operator's own-inbox primitives:
-     * `getMessage`, `markRead` and `transitionTask`, each optional and each acting under the same
-     * request identity. A missing one leaves only its verb `not-wired`.
+     * `getMessage`, `markRead`, `transitionTask` and `observeMessages` (the open questions' list, which
+     * never records `seenAt`), each optional and each acting under the same request identity. A missing
+     * one leaves only its verb `not-wired`.
      * @member {Object|null} composeWriter=null
      */
     composeWriter = null
@@ -738,6 +848,16 @@ class FleetControlBridge extends Base {
     }
 
     /**
+     * @summary Skip a starting agent's dependency install: the interrupted checkouts read `skipped`, and the
+     * Start launches. A Stop still cancels it.
+     * @param {String} id Registry agent id.
+     * @returns {{id: String, skippedStarts: Number}} how many pending Starts the Skip reached.
+     */
+    skipAgentDependencies(id) {
+        return this.getManager().skipAgentDependencies(id);
+    }
+
+    /**
      * @summary Restart a running agent through the provisioned path (repo re-ensured, harness runs in
      * ITS checkout). Restarting a non-running agent is just a provisioned start, with its refusals.
      * @param {String} id Registry agent id.
@@ -1067,14 +1187,40 @@ class FleetControlBridge extends Base {
     /**
      * @summary READ-OBSERVE: each seat's open work as the open-work producer last observed it: the
      * pull requests it owns and the reviews requested of it. The source envelope passes through
-     * untouched; an unwired source is named as unavailable, never as no open work.
+     * untouched; an unwired source is named as unavailable, never as no open work. Beside it,
+     * `questions` counts the viewer's open questions from the same read {@link fleetOwnQuestions}
+     * lists, so the count and the list cannot disagree.
      * @param {Object} [params] `{seat}` narrows the answer to one seat.
-     * @returns {Object}
+     * @returns {Promise<Object>} the source envelope plus `questions: {state, count, reason}`.
      */
-    fleetOpenWork(params = {}) {
-        return typeof this.openWorkSource?.readOpenWork === 'function'
-            ? this.openWorkSource.readOpenWork(params)
-            : {state: 'unavailable', observedAt: null, coverage: 'unavailable', reason: 'fleet open-work source not wired', seats: {}};
+    async fleetOpenWork(params = {}) {
+        const
+            openWork = typeof this.openWorkSource?.readOpenWork === 'function'
+                ? await this.openWorkSource.readOpenWork(params)
+                : {state: 'unavailable', observedAt: null, coverage: 'unavailable', reason: 'fleet open-work source not wired', seats: {}},
+            // the count is complete on any page, so one row reads it
+            {state, count, reason} = await readOwnQuestions(this.composeWriter, {limit: 1, offset: 0});
+
+        return {...openWork, questions: {state, count, reason}}
+    }
+
+    /**
+     * @summary READ-OBSERVE: the operator's open questions, the viewer's own non-terminal A2A Tasks, highest
+     * priority then oldest first, with their complete count. Read under the TRANSPORT-STAMPED request identity
+     * through the operator-mailbox seam's observational read, which leaves every message unseen:
+     * `MailboxService.listMessages` decides whose inbox it reads, and an archived but open Task still counts.
+     * Rows are the mailbox mirror's body-free rows.
+     * @param {Object} [params] `{limit, offset}`, bounded like the mailbox mirror's page.
+     * @returns {Promise<Object>} `{state: 'ok', reason: null, count, rows, page}`, or `unavailable` with its
+     *     reason, `count: null` and no rows.
+     */
+    fleetOwnQuestions(params = {}) {
+        const {limit, offset} = params ?? {};
+
+        return readOwnQuestions(this.composeWriter, {
+            limit : Number.isInteger(limit) ? Math.min(Math.max(limit, 1), MAX_FLEET_MAILBOX_MIRROR_LIMIT) : DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT,
+            offset: Number.isInteger(offset) && offset > 0 ? offset : 0
+        })
     }
 
     /**
@@ -1201,17 +1347,29 @@ class FleetControlBridge extends Base {
 
     /**
      * @summary READ-OBSERVE: one message in full, read under the TRANSPORT-STAMPED request
-     * identity: the operator opening a message from his own inbox. `MailboxService.getMessage`
-     * enforces its own `CAN_READ_INBOX_OF` gate and writes no receipt; this verb only routes.
+     * identity. `MailboxService.getMessage` enforces its own read-path gate and writes no receipt;
+     * this verb only routes. An optional `observer` selects the explicit non-stamping observer
+     * projection; omission preserves the ordinary authorized detail read.
      * @param {Object} params
      * @param {String} params.messageId
+     * @param {Object} [params.observer] Closed `{scope, memorySharing?}` observer mode.
      * @returns {Promise<Object>|Object} the message, `{status:'not-wired'}` when no reader is
-     *     installed, or `{status:'rejected'}` for a missing id.
+     *     installed, or `{status:'rejected'}` for a missing id or invalid observer.
      */
     fleetOwnMessage(params = {}) {
-        const {messageId} = params ?? {};
+        const {messageId, observer} = params ?? {};
+        const args = {messageId};
+        let invalid = null;
 
-        return callOwnInbox(this.composeWriter, 'getMessage', messageId, {messageId})
+        if (observer !== undefined) {
+            try {
+                args.observer = normalizeMailboxObserver(observer)
+            } catch (error) {
+                invalid = error?.message ?? 'observer is invalid'
+            }
+        }
+
+        return callOwnInbox(this.composeWriter, 'getMessage', messageId, args, invalid)
     }
 
     /**
@@ -1271,11 +1429,33 @@ class FleetControlBridge extends Base {
      * page}` envelope, `admission.state: 'unavailable'`, zero rows. It never returns an empty inbox
      * for a missing feed — "this agent has no mail" and "we cannot see this agent's mail" are
      * different claims, and only the producer is entitled to the first.
-     * @param {Object} [params] `{subjectAgentId, limit, offset}` — the direct subject agent whose
-     *     ACTIVE inbox is mirrored, plus bounded pagination.
-     * @returns {Promise<Object>|Object} `{capability, admission, rows, page}` — the S1 mirror snapshot.
+     * @param {Object} [params] Ordinary mode accepts `{subjectAgentId, limit, offset}` for the direct subject-agent
+     *     mirror. Explicit `{observer}` mode instead routes only its closed observer scope and bounded mailbox
+     *     filters/page to the Memory Core observer read, returning that canonical answer unchanged.
+     * @returns {Promise<Object>|Object} The Memory Core observer answer, or `{capability, admission, rows, page}`
+     *     for the ordinary S1 mirror snapshot.
      */
-    fleetMailboxMirror(params) {
+    fleetMailboxMirror(params = {}) {
+        if (params?.observer !== undefined) {
+            if (MAILBOX_OBSERVER_IDENTITY_FIELDS.some(field => params[field] !== undefined)) {
+                return {status: 'rejected', reason: 'fleet: observer reads do not accept caller identity selectors'}
+            }
+
+            let observer;
+
+            try {
+                observer = normalizeMailboxObserver(params.observer)
+            } catch (error) {
+                return {status: 'rejected', reason: `fleet: ${error?.message ?? 'observer is invalid'}`}
+            }
+
+            if (typeof this.composeWriter?.observeMessages !== 'function') {
+                return {status: 'not-wired', reason: 'fleet: operator inbox observer read not wired'}
+            }
+
+            return this.composeWriter.observeMessages(mailboxObserverListArgs(params, observer))
+        }
+
         return this.mailboxMirrorSource
             ? this.mailboxMirrorSource.readMailboxMirror(params)
             : createFleetMailboxMirrorSnapshot({
