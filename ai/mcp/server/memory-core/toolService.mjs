@@ -503,7 +503,7 @@ export function composeMemoryCoreHealthcheck({
 const addMessageTool = args => MailboxService.addMessage(args, {deferProjection: true});
 
 /**
- * @summary The model-visible mailbox boundary — the only place a listing records `seenAt`.
+ * @summary The ordinary model-visible mailbox boundary — the only place an ordinary listing records `seenAt`.
  *
  * `MailboxService.listMessages` defaults `recordSeen` to false, so a direct service read cannot
  * stamp by omission. That is the whole safety argument, and it replaces an earlier design that
@@ -512,7 +512,9 @@ const addMessageTool = args => MailboxService.addMessage(args, {deferProjection:
  * rather than excluding it. Caller identity proves mailbox authority, not display authority.
  *
  * Arming it here means the heartbeat and the diagnostics scripts are safe by construction — they
- * never cross this boundary — instead of safe because a predicate happened to exclude them.
+ * never cross this boundary — instead of safe because a predicate happened to exclude them. The
+ * explicit validated `observer` request is a separate non-stamping service mode; it is not a generic
+ * caller-controlled `recordSeen` switch, and ordinary calls keep this wrapper's `recordSeen: true`.
  *
  * Passed as the SECOND argument rather than folded into `args`, matching `addMessageTool` directly
  * above. Two reasons, and the first is mechanical: the Zod facade strips keys the operation schema

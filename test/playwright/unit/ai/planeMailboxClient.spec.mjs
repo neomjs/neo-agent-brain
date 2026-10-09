@@ -1,6 +1,6 @@
 import {test, expect} from '@playwright/test';
 
-import {createPlaneMailboxClient} from '../../../../ai/services/fleet/planeMailboxClient.mjs';
+import {createPlaneMailboxClient, MAILBOX_OBSERVER_UNAVAILABLE} from '../../../../ai/services/fleet/planeMailboxClient.mjs';
 
 /**
  * @summary Unit coverage for the plane mailbox client — the SDK-backed streamable-HTTP MCP client
@@ -15,6 +15,18 @@ import {createPlaneMailboxClient} from '../../../../ai/services/fleet/planeMailb
 
 const LOOPBACK_URL = 'http://127.0.0.1:3102/mc/mcp';
 const IDENTITY     = '@neo-fable-clio';
+
+function mailboxTools(observerScopes = null) {
+    const observer = observerScopes
+        ? {type: 'object', properties: {scope: {type: 'string', enum: observerScopes}}}
+        : undefined,
+        schema = properties => ({type: 'object', properties: {...properties, ...(observer ? {observer} : {})}});
+
+    return [
+        {name: 'list_messages', inputSchema: schema({limit: {type: 'integer'}})},
+        {name: 'get_message', inputSchema: schema({messageId: {type: 'string'}})}
+    ]
+}
 
 /**
  * @summary One Response-shaped object covering the subset the SDK transport reads.
@@ -59,7 +71,7 @@ function planeResponse({status = 200, contentType = 'application/json', sessionI
  *     before succeeding.
  * @returns {Object} `{fetchImpl, calls}`
  */
-function scriptedPlane({identityBySession = [IDENTITY], toolResponder = null, failInitializeTimes = 0, deleteDelayMs = 0} = {}) {
+function scriptedPlane({identityBySession = [IDENTITY], toolResponder = null, toolsBySession = null, toolListResponder = null, failInitializeTimes = 0, deleteDelayMs = 0} = {}) {
     const calls = [];
 
     let sessions           = 0,
@@ -79,7 +91,8 @@ function scriptedPlane({identityBySession = [IDENTITY], toolResponder = null, fa
             rpcMethod    : body?.method ?? null,
             rpcId        : body?.id ?? null,
             toolName     : body?.method === 'tools/call' ? body?.params?.name : null,
-            toolArgs     : body?.method === 'tools/call' ? body?.params?.arguments : null
+            toolArgs     : body?.method === 'tools/call' ? body?.params?.arguments : null,
+            toolCursor   : body?.method === 'tools/list' ? body?.params?.cursor ?? null : null
         };
 
         calls.push(call);
@@ -115,6 +128,18 @@ function scriptedPlane({identityBySession = [IDENTITY], toolResponder = null, fa
 
         if (body?.method === 'notifications/initialized') {
             return planeResponse({status: 202})
+        }
+
+        if (body?.method === 'tools/list') {
+            const sessionOrdinal = Math.max(0, sessions - 1),
+                listed = toolListResponder
+                    ? await toolListResponder({cursor: call.toolCursor, call, sessionOrdinal})
+                    : {tools: toolsBySession?.[Math.min(sessionOrdinal, toolsBySession.length - 1)] ?? [
+                        {name: 'list_messages', inputSchema: {type: 'object', properties: {limit: {type: 'integer'}}}},
+                        {name: 'get_message', inputSchema: {type: 'object', properties: {messageId: {type: 'string'}}}}
+                    ]};
+
+            return planeResponse({body: {jsonrpc: '2.0', id: body.id, result: listed}})
         }
 
         if (body?.method === 'tools/call') {
@@ -268,6 +293,61 @@ test.describe('planeMailboxClient: tool calls (error shape mirrors the in-proces
         expect(call.toolArgs).toEqual({limit: 5})
     });
 
+    test('observer list and detail refuse a legacy schema before any content call', async () => {
+        const {client, plane} = await initializedClient({toolsBySession: [mailboxTools()]});
+
+        await expect(client.listMessages({observer: {scope: 'own'}}))
+            .rejects.toMatchObject({code: MAILBOX_OBSERVER_UNAVAILABLE});
+        await expect(client.getMessage({messageId: 'MESSAGE:1', observer: {scope: 'all'}}))
+            .rejects.toMatchObject({code: MAILBOX_OBSERVER_UNAVAILABLE});
+
+        expect(plane.calls.filter(call => call.rpcMethod === 'tools/list')).toHaveLength(1);
+        expect(plane.calls.filter(call => ['list_messages', 'get_message'].includes(call.toolName))).toHaveLength(0)
+    });
+
+    test('observer schema discovery is paginated, session-cached, and admits only advertised scopes', async () => {
+        const {client, plane} = await initializedClient({
+            toolListResponder: ({cursor}) => cursor
+                ? {tools: mailboxTools(['own', 'all'])}
+                : {tools: [{name: 'unrelated', inputSchema: {type: 'object', properties: {}}}], nextCursor: 'page-2'},
+            toolResponder: ({name}) => ({payload: name === 'list_messages'
+                ? {messages: [], totalCount: 0, truncated: false}
+                : {messageId: 'MESSAGE:1'}})
+        });
+
+        await expect(client.listMessages({observer: {scope: 'own'}})).resolves.toHaveProperty('totalCount', 0);
+        await expect(client.getMessage({messageId: 'MESSAGE:1', observer: {scope: 'all'}})).resolves.toHaveProperty('messageId', 'MESSAGE:1');
+        await expect(client.getMessage({messageId: 'MESSAGE:1', observer: {scope: 'involves-me'}}))
+            .rejects.toMatchObject({code: MAILBOX_OBSERVER_UNAVAILABLE});
+        await expect(client.listMessages({observer: {scope: 'own', memorySharing: 'private'}}))
+            .rejects.toMatchObject({code: MAILBOX_OBSERVER_UNAVAILABLE});
+
+        expect(plane.calls.filter(call => call.rpcMethod === 'tools/list').map(call => call.toolCursor)).toEqual([null, 'page-2']);
+        expect(plane.calls.filter(call => call.toolName === 'list_messages')).toHaveLength(1);
+        expect(plane.calls.filter(call => call.toolName === 'get_message')).toHaveLength(1)
+    });
+
+    test('a 404 recovery rechecks observer scope on the replacement session before replay', async () => {
+        let first = true;
+        const {client, plane} = await initializedClient({
+            toolsBySession: [mailboxTools(['all']), mailboxTools(['own'])],
+            toolResponder: ({name}) => {
+                if (name === 'list_messages' && first) {
+                    first = false;
+                    return {status: 404}
+                }
+
+                return {payload: {messages: [], totalCount: 0, truncated: false}}
+            }
+        });
+
+        await expect(client.listMessages({observer: {scope: 'all'}}))
+            .rejects.toMatchObject({code: MAILBOX_OBSERVER_UNAVAILABLE});
+
+        expect(plane.calls.filter(call => call.rpcMethod === 'tools/list')).toHaveLength(2);
+        expect(plane.calls.filter(call => call.toolName === 'list_messages')).toHaveLength(1)
+    });
+
     test('addMessage maps to the add_message tool; text-only payloads parse too', async () => {
         const {client, plane} = await initializedClient({
             toolResponder: () => ({textPayload: JSON.stringify({status: 'sent'})})
@@ -384,7 +464,7 @@ test.describe('planeMailboxClient: session loss (one bounded recovery, identity 
         const fetchImpl = async (url, init = {}) => {
             const body = typeof init.body === 'string' ? JSON.parse(init.body) : null;
 
-            // Initialize #2 (the first recovery) fails — that failed recovery leaves session null.
+            // The second initialization (the first recovery) fails — that failed recovery leaves session null.
             if (body?.method === 'initialize' && ++initializeAttempts === 2) {
                 return planeResponse({status: 503, body: 'down'})
             }

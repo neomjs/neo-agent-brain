@@ -14,6 +14,7 @@ import {
     DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT,
     MAX_FLEET_MAILBOX_MIRROR_LIMIT
 } from './fleetMailboxMirrorAdapter.mjs';
+import {normalizeMailboxObserver} from '../memory-core/helpers/mailboxObservation.mjs';
 
 import {createFleetCockpitStatus, createNotWiredCapability} from './fleetCockpitStatus.mjs';
 import {FLEET_COCKPIT_SOURCES}                              from '../../../src/fleet/contract/cockpit.mjs';
@@ -132,6 +133,40 @@ async function readOwnQuestions(seam, page) {
         page      : {...window, count: rows.length, hasMore: answer.truncated},
         capturedAt: observedAt
     }
+}
+
+/**
+ * The list filters an observer may apply without choosing a viewer or subject identity. `fromIdentity` only
+ * narrows the admitted observer population; it never changes who is admitted.
+ * @type {Readonly<String[]>}
+ */
+const MAILBOX_OBSERVER_LIST_FILTERS = Object.freeze([
+    'box', 'status', 'fromIdentity', 'threadId', 'taggedConcepts', 'taskStates', 'taskOrder', 'includeArchived'
+]);
+
+/** Caller identity selectors are not part of observer filtering or admission. */
+const MAILBOX_OBSERVER_IDENTITY_FIELDS = Object.freeze([
+    'to', 'subjectAgentId', 'viewerIdentity'
+]);
+
+/**
+ * @summary Whitelist one observer page and its read filters; no viewer or subject claim crosses the writer seam.
+ * @param {Object} params Fleet bridge params.
+ * @param {Object} observer The validated observer scope.
+ * @returns {Object}
+ */
+function mailboxObserverListArgs(params, observer) {
+    const args = {
+        observer,
+        limit : params.limit === undefined ? DEFAULT_FLEET_MAILBOX_MIRROR_LIMIT : params.limit,
+        offset: params.offset === undefined ? 0 : params.offset
+    };
+
+    MAILBOX_OBSERVER_LIST_FILTERS.forEach(field => {
+        if (params[field] !== undefined) args[field] = params[field]
+    });
+
+    return args
 }
 
 /**
@@ -1312,17 +1347,29 @@ class FleetControlBridge extends Base {
 
     /**
      * @summary READ-OBSERVE: one message in full, read under the TRANSPORT-STAMPED request
-     * identity: the operator opening a message from his own inbox. `MailboxService.getMessage`
-     * enforces its own `CAN_READ_INBOX_OF` gate and writes no receipt; this verb only routes.
+     * identity. `MailboxService.getMessage` enforces its own read-path gate and writes no receipt;
+     * this verb only routes. An optional `observer` selects the explicit non-stamping observer
+     * projection; omission preserves the ordinary authorized detail read.
      * @param {Object} params
      * @param {String} params.messageId
+     * @param {Object} [params.observer] Closed `{scope, memorySharing?}` observer mode.
      * @returns {Promise<Object>|Object} the message, `{status:'not-wired'}` when no reader is
-     *     installed, or `{status:'rejected'}` for a missing id.
+     *     installed, or `{status:'rejected'}` for a missing id or invalid observer.
      */
     fleetOwnMessage(params = {}) {
-        const {messageId} = params ?? {};
+        const {messageId, observer} = params ?? {};
+        const args = {messageId};
+        let invalid = null;
 
-        return callOwnInbox(this.composeWriter, 'getMessage', messageId, {messageId})
+        if (observer !== undefined) {
+            try {
+                args.observer = normalizeMailboxObserver(observer)
+            } catch (error) {
+                invalid = error?.message ?? 'observer is invalid'
+            }
+        }
+
+        return callOwnInbox(this.composeWriter, 'getMessage', messageId, args, invalid)
     }
 
     /**
@@ -1382,11 +1429,33 @@ class FleetControlBridge extends Base {
      * page}` envelope, `admission.state: 'unavailable'`, zero rows. It never returns an empty inbox
      * for a missing feed — "this agent has no mail" and "we cannot see this agent's mail" are
      * different claims, and only the producer is entitled to the first.
-     * @param {Object} [params] `{subjectAgentId, limit, offset}` — the direct subject agent whose
-     *     ACTIVE inbox is mirrored, plus bounded pagination.
-     * @returns {Promise<Object>|Object} `{capability, admission, rows, page}` — the S1 mirror snapshot.
+     * @param {Object} [params] Ordinary mode accepts `{subjectAgentId, limit, offset}` for the direct subject-agent
+     *     mirror. Explicit `{observer}` mode instead routes only its closed observer scope and bounded mailbox
+     *     filters/page to the Memory Core observer read, returning that canonical answer unchanged.
+     * @returns {Promise<Object>|Object} The Memory Core observer answer, or `{capability, admission, rows, page}`
+     *     for the ordinary S1 mirror snapshot.
      */
-    fleetMailboxMirror(params) {
+    fleetMailboxMirror(params = {}) {
+        if (params?.observer !== undefined) {
+            if (MAILBOX_OBSERVER_IDENTITY_FIELDS.some(field => params[field] !== undefined)) {
+                return {status: 'rejected', reason: 'fleet: observer reads do not accept caller identity selectors'}
+            }
+
+            let observer;
+
+            try {
+                observer = normalizeMailboxObserver(params.observer)
+            } catch (error) {
+                return {status: 'rejected', reason: `fleet: ${error?.message ?? 'observer is invalid'}`}
+            }
+
+            if (typeof this.composeWriter?.observeMessages !== 'function') {
+                return {status: 'not-wired', reason: 'fleet: operator inbox observer read not wired'}
+            }
+
+            return this.composeWriter.observeMessages(mailboxObserverListArgs(params, observer))
+        }
+
         return this.mailboxMirrorSource
             ? this.mailboxMirrorSource.readMailboxMirror(params)
             : createFleetMailboxMirrorSnapshot({

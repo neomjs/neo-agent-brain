@@ -77,6 +77,11 @@ import {
  */
 export const VIEWER_BINDING_UNAVAILABLE = 'viewer-binding-unavailable'
 
+/** Refusal code when the connected plane cannot prove it supports a requested observer scope. */
+export const MAILBOX_OBSERVER_UNAVAILABLE = 'MAILBOX_OBSERVER_UNAVAILABLE'
+
+const MAX_OBSERVER_TOOL_PAGES = 16;
+
 export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = null, createSession = null, allowPlainHttpHosts = []}) {
     const endpoint = normalizeSecureMcpEndpoint(baseUrl, {allowPlainHttpHosts});
 
@@ -261,6 +266,97 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
         return payload
     }
 
+    /**
+     * @summary Proves observer support from this exact session's advertised schema before dispatch.
+     * @param {Object} candidate Proven MCP session.
+     * @param {String} name Mailbox tool.
+     * @param {Object} request Requested observer scope and optional sharing policy.
+     * @returns {Promise<Boolean>}
+     * @private
+     */
+    async function supportsObserver(candidate, name, request) {
+        if (!candidate.observerToolsPromise) {
+            candidate.observerToolsPromise = (async () => {
+                const tools = [], cursors = new Set();
+                let cursor;
+
+                for (let page = 0; page < MAX_OBSERVER_TOOL_PAGES; page++) {
+                    const result = await candidate.client.listTools(cursor ? {cursor} : {});
+
+                    if (!Array.isArray(result?.tools)) return null;
+
+                    tools.push(...result.tools);
+
+                    if (result.nextCursor === undefined) return tools;
+                    if (typeof result.nextCursor !== 'string' || !result.nextCursor || cursors.has(result.nextCursor)) return null;
+
+                    cursors.add(result.nextCursor);
+                    cursor = result.nextCursor
+                }
+
+                return null
+            })().catch(error => {
+                candidate.observerToolsPromise = null;
+                throw error
+            })
+        }
+
+        const tools = await candidate.observerToolsPromise;
+
+        if (!tools) return false;
+
+        const matches = tools.filter(tool => tool?.name === name);
+
+        if (matches.length !== 1) return false;
+
+        const schema = matches[0]?.inputSchema,
+            observer = schema?.type === 'object' && schema.properties?.observer;
+
+        const scope   = request.scope,
+            sharing = request.memorySharing;
+
+        if (observer?.type !== 'object'
+            || !Array.isArray(observer.properties?.scope?.enum)
+            || !observer.properties.scope.enum.includes(scope)) return false;
+
+        return sharing === undefined || (Array.isArray(observer.properties?.memorySharing?.enum)
+            && observer.properties.memorySharing.enum.includes(sharing))
+    }
+
+    /**
+     * @summary Creates a typed refusal without sending an observer-bearing content call.
+     * @param {String} name Requested tool.
+     * @param {String} scope Requested scope, or `invalid` when absent.
+     * @returns {Error} A bounded error carrying `MAILBOX_OBSERVER_UNAVAILABLE`.
+     */
+    function observerUnavailable(name, scope) {
+        const error = new Error(`plane ${name} refused: observer scope '${scope}' is not advertised by this session`);
+
+        error.code = MAILBOX_OBSERVER_UNAVAILABLE;
+
+        return error
+    }
+
+    /**
+     * @summary Checks a proven session's observer schema before sending an observer read.
+     * @param {Object} candidate Proven MCP session.
+     * @param {String} name Tool name.
+     * @param {Object} args Tool arguments.
+     * @returns {Promise<Object>} SDK CallToolResult.
+     * @throws {Error} Typed observer refusal or SDK transport/tool error.
+     */
+    async function callProvenSession(candidate, name, args) {
+        if ((name === 'list_messages' || name === 'get_message') && args?.observer !== undefined) {
+            const scope = args.observer?.scope;
+
+            if (typeof scope !== 'string' || !await supportsObserver(candidate, name, args.observer)) {
+                throw observerUnavailable(name, typeof scope === 'string' ? scope : 'invalid')
+            }
+        }
+
+        return candidate.client.callTool({name, arguments: args})
+    }
+
     return {
         /**
          * @summary Connect + prove the single-viewer invariant. REQUIRED before any tool call.
@@ -327,8 +423,10 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
             let result;
 
             try {
-                result = await mine.client.callTool({name, arguments: args})
+                result = await callProvenSession(mine, name, args)
             } catch (error) {
+                if (error?.code === MAILBOX_OBSERVER_UNAVAILABLE) throw error;
+
                 // Candidate-local clear: only the still-current failed session is cleared and torn
                 // down; when a concurrent caller already replaced it, the successor stays untouched
                 // (the replacer's own failure path tore the shared predecessor exactly once).
@@ -367,7 +465,7 @@ export function createPlaneMailboxClient({baseUrl, credential = '', fetchImpl = 
                     throw new Error(`plane ${name} failed: client closed during recovery`)
                 }
 
-                result = await fresh.client.callTool({name, arguments: args})
+                result = await callProvenSession(fresh, name, args)
             }
 
             return mapToolResult(name, result)
