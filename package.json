@@ -90,8 +90,8 @@
     "dependencies": {
         "@chroma-core/default-embed": "0.1.9",
         "@google/generative-ai": "^0.24.1",
-        "@modelcontextprotocol/sdk": "^1.32.0",
-        "acorn": "^8.17.0",
+        "@modelcontextprotocol/sdk": "^1.32.1",
+        "acorn": "^8.19.0",
         "ajv": "8.20.0",
         "better-sqlite3": "13.0.3",
         "chromadb": "3.5.0",
@@ -99,11 +99,11 @@
         "cors": "2.8.6",
         "dotenv": "^18.0.5",
         "express": "5.2.1",
-        "express-rate-limit": "8.7.0",
+        "express-rate-limit": "8.7.1",
         "fast-glob": "^3.3.3",
         "fs-extra": "^11.4.1",
         "gray-matter": "^4.0.3",
-        "js-yaml": "^5.4.2",
+        "js-yaml": "^5.4.3",
         "micromatch": "4.0.8",
         "neo-agent-skills": "^0.1.30",
         "neo.mjs": "https://github.com/neomjs/neo/archive/7f16355a9bf6bc7cdf7cbf94873b649711298f28.tar.gz",
@@ -119,7 +119,7 @@
         "autoprefixer": "^10.6.1",
         "catharsis": "0.11.0",
         "chalk": "^6.0.1",
-        "postcss": "^8.5.28",
+        "postcss": "^8.5.29",
         "sass": "^1.105.1"
     },
     "overrides": {
